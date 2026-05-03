@@ -764,6 +764,12 @@ class Agent:
         for tool in tools:
             self._tool_registry.register(tool)
         self._tool_executor = ToolExecutor(self._tool_registry, timeout=self.config.tool_timeout)
+        logger.debug(
+            "Installed %d tool(s) for %s: %s",
+            len(tools),
+            self.name,
+            ", ".join(t.name for t in tools),
+        )
 
     async def _process_tool_calls(
         self,

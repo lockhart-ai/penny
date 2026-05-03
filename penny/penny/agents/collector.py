@@ -22,6 +22,7 @@ Dispatcher pattern (vs. one stateful agent per collection):
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -33,7 +34,9 @@ from penny.database import Database
 from penny.database.memory_store import LogEntryInput
 from penny.database.models import Memory
 from penny.llm.client import LlmClient
-from penny.tools.memory_tools import DoneTool
+from penny.tools.memory_tools import DoneTool, check_extraction_prompt
+
+logger = logging.getLogger(__name__)
 
 
 class Collector(BackgroundAgent):
@@ -122,6 +125,8 @@ class Collector(BackgroundAgent):
                 f"Collection '{collection_name}' has no extraction_prompt — "
                 f"set one with collection_update before testing.",
             )
+        if error := check_extraction_prompt(collection.extraction_prompt):
+            return False, error
         return await self._execute_cycle(collection)
 
     async def _execute_cycle(self, collection: Memory) -> tuple[bool, str]:
@@ -298,6 +303,14 @@ class Collector(BackgroundAgent):
     @staticmethod
     def _is_ready(memory: Memory, now: datetime) -> bool:
         if memory.archived or memory.extraction_prompt is None:
+            return False
+        if check_extraction_prompt(memory.extraction_prompt) is not None:
+            logger.warning(
+                "Skipping collection '%s': extraction_prompt too short (%d chars, minimum 25) "
+                "— update it via collection_update to enable collection",
+                memory.name,
+                len(memory.extraction_prompt),
+            )
             return False
         if memory.last_collected_at is None:
             return True  # Never run — always ready

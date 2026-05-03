@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 
 _RECALL_MODES = ", ".join(m.value for m in RecallMode)
-_EXTRACTION_PROMPT_MIN_CHARS = 25
+EXTRACTION_PROMPT_MIN_CHARS = 25
 
 
 # ── Shared formatting ───────────────────────────────────────────────────────
@@ -86,13 +86,13 @@ def _format_entries(entries: list[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
-def _check_extraction_prompt(prompt: str | None) -> str | None:
+def check_extraction_prompt(prompt: str | None) -> str | None:
     """Return an error string if prompt is set but too short, else None."""
-    if prompt is None or len(prompt) >= _EXTRACTION_PROMPT_MIN_CHARS:
+    if prompt is None or len(prompt) >= EXTRACTION_PROMPT_MIN_CHARS:
         return None
     return (
         f"extraction_prompt is too short ({len(prompt)} chars — minimum "
-        f"{_EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
+        f"{EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
         f"(see the collection_create description for the required shape) or omit "
         f"extraction_prompt entirely to create a manually-managed collection."
     )
@@ -236,7 +236,7 @@ class CollectionCreateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         args = CreateMemoryArgs(**kwargs)
-        if error := _check_extraction_prompt(args.extraction_prompt):
+        if error := check_extraction_prompt(args.extraction_prompt):
             return error
         try:
             self._db.memories.create_collection(
@@ -649,7 +649,7 @@ class CollectionUpdateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         args = CollectionUpdateArgs(**kwargs)
-        if error := _check_extraction_prompt(args.extraction_prompt):
+        if error := check_extraction_prompt(args.extraction_prompt):
             return error
         recall = RecallMode(args.recall) if args.recall is not None else None
         try:

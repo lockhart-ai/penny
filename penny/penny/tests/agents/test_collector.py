@@ -54,13 +54,16 @@ def test_dispatcher_returns_none_when_no_collections_have_prompts(test_config, t
     assert collector._next_ready_collection() is None
 
 
+_VALID_EXTRACTION_PROMPT = "Extract relevant items from user-messages log."
+
+
 def test_dispatcher_picks_collection_with_extraction_prompt(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "wired",
         "has a collector",
         RecallMode.OFF,
-        extraction_prompt="extract things",
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
     )
     target = collector._next_ready_collection()
     assert target is not None
@@ -73,9 +76,23 @@ def test_dispatcher_skips_archived(test_config, tmp_path):
         "wired",
         "has a collector",
         RecallMode.OFF,
-        extraction_prompt="extract",
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
     )
     db.memories.archive("wired")
+    assert collector._next_ready_collection() is None
+
+
+def test_dispatcher_skips_collection_with_too_short_extraction_prompt(test_config, tmp_path):
+    """A collection whose extraction_prompt is below the 25-char minimum is skipped.
+
+    Prevents the LLM from receiving a nonsensical (often function-call-shaped)
+    instruction body that causes tool-name hallucinations.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    # "test_extraction_prompt" is 22 chars — below the 25-char minimum.
+    db.memories.create_collection(
+        "test-col", "x", RecallMode.OFF, extraction_prompt="test_extraction_prompt"
+    )
     assert collector._next_ready_collection() is None
 
 
@@ -87,7 +104,7 @@ def test_dispatcher_skips_collections_within_interval(test_config, tmp_path):
         "wired",
         "has a collector",
         RecallMode.OFF,
-        extraction_prompt="extract",
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
         collector_interval_seconds=300,
     )
     db.memories.mark_collected("wired")  # last_collected_at = now
@@ -98,10 +115,18 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
     """When multiple collections are ready the oldest last_collected_at wins."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
-        "fresh", "x", RecallMode.OFF, extraction_prompt="x", collector_interval_seconds=60
+        "fresh",
+        "x",
+        RecallMode.OFF,
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
+        collector_interval_seconds=60,
     )
     db.memories.create_collection(
-        "stale", "x", RecallMode.OFF, extraction_prompt="x", collector_interval_seconds=60
+        "stale",
+        "x",
+        RecallMode.OFF,
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
+        collector_interval_seconds=60,
     )
     # Both collected, but `stale` was much earlier
     db.memories.mark_collected("fresh")
@@ -124,7 +149,9 @@ def test_dispatcher_uses_default_interval_when_unset(test_config, tmp_path):
     """A collection with NULL collector_interval_seconds falls back to the
     PennyConstants default."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("wired", "x", RecallMode.OFF, extraction_prompt="x")
+    db.memories.create_collection(
+        "wired", "x", RecallMode.OFF, extraction_prompt=_VALID_EXTRACTION_PROMPT
+    )
     # Just collected → not ready until DEFAULT_INTERVAL elapses
     db.memories.mark_collected("wired")
     assert collector._next_ready_collection() is None
@@ -428,6 +455,19 @@ async def test_run_for_no_extraction_prompt(test_config, tmp_path):
     assert success is False
     assert "extraction_prompt" in message
     assert "collection_update" in message
+
+
+@pytest.mark.asyncio
+async def test_run_for_rejects_too_short_extraction_prompt(test_config, tmp_path):
+    """run_for returns an error for a sub-minimum extraction_prompt instead of
+    running the cycle, preventing the same hallucination path as the dispatcher."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "short-col", "x", RecallMode.OFF, extraction_prompt="test_extraction_prompt"
+    )
+    success, message = await collector.run_for("short-col")
+    assert success is False
+    assert "too short" in message
 
 
 @pytest.mark.asyncio
