@@ -216,6 +216,10 @@ class Memory(SQLModel, table=True):
     collector_interval_seconds: int | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": "1970-01-01 00:00:00"},
+    )
 
 
 class MemoryEntry(SQLModel, table=True):

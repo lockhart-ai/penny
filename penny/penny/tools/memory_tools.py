@@ -703,12 +703,16 @@ class CollectionMetadataTool(Tool):
             if memory.last_collected_at is not None
             else "never"
         )
+        created = memory.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        updated = memory.updated_at.strftime("%Y-%m-%d %H:%M:%S")
         lines = [
             f"name: {memory.name}",
             f"type: {memory.type}",
             f"description: {memory.description}",
             f"recall: {memory.recall}",
             f"archived: {memory.archived}",
+            f"created: {created}",
+            f"updated: {updated}",
             f"interval: {interval}",
             f"last collected: {last_collected}",
             f"extraction prompt: {memory.extraction_prompt or 'none'}",

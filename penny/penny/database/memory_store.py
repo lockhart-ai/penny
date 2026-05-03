@@ -282,6 +282,7 @@ class MemoryStore:
             if memory is None:
                 raise MemoryNotFoundError(name)
             memory.archived = archived
+            memory.updated_at = datetime.now(UTC)
             session.add(memory)
             session.commit()
         self._notify_changed(name)
@@ -310,6 +311,7 @@ class MemoryStore:
                 memory.extraction_prompt = extraction_prompt
             if collector_interval_seconds is not None:
                 memory.collector_interval_seconds = collector_interval_seconds
+            memory.updated_at = datetime.now(UTC)
             session.add(memory)
             session.commit()
             session.refresh(memory)

@@ -287,9 +287,9 @@ def test_skips_block_when_target_memory_already_populated(tmp_path):
         _seed_preference(conn, "tea", "positive", base)
         conn.execute(
             "INSERT INTO memory"
-            " (name, type, description, recall, archived, created_at)"
-            " VALUES ('likes', 'collection', 'x', 'relevant', 0, ?)",
-            (base.isoformat(),),
+            " (name, type, description, recall, archived, created_at, updated_at)"
+            " VALUES ('likes', 'collection', 'x', 'relevant', 0, ?, ?)",
+            (base.isoformat(), base.isoformat()),
         )
         conn.execute(
             "INSERT INTO memory_entry"

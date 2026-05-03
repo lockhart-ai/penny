@@ -116,6 +116,8 @@ class TestMemoryMetadata:
         assert "300s" in result
         assert "never" in result  # last collected
         assert "Browse for Prague spots and write entries." in result
+        assert "created:" in result
+        assert "updated:" in result
 
     def test_collection_metadata_tool_no_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
@@ -123,6 +125,14 @@ class TestMemoryMetadata:
         tool = CollectionMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
         assert "extraction prompt: none" in result
+
+    def test_updated_at_advances_on_metadata_update(self, tmp_path):
+        db = _make_db(tmp_path)
+        db.memories.create_collection("col", "desc", RecallMode.OFF)
+        before = db.memories.get("col").updated_at
+        db.memories.update_collection_metadata("col", description="new desc")
+        after = db.memories.get("col").updated_at
+        assert after >= before
 
     def test_collection_metadata_tool_not_found(self, tmp_path):
         db = _make_db(tmp_path)
