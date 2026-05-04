@@ -218,7 +218,7 @@ from earlier in the conversation.
 How to use the browse tool:
 1. If the user gave you URLs, read them directly — pass the URLs in the \
 queries array. Do NOT search for a site the user already linked.
-2. If the user gave you a topic (no URLs), search first to discover \
+2. If the user gave you a topic (no URLs), call browse to discover \
 relevant pages.
 3. Read the most promising pages by passing their URLs in the queries \
 array (e.g., queries: ["https://example.com/page"]). \

@@ -1,6 +1,6 @@
 """ChatAgent — Penny's conversation mode.
 
-Handles incoming user messages with tools for search and news.
+Handles incoming user messages with web browsing and memory tools.
 Context is injected automatically via the Agent base class.
 """
 

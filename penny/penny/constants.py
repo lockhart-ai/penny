@@ -80,7 +80,7 @@ class PennyConstants:
     BROWSE_RETRIES = 4
     BROWSE_RETRY_DELAY = 1.0
     MAX_SEARCH_LINKS = 10
-    BROWSE_SEARCH_HEADER = "## search: "
+    BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "
     BROWSE_ERROR_HEADER = "## browse error: "
     BROWSE_TITLE_PREFIX = "Title: "
