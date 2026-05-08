@@ -1,6 +1,7 @@
 """Base classes for tools."""
 
 import asyncio
+import difflib
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
@@ -183,11 +184,13 @@ class ToolExecutor:
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"
+        close = difflib.get_close_matches(tool_call.tool, available_tools, n=1, cutoff=0.6)
+        suggestion = f" Did you mean '{close[0]}'?" if close else ""
         return ToolResult(
             tool=tool_call.tool,
             result=None,
             error=(
-                f"Tool '{tool_call.tool}' not found. "
+                f"Tool '{tool_call.tool}' not found.{suggestion} "
                 f"Available tools: {available_list}. "
                 f"You must ONLY use the tools listed above."
             ),

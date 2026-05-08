@@ -98,6 +98,57 @@ class TestToolNotFound:
         await agent.close()
 
 
+class StubReadLatestTool(Tool):
+    """Stub for read_latest — used in close-match suggestion tests."""
+
+    name = "read_latest"
+    description = "Read the latest entries from a memory collection"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory": {"type": "string", "description": "Memory name."},
+        },
+        "required": ["memory"],
+    }
+
+    async def execute(self, **kwargs):
+        return "entries"
+
+
+class TestToolNotFoundSuggestion:
+    """Error message includes a 'did you mean' suggestion for close tool names."""
+
+    @pytest.mark.asyncio
+    async def test_did_you_mean_for_read_last(self):
+        """'read_last' produces a 'Did you mean read_latest?' suggestion."""
+        from penny.tools.models import ToolCall
+
+        registry = ToolRegistry()
+        registry.register(StubReadLatestTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        tool_call = ToolCall(tool="read_last", arguments={})
+        result = await executor.execute(tool_call)
+
+        assert result.error is not None
+        assert "Did you mean 'read_latest'?" in result.error
+
+    @pytest.mark.asyncio
+    async def test_no_suggestion_for_unrecognisable_tool_name(self):
+        """No suggestion is added when no close match exists."""
+        from penny.tools.models import ToolCall
+
+        registry = ToolRegistry()
+        registry.register(StubReadLatestTool())
+        executor = ToolExecutor(registry, timeout=30.0)
+
+        tool_call = ToolCall(tool="completely_unknown_xyz", arguments={})
+        result = await executor.execute(tool_call)
+
+        assert result.error is not None
+        assert "Did you mean" not in result.error
+
+
 class StubDoneTool(Tool):
     """Stub tool with two required typed+described parameters."""
 
