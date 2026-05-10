@@ -74,6 +74,11 @@ class BrowseTool(Tool):
     """
 
     name = "browse"
+    # Must exceed TOOL_REQUEST_TIMEOUT (60s) so the inner per-URL timeout fires
+    # before the outer executor cancels the whole tool call.  Without this, both
+    # timers fire at ~60s and the outer cancellation wins, surfacing as a tool
+    # execution timeout rather than a graceful per-URL error section.
+    timeout = 300.0
 
     def __init__(
         self,
