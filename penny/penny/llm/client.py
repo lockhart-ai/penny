@@ -24,6 +24,7 @@ from penny.llm.models import (
     LlmResponseError,
     LlmToolCall,
     LlmToolCallFunction,
+    LlmToolParseError,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,19 @@ class LlmClient:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay)
             except openai.OpenAIError as error:
-                last_error = LlmResponseError(str(error))
+                error_str = str(error)
+                # 500 "error parsing tool call" means the model produced plain text
+                # instead of a JSON tool call. Retrying with the same messages won't
+                # help — raise immediately so the agent can inject a format nudge.
+                if (
+                    getattr(error, "status_code", None) == 500
+                    and "error parsing tool call" in error_str
+                ):
+                    logger.warning(
+                        "Tool parse error — model returned plain text instead of JSON tool call"
+                    )
+                    raise LlmToolParseError(error_str) from error
+                last_error = LlmResponseError(error_str)
                 logger.warning(
                     "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
                 )

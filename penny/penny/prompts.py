@@ -155,6 +155,13 @@ Examples:
         "The user sent an image. Respond naturally to the image description provided."
     )
 
+    # Injected after a tool-parse 500 — model returned plain text instead of a JSON tool call
+    TOOL_FORMAT_NUDGE = (
+        "Your previous response could not be parsed as a tool call — you sent plain text "
+        "instead of a structured JSON tool call. You MUST respond with a valid tool call only. "
+        "Do not include any reasoning, preamble, or explanation before the JSON."
+    )
+
     # Nudge prompts (injected when model returns empty content)
     FINAL_STEP_NUDGE = (
         "STOP. You cannot search anymore. Tools are no longer available. "

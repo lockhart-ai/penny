@@ -295,6 +295,76 @@ class TestModelErrorHandling:
 
         await agent.close()
 
+
+class TestToolParseErrorRetry:
+    """500 'error parsing tool call' recovers via a format nudge, not a fatal abort."""
+
+    @pytest.mark.asyncio
+    async def test_tool_parse_error_retries_with_format_nudge(self, test_db, mock_llm):
+        """When the server returns a tool-parse 500, agent injects format nudge and retries."""
+        from penny.llm.models import LlmToolParseError
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                raise LlmToolParseError("error parsing tool call: raw='We need to produce...'")
+            return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+
+        mock_llm.set_response_handler(handler)
+
+        await agent.run("test prompt", max_steps=max_steps)
+
+        # Second call (after nudge) should include the format reminder
+        assert len(mock_llm.requests) >= 2
+        nudge_messages = mock_llm.requests[1]["messages"]
+        last_user = next(m for m in reversed(nudge_messages) if m["role"] == "user")
+        assert "tool call" in last_user["content"].lower()
+        assert "plain text" in last_user["content"].lower()
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_tool_parse_error_recovers_and_completes(self, test_db, mock_llm):
+        """Cycle completes normally after a tool-parse error and retry."""
+        from penny.llm.models import LlmToolParseError
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                raise LlmToolParseError("error parsing tool call: raw='Let me reason first...'")
+            if count == 2:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "vitamins"})
+            return mock_llm._make_text_response(request, "Here is the info about vitamins!")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("tell me about vitamins", max_steps=max_steps)
+        assert response.answer == "Here is the info about vitamins!"
+        assert len(mock_llm.requests) == 3
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_tool_parse_error_only_retried_once(self, test_db, mock_llm):
+        """Tool-parse error retry only fires once — second parse error aborts the loop."""
+        from penny.llm.models import LlmToolParseError
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            raise LlmToolParseError("error parsing tool call: raw='plain text again...'")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test prompt", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        # First call + one retry = 2 total calls
+        assert len(mock_llm.requests) == 2
+
+        await agent.close()
+
     @pytest.mark.asyncio
     async def test_non_llm_exception_propagates(self, test_db, mock_llm):
         """Programmer bugs in the LLM call path must surface, not be swallowed."""

@@ -18,7 +18,7 @@ from penny.config import Config
 from penny.constants import PennyConstants, ValidationReason
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.llm.models import LlmError
+from penny.llm.models import LlmError, LlmToolParseError
 from penny.llm.refusal import is_refusal
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -536,7 +536,8 @@ class Agent:
     ):
         """Call the model, retrying on invalid outputs.
 
-        Checks for (in order): XML markup, empty content, refusal, hallucinated URLs.
+        Checks for (in order): XML markup, empty content, refusal, hallucinated URLs,
+        tool parse errors (500 plain-text-instead-of-JSON).
         Each invalid output type gets one retry. Tool call responses are returned
         immediately without validation. When tools are stripped (None) but the model
         hallucinates tool calls, they are cleared and content falls through to
@@ -548,7 +549,20 @@ class Agent:
         response = None
 
         for attempt in range(max_retries):
-            response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+            try:
+                response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+            except LlmToolParseError:
+                if ValidationReason.TOOL_PARSE_ERROR not in retried:
+                    retried.add(ValidationReason.TOOL_PARSE_ERROR)
+                    logger.warning(
+                        "Tool parse error on attempt %d/%d — retrying with format nudge",
+                        attempt + 1,
+                        max_retries,
+                    )
+                    messages.append({"role": MessageRole.USER, "content": Prompt.TOOL_FORMAT_NUDGE})
+                    continue
+                logger.error("Tool parse error on repeated attempt — aborting")
+                return None
             if response is None:
                 return None
 
@@ -578,7 +592,11 @@ class Agent:
         run_id: str | None,
         prompt_type: str | None,
     ):
-        """Call the LLM, returning ``None`` on connection/response errors."""
+        """Call the LLM, returning ``None`` on connection/response errors.
+
+        Re-raises ``LlmToolParseError`` so ``_call_model_validated`` can inject a
+        format nudge and retry — the model needs a different message, not the same one.
+        """
         try:
             return await self._model_client.chat(
                 messages=messages,
@@ -587,6 +605,8 @@ class Agent:
                 prompt_type=prompt_type,
                 run_id=run_id,
             )
+        except LlmToolParseError:
+            raise
         except LlmError as exception:
             logger.error("LLM chat failed: %s", exception)
             return None

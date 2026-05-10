@@ -26,6 +26,7 @@ class ValidationReason(StrEnum):
     EMPTY = "empty"
     REFUSAL = "refusal"
     HALLUCINATED_URLS = "hallucinated_urls"
+    TOOL_PARSE_ERROR = "tool_parse_error"
 
 
 class ProgressEmoji(StrEnum):
