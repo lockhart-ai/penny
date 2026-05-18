@@ -79,7 +79,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 37
+        assert count == 38
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -119,7 +119,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 37
+        assert count1 == 38
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -157,8 +157,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0037 run = 36 migrations
-        assert count == 36
+        # 0001 is skipped; 0002 through 0038 run = 37 migrations
+        assert count == 37
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -184,7 +184,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 37  # all migrations applied
+        assert count == 38  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -237,3 +237,51 @@ class TestMigrate:
         assert "collection_update" not in prompt
         assert 'update_entry("knowledge", key=<title>,' in prompt
         conn.close()
+
+    def test_0038_fixes_stale_read_similar_in_extraction_prompts(self, tmp_path):
+        """Migration 0038 replaces collection_read_similar and log_read_similar
+        with the unified read_similar in extraction_prompt rows."""
+        import importlib.util
+        from pathlib import Path
+
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        conn.executemany(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            [
+                ("col", 'call collection_read_similar("likes", anchor="coffee", k=3)'),
+                ("log", 'call log_read_similar("user-messages", anchor="coffee")'),
+                ("both", 'collection_read_similar("a") and log_read_similar("b")'),
+                ("clean", 'call read_similar("likes", anchor="coffee")'),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0038_fix_stale_read_similar_in_extraction_prompts.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0038", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        rows = dict(conn.execute("SELECT name, extraction_prompt FROM memory").fetchall())
+        conn.close()
+
+        assert "collection_read_similar" not in rows["col"]
+        assert "read_similar" in rows["col"]
+        assert "collection_read_similar" not in rows["log"]
+        assert "log_read_similar" not in rows["log"]
+        assert "read_similar" in rows["log"]
+        assert "collection_read_similar" not in rows["both"]
+        assert "log_read_similar" not in rows["both"]
+        assert rows["clean"] == 'call read_similar("likes", anchor="coffee")'

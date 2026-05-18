@@ -73,7 +73,11 @@ class Collector(BackgroundAgent):
         "rather than appending alongside.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically."
+        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
+        "- Shape-agnostic reads: use ``read_latest(memory)`` for recent entries and "
+        "``read_similar(memory, anchor)`` for similarity searches — both work on collections "
+        "and logs.  Do NOT use ``collection_read_similar`` or ``log_read_similar`` — "
+        "those names no longer exist."
     )
 
     def __init__(
