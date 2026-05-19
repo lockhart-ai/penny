@@ -1,5 +1,7 @@
 """Tests for handling tool calls with non-existent tool names and missing parameters."""
 
+import types
+
 import pytest
 
 from penny.agents.base import Agent
@@ -96,6 +98,46 @@ class TestToolNotFound:
         assert "search" in error_content.lower()  # The actual tool name
 
         await agent.close()
+
+
+def _make_raw_tool_call(name: str, arguments: str) -> types.SimpleNamespace:
+    """Build a minimal fake OpenAI SDK ChatCompletionMessageToolCall."""
+    fn = types.SimpleNamespace(name=name, arguments=arguments)
+    return types.SimpleNamespace(id="call_test", function=fn)
+
+
+class TestSpecialTokenSanitization:
+    """LlmClient._parse_tool_call strips model-internal <|...|> tokens from tool names."""
+
+    def test_plain_name_unchanged(self):
+        raw = _make_raw_tool_call("search", '{"query": "hello"}')
+        result = LlmClient._parse_tool_call(raw)
+        assert result.function.name == "search"
+
+    def test_trailing_special_token_and_suffix_stripped(self):
+        """'log_read_next<|channel|>commentary' → 'log_read_next' (observed real bug)."""
+        raw = _make_raw_tool_call("log_read_next<|channel|>commentary", "{}")
+        result = LlmClient._parse_tool_call(raw)
+        assert result.function.name == "log_read_next"
+
+    def test_leading_special_token_stripped(self):
+        """'<|start|>search' → 'search'."""
+        raw = _make_raw_tool_call("<|start|>search", "{}")
+        result = LlmClient._parse_tool_call(raw)
+        assert result.function.name == "search"
+
+    def test_multiple_special_tokens_first_segment_taken(self):
+        """'search<|sep|>browse<|end|>' → 'search'."""
+        raw = _make_raw_tool_call("search<|sep|>browse<|end|>", "{}")
+        result = LlmClient._parse_tool_call(raw)
+        assert result.function.name == "search"
+
+    def test_arguments_preserved_after_sanitization(self):
+        """Sanitizing the name does not affect argument parsing."""
+        raw = _make_raw_tool_call("browse<|channel|>reasoning", '{"queries": ["hello"]}')
+        result = LlmClient._parse_tool_call(raw)
+        assert result.function.name == "browse"
+        assert result.function.arguments == {"queries": ["hello"]}
 
 
 class StubDoneTool(Tool):

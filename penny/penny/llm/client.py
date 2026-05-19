@@ -293,13 +293,23 @@ class LlmClient:
                 )
                 arguments = LlmClient._extract_malformed_arguments(tool_call.function.arguments)
 
+        raw_name = tool_call.function.name or ""
+        parts = LlmClient._SPECIAL_TOKEN_RE.split(raw_name)
+        name = next((p.strip() for p in parts if p.strip()), raw_name)
+        if name != raw_name:
+            logger.warning("Stripped special tokens from tool name: %r → %r", raw_name, name)
+
         return LlmToolCall(
             id=tool_call.id,
             function=LlmToolCallFunction(
-                name=tool_call.function.name,
+                name=name,
                 arguments=arguments,
             ),
         )
+
+    # Regex to strip Qwen/Ollama model-internal special tokens from tool names
+    # e.g. "log_read_next<|channel|>commentary" → split → take first segment → "log_read_next"
+    _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|]*\|>")
 
     # Regex to extract quoted strings from a queries array
     _QUERY_PATTERN = re.compile(r'"queries"\s*:\s*\[([^\]]*)', re.DOTALL)
