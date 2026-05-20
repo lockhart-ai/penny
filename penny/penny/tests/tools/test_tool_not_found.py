@@ -98,6 +98,65 @@ class TestToolNotFound:
         await agent.close()
 
 
+class TestMalformedToolName:
+    """Malformed tool names from the LLM are rejected before reaching the executor."""
+
+    @pytest.mark.asyncio
+    async def test_agent_rejects_malformed_tool_name(self, test_db, mock_llm):
+        """Agent sends error message back to model when LLM emits a malformed tool name."""
+        db = Database(test_db)
+        db.create_tables()
+
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            log_level="DEBUG",
+            db_path=test_db,
+        )
+        search_tool = StubSearchTool()
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="test-model",
+            db=db,
+            max_retries=1,
+            retry_delay=0.1,
+        )
+        agent = Agent(
+            system_prompt="test",
+            model_client=client,
+            tools=[search_tool],
+            db=db,
+            config=config,
+        )
+
+        messages_sent = []
+
+        def handler(request: dict, count: int) -> dict:
+            messages_sent.append(request["messages"])
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "0>We", {"query": "test"})
+            return mock_llm._make_text_response(request, "Here is the answer.")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test prompt", max_steps=3)
+
+        assert response.answer is not None
+        assert len(messages_sent) == 2
+
+        second_call_messages = messages_sent[1]
+        tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert len(tool_messages) > 0
+        assert "not valid" in tool_messages[0]["content"].lower()
+
+        await agent.close()
+
+
 class StubDoneTool(Tool):
     """Stub tool with two required typed+described parameters."""
 

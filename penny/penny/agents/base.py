@@ -112,6 +112,8 @@ def _strip_think_tags(content: str) -> tuple[str, str | None]:
     return cleaned, extracted
 
 
+_VALID_TOOL_NAME = re.compile(r"^[a-zA-Z_]\w*$")
+
 # Prefixes in tool result strings that indicate a failed or empty result.
 # Checked after tool execution to mark ToolCallRecord.failed = True.
 _TOOL_FAILURE_PREFIXES = (
@@ -812,6 +814,19 @@ class Agent:
         for tool_call in response.message.tool_calls or []:
             tool_call_id = tool_call.id
             tool_name = tool_call.function.name
+            if not _VALID_TOOL_NAME.match(tool_name):
+                logger.warning("Malformed tool name from LLM (skipping): %r", tool_name)
+                messages.append(
+                    {
+                        "role": MessageRole.TOOL,
+                        "content": (
+                            "Tool name is not valid. "
+                            "Use only the exact tool names listed in your instructions."
+                        ),
+                        "tool_call_id": tool_call_id,
+                    }
+                )
+                continue
             arguments = tool_call.function.arguments
             # Pop reasoning before dedup (same args + different reasoning = repeat)
             reasoning = arguments.pop("reasoning", None)
