@@ -8,13 +8,17 @@ silently producing an instance with empty strings.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from penny.channels.base import PageContext
 from penny.channels.browser.models import BrowserIncoming
 from penny.channels.discord.models import DiscordUser
+from penny.llm.client import LlmClient
 from penny.llm.models import LlmToolCall, LlmToolCallFunction
+from penny.tools.memory_args import CollectionEntrySpec, CollectionWriteArgs
 
 
 class TestPageContextRequiresAllFields:
@@ -62,3 +66,91 @@ class TestLlmToolCallRequiresIdAndFunctionName:
     def test_missing_function_rejected(self) -> None:
         with pytest.raises(ValidationError, match="function"):
             LlmToolCall(id="call_1")  # ty: ignore[missing-argument]
+
+
+class TestCollectionEntrySpecCoercesStringifiedObjects:
+    """CollectionEntrySpec must accept JSON-stringified dicts in addition to plain dicts.
+
+    Some models wrap array entries in outer quotes, producing strings instead of
+    objects. The model_validator should parse them back out transparently.
+    """
+
+    def test_dict_input_accepted(self) -> None:
+        spec = CollectionEntrySpec.model_validate({"key": "foo", "content": "bar"})
+        assert spec.key == "foo"
+        assert spec.content == "bar"
+
+    def test_json_string_coerced_to_dict(self) -> None:
+        entry_json = json.dumps({"key": "tea diplomacy", "content": "https://url"})
+        spec = CollectionEntrySpec.model_validate(entry_json)
+        assert spec.key == "tea diplomacy"
+        assert spec.content == "https://url"
+
+    def test_invalid_string_raises_validation_error(self) -> None:
+        with pytest.raises(ValidationError):
+            CollectionEntrySpec.model_validate("not a json object")
+
+    def test_collection_write_args_mixed_entries(self) -> None:
+        args = CollectionWriteArgs.model_validate(
+            {
+                "memory": "knowledge",
+                "entries": [
+                    {"key": "Putin visit", "content": "https://url1"},
+                    json.dumps({"key": "Tea diplomacy", "content": "https://url2"}),
+                ],
+            }
+        )
+        assert len(args.entries) == 2
+        assert args.entries[0].key == "Putin visit"
+        assert args.entries[1].key == "Tea diplomacy"
+        assert args.entries[1].content == "https://url2"
+
+
+class TestExtractMalformedArguments:
+    """LlmClient._extract_malformed_arguments must recover entries arrays.
+
+    The model sometimes emits ``collection_write`` calls where the first entry
+    is a proper object but subsequent ones are unescaped JSON-inside-quotes,
+    making the overall JSON unparseable. The fallback extractor should recover
+    all key/content pairs via regex.
+    """
+
+    def test_queries_array_still_extracted(self) -> None:
+        raw = '{"queries": ["what is AI", "machine learning basics"]}'
+        result = LlmClient._extract_malformed_arguments(raw)
+        assert result == {"queries": ["what is AI", "machine learning basics"]}
+
+    def test_entries_array_with_valid_objects(self) -> None:
+        raw = (
+            '{"entries": [{"key": "k1", "content": "c1"}, {"key": "k2", "content": "c2"}],'
+            ' "memory": "knowledge"}'
+        )
+        result = LlmClient._extract_malformed_arguments(raw)
+        assert result.get("memory") == "knowledge"
+        assert result.get("entries") == [
+            {"key": "k1", "content": "c1"},
+            {"key": "k2", "content": "c2"},
+        ]
+
+    def test_entries_array_with_unescaped_stringified_objects(self) -> None:
+        # This is the exact malformation from the bug report: entry 2+ are
+        # surrounded by outer quotes with unescaped inner quotes, making the
+        # raw JSON unparseable by json.loads.
+        raw = (
+            '{"entries": [{"key": "Putin visit", "content": "https://url1"}, '
+            '"{"key": "Tea diplomacy", "content": "https://url2"}", '
+            '"{"key": "Samsung news", "content": "https://url3"}"], '
+            '"memory": "knowledge"}'
+        )
+        result = LlmClient._extract_malformed_arguments(raw)
+        assert result.get("memory") == "knowledge"
+        entries = result.get("entries", [])
+        assert len(entries) == 3
+        assert entries[0]["key"] == "Putin visit"
+        assert entries[1]["key"] == "Tea diplomacy"
+        assert entries[2]["key"] == "Samsung news"
+
+    def test_unrecognised_pattern_returns_empty_dict(self) -> None:
+        raw = '{"completely": "different", "structure": 42}'
+        result = LlmClient._extract_malformed_arguments(raw)
+        assert result == {}

@@ -8,9 +8,10 @@ layer's signature.
 
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 # Models occasionally substitute Unicode dashes (U+2010–U+2015) for ASCII
 # hyphen-minus (U+002D) when emitting memory names — gpt-oss has been
@@ -146,6 +147,25 @@ class CollectionEntrySpec(BaseModel):
 
     key: str
     content: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_stringified_object(cls, value: Any) -> Any:
+        """Parse a JSON-stringified dict back into a plain dict.
+
+        Some models wrap array elements in outer quotes, producing a JSON string
+        that contains an object literal (e.g. '{"key": "foo", "content": "bar"}')
+        instead of a bare object. Detect and unwrap it so field validation proceeds
+        normally.
+        """
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    return parsed
+            except ValueError:
+                pass
+        return value
 
 
 class CollectionWriteArgs(BaseModel):

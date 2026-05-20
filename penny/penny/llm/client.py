@@ -297,6 +297,7 @@ class LlmClient:
         """Parse a single OpenAI tool call, deserializing JSON arguments."""
         arguments = {}
         if tool_call.function.arguments:
+            logger.debug("Tool call raw arguments: %.500s", tool_call.function.arguments)
             try:
                 arguments = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError:
@@ -314,21 +315,51 @@ class LlmClient:
             ),
         )
 
-    # Regex to extract quoted strings from a queries array
+    # Regex to extract quoted strings from a queries array (browse tool)
     _QUERY_PATTERN = re.compile(r'"queries"\s*:\s*\[([^\]]*)', re.DOTALL)
     _QUOTED_STRING = re.compile(r'"([^"]+)"')
 
+    # Regex to extract key/content pairs from an entries array (collection_write tool).
+    # Handles both proper objects and unescaped-quote stringified objects where the
+    # outer JSON itself is malformed (json.loads raises JSONDecodeError).
+    _ENTRIES_SECTION_PATTERN = re.compile(r'"entries"\s*:\s*\[', re.DOTALL)
+    _ENTRY_KV_PATTERN = re.compile(
+        r'"key"\s*:\s*"([^"]*)".*?"content"\s*:\s*"([^"]*)"',
+        re.DOTALL,
+    )
+    _MEMORY_FIELD_PATTERN = re.compile(r'"memory"\s*:\s*"([^"]+)"')
+
     @staticmethod
     def _extract_malformed_arguments(raw: str) -> dict[str, Any]:
-        """Best-effort extraction of queries from malformed JSON arguments.
+        """Best-effort extraction of tool arguments from malformed JSON.
+
+        Handles two known malformation patterns:
+        - ``queries`` array (browse tool): items are plain strings.
+        - ``entries`` array (collection_write): items are objects whose inner
+          quotes are unescaped, making json.loads fail with JSONDecodeError.
+          Key/content pairs are recovered via regex.
 
         Falls back to empty dict if nothing can be extracted.
         """
+        # Browse tool: queries array of plain strings
         match = LlmClient._QUERY_PATTERN.search(raw)
         if match:
             items = LlmClient._QUOTED_STRING.findall(match.group(1))
             if items:
                 return {"queries": items}
+
+        # collection_write tool: entries array of {key, content} objects
+        entries_match = LlmClient._ENTRIES_SECTION_PATTERN.search(raw)
+        if entries_match:
+            pairs = LlmClient._ENTRY_KV_PATTERN.findall(raw[entries_match.end() :])
+            entries = [{"key": k, "content": c} for k, c in pairs]
+            if entries:
+                result: dict[str, Any] = {"entries": entries}
+                memory_match = LlmClient._MEMORY_FIELD_PATTERN.search(raw)
+                if memory_match:
+                    result["memory"] = memory_match.group(1)
+                return result
+
         return {}
 
     # ── Internal: logging ────────────────────────────────────────────────
