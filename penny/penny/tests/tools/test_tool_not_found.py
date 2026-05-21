@@ -107,6 +107,7 @@ class TestMalformedToolName:
         [
             "0>We",  # partial/garbled tool name
             "....Wait",  # CoT thinking artifact leaking into tool name (issue #1193)
+            "methods?…?",  # unicode ellipsis + question marks (issue #1194)
         ],
     )
     async def test_agent_rejects_malformed_tool_name(self, test_db, mock_llm, malformed_name):
