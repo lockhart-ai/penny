@@ -325,6 +325,23 @@ class TestBrowseTool:
         assert "blocked" in result.text
         request_fn.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_hanging_request_fn_times_out_per_attempt(self, monkeypatch):
+        """A hung request_fn should timeout per-attempt and surface as an error section."""
+        monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 1)
+        monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
+        monkeypatch.setattr(PennyConstants, "BROWSE_REQUEST_TIMEOUT", 0.05)
+
+        async def hanging_request_fn(method: str, params: dict):
+            await asyncio.sleep(1000)
+            return ("", None)
+
+        tool = self._make_tool(hanging_request_fn)
+        result = await tool.execute(queries=["https://example.com"])
+
+        assert isinstance(result, SearchResult)
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.text
+
 
 class TestBrowseToolImagePassthrough:
     """BrowseTool passes the first browse image through to the combined result."""
