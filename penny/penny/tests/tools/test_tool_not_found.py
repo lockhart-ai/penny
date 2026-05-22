@@ -7,6 +7,8 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.memory_tools import DoneTool
+from penny.tools.models import ToolCall
 
 
 class StubSearchTool(Tool):
@@ -221,3 +223,36 @@ class TestMissingRequiredParameters:
         assert "string" in error_content
 
         await agent.close()
+
+
+class TestDoneToolAliases:
+    """DoneTool aliases resolve to the canonical tool instead of returning not-found errors."""
+
+    @pytest.mark.asyncio
+    async def test_exits_alias_executes_done_tool(self):
+        """Calling 'exits' resolves transparently to DoneTool.execute()."""
+        registry = ToolRegistry()
+        tool = DoneTool()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+
+        call = ToolCall(tool="exits", arguments={"success": True, "summary": "finished"})
+        result = await executor.execute(call)
+
+        assert result.error is None
+        assert "Cycle complete" in result.result
+
+    @pytest.mark.parametrize("alias", ["exit", "exits", "finish", "complete", "end", "stop"])
+    @pytest.mark.asyncio
+    async def test_all_aliases_resolve_to_done_tool(self, alias):
+        """Every declared DoneTool alias executes successfully without a not-found error."""
+        registry = ToolRegistry()
+        tool = DoneTool()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+
+        call = ToolCall(tool=alias, arguments={"success": False, "summary": "no-op"})
+        result = await executor.execute(call)
+
+        assert result.error is None
+        assert "Cycle complete" in result.result

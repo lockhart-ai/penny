@@ -1047,6 +1047,7 @@ class DoneTool(Tool):
     """Signal the cycle is finished, with a structured success + summary report."""
 
     name = "done"
+    aliases = ["exit", "exits", "finish", "complete", "end", "stop"]
     description = (
         "Call this when the cycle is finished.  Pass ``success`` (true if "
         "you did what the prompt asked, false on no-op or failure) and "

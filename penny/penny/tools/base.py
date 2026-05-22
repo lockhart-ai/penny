@@ -18,6 +18,7 @@ class Tool(ABC):
     description: str
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
     timeout: float | None = None  # None = use ToolExecutor's global timeout
+    aliases: ClassVar[list[str]] = []
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -109,16 +110,23 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
-        """Register a tool."""
+        """Register a tool, including any declared aliases."""
         self._tools[tool.name] = tool
+        for alias in tool.aliases:
+            self._tools[alias] = tool
 
     def unregister(self, name: str) -> None:
         """Unregister a tool by name."""
         self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
-        """Get a tool by name."""
+        """Get a tool by name, including aliases."""
         return self._tools.get(name)
+
+    def canonical_name(self, name: str) -> str:
+        """Return the canonical tool name for a given name or alias."""
+        tool = self._tools.get(name)
+        return tool.name if tool is not None else name
 
     def get_all(self) -> list[Tool]:
         """Get all registered tools."""

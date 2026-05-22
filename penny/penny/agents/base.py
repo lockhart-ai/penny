@@ -874,8 +874,9 @@ class Agent:
         if reasoning:
             logger.debug("Tool reasoning: %s", reasoning[:200])
 
-        record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
-        tool_call = ToolCall(tool=tool_name, arguments=arguments)
+        canonical = self._tool_executor.registry.canonical_name(tool_name)
+        record = ToolCallRecord(tool=canonical, arguments=arguments, reasoning=reasoning)
+        tool_call = ToolCall(tool=canonical, arguments=arguments)
         tool_result = await self._tool_executor.execute(tool_call)
 
         if tool_result.error:
