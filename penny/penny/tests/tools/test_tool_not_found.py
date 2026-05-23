@@ -7,6 +7,7 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.models import ToolCall
 
 
 class StubSearchTool(Tool):
@@ -26,6 +27,19 @@ class StubSearchTool(Tool):
 
 class TestToolNotFound:
     """Test handling of tool calls for tools that don't exist."""
+
+    @pytest.mark.asyncio
+    async def test_entirely_garbage_tool_name_returns_error(self):
+        """Tool names with no valid identifier chars return a helpful error, not a crash."""
+        registry = ToolRegistry()
+        registry.register(StubSearchTool())
+        executor = ToolExecutor(registry)
+
+        result = await executor.execute(ToolCall(tool='.."', arguments={}))
+
+        assert result.error is not None
+        assert '.."' in result.error
+        assert "search" in result.error
 
     @pytest.mark.asyncio
     async def test_agent_returns_helpful_error_for_nonexistent_tool(self, test_db, mock_llm):
