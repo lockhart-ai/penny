@@ -388,3 +388,47 @@ class TestMigrate:
         assert "update_entry" in rows["my-collection"]
         assert rows["no-issue"] == "Call update_entry to store the result."
         assert rows["no-prompt"] is None
+
+    def test_0038_fixes_thinking_prompt_browse_call_syntax(self, tmp_path):
+        """Migration 0038 replaces bare 'browse' label with explicit call syntax in
+        the unnotified-thoughts extraction_prompt for databases seeded by migration 0033."""
+        import importlib.util
+        from pathlib import Path
+
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        old_prompt = "3. browse — search the web and read one or two pages to find something"
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES (?, ?)",
+            ("unnotified-thoughts", old_prompt),
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0038_fix_thinking_prompt_browse_call_syntax.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0038br", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        conn.close()
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'unnotified-thoughts'"
+        ).fetchone()
+        assert row is not None
+        prompt = row[0]
+        assert "3. browse — search the web" not in prompt
+        assert 'browse(queries=["<seed topic>"])' in prompt
+        conn.close()

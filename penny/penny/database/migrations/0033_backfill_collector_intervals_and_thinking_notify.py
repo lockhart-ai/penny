@@ -39,8 +39,9 @@ _THINKING_PROMPT = (
     '1. collection_read_random("likes", 1) — pick one seed topic from '
     "the user's likes.\n"
     '2. read_latest("dislikes") — see what the user doesn\'t like.\n'
-    "3. browse — search the web and read one or two pages to find "
-    "something timely and interesting grounded in the seed topic.\n"
+    '3. browse(queries=["<seed topic>"]) — search the web and read one or '
+    "two pages to find something timely and interesting grounded in the "
+    "seed topic.\n"
     "4. Draft ONE thought connecting what you found to the seed.  Write "
     "it conversationally, like you're texting a friend; include specific "
     "details (names, specs, dates), at least one source URL, and finish "
