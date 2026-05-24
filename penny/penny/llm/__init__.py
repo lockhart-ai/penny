@@ -7,6 +7,7 @@ from penny.llm.models import (
     LlmError,
     LlmNotFoundError,
     LlmResponseError,
+    LlmTimeoutError,
 )
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "LlmError",
     "LlmNotFoundError",
     "LlmResponseError",
+    "LlmTimeoutError",
     "OllamaImageClient",
 ]

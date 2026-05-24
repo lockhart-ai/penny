@@ -18,7 +18,7 @@ from penny.config import Config
 from penny.constants import PennyConstants, ValidationReason
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.llm.models import LlmError, LlmToolParseError
+from penny.llm.models import LlmError, LlmTimeoutError, LlmToolParseError
 from penny.llm.refusal import is_refusal
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -598,6 +598,11 @@ class Agent:
 
         Re-raises ``LlmToolParseError`` so ``_call_model_validated`` can inject a
         format nudge and retry — the model needs a different message, not the same one.
+
+        Timeouts are logged at WARNING — they're transient (the model may be slow
+        or temporarily busy) and are already retried by the LLM client before
+        this method is called.  Other LlmErrors (connection refused, server error,
+        model not found) are logged at ERROR.
         """
         try:
             return await self._model_client.chat(
@@ -609,6 +614,9 @@ class Agent:
             )
         except LlmToolParseError:
             raise
+        except LlmTimeoutError as exception:
+            logger.warning("LLM request timed out (model slow or temporarily busy): %s", exception)
+            return None
         except LlmError as exception:
             logger.error("LLM chat failed: %s", exception)
             return None

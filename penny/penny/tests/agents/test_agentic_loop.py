@@ -366,6 +366,31 @@ class TestToolParseErrorRetry:
         await agent.close()
 
     @pytest.mark.asyncio
+    async def test_timeout_error_returns_agent_model_error(self, test_db, mock_llm, caplog):
+        """LLM timeouts also return AGENT_MODEL_ERROR and are logged at WARNING not ERROR."""
+        import logging
+
+        from penny.llm.models import LlmTimeoutError
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm)
+
+        def handler(request, count):
+            raise LlmTimeoutError("Request timed out.")
+
+        mock_llm.set_response_handler(handler)
+
+        with caplog.at_level(logging.WARNING, logger="penny.agents.base"):
+            response = await agent.run("test prompt", max_steps=max_steps)
+
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        error_msgs = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+        assert any("timed out" in m.lower() for m in warning_msgs)
+        assert not any("timed out" in m.lower() for m in error_msgs)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
     async def test_non_llm_exception_propagates(self, test_db, mock_llm):
         """Programmer bugs in the LLM call path must surface, not be swallowed."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm)

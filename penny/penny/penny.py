@@ -85,6 +85,7 @@ class Penny:
             max_retries=self.config.llm_max_retries,
             retry_delay=self.config.llm_retry_delay,
             api_key=api_key or self.config.llm_api_key,
+            timeout=self.config.llm_timeout,
         )
 
     def _init_llm_clients(self, config: Config) -> None:

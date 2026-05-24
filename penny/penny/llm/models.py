@@ -26,6 +26,10 @@ class LlmConnectionError(LlmError):
     """Could not connect to the LLM server."""
 
 
+class LlmTimeoutError(LlmConnectionError):
+    """LLM request timed out. Transient — model may be slow or temporarily busy."""
+
+
 class LlmResponseError(LlmError):
     """Server returned an error response."""
 

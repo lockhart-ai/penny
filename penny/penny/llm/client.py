@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any
 
+import httpx
 import openai
 
 from penny.llm.models import (
@@ -22,6 +23,7 @@ from penny.llm.models import (
     LlmNotFoundError,
     LlmResponse,
     LlmResponseError,
+    LlmTimeoutError,
     LlmToolCall,
     LlmToolCallFunction,
     LlmToolParseError,
@@ -48,6 +50,7 @@ class LlmClient:
         max_retries: int,
         retry_delay: float,
         api_key: str = _DEFAULT_API_KEY,
+        timeout: float | None = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.model = model
@@ -55,11 +58,16 @@ class LlmClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
-        self.client = openai.AsyncOpenAI(
-            base_url=f"{self.api_url}/v1",
-            api_key=api_key,
-            max_retries=0,  # We handle retries ourselves
-        )
+        client_kwargs: dict[str, Any] = {
+            "base_url": f"{self.api_url}/v1",
+            "api_key": api_key,
+            "max_retries": 0,  # We handle retries ourselves
+        }
+        if timeout is not None:
+            # Keep connect timeout short; only extend read/write for slow models.
+            client_kwargs["timeout"] = httpx.Timeout(timeout=timeout, connect=5.0)
+
+        self.client = openai.AsyncOpenAI(**client_kwargs)
 
         logger.info("Initialized LLM client: url=%s, model=%s", api_url, model)
 
@@ -110,6 +118,16 @@ class LlmClient:
             except openai.NotFoundError as error:
                 logger.error("LLM chat failed (model not found, no retry): %s", error)
                 raise LlmNotFoundError(str(error)) from error
+            except openai.APITimeoutError as error:
+                last_error = LlmTimeoutError(str(error))
+                logger.warning(
+                    "LLM request timed out (attempt %d/%d): %s",
+                    attempt + 1,
+                    self.max_retries,
+                    error,
+                )
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
             except openai.APIConnectionError as error:
                 last_error = LlmConnectionError(str(error))
                 logger.warning(

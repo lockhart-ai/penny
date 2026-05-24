@@ -98,6 +98,9 @@ def _collect_env_vars(channel_type: str) -> dict:
         "log_max_bytes": int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024))),
         "log_backup_count": int(os.getenv("LOG_BACKUP_COUNT", "5")),
         "tool_timeout": float(os.getenv("TOOL_TIMEOUT", "120.0")),
+        "llm_timeout": float(env_llm_timeout)
+        if (env_llm_timeout := os.getenv("LLM_TIMEOUT"))
+        else None,
         "fastmail_api_token": os.getenv("FASTMAIL_API_TOKEN"),
         "zoho_api_id": os.getenv("ZOHO_API_ID"),
         "zoho_api_secret": os.getenv("ZOHO_API_SECRET"),
@@ -169,6 +172,10 @@ class Config:
 
     # Tool execution timeout (seconds)
     tool_timeout: float = 120.0
+
+    # LLM read timeout in seconds (None = SDK default 600s). Use LLM_TIMEOUT env var to tune
+    # for hardware where models take longer to respond. Connect timeout is always 5s.
+    llm_timeout: float | None = None
 
     # Scheduler tick interval (seconds)
     scheduler_tick_interval: float = 1.0
