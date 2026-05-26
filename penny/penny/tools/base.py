@@ -18,6 +18,7 @@ class Tool(ABC):
     description: str
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
     timeout: float | None = None  # None = use ToolExecutor's global timeout
+    aliases: ClassVar[list[str]] = []
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -109,8 +110,10 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
-        """Register a tool."""
+        """Register a tool, including any alternate names it declares."""
         self._tools[tool.name] = tool
+        for alias in tool.aliases:
+            self._tools[alias] = tool
 
     def unregister(self, name: str) -> None:
         """Unregister a tool by name."""
@@ -121,8 +124,14 @@ class ToolRegistry:
         return self._tools.get(name)
 
     def get_all(self) -> list[Tool]:
-        """Get all registered tools."""
-        return list(self._tools.values())
+        """Get all registered tools (canonical instances only, no alias duplicates)."""
+        seen: set[int] = set()
+        result = []
+        for tool in self._tools.values():
+            if id(tool) not in seen:
+                seen.add(id(tool))
+                result.append(tool)
+        return result
 
     def get_definitions(self) -> list[ToolDefinition]:
         """Get all tool definitions for prompt building."""

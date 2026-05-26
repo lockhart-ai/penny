@@ -24,6 +24,18 @@ class StubSearchTool(Tool):
         return "Mock search results for testing"
 
 
+class StubAliasTool(Tool):
+    """Stub tool with aliases for testing alias resolution."""
+
+    name = "exists"
+    aliases = ["existing", "existence"]
+    description = "Check whether something exists"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        return "yes"
+
+
 class TestToolNotFound:
     """Test handling of tool calls for tools that don't exist."""
 
@@ -221,3 +233,34 @@ class TestMissingRequiredParameters:
         assert "string" in error_content
 
         await agent.close()
+
+
+class TestToolAliases:
+    """Tool aliases allow the LLM to call a tool by an alternate name."""
+
+    def test_alias_resolves_to_canonical_tool(self):
+        """Registering a tool with aliases makes all alias names return the same tool instance."""
+        registry = ToolRegistry()
+        tool = StubAliasTool()
+        registry.register(tool)
+
+        assert registry.get("exists") is tool
+        assert registry.get("existing") is tool
+        assert registry.get("existence") is tool
+
+    def test_alias_not_in_definitions(self):
+        """Aliases do not appear as separate entries in the tool definition list."""
+        registry = ToolRegistry()
+        registry.register(StubAliasTool())
+
+        names = [d.name for d in registry.get_definitions()]
+        assert "exists" in names
+        assert "existing" not in names
+        assert "existence" not in names
+
+    def test_unknown_name_still_returns_none(self):
+        """A completely unknown name returns None even when aliases are registered."""
+        registry = ToolRegistry()
+        registry.register(StubAliasTool())
+
+        assert registry.get("nonexistent") is None
