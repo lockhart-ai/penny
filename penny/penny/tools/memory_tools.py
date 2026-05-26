@@ -889,6 +889,7 @@ class LogReadNextTool(Tool):
     """
 
     name = "log_read_next"
+    aliases = ["read_next"]
     description = (
         "Return entries appended to a log since this agent's last committed read. "
         "Use this to process new content incrementally without re-seeing entries "

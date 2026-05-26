@@ -221,3 +221,44 @@ class TestMissingRequiredParameters:
         assert "string" in error_content
 
         await agent.close()
+
+
+class StubAliasTool(Tool):
+    """Stub tool with aliases for testing alias resolution."""
+
+    name = "log_read_next"
+    aliases = ["read_next"]
+    description = "Read next log entries"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        return "entries"
+
+
+class TestToolAliases:
+    """Tool aliases allow the LLM to call a tool by an alternate name."""
+
+    def test_alias_resolves_to_canonical_tool(self):
+        """Registering a tool with aliases makes all alias names return the same tool instance."""
+        registry = ToolRegistry()
+        tool = StubAliasTool()
+        registry.register(tool)
+
+        assert registry.get("log_read_next") is tool
+        assert registry.get("read_next") is tool
+
+    def test_alias_not_in_definitions(self):
+        """Aliases do not appear as separate entries in the tool definition list."""
+        registry = ToolRegistry()
+        registry.register(StubAliasTool())
+
+        names = [d.name for d in registry.get_definitions()]
+        assert "log_read_next" in names
+        assert "read_next" not in names
+
+    def test_unknown_name_still_returns_none(self):
+        """A completely unknown name returns None even when aliases are registered."""
+        registry = ToolRegistry()
+        registry.register(StubAliasTool())
+
+        assert registry.get("nonexistent") is None
