@@ -296,10 +296,24 @@ class LlmClient:
         return LlmToolCall(
             id=tool_call.id,
             function=LlmToolCallFunction(
-                name=tool_call.function.name,
+                name=LlmClient._sanitize_tool_name(tool_call.function.name),
                 arguments=arguments,
             ),
         )
+
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """Strip chat-template special tokens (e.g. <|channel|>) from a tool name.
+
+        Some local models bleed control tokens into generated tool names. We truncate
+        at the first <| to recover the clean base identifier.
+        """
+        idx = name.find("<|")
+        if idx == -1:
+            return name
+        sanitized = name[:idx]
+        logger.warning("Stripped special token from tool name: %r → %r", name, sanitized)
+        return sanitized
 
     # Regex to extract quoted strings from a queries array
     _QUERY_PATTERN = re.compile(r'"queries"\s*:\s*\[([^\]]*)', re.DOTALL)

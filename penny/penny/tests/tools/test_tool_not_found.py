@@ -7,6 +7,7 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.models import ToolCall
 
 
 class StubSearchTool(Tool):
@@ -221,3 +222,69 @@ class TestMissingRequiredParameters:
         assert "string" in error_content
 
         await agent.close()
+
+
+class StubCollectionWriteTool(Tool):
+    """Stub for testing special-token sanitization on a collection_write-like tool."""
+
+    name = "collection_write"
+    description = "Write an entry to a collection"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "key": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["key", "content"],
+    }
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def execute(self, **kwargs):
+        self.calls.append(kwargs)
+        return "written"
+
+
+class TestSpecialTokenSanitization:
+    """LlmClient strips <|...|> control tokens from malformed tool names."""
+
+    def test_sanitize_strips_special_token_and_trailing_text(self):
+        """collection_write<|channel|>json → collection_write."""
+        result = LlmClient._sanitize_tool_name("collection_write<|channel|>json")
+        assert result == "collection_write"
+
+    def test_sanitize_is_noop_for_clean_name(self):
+        """Clean tool names pass through unchanged."""
+        assert LlmClient._sanitize_tool_name("collection_write") == "collection_write"
+        assert LlmClient._sanitize_tool_name("read_latest") == "read_latest"
+
+    def test_sanitize_handles_token_at_start(self):
+        """<|im_start|>toolname → empty string (malformed, but shouldn't crash)."""
+        result = LlmClient._sanitize_tool_name("<|im_start|>toolname")
+        assert result == ""
+
+    def test_sanitize_strips_multiple_tokens(self):
+        """Only the first <| matters — everything from it onward is stripped."""
+        result = LlmClient._sanitize_tool_name("search<|a|>extra<|b|>more")
+        assert result == "search"
+
+    @pytest.mark.asyncio
+    async def test_executor_resolves_sanitized_name_to_correct_tool(self):
+        """ToolExecutor runs collection_write after LlmClient strips the special token."""
+        registry = ToolRegistry()
+        tool = StubCollectionWriteTool()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+
+        result = await executor.execute(
+            ToolCall(
+                tool="collection_write",
+                arguments={"key": "k1", "content": "hello"},
+                id="tc-special",
+            )
+        )
+
+        assert result.error is None
+        assert result.result == "written"
+        assert tool.calls == [{"key": "k1", "content": "hello"}]
