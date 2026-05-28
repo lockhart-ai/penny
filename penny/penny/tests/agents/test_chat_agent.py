@@ -191,7 +191,7 @@ and what you'll do with the result.
 
 Search memory first. The recall block above shows the most relevant \
 entries verbatim, and your memory tools (`read_latest`, \
-`read_similar`, etc.) cover everything else stored. \
+`read_similar`, `log_read_recent`, etc.) cover everything else stored. \
 Only browse if memory \
 doesn't have what the user needs, or for current/external info \
 (news, products, prices, fresh facts).
@@ -361,6 +361,29 @@ async def test_message_without_tool_call(
 
         # Only one Ollama call (no tool)
         assert len(mock_llm.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_prompt_names_log_read_recent_tool(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """
+    Regression test for #1225: CONVERSATION_PROMPT must mention `log_read_recent`
+    explicitly so the model calls the correct tool name, not the bare `read_recent`
+    (which is only the MemoryStore method name, never a registered tool).
+    """
+    mock_llm.set_default_flow(final_response="got it! 👍")
+
+    async with running_penny(test_config):
+        await signal_server.push_message(sender=TEST_SENDER, content="test")
+        await signal_server.wait_for_message(timeout=10.0)
+
+    first_request = mock_llm.requests[0]
+    messages = first_request.get("messages", [])
+    system_text = " ".join(m.get("content", "") for m in messages if m.get("role") == "system")
+    assert "log_read_recent" in system_text, (
+        "CONVERSATION_PROMPT must name `log_read_recent` so the model uses the correct tool name"
+    )
 
 
 @pytest.mark.asyncio
