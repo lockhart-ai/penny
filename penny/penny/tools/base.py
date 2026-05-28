@@ -101,6 +101,22 @@ class Tool(ABC):
         }
 
 
+_TOOL_ALIASES: dict[str, str] = {
+    # The LLM hallucinates 'log_read_latest' because the surface has log_read_next and
+    # log_read_recent (both with the log_ prefix), so it infers the same prefix for the
+    # "latest" variant.  The real tool is 'read_latest' — the unified read for both
+    # collections and logs.
+    "log_read_latest": "read_latest",
+    # The LLM hallucinates 'collection_read_latest' and 'collection_read_similar' by
+    # applying the dominant 'collection_' prefix it sees on collection_create,
+    # collection_get, collection_read_random, etc.  The design doc listed them as
+    # 'collection_read_latest' / 'collection_read_similar', but the implementation chose
+    # unprefixed names.
+    "collection_read_latest": "read_latest",
+    "collection_read_similar": "read_similar",
+}
+
+
 class ToolRegistry:
     """Registry of available tools."""
 
@@ -117,8 +133,14 @@ class ToolRegistry:
         self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
-        """Get a tool by name."""
-        return self._tools.get(name)
+        """Get a tool by name, resolving known aliases for hallucinated names."""
+        tool = self._tools.get(name)
+        if tool is None and name in _TOOL_ALIASES:
+            canonical = _TOOL_ALIASES[name]
+            tool = self._tools.get(canonical)
+            if tool is not None:
+                logger.warning("Resolved hallucinated tool name %r → %r", name, canonical)
+        return tool
 
     def get_all(self) -> list[Tool]:
         """Get all registered tools."""
