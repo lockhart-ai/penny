@@ -6,7 +6,7 @@ from penny.agents.base import Agent
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.base import Tool, ToolCall, ToolExecutor, ToolRegistry
 
 
 class StubSearchTool(Tool):
@@ -96,6 +96,74 @@ class TestToolNotFound:
         assert "search" in error_content.lower()  # The actual tool name
 
         await agent.close()
+
+
+class StubReadLatestTool(Tool):
+    """Stub that stands in for the real read_latest memory tool."""
+
+    name = "read_latest"
+    description = "Return the newest entries in a memory"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory": {"type": "string"},
+            "k": {"type": "integer"},
+        },
+        "required": ["memory"],
+    }
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def execute(self, **kwargs):
+        self.calls.append(kwargs)
+        return "stub entries"
+
+
+class TestLogReadLatestAlias:
+    """log_read_latest is silently resolved to read_latest via the alias table."""
+
+    def test_registry_resolves_log_read_latest_to_read_latest(self):
+        """ToolRegistry.get('log_read_latest') returns the read_latest tool instance."""
+        registry = ToolRegistry()
+        tool = StubReadLatestTool()
+        registry.register(tool)
+
+        assert registry.get("log_read_latest") is tool
+
+    def test_registry_returns_none_for_unknown_name(self):
+        """ToolRegistry.get returns None for names with no alias and no registration."""
+        registry = ToolRegistry()
+        assert registry.get("nonexistent_tool") is None
+
+    @pytest.mark.asyncio
+    async def test_executor_runs_read_latest_for_log_read_latest_call(self):
+        """ToolExecutor executes read_latest when the model calls log_read_latest."""
+        registry = ToolRegistry()
+        tool = StubReadLatestTool()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+
+        result = await executor.execute(
+            ToolCall(tool="log_read_latest", arguments={"memory": "user-messages"}, id="tc-1")
+        )
+
+        assert result.error is None
+        assert result.result == "stub entries"
+        assert tool.calls == [{"memory": "user-messages"}]
+
+    @pytest.mark.asyncio
+    async def test_log_read_latest_missing_target_returns_not_found(self):
+        """If read_latest is not registered, log_read_latest still returns not-found."""
+        registry = ToolRegistry()
+        executor = ToolExecutor(registry)
+
+        result = await executor.execute(
+            ToolCall(tool="log_read_latest", arguments={"memory": "user-messages"}, id="tc-2")
+        )
+
+        assert result.error is not None
+        assert "not found" in result.error.lower()
 
 
 class StubDoneTool(Tool):
