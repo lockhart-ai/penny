@@ -588,9 +588,12 @@ class UpdateEntryTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "memory": {"type": "string"},
-            "key": {"type": "string"},
-            "content": {"type": "string"},
+            "memory": {"type": "string", "description": "Collection name"},
+            "key": {"type": "string", "description": "Entry key within the collection"},
+            "content": {
+                "type": "string",
+                "description": "New content to replace the existing entry",
+            },
         },
         "required": ["memory", "key", "content"],
     }

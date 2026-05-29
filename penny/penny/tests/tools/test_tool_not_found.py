@@ -7,6 +7,7 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.memory_tools import UpdateEntryTool
 
 
 class StubSearchTool(Tool):
@@ -216,6 +217,24 @@ class TestMissingRequiredParameters:
         error = executor._validate_arguments(tool, {"success": True, "summary": "done"})
 
         assert error is None
+
+    def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
+        """update_entry validation error names 'Collection name' and 'Entry key' so the
+        LLM understands which identifier each parameter represents."""
+        from penny.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.create_tables()
+        tool = UpdateEntryTool(db=db, author="test")
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+
+        error = executor._validate_arguments(tool, {"content": "new value"})
+
+        assert error is not None
+        assert "Collection name" in error
+        assert "Entry key within the collection" in error
 
     @pytest.mark.asyncio
     async def test_agent_sends_hint_rich_error_to_model_on_missing_params(self, test_db, mock_llm):
