@@ -13,6 +13,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
+from penny.constants import PennyConstants
+
 # Models occasionally substitute Unicode dashes (U+2010–U+2015) for ASCII
 # hyphen-minus (U+002D) when emitting memory names — gpt-oss has been
 # observed writing ``"prague‑highlights"`` for ``"prague-highlights"``.
@@ -128,7 +130,7 @@ class ReadRecentArgs(BaseModel):
     """Entries created within the past ``window_seconds`` seconds."""
 
     memory: MemoryName
-    window_seconds: int = 3600
+    window_seconds: int = PennyConstants.LOG_READ_RECENT_DEFAULT_WINDOW_SECONDS
     cap: int | None = None
 
 

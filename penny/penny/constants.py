@@ -81,6 +81,16 @@ class PennyConstants:
     BROWSE_RETRIES = 4
     BROWSE_RETRY_DELAY = 1.0
     BROWSE_REQUEST_TIMEOUT = 30.0
+
+    # Default look-back window (seconds) for log_read_recent when the caller
+    # omits ``window_seconds``.  1 hour is the most common "what just happened"
+    # range.
+    LOG_READ_RECENT_DEFAULT_WINDOW_SECONDS = 3600
+
+    # Connect timeout for the OpenAI-compatible LLM HTTP client.  Tunes only the
+    # TCP-handshake / TLS deadline — the per-request read/write deadline is the
+    # separately configurable ``LLM_TIMEOUT``.
+    LLM_CONNECT_TIMEOUT_SECONDS = 5.0
     MAX_SEARCH_LINKS = 10
     BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "

@@ -891,7 +891,10 @@ class LogReadRecentTool(Tool):
             "memory": {"type": "string"},
             "window_seconds": {
                 "type": "integer",
-                "description": "Look-back window in seconds; defaults to 3600 (1 hour) if omitted",
+                "description": (
+                    "Look-back window in seconds; defaults to "
+                    f"{PennyConstants.LOG_READ_RECENT_DEFAULT_WINDOW_SECONDS} (1 hour) if omitted"
+                ),
             },
             "cap": {"type": "integer", "description": "Max entries; omit for all"},
         },

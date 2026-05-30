@@ -1,5 +1,6 @@
 """Tests for agentic loop changes: reasoning, last step, and after_step hook."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
 from penny.llm import LlmClient
+from penny.llm.models import LlmConnectionError, LlmTimeoutError, LlmToolParseError
 from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
@@ -281,7 +283,6 @@ class TestModelErrorHandling:
     @pytest.mark.asyncio
     async def test_llm_error_returns_agent_model_error(self, test_db, mock_llm):
         """Connection/response errors from the LLM result in AGENT_MODEL_ERROR, not a crash."""
-        from penny.llm.models import LlmConnectionError
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm)
 
@@ -302,7 +303,6 @@ class TestToolParseErrorRetry:
     @pytest.mark.asyncio
     async def test_tool_parse_error_retries_with_format_nudge(self, test_db, mock_llm):
         """When the server returns a tool-parse 500, agent injects format nudge and retries."""
-        from penny.llm.models import LlmToolParseError
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -327,7 +327,6 @@ class TestToolParseErrorRetry:
     @pytest.mark.asyncio
     async def test_tool_parse_error_recovers_and_completes(self, test_db, mock_llm):
         """Cycle completes normally after a tool-parse error and retry."""
-        from penny.llm.models import LlmToolParseError
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -349,7 +348,6 @@ class TestToolParseErrorRetry:
     @pytest.mark.asyncio
     async def test_tool_parse_error_only_retried_once(self, test_db, mock_llm):
         """Tool-parse error retry only fires once — second parse error aborts the loop."""
-        from penny.llm.models import LlmToolParseError
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -368,9 +366,6 @@ class TestToolParseErrorRetry:
     @pytest.mark.asyncio
     async def test_timeout_error_returns_agent_model_error(self, test_db, mock_llm, caplog):
         """LLM timeouts also return AGENT_MODEL_ERROR and are logged at WARNING not ERROR."""
-        import logging
-
-        from penny.llm.models import LlmTimeoutError
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm)
 

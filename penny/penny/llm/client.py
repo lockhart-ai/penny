@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import openai
 
+from penny.constants import PennyConstants
 from penny.llm.models import (
     LlmConnectionError,
     LlmError,
@@ -65,7 +66,9 @@ class LlmClient:
         }
         if timeout is not None:
             # Keep connect timeout short; only extend read/write for slow models.
-            client_kwargs["timeout"] = httpx.Timeout(timeout=timeout, connect=5.0)
+            client_kwargs["timeout"] = httpx.Timeout(
+                timeout=timeout, connect=PennyConstants.LLM_CONNECT_TIMEOUT_SECONDS
+            )
 
         self.client = openai.AsyncOpenAI(**client_kwargs)
 

@@ -1,5 +1,6 @@
 """Tests for the database migration system."""
 
+import importlib.util
 import sqlite3
 from pathlib import Path
 
@@ -194,8 +195,6 @@ class TestMigrate:
 
     def test_0039_fixes_read_last_in_extraction_prompts(self, tmp_path):
         """Migration 0039 replaces read_last( with read_latest( in extraction prompts."""
-        import importlib.util
-        from pathlib import Path
 
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -238,8 +237,6 @@ class TestMigrate:
     def test_0037_fixes_knowledge_extraction_prompt(self, tmp_path):
         """Migration 0037 replaces collection_update with update_entry in the
         knowledge extraction_prompt for databases seeded by migration 0031."""
-        import importlib.util
-        from pathlib import Path
 
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -283,8 +280,6 @@ class TestMigrate:
 
     def test_0040_fixes_log_read_log_in_extraction_prompts(self, tmp_path):
         """Migration 0040 replaces log_read_log( with log_read_next( in any extraction_prompt."""
-        import importlib.util
-        from pathlib import Path
 
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -327,8 +322,6 @@ class TestMigrate:
     def test_0041_fixes_collection_update_in_all_extraction_prompts(self, tmp_path):
         """Migration 0041 replaces collection_update with update_entry in all
         extraction_prompts, including user-created collections."""
-        import importlib.util
-        from pathlib import Path
 
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -392,8 +385,6 @@ class TestMigrate:
     def test_0042_fixes_thinking_prompt_browse_call_syntax(self, tmp_path):
         """Migration 0042 replaces bare 'browse' label with explicit call syntax in
         the unnotified-thoughts extraction_prompt for databases seeded by migration 0033."""
-        import importlib.util
-        from pathlib import Path
 
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
