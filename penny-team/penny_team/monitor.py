@@ -96,13 +96,40 @@ def extract_errors(log_text: str) -> list[ErrorBlock]:
 # Pattern to match the last exception line in a traceback (e.g., "ValueError: bad input")
 _EXCEPTION_RE = re.compile(r"^(\w+(?:\.\w+)*(?:Error|Exception|Warning|Fault))\b", re.MULTILINE)
 
+# Variable tail of a "Tool not found: <name>" error message.  The model emits
+# a different hallucinated name on every cycle (``read_next``, ``get_latest``,
+# ``collection_search?``, ``<|special|>``…), so the raw message produces a
+# fresh signature every time.  Collapsing the trailing name to a placeholder
+# lets a single closed-as-not-planned tracker silence the whole class.
+_TOOL_NOT_FOUND_RE = re.compile(r"^(Tool not found):\s*\S.*$", re.IGNORECASE)
+_TOOL_NOT_FOUND_FAMILY = "Tool not found"
+
+
+def _normalize_error_message(message: str) -> str:
+    """Strip variable identifiers from known error-message templates.
+
+    Currently handles the ``Tool not found: <NAME>`` family.  Add other
+    templates here when a single class of error keeps minting unique
+    signatures (validation-error field names, etc.).  We collapse to the
+    bare template prefix (``"Tool not found"``) rather than a placeholder
+    token like ``<TOOL>``, so the resulting signature substring still
+    matches typical bug-issue titles ("Tool not found for ...",
+    "Tool not found: search_memory") via the substring dedup path.
+    """
+    if _TOOL_NOT_FOUND_RE.match(message):
+        return _TOOL_NOT_FOUND_FAMILY
+    return message
+
 
 def extract_error_signature(error: ErrorBlock) -> str:
     """Extract a normalized signature for dedup: 'module:ExceptionType'.
 
     Uses the module from the log line and the exception type from the
     traceback. Falls back to the first few words of the message if
-    no exception type is found in the traceback.
+    no exception type is found in the traceback.  When a known
+    error-message template is detected (e.g. ``Tool not found:``) the
+    variable name is collapsed to a placeholder so the signature is
+    stable across hallucinated names.
     """
     exception_type = ""
     if error.traceback:
@@ -111,8 +138,8 @@ def extract_error_signature(error: ErrorBlock) -> str:
             exception_type = matches[-1]  # Last match is the actual exception
 
     if not exception_type:
-        # Fall back to first few significant words of the message
-        words = error.message.split()[:4]
+        # Fall back to first few significant words of the (normalized) message
+        words = _normalize_error_message(error.message).split()[:4]
         exception_type = " ".join(words)
 
     return f"{error.module}:{exception_type}".lower()
@@ -302,11 +329,20 @@ class MonitorAgent(Agent):
         return content, new_offset
 
     def _fetch_dedup_issues(self) -> list[IssueDetail]:
-        """Fetch open bug AND in-review issues for dedup.
+        """Fetch open + closed-as-not-planned bug issues for dedup.
 
-        Includes in-review because the Worker relabels bugs from 'bug' to
-        'in-review' after pushing a PR.  Without this, the same error gets
-        filed again once the original issue leaves the 'bug' label.
+        Three sources contribute:
+          - Open ``bug`` issues (active reports).
+          - Open ``in-review`` issues — the Worker relabels bugs to
+            ``in-review`` after pushing a PR; without this, the same error
+            gets filed again once the original issue leaves the ``bug``
+            label.
+          - Closed-as-not-planned ``bug`` issues — when the user closes a
+            bug with reason ``not planned`` it's a policy decision that
+            the whole class shouldn't be filed again.  Without this, a
+            cleanup pass that closes 40 alias PRs as won't-fix is silently
+            undone the next time the model hallucinates a new tool name.
+
         Returns empty list on failure (fail-open).
         """
         if self.github_api is None:
@@ -324,6 +360,17 @@ class MonitorAgent(Agent):
                         seen.add(issue.number)
             except (OSError, RuntimeError) as e:
                 logger.warning(f"[{self.name}] Failed to fetch {label} issues: {e}")
+
+        try:
+            closed = self.github_api.list_closed_not_planned_issues(
+                TeamConstants.Label.BUG, limit=50
+            )
+            for issue in closed:
+                if issue.number not in seen:
+                    issues.append(issue)
+                    seen.add(issue.number)
+        except (OSError, RuntimeError) as e:
+            logger.warning(f"[{self.name}] Failed to fetch closed-not-planned bugs: {e}")
 
         return issues
 

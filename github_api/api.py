@@ -45,7 +45,29 @@ query($owner: String!, $repo: String!, $label: String!, $limit: Int!) {
     issues(labels: [$label], states: OPEN, first: $limit,
            orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes {
-        number title body
+        number title body stateReason
+        author { login }
+        labels(first: 10) { nodes { name } }
+        comments(first: 50) {
+          nodes { author { login } body createdAt }
+        }
+      }
+    }
+  }
+}
+"""
+
+# Same shape as GQL_ISSUES_DETAILED but for CLOSED issues — used to feed the
+# monitor dedup with bugs the user has already triaged as "won't fix" so the
+# same class isn't refiled every cycle.  Filtering by stateReason happens
+# client-side (GitHub's filterBy argument doesn't expose stateReason).
+GQL_ISSUES_DETAILED_CLOSED = """
+query($owner: String!, $repo: String!, $label: String!, $limit: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issues(labels: [$label], states: CLOSED, first: $limit,
+           orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number title body stateReason
         author { login }
         labels(first: 10) { nodes { name } }
         comments(first: 50) {
@@ -132,9 +154,12 @@ class IssueComment(BaseModel):
 class IssueDetail(BaseModel):
     """Full issue details from detailed query."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     number: int
     title: str = ""
     body: str = ""
+    state_reason: str = Field("", alias="stateReason")
     author: IssueAuthor = IssueAuthor()
     labels: list[IssueLabel] = []
     comments: list[IssueComment] = []
@@ -293,9 +318,12 @@ class _GqlLabelNodeList(BaseModel):
 
 
 class _GqlIssueDetailNode(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     number: int
     title: str = ""
     body: str = ""
+    state_reason: str = Field("", alias="stateReason")
     author: _GqlAuthor | None = None
     labels: _GqlLabelNodeList = _GqlLabelNodeList()
     comments: _GqlIssueCommentNodeList = _GqlIssueCommentNodeList()
@@ -431,6 +459,7 @@ def _to_issue_detail(node: _GqlIssueDetailNode) -> IssueDetail:
         number=node.number,
         title=node.title,
         body=node.body,
+        state_reason=node.state_reason,
         author=IssueAuthor(login=author.login),
         labels=node.labels.nodes,
         comments=[_to_issue_comment(c) for c in node.comments.nodes],
@@ -438,6 +467,11 @@ def _to_issue_detail(node: _GqlIssueDetailNode) -> IssueDetail:
 
 
 _TYPENAME_CHECK_RUN = "CheckRun"
+
+# GitHub issue ``stateReason`` enum value for "won't fix" / "not planned"
+# closures.  The other observed values are ``COMPLETED`` (issue resolved)
+# and ``REOPENED``.
+_STATE_REASON_NOT_PLANNED = "NOT_PLANNED"
 
 
 def _to_check_status(ctx: _GqlCheckContext) -> CheckStatus:
@@ -580,6 +614,36 @@ class GitHubAPI:
         )
         response = _GqlIssueDetailResponse.model_validate(raw)
         return [_to_issue_detail(node) for node in response.data.repository.issues.nodes]
+
+    def list_closed_not_planned_issues(
+        self, label: str, limit: int = 20
+    ) -> list[IssueDetail]:
+        """List closed-as-not-planned issues by label.
+
+        Used by the monitor to keep dedup memory of "won't fix" decisions
+        the user made for prior reports — closing an alias / sanitization
+        PR with reason ``not planned`` should silence the whole class of
+        error on future runs, not just the one instance.
+
+        Fetches recent CLOSED issues and filters client-side by
+        ``stateReason == NOT_PLANNED`` (GitHub's ``filterBy`` argument
+        doesn't expose stateReason).
+        """
+        raw = self._graphql(
+            GQL_ISSUES_DETAILED_CLOSED,
+            variables={
+                "owner": self._owner,
+                "repo": self._repo,
+                "label": label,
+                "limit": limit,
+            },
+        )
+        response = _GqlIssueDetailResponse.model_validate(raw)
+        return [
+            _to_issue_detail(node)
+            for node in response.data.repository.issues.nodes
+            if node.state_reason == _STATE_REASON_NOT_PLANNED
+        ]
 
     # --- Issues (REST) ---
 

@@ -61,6 +61,7 @@ class MockGitHubAPI:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._issues: dict[str, list[IssueListItem]] = {}
         self._issues_detailed: dict[str, list[IssueDetail]] = {}
+        self._closed_not_planned: dict[str, list[IssueDetail]] = {}
         self._prs: list[PullRequest] = []
         self._review_comments: dict[int, list[ReviewComment]] = {}
         self._failed_runs: dict[str, list[WorkflowRun]] = {}
@@ -68,6 +69,7 @@ class MockGitHubAPI:
         self._comment_issue_fail: bool = False
         self._list_issues_fail: bool = False
         self._list_issues_detailed_fail: bool = False
+        self._list_closed_not_planned_fail: bool = False
         self._list_prs_fail: bool = False
 
     # --- Setup methods ---
@@ -77,6 +79,9 @@ class MockGitHubAPI:
 
     def set_issues_detailed(self, label: str, items: list[IssueDetail]) -> None:
         self._issues_detailed[label] = items
+
+    def set_closed_not_planned(self, label: str, items: list[IssueDetail]) -> None:
+        self._closed_not_planned[label] = items
 
     def set_prs(self, prs: list[PullRequest]) -> None:
         self._prs = prs
@@ -103,6 +108,16 @@ class MockGitHubAPI:
         if self._list_issues_detailed_fail:
             raise RuntimeError("Mock list_issues_detailed failure")
         return self._issues_detailed.get(label, [])
+
+    def list_closed_not_planned_issues(
+        self, label: str, limit: int = 20
+    ) -> list[IssueDetail]:
+        self.calls.append(
+            ("list_closed_not_planned_issues", (label,), {"limit": limit})
+        )
+        if self._list_closed_not_planned_fail:
+            raise RuntimeError("Mock list_closed_not_planned_issues failure")
+        return self._closed_not_planned.get(label, [])
 
     def comment_issue(self, number: int, body: str) -> None:
         self.calls.append(("comment_issue", (number, body), {}))
@@ -196,6 +211,7 @@ def make_issue_detail(
     author: str = "alice",
     labels: list[str] | None = None,
     comments: list[dict] | None = None,
+    state_reason: str = "",
 ) -> IssueDetail:
     """Create an IssueDetail instance for testing."""
     issue_comments = []
@@ -212,6 +228,7 @@ def make_issue_detail(
         number=number,
         title=title,
         body=body,
+        state_reason=state_reason,
         author=IssueAuthor(login=author),
         labels=[IssueLabel(name=l) for l in (labels or ["requirements"])],
         comments=issue_comments,

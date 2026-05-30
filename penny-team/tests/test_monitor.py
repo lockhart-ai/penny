@@ -603,3 +603,113 @@ class TestInReviewDedup:
         assert result.success is True
         assert result.output == "All errors already have open issues"
         assert len(calls) == 0  # Claude CLI not called
+
+
+class TestToolNotFoundNormalization:
+    """``Tool not found:`` signatures collapse the variable name to a placeholder.
+
+    Without this, every novel hallucinated name (``search_memory``,
+    ``get_latest``, ``collection_search?``…) produces a unique signature, so a
+    single tracked bug can never match the next one.
+    """
+
+    def test_signature_collapses_variable_tool_name(self):
+        a = ErrorBlock(
+            timestamp="2024-01-15 14:23:45",
+            module="penny.tools.base",
+            level="ERROR",
+            message="Tool not found: search_memory",
+            traceback="",
+        )
+        b = ErrorBlock(
+            timestamp="2024-01-15 14:24:00",
+            module="penny.tools.base",
+            level="ERROR",
+            message="Tool not found: collection_read_latest",
+            traceback="",
+        )
+        # Two different hallucinated names produce the SAME signature.
+        assert extract_error_signature(a) == extract_error_signature(b)
+
+    def test_signature_preserves_non_template_message(self):
+        """Other error messages aren't collapsed — only the tool-not-found family."""
+        a = ErrorBlock(
+            timestamp="2024-01-15 14:23:45",
+            module="penny.agent",
+            level="ERROR",
+            message="Connection refused to Ollama",
+            traceback="",
+        )
+        b = ErrorBlock(
+            timestamp="2024-01-15 14:24:00",
+            module="penny.agent",
+            level="ERROR",
+            message="DB locked",
+            traceback="",
+        )
+        assert extract_error_signature(a) != extract_error_signature(b)
+
+
+class TestClosedNotPlannedDedup:
+    """Closed-as-not-planned bug issues are part of the dedup corpus.
+
+    When the user closes a bug with reason ``not planned`` they're declaring
+    a policy: don't refile this class again.  The monitor honours that by
+    fetching closed-not-planned bugs alongside open ones.
+    """
+
+    def test_closed_not_planned_filters_matching_error(self, tmp_path, capture_popen):
+        agent, _ = make_monitor_agent(
+            tmp_path,
+            log_content=(
+                "2024-01-15 14:23:45 - penny.tools.base - ERROR - "
+                "Tool not found: search_memory\n"
+            ),
+        )
+
+        mock_api = MockGitHubAPI()
+        mock_api.set_issues_detailed("bug", [])
+        mock_api.set_issues_detailed("in-review", [])
+        mock_api.set_closed_not_planned(
+            "bug",
+            [
+                make_issue_detail(
+                    number=991,
+                    title="bug: Tool not found for hallucinated name",
+                    body="Module: penny.tools.base\nTool not found",
+                    labels=["bug"],
+                    state_reason="NOT_PLANNED",
+                )
+            ],
+        )
+        agent.github_api = mock_api
+
+        calls = capture_popen(stdout_lines=[result_event()], returncode=0)
+        result = agent.run()
+
+        assert result.success is True
+        assert result.output == "All errors already have open issues"
+        assert len(calls) == 0  # Claude CLI not called — error pre-filtered
+
+    def test_closed_not_planned_fetch_failure_is_fail_open(self, tmp_path, capture_popen):
+        """A failure fetching closed-not-planned doesn't block the dedup pass."""
+        agent, _ = make_monitor_agent(
+            tmp_path,
+            log_content=(
+                "2024-01-15 14:23:45 - penny.tools.base - ERROR - "
+                "Tool not found: search_memory\n"
+            ),
+        )
+
+        mock_api = MockGitHubAPI()
+        mock_api.set_issues_detailed("bug", [])
+        mock_api.set_issues_detailed("in-review", [])
+        mock_api._list_closed_not_planned_fail = True
+        agent.github_api = mock_api
+
+        calls = capture_popen(stdout_lines=[result_event()], returncode=0)
+        result = agent.run()
+
+        # Error not pre-filtered → Claude is invoked (no matching tracked bug).
+        assert result.success is True
+        assert len(calls) == 1

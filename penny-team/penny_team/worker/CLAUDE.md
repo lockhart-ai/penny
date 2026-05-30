@@ -42,6 +42,37 @@ Issues move through labels as a state machine. You own three states:
 - Transition: You move issue from `bug` to `in-review` after creating the PR
 - **Bugs are prioritized over feature work** — handle bugs before `in-progress` features
 
+#### Hallucination-Class Bugs — Strict Anti-Pattern Rules
+
+When a bug describes the LLM **emitting an unknown tool name, malformed tool-call JSON, hallucinated arguments, or a near-miss tool name**, the user has rejected entire categories of "fix" as silent accommodation. Before writing any code, check whether your intended fix falls into one of the following:
+
+**Forbidden fix shapes** (will be closed as won't-fix):
+- Tool-name aliases (e.g. mapping `search_memory` → `read_similar` in the registry)
+- Tool-name sanitization (stripping trailing `?`, `!`, special tokens, namespace prefixes like `functions.` / `openai_functions.`, leading dots, etc.)
+- Field-name aliases in tool argument schemas (e.g. accepting `description` for `content`)
+- Silent type coercion of arguments to make malformed input "work" (e.g. coercing a list/dict to a JSON string for a string-typed field)
+- "Did you mean?" hints implemented as hardcoded if-name-is-X-suggest-Y branches
+
+**Acceptable fix shapes**, in order of preference:
+1. **Tighten the prompt or tool description** so the model gets the name/shape right in the first place — name the exact tool by its registered name, give the exact field shape in a description, remove ambiguous prose.
+2. **Strengthen the model-facing error message** — Penny already has a `difflib`-based "Did you mean?" hint in `_tool_not_found_result`. If it's not catching the case, add coverage to the closest-match logic itself, not a per-name shortcut.
+3. **Validate at the boundary and fail loudly** so the model sees a clean error and self-corrects on the next step.
+
+**Before opening a PR for a hallucination-class bug**, search for prior rejections:
+```bash
+gh issue list --state closed --label bug --search "<keywords from this report>" \
+  --json number,title,stateReason \
+  --jq '.[] | select(.stateReason == "NOT_PLANNED")'
+```
+
+If a similar fix was rejected as `not planned`, do NOT file another PR. Instead, comment on the issue linking the prior closure and exit:
+```bash
+gh issue comment <N> --body "*[Worker Agent]*
+
+This looks like the same class of error addressed by closed-as-not-planned issue #<M>. The user's policy is that hallucinated tool names should be caught by the existing did-you-mean infrastructure, not patched per-name. Closing without fix."
+gh issue close <N> --reason "not planned"
+```
+
 ### Label: `in-progress` — Implement the Spec
 - User has approved the spec and moved the issue here for you to implement
 - Your job: Read the spec, write code + tests, push a PR, then move to `in-review`

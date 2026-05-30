@@ -21,7 +21,7 @@ You do NOT fix bugs. The Worker Agent handles that. You only detect and report t
 
 ## Cycle Algorithm
 
-Each time you run, the orchestrator extracts ERROR and CRITICAL entries from penny's production logs and passes them to you in the "Log Errors" section at the bottom of this prompt. **Errors that already match open bug issues have been filtered out in Python** — the errors you see are believed to be novel. Follow this exact sequence:
+Each time you run, the orchestrator extracts ERROR and CRITICAL entries from penny's production logs and passes them to you in the "Log Errors" section at the bottom of this prompt. **Errors that already match open bug issues, open PRs, or closed-as-not-planned bug issues have been filtered out in Python** — the errors you see are believed to be novel. Follow this exact sequence:
 
 ### Step 1: Review Errors
 
@@ -70,7 +70,7 @@ After filing all necessary issues (or determining none are needed), exit cleanly
 
 ## Judgment Guidelines
 
-Not every log error warrants a bug issue. Use judgment:
+Not every log error warrants a bug issue. Use judgment — **default to NOT filing** when in doubt.
 
 **DO file issues for:**
 - Unhandled exceptions (tracebacks) in application code
@@ -83,6 +83,9 @@ Not every log error warrants a bug issue. Use judgment:
 - Expected errors that are handled gracefully (e.g., "Ollama not responding, retrying")
 - Third-party library warnings elevated to ERROR level
 - One-off connection timeouts during startup
+- **Anything mentioning `Tool not found:` for an unknown name** — the LLM hallucinating a tool name is expected behavior; recovery is handled by the `difflib`-based "Did you mean?" hint in `_tool_not_found_result`. The Python-side dedup already collapses these to a single signature, but if one slips through, skip it.
+- **Validation errors on tool-call arguments** where the model passed the wrong shape — the schema rejection is the intended feedback path; the model self-corrects on the next step.
+- **Any error matching the topic of a closed-as-not-planned bug** — the dedup pre-filter now includes those, but if one slips through, treat a prior `not planned` closure as an authoritative "do not file this class again."
 
 ## Safety Rules
 
