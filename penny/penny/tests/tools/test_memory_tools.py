@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+from pydantic import ValidationError
 
 from penny.database import Database
 from penny.llm.client import LlmClient
@@ -98,13 +99,25 @@ class TestCreateAndList:
     async def test_create_collection_persists(self, tmp_path):
         db = _make_db(tmp_path)
         result = await CollectionCreateTool(db).execute(
-            name="likes", description="positive prefs", recall="relevant"
+            name="likes",
+            description="positive prefs",
+            recall="relevant",
+            extraction_prompt=(
+                "Extract user likes from user-messages log and write to likes collection."
+            ),
+            collector_interval_seconds=3600,
         )
+        # Structured echo: collection name, interval, recall, prompt body all surfaced
+        # so the chat agent can confirm-back without confabulating.
         assert "Created collection 'likes'" in result
+        assert "interval: 3600s (1h)" in result
+        assert "recall: relevant" in result
+        assert "Extract user likes" in result  # extraction_prompt is echoed verbatim
         memories = {m.name: m for m in db.memories.list_all()}
         assert memories["likes"].type == "collection"
         assert memories["likes"].recall == "relevant"
         assert memories["likes"].description == "positive prefs"
+        assert memories["likes"].collector_interval_seconds == 3600
 
     @pytest.mark.asyncio
     async def test_create_log_persists(self, tmp_path):
@@ -119,9 +132,19 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_collection_duplicate_returns_user_friendly_message(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="ai-news", description="first", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="ai-news",
+            description="first",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         result = await CollectionCreateTool(db).execute(
-            name="ai-news", description="second slightly different", recall="relevant"
+            name="ai-news",
+            description="second slightly different",
+            recall="relevant",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
         )
         assert "already exists" in result
         assert "ai-news" in result
@@ -142,42 +165,85 @@ class TestCreateAndList:
     async def test_create_rejects_short_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         result = await CollectionCreateTool(db).execute(
-            name="notes", description="x", recall="off", extraction_prompt="yes"
+            name="notes",
+            description="x",
+            recall="off",
+            extraction_prompt="yes",
+            collector_interval_seconds=3600,
         )
         assert "too short" in result
         assert "minimum" in result
         assert db.memories.get("notes") is None  # collection not created
 
     @pytest.mark.asyncio
-    async def test_create_accepts_null_extraction_prompt(self, tmp_path):
+    async def test_create_rejects_missing_extraction_prompt(self, tmp_path):
+        # extraction_prompt is required — a collection without one is passive
+        # (nothing fills it), so the tool surface refuses to create one.
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db).execute(name="notes", description="x", recall="off")
-        assert "Created" in result
-        assert db.memories.get("notes") is not None
+        with pytest.raises(ValidationError):
+            await CollectionCreateTool(db).execute(
+                name="notes",
+                description="x",
+                recall="off",
+                collector_interval_seconds=3600,
+            )
+        assert db.memories.get("notes") is None
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_missing_interval(self, tmp_path):
+        # collector_interval_seconds is required — a collection without one
+        # has no cadence and never runs.
+        db = _make_db(tmp_path)
+        with pytest.raises(ValidationError):
+            await CollectionCreateTool(db).execute(
+                name="notes",
+                description="x",
+                recall="off",
+                extraction_prompt="Extract things from somewhere.",
+            )
+        assert db.memories.get("notes") is None
 
     @pytest.mark.asyncio
     async def test_create_accepts_long_enough_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         prompt = "Extract likes from user-messages log and write to collection."
         result = await CollectionCreateTool(db).execute(
-            name="notes", description="x", recall="off", extraction_prompt=prompt
+            name="notes",
+            description="x",
+            recall="off",
+            extraction_prompt=prompt,
+            collector_interval_seconds=3600,
         )
         assert "Created" in result
 
     @pytest.mark.asyncio
     async def test_update_rejects_short_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="notes", description="x", recall="off")
+        original_prompt = "test fixture extraction prompt"
+        await CollectionCreateTool(db).execute(
+            name="notes",
+            description="x",
+            recall="off",
+            extraction_prompt=original_prompt,
+            collector_interval_seconds=3600,
+        )
         result = await CollectionUpdateTool(db).execute(name="notes", extraction_prompt="yes")
         assert "too short" in result
-        assert db.memories.get("notes").extraction_prompt is None  # unchanged
+        # Update rejected — original prompt preserved unchanged
+        assert db.memories.get("notes").extraction_prompt == original_prompt
 
 
 class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_write_read_roundtrip(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="relevant")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="relevant",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.execute(
             memory="likes",
@@ -194,7 +260,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
             memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
@@ -214,7 +286,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="likes", entries=[{"key": "k", "content": "hello"}]
         )
@@ -225,7 +303,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
         await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
@@ -235,7 +319,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_read_random_returns_all_when_few(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
         rendered = await CollectionReadRandomTool(db).execute(memory="likes", k=5)
@@ -244,7 +334,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         client = _make_llm_client(mock_llm)
         await CollectionWriteTool(db, client, author="test").execute(
             memory="likes", entries=[{"key": "coffee", "content": "loves coffee"}]
@@ -258,7 +354,13 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_read_similar_without_llm_client_returns_sentinel(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         result = await ReadSimilarTool(db, None).execute(memory="likes", anchor="whatever")
         assert "similarity search unavailable" in result
 
@@ -267,7 +369,13 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_update_replaces_content(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="likes", entries=[{"key": "k", "content": "old"}]
         )
@@ -281,7 +389,13 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_update_missing_reports_not_found(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         result = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="k", content="new"
         )
@@ -290,8 +404,20 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_move_between_collections(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="unnotified", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="notified", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="unnotified",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="notified",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="unnotified", entries=[{"key": "t1", "content": "x"}]
         )
@@ -303,8 +429,20 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_move_collision(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="a", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="b", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="a",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="b",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="a", entries=[{"key": "k", "content": "src"}])
         await write.execute(memory="b", entries=[{"key": "k", "content": "dst"}])
@@ -316,7 +454,13 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         assert "Archived 'likes'" in await CollectionArchiveTool(db).execute(memory="likes")
         assert "Unarchived 'likes'" in await CollectionUnarchiveTool(db).execute(memory="likes")
 
@@ -498,7 +642,13 @@ class TestExistsAndDone:
     @pytest.mark.asyncio
     async def test_exists_yes_via_exact_key(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         client = _make_llm_client(mock_llm)
         await CollectionWriteTool(db, client, author="test").execute(
             memory="likes", entries=[{"key": "dark roast", "content": "body"}]
@@ -511,7 +661,13 @@ class TestExistsAndDone:
     @pytest.mark.asyncio
     async def test_exists_no(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
             memories=["likes"], key="not there", content="nothing"
         )
@@ -525,7 +681,11 @@ class TestExistsAndDone:
         in so the rest of the stack sees the canonical form."""
         db = _make_db(tmp_path)
         await CollectionCreateTool(db).execute(
-            name="prague-highlights", description="x", recall="off"
+            name="prague-highlights",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         # Non-breaking hyphen U+2011 in the memory name — model output
@@ -546,7 +706,11 @@ class TestExistsAndDone:
         in the dedup rule."""
         db = _make_db(tmp_path)
         await CollectionCreateTool(db).execute(
-            name="prague-highlights", description="x", recall="off"
+            name="prague-highlights",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
         )
         client = _make_llm_client(mock_llm)
         # Existing entry: short key, long descriptive content.
@@ -594,7 +758,13 @@ class TestAuthorAttribution:
     async def test_writes_stamp_constructor_author(self, tmp_path, mock_llm):
         """Author is bound at tool construction (not pulled from ambient state)."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="preference-extractor"
         ).execute(memory="likes", entries=[{"key": "k", "content": "v"}])
@@ -607,8 +777,20 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_moves_entries_and_archives_source(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="src", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dst", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="src",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dst",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="src", entries=[{"key": "a", "content": "alpha"}])
         await write.execute(memory="src", entries=[{"key": "b", "content": "beta"}])
@@ -624,8 +806,20 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_drops_colliding_keys(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="src", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dst", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="src",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dst",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="src", entries=[{"key": "shared", "content": "from src"}])
         await write.execute(memory="src", entries=[{"key": "unique", "content": "only in src"}])
@@ -644,8 +838,20 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_empty_source_archives_it(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="src", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dst", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="src",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dst",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
 
         result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
 
@@ -766,8 +972,20 @@ class TestScopedFactory:
         """A scoped collector that tries to write to a different collection
         gets a clean refusal rather than silently corrupting unrelated data."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dislikes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dislikes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
 
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
@@ -781,7 +999,13 @@ class TestScopedFactory:
     @pytest.mark.asyncio
     async def test_scoped_write_allows_target_collection(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="likes", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="likes",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
 
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="collector:likes", scope="likes"
@@ -804,8 +1028,20 @@ class TestScopedFactory:
         the move is in-bounds even though from_memory is a different memory.
         """
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="src", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dst", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="src",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dst",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="t").execute(
             memory="src", entries=[{"key": "k", "content": "v"}]
         )
@@ -819,8 +1055,20 @@ class TestScopedFactory:
     async def test_scoped_move_defaults_to_memory_from_scope(self, tmp_path, mock_llm):
         """Omitting to_memory on a scoped tool defaults to the bound scope."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db).execute(name="src", description="x", recall="off")
-        await CollectionCreateTool(db).execute(name="dst", description="x", recall="off")
+        await CollectionCreateTool(db).execute(
+            name="src",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
+        await CollectionCreateTool(db).execute(
+            name="dst",
+            description="x",
+            recall="off",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+        )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="t").execute(
             memory="src", entries=[{"key": "k", "content": "v"}]
         )

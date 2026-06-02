@@ -48,22 +48,35 @@ MemoryNameList = Annotated[list[str], BeforeValidator(_normalize_dash_list)]
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
-class CreateMemoryArgs(BaseModel):
-    """Shared shape for ``collection_create`` and ``log_create``.
+class CollectionCreateArgs(BaseModel):
+    """Args for ``collection_create``.
 
-    ``extraction_prompt`` only applies to collections — it's the body of
-    instructions the per-collection collector subagent will run with on
-    each cycle (read recent log entries, extract structured records,
-    write/update/delete).  Logs ignore it.  Optional at the schema level
-    so migrations and tests can create collections without one; the chat
-    agent's prompt instructs it to always supply one for user-created
-    collections so the new collection gets a collector immediately.
+    A collection without an ``extraction_prompt`` is passive (nothing
+    fills it) and a collection without ``collector_interval_seconds``
+    has no cadence (nothing schedules it).  Both are required at the
+    tool surface so every model-created collection gets a working
+    collector immediately, instead of silently sitting empty until the
+    user notices.
     """
 
     name: MemoryName
     description: str
     recall: str  # "off" | "recent" | "relevant" | "all" — validated in the store layer
-    extraction_prompt: str | None = None
+    extraction_prompt: str
+    collector_interval_seconds: int
+
+
+class LogCreateArgs(BaseModel):
+    """Args for ``log_create``.
+
+    Logs are append-only streams of events (messages, browse results,
+    measurements).  No extraction_prompt — logs are inputs, not curated
+    outputs.  No interval — logs don't have a collector.
+    """
+
+    name: MemoryName
+    description: str
+    recall: str  # "off" | "recent" | "relevant" | "all" — validated in the store layer
 
 
 class MemoryNameArgs(BaseModel):

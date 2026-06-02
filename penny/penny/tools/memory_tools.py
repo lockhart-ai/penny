@@ -36,6 +36,7 @@ from penny.database.models import MemoryEntry
 from penny.llm.similarity import embed_text
 from penny.tools.base import Tool
 from penny.tools.memory_args import (
+    CollectionCreateArgs,
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
     CollectionGetArgs,
@@ -43,10 +44,10 @@ from penny.tools.memory_args import (
     CollectionMoveArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
-    CreateMemoryArgs,
     DoneArgs,
     ExistsArgs,
     LogAppendArgs,
+    LogCreateArgs,
     MemoryNameArgs,
     ReadLatestArgs,
     ReadNextArgs,
@@ -93,8 +94,42 @@ def check_extraction_prompt(prompt: str | None) -> str | None:
     return (
         f"extraction_prompt is too short ({len(prompt)} chars — minimum "
         f"{EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
-        f"(see the collection_create description for the required shape) or omit "
-        f"extraction_prompt entirely to create a manually-managed collection."
+        f"(see the collection_create description for the required shape)."
+    )
+
+
+def _humanize_interval(seconds: int | None) -> str:
+    """Render a collector interval as a human-readable cadence (e.g. '1h')."""
+    if not seconds:
+        return "unset"
+    if seconds % 86400 == 0:
+        days = seconds // 86400
+        return f"{days}d"
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours}h"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes}m"
+    return f"{seconds}s"
+
+
+def _format_collection_echo(memory: Any, verb: str) -> str:
+    """Render a created or updated collection as a structured echo.
+
+    The chat agent uses this to confirm-back what landed without
+    making up fields.  Includes the full extraction_prompt verbatim
+    so the model's reply can summarize accurately (the model previously
+    confabulated this because the create/update returns were one-liners).
+    """
+    return (
+        f"{verb} collection '{memory.name}':\n"
+        f"  interval: {memory.collector_interval_seconds}s "
+        f"({_humanize_interval(memory.collector_interval_seconds)})\n"
+        f"  recall: {memory.recall}\n"
+        f"  description: {memory.description}\n"
+        f"  extraction_prompt: |\n    "
+        f"{(memory.extraction_prompt or '').replace(chr(10), chr(10) + '    ')}"
     )
 
 
@@ -114,57 +149,73 @@ class CollectionCreateTool(Tool):
 
     name = "collection_create"
     description = (
-        "Create a new keyed collection.  Provide ``description``, "
-        f"``recall`` mode ({_RECALL_MODES}), and an ``extraction_prompt``.  "
-        "Without the extraction_prompt the collection stays empty — it is "
-        "the system prompt the per-collection Collector subagent runs each "
-        "cycle.\n"
+        "Set up a background researcher.  A collection is a long-lived task: "
+        "every ``collector_interval_seconds`` the Collector subagent runs the "
+        "``extraction_prompt`` you write here, browses or reads logs, writes "
+        "structured entries, and (optionally) pings the user when it finds "
+        "something new.  Both ``extraction_prompt`` and "
+        "``collector_interval_seconds`` are REQUIRED — a collection without "
+        "either is dead weight.\n"
         "\n"
-        "# Writing extraction_prompts\n"
+        "# When to call this\n"
         "\n"
-        "Every extraction_prompt is a numbered list of explicit tool calls "
-        "plus a short tail.  The collector executes the steps in order — "
-        "flowing prose loses the model.\n"
+        'Call when the user signals ongoing investigation: "research X", '
+        '"follow X", "keep an eye on X", "build me a list of X", "i\'m going '
+        'to X next week, find me Y", "send me a daily digest of Z", etc.  '
+        'For one-shot questions ("what\'s a good X", "find me X for tonight") '
+        "just browse and answer — don't create a collection.\n"
         "\n"
-        "## The standard shape\n"
+        "# Picking collector_interval_seconds\n"
         "\n"
-        "```\n"
-        "[One-sentence statement of what this collector does.]\n"
+        "- 1800 (30m) — fast-moving topics: breaking news, live event tracking\n"
+        "- 3600 (1h) — DEFAULT for active research: trip planning, product "
+        "comparisons, ongoing topic monitoring\n"
+        "- 21600 (6h) — slow-moving: weekly reading lists, hobby topics\n"
+        "- 86400 (1d) — daily digests, periodic summaries\n"
         "\n"
-        "1. [Read source — explicit tool call.]\n"
-        "2. [Identify what counts; list what to skip.]\n"
-        "3. [Optionally: browse for current info.]\n"
-        "4. [Write — explicit collection_write tool call.]\n"
-        "5. [Optionally: send_message, gated on successful write.]\n"
-        "6. [Handle corrections.]\n"
-        "7. done().\n"
+        "If the user said a cadence word, match it; otherwise default to 3600.\n"
         "\n"
-        '[Tail: edge-case rules, "if nothing matches, just done()".]\n'
-        "```\n"
+        "# Picking recall\n"
+        "\n"
+        f"({_RECALL_MODES}).  Two rules:\n"
+        '- If the user said "silent" / "don\'t ping me" / "i\'ll check in" / '
+        '"i\'ll ask" / "no notifications" → ``recall="off"`` AND omit '
+        "``send_message`` from the extraction_prompt body.  Both, not "
+        "either — they're the two ways a collection can ping the user.\n"
+        '- Otherwise → ``recall="relevant"`` so entries surface when the '
+        "user asks about the topic.\n"
+        "\n"
+        "# Writing the extraction_prompt\n"
+        "\n"
+        "The extraction_prompt is a numbered list of explicit tool calls plus "
+        "a short tail.  Flowing prose loses the model.  Browse-first for "
+        "research; log-first only for pure passive extraction.\n"
         "\n"
         "## Worked examples — clone the closest, customise\n"
         "\n"
-        "Match the user's request to a shape: \"find me X and tell me when "
-        'there\'s something new" → **Research + notify**.  "Track topics I '
-        'mention" → **Pure extraction**.\n'
+        "Match the user's request to a shape: \"research X and tell me when "
+        'there\'s something new" → **Research + notify**.  "Daily digest of '
+        'X" → **Digest**.  "Track topics I mention" → **Pure extraction**.\n'
         "\n"
-        '### Research + notify on new finds (for "find me X, track them, tell '
-        "me when there's something new\")\n"
+        '### Research + notify on new finds ("research X, ping me when you '
+        'find stuff")\n'
         "\n"
         "> Collect [topic] — [scope].\n"
         ">\n"
-        '> 1. log_read_next("user-messages") and log_read_next("browse-results") '
-        "for recent context and any pages fetched since last cycle.\n"
-        "> 2. browse the web for new [topic] items when there's a topical "
-        "opening.  Read actual pages — never cite from search snippets alone.\n"
-        "> 3. Each entry: key is the item's name (3-10 words); content is name "
-        "+ description + a real source URL pulled from a page browsed THIS "
-        "cycle.\n"
+        "> 1. browse the web for new [topic] items.  Try a couple of search "
+        "queries that target [scope] specifically.  Read actual pages — never "
+        "cite from search snippets alone.\n"
+        '> 2. log_read_next("user-messages") to pick up any corrections or '
+        "scope adjustments the user mentioned since last cycle.\n"
+        "> 3. Each entry: key is the item's name (3-10 words); content is "
+        "name + description + location/details + a real source URL pulled "
+        "from a page browsed THIS cycle.\n"
         '> 4. collection_write("[bound collection]", entries=[...]) batching '
         "all new items.\n"
         "> 5. ONLY IF the write succeeded (not duplicate-rejected): "
         'send_message with a one-or-two-sentence "found something new for '
-        '[topic]" note, conversational, finish with an emoji.\n'
+        '[topic]" note including the URL.  Conversational, finish with an '
+        "emoji.\n"
         "> 6. If a recent message indicates an existing entry is wrong "
         "(closed, link dead, plans changed), update_entry or "
         "collection_delete_entry.\n"
@@ -172,8 +223,21 @@ class CollectionCreateTool(Tool):
         ">\n"
         "> Cite only sources you actually browsed this cycle.  Never invent URLs.\n"
         "\n"
-        "### Pure extraction (the ``likes`` shape, for tracking topics the "
-        "user mentions in chat)\n"
+        '### Digest ("daily digest of X at 6pm" / "hourly check + once-a-day '
+        'summary")\n'
+        "\n"
+        "> Collect [topic] — produce a daily digest.\n"
+        ">\n"
+        "> 1. browse the web for today's [topic] stories.  Try 2-3 queries.\n"
+        "> 2. Each cycle, append today's findings to the entry keyed by "
+        "today's date (YYYY-MM-DD).  If the entry doesn't exist yet, "
+        "create it; otherwise update_entry to add the new items to the "
+        "existing list.\n"
+        "> 3. Only send_message at the scheduled digest time (e.g., 18:00 "
+        "UTC if user asked for 6pm) — at other times just write and done().\n"
+        "> 4. done().\n"
+        "\n"
+        '### Pure extraction (the ``likes`` shape — "track topics I mention")\n'
         "\n"
         "> Extract the user's positive preferences from their recent messages.\n"
         ">\n"
@@ -192,14 +256,17 @@ class CollectionCreateTool(Tool):
         "\n"
         "## Authoring rules\n"
         "\n"
-        "- Name every tool explicitly in the steps: "
+        "- Name every tool explicitly in the steps: ``browse(...)``, "
         '``log_read_next("X")``, ``collection_write("X", entries=[...])``, '
         "``send_message(content=...)``, ``done()``.  The collector won't "
         "call a tool the prompt doesn't name.\n"
+        "- Browse-first for research collections.  log_read_next is for "
+        "pure extraction (preferences, knowledge from already-browsed pages) "
+        "or as a SECONDARY step in research collections to catch user "
+        "corrections.\n"
         "- Only include ``send_message`` if the user explicitly asked for "
-        'notification-on-new ("tell me when there\'s something new").  '
-        "Pure-tracking requests should NOT include send_message — the user "
-        "doesn't want a chat ping for every entry.\n"
+        'notification-on-new ("ping me", "let me know when").  Silent / '
+        '"i\'ll check in" requests must NOT include send_message.\n'
         "\n"
         "(Runtime invariants — quiet-cycle escape, batched writes, "
         "send_message gating, source-provenance, correction handling, "
@@ -209,7 +276,10 @@ class CollectionCreateTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Unique collection name"},
+            "name": {
+                "type": "string",
+                "description": "Unique collection name (slug-style: lowercase, hyphens)",
+            },
             "description": {
                 "type": "string",
                 "description": "One-line summary shown in the memory registry",
@@ -222,32 +292,47 @@ class CollectionCreateTool(Tool):
             "extraction_prompt": {
                 "type": "string",
                 "description": (
-                    "Instructions for the per-collection collector subagent. "
-                    "Should describe what to extract, from which logs, and how "
-                    "to handle corrections/removals."
+                    "REQUIRED. The system prompt the Collector subagent runs "
+                    "each cycle. Numbered list of explicit tool calls — see "
+                    "tool description for worked examples."
+                ),
+            },
+            "collector_interval_seconds": {
+                "type": "integer",
+                "description": (
+                    "REQUIRED. How often the collector runs. Common values: "
+                    "1800 (30m), 3600 (1h, default for active research), "
+                    "21600 (6h), 86400 (daily)."
                 ),
             },
         },
-        "required": ["name", "description", "recall"],
+        "required": [
+            "name",
+            "description",
+            "recall",
+            "extraction_prompt",
+            "collector_interval_seconds",
+        ],
     }
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     async def execute(self, **kwargs: Any) -> str:
-        args = CreateMemoryArgs(**kwargs)
+        args = CollectionCreateArgs(**kwargs)
         if error := check_extraction_prompt(args.extraction_prompt):
             return error
         try:
-            self._db.memories.create_collection(
+            memory = self._db.memories.create_collection(
                 args.name,
                 args.description,
                 RecallMode(args.recall),
                 extraction_prompt=args.extraction_prompt,
+                collector_interval_seconds=args.collector_interval_seconds,
             )
         except MemoryAlreadyExistsError:
             return f"Collection '{args.name}' already exists."
-        return f"Created collection '{args.name}'."
+        return _format_collection_echo(memory, "Created")
 
 
 class LogCreateTool(Tool):
@@ -277,7 +362,7 @@ class LogCreateTool(Tool):
         self._db = db
 
     async def execute(self, **kwargs: Any) -> str:
-        args = CreateMemoryArgs(**kwargs)
+        args = LogCreateArgs(**kwargs)
         try:
             self._db.memories.create_log(args.name, args.description, RecallMode(args.recall))
         except MemoryAlreadyExistsError:
@@ -627,22 +712,108 @@ class CollectionUpdateTool(Tool):
 
     name = "collection_update"
     description = (
-        "Update an existing collection's metadata.  Provide the collection "
-        "``name`` plus any of: ``description``, ``recall`` "
-        f"({_RECALL_MODES}), ``extraction_prompt``, ``collector_interval_seconds``. "
-        "Only the fields you supply are changed."
+        "Update an existing collection's metadata.  Only the fields you "
+        "supply are changed.\n"
+        "\n"
+        "# When to call this\n"
+        "\n"
+        "The user is asking you to evolve an existing research collection.  "
+        "Common shapes:\n"
+        '- "add Y to the X collection" → scope change\n'
+        '- "drop Y from X, just focus on Z" → scope change.  Scope lives in '
+        "the extraction_prompt body — updating only the description leaves "
+        "the collector running the old focus.\n"
+        '- "check it every 30 minutes instead" → interval change\n'
+        '- "stop pinging me about new finds" / "go silent" → silent flip '
+        "(see below — this requires BOTH recall and extraction_prompt body)\n"
+        "\n"
+        "If the user's intent is to read or query an existing collection "
+        "(not modify it), don't call this — use ``read_latest``, "
+        "``read_similar``, ``collection_get``, etc. instead.\n"
+        "\n"
+        "# Mapping user intent → which fields to update\n"
+        "\n"
+        "**Scope change (what topics the collector looks for) — "
+        "``extraction_prompt``, NOT ``description`` alone.**  The description "
+        "is cosmetic; it's a one-line summary shown in the memory registry "
+        "for the chat agent's reference.  The body in the extraction_prompt "
+        "is what actually drives the collector's browsing and writing.  If "
+        "the user wants the collector to start/stop looking for something, "
+        "you MUST rewrite the extraction_prompt body.\n"
+        "\n"
+        "To rewrite the body safely: call ``collection_metadata`` first to "
+        "read the current body, then send a full rewritten body in "
+        "``extraction_prompt`` (don't send a diff or partial body — the "
+        "field replaces the whole prompt).  Update ``description`` to match "
+        "the new focus as a courtesy.\n"
+        "\n"
+        "**Cadence change — ``collector_interval_seconds``.**  Match the "
+        'user\'s words: "every 30 minutes" → 1800, "hourly" → 3600, "daily" '
+        "→ 86400.  Don't touch other fields.\n"
+        "\n"
+        '**Silent flip ("stop pinging me" / "go silent" / "i\'ll check in") '
+        "— BOTH ``recall`` AND ``extraction_prompt``.**  These are the two "
+        "ways a collection pings the user, and silencing means killing "
+        "both:\n"
+        '  1. ``recall="off"`` removes ambient surfacing in the chat '
+        "agent's context.\n"
+        "  2. The ``send_message`` step in the extraction_prompt body is "
+        "what actively pings on every find.  If you leave it in, the "
+        "collector will keep paging the user every cycle even with "
+        '``recall="off"``.  Call ``collection_metadata`` first, then send a '
+        "rewritten ``extraction_prompt`` with the send_message step removed.\n"
+        "\n"
+        '**Notify flip (the reverse — "start pinging me again") — also '
+        'BOTH.**  ``recall="relevant"`` plus rewrite the extraction_prompt '
+        "to re-add the send_message step (gated on successful write, as in "
+        "the create-tool's worked examples).\n"
+        "\n"
+        "# Confirming back\n"
+        "\n"
+        "The return value echoes the full updated state (name, interval, "
+        "recall, description, extraction_prompt verbatim).  Use it to "
+        "confirm in one short sentence what got changed — do not invent "
+        "fields the echo didn't return.  If a field you tried to update "
+        "isn't reflected in the echo, your update didn't land — fix it "
+        'and try again rather than saying "done".\n'
     )
     parameters = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "description": "Collection name to update"},
-            "description": {"type": "string"},
+            "description": {
+                "type": "string",
+                "description": (
+                    "One-line summary for the memory registry. Cosmetic — "
+                    "does not drive collector behavior. Update for "
+                    "consistency with extraction_prompt, not as a "
+                    "substitute for it."
+                ),
+            },
             "recall": {
                 "type": "string",
                 "enum": [m.value for m in RecallMode],
+                "description": (
+                    "How the chat agent surfaces this collection in "
+                    'ambient context. "off" for silent collections.'
+                ),
             },
-            "extraction_prompt": {"type": "string"},
-            "collector_interval_seconds": {"type": "integer"},
+            "extraction_prompt": {
+                "type": "string",
+                "description": (
+                    "FULL rewritten body — replaces the whole prompt, not "
+                    "a diff. Drives what the collector actually does. Read "
+                    "current body via collection_metadata first for scope "
+                    "or silent-flip changes."
+                ),
+            },
+            "collector_interval_seconds": {
+                "type": "integer",
+                "description": (
+                    "How often the collector runs. 1800 (30m), 3600 (1h), "
+                    "21600 (6h), 86400 (daily)."
+                ),
+            },
         },
         "required": ["name"],
     }
@@ -656,7 +827,7 @@ class CollectionUpdateTool(Tool):
             return error
         recall = RecallMode(args.recall) if args.recall is not None else None
         try:
-            self._db.memories.update_collection_metadata(
+            memory = self._db.memories.update_collection_metadata(
                 args.name,
                 description=args.description,
                 recall=recall,
@@ -665,7 +836,7 @@ class CollectionUpdateTool(Tool):
             )
         except MemoryNotFoundError:
             return f"Collection '{args.name}' not found."
-        return f"Updated '{args.name}'."
+        return _format_collection_echo(memory, "Updated")
 
 
 class CollectionMetadataTool(Tool):
