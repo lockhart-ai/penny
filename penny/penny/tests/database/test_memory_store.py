@@ -906,3 +906,56 @@ class TestDedupSignals:
             author="chat",
         )
         assert result[0].outcome == "written"
+
+
+class TestEmbeddingBackfill:
+    """Startup backfill targets recall-relevant, non-archived entries only.
+
+    Migration-seeded content (skills) and other rows inserted via raw SQL
+    arrive with NULL embeddings; the backfill embeds the ones that are
+    actually reachable by similarity and skips bulk ``recall=off`` logs
+    (``collector-runs``) that would otherwise be a huge pointless embed.
+    """
+
+    def test_scopes_to_relevant_unarchived_and_persists(self, tmp_path):
+        db = _make_db(tmp_path)
+        # A relevant collection (skills-like): entries SHOULD be embedded.
+        db.memories.create_collection("skills", "workflow patterns", RecallMode.RELEVANT)
+        db.memories.write(
+            "skills",
+            [EntryInput(key="Do X when Y", content="TRIGGER ... STEPS ...")],
+            author="system",
+        )
+        # An off log (collector-runs-like): never surfaces → must be skipped.
+        db.memories.create_log("collector-runs", "cycle log", RecallMode.OFF)
+        db.memories.append(
+            "collector-runs",
+            [LogEntryInput(content="cycle summary")],
+            author="collector",
+        )
+        # An archived collection: never surfaces → must be skipped.
+        db.memories.create_collection("old-trip", "archived", RecallMode.RELEVANT)
+        db.memories.write(
+            "old-trip",
+            [EntryInput(key="spot", content="some place")],
+            author="chat",
+        )
+        db.memories.archive("old-trip")
+
+        pending = db.memories.get_entries_without_embeddings(limit=100)
+        # Only the skills entry qualifies — off-log and archived are excluded.
+        assert [e.memory_name for e in pending] == ["skills"]
+        assert pending[0].content_embedding is None
+
+        # Persist embeddings, then confirm it drops out of the pending set.
+        entry_id = pending[0].id
+        assert entry_id is not None
+        db.memories.set_entry_embeddings(
+            entry_id,
+            key_embedding=_unit_vec(0),
+            content_embedding=_unit_vec(1),
+        )
+        assert db.memories.get_entries_without_embeddings(limit=100) == []
+        rows = db.memories.read_latest("skills")
+        assert rows[0].content_embedding is not None
+        assert rows[0].key_embedding is not None

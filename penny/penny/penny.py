@@ -27,6 +27,7 @@ from penny.database.migrate import migrate
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
+from penny.llm.models import LlmError
 from penny.responses import PennyResponse
 from penny.scheduler import (
     AlwaysRunSchedule,
@@ -358,6 +359,44 @@ class Penny:
                 break
         return total
 
+    async def _backfill_memory_embeddings(self, batch_limit: int) -> int:
+        """Backfill memory entries missing embeddings. Returns count embedded.
+
+        Covers the unified memory framework (skills, ``user-messages``, any
+        migration-seeded collection content) that the preference backfill
+        doesn't reach.  Scoped by the store to non-archived, non-``off``
+        memories so recall-relevant entries get vectors while bulk ``off``
+        logs (``collector-runs``) are skipped.  Embeds both key and content
+        so keyed entries are matchable by ``read_similar``.
+        """
+        assert self.embedding_model_client is not None
+        total = 0
+        while True:
+            entries = self.db.memories.get_entries_without_embeddings(limit=batch_limit)
+            if not entries:
+                break
+            try:
+                content_vecs = await self.embedding_model_client.embed([e.content for e in entries])
+                keyed = [(e.id, e.key) for e in entries if e.key is not None and e.id is not None]
+                key_vec_by_id: dict[int, list[float]] = {}
+                if keyed:
+                    key_vecs = await self.embedding_model_client.embed([key for _, key in keyed])
+                    key_vec_by_id = {
+                        entry_id: vec for (entry_id, _), vec in zip(keyed, key_vecs, strict=True)
+                    }
+                for entry, content_vec in zip(entries, content_vecs, strict=True):
+                    assert entry.id is not None
+                    self.db.memories.set_entry_embeddings(
+                        entry.id,
+                        key_embedding=key_vec_by_id.get(entry.id),
+                        content_embedding=content_vec,
+                    )
+                total += len(entries)
+            except LlmError as e:
+                logger.warning("Startup embedding backfill failed for memory entries: %s", e)
+                break
+        return total
+
     async def run(self) -> None:
         """Run the agent."""
         logger.info("Starting Penny AI agent...")
@@ -377,6 +416,9 @@ class Penny:
             total_prefs = await self._backfill_preference_embeddings(batch_limit)
             if total_prefs:
                 logger.info("Startup embedding backfill complete: %d preferences", total_prefs)
+            total_entries = await self._backfill_memory_embeddings(batch_limit)
+            if total_entries:
+                logger.info("Startup embedding backfill complete: %d memory entries", total_entries)
 
         await self._send_startup_announcement()
         await self._prompt_for_missing_profiles()

@@ -334,6 +334,55 @@ class MemoryStore:
             session.commit()
         self._notify_changed(name)
 
+    # ── Embedding backfill ──────────────────────────────────────────────────
+
+    def get_entries_without_embeddings(self, limit: int) -> list[MemoryEntry]:
+        """Entries missing a content embedding that are worth embedding.
+
+        Scoped to non-archived memories whose ``recall`` is not ``off``:
+        a ``recall=off`` memory (e.g. ``collector-runs``) never surfaces via
+        similarity and is never probed by ``read_similar``, so embedding its
+        entries is pure waste — and there can be tens of thousands of them.
+        Entries reachable by relevant-recall or ``read_similar`` (skills,
+        ``user-messages``, etc.) are the ones that actually need vectors.
+
+        Newest first, so the most recall-relevant rows embed first when the
+        backfill is batched.
+        """
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MemoryEntry)
+                    .join(Memory)  # FK memory_entry.memory_name → memory.name
+                    .where(
+                        MemoryEntry.content_embedding == None,  # noqa: E711
+                        Memory.archived == False,  # noqa: E712
+                        Memory.recall != RecallMode.OFF.value,
+                    )
+                    .order_by(MemoryEntry.created_at.desc())  # type: ignore[union-attr]
+                    .limit(limit)
+                ).all()
+            )
+
+    def set_entry_embeddings(
+        self,
+        entry_id: int,
+        *,
+        key_embedding: list[float] | None,
+        content_embedding: list[float] | None,
+    ) -> None:
+        """Persist computed embeddings on an existing entry (backfill path)."""
+        with self._session() as session:
+            entry = session.get(MemoryEntry, entry_id)
+            if entry is None:
+                return
+            if key_embedding is not None:
+                entry.key_embedding = _maybe_serialize(key_embedding)
+            if content_embedding is not None:
+                entry.content_embedding = _maybe_serialize(content_embedding)
+            session.add(entry)
+            session.commit()
+
     # ── Collection writes ───────────────────────────────────────────────────
 
     def write(
