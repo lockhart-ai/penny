@@ -203,6 +203,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
   - `knowledge` — summarize web pages from `browse-results` (300s)
   - `unnotified-thoughts` — inner monologue, picks a random like and drafts a thought (1200s)
   - `notified-thoughts` — picks an unnotified thought, calls `send_message`, moves the entry into its own collection (300s)
+  - `skills` — workflow patterns the chat agent follows (TRIGGER + STEPS entries surfaced via recall); its collector extracts/refines/removes skills from chat as the user teaches Penny new behavior (21600s)
 - User-defined collections created via chat (`/collection_create` with an `extraction_prompt`) are picked up automatically on the next tick — no restart required.
 - Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done.
 - Cadence: `COLLECTOR_TICK_INTERVAL` (default 30s, idle-gated) drives the dispatcher; per-collection `collector_interval_seconds` controls each collection's pacing within that.
@@ -418,6 +419,8 @@ Notable migrations:
 - 0027: Backfill memory framework from existing tables — `messagelog` → user/penny logs, `preference` → likes/dislikes, `thought` → notified/unnotified-thoughts, `knowledge` → knowledge collection (Stage 10)
 - 0028: Disable ambient recall for `penny-messages` — duplicates the conversation turns array
 - 0029: Re-enable ambient recall for `penny-messages` — chat-turn duplication is now handled by the self-match exclusion (#1006) and short-anchor noise by the low-info filter, so historical Penny replies should surface again
+- 0030–0042: extraction-prompt fixes and incremental collector/collection tweaks (see individual files)
+- 0043: Seed the `skills` collection — workflow patterns (TRIGGER + STEPS) the chat agent follows via recall, plus a collector that extracts/refines/removes skills from chat over time
 
 ## Extending
 

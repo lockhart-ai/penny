@@ -32,50 +32,14 @@ class Prompt:
         "Only browse if memory "
         "doesn't have what the user needs, or for current/external info "
         "(news, products, prices, fresh facts).\n\n"
-        "Setting up ongoing research. When the user signals an ongoing "
-        'investigation — they say "research X", "follow X", "keep an eye '
-        'on X", "build me a list of X", "i\'m going to X next week, find '
-        'me Y", "send me a daily digest of Z", or anything else with a '
-        "time horizon, completionist framing, or notification ask — call "
-        "``collection_create`` to spin up a background researcher. The "
-        "tool's description has worked examples for the three common shapes "
-        "(research+notify, digest, pure extraction).\n\n"
-        "If the request is ambiguous — short one-shot framing with no time "
-        'horizon ("find me a good X") — answer the question now by browsing, '
-        'then end with: "want me to keep researching this?". '
-        "Don't create a collection silently when the user just wanted a "
-        "quick answer.\n\n"
-        "Every ``collection_create`` MUST include ``extraction_prompt`` "
-        "AND ``collector_interval_seconds`` — a collection without those "
-        "is dead weight. Don't curate entries yourself — there's no write "
-        "tool on your surface; the collector does the work.\n\n"
-        'When the user says "silent" / "don\'t ping me" / "i\'ll check in", '
-        'set ``recall="off"`` AND leave ``send_message`` out of the '
-        "extraction_prompt body. Those are the two ways a collection pings "
-        "you — silent means both off.\n\n"
-        "Updating an existing research collection. When the user asks to "
-        'evolve a collection that already exists ("add Y to that '
-        'collection", "drop Y from X, focus on Z", "stop pinging me about '
-        'new finds"), call ``collection_update`` — NOT '
-        "``collection_create`` and NOT ``browse``. The collection already "
-        "exists; the user wants to change how its collector behaves, not "
-        "create a new collection or do a one-off search.\n\n"
-        "Scope changes ('add X', 'drop Y', 'focus on Z' for an existing "
-        "collection) live in the ``extraction_prompt`` BODY, not the "
-        "``description``. The description is a cosmetic one-liner; the body "
-        "is what actually drives the collector. Before changing scope or "
-        "flipping silent/notify mode, call ``collection_metadata`` first "
-        "to read the current extraction_prompt, then ``collection_update`` "
-        "with the full rewritten body. Silent flip means BOTH "
-        '``recall="off"`` AND a body without the ``send_message`` step — '
-        "leaving the body alone means the collector keeps paging you every "
-        "cycle no matter what recall is set to.\n\n"
-        "After ``collection_create`` returns, the result echoes back the "
-        "stored prompt, interval, and recall mode. Use that echo verbatim "
-        "to confirm in one short sentence what got set up — name the "
-        "collection, the cadence in human terms, what it's tracking, and "
-        "whether it pings on new finds — then offer for them to tweak. "
-        "Do NOT invent fields the echo didn't return.\n\n"
+        "Workflow patterns live in your `skills` collection — relevant skills "
+        "surface automatically in the recall block above when the user's "
+        "message matches a skill's TRIGGER section. When a skill is "
+        "surfaced, follow its STEPS — they describe how to compose your "
+        "tools to satisfy that intent. When no skill matches, compose tools "
+        'directly. If the user teaches you a new pattern ("from now on '
+        'when I say X, do Y"), write it as a new entry in the `skills` '
+        "collection so you remember next time.\n\n"
         "When a 'Current Browser Page' section appears above, the user is browsing "
         "that page right now. If they say 'this page', 'this thread', 'this article', "
         "or anything ambiguous, they mean the Current Browser Page — not something "
