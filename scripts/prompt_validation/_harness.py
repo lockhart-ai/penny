@@ -67,6 +67,71 @@ def penny_identity() -> str:
     return class_attr(PENNY_PKG / "prompts.py", "Prompt", "PENNY_IDENTITY")
 
 
+_RECALL_MODE_VALUES = ["off", "recent", "relevant", "all"]
+
+
+class _FakeRecallMode:
+    """Iterable stub so ``[m.value for m in RecallMode]`` evals at load time."""
+
+    def __iter__(self):
+        from collections import namedtuple
+
+        rm = namedtuple("RM", ["value"])
+        return iter(rm(v) for v in _RECALL_MODE_VALUES)
+
+
+def load_tool(class_name: str) -> dict:
+    """Build the OpenAI tool dict for a memory_tools Tool subclass from source.
+
+    Reads the real ``name`` / ``description`` / ``parameters`` so suites test
+    the production tool surface, not a hand-copied paraphrase.
+    """
+    path = PENNY_PKG / "tools" / "memory_tools.py"
+    globs = {"_RECALL_MODES": ", ".join(_RECALL_MODE_VALUES), "RecallMode": _FakeRecallMode()}
+    return {
+        "type": "function",
+        "function": {
+            "name": class_attr(path, class_name, "name", globs),
+            "description": class_attr(path, class_name, "description", globs),
+            "parameters": class_attr(path, class_name, "parameters", globs),
+        },
+    }
+
+
+def browse_tool() -> dict:
+    """Minimal browse tool (production's is dynamic; this matches its shape)."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "browse",
+            "description": "Look things up. Pass up to 3 queries and/or URLs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {"type": "string"},
+                    "queries": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+                },
+                "required": ["queries"],
+            },
+        },
+    }
+
+
+def render_skills_recall(seed_skills: list[tuple[str, str]]) -> str:
+    """Render seed skills as a recall block (mirrors chat.py:_format_recall_section).
+
+    Injects all skills — the harness isolates skill *followability* from
+    *retrievability*; production embedding recall surfaces the matching subset.
+    """
+    lines = ["## Recall context", "", "### skills",
+             "Workflow patterns — how to compose tools to satisfy user intents"]
+    for key, content in seed_skills:
+        lines.append("")
+        lines.append(f"#### [{key}] · 2026-06-01 00:00")
+        lines.append(content.rstrip())
+    return "\n".join(lines)
+
+
 def load_seed_skills() -> tuple[list[tuple[str, str]], str]:
     """Load (SEED_SKILLS, SKILLS_EXTRACTION_PROMPT) from the seed migration.
 
@@ -159,15 +224,92 @@ class Harness:
 
 
 def extract_tool_calls(msg: Any) -> list[dict]:
-    """Normalize a message's tool calls into [{name, args}]."""
+    """Normalize a message's tool calls into [{name, args, id}]."""
     out = []
     for tc in getattr(msg, "tool_calls", None) or []:
         try:
             args = json.loads(tc.function.arguments)
         except Exception:
             args = {"_unparseable": tc.function.arguments}
-        out.append({"name": tc.function.name, "args": args})
+        out.append({"name": tc.function.name, "args": args, "id": tc.id})
     return out
+
+
+@dataclass
+class Conversation:
+    """Outcome of a multi-turn agentic run."""
+
+    turns: list[dict]  # [{calls: [{name,args}], text}]
+    terminal_call: dict | None  # first {name, args} the model committed to
+    final_text: str
+
+    def all_calls(self) -> list[dict]:
+        return [c for t in self.turns for c in t["calls"]]
+
+
+# Sentinel: a tool_result function returns this to mark a call terminal
+# (the harness captures it and stops the loop, as production would hand
+# off to the real side-effecting tool).
+TERMINAL = object()
+
+
+def converse(
+    h: Harness,
+    system: str,
+    user_msg: str,
+    tools: list[dict],
+    tool_result: Callable[[str, dict], Any],
+    max_steps: int = 6,
+) -> Conversation:
+    """Run the agentic loop, serving synthetic results for read-style tool
+    calls and stopping at the first terminal call.
+
+    ``tool_result(name, args)`` returns a string (a synthetic tool result —
+    the loop continues) or the ``TERMINAL`` sentinel (capture the call and
+    stop).  A plain text reply with no tool calls also stops the loop.
+    """
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_msg},
+    ]
+    turns: list[dict] = []
+    terminal_call: dict | None = None
+    final_text = ""
+
+    for _ in range(max_steps):
+        msg = h.chat(messages, tools=tools)
+        calls = extract_tool_calls(msg)
+        text = msg.content or ""
+        turns.append({"calls": [{"name": c["name"], "args": c["args"]} for c in calls], "text": text})
+
+        if not calls:
+            final_text = text
+            break
+
+        # Is any call terminal?
+        terminal = next((c for c in calls if tool_result(c["name"], c["args"]) is TERMINAL), None)
+        if terminal is not None:
+            terminal_call = {"name": terminal["name"], "args": terminal["args"]}
+            break
+
+        # All read-style: serve synthetic results and continue.
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
+                for c in calls
+            ],
+        })
+        for c in calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": c["id"],
+                "content": str(tool_result(c["name"], c["args"])),
+            })
+
+    return Conversation(turns, terminal_call, final_text)
 
 
 # ── Reporting ───────────────────────────────────────────────────────────────

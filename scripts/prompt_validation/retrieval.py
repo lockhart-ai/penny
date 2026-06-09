@@ -26,8 +26,10 @@ import re
 
 from similarity.embeddings import cosine_similarity
 
-from scripts.prompt_validation._harness import Harness, load_seed_skills
+from scripts.prompt_validation._harness import CaseResult, Harness, load_seed_skills
 from scripts.prompt_validation.fixtures import MESSAGES, SYNTH_COLLECTIONS
+
+NAME = "retrieval"
 
 RECALL_LIMIT = 5  # mirrors production RECALL_LIMIT
 STAGE1_THRESHOLD = 0.40  # description-anchor inclusion gate
@@ -92,6 +94,46 @@ def hybrid_rank(
     cos_rank = sorted(docs, key=lambda d: -max_cos(anchor_vecs, d[2]))
     lex_rank = sorted(docs, key=lambda d: -lexical(qt, toks(d[1]), idf_map))
     return rrf([[d[0] for d in cos_rank], [d[0] for d in lex_rank]])
+
+
+def run(h: Harness, samples: int = 1, only: str | None = None) -> list[CaseResult]:
+    """Registry entry point. Embeddings are deterministic, so ``samples`` is
+    ignored (single pass). Returns one CaseResult per message covering both
+    the stage-1 routing and the stage-2 skill-surfacing checks."""
+    seed_skills, _ = load_seed_skills()
+    skill_vecs = h.embed([f"{k}\n{c}" for k, c in seed_skills])
+    skill_docs = [(k, f"{k}\n{c}", v) for (k, c), v in zip(seed_skills, skill_vecs)]
+    desc_vecs = {c.name: v for c, v in zip(
+        SYNTH_COLLECTIONS, h.embed([c.description for c in SYNTH_COLLECTIONS]))}
+
+    results: list[CaseResult] = []
+    for msg in MESSAGES:
+        if only and only != msg.id:
+            continue
+        fails: list[str] = []
+        anchor_text = " ".join([*msg.history, msg.text])
+        anchor_vecs = h.embed([msg.text, *msg.history])
+
+        included = set()
+        for col in SYNTH_COLLECTIONS:
+            if col.inclusion == "always":
+                included.add(col.name)
+            elif col.inclusion == "relevant" and max_cos(anchor_vecs, desc_vecs[col.name]) >= STAGE1_THRESHOLD:
+                included.add(col.name)
+        for exp in msg.collections:
+            if exp not in included:
+                fails.append(f"routing: expected '{exp}' included")
+        for col in SYNTH_COLLECTIONS:
+            if col.inclusion == "relevant" and col.name not in msg.collections and col.name in included:
+                fails.append(f"routing: '{col.name}' should have dropped")
+
+        if msg.skill is not None:
+            ranked = hybrid_rank(anchor_text, anchor_vecs, skill_docs)[:RECALL_LIMIT]
+            if msg.skill not in ranked:
+                fails.append(f"skill '{msg.skill}' not in top-{RECALL_LIMIT}")
+
+        results.append(CaseResult(f"{NAME}:{msg.id}", not fails, fails))
+    return results
 
 
 def main() -> None:
