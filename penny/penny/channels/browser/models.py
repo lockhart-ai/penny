@@ -225,7 +225,8 @@ class MemoryRecord(BaseModel):
     name: str
     type: str  # "collection" | "log"
     description: str
-    recall: str  # "off" | "recent" | "relevant" | "all"
+    inclusion: str  # "always" | "relevant" | "never" — stage-1 routing
+    recall: str  # "all" | "relevant" | "recent" — stage-2 entry rendering
     archived: bool
     extraction_prompt: str | None
     collector_interval_seconds: int | None

@@ -21,10 +21,8 @@ Run from repo root::
 """
 from __future__ import annotations
 
-import math
-import re
-
 from similarity.embeddings import cosine_similarity
+from similarity.lexical import idf, lexical_coverage, reciprocal_rank_fusion, tokens
 
 from scripts.prompt_validation._harness import CaseResult, Harness, load_seed_skills
 from scripts.prompt_validation.fixtures import MESSAGES, SYNTH_COLLECTIONS
@@ -33,44 +31,6 @@ NAME = "retrieval"
 
 RECALL_LIMIT = 5  # mirrors production RECALL_LIMIT
 STAGE1_THRESHOLD = 0.40  # description-anchor inclusion gate
-
-_STOP = set(
-    "a an the of to for and or but in on at is are be can you i me my we it that this with "
-    "what how do does some more new when find tell them they about your please get got go "
-    "going want need know see if then there here was were has have had will would should "
-    "could just back into out up so it's i'm ya".split()
-)
-
-
-def toks(text: str) -> set[str]:
-    return {t for t in re.sub(r"[^a-z0-9 ]", " ", text.lower()).split() if t not in _STOP and len(t) > 2}
-
-
-def idf(token_sets: list[set[str]]) -> dict[str, float]:
-    n = len(token_sets)
-    df: dict[str, int] = {}
-    for s in token_sets:
-        for t in s:
-            df[t] = df.get(t, 0) + 1
-    return {t: math.log((n + 1) / (c + 0.5)) for t, c in df.items()}
-
-
-def lexical(query_toks: set[str], doc_toks: set[str], idf_map: dict[str, float]) -> float:
-    """IDF-weighted fraction of the query's distinctive tokens present in doc."""
-    if not query_toks:
-        return 0.0
-    den = sum(idf_map.get(t, 0.5) for t in query_toks)
-    num = sum(idf_map.get(t, 0.5) for t in query_toks if t in doc_toks)
-    return num / den if den else 0.0
-
-
-def rrf(rankings: list[list[str]], k: int = 60) -> list[str]:
-    """Reciprocal-rank fusion of several ranked key lists."""
-    score: dict[str, float] = {}
-    for ranking in rankings:
-        for rank, key in enumerate(ranking):
-            score[key] = score.get(key, 0.0) + 1.0 / (k + rank)
-    return sorted(score, key=lambda x: -score[x])
 
 
 def max_cos(anchor_vecs: list[list[float]], vec: list[float]) -> float:
@@ -88,12 +48,19 @@ def hybrid_rank(
     anchor_vecs: list[list[float]],
     docs: list[tuple[str, str, list[float]]],  # (key, text, vec)
 ) -> list[str]:
-    """Rank doc keys by RRF of (best-anchor cosine) and IDF-lexical."""
-    qt = toks(query_text)
-    idf_map = idf([toks(text) for _, text, _ in docs])
+    """Rank doc keys by RRF of (best-anchor cosine) and IDF-lexical.
+
+    Uses the same ``similarity.lexical`` primitives production composes in
+    ``MemoryStore._rank_hybrid`` — the harness validates the real scoring
+    code, not a parallel reimplementation.
+    """
+    query_tokens = tokens(query_text)
+    idf_map = idf([tokens(text) for _, text, _ in docs])
     cos_rank = sorted(docs, key=lambda d: -max_cos(anchor_vecs, d[2]))
-    lex_rank = sorted(docs, key=lambda d: -lexical(qt, toks(d[1]), idf_map))
-    return rrf([[d[0] for d in cos_rank], [d[0] for d in lex_rank]])
+    lex_rank = sorted(
+        docs, key=lambda d: -lexical_coverage(query_tokens, tokens(d[1]), idf_map)
+    )
+    return reciprocal_rank_fusion([[d[0] for d in cos_rank], [d[0] for d in lex_rank]])
 
 
 def run(h: Harness, samples: int = 1, only: str | None = None) -> list[CaseResult]:

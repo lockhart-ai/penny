@@ -500,6 +500,7 @@ class BrowserChannel(MessageChannel):
             name=memory.name,
             type=memory.type,
             description=memory.description,
+            inclusion=memory.inclusion,
             recall=memory.recall,
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,

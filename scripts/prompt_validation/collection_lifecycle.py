@@ -60,7 +60,8 @@ _BG_RECALL = "## Recall context (existing collection)\n\n### board-games\n" + _B
 )
 _BG_METADATA = (
     f"name: board-games\ntype: collection\ndescription: {_BG.description}\n"
-    f"recall: relevant\narchived: False\ninterval: 3600s\nextraction prompt: {_BG_PROMPT}"
+    f"inclusion: relevant\nrecall: relevant\narchived: False\ninterval: 3600s\n"
+    f"extraction prompt: {_BG_PROMPT}"
 )
 
 SYSTEM_BASE = f"{penny_identity()}\n\n{SKILLS_RECALL}\n\n{conversation_prompt()}"
@@ -80,7 +81,8 @@ def _serve(name: str, args: dict):
         a = args
         return (
             f"Created collection '{a.get('name')}':\n  interval: {a.get('collector_interval_seconds')}s\n"
-            f"  recall: {a.get('recall')}\n  description: {a.get('description', '')}\n"
+            f"  inclusion: {a.get('inclusion')}\n  recall: {a.get('recall')}\n"
+            f"  description: {a.get('description', '')}\n"
             f"  extraction_prompt: {a.get('extraction_prompt', '')[:200]}"
         )
     if name == "collection_update":
@@ -98,10 +100,25 @@ def _call(conv: Conversation, name: str) -> dict | None:
 
 # ── Scorers ─────────────────────────────────────────────────────────────────
 
-_REQ_CREATE = {"name", "description", "recall", "extraction_prompt", "collector_interval_seconds"}
+_REQ_CREATE = {
+    "name",
+    "description",
+    "inclusion",
+    "recall",
+    "extraction_prompt",
+    "collector_interval_seconds",
+}
 
 
-def _score_create(conv: Conversation, *, recall: str, send_message: bool, interval: int | None) -> list[str]:
+def _score_create(
+    conv: Conversation, *, inclusion: str, send_message: bool, interval: int | None
+) -> list[str]:
+    """Score a create against the two-flag surface.
+
+    ``inclusion`` is the load-bearing routing expectation (silent =
+    ``never``).  ``recall`` is not asserted — for the create flows any
+    valid entry mode is acceptable and the enum schema constrains it.
+    """
     f = []
     a = _call(conv, "collection_create")
     if a is None:
@@ -109,8 +126,8 @@ def _score_create(conv: Conversation, *, recall: str, send_message: bool, interv
     missing = _REQ_CREATE - set(a.keys())
     if missing:
         f.append(f"missing fields: {sorted(missing)}")
-    if a.get("recall") != recall:
-        f.append(f"recall expected {recall!r}, got {a.get('recall')!r}")
+    if a.get("inclusion") != inclusion:
+        f.append(f"inclusion expected {inclusion!r}, got {a.get('inclusion')!r}")
     body = (a.get("extraction_prompt") or "").lower()
     if "browse" not in body:
         f.append("body missing browse step")
@@ -124,7 +141,7 @@ def _score_create(conv: Conversation, *, recall: str, send_message: bool, interv
 
 
 def _score_update(conv: Conversation, *, added: tuple[str, ...] | None = None,
-                  removed: str | None = None, recall: str | None = None,
+                  removed: str | None = None, inclusion: str | None = None,
                   interval: int | None = None, body_required: bool = True) -> list[str]:
     f = []
     a = _call(conv, "collection_update")
@@ -140,9 +157,9 @@ def _score_update(conv: Conversation, *, added: tuple[str, ...] | None = None,
         f.append(f"body missing added scope (any of {added})")
     if removed and removed.lower() in body.lower():
         f.append(f"body still has removed scope {removed!r}")
-    if recall and a.get("recall") != recall:
-        f.append(f"recall expected {recall!r}, got {a.get('recall')!r}")
-    if recall == "off" and "send_message" in body.lower():
+    if inclusion and a.get("inclusion") != inclusion:
+        f.append(f"inclusion expected {inclusion!r}, got {a.get('inclusion')!r}")
+    if inclusion == "never" and "send_message" in body.lower():
         f.append("silent flip but body still has send_message")
     if interval is not None and a.get("collector_interval_seconds") != interval:
         f.append(f"interval expected {interval}, got {a.get('collector_interval_seconds')}")
@@ -183,16 +200,16 @@ def _score_no_create(conv: Conversation, want_browse: bool) -> list[str]:
 CASES = [
     ("create-notify", SYSTEM_BASE,
      "research heavier euro-style strategy board games for me, ping me when you find good ones",
-     lambda c: _score_create(c, recall="relevant", send_message=True, interval=None)),
+     lambda c: _score_create(c, inclusion="relevant", send_message=True, interval=None)),
     ("create-silent", SYSTEM_BASE,
      "research fountain pens and inks for me — silent, i'll check the list myself",
-     lambda c: _score_create(c, recall="off", send_message=False, interval=None)),
+     lambda c: _score_create(c, inclusion="never", send_message=False, interval=None)),
     ("create-digest", SYSTEM_BASE,
      "research indie game releases for me — check hourly, send me a digest at 6pm",
-     lambda c: _score_create(c, recall="relevant", send_message=True, interval=None)),
+     lambda c: _score_create(c, inclusion="relevant", send_message=True, interval=None)),
     ("create-cadence", SYSTEM_BASE,
      "research new sci-fi novels for me, check daily, ping me when good ones land",
-     lambda c: _score_create(c, recall="relevant", send_message=True, interval=86400)),
+     lambda c: _score_create(c, inclusion="relevant", send_message=True, interval=86400)),
     ("update-add-scope", SYSTEM_WITH_BG,
      "add solo/co-op board games to the board games collection too",
      lambda c: _score_update(c, added=("solo", "co-op", "cooperative"))),
@@ -202,7 +219,7 @@ CASES = [
                              removed="party")),
     ("update-silent-flip", SYSTEM_WITH_BG,
      "stop pinging me about new board game finds, i'll just check the collection myself",
-     lambda c: _score_update(c, recall="off")),
+     lambda c: _score_update(c, inclusion="never")),
     ("update-cadence", SYSTEM_WITH_BG,
      "check the board games collection every 30 minutes instead",
      lambda c: _score_update(c, interval=1800, body_required=False)),

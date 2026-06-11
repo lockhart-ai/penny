@@ -67,17 +67,24 @@ def penny_identity() -> str:
     return class_attr(PENNY_PKG / "prompts.py", "Prompt", "PENNY_IDENTITY")
 
 
-_RECALL_MODE_VALUES = ["off", "recent", "relevant", "all"]
+# Mirror the two production enums (memory_store.Inclusion / RecallMode) so
+# the tool descriptions' f-strings and ``[m.value for m in ...]`` enum
+# comprehensions evaluate at load time without importing the penny package.
+_INCLUSION_VALUES = ["always", "relevant", "never"]
+_RECALL_MODE_VALUES = ["recent", "relevant", "all"]
 
 
-class _FakeRecallMode:
-    """Iterable stub so ``[m.value for m in RecallMode]`` evals at load time."""
+class _FakeEnum:
+    """Iterable stub so ``[m.value for m in SomeEnum]`` evals at load time."""
+
+    def __init__(self, values: list[str]):
+        self._values = values
 
     def __iter__(self):
         from collections import namedtuple
 
-        rm = namedtuple("RM", ["value"])
-        return iter(rm(v) for v in _RECALL_MODE_VALUES)
+        member = namedtuple("Member", ["value"])
+        return iter(member(v) for v in self._values)
 
 
 def load_tool(class_name: str) -> dict:
@@ -87,7 +94,12 @@ def load_tool(class_name: str) -> dict:
     the production tool surface, not a hand-copied paraphrase.
     """
     path = PENNY_PKG / "tools" / "memory_tools.py"
-    globs = {"_RECALL_MODES": ", ".join(_RECALL_MODE_VALUES), "RecallMode": _FakeRecallMode()}
+    globs = {
+        "_INCLUSION_MODES": ", ".join(_INCLUSION_VALUES),
+        "_RECALL_MODES": ", ".join(_RECALL_MODE_VALUES),
+        "Inclusion": _FakeEnum(_INCLUSION_VALUES),
+        "RecallMode": _FakeEnum(_RECALL_MODE_VALUES),
+    }
     return {
         "type": "function",
         "function": {
@@ -132,18 +144,30 @@ def render_skills_recall(seed_skills: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def load_seed_skills() -> tuple[list[tuple[str, str]], str]:
-    """Load (SEED_SKILLS, SKILLS_EXTRACTION_PROMPT) from the seed migration.
-
-    Imports the migration module directly — it's pure data with no DB
-    side effects at import time.
-    """
-    path = PENNY_PKG / "database" / "migrations" / "0043_seed_skills_collection.py"
-    spec = importlib.util.spec_from_file_location("_seed_skills", path)
+def _load_migration_module(filename: str):
+    """Import a migration module directly — pure data, no DB side effects."""
+    path = PENNY_PKG / "database" / "migrations" / filename
+    spec = importlib.util.spec_from_file_location(f"_mig_{filename[:4]}", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.SEED_SKILLS, mod.SKILLS_EXTRACTION_PROMPT
+    return mod
+
+
+def load_seed_skills() -> tuple[list[tuple[str, str]], str]:
+    """Load (SEED_SKILLS, SKILLS_EXTRACTION_PROMPT) at their migrated end-state.
+
+    0043 seeds the skills; 0045 rewrites several for the inclusion/recall
+    split.  Overlaying the 0045 replacements reproduces what a fully
+    migrated database contains, so suites test the skills production
+    actually serves — not the original seed text.
+    """
+    seed_mod = _load_migration_module("0043_seed_skills_collection.py")
+    fix_mod = _load_migration_module("0045_update_skills_for_inclusion_split.py")
+    skills = [
+        (key, fix_mod.REPLACEMENTS.get(key, content)) for key, content in seed_mod.SEED_SKILLS
+    ]
+    return skills, seed_mod.SKILLS_EXTRACTION_PROMPT
 
 
 # ── LLM access (Ollama via OpenAI-compatible endpoint) ──────────────────────

@@ -287,7 +287,10 @@ export interface MemoryRecord {
   name: string;
   type: "collection" | "log";
   description: string;
-  recall: "off" | "recent" | "relevant" | "all";
+  /** Stage-1 routing: does this memory participate in recall at all. */
+  inclusion: "always" | "relevant" | "never";
+  /** Stage-2 entry rendering once included. */
+  recall: "all" | "relevant" | "recent";
   archived: boolean;
   extraction_prompt: string | null;
   collector_interval_seconds: number | null;
