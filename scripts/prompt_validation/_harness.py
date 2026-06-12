@@ -310,13 +310,18 @@ def converse(
             final_text = text
             break
 
-        # Is any call terminal?
-        terminal = next((c for c in calls if tool_result(c["name"], c["args"]) is TERMINAL), None)
+        # Serve each call exactly ONCE — stateful tool_result functions
+        # (dedup sets, served-page flags) break if invoked twice per call,
+        # because the model sees the SECOND invocation's value.  This bug
+        # silently fed repeat-rejections instead of pages to every suite
+        # case with a stateful serve, invalidating their measurements.
+        served = [(c, tool_result(c["name"], c["args"])) for c in calls]
+        terminal = next((c for c, result in served if result is TERMINAL), None)
         if terminal is not None:
             terminal_call = {"name": terminal["name"], "args": terminal["args"]}
             break
 
-        # All read-style: serve synthetic results and continue.
+        # All read-style: append the served results and continue.
         messages.append({
             "role": "assistant",
             "content": msg.content,
@@ -326,11 +331,11 @@ def converse(
                 for c in calls
             ],
         })
-        for c in calls:
+        for c, result in served:
             messages.append({
                 "role": "tool",
                 "tool_call_id": c["id"],
-                "content": str(tool_result(c["name"], c["args"])),
+                "content": str(result),
             })
 
     return Conversation(turns, terminal_call, final_text)
