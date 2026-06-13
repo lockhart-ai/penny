@@ -749,11 +749,19 @@ class Agent:
         immediately and the underlying ``BrowseTool``'s author + cursor
         identity match the agent's current ``name``.
         """
+        scope = self._memory_scope()
+        # Key the memory tools (read cursors + entry author) on the bound
+        # collection, not the constant agent identity.  The Collector drives
+        # every collection under one ``name`` ("collector"), so keying on
+        # ``self.name`` collapsed all collections that read the same log onto
+        # a single shared cursor — whichever ran first consumed the new
+        # entries and starved the rest.  ``scope`` is the bound collection for
+        # collectors and None for chat/schedule agents (which keep self.name).
         tools: list[Tool] = build_memory_tools(
             self.db,
             self._embedding_model_client,
-            agent_name=self.name,
-            scope=self._memory_scope(),
+            agent_name=scope or self.name,
+            scope=scope,
         )
         tools.append(self._build_browse_tool(author=self.name))
         return tools
@@ -870,14 +878,24 @@ class Agent:
         records: list[ToolCallRecord],
         source_urls: list[str],
     ) -> None:
-        """Append each tool result to messages and accumulate records/urls."""
-        for (tool_call_id, _, _, _), (result_str, record, urls) in zip(
+        """Append each tool result to messages and accumulate records/urls.
+
+        Frames the model-facing content via ``Tool.format_result`` so every
+        result is unmistakably the response to the model's own call.  Framing
+        happens here, not in ``_execute_single_tool``, so ``record.failed``
+        (computed on the raw string by ``startswith`` checks) is unaffected.
+        """
+        for (tool_call_id, tool_name, _, _), (result_str, record, urls) in zip(
             pending, results, strict=True
         ):
             records.append(record)
             source_urls.extend(urls)
             messages.append(
-                {"role": MessageRole.TOOL, "content": result_str, "tool_call_id": tool_call_id}
+                {
+                    "role": MessageRole.TOOL,
+                    "content": Tool.format_result(tool_name, result_str),
+                    "tool_call_id": tool_call_id,
+                }
             )
 
     async def _execute_single_tool(

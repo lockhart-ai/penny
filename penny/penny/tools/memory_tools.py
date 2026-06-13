@@ -73,20 +73,36 @@ EXTRACTION_PROMPT_MIN_CHARS = 25
 # ── Shared formatting ───────────────────────────────────────────────────────
 
 
-def _format_entries(entries: list[MemoryEntry]) -> str:
-    """Render a list of entries as a bulleted string the model can read.
+def _format_entries(
+    entries: list[MemoryEntry],
+    *,
+    source: str | None = None,
+    ordering: str | None = None,
+) -> str:
+    """Render a list of entries as a numbered string the model can read.
 
-    Keyed entries (collection) include the key; keyless entries (log) show
-    just content. Empty lists produce a clear "no entries" sentinel so the
-    model doesn't confuse absence with error.
+    Leads with a ``N entries from `source` (ordering):`` header so the model
+    reads the body as *fetched data* rather than a fresh instruction — the
+    failure mode when a returned user message itself reads like a directive.
+    ``source`` is the memory name; ``ordering`` is a human hint ("oldest
+    first", "most relevant first") since the order differs per read tool and
+    matters when the model concatenates entries.  Keyed entries (collection)
+    include the key; keyless entries (log) show just content.  Empty lists
+    produce a clear "no entries" sentinel so the model doesn't confuse
+    absence with error.
     """
     if not entries:
         return "(no entries)"
     lines = []
-    for entry in entries:
+    for index, entry in enumerate(entries, start=1):
         prefix = f"[{entry.key}] " if entry.key else ""
-        lines.append(f"- {prefix}{entry.content}")
-    return "\n".join(lines)
+        lines.append(f"{index}. {prefix}{entry.content}")
+    body = "\n".join(lines)
+    if source is None:
+        return body
+    noun = "entry" if len(entries) == 1 else "entries"
+    suffix = f" ({ordering})" if ordering else ""
+    return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
 def check_extraction_prompt(prompt: str | None) -> str | None:
@@ -405,7 +421,7 @@ class CollectionGetTool(Tool):
         rows = self._db.memories.get_entry(args.memory, args.key)
         if not rows:
             return f"Key '{args.key}' not found in '{args.memory}'."
-        return _format_entries(rows)
+        return _format_entries(rows, source=args.memory)
 
 
 class ReadLatestTool(Tool):
@@ -431,7 +447,7 @@ class ReadLatestTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         args = ReadLatestArgs(**kwargs)
         entries = self._db.memories.read_latest(args.memory, args.k)
-        return _format_entries(entries)
+        return _format_entries(entries, source=args.memory, ordering="most recent first")
 
 
 class CollectionReadRandomTool(Tool):
@@ -454,7 +470,7 @@ class CollectionReadRandomTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         args = ReadRandomArgs(**kwargs)
         entries = self._db.memories.read_random(args.memory, args.k)
-        return _format_entries(entries)
+        return _format_entries(entries, source=args.memory, ordering="random sample")
 
 
 class ReadSimilarTool(Tool):
@@ -494,7 +510,7 @@ class ReadSimilarTool(Tool):
             )
             return "(similarity search unavailable — no embedding model configured)"
         entries = self._db.memories.read_similar(args.memory, vec, args.k)
-        return _format_entries(entries)
+        return _format_entries(entries, source=args.memory, ordering="most relevant first")
 
 
 class CollectionKeysTool(Tool):
@@ -1026,7 +1042,7 @@ class LogReadRecentTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         args = ReadRecentArgs(**kwargs)
         entries = self._db.memories.read_recent(args.memory, args.window_seconds, args.cap)
-        return _format_entries(entries)
+        return _format_entries(entries, source=args.memory, ordering="oldest first")
 
 
 class LogReadNextTool(Tool):
@@ -1081,7 +1097,7 @@ class LogReadNextTool(Tool):
             prev = self._pending.get(args.memory)
             if prev is None or max_seen > prev:
                 self._pending[args.memory] = max_seen
-        return _format_entries(entries)
+        return _format_entries(entries, source=args.memory, ordering="oldest first")
 
     def commit_pending(self) -> None:
         """Persist the highest timestamp seen during this run as the new cursor.

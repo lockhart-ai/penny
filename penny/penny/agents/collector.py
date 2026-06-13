@@ -14,9 +14,12 @@ Dispatcher pattern (vs. one stateful agent per collection):
   - Hot-add for free — chat creates a new collection mid-session, the
     next dispatcher tick picks it up.
   - Per-collection cadence respected naturally via the readiness check.
-  - The agent_cursor table still partitions per (agent_name, memory_name),
-    so log read cursors stay correctly partitioned per collection even
-    though one agent identity (``"collector"``) drives all of them.
+  - Log read cursors partition per collection: ``get_tools`` keys the
+    memory tools on the bound collection name (``_memory_scope()``), not
+    the constant ``"collector"`` identity.  Keying on the identity would
+    collapse every collection that reads the same log (e.g. the many that
+    read ``user-messages``) onto one shared cursor — whichever ran first
+    would consume the new entries and starve the rest.
 """
 
 from __future__ import annotations

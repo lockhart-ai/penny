@@ -17,9 +17,10 @@ from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory_store import Inclusion, RecallMode
+from penny.database.memory_store import Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Memory
 from penny.llm.client import LlmClient
+from penny.tools.memory_tools import LogReadNextTool
 
 
 def _llm_client() -> LlmClient:
@@ -43,10 +44,52 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
 
 
 def test_collector_name_is_singular(test_config, tmp_path):
-    """One agent identity for all collections — cursors stay partitioned via
-    (agent_name, memory_name) on agent_cursor."""
+    """One agent identity ("collector") for promptlog/run tagging across all
+    collections.  Read cursors do NOT key on this name — they key on the bound
+    collection (see test_collector_cursors_partition_per_collection)."""
     collector, _ = _make_collector(test_config, tmp_path)
     assert collector.name == "collector"
+
+
+async def test_collector_cursors_partition_per_collection(test_config, tmp_path):
+    """Two collections reading the same log get independent cursors.
+
+    The dispatcher drives every collection under one ``name`` ("collector"),
+    so keying the cursor on the agent name collapsed all collections reading a
+    log onto one shared cursor — whichever ran first consumed the new entries
+    and starved the rest.  ``get_tools`` keys on the bound collection instead.
+    """
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_log("user-messages", "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.append(
+        "user-messages",
+        [LogEntryInput(content="hello there", content_embedding=None)],
+        author="user",
+    )
+
+    def _log_read_next_for(collection: str) -> LogReadNextTool:
+        db.memories.create_collection(collection, "d", Inclusion.NEVER, RecallMode.RECENT)
+        collector._current_target = db.memories.get(collection)
+        tool = next(t for t in collector.get_tools() if isinstance(t, LogReadNextTool))
+        collector._current_target = None
+        return tool
+
+    alpha = _log_read_next_for("alpha")
+    alpha_result = await alpha.execute(memory="user-messages")
+    assert "hello there" in alpha_result
+    # Framing: the read leads with a count + source header so the model reads
+    # the body as fetched data, not a fresh instruction.
+    assert "1 entry from `user-messages`" in alpha_result
+    alpha.commit_pending()  # advance alpha's cursor past the entry
+
+    beta = _log_read_next_for("beta")
+    assert "hello there" in await beta.execute(memory="user-messages"), (
+        "beta starved by alpha's cursor — collections share one cursor"
+    )
+
+    # Cursors key on the collection, never on the dispatcher identity.
+    assert db.cursors.get("alpha", "user-messages") is not None
+    assert db.cursors.get("collector", "user-messages") is None
 
 
 def test_dispatcher_returns_none_when_no_collections_have_prompts(test_config, tmp_path):

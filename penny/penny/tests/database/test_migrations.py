@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 48
+        assert count == 49
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 48
+        assert count1 == 49
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0048 run = 47 migrations
-        assert count == 47
+        # 0001 is skipped; 0002 through 0049 run = 48 migrations
+        assert count == 48
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 48  # all migrations applied
+        assert count == 49  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -496,3 +496,60 @@ class TestMigrate:
         }
         conn.close()
         assert "ix_promptlog_agent_run_timestamp" in indexes
+
+    def test_0049_partitions_cursors_per_collection(self, tmp_path):
+        """Migration 0049 seeds a per-collection cursor from the old shared
+        (collector, log) value and drops the dead dispatcher/legacy rows."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        conn.execute(
+            "CREATE TABLE agent_cursor (agent_name TEXT, memory_name TEXT, "
+            "last_read_at TEXT, updated_at TEXT, PRIMARY KEY (agent_name, memory_name))"
+        )
+        conn.execute(
+            "INSERT INTO memory (name, extraction_prompt) VALUES "
+            "('journal', 'log_read_next(\"user-messages\")'), "
+            "('likes', 'log_read_next(\"user-messages\")'), "
+            "('user-messages', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO agent_cursor VALUES "
+            "('collector', 'user-messages', '2026-06-13T00:00:00', '2026-06-13T00:00:00'), "
+            "('preference-extractor', 'user-messages', '2026-01-01', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0049_partition_collector_cursors_per_collection.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0049", migration_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        # Both collections that read user-messages get their own cursor at the
+        # old shared value — no re-processing of history on the next run.
+        for collection in ("journal", "likes"):
+            row = conn.execute(
+                "SELECT last_read_at FROM agent_cursor "
+                "WHERE agent_name = ? AND memory_name = 'user-messages'",
+                (collection,),
+            ).fetchone()
+            assert row is not None and row[0] == "2026-06-13T00:00:00"
+        # Dead rows are gone: the shared dispatcher row + the pre-dispatcher agent.
+        assert (
+            conn.execute(
+                "SELECT 1 FROM agent_cursor "
+                "WHERE agent_name IN ('collector', 'preference-extractor')"
+            ).fetchone()
+            is None
+        )
+        conn.close()

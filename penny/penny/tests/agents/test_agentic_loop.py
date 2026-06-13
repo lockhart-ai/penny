@@ -554,9 +554,15 @@ class TestAfterStepHook:
 
         await agent.run("test", max_steps=max_steps)
 
-        # 3 tool calls → exactly 3 entries, no duplicates from re-scanning history
+        # 3 tool calls → exactly 3 entries, no duplicates from re-scanning history.
+        # Each is wrapped by Tool.format_result so the model reads it as the
+        # response to its own call (the body is unchanged).
         assert len(agent._tool_result_text) == 3
-        assert agent._tool_result_text == ["result_A", "result_B", "result_C"]
+        assert agent._tool_result_text == [
+            "Result of your `search` call:\nresult_A",
+            "Result of your `search` call:\nresult_B",
+            "Result of your `search` call:\nresult_C",
+        ]
 
         await agent.close()
 
@@ -1108,7 +1114,9 @@ class TestEmptyContentAfterToolCalls:
             tool_messages = [m for m in messages if m.get("role") == "tool"]
             assert len(tool_messages) == 1
             content = tool_messages[0]["content"]
-            assert len(content) == 100_000
+            # Body passes through whole (the Tool.format_result frame adds a
+            # short header prefix, but the 100k payload is untouched).
+            assert large_result in content
             assert "[truncated]" not in content
             return mock_llm._make_text_response(request, "done")
 

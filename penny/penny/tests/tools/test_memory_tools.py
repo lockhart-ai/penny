@@ -502,7 +502,13 @@ class TestLogTools:
         await append.execute(memory="events", content="first")
         await append.execute(memory="events", content="second")
         rendered = await ReadLatestTool(db).execute(memory="events")
-        assert rendered.splitlines() == ["- second", "- first"]
+        # Leads with a count + source header so the model reads the body as
+        # fetched data; entries are numbered newest-first.
+        assert rendered.splitlines() == [
+            "2 entries from `events` (most recent first):",
+            "1. second",
+            "2. first",
+        ]
 
     @pytest.mark.asyncio
     async def test_read_recent_window(self, tmp_path, mock_llm):

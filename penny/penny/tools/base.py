@@ -62,6 +62,22 @@ class Tool(ABC):
         return tool_cls.to_action_str(arguments) if tool_cls else f"Using {tool_name}"
 
     @classmethod
+    def format_result(cls, tool_name: str, body: str) -> str:
+        """Frame a result so the model reads it as the response to ITS own call.
+
+        The OpenAI ``role: "tool"`` + ``tool_call_id`` envelope already marks
+        this as a tool result structurally, but smaller local models don't
+        reliably honour that primitive when the body reads like prose — they
+        can mistake fetched data (e.g. a returned user message) for a fresh
+        instruction directed at them.  A one-line content header naming the
+        originating tool removes the ambiguity uniformly, for every tool —
+        current and future — in one place, so this never has to be solved
+        per-tool again.  Read tools additionally lead their body with a
+        count + source line (see ``_format_entries``).
+        """
+        return f"Result of your `{tool_name}` call:\n{body}"
+
+    @classmethod
     def format_progress_emoji(cls, tool_name: str, arguments: dict) -> ProgressEmoji:
         """Dispatch to the matching tool's to_progress_emoji via the class registry."""
         tool_cls = cls._registry.get(tool_name)
