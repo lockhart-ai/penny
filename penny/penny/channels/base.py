@@ -451,24 +451,11 @@ class MessageChannel(ABC):
         """Check if the message is a thread reply to a slash command."""
         return bool(message.quoted_text and message.quoted_text.strip().startswith("/"))
 
-    def _is_thread_reply_to_test(self, message: IncomingMessage) -> bool:
-        """Check if the message is a thread reply to a test mode response."""
-        return bool(
-            message.quoted_text
-            and message.quoted_text.strip().startswith(PennyResponse.TEST_MODE_PREFIX)
-        )
-
     async def _reject_unsupported_thread(self, message: IncomingMessage) -> bool:
-        """Reject thread replies to commands or test mode. Returns True if rejected."""
+        """Reject thread replies to commands. Returns True if rejected."""
         if self._is_thread_reply_to_command(message):
             prepared = self.prepare_outgoing(PennyResponse.THREADING_NOT_SUPPORTED_COMMANDS)
             await self.send_message(message.sender, prepared, attachments=None, quote_message=None)
-            return True
-
-        if self._is_thread_reply_to_test(message):
-            await self.send_status_message(
-                message.sender, PennyResponse.THREADING_NOT_SUPPORTED_TEST
-            )
             return True
 
         return False

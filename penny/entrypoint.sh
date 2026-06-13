@@ -16,12 +16,5 @@ if [ "${SNAPSHOT:-0}" = "1" ] && [ -f "$PROD_DB" ]; then
     ls -t "$BACKUP_DIR"/penny.db.* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
 fi
 
-# Always create test database snapshot (needed by pytest)
-if [ -f "$PROD_DB" ]; then
-    TEST_DB="/penny/data/penny/penny-test.db"
-    echo "Creating test database snapshot: $TEST_DB"
-    cp "$PROD_DB" "$TEST_DB"
-fi
-
 # Execute the main command
 exec "$@"

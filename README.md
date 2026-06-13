@@ -70,14 +70,12 @@ Beyond regular conversation, Penny supports slash commands:
 - **/schedule** — set up recurring tasks (e.g., `/schedule daily 9am weather forecast`); uses LLM to parse natural-language timing
 - **/unschedule** — list and delete scheduled tasks
 - **/config** — view or tune runtime parameters (30+ values: scheduling intervals, notification backoff, dedup thresholds, email pagination limits, etc.)
-- **/debug** — show agent status, git commit, system info, background task state
 - **/mute**, **/unmute** — silence or resume autonomous notifications
 - **/draw** — generate images via a local model (requires `LLM_IMAGE_MODEL`)
 - **/email** — search your Fastmail inbox via JMAP (requires `FASTMAIL_API_TOKEN`)
 - **/zoho** — search your Zoho Mail inbox (requires `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`)
 - **/bug** — file a bug report on GitHub (requires GitHub App credentials)
 - **/feature** — file a feature request on GitHub (requires GitHub App credentials)
-- **/test** — enter isolated test mode (separate DB, fresh agents) for development
 
 ## Penny's Mind
 

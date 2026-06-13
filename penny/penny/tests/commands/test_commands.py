@@ -15,28 +15,29 @@ async def test_commands_list(signal_server, test_config, mock_llm, running_penny
         # Wait for response
         response = await signal_server.wait_for_message(timeout=5.0)
 
-        # Should list both commands
+        # Should list registered commands with their descriptions
         assert "**Available Commands**" in response["message"]
         assert "**/commands**" in response["message"]
-        assert "**/debug**" in response["message"]
+        assert "**/profile**" in response["message"]
         assert "List all commands" in response["message"]
-        assert "diagnostic information" in response["message"]
+        assert "View or update your profile" in response["message"]
 
 
 @pytest.mark.asyncio
 async def test_commands_help_specific(signal_server, test_config, mock_llm, running_penny):
     """Test /commands <name> shows help for specific command."""
     async with running_penny(test_config) as _penny:
-        # Send /commands debug
-        await signal_server.push_message(sender=TEST_SENDER, content="/commands debug")
+        # Send /commands profile
+        await signal_server.push_message(sender=TEST_SENDER, content="/commands profile")
 
         # Wait for response
         response = await signal_server.wait_for_message(timeout=5.0)
 
-        # Should show debug command help
-        assert "**Command: /debug**" in response["message"]
-        assert "diagnostic information" in response["message"]
-        assert "**Usage**: `/debug`" in response["message"]
+        # Should show profile command help
+        assert "**Command: /profile**" in response["message"]
+        assert "View your current profile" in response["message"]
+        assert "**Usage**:" in response["message"]
+        assert "`/profile`" in response["message"]
 
 
 @pytest.mark.asyncio

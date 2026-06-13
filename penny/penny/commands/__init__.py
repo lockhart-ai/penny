@@ -1,11 +1,9 @@
 """Command system for Penny."""
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from penny.commands.base import Command, CommandRegistry
 from penny.commands.config import ConfigCommand
-from penny.commands.debug import DebugCommand
 from penny.commands.dislike import DislikeCommand
 from penny.commands.index import IndexCommand
 from penny.commands.like import LikeCommand
@@ -13,7 +11,6 @@ from penny.commands.models import CommandContext, CommandError, CommandResult
 from penny.commands.mute import MuteCommand
 from penny.commands.profile import ProfileCommand
 from penny.commands.schedule import ScheduleCommand
-from penny.commands.test import TestCommand
 from penny.commands.undislike import UndislikeCommand
 from penny.commands.unlike import UnlikeCommand
 from penny.commands.unmute import UnmuteCommand
@@ -36,7 +33,6 @@ __all__ = [
 
 
 def create_command_registry(
-    message_agent_factory: Callable | None = None,
     github_api: GitHubAPI | None = None,
     image_model_client: OllamaImageClient | None = None,
     fastmail_api_token: str | None = None,
@@ -46,8 +42,6 @@ def create_command_registry(
     Factory to create registry with builtin commands.
 
     Args:
-        message_agent_factory: Optional factory for creating ChatAgent instances
-                              (required for test command)
         github_api: Optional GitHub API client (required for bug command)
         image_model_client: Optional image generation OllamaImageClient (required for draw command)
         fastmail_api_token: Optional Fastmail API token (required for email command)
@@ -63,7 +57,6 @@ def create_command_registry(
     registry.register(commands_cmd)
 
     # Register other builtin commands
-    registry.register(DebugCommand())
     registry.register(ConfigCommand())
     registry.register(ProfileCommand())
     registry.register(ScheduleCommand())
@@ -74,10 +67,6 @@ def create_command_registry(
     registry.register(UnlikeCommand())
     registry.register(DislikeCommand())
     registry.register(UndislikeCommand())
-
-    # Register test command if factory provided
-    if message_agent_factory:
-        registry.register(TestCommand(message_agent_factory))
 
     # Register bug and feature commands if GitHub API is configured
     if github_api:

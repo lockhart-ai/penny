@@ -25,13 +25,13 @@ async def test_command_threading_blocked(signal_server, test_config, mock_llm, r
     """Test that thread-replying to a command is blocked."""
     async with running_penny(test_config) as _penny:
         # First, send a command
-        await signal_server.push_message(sender=TEST_SENDER, content="/debug")
+        await signal_server.push_message(sender=TEST_SENDER, content="/commands")
         response1 = await signal_server.wait_for_message(timeout=5.0)
-        assert "**Debug Information**" in response1["message"]
+        assert "**Available Commands**" in response1["message"]
 
         # Try to thread-reply to the command
         # Build quote dict matching Signal's Quote model
-        quote = {"id": 1, "text": "/debug"}
+        quote = {"id": 1, "text": "/commands"}
         await signal_server.push_message(
             sender=TEST_SENDER, content="What does this mean?", quote=quote
         )
@@ -46,7 +46,7 @@ async def test_command_logging(signal_server, test_config, mock_llm, running_pen
     """Test that commands are logged to the database."""
     async with running_penny(test_config) as penny:
         # Send a command
-        await signal_server.push_message(sender=TEST_SENDER, content="/commands debug")
+        await signal_server.push_message(sender=TEST_SENDER, content="/commands profile")
         await signal_server.wait_for_message(timeout=5.0)
 
         # Check database for command log
@@ -59,10 +59,10 @@ async def test_command_logging(signal_server, test_config, mock_llm, running_pen
             assert len(logs) == 1
             log = logs[0]
             assert log.command_name == "commands"
-            assert log.command_args == "debug"
+            assert log.command_args == "profile"
             assert log.user == TEST_SENDER
             assert log.channel_type == "signal"
-            assert "**Command: /debug**" in log.response
+            assert "**Command: /profile**" in log.response
             assert log.error is None
 
 
@@ -73,7 +73,7 @@ async def test_command_not_logged_to_message_table(
     """Test that commands are NOT logged to MessageLog table."""
     async with running_penny(test_config) as penny:
         # Send a command
-        await signal_server.push_message(sender=TEST_SENDER, content="/debug")
+        await signal_server.push_message(sender=TEST_SENDER, content="/commands")
         await signal_server.wait_for_message(timeout=5.0)
 
         # Check that no messages were logged

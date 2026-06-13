@@ -24,7 +24,6 @@ class PennyResponse:
 
     DELIVERY_FAILURE = "Sorry, I had trouble delivering that message. Please try again."
     THREADING_NOT_SUPPORTED_COMMANDS = "Commands can't be used in threads."
-    THREADING_NOT_SUPPORTED_TEST = "Test mode can't be used in threads."
     UNKNOWN_COMMAND = "Unknown command: /{command_name}. Use /commands to see available commands."
     COMMAND_ERROR = "Failed to run command: {error}"
 
@@ -127,14 +126,6 @@ class PennyResponse:
     ZOHO_NO_QUERY_TEXT = "Please ask a question about your Zoho email. Usage: /zoho <question>"
     ZOHO_ERROR = "Failed to search Zoho email: {error}"
 
-    # ── Test ─────────────────────────────────────────────────────────────────
-
-    TEST_MODE_PREFIX = "[TEST] "
-    TEST_USAGE = "Please provide a prompt. Usage: /test <prompt>"
-    TEST_NESTED_ERROR = "Nested commands are not supported in test mode."
-    TEST_ERROR = "Failed to run test: {error}"
-    TEST_NO_RESPONSE = "No response generated."
-
     # ── Draw ─────────────────────────────────────────────────────────────────
 
     DRAW_USAGE = "Please describe what you want to draw. Usage: /draw <prompt>"
@@ -151,27 +142,6 @@ class PennyResponse:
     FEATURE_USAGE = "Please provide a feature description. Usage: /feature <description>"
     FEATURE_FILED = "Feature request filed! {issue_url}"
     FEATURE_ERROR = "Failed to create issue: {error}"
-
-    # ── Debug ────────────────────────────────────────────────────────────────
-
-    DEBUG_TEMPLATE = """**Debug Information**
-
-**Git Commit**: {commit}
-**Uptime**: {uptime}
-**Channel**: {channel}
-**Database**: {messages:,} messages, {threads} active threads
-**Model**: {model}
-**RAM**: {ram}
-
-**Background Tasks**:
-{task_status}
-"""
-    DEBUG_UPTIME = "{days} days, {hours} hours, {minutes} minutes"
-    DEBUG_NO_SCHEDULER = "Unknown (no scheduler)"
-    DEBUG_TASK_NEVER = "• **{name}**: never run"
-    DEBUG_TASK_SECONDS = "• **{name}**: {seconds}s ago"
-    DEBUG_TASK_MINUTES = "• **{name}**: {minutes}m ago"
-    DEBUG_TASK_HOURS = "• **{name}**: {hours}h ago"
 
     # ── Commands Index ───────────────────────────────────────────────────────
 

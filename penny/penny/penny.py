@@ -121,21 +121,6 @@ class Penny:
             else None
         )
 
-    def _create_chat_agent(self, db: Database) -> ChatAgent:
-        """Factory for creating ChatAgent with a given database.
-
-        Creates its own LlmClient because the /test command needs
-        prompt logging against a separate test database.
-        """
-        client = self._create_llm_client(self.config.llm_model, db=db)
-        return ChatAgent(
-            model_client=client,
-            db=db,
-            config=self.config,
-            vision_model_client=self.vision_model_client,
-            embedding_model_client=self.embedding_model_client,
-        )
-
     def _init_agents(self, config: Config) -> None:
         """Create chat agent + collector dispatcher + schedule executor.
 
@@ -199,11 +184,10 @@ class Penny:
             return None
 
     def _init_commands(self, config: Config) -> None:
-        """Create command registry with GitHub client and message agent factory."""
+        """Create command registry with GitHub client and optional integrations."""
         github_api = self._init_github_client(config)
         zoho_credentials = self._get_zoho_credentials(config)
         self.command_registry = create_command_registry(
-            message_agent_factory=self._create_chat_agent,
             github_api=github_api,
             image_model_client=self.image_client,
             fastmail_api_token=config.fastmail_api_token,

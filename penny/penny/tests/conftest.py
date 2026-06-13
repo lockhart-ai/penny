@@ -197,19 +197,6 @@ def running_penny(signal_server) -> Callable[[Config], AbstractAsyncContextManag
             penny.chat_agent._browse_provider = mock_browse
             penny.collector._browse_provider = mock_browse
 
-            # Wrap the chat agent factory so /test command agents also
-            # get the mock browse provider
-            test_cmd = penny.command_registry.get("test")
-            if test_cmd:
-                original_factory = test_cmd._message_agent_factory
-
-                def patched_factory(db):
-                    agent = original_factory(db)
-                    agent._browse_provider = mock_browse
-                    return agent
-
-                test_cmd._message_agent_factory = patched_factory  # ty: ignore[invalid-assignment]
-
             yield penny
         finally:
             penny_task.cancel()

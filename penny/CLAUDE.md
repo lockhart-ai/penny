@@ -70,7 +70,6 @@ penny/
     github_issue.py   — GitHubIssueCommand base class for /bug and /feature
     preference_base.py — PreferenceBaseCommand, PreferenceAddCommand, PreferenceRemoveCommand
     config.py         — /config: view and modify runtime settings
-    debug.py          — /debug: show agent status, git commit, system info
     index.py          — /commands: list available commands
     profile.py        — /profile: user info collection (name, location, DOB, timezone)
     schedule.py       — /schedule: create and list recurring background tasks
@@ -81,7 +80,6 @@ penny/
     unlike.py         — /unlike: remove positive preferences
     dislike.py        — /dislike: show or add negative preferences
     undislike.py      — /undislike: remove negative preferences
-    test.py           — /test: isolated test mode for development
     draw.py           — /draw: generate images via Ollama image model (optional)
     bug.py            — /bug: file GitHub issues (optional, requires GitHub App)
     feature.py        — /feature: file GitHub feature requests (optional, requires GitHub App)
@@ -276,7 +274,7 @@ The `scheduler/` module manages background tasks:
 
 ## Command System
 
-Penny supports slash commands sent as messages (e.g., `/debug`, `/config`). Commands are handled before the message reaches the agent loop.
+Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Commands are handled before the message reaches the agent loop.
 
 ### Architecture (`commands/`)
 - **Command ABC** (`base.py`): Each command implements `name`, `description`, `aliases`, and `async execute(context) → CommandResult`
@@ -285,7 +283,6 @@ Penny supports slash commands sent as messages (e.g., `/debug`, `/config`). Comm
 
 ### Built-in Commands (always registered)
 - **/commands** (`index.py`): Lists all available commands with descriptions
-- **/debug** (`debug.py`): Shows agent status, git commit, system info, background task state
 - **/config** (`config.py`): View and modify runtime settings (e.g., `/config idle_seconds 600`). Reads/writes RuntimeConfig table in SQLite; changes take effect immediately
 - **/profile** (`profile.py`): View or update user profile (name, location, DOB). Derives IANA timezone from location. Required before Penny will chat
 - **/schedule** (`schedule.py`): Create and list recurring cron-based background tasks (uses LLM to parse natural language timing)
@@ -298,7 +295,6 @@ Penny supports slash commands sent as messages (e.g., `/debug`, `/config`). Comm
 - **/undislike** (`undislike.py`): Remove a negative preference by number
 
 ### Conditional Commands (registered based on config)
-- **/test** (`test.py`): Enters isolated test mode — creates a separate DB and fresh agents for testing without affecting production data. Exit with `/test stop` (requires message agent factory)
 - **/draw** (`draw.py`): Generate images via Ollama image model (requires `LLM_IMAGE_MODEL`)
 - **/bug** (`bug.py`): File a bug report on GitHub (requires GitHub App config)
 - **/feature** (`feature.py`): File a feature request on GitHub (requires GitHub App config)
