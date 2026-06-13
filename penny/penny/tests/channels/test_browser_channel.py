@@ -1195,6 +1195,24 @@ class TestBrowserPromptLogHandlers:
         assert len(response["runs"]) == 2
 
     @pytest.mark.asyncio
+    async def test_prompt_logs_has_more_paginates(self, tmp_path):
+        """A full first page sets ``has_more``; the trailing page clears it.
+        Exercises the SQL run-level pagination — only one page of runs is ever
+        materialized, regardless of total history size."""
+        channel, db = self._channel(tmp_path)
+        channel._PROMPT_LOG_PAGE_SIZE = 2  # shrink so 3 runs span 2 pages
+        for run_id in ("run1", "run2", "run3"):
+            self._log_prompt(db, "chat", run_id)
+
+        first = await self._request_prompt_logs(channel)
+        assert len(first["runs"]) == 2
+        assert first["has_more"] is True
+
+        second = await self._request_prompt_logs(channel, {"offset": 2})
+        assert len(second["runs"]) == 1
+        assert second["has_more"] is False
+
+    @pytest.mark.asyncio
     async def test_prompt_logs_include_run_outcome(self, tmp_path):
         """Run outcome (success / reason / target) is included in the response when set."""
         channel, db = self._channel(tmp_path)
@@ -1368,8 +1386,11 @@ class TestBrowserMemoryHandlers:
         assert resp["memory"]["entry_count"] == 2
         assert [e["content"] for e in resp["entries"]] == ["second", "first"]
         assert all(e["author"] == "collector" for e in resp["entries"])
+        # Both sections fit in one page → no "load more".
+        assert resp["entries_has_more"] is False
         # Logs don't get collector_runs filtering — the field exists but is empty.
         assert resp["collector_runs"] == []
+        assert resp["collector_runs_has_more"] is False
 
     @pytest.mark.asyncio
     async def test_memory_detail_request_includes_matching_collector_runs(self, tmp_path):
@@ -1409,6 +1430,8 @@ class TestBrowserMemoryHandlers:
         assert runs[1]["content"] == "[board-games] ✅ wrote 2 games"
         # Other-target run is excluded.
         assert all("other-target" not in r["content"] for r in runs)
+        # Both target runs fit in one page.
+        assert resp["collector_runs_has_more"] is False
 
     @pytest.mark.asyncio
     async def test_memory_detail_request_unknown_memory_silently_drops(self, tmp_path):
@@ -1418,6 +1441,97 @@ class TestBrowserMemoryHandlers:
         await channel._handle_memory_detail_request(
             ws,  # ty: ignore[invalid-argument-type]
             {"type": "memory_detail_request", "name": "not-a-real-memory"},
+        )
+        assert ws.sent == []
+
+    @pytest.mark.asyncio
+    async def test_memory_detail_entries_paginate(self, tmp_path):
+        """A log with more entries than one page returns the first page plus
+        ``entries_has_more``; ``memory_page_request`` walks the rest
+        newest-first without ever loading the whole history at once."""
+        channel, db = self._channel(tmp_path)
+        channel._MEMORY_PAGE_SIZE = 2  # shrink the page so 3 entries span 2 pages
+        for content in ("first", "second", "third"):
+            db.memories.append(
+                "collector-runs", [LogEntryInput(content=content)], author="collector"
+            )
+
+        ws = _MockWs()
+        await channel._handle_memory_detail_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "memory_detail_request", "name": "collector-runs"},
+        )
+        first = ws.sent[0]
+        assert [e["content"] for e in first["entries"]] == ["third", "second"]
+        assert first["entries_has_more"] is True
+
+        ws = _MockWs()
+        await channel._handle_memory_page_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {
+                "type": "memory_page_request",
+                "name": "collector-runs",
+                "section": "entries",
+                "offset": 2,
+            },
+        )
+        page = ws.sent[0]
+        assert page["type"] == "memory_page_response"
+        assert page["section"] == "entries"
+        assert [e["content"] for e in page["entries"]] == ["first"]
+        assert page["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_memory_page_request_collector_runs_paginate(self, tmp_path):
+        """The inline collector-activity section paginates independently of the
+        entries section, scoped to the collection's target prefix."""
+        channel, db = self._channel(tmp_path)
+        channel._MEMORY_PAGE_SIZE = 2
+        db.memories.create_collection(
+            "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
+        )
+        for marker in ("cycle-1", "cycle-2", "cycle-3"):
+            db.memories.append(
+                "collector-runs",
+                [LogEntryInput(content=f"[board-games] {marker}")],
+                author="collector",
+            )
+
+        ws = _MockWs()
+        await channel._handle_memory_detail_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "memory_detail_request", "name": "board-games"},
+        )
+        first = ws.sent[0]
+        assert [r["content"] for r in first["collector_runs"]] == [
+            "[board-games] cycle-3",
+            "[board-games] cycle-2",
+        ]
+        assert first["collector_runs_has_more"] is True
+
+        ws = _MockWs()
+        await channel._handle_memory_page_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {
+                "type": "memory_page_request",
+                "name": "board-games",
+                "section": "collector_runs",
+                "offset": 2,
+            },
+        )
+        page = ws.sent[0]
+        assert page["section"] == "collector_runs"
+        assert [r["content"] for r in page["entries"]] == ["[board-games] cycle-1"]
+        assert page["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_memory_page_request_unknown_memory_silently_drops(self, tmp_path):
+        """A page request for an unknown memory produces no response."""
+        channel, _ = self._channel(tmp_path)
+        ws = _MockWs()
+        await channel._handle_memory_page_request(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "memory_page_request", "name": "nope", "section": "entries", "offset": 0},
         )
         assert ws.sent == []
 
@@ -1449,6 +1563,45 @@ class TestBrowserMemoryHandlers:
         db.memories.append("collector-runs", [LogEntryInput(content="cycle x")], author="collector")
 
         assert "collector-runs" in received
+
+    # ── On-demand extractor trigger ──────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_collection_trigger_runs_extractor(self, tmp_path):
+        """The trigger delegates to the collector's on-demand ``run_for`` and
+        reports the outcome back to the requesting addon."""
+        channel, db = self._channel(tmp_path)
+        collector = MagicMock()
+        collector.run_for = AsyncMock(
+            return_value=(True, "Collector cycle complete. wrote 2 games")
+        )
+        channel.set_collector(collector)
+
+        ws = _MockWs()
+        await channel._handle_collection_trigger(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "collection_trigger", "name": "board-games"},
+        )
+
+        collector.run_for.assert_awaited_once_with("board-games")
+        resp = ws.sent[0]
+        assert resp["type"] == "collection_trigger_result"
+        assert resp["name"] == "board-games"
+        assert resp["success"] is True
+        assert "wrote 2 games" in resp["message"]
+
+    @pytest.mark.asyncio
+    async def test_collection_trigger_without_collector_reports_failure(self, tmp_path):
+        """With no collector wired, the trigger fails loudly rather than silently."""
+        channel, _ = self._channel(tmp_path)
+        ws = _MockWs()
+        await channel._handle_collection_trigger(
+            ws,  # ty: ignore[invalid-argument-type]
+            {"type": "collection_trigger", "name": "board-games"},
+        )
+        resp = ws.sent[0]
+        assert resp["success"] is False
+        assert resp["message"] == "Collector is not available."
 
     # ── Edit handlers ────────────────────────────────────────────────────
 

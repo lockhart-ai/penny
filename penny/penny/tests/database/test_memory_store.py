@@ -486,6 +486,10 @@ class TestReads:
         latest = db.memories.read_latest("events", 3)
         assert [e.content for e in latest] == ["msg-4", "msg-3", "msg-2"]
 
+        # offset paginates past the newest rows (second page of size 3).
+        page_two = db.memories.read_latest("events", 3, offset=3)
+        assert [e.content for e in page_two] == ["msg-1", "msg-0"]
+
     def test_read_since(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)

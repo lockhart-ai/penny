@@ -22,6 +22,7 @@ from websockets.asyncio.server import Server, ServerConnection
 from penny.channels.base import IncomingMessage, MessageChannel, PageContext, ProgressTracker
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_CAPABILITIES_UPDATE,
+    BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
     BROWSER_MSG_TYPE_CONFIG_REQUEST,
     BROWSER_MSG_TYPE_CONFIG_UPDATE,
     BROWSER_MSG_TYPE_DOMAIN_DELETE,
@@ -34,6 +35,7 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_MEMORY_ARCHIVE,
     BROWSER_MSG_TYPE_MEMORY_CREATE,
     BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST,
+    BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST,
     BROWSER_MSG_TYPE_MEMORY_UPDATE,
     BROWSER_MSG_TYPE_MESSAGE,
     BROWSER_MSG_TYPE_PERMISSION_DECISION,
@@ -51,7 +53,11 @@ from penny.channels.browser.models import (
     BROWSER_RESP_TYPE_SCHEDULES,
     BROWSER_RESP_TYPE_STATUS,
     BROWSER_RESP_TYPE_TYPING,
+    MEMORY_SECTION_COLLECTOR_RUNS,
+    MEMORY_SECTION_ENTRIES,
     BrowserCapabilitiesUpdate,
+    BrowserCollectionTrigger,
+    BrowserCollectionTriggerResult,
     BrowserConfigUpdate,
     BrowserDomainDelete,
     BrowserDomainPermissionsSync,
@@ -66,6 +72,8 @@ from penny.channels.browser.models import (
     BrowserMemoryCreate,
     BrowserMemoryDetailRequest,
     BrowserMemoryDetailResponse,
+    BrowserMemoryPageRequest,
+    BrowserMemoryPageResponse,
     BrowserMemoryUpdate,
     BrowserOutgoing,
     BrowserPermissionDecision,
@@ -101,6 +109,7 @@ from penny.tools.base import Tool
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
+    from penny.agents.collector import Collector
     from penny.commands import CommandRegistry
     from penny.database import Database
     from penny.database.models import MessageLog
@@ -147,6 +156,7 @@ class BrowserChannel(MessageChannel):
         self._connections: dict[str, ConnectionInfo] = {}
         self._pending_requests: dict[str, asyncio.Future[tuple[str, str | None]]] = {}
         self._permission_manager: PermissionManager | None = None
+        self._collector: Collector | None = None
         db.messages._on_prompt_logged = self._on_prompt_logged
         db.messages._on_run_outcome_set = self._on_run_outcome_set
         db.memories._on_memory_changed = self._on_memory_changed
@@ -185,6 +195,11 @@ class BrowserChannel(MessageChannel):
     def set_permission_manager(self, manager: PermissionManager) -> None:
         """Set the permission manager for routing addon permission decisions."""
         self._permission_manager = manager
+
+    def set_collector(self, collector: Collector) -> None:
+        """Wire the collector so the addon can run a collection's extractor
+        on demand (the "run extractor" button)."""
+        self._collector = collector
 
     @property
     def has_tool_connection(self) -> bool:
@@ -309,6 +324,14 @@ class BrowserChannel(MessageChannel):
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST:
             await self._handle_memory_detail_request(ws, data)
+            return device_label
+
+        if msg_type == BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST:
+            await self._handle_memory_page_request(ws, data)
+            return device_label
+
+        if msg_type == BROWSER_MSG_TYPE_COLLECTION_TRIGGER:
+            await self._handle_collection_trigger(ws, data)
             return device_label
 
         if msg_type == BROWSER_MSG_TYPE_MEMORY_CREATE:
@@ -460,10 +483,14 @@ class BrowserChannel(MessageChannel):
         with contextlib.suppress(websockets.ConnectionClosed):
             await ws.send(payload.model_dump_json())
 
+    _MEMORY_PAGE_SIZE = 50
+
     async def _handle_memory_detail_request(self, ws: ServerConnection, data: dict) -> None:
-        """Send one memory's metadata + every entry newest-first.  For
-        collections, also include the matching ``collector-runs`` entries
-        so the addon can show this collection's collector activity inline."""
+        """Send one memory's metadata + the first page of each section: its
+        entries, and — for collections — the matching ``collector-runs``
+        entries rendered inline as collector activity.  Both sections page
+        independently via ``_handle_memory_page_request`` so opening a memory
+        never loads its whole (potentially multi-thousand-row) history."""
         try:
             req = BrowserMemoryDetailRequest(**data)
         except ValidationError:
@@ -473,25 +500,83 @@ class BrowserChannel(MessageChannel):
         if memory is None:
             logger.warning("memory_detail_request for unknown memory: %s", req.name)
             return
-        rows = self._db.memories.read_latest(req.name)
         counts = self._db.memories.entry_counts()
         record = self._memory_to_record(memory, counts.get(memory.name, 0))
-        entries = [self._entry_to_record(row) for row in rows]
-        collector_runs = [self._entry_to_record(row) for row in self._collector_runs_for(memory)]
+        entries, entries_has_more = self._memory_section_page(memory, MEMORY_SECTION_ENTRIES, 0)
+        runs, runs_has_more = self._memory_section_page(memory, MEMORY_SECTION_COLLECTOR_RUNS, 0)
         payload = BrowserMemoryDetailResponse(
-            memory=record, entries=entries, collector_runs=collector_runs
+            memory=record,
+            entries=entries,
+            entries_has_more=entries_has_more,
+            collector_runs=runs,
+            collector_runs_has_more=runs_has_more,
         )
         with contextlib.suppress(websockets.ConnectionClosed):
             await ws.send(payload.model_dump_json())
 
-    def _collector_runs_for(self, memory) -> list:
+    async def _handle_memory_page_request(self, ws: ServerConnection, data: dict) -> None:
+        """Send one more page of a single memory-detail section (entries or
+        collector runs), advancing past the rows the addon already holds."""
+        try:
+            req = BrowserMemoryPageRequest(**data)
+        except ValidationError:
+            logger.warning("Invalid memory_page_request: %s", str(data)[:200])
+            return
+        memory = self._db.memories.get(req.name)
+        if memory is None:
+            logger.warning("memory_page_request for unknown memory: %s", req.name)
+            return
+        entries, has_more = self._memory_section_page(memory, req.section, req.offset)
+        payload = BrowserMemoryPageResponse(
+            name=req.name, section=req.section, entries=entries, has_more=has_more
+        )
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(payload.model_dump_json())
+
+    async def _handle_collection_trigger(self, ws: ServerConnection, data: dict) -> None:
+        """Run a collection's extractor on demand and report the outcome back
+        to the requesting addon.  ``run_for`` validates the target and is
+        serialized against the background cadence by the collector's cycle
+        lock; its ``mark_collected`` fans out a ``memory_changed`` event that
+        refreshes the detail view's entries + collector activity."""
+        try:
+            req = BrowserCollectionTrigger(**data)
+        except ValidationError:
+            logger.warning("Invalid collection_trigger: %s", str(data)[:200])
+            return
+        if self._collector is None:
+            success, message = False, "Collector is not available."
+        else:
+            success, message = await self._collector.run_for(req.name)
+        result = BrowserCollectionTriggerResult(name=req.name, success=success, message=message)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(result.model_dump_json())
+
+    def _memory_section_page(
+        self, memory, section: str, offset: int
+    ) -> tuple[list[MemoryEntryRecord], bool]:
+        """One newest-first page of a memory-detail section.  ``has_more`` is
+        true when the page filled the page size, matching the prompts tab."""
+        if section == MEMORY_SECTION_COLLECTOR_RUNS:
+            rows = self._collector_runs_for(memory, self._MEMORY_PAGE_SIZE, offset)
+        else:
+            rows = self._db.memories.read_latest(
+                memory.name, k=self._MEMORY_PAGE_SIZE, offset=offset
+            )
+        records = [self._entry_to_record(row) for row in rows]
+        return records, len(records) == self._MEMORY_PAGE_SIZE
+
+    def _collector_runs_for(self, memory, limit: int, offset: int) -> list:
         """Newest-first ``collector-runs`` entries for this collection.
         Matches the ``[<target>] `` content prefix the Collector writes.
         Empty for logs (collectors only target collections)."""
         if memory.type != "collection":
             return []
         return self._db.memories.read_latest_matching(
-            PennyConstants.MEMORY_COLLECTOR_RUNS_LOG, f"[{memory.name}] "
+            PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
+            f"[{memory.name}] ",
+            k=limit,
+            offset=offset,
         )
 
     @staticmethod

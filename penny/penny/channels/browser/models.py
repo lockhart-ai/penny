@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from penny.channels.base import PageContext
@@ -25,12 +27,14 @@ BROWSER_MSG_TYPE_SCHEDULE_DELETE = "schedule_delete"
 BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST = "prompt_logs_request"
 BROWSER_MSG_TYPE_MEMORIES_REQUEST = "memories_request"
 BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST = "memory_detail_request"
+BROWSER_MSG_TYPE_MEMORY_PAGE_REQUEST = "memory_page_request"
 BROWSER_MSG_TYPE_MEMORY_CREATE = "memory_create"
 BROWSER_MSG_TYPE_MEMORY_UPDATE = "memory_update"
 BROWSER_MSG_TYPE_MEMORY_ARCHIVE = "memory_archive"
 BROWSER_MSG_TYPE_ENTRY_CREATE = "entry_create"
 BROWSER_MSG_TYPE_ENTRY_UPDATE = "entry_update"
 BROWSER_MSG_TYPE_ENTRY_DELETE = "entry_delete"
+BROWSER_MSG_TYPE_COLLECTION_TRIGGER = "collection_trigger"
 
 # Outgoing message types (server → browser)
 BROWSER_RESP_TYPE_MESSAGE = "message"
@@ -47,7 +51,13 @@ BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE = "prompt_log_update"
 BROWSER_RESP_TYPE_RUN_OUTCOME = "run_outcome_update"
 BROWSER_RESP_TYPE_MEMORIES = "memories_response"
 BROWSER_RESP_TYPE_MEMORY_DETAIL = "memory_detail_response"
+BROWSER_RESP_TYPE_MEMORY_PAGE = "memory_page_response"
 BROWSER_RESP_TYPE_MEMORY_CHANGED = "memory_changed"
+BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT = "collection_trigger_result"
+
+# Sections of a memory's detail view that paginate independently.
+MEMORY_SECTION_ENTRIES = "entries"
+MEMORY_SECTION_COLLECTOR_RUNS = "collector_runs"
 
 
 class BrowserIncoming(BaseModel):
@@ -213,10 +223,21 @@ class BrowserRunOutcomeUpdate(BaseModel):
 
 
 class BrowserMemoryDetailRequest(BaseModel):
-    """A request to load entries + metadata for a single memory."""
+    """A request to load metadata + the first page of each section for a
+    single memory."""
 
     type: str
     name: str
+
+
+class BrowserMemoryPageRequest(BaseModel):
+    """A request for one more page of a memory-detail section (entries or
+    collector runs), advancing past ``offset`` already-shown rows."""
+
+    type: str
+    name: str
+    section: Literal["entries", "collector_runs"]
+    offset: int = 0
 
 
 class MemoryRecord(BaseModel):
@@ -252,15 +273,47 @@ class BrowserMemoriesResponse(BaseModel):
 
 
 class BrowserMemoryDetailResponse(BaseModel):
-    """One memory's metadata + entries (newest-first), plus this collection's
-    matching ``collector-runs`` entries when the memory is a collection
-    (empty for logs).  The addon renders the collector activity inline on
-    the collection's detail page."""
+    """One memory's metadata + the first page of entries (newest-first), plus
+    the first page of this collection's matching ``collector-runs`` entries
+    when the memory is a collection (empty for logs).  The addon renders the
+    collector activity inline on the collection's detail page.  Each section
+    paginates independently via :class:`BrowserMemoryPageRequest`; the
+    ``*_has_more`` flags tell the addon whether to show a "load more" control."""
 
     type: str = BROWSER_RESP_TYPE_MEMORY_DETAIL
     memory: MemoryRecord
     entries: list[MemoryEntryRecord]
+    entries_has_more: bool = False
     collector_runs: list[MemoryEntryRecord] = []
+    collector_runs_has_more: bool = False
+
+
+class BrowserMemoryPageResponse(BaseModel):
+    """One more page of a single memory-detail section, newest-first, in
+    response to a :class:`BrowserMemoryPageRequest`."""
+
+    type: str = BROWSER_RESP_TYPE_MEMORY_PAGE
+    name: str
+    section: Literal["entries", "collector_runs"]
+    entries: list[MemoryEntryRecord]
+    has_more: bool
+
+
+class BrowserCollectionTrigger(BaseModel):
+    """Run a collection's extractor on demand, off the collector's cadence."""
+
+    type: str
+    name: str
+
+
+class BrowserCollectionTriggerResult(BaseModel):
+    """Outcome of an on-demand extractor run, sent back to the addon so the
+    button can report success/failure."""
+
+    type: str = BROWSER_RESP_TYPE_COLLECTION_TRIGGER_RESULT
+    name: str
+    success: bool
+    message: str
 
 
 class BrowserMemoryChanged(BaseModel):

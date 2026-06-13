@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from penny.agents.models import MessageRole
@@ -422,15 +423,11 @@ class MessageStore:
     def count(self) -> int:
         """Count total number of messages."""
         with self._session() as session:
-            from sqlalchemy import func
-
             return session.exec(select(func.count()).select_from(MessageLog)).one()
 
     def count_active_threads(self) -> int:
         """Count leaf messages (those with no children)."""
         with self._session() as session:
-            from sqlalchemy import func
-
             has_child = select(MessageLog.parent_id).where(MessageLog.parent_id.isnot(None))
             return session.exec(
                 select(func.count()).select_from(MessageLog).where(MessageLog.id.notin_(has_child))
@@ -485,32 +482,52 @@ class MessageStore:
         """Get prompt logs grouped by run_id, newest first.
 
         Returns a list of run summaries with their individual prompts.
+        Pagination happens at the run level in SQL: stage one selects only
+        the requested page of run_ids (ordered by each run's newest prompt),
+        stage two loads the heavy prompt rows for just those runs.  This
+        keeps the query cost proportional to the page size, not to the whole
+        (multi-GB) promptlog table.
         """
         with self._session() as session:
-            query = (
-                select(PromptLog)
-                .where(PromptLog.run_id.isnot(None))  # ty: ignore[unresolved-attribute]
-                .order_by(PromptLog.timestamp.desc())
-            )
-            if agent_name:
-                query = query.where(PromptLog.agent_name == agent_name)
-            all_prompts = list(session.exec(query).all())
+            run_ids_ordered = self._page_of_run_ids(session, limit, offset, agent_name)
+            if not run_ids_ordered:
+                return []
 
             grouped: dict[str, list[PromptLog]] = {}
-            for prompt in all_prompts:
+            prompts = session.exec(
+                select(PromptLog)
+                .where(PromptLog.run_id.in_(run_ids_ordered))  # ty: ignore[unresolved-attribute]
+                .order_by(PromptLog.timestamp.asc())
+            ).all()
+            for prompt in prompts:
                 if prompt.run_id is None:
                     continue
                 grouped.setdefault(prompt.run_id, []).append(prompt)
 
-            run_ids_ordered = list(grouped.keys())[offset : offset + limit]
-
             runs = []
             for run_id in run_ids_ordered:
-                prompts = sorted(grouped[run_id], key=lambda p: p.timestamp)
-                total_duration_ms = sum(p.duration_ms or 0 for p in prompts)
-                runs.append(self._serialize_run(run_id, prompts, total_duration_ms))
-
+                run_prompts = grouped[run_id]
+                total_duration_ms = sum(p.duration_ms or 0 for p in run_prompts)
+                runs.append(self._serialize_run(run_id, run_prompts, total_duration_ms))
             return runs
+
+    @staticmethod
+    def _page_of_run_ids(
+        session: Session, limit: int, offset: int, agent_name: str | None
+    ) -> list[str]:
+        """Return one page of run_ids, ordered newest-first by each run's most
+        recent prompt.  Touches only the indexed run_id/timestamp columns — no
+        heavy JSON payloads — so it stays cheap as the table grows."""
+        query = select(PromptLog.run_id).where(PromptLog.run_id.isnot(None))  # ty: ignore[unresolved-attribute]
+        if agent_name:
+            query = query.where(PromptLog.agent_name == agent_name)
+        query = (
+            query.group_by(PromptLog.run_id)
+            .order_by(func.max(PromptLog.timestamp).desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return [run_id for run_id in session.exec(query).all() if run_id is not None]
 
     @staticmethod
     def _extract_token_usage(response: dict) -> tuple[int, int]:

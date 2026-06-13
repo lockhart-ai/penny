@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.constants import PennyConstants
@@ -594,3 +595,35 @@ def test_tag_promptlog_run_isolates_neighbouring_cycles(test_config, tmp_path):
     assert runs["run-A"]["run_reason"] == "ok-A"
     assert runs["run-B"]["run_target"] == "card-games"
     assert runs["run-B"]["run_reason"] == "ok-B"
+
+
+@pytest.mark.asyncio
+async def test_cycle_runs_under_lock(test_config, tmp_path):
+    """Every extraction cycle holds the cycle lock, so an on-demand trigger
+    and the background cadence can never run two cycles at once and clobber
+    the shared ``_current_target``."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_collector_runs_log(db)
+    db.memories.create_collection(
+        "games",
+        "x",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
+    )
+
+    observed: dict = {}
+
+    async def fake_run_cycle(run_id: str) -> CycleResult:
+        observed["locked"] = collector._cycle_lock.locked()
+        observed["target"] = collector._current_target.name
+        return CycleResult(success=True, response=ControllerResponse(answer="done"))
+
+    collector._run_cycle = fake_run_cycle  # ty: ignore[invalid-assignment]
+    success, _ = await collector.run_for("games")
+
+    assert success is True
+    assert observed["locked"] is True
+    assert observed["target"] == "games"
+    # Lock is released once the cycle finishes.
+    assert collector._cycle_lock.locked() is False

@@ -95,9 +95,13 @@ class Collector(BackgroundAgent):
             embedding_model_client=embedding_model_client,
             vision_model_client=vision_model_client,
         )
-        # Set per-cycle inside ``execute``.  The cycle is single-threaded
-        # by the scheduler, so transient instance state is safe.
+        # Set per-cycle inside ``_execute_cycle``.  The scheduler runs cycles
+        # one at a time, but on-demand triggers (chat's extraction-prompt test
+        # tool, the addon's "run extractor" button) call ``run_for`` off the
+        # scheduler's cadence.  ``_cycle_lock`` serializes every cycle so
+        # ``_current_target`` is never clobbered by an overlapping run.
         self._current_target: Memory | None = None
+        self._cycle_lock = asyncio.Lock()
 
     async def execute(self) -> bool:
         target = self._next_ready_collection()
@@ -140,27 +144,28 @@ class Collector(BackgroundAgent):
         success = False
         response: ControllerResponse | None = None
         cancelled = False
-        try:
-            self._current_target = collection
-            result = await self._run_cycle(run_id)
-            success = result.success
-            response = result.response
-        except asyncio.CancelledError:
-            # Foreground activity preempted the cycle — tag clearly rather
-            # than letting it look like a model crash, then re-raise.
-            cancelled = True
-            raise
-        finally:
-            # Stamp regardless of success — cadence is driven by the check
-            # happening, not by success.  A persistently-failing collection
-            # would otherwise be re-attempted on every tick.
-            self.db.memories.mark_collected(collection.name)
-            if cancelled:
-                self._tag_promptlog_run_cancelled(collection, run_id)
-            else:
-                self._log_run(collection, response)
-                self._tag_promptlog_run(collection, run_id, response)
-            self._current_target = None
+        async with self._cycle_lock:
+            try:
+                self._current_target = collection
+                result = await self._run_cycle(run_id)
+                success = result.success
+                response = result.response
+            except asyncio.CancelledError:
+                # Foreground activity preempted the cycle — tag clearly rather
+                # than letting it look like a model crash, then re-raise.
+                cancelled = True
+                raise
+            finally:
+                # Stamp regardless of success — cadence is driven by the check
+                # happening, not by success.  A persistently-failing collection
+                # would otherwise be re-attempted on every tick.
+                self.db.memories.mark_collected(collection.name)
+                if cancelled:
+                    self._tag_promptlog_run_cancelled(collection, run_id)
+                else:
+                    self._log_run(collection, response)
+                    self._tag_promptlog_run(collection, run_id, response)
+                self._current_target = None
         _, summary = self._extract_done_args(response)
         tool_trace = self._format_tool_trace(response)
         message = f"Collector cycle complete. {summary}"

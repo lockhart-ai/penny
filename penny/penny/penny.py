@@ -246,6 +246,8 @@ class Penny:
         # Wire up permission manager
         perm_mgr = PermissionManager(db=self.db, channel_manager=self.channel, config=config)
         browser_ch.set_permission_manager(perm_mgr)
+        # Let the addon run a collection's extractor on demand.
+        browser_ch.set_collector(self.collector)
         signal_ch = self.channel.get_channel(ChannelType.SIGNAL)
         if isinstance(signal_ch, SignalChannel):
             signal_ch.set_permission_manager(perm_mgr)

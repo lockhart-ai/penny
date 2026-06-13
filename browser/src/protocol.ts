@@ -40,12 +40,14 @@ export type WsOutgoingType =
   | "prompt_logs_request"
   | "memories_request"
   | "memory_detail_request"
+  | "memory_page_request"
   | "memory_create"
   | "memory_update"
   | "memory_archive"
   | "entry_create"
   | "entry_update"
-  | "entry_delete";
+  | "entry_delete"
+  | "collection_trigger";
 export const WsOutgoingType = {
   Message: "message",
   ToolResponse: "tool_response",
@@ -64,12 +66,14 @@ export const WsOutgoingType = {
   PromptLogsRequest: "prompt_logs_request",
   MemoriesRequest: "memories_request",
   MemoryDetailRequest: "memory_detail_request",
+  MemoryPageRequest: "memory_page_request",
   MemoryCreate: "memory_create",
   MemoryUpdate: "memory_update",
   MemoryArchive: "memory_archive",
   EntryCreate: "entry_create",
   EntryUpdate: "entry_update",
   EntryDelete: "entry_delete",
+  CollectionTrigger: "collection_trigger",
 } as const satisfies Record<string, WsOutgoingType>;
 
 export interface WsOutgoingMessage {
@@ -142,7 +146,9 @@ export type WsIncomingType =
   | "run_outcome_update"
   | "memories_response"
   | "memory_detail_response"
-  | "memory_changed";
+  | "memory_page_response"
+  | "memory_changed"
+  | "collection_trigger_result";
 export const WsIncomingType = {
   Message: "message",
   Typing: "typing",
@@ -158,7 +164,9 @@ export const WsIncomingType = {
   RunOutcomeUpdate: "run_outcome_update",
   MemoriesResponse: "memories_response",
   MemoryDetailResponse: "memory_detail_response",
+  MemoryPageResponse: "memory_page_response",
   MemoryChanged: "memory_changed",
+  CollectionTriggerResult: "collection_trigger_result",
 } as const satisfies Record<string, WsIncomingType>;
 
 export interface WsIncomingMessagePayload {
@@ -306,6 +314,9 @@ export interface MemoryEntryRecord {
   created_at: string;
 }
 
+/** Independently-paginated sections of a memory's detail view. */
+export type MemorySection = "entries" | "collector_runs";
+
 export interface WsIncomingMemoriesPayload {
   type: typeof WsIncomingType.MemoriesResponse;
   memories: MemoryRecord[];
@@ -315,12 +326,29 @@ export interface WsIncomingMemoryDetailPayload {
   type: typeof WsIncomingType.MemoryDetailResponse;
   memory: MemoryRecord;
   entries: MemoryEntryRecord[];
+  entries_has_more: boolean;
   collector_runs: MemoryEntryRecord[];
+  collector_runs_has_more: boolean;
+}
+
+export interface WsIncomingMemoryPagePayload {
+  type: typeof WsIncomingType.MemoryPageResponse;
+  name: string;
+  section: MemorySection;
+  entries: MemoryEntryRecord[];
+  has_more: boolean;
 }
 
 export interface WsIncomingMemoryChangedPayload {
   type: typeof WsIncomingType.MemoryChanged;
   name: string | null;
+}
+
+export interface WsIncomingCollectionTriggerResultPayload {
+  type: typeof WsIncomingType.CollectionTriggerResult;
+  name: string;
+  success: boolean;
+  message: string;
 }
 
 export type WsIncomingPayload =
@@ -338,7 +366,9 @@ export type WsIncomingPayload =
   | WsIncomingRunOutcomePayload
   | WsIncomingMemoriesPayload
   | WsIncomingMemoryDetailPayload
-  | WsIncomingMemoryChangedPayload;
+  | WsIncomingMemoryPagePayload
+  | WsIncomingMemoryChangedPayload
+  | WsIncomingCollectionTriggerResultPayload;
 
 // --- Runtime messages (sidebar ↔ background) ---
 
@@ -372,13 +402,17 @@ export type RuntimeMessageType =
   | "memories_response"
   | "memory_detail_request"
   | "memory_detail_response"
+  | "memory_page_request"
+  | "memory_page_response"
   | "memory_changed"
   | "memory_create"
   | "memory_update"
   | "memory_archive"
   | "entry_create"
   | "entry_update"
-  | "entry_delete";
+  | "entry_delete"
+  | "collection_trigger"
+  | "collection_trigger_result";
 
 export const RuntimeMessageType = {
   SendChat: "send_chat",
@@ -410,6 +444,8 @@ export const RuntimeMessageType = {
   MemoriesResponse: "memories_response",
   MemoryDetailRequest: "memory_detail_request",
   MemoryDetailResponse: "memory_detail_response",
+  MemoryPageRequest: "memory_page_request",
+  MemoryPageResponse: "memory_page_response",
   MemoryChanged: "memory_changed",
   MemoryCreate: "memory_create",
   MemoryUpdate: "memory_update",
@@ -417,6 +453,8 @@ export const RuntimeMessageType = {
   EntryCreate: "entry_create",
   EntryUpdate: "entry_update",
   EntryDelete: "entry_delete",
+  CollectionTrigger: "collection_trigger",
+  CollectionTriggerResult: "collection_trigger_result",
 } as const satisfies Record<string, RuntimeMessageType>;
 
 /** Sidebar → background: user typed a chat message */
@@ -602,19 +640,54 @@ export interface RuntimeMemoryDetailRequest {
   name: string;
 }
 
-/** Background → memories tab: drill-in payload (metadata + entries +
- *  this collection's matching ``collector-runs`` entries — empty for logs). */
+/** Background → memories tab: drill-in payload (metadata + first page of
+ *  entries + first page of this collection's matching ``collector-runs``
+ *  entries — empty for logs).  Each section paginates independently; the
+ *  ``*_has_more`` flags drive the per-section "load more" controls. */
 export interface RuntimeMemoryDetailResponse {
   type: typeof RuntimeMessageType.MemoryDetailResponse;
   memory: MemoryRecord;
   entries: MemoryEntryRecord[];
+  entries_has_more: boolean;
   collector_runs: MemoryEntryRecord[];
+  collector_runs_has_more: boolean;
+}
+
+/** Memories tab → background: load one more page of a detail section */
+export interface RuntimeMemoryPageRequest {
+  type: typeof RuntimeMessageType.MemoryPageRequest;
+  name: string;
+  section: MemorySection;
+  offset: number;
+}
+
+/** Background → memories tab: one more page of a detail section */
+export interface RuntimeMemoryPageResponse {
+  type: typeof RuntimeMessageType.MemoryPageResponse;
+  name: string;
+  section: MemorySection;
+  entries: MemoryEntryRecord[];
+  has_more: boolean;
 }
 
 /** Background → memories tab: a memory was mutated, refresh */
 export interface RuntimeMemoryChanged {
   type: typeof RuntimeMessageType.MemoryChanged;
   name: string | null;
+}
+
+/** Memories tab → background: run a collection's extractor on demand */
+export interface RuntimeCollectionTrigger {
+  type: typeof RuntimeMessageType.CollectionTrigger;
+  name: string;
+}
+
+/** Background → memories tab: outcome of an on-demand extractor run */
+export interface RuntimeCollectionTriggerResult {
+  type: typeof RuntimeMessageType.CollectionTriggerResult;
+  name: string;
+  success: boolean;
+  message: string;
 }
 
 /** Memories tab → background: create a new collection */
@@ -696,7 +769,11 @@ export type RuntimeMessage =
   | RuntimeMemoriesResponse
   | RuntimeMemoryDetailRequest
   | RuntimeMemoryDetailResponse
+  | RuntimeMemoryPageRequest
+  | RuntimeMemoryPageResponse
   | RuntimeMemoryChanged
+  | RuntimeCollectionTrigger
+  | RuntimeCollectionTriggerResult
   | RuntimeMemoryCreate
   | RuntimeMemoryUpdate
   | RuntimeMemoryArchive

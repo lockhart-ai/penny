@@ -623,8 +623,10 @@ class MemoryStore:
         with self._session() as session:
             return self._entries_by_key(session, _slug(name), key)
 
-    def read_latest(self, name: str, k: int | None = None) -> list[MemoryEntry]:
-        """Return entries newest-first. With `k=None`, returns every entry."""
+    def read_latest(self, name: str, k: int | None = None, offset: int = 0) -> list[MemoryEntry]:
+        """Return entries newest-first. With `k=None`, returns every entry.
+        `offset` skips the newest `offset` entries — paginate by passing a
+        page size as `k` and advancing `offset` by `k` per page."""
         name = _slug(name)
         with self._session() as session:
             query = (
@@ -634,16 +636,19 @@ class MemoryStore:
             )
             if k is not None:
                 query = query.limit(k)
+            if offset:
+                query = query.offset(offset)
             return list(session.exec(query).all())
 
     def read_latest_matching(
-        self, name: str, content_prefix: str, k: int | None = None
+        self, name: str, content_prefix: str, k: int | None = None, offset: int = 0
     ) -> list[MemoryEntry]:
         """Newest-first entries whose ``content`` starts with ``content_prefix``.
 
         Used to scope a log read to one tag — e.g. ``collector-runs``
         entries for a specific target collection (the content format is
-        ``[<target>] <marker> <summary>``).
+        ``[<target>] <marker> <summary>``).  `offset` paginates the same way
+        as :meth:`read_latest`.
         """
         name = _slug(name)
         with self._session() as session:
@@ -657,6 +662,8 @@ class MemoryStore:
             )
             if k is not None:
                 query = query.limit(k)
+            if offset:
+                query = query.offset(offset)
             return list(session.exec(query).all())
 
     def read_recent(

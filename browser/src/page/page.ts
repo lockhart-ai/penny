@@ -9,9 +9,13 @@ import {
   type DomainPermissionEntry,
   type MemoryEntryRecord,
   type MemoryRecord,
+  type MemorySection,
   type PromptLogEntry,
   type PromptLogRun,
+  type RuntimeCollectionTriggerResult,
   type RuntimeConfigParam,
+  type RuntimeMemoryDetailResponse,
+  type RuntimeMemoryPageResponse,
   type RuntimeMessage,
   RuntimeMessageType,
   type ScheduleItem,
@@ -77,6 +81,17 @@ type MemoryTab = "collections" | "logs" | "archived";
 let allMemories: MemoryRecord[] = [];
 let activeMemoryName: string | null = null;
 let activeMemoryTab: MemoryTab = "collections";
+
+// Detail view pagination — each section accumulates pages independently so
+// opening a big collection/log never loads its whole history at once.
+let activeMemory: MemoryRecord | null = null;
+let memoryEntries: MemoryEntryRecord[] = [];
+let memoryEntriesHasMore = false;
+let memoryRuns: MemoryEntryRecord[] = [];
+let memoryRunsHasMore = false;
+// Name of the collection whose extractor is currently running on demand
+// (drives the "run extractor" button's disabled/spinner state).
+let triggeringCollection: string | null = null;
 
 // --- Config state ---
 
@@ -170,9 +185,13 @@ function handleMessage(message: RuntimeMessage): void {
   } else if (message.type === RuntimeMessageType.MemoriesResponse) {
     handleMemoriesResponse(message.memories);
   } else if (message.type === RuntimeMessageType.MemoryDetailResponse) {
-    handleMemoryDetailResponse(message.memory, message.entries, message.collector_runs);
+    handleMemoryDetailResponse(message);
+  } else if (message.type === RuntimeMessageType.MemoryPageResponse) {
+    handleMemoryPageResponse(message);
   } else if (message.type === RuntimeMessageType.MemoryChanged) {
     handleMemoryChanged(message.name);
+  } else if (message.type === RuntimeMessageType.CollectionTriggerResult) {
+    handleCollectionTriggerResult(message);
   }
 }
 
@@ -1053,14 +1072,38 @@ function handleMemoriesResponse(memories: MemoryRecord[]): void {
   renderMemoriesList();
 }
 
-function handleMemoryDetailResponse(
-  memory: MemoryRecord,
-  entries: MemoryEntryRecord[],
-  collectorRuns: MemoryEntryRecord[],
-): void {
-  activeMemoryName = memory.name;
+function handleMemoryDetailResponse(message: RuntimeMemoryDetailResponse): void {
+  activeMemoryName = message.memory.name;
+  activeMemory = message.memory;
+  memoryEntries = message.entries;
+  memoryEntriesHasMore = message.entries_has_more;
+  memoryRuns = message.collector_runs;
+  memoryRunsHasMore = message.collector_runs_has_more;
   showMemoryDetail();
-  renderMemoryDetail(memory, entries, collectorRuns);
+  renderMemoryDetail();
+}
+
+function handleMemoryPageResponse(message: RuntimeMemoryPageResponse): void {
+  // Drop pages for a memory the user already navigated away from.
+  if (!activeMemory || message.name !== activeMemory.name) return;
+  if (message.section === "collector_runs") {
+    memoryRuns = memoryRuns.concat(message.entries);
+    memoryRunsHasMore = message.has_more;
+  } else {
+    memoryEntries = memoryEntries.concat(message.entries);
+    memoryEntriesHasMore = message.has_more;
+  }
+  renderMemoryDetail();
+}
+
+function requestMemoryPage(section: MemorySection, offset: number): void {
+  if (!activeMemory) return;
+  browser.runtime.sendMessage({
+    type: RuntimeMessageType.MemoryPageRequest,
+    name: activeMemory.name,
+    section,
+    offset,
+  });
 }
 
 function handleMemoryChanged(name: string | null): void {
@@ -1300,36 +1343,58 @@ function metaItem(iconClass: string, text: string): HTMLSpanElement {
   return span;
 }
 
-function renderMemoryDetail(
-  memory: MemoryRecord,
-  entries: MemoryEntryRecord[],
-  collectorRuns: MemoryEntryRecord[],
-): void {
+function renderMemoryDetail(): void {
+  if (!activeMemory) return;
+  const memory = activeMemory;
   memoryDetailContent.innerHTML = "";
 
   memoryDetailContent.appendChild(createMemoryHeader(memory));
   memoryDetailContent.appendChild(createMemoryMetadataSection(memory));
-  memoryDetailContent.appendChild(createMemoryEntriesSection(memory, entries));
+  memoryDetailContent.appendChild(
+    createMemoryEntriesSection(memory, memoryEntries, memoryEntriesHasMore),
+  );
   // Collector activity is per-collection — empty for logs (they aren't
   // driven by a collector cycle).
-  if (collectorRuns.length > 0) {
-    memoryDetailContent.appendChild(createCollectorRunsSection(memory, collectorRuns));
+  if (memoryRuns.length > 0) {
+    memoryDetailContent.appendChild(
+      createCollectorRunsSection(memory, memoryRuns, memoryRunsHasMore),
+    );
   }
+}
+
+// "Load more" affordance shared by the detail view's paginated sections.
+function createLoadMoreButton(onClick: () => void): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "memory-load-more";
+  const button = document.createElement("button");
+  button.className = "load-more-btn";
+  button.innerHTML = '<i class="fa-solid fa-chevron-down"></i> Load more';
+  button.addEventListener("click", onClick);
+  wrapper.appendChild(button);
+  return wrapper;
 }
 
 function createCollectorRunsSection(
   memory: MemoryRecord,
   runs: MemoryEntryRecord[],
+  hasMore: boolean,
 ): HTMLElement {
   const section = document.createElement("div");
   section.className = "memory-entries-section";
 
   const title = document.createElement("h3");
-  title.textContent = `Collector activity (${runs.length})`;
+  title.textContent = hasMore
+    ? `Collector activity (showing ${runs.length}, newest first)`
+    : `Collector activity (${runs.length})`;
   section.appendChild(title);
 
   for (const run of runs) {
     section.appendChild(createCollectorRunEntry(memory, run));
+  }
+  if (hasMore) {
+    section.appendChild(
+      createLoadMoreButton(() => requestMemoryPage("collector_runs", runs.length)),
+    );
   }
   return section;
 }
@@ -1445,6 +1510,11 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "memory-form-actions";
 
+  // Only collections with an extraction prompt have a collector to run.
+  if (memory.extraction_prompt) {
+    actions.appendChild(createRunExtractorButton(memory));
+  }
+
   const archive = document.createElement("button");
   archive.className = "memory-form-archive";
   archive.textContent = memory.archived ? "Archived" : "Archive";
@@ -1478,6 +1548,30 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
   return section;
 }
 
+function createRunExtractorButton(memory: MemoryRecord): HTMLElement {
+  const running = triggeringCollection === memory.name;
+  const button = document.createElement("button");
+  button.className = "memory-form-run";
+  button.disabled = running;
+  button.innerHTML = running
+    ? '<i class="fa-solid fa-spinner fa-spin"></i> Running…'
+    : '<i class="fa-solid fa-play"></i> Run extractor';
+  button.addEventListener("click", () => {
+    triggeringCollection = memory.name;
+    browser.runtime.sendMessage({ type: RuntimeMessageType.CollectionTrigger, name: memory.name });
+    renderMemoryDetail(); // reflect the running state immediately
+  });
+  return button;
+}
+
+function handleCollectionTriggerResult(message: RuntimeCollectionTriggerResult): void {
+  if (triggeringCollection === message.name) triggeringCollection = null;
+  showToast(message.success ? "Extractor finished" : `Extractor failed: ${message.message}`);
+  // Refresh the detail so re-enabled button, new entries, and updated
+  // "last collected" all reflect the run (also arrives via memory_changed).
+  if (activeMemory && activeMemory.name === message.name) renderMemoryDetail();
+}
+
 function appendDef(grid: HTMLElement, label: string, value: string, monospace = false): void {
   const dt = document.createElement("dt");
   dt.textContent = label;
@@ -1493,7 +1587,11 @@ function appendDef(grid: HTMLElement, label: string, value: string, monospace = 
   grid.appendChild(dd);
 }
 
-function createMemoryEntriesSection(memory: MemoryRecord, entries: MemoryEntryRecord[]): HTMLElement {
+function createMemoryEntriesSection(
+  memory: MemoryRecord,
+  entries: MemoryEntryRecord[],
+  hasMore: boolean,
+): HTMLElement {
   // The entries section is "flat" — entries themselves are the cards,
   // so wrapping them in another card creates visual nesting noise.
   const section = document.createElement("div");
@@ -1515,6 +1613,10 @@ function createMemoryEntriesSection(memory: MemoryRecord, entries: MemoryEntryRe
     for (const entry of entries) {
       section.appendChild(createMemoryEntry(memory, entry));
     }
+  }
+
+  if (hasMore) {
+    section.appendChild(createLoadMoreButton(() => requestMemoryPage("entries", entries.length)));
   }
 
   // Logs are append-only by the system — manual entry add is collection-only.

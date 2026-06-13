@@ -9,6 +9,7 @@ import {
   ConnectionState as CS,
   type DomainAllowlist,
   type DomainPermissionEntry,
+  type MemorySection,
   type PageContext,
   RECONNECT_DELAY_MS,
   type RuntimeMessage,
@@ -174,6 +175,10 @@ function handleRuntimeMessage(message: RuntimeMessage): void {
     requestMemories();
   } else if (message.type === RuntimeMessageType.MemoryDetailRequest) {
     requestMemoryDetail(message.name);
+  } else if (message.type === RuntimeMessageType.MemoryPageRequest) {
+    requestMemoryPage(message.name, message.section, message.offset);
+  } else if (message.type === RuntimeMessageType.CollectionTrigger) {
+    triggerCollection(message.name);
   } else if (message.type === RuntimeMessageType.MemoryCreate) {
     sendMemoryCreate(message);
   } else if (message.type === RuntimeMessageType.MemoryUpdate) {
@@ -281,12 +286,29 @@ function connect(): void {
         type: RuntimeMessageType.MemoryDetailResponse,
         memory: data.memory,
         entries: data.entries,
+        entries_has_more: data.entries_has_more,
         collector_runs: data.collector_runs,
+        collector_runs_has_more: data.collector_runs_has_more,
+      });
+    } else if (data.type === WsIn.MemoryPageResponse) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.MemoryPageResponse,
+        name: data.name,
+        section: data.section,
+        entries: data.entries,
+        has_more: data.has_more,
       });
     } else if (data.type === WsIn.MemoryChanged) {
       broadcastToSidebar({
         type: RuntimeMessageType.MemoryChanged,
         name: data.name,
+      });
+    } else if (data.type === WsIn.CollectionTriggerResult) {
+      broadcastToSidebar({
+        type: RuntimeMessageType.CollectionTriggerResult,
+        name: data.name,
+        success: data.success,
+        message: data.message,
       });
     }
   });
@@ -397,6 +419,16 @@ function requestMemories(): void {
 function requestMemoryDetail(name: string): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: WsOutgoingType.MemoryDetailRequest, name }));
+}
+
+function requestMemoryPage(name: string, section: MemorySection, offset: number): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: WsOutgoingType.MemoryPageRequest, name, section, offset }));
+}
+
+function triggerCollection(name: string): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: WsOutgoingType.CollectionTrigger, name }));
 }
 
 function sendMemoryCreate(message: {
