@@ -460,13 +460,11 @@ class BrowserChannel(MessageChannel):
         """Query prompt logs grouped by run_id and send them to the browser."""
         agent_name = data.get("agent_name") or None
         offset = int(data.get("offset", 0))
-        agent_names = self._db.messages.get_prompt_log_agent_names()
         runs = self._db.messages.get_prompt_log_runs(
             limit=self._PROMPT_LOG_PAGE_SIZE, offset=offset, agent_name=agent_name
         )
         response = {
             "type": BROWSER_RESP_TYPE_PROMPT_LOGS,
-            "agent_names": agent_names,
             "runs": runs,
             "has_more": len(runs) == self._PROMPT_LOG_PAGE_SIZE,
         }

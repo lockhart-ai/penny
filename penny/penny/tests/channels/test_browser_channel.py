@@ -1168,7 +1168,9 @@ class TestBrowserPromptLogHandlers:
         assert response["type"] == "prompt_logs_response"
         assert len(response["runs"]) == 2
         assert response["has_more"] is False
-        assert set(response["agent_names"]) == {"chat", "inner_monologue"}
+        # The agent-filter chips are a static frontend list — the response
+        # carries only runs, not a scanned set of agent names.
+        assert "agent_names" not in response
 
     @pytest.mark.asyncio
     async def test_prompt_logs_filter_by_agent(self, tmp_path):
@@ -1180,8 +1182,6 @@ class TestBrowserPromptLogHandlers:
         response = await self._request_prompt_logs(channel, {"agent_name": "chat"})
         assert len(response["runs"]) == 1
         assert response["runs"][0]["agent_name"] == "chat"
-        # agent_names still lists all available types
-        assert set(response["agent_names"]) == {"chat", "inner_monologue"}
 
     @pytest.mark.asyncio
     async def test_prompt_logs_pagination(self, tmp_path):

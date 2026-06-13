@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 46
+        assert count == 48
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 46
+        assert count1 == 48
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0046 run = 45 migrations
-        assert count == 45
+        # 0001 is skipped; 0002 through 0048 run = 47 migrations
+        assert count == 47
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 46  # all migrations applied
+        assert count == 48  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -423,3 +423,76 @@ class TestMigrate:
         assert "3. browse — search the web" not in prompt
         assert 'browse(queries=["<seed topic>"])' in prompt
         conn.close()
+
+    def test_0047_replaces_run_id_index_with_composite(self, tmp_path):
+        """Migration 0047 adds the (run_id, timestamp) composite index used by
+        the prompt-log run pagination and drops the redundant single-column
+        run_id index from 0021."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE promptlog (id INTEGER PRIMARY KEY, run_id TEXT, timestamp TEXT)")
+        conn.execute("CREATE INDEX ix_promptlog_run_id ON promptlog (run_id)")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0047_promptlog_run_id_timestamp_index.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0047", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='promptlog'"
+            ).fetchall()
+        }
+        conn.close()
+
+        assert "ix_promptlog_run_id_timestamp" in indexes
+        assert "ix_promptlog_run_id" not in indexes
+
+    def test_0048_adds_agent_run_index(self, tmp_path):
+        """Migration 0048 adds the (agent_name, run_id, timestamp) index used by
+        the per-agent prompt-log filter."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE promptlog "
+            "(id INTEGER PRIMARY KEY, agent_name TEXT, run_id TEXT, timestamp TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0048_promptlog_agent_run_index.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0048", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='promptlog'"
+            ).fetchall()
+        }
+        conn.close()
+        assert "ix_promptlog_agent_run_timestamp" in indexes

@@ -273,7 +273,6 @@ export interface PromptLogRun {
 
 export interface WsIncomingPromptLogsPayload {
   type: typeof WsIncomingType.PromptLogsResponse;
-  agent_names: string[];
   runs: PromptLogRun[];
   has_more: boolean;
 }
@@ -603,7 +602,6 @@ export interface RuntimePromptLogsRequest {
 /** Background → prompts page: prompt logs data */
 export interface RuntimePromptLogsResponse {
   type: typeof RuntimeMessageType.PromptLogsResponse;
-  agent_names: string[];
   runs: PromptLogRun[];
   has_more: boolean;
 }

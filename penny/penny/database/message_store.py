@@ -463,19 +463,6 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
-    def get_prompt_log_agent_names(self) -> list[str]:
-        """Get distinct agent names from prompt logs."""
-        with self._session() as session:
-            rows = session.exec(
-                select(PromptLog.agent_name)
-                .where(
-                    PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
-                    PromptLog.agent_name.isnot(None),  # ty: ignore[unresolved-attribute]
-                )
-                .distinct()
-            ).all()
-            return sorted(name for name in rows if name)
-
     def get_prompt_log_runs(
         self, limit: int = 50, offset: int = 0, agent_name: str | None = None
     ) -> list[dict]:

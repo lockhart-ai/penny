@@ -264,7 +264,6 @@ function connect(): void {
     } else if (data.type === WsIn.PromptLogsResponse) {
       broadcastToSidebar({
         type: RuntimeMessageType.PromptLogsResponse,
-        agent_names: data.agent_names,
         runs: data.runs,
         has_more: data.has_more,
       });
