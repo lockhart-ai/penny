@@ -290,7 +290,6 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
         seed: Seeder,
         score: CollectorScorer,
         snapshot: Snapshotter | None = None,
-        extra_tools: Callable[[object], list] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float = 0.75,
     ) -> None:
@@ -309,8 +308,6 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     seed_user(penny.db)
                     seed(penny.db)
                     await _embed_seeds(penny)
-                    if extra_tools is not None:
-                        penny.collector._extra_tools = extra_tools(penny.collector)
                     before = snapshot(penny.db) if snapshot is not None else None
                     sent_before = len(server.outgoing_messages)
                     await penny.collector.run_for(collection)

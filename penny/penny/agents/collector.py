@@ -50,6 +50,7 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
     check_extraction_prompt,
 )
+from penny.tools.prompt_test import PromptTestTool
 from penny.tools.send_message import SendMessageTool
 
 if TYPE_CHECKING:
@@ -139,15 +140,21 @@ class Collector(BackgroundAgent):
         # ``_current_target`` is never clobbered by an overlapping run.
         self._current_target: Memory | None = None
         self._cycle_lock = asyncio.Lock()
-        # Extra tools appended to every cycle's surface.  The seam for the
-        # self-correction dry-run tool (``prompt_test``): the quality collector
-        # needs to replay a candidate extraction_prompt before applying it.
-        # Empty in production until that tool is wired; the eval injects a stub
-        # to validate the model can actually drive the find→fix→test→apply loop.
-        self._extra_tools: list[Tool] = []
 
     def get_tools(self) -> list[Tool]:
-        return [*super().get_tools(), *self._extra_tools]
+        """Standard collector surface, plus ``prompt_test`` for the quality cycle.
+
+        The self-correcting ``quality`` collector is the only cycle that revises
+        another collection's extraction_prompt, so it's the only one that needs
+        to dry-run a candidate first.  Gating per bound target keeps the tool out
+        of every other collector's surface (and out of the dry-run's own surface,
+        which bypasses this override — no nested prompt_test).
+        """
+        tools = super().get_tools()
+        target = self._current_target
+        if target is not None and target.name == PennyConstants.MEMORY_QUALITY_COLLECTION:
+            tools.append(PromptTestTool(self))
+        return tools
 
     async def execute(self) -> bool:
         target = self._next_ready_collection()

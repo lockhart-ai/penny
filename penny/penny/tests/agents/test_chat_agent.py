@@ -168,6 +168,8 @@ target + success marker + done() summary
 - notified-thoughts (collection, 0 entries) — Thoughts already shared with the user
 - penny-messages (log, 0 entries) — Every outgoing Penny reply
 - playlists (collection, 1 entries) — favorite playlists
+- quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
+corrects collection prompts that have drifted from their stated intent
 - secrets (collection, 1 entries) — hidden
 - skills (collection, 8 entries) — Workflow patterns — how to compose tools to satisfy user intents
 - tips (log, 1 entries) — useful tips

@@ -223,6 +223,12 @@ class PennyConstants:
     MEMORY_UNNOTIFIED_THOUGHTS = "unnotified-thoughts"
     MEMORY_NOTIFIED_THOUGHTS = "notified-thoughts"
 
+    # The self-correcting collector (seeded by migration 0055): reviews Penny's
+    # own runs/messages against each collection's intent and rewrites drifted
+    # extraction_prompts.  The collector gates the ``prompt_test`` dry-run tool
+    # into the surface only for this collection's cycles.
+    MEMORY_QUALITY_COLLECTION = "quality"
+
     # Centroid-proxy penalty applied during similarity-ranked retrieval:
     # ``adjusted = max(weighted, current_cos) - α * cos(entry, corpus_centroid)``.
     # The proxy is rank-equivalent to mean cosine to every other entry in the

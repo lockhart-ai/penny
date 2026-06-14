@@ -143,14 +143,27 @@ like `browse`/`send_message` need capture regardless):
    Cleanest isolation, heavier. *(current lean)*
 3. **read-through / write-capture proxy** — reads hit prod, writes intercepted.
 
-## Phase 3 — the model tool
+## Phase 3 — the model tool (shipped)
 
-Wrap the Phase-2 sandbox as `dry_run_collection(name, candidate_prompt)` →
-`{would_write, would_send, summary}`, exposed to the quality collector (and
-chat). It's the sandboxed sibling of the existing `TestExtractionPromptTool`
-(which runs `collector.run_for` *for real*) — the delta is capture-don't-apply.
+Done. The Phase-2 sandbox is wrapped as the **`prompt_test`** tool
+(`penny/tools/prompt_test.py` → `Collector.dry_run`): the sandboxed sibling of
+`TestExtractionPromptTool` (which runs `collector.run_for` *for real*) — the
+delta is capture-don't-apply. We chose the **capturing-tool-surface** sandbox
+over snapshot/clone: a throwaway `_DryRunCollector` runs the candidate cycle in
+place with side-effecting tools captured, browse stubbed, and the log-read
+cursor never committed (non-consuming reads via the `_should_commit_cursor`
+hook). No DB copy.
+
 The quality collector reads the dry-run output, compares it against the
-collection's `intent`, and applies the prompt change only if the gap shrinks
-(then notifies the user — apply-then-tell, since there's no reliable approval
-gate). Building this *before* eval rides real agents would ship the fake
-harness's drift to the model, so it is strictly last.
+collection's `intent`, and applies the change with `collection_update` only once
+the dry run is clean — then notifies the user (apply-then-tell; no reliable
+approval gate).
+
+**Validated, then graduated.** A stubbed tool first proved (through the real
+harness, real collector, real model) that gpt-oss can drive the full loop —
+spot drift → draft a fix → `prompt_test` it → read the result → apply. The real
+tool passed the same contract. Migration **0055** then seeds the `quality`
+collector into every DB so all deployments get it; `Collector.get_tools` gates
+`prompt_test` into the surface for that collection's cycles only
+(`MEMORY_QUALITY_COLLECTION`). The contracts live in
+`tests/eval/test_quality_correction.py`.
