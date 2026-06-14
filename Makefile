@@ -1,10 +1,13 @@
 # Check tool configuration (single source of truth for tool parameters)
 RUFF_TARGETS = penny/
-PYTEST_ARGS = penny/tests/ -v
+# Exclude the live-model eval suite from the default test run — it's slow and
+# needs a running Ollama, so it never runs in make check / CI (see make eval).
+PYTEST_ARGS = penny/tests/ -v -m "not eval"
+EVAL_PYTEST_ARGS = penny/tests/eval/ -v -m eval
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
-.PHONY: up prod kill build team-build browser-build fmt lint fix typecheck check pytest token migrate-test migrate-validate
+.PHONY: up prod kill build team-build browser-build fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -77,6 +80,20 @@ check: $(if $(LOCAL),,build team-build)
 pytest: $(if $(LOCAL),,build team-build)
 	$(RUN) pytest $(PYTEST_ARGS)
 	$(TEAM_RUN) pytest $(TEAM_PYTEST_ARGS)
+
+# Live-model contract suite — drives the REAL agents against a running Ollama
+# (gpt-oss + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's
+# kept out of make check; run it by hand to validate prompt/behaviour changes.
+# Forwards the model endpoint into the container (defaulting to the docker host,
+# where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
+# the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+eval: $(if $(LOCAL),,build)
+	$(RUN) env \
+		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
+		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
+		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
+		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
+		pytest $(EVAL_PYTEST_ARGS)
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test

@@ -63,6 +63,9 @@ indent-style = "space"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["penny/tests"]
+markers = [
+    "eval: live-model contract tests — slow, need a running Ollama; excluded from make check, run via make eval",
+]
 
 [tool.ty.environment]
 python = "/usr/local/bin/python"

@@ -167,6 +167,43 @@ def test_user_info(test_config):
     return db
 
 
+@asynccontextmanager
+async def run_penny_with_server(
+    config: Config, signal_server: MockSignalServer
+) -> AsyncIterator[Penny]:
+    """Run a real Penny against a given mock Signal server, with clean teardown.
+
+    The shared isolation core: construct the real ``Penny``, start its run loop,
+    wait for the channel to connect, mock the browse provider, then yield.  The
+    ``running_penny`` fixture binds this to the per-test ``signal_server``; the
+    live-model eval suite drives it with a fresh server per sample.  Keeping one
+    construction path means tests and eval can never diverge.
+    """
+    penny = Penny(config)
+    penny_task = asyncio.create_task(penny.run())
+    try:
+        # Wait for WebSocket connection to establish
+        await wait_until(lambda: len(signal_server._websockets) > 0)
+
+        # Mock browse provider on all agents so tool calls don't hit
+        # real retry/sleep loops when no browser extension is connected
+        def mock_browse():
+            return (
+                AsyncMock(return_value=("Mock search results", "data:image/png;base64,mock")),
+                MagicMock(check_domain=AsyncMock()),
+            )
+
+        penny.chat_agent._browse_provider = mock_browse
+        penny.collector._browse_provider = mock_browse
+
+        yield penny
+    finally:
+        penny_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await penny_task
+        await penny.shutdown()
+
+
 @pytest.fixture
 def running_penny(signal_server) -> Callable[[Config], AbstractAsyncContextManager[Penny]]:
     """
@@ -178,31 +215,8 @@ def running_penny(signal_server) -> Callable[[Config], AbstractAsyncContextManag
             await signal_server.push_message(...)
     """
 
-    @asynccontextmanager
-    async def _running_penny(config: Config) -> AsyncIterator[Penny]:
-        penny = Penny(config)
-        penny_task = asyncio.create_task(penny.run())
-        try:
-            # Wait for WebSocket connection to establish
-            await wait_until(lambda: len(signal_server._websockets) > 0)
-
-            # Mock browse provider on all agents so tool calls don't hit
-            # real retry/sleep loops when no browser extension is connected
-            def mock_browse():
-                return (
-                    AsyncMock(return_value=("Mock search results", "data:image/png;base64,mock")),
-                    MagicMock(check_domain=AsyncMock()),
-                )
-
-            penny.chat_agent._browse_provider = mock_browse
-            penny.collector._browse_provider = mock_browse
-
-            yield penny
-        finally:
-            penny_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await penny_task
-            await penny.shutdown()
+    def _running_penny(config: Config) -> AbstractAsyncContextManager[Penny]:
+        return run_penny_with_server(config, signal_server)
 
     return _running_penny
 
