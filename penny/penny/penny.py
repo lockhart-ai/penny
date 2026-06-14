@@ -383,6 +383,32 @@ class Penny:
                 break
         return total
 
+    async def _backfill_message_embeddings(self, batch_limit: int) -> int:
+        """Backfill ``messagelog`` rows missing a content embedding.
+
+        The user/penny message logs are read facades over ``messagelog``, and
+        ``read_similar`` over them ranks on ``messagelog.embedding`` — so any
+        table with an embedding column gets vectorized here (no row is copied
+        from another table).  Idempotent: a row keeps its embedding once set.
+        """
+        if self.embedding_model_client is None:
+            return 0
+        total = 0
+        while True:
+            messages = self.db.messages.messages_without_embeddings(limit=batch_limit)
+            if not messages:
+                break
+            try:
+                vectors = await self.embedding_model_client.embed([m.content for m in messages])
+                for message, vector in zip(messages, vectors, strict=True):
+                    if message.id is not None:
+                        self.db.messages.set_embedding(message.id, serialize_embedding(vector))
+                total += len(messages)
+            except LlmError as e:
+                logger.warning("Startup embedding backfill failed for messages: %s", e)
+                break
+        return total
+
     async def _backfill_description_embeddings(self, batch_limit: int) -> int:
         """Backfill memory description anchors missing an embedding.
 
@@ -437,6 +463,9 @@ class Penny:
                 logger.info(
                     "Startup embedding backfill complete: %d descriptions", total_descriptions
                 )
+            total_messages = await self._backfill_message_embeddings(batch_limit)
+            if total_messages:
+                logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
         await self._send_startup_announcement()
         await self._prompt_for_missing_profiles()

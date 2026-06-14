@@ -14,7 +14,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.database.memory_store import LogEntryInput
 from penny.database.models import MessageLog
 from penny.llm import LlmClient
 from penny.llm.image_client import OllamaImageClient
@@ -334,10 +333,10 @@ class MessageChannel(ABC):
             thought_id=thought_id,
             device_id=device_id,
         )
+        # The outgoing message is logged to ``messagelog`` (above); the
+        # ``penny-messages`` log is a read facade over it, so there's no separate
+        # append.  The embedding is still computed for nearest-image matching.
         embedding = await embed_text(self._embedding_model_client, prepared)
-        await self._append_to_memory_log(
-            PennyConstants.MEMORY_PENNY_MESSAGES_LOG, prepared, author, embedding
-        )
         attachments = self._resolve_media(attachments, embedding)
         external_id = await self.send_message(recipient, prepared, attachments, quote_message)
         # Store the external ID for future reactions and quote replies
@@ -362,26 +361,6 @@ class MessageChannel(ABC):
             return attachments
         encoded = base64.b64encode(media.data).decode()
         return [f"data:{media.mime_type};base64,{encoded}"]
-
-    async def _append_to_memory_log(
-        self, name: str, content: str, author: str, embedding: list[float] | None = None
-    ) -> None:
-        """Append ``content`` to a memory log, embedding at write time.
-
-        The embedding is best-effort — if no embedding client is configured
-        or embed_text fails, the entry is still appended without a vector.  A
-        precomputed ``embedding`` is reused when the caller already has one.
-        """
-        vec = (
-            embedding
-            if embedding is not None
-            else await embed_text(self._embedding_model_client, content)
-        )
-        self._db.memories.append(
-            name,
-            [LogEntryInput(content=content, content_embedding=vec)],
-            author=author,
-        )
 
     async def handle_message(self, envelope_data: dict) -> None:
         """
@@ -555,9 +534,8 @@ class MessageChannel(ABC):
         threaded through ambient state.
         """
         logger.info("Dispatching to message agent for %s", message.sender)
-        await self._append_to_memory_log(
-            PennyConstants.MEMORY_USER_MESSAGES_LOG, message.content, "user"
-        )
+        # The incoming message is logged to ``messagelog`` below (``log_message``);
+        # ``user-messages`` is a read facade over it — no separate append.
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)

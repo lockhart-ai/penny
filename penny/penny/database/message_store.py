@@ -254,6 +254,35 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set external_id: %s", e)
 
+    # --- Embeddings (startup backfill) ---
+
+    def messages_without_embeddings(self, limit: int) -> list[MessageLog]:
+        """Real messages still missing a content embedding (reactions excluded).
+
+        ``messagelog.embedding`` powers ``read_similar`` over the user/penny
+        message logs (now read facades over this table).  The startup backfill
+        fills any gaps — historical rows + anything logged since the last run."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MessageLog)
+                    .where(
+                        MessageLog.embedding.is_(None),  # ty: ignore[unresolved-attribute]
+                        MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
+                    )
+                    .limit(limit)
+                ).all()
+            )
+
+    def set_embedding(self, message_id: int, embedding: bytes) -> None:
+        """Store a serialized content embedding on a message row."""
+        with self._session() as session:
+            message = session.get(MessageLog, message_id)
+            if message is not None:
+                message.embedding = embedding
+                session.add(message)
+                session.commit()
+
     # --- Message lookup ---
 
     def get_by_id(self, message_id: int) -> MessageLog | None:

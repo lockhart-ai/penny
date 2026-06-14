@@ -48,7 +48,15 @@ from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
-from penny.database.models import Memory, MemoryEntry
+from penny.database.models import Memory, MemoryEntry, MessageLog
+
+# The two message logs are read facades over ``messagelog`` (the canonical store)
+# — not duplicated ``memory_entry`` rows.  Every read path below serves them from
+# ``messagelog`` (synthesized as ``MemoryEntry``), keyed by direction.
+_MESSAGE_LOG_DIRECTIONS = {
+    PennyConstants.MEMORY_USER_MESSAGES_LOG: PennyConstants.MessageDirection.INCOMING,
+    PennyConstants.MEMORY_PENNY_MESSAGES_LOG: PennyConstants.MessageDirection.OUTGOING,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +320,19 @@ class MemoryStore:
                     MemoryEntry.memory_name
                 )  # ty: ignore[invalid-argument-type]
             ).all()
-        return dict(rows)
+            counts = dict(rows)
+            # The message logs are facades over ``messagelog`` — count there, not
+            # the (now empty) ``memory_entry`` rows, so the inventory matches reads.
+            by_direction = dict(
+                session.exec(
+                    select(MessageLog.direction, func.count(MessageLog.id))  # ty: ignore[invalid-argument-type]
+                    .where(MessageLog.is_reaction.is_(False))  # ty: ignore[unresolved-attribute]
+                    .group_by(MessageLog.direction)
+                ).all()
+            )
+        for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
+            counts[log_name] = by_direction.get(direction, 0)
+        return counts
 
     def _notify_changed(self, name: str | None) -> None:
         """Fire the change callback if registered.  Safe to call without a hook."""
@@ -655,6 +675,43 @@ class MemoryStore:
         with self._session() as session:
             return self._entries_by_key(session, _slug(name), key)
 
+    def _message_entries(self, name: str) -> list[MemoryEntry]:
+        """The user/penny message logs, read from ``messagelog`` and synthesized
+        as ``MemoryEntry`` (oldest-first) so every read path treats them like any
+        log's entries — with no duplicated rows.  ``content_embedding`` is the
+        ``messagelog`` embedding (same serialized-bytes format), populated by the
+        startup backfill.  Reactions are excluded — they aren't conversation."""
+        direction = _MESSAGE_LOG_DIRECTIONS[name]
+        # A message has two conversational authors — the user (incoming) or
+        # Penny (outgoing) — which IS the direction.  The internal agent that
+        # produced a Penny message isn't a conversational author, so it isn't
+        # recorded on messagelog and the facade derives author from direction.
+        author = "user" if direction == PennyConstants.MessageDirection.INCOMING else "penny"
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MessageLog)
+                    .where(
+                        MessageLog.direction == direction,
+                        MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
+                    )
+                    .order_by(MessageLog.timestamp.asc())  # type: ignore[union-attr]
+                ).all()
+            )
+        return [
+            MemoryEntry(
+                id=row.id,
+                memory_name=name,
+                key=None,
+                content=row.content,
+                author=author,
+                key_embedding=None,
+                content_embedding=row.embedding,
+                created_at=row.timestamp,
+            )
+            for row in rows
+        ]
+
     def read_latest(
         self, name: str, k: int | None = None, offset: int = 0, search: str | None = None
     ) -> list[MemoryEntry]:
@@ -665,6 +722,14 @@ class MemoryStore:
         substring LIKE) — used by the addon to filter a collection's entries
         to a search term."""
         name = _slug(name)
+        if name in _MESSAGE_LOG_DIRECTIONS:
+            entries = list(reversed(self._message_entries(name)))
+            if search:
+                needle = search.lower()
+                entries = [e for e in entries if needle in e.content.lower()]
+            if offset:
+                entries = entries[offset:]
+            return entries[:k] if k is not None else entries
         with self._session() as session:
             query = (
                 select(MemoryEntry)
@@ -734,6 +799,9 @@ class MemoryStore:
 
     def read_since(self, name: str, cursor: datetime, cap: int | None = None) -> list[MemoryEntry]:
         name = _slug(name)
+        if name in _MESSAGE_LOG_DIRECTIONS:
+            entries = [e for e in self._message_entries(name) if e.created_at > cursor]
+            return entries[:cap] if cap is not None else entries
         with self._session() as session:
             query = (
                 select(MemoryEntry)
@@ -861,6 +929,8 @@ class MemoryStore:
         return [by_id[entry_id] for entry_id in fused]
 
     def _embedded_rows(self, name: str) -> list[MemoryEntry]:
+        if name in _MESSAGE_LOG_DIRECTIONS:
+            return [e for e in self._message_entries(name) if e.content_embedding is not None]
         with self._session() as session:
             return list(
                 session.exec(
@@ -927,6 +997,8 @@ class MemoryStore:
         name = _slug(name)
         if not hits:
             return []
+        if name in _MESSAGE_LOG_DIRECTIONS:
+            return self._neighbors_in_window(self._message_entries(name), hits, window_minutes)
         delta = timedelta(minutes=window_minutes)
         seen_ids: set[int] = set()
         expanded: list[MemoryEntry] = []
@@ -950,8 +1022,31 @@ class MemoryStore:
         expanded.sort(key=lambda r: r.created_at)
         return expanded
 
+    @staticmethod
+    def _neighbors_in_window(
+        entries: list[MemoryEntry], hits: list[MemoryEntry], window_minutes: int
+    ) -> list[MemoryEntry]:
+        """Temporal-neighbor expansion over an in-memory entry list (message logs)."""
+        delta = timedelta(minutes=window_minutes)
+        seen_ids: set[int] = set()
+        expanded: list[MemoryEntry] = []
+        for hit in hits:
+            start, end = hit.created_at - delta, hit.created_at + delta
+            for entry in entries:
+                if (
+                    entry.id is not None
+                    and entry.id not in seen_ids
+                    and start <= entry.created_at <= end
+                ):
+                    seen_ids.add(entry.id)
+                    expanded.append(entry)
+        expanded.sort(key=lambda r: r.created_at)
+        return expanded
+
     def read_all(self, name: str) -> list[MemoryEntry]:
         name = _slug(name)
+        if name in _MESSAGE_LOG_DIRECTIONS:
+            return self._message_entries(name)
         with self._session() as session:
             return list(
                 session.exec(

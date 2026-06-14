@@ -174,7 +174,7 @@ corrects collection prompts that have drifted from their stated intent
 - skills (collection, 8 entries) — Workflow patterns — how to compose tools to satisfy user intents
 - tips (log, 1 entries) — useful tips
 - unnotified-thoughts (collection, 0 entries) — Pending thoughts to share with the user
-- user-messages (log, 1 entries) — Every incoming user message
+- user-messages (log, 0 entries) — Every incoming user message
 
 ### playlists
 favorite playlists
@@ -265,15 +265,16 @@ source URL so the user can follow up."""
         assert incoming_messages[0].device_id == test_device.id
         assert outgoing[0].device_id == test_device.id
 
-        # Stage 9 side-effect writes: every message flow populates the three
-        # system log memories so the recall assembler can read them next turn.
+        # The message logs are read facades over messagelog: the flow's
+        # incoming/outgoing messages surface through read_all, with two
+        # conversational authors — the user (incoming) or Penny (outgoing).
         user_msg_entries = penny.db.memories.read_all("user-messages")
         assert any(e.content == "what's the weather like today?" for e in user_msg_entries)
         assert all(e.author == "user" for e in user_msg_entries)
 
         penny_msg_entries = penny.db.memories.read_all("penny-messages")
         assert any("here's what i found" in e.content.lower() for e in penny_msg_entries)
-        assert all(e.author == "chat" for e in penny_msg_entries)
+        assert all(e.author == "penny" for e in penny_msg_entries)
 
         browse_entries = penny.db.memories.read_all("browse-results")
         # Mock browse provider is wired in conftest; the tool was invoked once.

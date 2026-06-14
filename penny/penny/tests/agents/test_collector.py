@@ -67,9 +67,9 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     and starved the rest.  ``get_tools`` keys on the bound collection instead.
     """
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_log("user-messages", "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log("chatter", "log", Inclusion.ALWAYS, RecallMode.RECENT)
     db.memories.append(
-        "user-messages",
+        "chatter",
         [LogEntryInput(content="hello there", content_embedding=None)],
         author="user",
     )
@@ -82,21 +82,21 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
         return tool
 
     alpha = _log_read_for("alpha")
-    alpha_result = await alpha.execute(memory="user-messages")
+    alpha_result = await alpha.execute(memory="chatter")
     assert "hello there" in alpha_result
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
-    assert "1 entry from `user-messages`" in alpha_result
+    assert "1 entry from `chatter`" in alpha_result
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
     beta = _log_read_for("beta")
-    assert "hello there" in await beta.execute(memory="user-messages"), (
+    assert "hello there" in await beta.execute(memory="chatter"), (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
     # Cursors key on the collection, never on the dispatcher identity.
-    assert db.cursors.get("alpha", "user-messages") is not None
-    assert db.cursors.get("collector", "user-messages") is None
+    assert db.cursors.get("alpha", "chatter") is not None
+    assert db.cursors.get("collector", "chatter") is None
 
 
 def test_dispatcher_returns_none_when_no_collections_have_prompts(test_config, tmp_path):

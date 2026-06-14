@@ -18,7 +18,7 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory_store import Inclusion, LogEntryInput, RecallMode
+from penny.database.memory_store import Inclusion, RecallMode
 from penny.tools.send_message import SendMessageTool, _appears_truncated
 
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
@@ -42,6 +42,17 @@ def _make_config(cooldown_seconds: float = 600.0):
     """Stand-in config exposing the runtime knobs the tool reads."""
     runtime = type("Runtime", (), {"SEND_COOLDOWN_SECONDS": cooldown_seconds})()
     return type("Config", (), {"runtime": runtime})()
+
+
+def _penny_sent(db, content: str) -> None:
+    """Record a Penny outgoing message — the cooldown reads ``penny-messages``,
+    a facade over ``messagelog`` (direction=outgoing)."""
+    db.messages.log_message(PennyConstants.MessageDirection.OUTGOING, "penny", content)
+
+
+def _user_said(db, content: str) -> None:
+    """Record an incoming user message (``user-messages`` facade)."""
+    db.messages.log_message(PennyConstants.MessageDirection.INCOMING, _RECIPIENT, content)
 
 
 def _make_channel():
@@ -174,7 +185,7 @@ async def test_send_message_refuses_when_cooldown_not_elapsed(tmp_path):
     db = _make_db(tmp_path)
     # Seed a prior send authored by this agent — count = 1 (no user reply since),
     # so the cooldown applies and the new send is refused.
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="prior")], author=_AGENT)
+    _penny_sent(db, "prior")
     channel = _make_channel()
     tool = _make_tool(db, channel=channel, config=_make_config(cooldown_seconds=3600.0))
 
@@ -196,10 +207,8 @@ async def test_cooldown_skipped_when_user_replied_since_last_send(tmp_path):
     """
     db = _make_db(tmp_path)
     # Prior send, then a user reply, then this new send attempt.
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="prior")], author=_AGENT)
-    db.memories.append(
-        _USER_LOG, [LogEntryInput(content="actually here's a follow-up")], author="user"
-    )
+    _penny_sent(db, "prior")
+    _user_said(db, "actually here's a follow-up")
     channel = _make_channel()
     tool = _make_tool(db, channel=channel, config=_make_config(cooldown_seconds=3600.0))
 
@@ -213,10 +222,10 @@ def test_user_reply_resets_cooldown_count(tmp_path):
     """A user-messages entry newer than prior sends resets the autonomous-send count to zero."""
     db = _make_db(tmp_path)
     # Old send → would otherwise be counted as autonomous outreach.
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="old")], author=_AGENT)
+    _penny_sent(db, "old")
     # User replied since — entries are timestamped at write time, so this
     # user-messages entry's created_at is newer than the old send.
-    db.memories.append(_USER_LOG, [LogEntryInput(content="hi back")], author="user")
+    _user_said(db, "hi back")
     tool = _make_tool(db)
 
     # The count walks newest-first and breaks once entries are older than the
@@ -224,16 +233,17 @@ def test_user_reply_resets_cooldown_count(tmp_path):
     assert tool._count_sends_since_user_message() == 0
 
 
-def test_latest_send_time_filters_by_author(tmp_path):
-    """Only entries authored by ``self.agent_name`` count toward this agent's history."""
+def test_latest_send_time_is_penny_last_outgoing(tmp_path):
+    """The cooldown is per-Penny, not per-internal-agent: ``_latest_send_time``
+    returns Penny's most recent outgoing message regardless of which agent
+    produced it (a message has two authors — Penny or the user)."""
     db = _make_db(tmp_path)
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="from chat")], author="chat")
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="from notify")], author=_AGENT)
-    db.memories.append(_PENNY_LOG, [LogEntryInput(content="another chat")], author="chat")
+    _penny_sent(db, "first")
+    _penny_sent(db, "most recent")
     tool = _make_tool(db)
 
     latest = tool._latest_send_time()
-    assert latest is not None  # the notify entry is found despite chat entries surrounding it
+    assert latest is not None
 
 
 def test_latest_send_time_none_when_no_prior_sends(tmp_path):

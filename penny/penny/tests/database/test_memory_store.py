@@ -444,9 +444,9 @@ class TestDegenerateContentRejection:
 class TestLogAppend:
     def test_append_multiple_entries_stored_in_order(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("user-messages", "inbound", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("chatter", "inbound", Inclusion.RELEVANT, RecallMode.RELEVANT)
         db.memories.append(
-            "user-messages",
+            "chatter",
             [
                 LogEntryInput(content="hello"),
                 LogEntryInput(content="are you there"),
@@ -454,7 +454,7 @@ class TestLogAppend:
             author="user",
         )
 
-        entries = db.memories.read_all("user-messages")
+        entries = db.memories.read_all("chatter")
         assert [e.content for e in entries] == ["hello", "are you there"]
         assert all(e.key is None for e in entries)
         assert all(e.author == "user" for e in entries)
