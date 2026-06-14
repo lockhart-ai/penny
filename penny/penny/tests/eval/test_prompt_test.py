@@ -1,19 +1,16 @@
-"""EXPERIMENT — can the model drive a dry-run tool to self-correct a prompt?
+"""Can the model drive the dry-run tool to self-correct a prompt?
 
-The question this answers is purely behavioural: given a `prompt_test` tool that
-replays a candidate extraction_prompt and reports what the cycle WOULD do, can
-the quality collector run the full loop —
+The question is behavioural: given the real `prompt_test` tool (which replays a
+candidate extraction_prompt on a throwaway dry-run collector and reports what the
+cycle WOULD do), can the quality collector run the full loop —
 
     spot the drift → draft a fixed prompt → prompt_test it → read the result →
     decide it's fixed → apply it with collection_update
 
 — through the REAL collector against the REAL model?
 
-The tool here is a STUB: it doesn't build the real snapshot/capture sandbox, it
-just reports (deterministically, from the candidate's steps) how many messages
-the simulated cycle would send.  That's enough to test whether the model can
-operate the tool in a loop.  If this proves out, the real sandbox is a body swap
-behind the same tool surface — see docs/self-improvement-loop.md (Phase 2/3).
+This drives the production PromptTestTool (a stubbed version proved the model
+can operate the protocol; this checks it against a faithful simulation).
 
 Scenario: a silent-intent collection whose prompt still sends messages.  A
 correct fix removes the send_message step; the dry run should then report 0
@@ -22,16 +19,13 @@ messages, and the model should apply it.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-from pydantic import BaseModel
 
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory_store import Inclusion, LogEntryInput, RecallMode
 from penny.tests.eval.conftest import CollectorScorer, tool_was_called
-from penny.tools.base import Tool
+from penny.tools.prompt_test import PromptTestTool
 
 pytestmark = pytest.mark.eval
 
@@ -46,50 +40,6 @@ _DRIFTED_PROMPT = (
     "3. If the write succeeded, send_message: one-sentence 'found a new item' + URL.\n"
     "4. done()."
 )
-
-
-# ── The stub dry-run tool ────────────────────────────────────────────────────
-
-
-class _PromptTestArgs(BaseModel):
-    collection: str
-    extraction_prompt: str
-
-
-class _StubPromptTest(Tool):
-    """STUB dry-run: reports how many messages the candidate cycle would send,
-    derived deterministically from whether the prompt keeps a send_message step.
-    Stands in for the real snapshot/capture sandbox while we test the model's
-    ability to USE such a tool."""
-
-    name = "prompt_test"
-    description = (
-        "Dry-run a candidate extraction_prompt for a collection WITHOUT applying it. "
-        "Returns what the collector cycle would do — how many messages it would send "
-        "the user, and whether it would write entries — so you can confirm a fix "
-        "before committing it with collection_update. Always prompt_test a change "
-        "before you apply it."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "collection": {"type": "string", "description": "Collection to simulate."},
-            "extraction_prompt": {
-                "type": "string",
-                "description": "The full candidate extraction_prompt body to test.",
-            },
-        },
-        "required": ["collection", "extraction_prompt"],
-    }
-
-    async def execute(self, **kwargs: Any) -> str:
-        args = _PromptTestArgs(**kwargs)
-        would_send = 1 if "send_message" in args.extraction_prompt.lower() else 0
-        return (
-            f"Dry run of `{args.collection}` with the candidate prompt:\n"
-            f"- messages it would send to the user this cycle: {would_send}\n"
-            f"- entries it would write: a few (unchanged)"
-        )
 
 
 # ── Quality prompt that drives the dry-run loop ─────────────────────────────
@@ -174,8 +124,8 @@ def _score_loop(db: Database, before: object, sent: list[str]) -> list[str]:
     return fails
 
 
-def _extra_tools(db: Database) -> list:
-    return [_StubPromptTest()]
+def _extra_tools(collector) -> list:
+    return [PromptTestTool(collector)]
 
 
 async def test_dry_run_self_correction_loop(collector_eval) -> None:

@@ -27,7 +27,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse
@@ -38,6 +40,7 @@ from penny.database.memory_store import LogEntryInput
 from penny.database.models import Memory
 from penny.llm.client import LlmClient
 from penny.tools.base import Tool
+from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import (
     CollectionDeleteEntryTool,
     CollectionMoveTool,
@@ -48,6 +51,9 @@ from penny.tools.memory_tools import (
     check_extraction_prompt,
 )
 from penny.tools.send_message import SendMessageTool
+
+if TYPE_CHECKING:
+    from penny.channels.base import MessageChannel
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +178,32 @@ class Collector(BackgroundAgent):
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
         return await self._execute_cycle(collection)
+
+    async def dry_run(self, collection_name: str, candidate_prompt: str) -> str:
+        """Simulate one cycle for ``collection_name`` with ``candidate_prompt``,
+        reporting what it WOULD do without applying anything.
+
+        Backs the ``prompt_test`` tool: the self-correcting collector vets a
+        candidate extraction_prompt before committing it.  Runs on a throwaway
+        ``_DryRunCollector`` (its own loop/target state, so it never collides
+        with this live cycle) where reads are real-but-non-consuming and
+        writes/sends/browse are captured rather than executed.
+        """
+        collection = self.db.memories.get(collection_name)
+        if collection is None:
+            return f"Collection '{collection_name}' not found."
+        if error := check_extraction_prompt(candidate_prompt):
+            return f"Candidate prompt rejected: {error}"
+        runner = _DryRunCollector(
+            model_client=self._model_client,
+            db=self.db,
+            config=self.config,
+            embedding_model_client=self._embedding_model_client,
+            channel=self._channel,
+            candidate_prompt=candidate_prompt,
+        )
+        captures = await runner.simulate(collection)
+        return _summarize_dry_run(collection_name, captures)
 
     async def _execute_cycle(self, collection: Memory) -> tuple[bool, str]:
         """Run one full agent cycle bound to ``collection`` with audit cleanup.
@@ -433,3 +465,138 @@ class Collector(BackgroundAgent):
 def _aware(dt: datetime) -> datetime:
     """SQLite returns naive datetimes; assume UTC and attach tzinfo."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+# ── Dry-run sandbox (backs the prompt_test tool) ──────────────────────────────
+
+
+@dataclass
+class _CapturedCall:
+    """A side-effecting tool call a dry-run cycle made — recorded, not executed."""
+
+    tool: str
+    arguments: dict
+
+
+class _CapturingTool(Tool):
+    """Stands in for a side-effecting (or networked) tool during a dry run.
+
+    Presents the wrapped tool's real name/description/parameters so the model
+    sees the identical surface, but ``execute`` records the call and returns a
+    canned result instead of mutating the DB, messaging the user, or hitting the
+    network.  No class-level ``name`` so it isn't entered in the Tool registry.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        parameters: dict,
+        captures: list[_CapturedCall],
+        canned: str,
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self._captures = captures
+        self._canned = canned
+
+    async def execute(self, **kwargs: object) -> str:
+        self._captures.append(_CapturedCall(self.name, dict(kwargs)))
+        return self._canned
+
+
+class _DryRunCollector(Collector):
+    """A throwaway collector that simulates one cycle with a candidate prompt.
+
+    Lives only for the duration of a ``prompt_test`` call.  It binds the suspect
+    collection and runs the real agent loop, but: the system prompt uses the
+    *candidate* extraction_prompt; the write/send/browse tools are captured (no
+    DB mutation, no outbound message, no network); and the log-read cursor is
+    never committed, so reads are real but non-consuming.  Its own loop/target
+    state means it never collides with the live cycle that triggered it.
+    """
+
+    def __init__(
+        self,
+        model_client: LlmClient,
+        db: Database,
+        config: Config,
+        *,
+        embedding_model_client: LlmClient | None,
+        channel: MessageChannel | None,
+        candidate_prompt: str,
+    ) -> None:
+        super().__init__(
+            model_client=model_client,
+            db=db,
+            config=config,
+            embedding_model_client=embedding_model_client,
+        )
+        self._candidate_prompt = candidate_prompt
+        self._captures: list[_CapturedCall] = []
+        # send_message only enters the surface when a channel is bound; bind the
+        # live one so the model can "call" it — the capturing wrapper means it's
+        # never actually used.
+        if channel is not None:
+            self.set_channel(channel)
+
+    def _should_commit_cursor(self, success: bool) -> bool:
+        return False  # a simulation never consumes the reads it makes
+
+    async def _build_system_prompt(self, user: str | None) -> str:
+        target = self._require_target()
+        return (
+            f"You are the collector for the `{target.name}` collection.\n"
+            f"Description: {target.description}\n\n"
+            f"{self._candidate_prompt}\n\n"
+            f"{self._RUNTIME_RULES}"
+        )
+
+    def get_tools(self) -> list[Tool]:
+        # BackgroundAgent surface (memory + browse + done + send_message),
+        # skipping Collector's _extra_tools, then sandboxed.
+        return [self._sandbox(tool) for tool in super(Collector, self).get_tools()]
+
+    def _sandbox(self, tool: Tool) -> Tool:
+        if tool.name in _WORK_TOOLS:
+            return _CapturingTool(
+                tool.name,
+                tool.description,
+                tool.parameters,
+                self._captures,
+                canned=f"(dry run) recorded {tool.name} — not applied",
+            )
+        if tool.name == BrowseTool.name:
+            return _CapturingTool(
+                tool.name,
+                tool.description,
+                tool.parameters,
+                self._captures,
+                canned="(dry run) browse simulated — assume a few relevant items were found",
+            )
+        return tool
+
+    async def simulate(self, collection: Memory) -> list[_CapturedCall]:
+        self._current_target = collection
+        try:
+            await self._run_cycle(uuid.uuid4().hex)
+        finally:
+            self._current_target = None
+        return self._captures
+
+
+def _summarize_dry_run(collection_name: str, captures: list[_CapturedCall]) -> str:
+    """Render the captured calls into a result the model reasons about."""
+    sends = [call for call in captures if call.tool == SendMessageTool.name]
+    writes = [
+        call for call in captures if call.tool in _WORK_TOOLS and call.tool != SendMessageTool.name
+    ]
+    lines = [
+        f"Dry run of `{collection_name}` with the candidate prompt — what it WOULD do "
+        "this cycle (nothing was applied):",
+        f"- messages it would send to the user: {len(sends)}",
+    ]
+    lines.extend(f"    · {str(call.arguments.get('content', ''))[:160]}" for call in sends)
+    lines.append(f"- collection writes/edits/deletes it would make: {len(writes)}")
+    return "\n".join(lines)
