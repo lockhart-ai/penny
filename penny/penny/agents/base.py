@@ -355,12 +355,21 @@ class Agent:
         success = any(record.tool == self.terminator_tool for record in response.tool_calls)
 
         if log_read_next is not None:
-            if success:
+            if self._should_commit_cursor(success):
                 log_read_next.commit_pending()
             else:
                 log_read_next.discard_pending()
 
         return CycleResult(success=success, response=response)
+
+    def _should_commit_cursor(self, success: bool) -> bool:
+        """Whether to commit the log-read cursor after a cycle.
+
+        Real cycles commit on success — the entries were consumed.  The dry-run
+        collector overrides this to always discard, so a simulated cycle reads
+        real data without advancing the cursor (non-consuming reads).
+        """
+        return success
 
     # ── Override hooks ───────────────────────────────────────────────────
 

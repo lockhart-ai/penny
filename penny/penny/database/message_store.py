@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import func, text
 from sqlmodel import Session, select
@@ -21,6 +21,25 @@ _BOLD_ITALIC_RE = re.compile(r"\*{1,3}(.+?)\*{1,3}")
 _STRIKETHROUGH_RE = re.compile(r"~{1,2}(.+?)~{1,2}")
 _MONOSPACE_RE = re.compile(r"`(.+?)`")
 _TILDE_OPERATOR = "\u223c"
+
+
+class PromptPerf(NamedTuple):
+    """Aggregate wall time + token usage across logged prompts.
+
+    Sourced from data the real LLM path already records \u2014 ``duration_ms`` per
+    call plus the token usage stored inside each response \u2014 so the eval suite
+    can report throughput without any new instrumentation.
+    """
+
+    calls: int
+    duration_ms: int
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def tokens_per_second(self) -> float:
+        seconds = self.duration_ms / 1000
+        return self.output_tokens / seconds if seconds else 0.0
 
 
 class MessageStore:
@@ -560,6 +579,34 @@ class MessageStore:
             params["agent"] = agent_name
         rows = session.execute(sql, params).all()
         return [row[0] for row in rows if row[0] is not None]
+
+    def recent_prompts(self, limit: int = 200) -> list[PromptLog]:
+        """The most recent prompt-log rows, newest first — for inspection/eval."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(PromptLog).order_by(PromptLog.timestamp.desc()).limit(limit)
+                ).all()
+            )
+
+    def prompt_perf(self) -> PromptPerf:
+        """Aggregate wall time + token usage across every logged prompt.
+
+        Reads the timing the real LLM path already records (``duration_ms`` per
+        call) plus the token usage stored inside each response — the eval suite
+        sums this across a case's samples to report throughput (tok/s).
+        """
+        with self._session() as session:
+            rows = list(session.exec(select(PromptLog)).all())
+        input_tokens = 0
+        output_tokens = 0
+        for row in rows:
+            response = json.loads(row.response) if row.response else {}
+            prompt_tokens, completion_tokens = self._extract_token_usage(response)
+            input_tokens += prompt_tokens
+            output_tokens += completion_tokens
+        duration_ms = sum(row.duration_ms or 0 for row in rows)
+        return PromptPerf(len(rows), duration_ms, input_tokens, output_tokens)
 
     @staticmethod
     def _extract_token_usage(response: dict) -> tuple[int, int]:
