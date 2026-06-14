@@ -1,18 +1,16 @@
 """Quality-collector contracts — the graduated self-correcting collector.
 
-The ``quality`` collection is seeded by migration 0055 (prompt refined through
-0058), so it exists in every DB.  These cases drive the REAL seeded
-extraction_prompt via ``run_for("quality")``.
+The ``quality`` collection is seeded by migration 0055 (prompt refined since),
+so it exists in every DB.  These cases drive the REAL seeded extraction_prompt
+via ``run_for("quality")``.
 
-Quality reviews its collectors' runs the way the prompt describes: read the
-``collector-runs`` index (one summary per run, tagged with its run id), pick the
-runs that look off, and ``log_get(<run id>)`` each to see the run's full trace —
-the actual entries it wrote, the exact message it sent — then judge that against
-the collection's ``intent``.  So each case seeds a synthetic suspect collection
-(its intent + a prompt) AND the promptlog run(s) behind it, plus the keyed
-``collector-runs`` entries that index them.  There is no ``penny-messages`` read
-— that second cursor drifted from ``collector-runs``; the message detail now
-comes from the run's own trace.
+Quality reviews its collectors' runs by ``log_read("collector-runs")`` — a read
+facade over ``promptlog`` that renders each run as a record (``[target] summary``
++ the worked run's tool trace: the entries it wrote, the exact message it sent).
+It judges each against the collection's ``intent``.  So each case seeds a
+synthetic suspect collection (its intent + a prompt) AND the ``promptlog`` run(s)
+behind it — which IS the ``collector-runs`` content, no separate log to seed.
+There is no keyed ``log_get`` and no ``penny-messages`` read.
 
   rebroadcast  — intent "one fresh thought, never repeat"; two runs re-send the
                  same digest → rewrite the prompt (any material corrective change).
@@ -28,10 +26,9 @@ from typing import cast
 
 import pytest
 
-from penny.agents.collector import Collector
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
-from penny.database.memory_store import Inclusion, LogEntryInput, RecallMode
+from penny.database.memory_store import Inclusion, RecallMode
 from penny.tests.eval.conftest import CollectorScorer, tool_was_called
 
 pytestmark = pytest.mark.eval
@@ -88,12 +85,12 @@ def _seed_run(
     summary: str,
     calls: list[tuple[str, dict]],
 ) -> None:
-    """Seed one collector run: its promptlog trace + the keyed index entry.
+    """Seed one collector run as a ``promptlog`` row (+ its outcome).
 
-    The promptlog row carries the run's tool calls (what it actually did) so
-    ``log_get`` can render the trace; the ``collector-runs`` entry is keyed by
-    ``run_id`` exactly as the real ``_log_run`` writes it, so the quality cycle's
-    ``log_read`` surfaces the id it then passes back to ``log_get``.
+    That row IS the ``collector-runs`` content — the facade renders it as a run
+    record when the quality cycle calls ``log_read("collector-runs")``.  The
+    response carries the run's tool calls (what it actually did) and
+    ``set_run_outcome`` stamps the target/outcome/summary the record header uses.
     """
     response = {
         "choices": [
@@ -123,12 +120,6 @@ def _seed_run(
         run_target=suspect,
     )
     db.messages.set_run_outcome(run_id, outcome.value, summary)
-    marker = Collector._OUTCOME_MARKER[outcome]
-    db.memories.append(
-        PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
-        [LogEntryInput(content=f"[{suspect}] {marker} {outcome.value} — {summary}", key=run_id)],
-        author="collector",
-    )
 
 
 def _seed(*, suspect: str, description: str, intent: str, prompt: str, runs):
@@ -166,8 +157,6 @@ def _score_update(suspect: str, forbidden: str | None) -> CollectorScorer:
         memory = db.memories.get(suspect)
         new_prompt = (memory.extraction_prompt or "") if memory else ""
         fails = []
-        if not tool_was_called(db, "log_get"):
-            fails.append("did not inspect the run trace with log_get before judging")
         if not tool_was_called(db, "prompt_test"):
             fails.append("did not dry-run the fix with prompt_test before applying")
         if new_prompt == original:

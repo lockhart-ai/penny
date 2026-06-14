@@ -50,7 +50,6 @@ from penny.tools.memory_args import (
     ExistsArgs,
     LogAppendArgs,
     LogCreateArgs,
-    LogGetArgs,
     MemoryNameArgs,
     ReadLatestArgs,
     ReadLogArgs,
@@ -104,6 +103,15 @@ def _format_entries(
     noun = "entry" if len(entries) == 1 else "entries"
     suffix = f" ({ordering})" if ordering else ""
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
+
+
+def _format_run_records(records: list[Any]) -> str:
+    """Render the ``collector-runs`` facade batch — a count header plus each
+    run record (``[target] summary`` + trace), separated by ``---``."""
+    if not records:
+        return "(no collector runs)"
+    body = "\n---\n".join(f"{index}. {record.content}" for index, record in enumerate(records, 1))
+    return f"{len(records)} collector runs\n\n{body}"
 
 
 def _wrong_shape(db: Database, name: str, want: MemoryType) -> str | None:
@@ -1119,10 +1127,27 @@ class LogReadTool(Tool):
         args = ReadLogArgs(**kwargs)
         if error := _wrong_shape(self._db, args.memory, MemoryType.LOG):
             return error
+        if args.memory == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
+            return self._read_runs(args.memory)
         entries = (
             self._read_cursor(args.memory) if self._cursor_mode else self._read_window(args.memory)
         )
         return _format_entries(entries, source=args.memory, ordering="oldest first")
+
+    def _read_runs(self, memory: str) -> str:
+        """``collector-runs`` is a read facade over ``promptlog`` — runs rendered
+        as records (see ``MessageStore.collector_runs_*``), same cursor/window
+        dispatch as any log, but the entries are derived, not stored."""
+        limit = PennyConstants.LOG_READ_LIMIT
+        if self._cursor_mode:
+            cursor = self._db.cursors.get(self._agent_name, memory)
+            records = self._db.messages.collector_runs_since(cursor, limit)
+            self._advance_pending(memory, [record.timestamp for record in records])
+        else:
+            records = self._db.messages.collector_runs_window(
+                PennyConstants.LOG_READ_WINDOW_SECONDS, limit
+            )
+        return _format_run_records(records)
 
     def _read_cursor(self, memory: str) -> list[MemoryEntry]:
         cursor = self._db.cursors.get(self._agent_name, memory)
@@ -1136,12 +1161,17 @@ class LogReadTool(Tool):
             # The next N since the cursor — bounded so a backlog is worked through
             # in batches across cycles, never dumped into one loop.
             entries = self._db.memories.read_since(memory, cursor, limit)
-        if entries:
-            max_seen = max(e.created_at for e in entries)
-            prev = self._pending.get(memory)
-            if prev is None or max_seen > prev:
-                self._pending[memory] = max_seen
+        self._advance_pending(memory, [e.created_at for e in entries])
         return entries
+
+    def _advance_pending(self, memory: str, timestamps: list[datetime]) -> None:
+        """Track the highest timestamp seen this run as the pending cursor."""
+        if not timestamps:
+            return
+        max_seen = max(timestamps)
+        prev = self._pending.get(memory)
+        if prev is None or max_seen > prev:
+            self._pending[memory] = max_seen
 
     def _read_window(self, memory: str) -> list[MemoryEntry]:
         return self._db.memories.read_recent(memory, PennyConstants.LOG_READ_WINDOW_SECONDS, None)
@@ -1159,46 +1189,6 @@ class LogReadTool(Tool):
     def discard_pending(self) -> None:
         """Drop pending cursor advance — used after a failed run."""
         self._pending.clear()
-
-
-class LogGetTool(Tool):
-    """Expand one collector run into its full tool-call trace.
-
-    Pairs with ``log_read`` on ``collector-runs``: that read returns run
-    summaries each tagged with a ``[run id]``; this fetches the full prompt-log
-    trace for one of them.  Gated to the quality cycle — it's the detail leg of
-    "read the summaries, drill into the suspicious one, judge it."
-    """
-
-    name = "log_get"
-    description = (
-        "Expand a single collector run into its full trace.  Pass the id shown "
-        "in brackets on a `collector-runs` entry (from log_read).  Returns "
-        "everything that run actually did — every tool call with full arguments "
-        "(the entries it wrote, the exact message it sent) and the run's "
-        "outcome — so you can judge whether the behaviour matched the "
-        "collection's intent."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "run_id": {
-                "type": "string",
-                "description": "The bracketed run id on a collector-runs entry.",
-            }
-        },
-        "required": ["run_id"],
-    }
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def execute(self, **kwargs: Any) -> str:
-        args = LogGetArgs(**kwargs)
-        trace = self._db.messages.render_run_trace(args.run_id)
-        if trace is None:
-            return f"No run found for id '{args.run_id}'."
-        return trace
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────

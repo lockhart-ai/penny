@@ -32,7 +32,6 @@ from penny.tools.memory_tools import (
     ExistsTool,
     LogAppendTool,
     LogCreateTool,
-    LogGetTool,
     LogReadTool,
     ReadSimilarTool,
     TestExtractionPromptTool,
@@ -547,11 +546,14 @@ class TestLogTools:
         assert "hello" in rendered
 
     @pytest.mark.asyncio
-    async def test_log_get_renders_run_trace(self, tmp_path):
-        """log_get expands a run id into its full tool-call trace — the exact
-        message it sent and entries it wrote, plus the outcome — so the quality
-        cycle can judge the run against the collection's intent."""
+    async def test_collector_runs_log_renders_runs_from_promptlog(self, tmp_path):
+        """collector-runs is a read facade over promptlog: log_read renders each
+        worked run as a record (``[target] summary`` + its tool trace) — no
+        stored entries, no keys, no get.  This is the quality collector's review."""
         db = _make_db(tmp_path)
+        await LogCreateTool(db, None).execute(
+            name="collector-runs", description="audit", inclusion="never", recall="recent"
+        )
         response = {
             "choices": [
                 {
@@ -580,21 +582,15 @@ class TestLogTools:
             run_id="run-42",
             run_target="espresso-gear",
         )
-        db.messages.set_run_outcome("run-42", "worked", "sent an update")
+        db.messages.set_run_outcome("run-42", "worked", "sent an update about a grinder")
 
-        rendered = await LogGetTool(db).execute(run_id="run-42")
+        rendered = await LogReadTool(db, "quality", scope="quality").execute(
+            memory="collector-runs"
+        )
 
-        assert "espresso-gear" in rendered
-        assert "worked" in rendered
-        assert "send_message" in rendered
-        assert "Found a new grinder, $300." in rendered
-
-    @pytest.mark.asyncio
-    async def test_log_get_unknown_run(self, tmp_path):
-        """An id with no promptlog rows reports cleanly rather than crashing."""
-        db = _make_db(tmp_path)
-        rendered = await LogGetTool(db).execute(run_id="nope")
-        assert "No run found" in rendered
+        assert "1 collector runs" in rendered
+        assert "[espresso-gear] sent an update about a grinder" in rendered
+        assert "Found a new grinder, $300." in rendered  # the exact message, untruncated
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, tmp_path, mock_llm):
