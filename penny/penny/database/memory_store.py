@@ -130,10 +130,17 @@ class EntryInput(BaseModel):
 
 
 class LogEntryInput(BaseModel):
-    """Input row for log append — keyless content plus optional embedding."""
+    """Input row for log append — content, optional embedding, optional key.
+
+    Logs are append-only streams of keyless content.  A few system logs tag
+    each entry with the id of the thing it summarizes — ``collector-runs``
+    keys every entry by its cycle ``run_id`` so a reader can pull that run's
+    full prompt-log trace (via ``log_get``).  Most appends leave ``key`` unset.
+    """
 
     content: str
     content_embedding: list[float] | None = None
+    key: str | None = None
 
 
 WriteOutcome = Literal["written", "duplicate", "rejected"]
@@ -633,7 +640,7 @@ class MemoryStore:
             for entry in entries:
                 row = MemoryEntry(
                     memory_name=name,
-                    key=None,
+                    key=entry.key,
                     content=entry.content,
                     author=author,
                     key_embedding=None,

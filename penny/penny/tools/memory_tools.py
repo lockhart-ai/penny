@@ -49,6 +49,7 @@ from penny.tools.memory_args import (
     ExistsArgs,
     LogAppendArgs,
     LogCreateArgs,
+    LogGetArgs,
     MemoryNameArgs,
     ReadLatestArgs,
     ReadLogArgs,
@@ -1114,6 +1115,46 @@ class LogReadTool(Tool):
     def discard_pending(self) -> None:
         """Drop pending cursor advance — used after a failed run."""
         self._pending.clear()
+
+
+class LogGetTool(Tool):
+    """Expand one collector run into its full tool-call trace.
+
+    Pairs with ``log_read`` on ``collector-runs``: that read returns run
+    summaries each tagged with a ``[run id]``; this fetches the full prompt-log
+    trace for one of them.  Gated to the quality cycle — it's the detail leg of
+    "read the summaries, drill into the suspicious one, judge it."
+    """
+
+    name = "log_get"
+    description = (
+        "Expand a single collector run into its full trace.  Pass the id shown "
+        "in brackets on a `collector-runs` entry (from log_read).  Returns "
+        "everything that run actually did — every tool call with full arguments "
+        "(the entries it wrote, the exact message it sent) and the run's "
+        "outcome — so you can judge whether the behaviour matched the "
+        "collection's intent."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "description": "The bracketed run id on a collector-runs entry.",
+            }
+        },
+        "required": ["run_id"],
+    }
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def execute(self, **kwargs: Any) -> str:
+        args = LogGetArgs(**kwargs)
+        trace = self._db.messages.render_run_trace(args.run_id)
+        if trace is None:
+            return f"No run found for id '{args.run_id}'."
+        return trace
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────

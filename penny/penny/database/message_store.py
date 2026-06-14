@@ -23,6 +23,21 @@ _MONOSPACE_RE = re.compile(r"`(.+?)`")
 _TILDE_OPERATOR = "\u223c"
 
 
+def _parse_tool_args(function: dict) -> object:
+    """Deserialize a stored tool call's ``arguments`` (a JSON string) to a dict.
+
+    Falls back to the raw string when the model emitted malformed JSON, so the
+    trace still shows what it tried rather than dropping the call.
+    """
+    raw = function.get("arguments")
+    if not isinstance(raw, str) or not raw:
+        return raw or {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
 class PromptPerf(NamedTuple):
     """Aggregate wall time + token usage across logged prompts.
 
@@ -589,6 +604,72 @@ class MessageStore:
                     select(PromptLog).order_by(PromptLog.timestamp.desc()).limit(limit)
                 ).all()
             )
+
+    def render_run_trace(self, run_id: str) -> str | None:
+        """Render one run's full tool-call trace, or None if no rows match.
+
+        The quality collector reads a ``collector-runs`` summary, picks a
+        suspicious run by its id, and calls this to see what the cycle actually
+        did — every tool call with full arguments (the entries it wrote, the
+        message it sent) plus the run's outcome — so it can judge the behaviour
+        against the collection's intent.  Arguments are rendered in full (never
+        truncated): the message text and written content are the whole point.
+        """
+        with self._session() as session:
+            prompts = list(
+                session.exec(
+                    select(PromptLog)
+                    .where(PromptLog.run_id == run_id)
+                    .order_by(PromptLog.timestamp.asc())
+                ).all()
+            )
+        if not prompts:
+            return None
+        outcome, reason, target = self._run_outcome(prompts)
+        calls = self._run_tool_calls(prompts)
+        return self._format_run_trace(target, outcome, reason, calls)
+
+    @staticmethod
+    def _run_outcome(prompts: list[PromptLog]) -> tuple[str | None, str | None, str | None]:
+        """Outcome/reason/target from the last prompt carrying them (like _serialize_run)."""
+        for p in reversed(prompts):
+            if p.run_outcome is not None or p.run_reason:
+                return p.run_outcome, p.run_reason, p.run_target
+        return None, None, prompts[0].run_target
+
+    @staticmethod
+    def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
+        """Ordered (name, arguments) for every tool call across the run's prompts."""
+        calls: list[tuple[str, object]] = []
+        for p in prompts:
+            response = json.loads(p.response) if p.response else {}
+            for choice in response.get("choices", []):
+                message = choice.get("message") or {}
+                for tc in message.get("tool_calls") or []:
+                    function = tc.get("function") or {}
+                    calls.append((function.get("name") or "?", _parse_tool_args(function)))
+        return calls
+
+    @staticmethod
+    def _format_run_trace(
+        target: str | None,
+        outcome: str | None,
+        reason: str | None,
+        calls: list[tuple[str, object]],
+    ) -> str:
+        header = f"run for `{target or 'unknown'}`"
+        if outcome:
+            header += f" ({outcome}{f' — {reason}' if reason else ''})"
+        if not calls:
+            return f"{header}:\n(no tool calls recorded)"
+        lines = []
+        for index, (name, args) in enumerate(calls, start=1):
+            if isinstance(args, dict):
+                rendered = ", ".join(f"{key}={value!r}" for key, value in args.items())
+            else:
+                rendered = repr(args)
+            lines.append(f"{index}. {name}({rendered})")
+        return f"{header}:\n" + "\n".join(lines)
 
     def prompt_perf(self) -> PromptPerf:
         """Aggregate wall time + token usage across every logged prompt.

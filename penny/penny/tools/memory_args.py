@@ -154,6 +154,15 @@ class ReadLogArgs(BaseModel):
     memory: MemoryName
 
 
+class LogGetArgs(BaseModel):
+    """The id of one collector run to expand into its full prompt-log trace.
+
+    The id is the bracketed key on a ``collector-runs`` entry returned by
+    ``log_read`` — every run-summary entry is keyed by its cycle ``run_id``."""
+
+    run_id: str
+
+
 # ── Collection writes ───────────────────────────────────────────────────────
 
 

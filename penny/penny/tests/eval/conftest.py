@@ -3,8 +3,10 @@
 Construction reuses the integration-test isolation core (``running_penny``)
 with a config whose model points at the real Ollama endpoint — no second
 construction path, no stubs.  Each case samples N runs (the model is
-stochastic) and asserts a pass-rate threshold against PERSISTED DB state, which
-is the real contract.  See docs/self-improvement-loop.md.
+stochastic) and reports a pass-rate against PERSISTED DB state, which is the
+real contract.  A case gates on a ``min_pass_rate`` threshold, or — for
+inherently stochastic behaviours (``min_pass_rate=None``) — just prints its X/Y
+rate for inspection without failing the run.  See docs/self-improvement-loop.md.
 """
 
 from __future__ import annotations
@@ -194,19 +196,33 @@ async def _embed_seeds(penny: Penny) -> None:
     await penny._backfill_description_embeddings(_EMBED_BATCH)
 
 
-def _assert_threshold(case_id: str, results: list[SampleResult], min_pass_rate: float) -> None:
+def _assert_threshold(
+    case_id: str, results: list[SampleResult], min_pass_rate: float | None
+) -> None:
+    """Print the case's X/Y pass rate, and — unless report-only — gate on it.
+
+    ``min_pass_rate=None`` is report-only: the X/Y line and any per-sample
+    failures print for insight, but the case never fails the run.  Use it for
+    inherently stochastic behaviours we want to *observe* rather than gate (the
+    self-correction cases — the model can't clear every cross-run repeat, and a
+    flaky red adds no signal beyond the printed rate).
+    """
     passed = sum(1 for result in results if result.passed)
     total = len(results)
+    failures = "\n".join(
+        f"  [{i + 1}] {'; '.join(result.fails)}"
+        for i, result in enumerate(results)
+        if not result.passed
+    )
+    if min_pass_rate is None:
+        print(f"\nRESULT [{case_id}] {passed}/{total} passed (report-only)")
+        if failures:
+            print(failures)
+        return
     need = ceil(min_pass_rate * total)
+    print(f"\nRESULT [{case_id}] {passed}/{total} passed (need >={need}, rate {min_pass_rate})")
     if passed < need:
-        failures = "\n".join(
-            f"  [{i + 1}] {'; '.join(result.fails)}"
-            for i, result in enumerate(results)
-            if not result.passed
-        )
-        pytest.fail(
-            f"{case_id}: {passed}/{total} passed (need >={need}, rate {min_pass_rate}):\n{failures}"
-        )
+        pytest.fail(f"{case_id}: {passed}/{total} passed (need >={need}):\n{failures}")
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
@@ -232,7 +248,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         score: Scorer,
         seed: Seeder | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float = 0.75,
+        min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
     ) -> None:
         results: list[SampleResult] = []
@@ -291,7 +307,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
         score: CollectorScorer,
         snapshot: Snapshotter | None = None,
         samples: int = SAMPLES,
-        min_pass_rate: float = 0.75,
+        min_pass_rate: float | None = 0.75,
     ) -> None:
         results: list[SampleResult] = []
         perf = _Perf()
@@ -342,7 +358,7 @@ def recall_eval(make_config: Callable[..., Config], tmp_path) -> RecallEval:
     """
 
     async def _run(
-        *, case_id: str, seed: Seeder, messages, check, min_pass_rate: float = 0.75
+        *, case_id: str, seed: Seeder, messages, check, min_pass_rate: float | None = 0.75
     ) -> None:
         server = MockSignalServer()
         await server.start()

@@ -47,6 +47,7 @@ from penny.tools.memory_tools import (
     CollectionWriteTool,
     DoneTool,
     LogAppendTool,
+    LogGetTool,
     UpdateEntryTool,
     check_extraction_prompt,
 )
@@ -142,17 +143,19 @@ class Collector(BackgroundAgent):
         self._cycle_lock = asyncio.Lock()
 
     def get_tools(self) -> list[Tool]:
-        """Standard collector surface, plus ``prompt_test`` for the quality cycle.
+        """Standard collector surface, plus the quality cycle's review tools.
 
-        The self-correcting ``quality`` collector is the only cycle that revises
-        another collection's extraction_prompt, so it's the only one that needs
-        to dry-run a candidate first.  Gating per bound target keeps the tool out
-        of every other collector's surface (and out of the dry-run's own surface,
-        which bypasses this override — no nested prompt_test).
+        The self-correcting ``quality`` collector is the only cycle that
+        inspects another run's full trace (``log_get``) and revises another
+        collection's extraction_prompt (``prompt_test``), so it's the only one
+        that needs them.  Gating per bound target keeps both out of every other
+        collector's surface (and out of the dry-run's own surface, which
+        bypasses this override — no nested prompt_test/log_get).
         """
         tools = super().get_tools()
         target = self._current_target
         if target is not None and target.name == PennyConstants.MEMORY_QUALITY_COLLECTION:
+            tools.append(LogGetTool(self.db))
             tools.append(PromptTestTool(self))
         return tools
 
@@ -245,7 +248,7 @@ class Collector(BackgroundAgent):
                     # One determination of this cycle's outcome, used for the
                     # audit log, the promptlog tag, and the throttle alike.
                     outcome, summary = self._cycle_result(response)
-                    self._log_run(collection, outcome, summary)
+                    self._log_run(collection, outcome, summary, run_id)
                     self._tag_promptlog_run(run_id, outcome, summary)
                     self._apply_throttle(collection, outcome)
                 self._current_target = None
@@ -334,17 +337,24 @@ class Collector(BackgroundAgent):
 
     # ── Per-cycle audit log ───────────────────────────────────────────────
 
-    def _log_run(self, target: Memory, outcome: RunOutcome, summary: str) -> None:
+    def _log_run(self, target: Memory, outcome: RunOutcome, summary: str, run_id: str) -> None:
         """Append one entry to ``collector-runs`` describing this cycle.
 
         The entry leads with the outcome (marker + word) so the state is
         legible both to the user in the addon and to Penny when she reads the
-        log — e.g. ``[espresso-gear] 💤 no_work — nothing new``.
+        log — e.g. ``[espresso-gear] 💤 no_work — nothing new``.  It is keyed by
+        this cycle's ``run_id`` so the quality collector can expand a suspicious
+        summary into the run's full trace via ``log_get``.
         """
         marker = self._OUTCOME_MARKER[outcome]
         self.db.memories.append(
             PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
-            [LogEntryInput(content=f"[{target.name}] {marker} {outcome.value} — {summary}")],
+            [
+                LogEntryInput(
+                    content=f"[{target.name}] {marker} {outcome.value} — {summary}",
+                    key=run_id,
+                )
+            ],
             author=self.name,
         )
 

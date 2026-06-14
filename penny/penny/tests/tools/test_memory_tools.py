@@ -31,6 +31,7 @@ from penny.tools.memory_tools import (
     ExistsTool,
     LogAppendTool,
     LogCreateTool,
+    LogGetTool,
     LogReadTool,
     ReadLatestTool,
     ReadSimilarTool,
@@ -547,6 +548,56 @@ class TestLogTools:
         )
         rendered = await LogReadTool(db, "chat", scope=None).execute(memory="events")
         assert "hello" in rendered
+
+    @pytest.mark.asyncio
+    async def test_log_get_renders_run_trace(self, tmp_path):
+        """log_get expands a run id into its full tool-call trace — the exact
+        message it sent and entries it wrote, plus the outcome — so the quality
+        cycle can judge the run against the collection's intent."""
+        db = _make_db(tmp_path)
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "c0",
+                                "type": "function",
+                                "function": {
+                                    "name": "send_message",
+                                    "arguments": '{"content": "Found a new grinder, $300."}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response=response,
+            agent_name="collector",
+            run_id="run-42",
+            run_target="espresso-gear",
+        )
+        db.messages.set_run_outcome("run-42", "worked", "sent an update")
+
+        rendered = await LogGetTool(db).execute(run_id="run-42")
+
+        assert "espresso-gear" in rendered
+        assert "worked" in rendered
+        assert "send_message" in rendered
+        assert "Found a new grinder, $300." in rendered
+
+    @pytest.mark.asyncio
+    async def test_log_get_unknown_run(self, tmp_path):
+        """An id with no promptlog rows reports cleanly rather than crashing."""
+        db = _make_db(tmp_path)
+        rendered = await LogGetTool(db).execute(run_id="nope")
+        assert "No run found" in rendered
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, tmp_path, mock_llm):

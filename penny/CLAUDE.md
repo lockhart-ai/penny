@@ -96,7 +96,7 @@ penny/
     list_folders.py   — ListFoldersTool (available mailboxes)
     draft_email.py    — DraftEmailTool (compose + stage draft)
     memory_args.py    — Pydantic arg models for the memory tool surface
-    memory_tools.py   — 21 Tool subclasses over db.memories.* (collection + log + introspection) and build_memory_tools(db, embedding_client, author) factory
+    memory_tools.py   — 22 Tool subclasses over db.memories.* (collection + log + introspection; log_get is quality-gated) and build_memory_tools(db, embedding_client, author) factory
   channels/
     __init__.py       — create_channel() factory, channel type constants
     base.py           — MessageChannel ABC, IncomingMessage, shared message handling
@@ -207,9 +207,9 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
   - `unnotified-thoughts` — inner monologue, picks a random like and drafts a thought (1200s)
   - `notified-thoughts` — picks an unnotified thought, calls `send_message`, moves the entry into its own collection (300s)
   - `skills` — workflow patterns the chat agent follows (TRIGGER + STEPS entries surfaced via recall); its collector extracts/refines/removes skills from chat as the user teaches Penny new behavior (21600s)
-  - `quality` — self-correcting collector (migration 0055): reviews `collector-runs` + `penny-messages` against each collection's `intent` and rewrites whichever `extraction_prompt` has drifted, dry-running each candidate with `prompt_test` before applying it, then messaging the user (apply-then-notify) (3600s base, auto-throttles toward the weekly cap on quiet cycles like any other collector)
+  - `quality` — self-correcting collector (migration 0055, prompt refined through 0058): reads the `collector-runs` index (one summary per run, each keyed by its `run_id`), `log_get`s the runs that look off to see their full trace (the actual writes/message), and judges that behaviour against the collection's `intent` — rewriting whichever `extraction_prompt` has drifted, dry-running each candidate with `prompt_test` before applying it, then messaging the user (apply-then-notify). A `❌` run failure (max steps/crash) is capacity, not drift, and is skipped. No `penny-messages` read — that second cursor drifted from `collector-runs`; message detail comes from the run trace. (3600s base, auto-throttles toward the weekly cap on quiet cycles like any other collector)
 - User-defined collections created via chat (`/collection_create` with an `extraction_prompt`) are picked up automatically on the next tick — no restart required.
-- Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done. The `quality` cycle additionally gets `prompt_test` (gated by bound-target name in `get_tools`), which dry-runs a candidate prompt on a throwaway `_DryRunCollector` (captured writes/sends, non-consuming reads, no DB clone) — see `docs/self-improvement-loop.md`.
+- Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done. The `quality` cycle additionally gets `log_get` (expands a `collector-runs` run id into that run's full prompt-log trace) and `prompt_test` (dry-runs a candidate prompt on a throwaway `_DryRunCollector` — captured writes/sends, non-consuming reads, no DB clone), both gated by bound-target name in `get_tools` — see `docs/self-improvement-loop.md`.
 - Cadence: `COLLECTOR_TICK_INTERVAL` (default 30s, idle-gated) drives the dispatcher; per-collection `collector_interval_seconds` controls each collection's pacing within that.
 - **Auto-throttle** (`_apply_throttle`, runs after each non-cancelled cycle): after `COLLECTOR_THROTTLE_AFTER` (default 3) consecutive idle cycles a collection doubles its `collector_interval_seconds` (capped at `COLLECTOR_MAX_INTERVAL`, default 604800 = weekly) and resets its idle counter; a productive cycle snaps the interval back to `base_interval_seconds` (the user's intended cadence, stamped on create and re-set when the interval is edited) and clears the counter. "Produced work" (`_produced_work`) = a non-failed state-changing tool call this cycle (write/update/delete/move/`log_append`/`send_message`); reads + `done()` = idle. Deterministic in Python — not the quality/model layer.
 
@@ -437,6 +437,10 @@ Notable migrations:
 - 0052: Rebuild `promptlog_fts` to drop the `messages` column for instances that applied the original 3-column 0051 (input scaffolding is shared across runs and made search match boilerplate)
 - 0053: Add `memory.base_interval_seconds` (snap-back cadence, backfilled from `collector_interval_seconds`) + `memory.consecutive_idle_runs` for collector auto-throttle
 - 0054: Replace `promptlog.run_success` (bool) with `run_outcome` (tri-state `RunOutcome`: failed | no_work | worked | cancelled) — backfilled best-effort (success→worked, failure→failed); the work/no-work split isn't recoverable for old rows
+- 0055: Seed the `quality` self-correcting collector (inclusion=never, 1h base interval) + its extraction_prompt — graduates the prototype so every instance gets it
+- 0056: Switch the quality collector to cursor-based log reads (so the auto-throttle can't widen its window past unread entries)
+- 0057: Unify `log_read_next`/`log_read_recent` into one caller-dispatched `log_read` across all seeded extraction_prompts; drop the notify collector's `penny-messages` read (structural dedup via `collection_move`); quality reviews the whole batch
+- 0058: Rework the quality prompt around run inspection — read the `collector-runs` index, `log_get` the suspicious runs for their full trace, judge behaviour-vs-intent; drop the `penny-messages` read (cursor drift); skip `❌` run failures as capacity, not drift
 
 ## Extending
 

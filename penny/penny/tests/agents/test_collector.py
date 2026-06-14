@@ -359,14 +359,17 @@ def test_log_run_writes_outcome_marker_word_and_summary(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
     _seed_collector_runs_log(db)
 
-    collector._log_run(_target(), RunOutcome.WORKED, "wrote 2 new games")
-    collector._log_run(_target(), RunOutcome.NO_WORK, "nothing new")
-    collector._log_run(_target(), RunOutcome.FAILED, "no source URL found")
-    joined = "\n".join(e.content for e in db.memories.read_latest("collector-runs"))
+    collector._log_run(_target(), RunOutcome.WORKED, "wrote 2 new games", "run-worked")
+    collector._log_run(_target(), RunOutcome.NO_WORK, "nothing new", "run-noop")
+    collector._log_run(_target(), RunOutcome.FAILED, "no source URL found", "run-failed")
+    entries = db.memories.read_latest("collector-runs")
+    joined = "\n".join(e.content for e in entries)
 
     assert "[board-games] ✅ worked — wrote 2 new games" in joined
     assert "💤 no_work — nothing new" in joined
     assert "❌ failed — no source URL found" in joined
+    # Each run entry is keyed by its run_id so quality can log_get the trace.
+    assert {"run-worked", "run-noop", "run-failed"} <= {e.key for e in entries}
 
 
 # ── Promptlog run-outcome tagging ────────────────────────────────────────
