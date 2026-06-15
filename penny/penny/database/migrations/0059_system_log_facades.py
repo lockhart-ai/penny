@@ -1,20 +1,29 @@
-"""Quality reads the collector-runs facade; notify samples fairly.
+"""System logs become read facades over their canonical tables.
 
-Type: data
+Type: data + schema
 
-``collector-runs`` is now a read facade over ``promptlog`` (each run rendered as
-a ``[target] summary`` + trace record), not a stored summary log.  So:
+This is the single migration for the system-log facade refactor (one step on
+top of 0058 — collector-runs, user-messages, penny-messages stop being
+duplicated ``memory_entry`` rows and are read straight from ``promptlog`` /
+``messagelog``).  It:
 
-1. **Quality** reviews runs with the ordinary ``log_read("collector-runs")`` —
-   each record already carries the run's behaviour (the message it sent, the
-   entries it wrote), so it judges directly against each collection's intent.
-   No keyed ``log_get``, no separate ``penny-messages`` read.
-2. **Notify** picks an unshared thought with ``collection_read_random`` instead
-   of ``collection_read_latest`` + "pick one" — the newest-first read biased to
-   recent thoughts and let older ones sink and never get shared.
-3. The old ``collector-runs`` ``memory_entry`` rows (the summaries the previous
-   ``_log_run`` appended) are dead — the facade reads ``promptlog`` — so drop
-   them.  The ``collector-runs`` memory row itself stays as the log marker.
+1. Renames the read tools in every stored extraction_prompt to the
+   shape-specific taxonomy: ``read_latest(`` → ``collection_read_latest(`` and
+   ``collection_metadata(`` → ``memory_metadata(`` (collection reads error on a
+   log now; logs are read only via the cursored ``log_read`` — no ``log_get``).
+2. Rewrites the ``quality`` prompt to review runs via plain
+   ``log_read("collector-runs")`` (a facade over ``promptlog`` that renders each
+   run as a record) — no ``log_get``, no ``penny-messages`` read.
+3. Rewrites the ``notify`` prompt to pick an unshared thought with
+   ``collection_read_random`` instead of newest-first + "pick one" (which let
+   older thoughts sink and never get shared).
+4. Drops the now-dead ``memory_entry`` rows for the three facade logs — their
+   data lives in ``promptlog`` / ``messagelog``.  The log marker rows stay.
+   ``messagelog.embedding`` (for ``read_similar`` over messages) is filled by
+   the startup backfill + at write time; nothing is copied between tables.
+5. Adds a partial index over the run-completion rows so listing/counting
+   ``collector-runs`` is a bounded index read, not a scan of the whole
+   ``promptlog``.
 """
 
 from __future__ import annotations
@@ -81,6 +90,18 @@ _NOTIFY_PROMPT = (
 
 
 def up(conn: sqlite3.Connection) -> None:
+    # 1. Read-tool taxonomy rename across all stored extraction prompts.
+    conn.execute(
+        "UPDATE memory SET extraction_prompt = REPLACE(extraction_prompt, "
+        "'read_latest(', 'collection_read_latest(') "
+        "WHERE extraction_prompt LIKE '%read_latest(%'"
+    )
+    conn.execute(
+        "UPDATE memory SET extraction_prompt = REPLACE(extraction_prompt, "
+        "'collection_metadata(', 'memory_metadata(') "
+        "WHERE extraction_prompt LIKE '%collection_metadata(%'"
+    )
+    # 2 + 3. Quality reviews the collector-runs facade; notify samples fairly.
     conn.execute(
         "UPDATE memory SET extraction_prompt = ? WHERE name = 'quality'",
         (_QUALITY_PROMPT,),
@@ -89,5 +110,16 @@ def up(conn: sqlite3.Connection) -> None:
         "UPDATE memory SET extraction_prompt = ? WHERE name = 'notified-thoughts'",
         (_NOTIFY_PROMPT,),
     )
-    conn.execute("DELETE FROM memory_entry WHERE memory_name = 'collector-runs'")
+    # 4. Drop the dead replica rows for the three facade logs (markers stay).
+    conn.execute(
+        "DELETE FROM memory_entry WHERE memory_name IN "
+        "('collector-runs', 'user-messages', 'penny-messages')"
+    )
+    # 5. Partial index over run-completion rows — bounded collector-runs reads.
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "promptlog" in tables:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_promptlog_completed_runs "
+            "ON promptlog (timestamp) WHERE run_outcome IS NOT NULL"
+        )
     conn.commit()

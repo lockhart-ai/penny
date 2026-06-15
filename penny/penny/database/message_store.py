@@ -707,24 +707,19 @@ class MessageStore:
             else PromptLog.run_target.isnot(None)  # ty: ignore[unresolved-attribute]
         )
         with self._session() as session:
-            completion = func.max(PromptLog.timestamp)
-            ranked = (
-                select(
-                    PromptLog.run_id,
-                    completion.label("ts"),
-                    func.max(PromptLog.id).label("last_id"),
-                )
+            # Completion rows are the run index (one per run, partial-indexed),
+            # so this is a bounded ORDER BY ... LIMIT, not a GROUP BY scan.
+            recent = (
+                select(PromptLog.run_id, PromptLog.timestamp, PromptLog.id)
                 .where(
-                    PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
                     target_filter,
                 )
-                .group_by(PromptLog.run_id)
-                .having(func.count(PromptLog.run_outcome) > 0)  # ty: ignore[invalid-argument-type]
-                .order_by(completion.desc())
+                .order_by(PromptLog.timestamp.desc())
                 .limit(limit)
                 .offset(offset)
             )
-            rows = list(session.exec(ranked).all())
+            rows = list(session.exec(recent).all())
             if not rows:
                 return []
             grouped = self._group_prompts(session, [run_id for run_id, _, _ in rows])
@@ -744,31 +739,31 @@ class MessageStore:
     def _recent_run_ids(
         session: Session, cursor: datetime | None, limit: int
     ) -> list[tuple[str, datetime]]:
-        """``(run_id, completion_time)`` for collector runs, oldest-first.
+        """``(run_id, completion_time)`` for recent COMPLETED collector runs,
+        oldest-first.
 
-        Collector runs carry a ``run_target`` (the bound collection); chat turns
-        don't, so this filters to background cycles only.  A first read (no
-        cursor) takes the most-recent ``limit``; subsequent reads take the next
-        ``limit`` strictly after the cursor."""
-        completion = func.max(PromptLog.timestamp)
-        ranked = (
-            select(PromptLog.run_id, completion.label("ts"))
-            .where(
-                PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
-                PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
-            )
-            .group_by(PromptLog.run_id)
-            # Only completed runs — at least one row carries a run_outcome.  This
-            # excludes the reader's own in-progress run (outcome stamped after the
-            # cycle), so quality never reviews itself mid-flight.
-            .having(func.count(PromptLog.run_outcome) > 0)  # ty: ignore[invalid-argument-type]
+        ``set_run_outcome`` stamps ``run_outcome`` on exactly one row per run
+        (its last prompt), so the completion rows ARE the run index — one row
+        per run, its timestamp the run's completion time.  Reading them directly
+        (served by the ``ix_promptlog_completed_runs`` partial index) is a
+        bounded ``ORDER BY ... LIMIT`` rather than a ``GROUP BY`` over the whole
+        table.  Excludes the reader's own in-progress run (outcome not yet
+        stamped), so quality never reviews itself mid-flight.  Collector runs
+        carry a ``run_target`` (the bound collection); chat turns don't."""
+        completed = select(PromptLog.run_id, PromptLog.timestamp).where(
+            PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+            PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
         )
         if cursor is None:
-            ranked = ranked.order_by(completion.desc()).limit(limit)
-            rows = list(reversed(session.exec(ranked).all()))
+            recent = completed.order_by(PromptLog.timestamp.desc()).limit(limit)
+            rows = list(reversed(session.exec(recent).all()))
         else:
-            ranked = ranked.having(completion > cursor).order_by(completion.asc()).limit(limit)
-            rows = list(session.exec(ranked).all())
+            recent = (
+                completed.where(PromptLog.timestamp > cursor)
+                .order_by(PromptLog.timestamp.asc())
+                .limit(limit)
+            )
+            rows = list(session.exec(recent).all())
         return [(run_id, ts) for run_id, ts in rows if run_id is not None]
 
     @staticmethod

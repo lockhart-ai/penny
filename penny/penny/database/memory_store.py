@@ -331,10 +331,12 @@ class MemoryStore:
                 ).all()
             )
             # collector-runs is a facade over promptlog — count completed runs.
+            # ``run_outcome`` is set on exactly one row per run (its last prompt)
+            # and is partial-indexed, so this counts run rows, not all prompts.
             run_count = session.exec(
-                select(func.count(func.distinct(PromptLog.run_id))).where(
-                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                select(func.count(PromptLog.id)).where(  # ty: ignore[invalid-argument-type]
                     PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
                 )
             ).one()
         for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
