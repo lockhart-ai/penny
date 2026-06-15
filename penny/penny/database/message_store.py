@@ -36,6 +36,25 @@ _READ_TOOLS = frozenset(
 )
 
 
+def _write_contents(fields: dict) -> str:
+    """The entry contents of a ``collection_write`` call, joined for a run record."""
+    entries = fields.get("entries") or []
+    return "; ".join(str(e.get("content", "")) for e in entries if isinstance(e, dict))
+
+
+# Per-tool compact renderers for a run record (see ``_render_call``).  A dispatch
+# table rather than an if/else ladder \u2014 add a tool by adding a row.
+_CALL_RENDERERS: dict[str, Callable[[dict], str]] = {
+    "collection_write": lambda f: f"write({f.get('memory', '?')}, {_write_contents(f)!r})",
+    "update_entry": lambda f: f"update({f.get('memory', '?')}, {f.get('key', '?')!r})",
+    "send_message": lambda f: f"send({f.get('content', '')!r})",
+    "browse": lambda f: f"browse({f.get('queries', list(f.values()))!r})",
+    "collection_move": lambda f: (
+        f"move({f.get('key', '?')!r}: {f.get('from_memory', '?')}\u2192{f.get('to_memory', '?')})"
+    ),
+}
+
+
 def _parse_tool_args(function: dict) -> object:
     """Deserialize a stored tool call's ``arguments`` (a JSON string) to a dict.
 
@@ -729,7 +748,7 @@ class MessageStore:
                 memory_name=PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
                 key=None,
                 content=self._render_run_record(grouped.get(run_id) or []),
-                author="collector",
+                author=PennyConstants.MessageAuthor.COLLECTOR,
                 created_at=timestamp,
             )
             for run_id, timestamp, last_id in rows
@@ -826,23 +845,9 @@ class MessageStore:
     def _render_call(name: str, args: object) -> str:
         """Compact, grokkable render of one tool call (the salient args only)."""
         fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
-        if name == "collection_write":
-            entries = fields.get("entries") or []
-            contents = "; ".join(
-                str(entry.get("content", "")) for entry in entries if isinstance(entry, dict)
-            )
-            return f"write({fields.get('memory', '?')}, {contents!r})"
-        if name == "update_entry":
-            return f"update({fields.get('memory', '?')}, {fields.get('key', '?')!r})"
-        if name == "send_message":
-            return f"send({fields.get('content', '')!r})"
-        if name == "browse":
-            return f"browse({fields.get('queries', list(fields.values()))!r})"
-        if name == "collection_move":
-            return (
-                f"move({fields.get('key', '?')!r}: "
-                f"{fields.get('from_memory', '?')}→{fields.get('to_memory', '?')})"
-            )
+        renderer = _CALL_RENDERERS.get(name)
+        if renderer is not None:
+            return renderer(fields)
         if name in _READ_TOOLS:
             return f"read({fields.get('memory', '?')})"
         rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())

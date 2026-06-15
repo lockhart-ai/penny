@@ -79,6 +79,18 @@ class PennyConstants:
         INCOMING = "incoming"
         OUTGOING = "outgoing"
 
+    class MessageAuthor(StrEnum):
+        """Conversational author of a message-log/run entry.
+
+        A message has two conversational authors — the user (incoming) or Penny
+        (outgoing); the message-log facades derive these from direction.
+        ``COLLECTOR`` tags the synthesized ``collector-runs`` records.
+        """
+
+        USER = "user"
+        PENNY = "penny"
+        COLLECTOR = "collector"
+
     class SearchTrigger(StrEnum):
         """What triggered a search."""
 

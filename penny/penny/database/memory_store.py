@@ -706,7 +706,11 @@ class MemoryStore:
         (outgoing), which IS the direction; the internal agent that produced a
         Penny message isn't a conversational author, so it isn't on messagelog."""
         direction = _MESSAGE_LOG_DIRECTIONS[name]
-        author = "user" if direction == PennyConstants.MessageDirection.INCOMING else "penny"
+        author = (
+            PennyConstants.MessageAuthor.USER
+            if direction == PennyConstants.MessageDirection.INCOMING
+            else PennyConstants.MessageAuthor.PENNY
+        )
         with self._session() as session:
             query = select(MessageLog).where(
                 MessageLog.direction == direction,
