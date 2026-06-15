@@ -4,7 +4,7 @@ Type: data
 
 The model-facing read surface was made shape-consistent:
   * ``read_latest`` → ``collection_read_latest`` (collections only; it errors on
-    a log now, so logs are read strictly through ``log_read`` / ``log_get`` —
+    a log now, so logs are read strictly through ``log_read`` (streams, no get) —
     no newest-first scan bypassing the cursor).
   * ``collection_metadata`` → ``memory_metadata`` (it serves both shapes, so the
     ``collection_`` prefix was misleading).

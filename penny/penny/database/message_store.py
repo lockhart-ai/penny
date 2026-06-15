@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from penny.agents.models import MessageRole
 from penny.constants import PennyConstants, RunOutcome
-from penny.database.models import CommandLog, MessageLog, PromptLog
+from penny.database.models import CommandLog, MemoryEntry, MessageLog, PromptLog
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +120,14 @@ class MessageStore:
         recipient: str | None = None,
         thought_id: int | None = None,
         device_id: int | None = None,
+        embedding: bytes | None = None,
     ) -> int | None:
-        """Log a user message or agent response. Returns the message ID or None."""
+        """Log a user message or agent response. Returns the message ID or None.
+
+        ``embedding`` (serialized float32) is stored at write time so the message
+        is immediately searchable via the ``user-messages``/``penny-messages``
+        facades' ``read_similar``/relevant-recall path — the startup backfill only
+        catches rows logged without one."""
         if direction == PennyConstants.MessageDirection.OUTGOING:
             content = self.strip_formatting(content)
         try:
@@ -137,6 +143,7 @@ class MessageStore:
                     recipient=recipient,
                     thought_id=thought_id,
                     device_id=device_id,
+                    embedding=embedding,
                 )
                 session.add(log)
                 session.commit()
@@ -684,6 +691,55 @@ class MessageStore:
         cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
         return self.collector_runs_since(cutoff, limit)
 
+    def collector_runs_for(
+        self, run_target: str | None, limit: int, offset: int
+    ) -> list[MemoryEntry]:
+        """Recent collector runs, newest-first, as records — backs the addon's
+        ``collector-runs`` views (``collector-runs`` is a facade over
+        ``promptlog``, so there are no stored entries to read).  ``run_target``
+        scopes to one collection's panel; ``None`` is every run (the log's own
+        entries view).  Each run is synthesized as a ``MemoryEntry`` (content =
+        the rendered record) so the existing entry-to-record serialization
+        applies unchanged."""
+        target_filter = (
+            PromptLog.run_target == run_target
+            if run_target is not None
+            else PromptLog.run_target.isnot(None)  # ty: ignore[unresolved-attribute]
+        )
+        with self._session() as session:
+            completion = func.max(PromptLog.timestamp)
+            ranked = (
+                select(
+                    PromptLog.run_id,
+                    completion.label("ts"),
+                    func.max(PromptLog.id).label("last_id"),
+                )
+                .where(
+                    PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
+                    target_filter,
+                )
+                .group_by(PromptLog.run_id)
+                .having(func.count(PromptLog.run_outcome) > 0)  # ty: ignore[invalid-argument-type]
+                .order_by(completion.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            rows = list(session.exec(ranked).all())
+            if not rows:
+                return []
+            grouped = self._group_prompts(session, [run_id for run_id, _, _ in rows])
+        return [
+            MemoryEntry(
+                id=last_id,
+                memory_name=PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
+                key=None,
+                content=self._render_run_record(grouped.get(run_id) or []),
+                author="collector",
+                created_at=timestamp,
+            )
+            for run_id, timestamp, last_id in rows
+        ]
+
     @staticmethod
     def _recent_run_ids(
         session: Session, cursor: datetime | None, limit: int
@@ -702,6 +758,10 @@ class MessageStore:
                 PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
             )
             .group_by(PromptLog.run_id)
+            # Only completed runs — at least one row carries a run_outcome.  This
+            # excludes the reader's own in-progress run (outcome stamped after the
+            # cycle), so quality never reviews itself mid-flight.
+            .having(func.count(PromptLog.run_outcome) > 0)  # ty: ignore[invalid-argument-type]
         )
         if cursor is None:
             ranked = ranked.order_by(completion.desc()).limit(limit)

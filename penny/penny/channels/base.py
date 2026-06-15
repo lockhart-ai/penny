@@ -16,6 +16,7 @@ from penny.config import Config
 from penny.constants import PennyConstants
 from penny.database.models import MessageLog
 from penny.llm import LlmClient
+from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.similarity import embed_text
 from penny.responses import PennyResponse
@@ -324,6 +325,9 @@ class MessageChannel(ABC):
         prepared = self.prepare_outgoing(content)
         device = self._db.devices.get_by_identifier(recipient)
         device_id = device.id if device else None
+        # Embed once: stored on the messagelog row (the penny-messages facade's
+        # read_similar ranks on it) and reused for nearest-image matching.
+        embedding = await embed_text(self._embedding_model_client, prepared)
         message_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
             self.sender_id,
@@ -332,11 +336,8 @@ class MessageChannel(ABC):
             recipient=recipient,
             thought_id=thought_id,
             device_id=device_id,
+            embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
-        # The outgoing message is logged to ``messagelog`` (above); the
-        # ``penny-messages`` log is a read facade over it, so there's no separate
-        # append.  The embedding is still computed for nearest-image matching.
-        embedding = await embed_text(self._embedding_model_client, prepared)
         attachments = self._resolve_media(attachments, embedding)
         external_id = await self.send_message(recipient, prepared, attachments, quote_message)
         # Store the external ID for future reactions and quote replies
@@ -547,6 +548,7 @@ class MessageChannel(ABC):
             quoted_text=message.quoted_text,
             **self._make_handle_kwargs(message, progress),
         )
+        incoming_embedding = await embed_text(self._embedding_model_client, message.content)
         incoming_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
@@ -554,6 +556,9 @@ class MessageChannel(ABC):
             parent_id=parent_id,
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,
+            embedding=serialize_embedding(incoming_embedding)
+            if incoming_embedding is not None
+            else None,
         )
         await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name

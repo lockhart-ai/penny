@@ -118,7 +118,7 @@ def _wrong_shape(db: Database, name: str, want: MemoryType) -> str | None:
     """Error string if ``name`` exists but isn't the shape this read tool serves.
 
     Reads are shape-specific: ``collection_*`` reads operate only on collections;
-    ``log_read``/``log_get`` only on logs.  A wrong-shape call gets a readable
+    ``log_read`` only on logs.  A wrong-shape call gets a readable
     refusal pointing at the right tool instead of silently returning nothing (a
     log has no keyed entries) or bypassing the cursored log interface (the
     ``read_latest``-on-a-log footgun).  Missing memories pass through — the
@@ -130,7 +130,7 @@ def _wrong_shape(db: Database, name: str, want: MemoryType) -> str | None:
     if want == MemoryType.COLLECTION:
         return (
             f"Refused: '{name}' is a log, not a collection.  Read a log with "
-            f"log_read (recent/cursored batch) or log_get for one entry by id."
+            f"log_read (recent batch / cursored, oldest-first)."
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
@@ -481,9 +481,9 @@ class CollectionGetTool(Tool):
 class CollectionReadLatestTool(Tool):
     """Return the newest entries in a collection, newest first.
 
-    Collection-only: logs are read through the cursored ``log_read`` /
-    ``log_get`` pair, never through a newest-first scan (which would bypass the
-    cursor and silently miss entries).  A log target gets a readable refusal.
+    Collection-only: logs are read through the cursored ``log_read``, never
+    through a newest-first scan (which would bypass the cursor and silently miss
+    entries).  A log target gets a readable refusal.
     """
 
     name = "collection_read_latest"
@@ -1383,7 +1383,7 @@ def build_memory_tools(
     Reads are shape-specific and refuse the wrong shape (``_wrong_shape``):
     collections via ``collection_read_latest`` / ``collection_get`` /
     ``collection_read_random`` / ``collection_keys``; logs only via the cursored
-    ``log_read`` / ``log_get`` pair.  ``read_similar`` (embedding search) and
+    ``log_read`` (streams have no keyed get).  ``read_similar`` (embedding search) and
     ``memory_metadata`` are the genuinely shape-agnostic reads.  Keeping each
     content read shape-specific is what prevents a newest-first scan from
     bypassing a log's cursor (the ``read_latest``-on-a-log footgun).

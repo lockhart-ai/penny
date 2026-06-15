@@ -48,7 +48,7 @@ from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
-from penny.database.models import Memory, MemoryEntry, MessageLog
+from penny.database.models import Memory, MemoryEntry, MessageLog, PromptLog
 
 # The two message logs are read facades over ``messagelog`` (the canonical store)
 # — not duplicated ``memory_entry`` rows.  Every read path below serves them from
@@ -330,8 +330,16 @@ class MemoryStore:
                     .group_by(MessageLog.direction)
                 ).all()
             )
+            # collector-runs is a facade over promptlog — count completed runs.
+            run_count = session.exec(
+                select(func.count(func.distinct(PromptLog.run_id))).where(
+                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                )
+            ).one()
         for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
             counts[log_name] = by_direction.get(direction, 0)
+        counts[PennyConstants.MEMORY_COLLECTOR_RUNS_LOG] = run_count or 0
         return counts
 
     def _notify_changed(self, name: str | None) -> None:
@@ -675,29 +683,46 @@ class MemoryStore:
         with self._session() as session:
             return self._entries_by_key(session, _slug(name), key)
 
-    def _message_entries(self, name: str) -> list[MemoryEntry]:
+    def _message_entries(
+        self,
+        name: str,
+        *,
+        since: datetime | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_first: bool = False,
+        embedded_only: bool = False,
+        search: str | None = None,
+    ) -> list[MemoryEntry]:
         """The user/penny message logs, read from ``messagelog`` and synthesized
-        as ``MemoryEntry`` (oldest-first) so every read path treats them like any
-        log's entries — with no duplicated rows.  ``content_embedding`` is the
-        ``messagelog`` embedding (same serialized-bytes format), populated by the
-        startup backfill.  Reactions are excluded — they aren't conversation."""
+        as ``MemoryEntry`` so every read path treats them like any log's entries
+        — with no duplicated rows.  ``content_embedding`` is the ``messagelog``
+        embedding (same serialized-bytes format).  Reactions are excluded — they
+        aren't conversation.  The slice filters (``since``/``limit``/``offset``/
+        ``search``) push into SQL so a ``k=1`` read doesn't materialize the log.
+        A message has two conversational authors — the user (incoming) or Penny
+        (outgoing), which IS the direction; the internal agent that produced a
+        Penny message isn't a conversational author, so it isn't on messagelog."""
         direction = _MESSAGE_LOG_DIRECTIONS[name]
-        # A message has two conversational authors — the user (incoming) or
-        # Penny (outgoing) — which IS the direction.  The internal agent that
-        # produced a Penny message isn't a conversational author, so it isn't
-        # recorded on messagelog and the facade derives author from direction.
         author = "user" if direction == PennyConstants.MessageDirection.INCOMING else "penny"
         with self._session() as session:
-            rows = list(
-                session.exec(
-                    select(MessageLog)
-                    .where(
-                        MessageLog.direction == direction,
-                        MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
-                    )
-                    .order_by(MessageLog.timestamp.asc())  # type: ignore[union-attr]
-                ).all()
+            query = select(MessageLog).where(
+                MessageLog.direction == direction,
+                MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
             )
+            if embedded_only:
+                query = query.where(MessageLog.embedding.is_not(None))  # ty: ignore[union-attr]
+            if since is not None:
+                query = query.where(MessageLog.timestamp > since)
+            if search:
+                query = query.where(MessageLog.content.like(f"%{search}%"))  # ty: ignore[union-attr]
+            order = MessageLog.timestamp.desc() if newest_first else MessageLog.timestamp.asc()
+            query = query.order_by(order)  # type: ignore[union-attr]
+            if offset:
+                query = query.offset(offset)
+            if limit is not None:
+                query = query.limit(limit)
+            rows = list(session.exec(query).all())
         return [
             MemoryEntry(
                 id=row.id,
@@ -723,13 +748,9 @@ class MemoryStore:
         to a search term."""
         name = _slug(name)
         if name in _MESSAGE_LOG_DIRECTIONS:
-            entries = list(reversed(self._message_entries(name)))
-            if search:
-                needle = search.lower()
-                entries = [e for e in entries if needle in e.content.lower()]
-            if offset:
-                entries = entries[offset:]
-            return entries[:k] if k is not None else entries
+            return self._message_entries(
+                name, limit=k, offset=offset, newest_first=True, search=search
+            )
         with self._session() as session:
             query = (
                 select(MemoryEntry)
@@ -742,32 +763,6 @@ class MemoryStore:
                     MemoryEntry.content.like(like)  # ty: ignore[unresolved-attribute]
                     | MemoryEntry.key.like(like)  # ty: ignore[unresolved-attribute]
                 )
-            if k is not None:
-                query = query.limit(k)
-            if offset:
-                query = query.offset(offset)
-            return list(session.exec(query).all())
-
-    def read_latest_matching(
-        self, name: str, content_prefix: str, k: int | None = None, offset: int = 0
-    ) -> list[MemoryEntry]:
-        """Newest-first entries whose ``content`` starts with ``content_prefix``.
-
-        Used to scope a log read to one tag — e.g. ``collector-runs``
-        entries for a specific target collection (the content format is
-        ``[<target>] <marker> <summary>``).  `offset` paginates the same way
-        as :meth:`read_latest`.
-        """
-        name = _slug(name)
-        with self._session() as session:
-            query = (
-                select(MemoryEntry)
-                .where(
-                    MemoryEntry.memory_name == name,
-                    MemoryEntry.content.like(f"{content_prefix}%"),  # ty: ignore[unresolved-attribute]
-                )
-                .order_by(MemoryEntry.created_at.desc())  # type: ignore[union-attr]
-            )
             if k is not None:
                 query = query.limit(k)
             if offset:
@@ -800,8 +795,7 @@ class MemoryStore:
     def read_since(self, name: str, cursor: datetime, cap: int | None = None) -> list[MemoryEntry]:
         name = _slug(name)
         if name in _MESSAGE_LOG_DIRECTIONS:
-            entries = [e for e in self._message_entries(name) if e.created_at > cursor]
-            return entries[:cap] if cap is not None else entries
+            return self._message_entries(name, since=cursor, limit=cap)
         with self._session() as session:
             query = (
                 select(MemoryEntry)
@@ -930,7 +924,7 @@ class MemoryStore:
 
     def _embedded_rows(self, name: str) -> list[MemoryEntry]:
         if name in _MESSAGE_LOG_DIRECTIONS:
-            return [e for e in self._message_entries(name) if e.content_embedding is not None]
+            return self._message_entries(name, embedded_only=True)
         with self._session() as session:
             return list(
                 session.exec(

@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory_store import (
     DedupThresholds,
@@ -477,6 +478,25 @@ class TestLogAppend:
 
 
 class TestReads:
+    def test_message_log_read_similar_finds_write_time_embedding(self, tmp_path):
+        """user-/penny-messages are facades over messagelog: a message logged
+        with a write-time embedding is immediately found by read_similar (the
+        recall-freshness path — no restart/backfill needed)."""
+        db = _make_db(tmp_path)
+        log = PennyConstants.MEMORY_USER_MESSAGES_LOG
+        direction = PennyConstants.MessageDirection.INCOMING
+        db.messages.log_message(
+            direction, "+1", "I love jazz", embedding=serialize_embedding([1.0, 0.0, 0.0])
+        )
+        db.messages.log_message(
+            direction, "+1", "weather today", embedding=serialize_embedding([0.0, 1.0, 0.0])
+        )
+
+        hits = db.memories.read_similar(log, [1.0, 0.0, 0.0])
+
+        assert [h.content for h in hits][:1] == ["I love jazz"]
+        assert all(h.author == "user" for h in hits)
+
     def test_read_latest(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)

@@ -618,6 +618,12 @@ class BrowserChannel(MessageChannel):
         activity, not search results, so they're never filtered."""
         if section == MEMORY_SECTION_COLLECTOR_RUNS:
             rows = self._collector_runs_for(memory, self._MEMORY_PAGE_SIZE, offset)
+        elif memory.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
+            # The collector-runs log is itself a facade over promptlog — its
+            # "entries" are runs, not stored memory_entry rows.
+            rows = self._db.messages.collector_runs_for(
+                None, limit=self._MEMORY_PAGE_SIZE, offset=offset
+            )
         else:
             rows = self._db.memories.read_latest(
                 memory.name, k=self._MEMORY_PAGE_SIZE, offset=offset, search=query
@@ -626,17 +632,15 @@ class BrowserChannel(MessageChannel):
         return records, len(records) == self._MEMORY_PAGE_SIZE
 
     def _collector_runs_for(self, memory, limit: int, offset: int) -> list:
-        """Newest-first ``collector-runs`` entries for this collection.
-        Matches the ``[<target>] `` content prefix the Collector writes.
-        Empty for logs (collectors only target collections)."""
+        """Newest-first ``collector-runs`` for this collection.
+
+        ``collector-runs`` is a read facade over ``promptlog`` (no stored
+        entries), so the runs come from there, filtered to this collection's
+        ``run_target`` and rendered as records.  Empty for logs (collectors
+        only target collections)."""
         if memory.type != "collection":
             return []
-        return self._db.memories.read_latest_matching(
-            PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
-            f"[{memory.name}] ",
-            k=limit,
-            offset=offset,
-        )
+        return self._db.messages.collector_runs_for(memory.name, limit=limit, offset=offset)
 
     def _cursors_for(self, memory) -> list[CursorRecord]:
         """The collection's read positions over the logs it reads, oldest log

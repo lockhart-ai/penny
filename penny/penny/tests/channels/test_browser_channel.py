@@ -1356,6 +1356,21 @@ class TestBrowserPromptLogHandlers:
         assert received[0]["output_tokens"] == 20
 
 
+def _seed_collector_run(db, run_target: str, run_id: str, outcome: str, reason: str) -> None:
+    """Seed one completed promptlog run — ``collector-runs`` is a read facade
+    over ``promptlog``, so the addon's run views come from there.  With no tool
+    calls the rendered record is just its ``[target] reason`` header."""
+    db.messages.log_prompt(
+        model="m",
+        messages=[],
+        response={"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": []}}]},
+        agent_name="collector",
+        run_id=run_id,
+        run_target=run_target,
+    )
+    db.messages.set_run_outcome(run_id, outcome, reason)
+
+
 class TestBrowserMemoryHandlers:
     """memories_request / memory_detail_request / memory_changed handlers."""
 
@@ -1369,8 +1384,6 @@ class TestBrowserMemoryHandlers:
         return channel, db
 
     def _seed_memories(self, db) -> None:
-
-        # ``collector-runs`` already exists from migration 0034 — just append.
         db.memories.create_collection(
             "board-games",
             "board games",
@@ -1384,11 +1397,8 @@ class TestBrowserMemoryHandlers:
             [EntryInput(key="catan", content="Gateway strategy game")],
             author="user",
         )
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="[board-games] ✅ wrote 2 new games")],
-            author="collector",
-        )
+        # collector-runs is a facade over promptlog — seed a run, not an entry.
+        _seed_collector_run(db, "board-games", "seed-run", "worked", "wrote 2 new games")
 
     @pytest.mark.asyncio
     async def test_memories_request_returns_collections_and_logs(self, tmp_path):
@@ -1472,17 +1482,9 @@ class TestBrowserMemoryHandlers:
         """The drill-in view returns metadata + entries (newest first, capped)."""
 
         channel, db = self._channel(tmp_path)
-        # ``collector-runs`` is created by migration 0034 — append only.
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="first")],
-            author="collector",
-        )
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="second")],
-            author="collector",
-        )
+        # collector-runs is a facade over promptlog — its entries + count are runs.
+        _seed_collector_run(db, "knowledge", "r0", "worked", "first")
+        _seed_collector_run(db, "knowledge", "r1", "worked", "second")
 
         ws = _MockWs()
         await channel._handle_memory_detail_request(
@@ -1494,11 +1496,14 @@ class TestBrowserMemoryHandlers:
         assert resp["type"] == "memory_detail_response"
         assert resp["memory"]["name"] == "collector-runs"
         assert resp["memory"]["entry_count"] == 2
-        assert [e["content"] for e in resp["entries"]] == ["second", "first"]
+        assert [e["content"] for e in resp["entries"]] == [
+            "[knowledge] second",
+            "[knowledge] first",
+        ]
         assert all(e["author"] == "collector" for e in resp["entries"])
         # Both sections fit in one page → no "load more".
         assert resp["entries_has_more"] is False
-        # Logs don't get collector_runs filtering — the field exists but is empty.
+        # Logs don't get the per-collection collector_runs panel — that's empty.
         assert resp["collector_runs"] == []
         assert resp["collector_runs_has_more"] is False
 
@@ -1510,21 +1515,9 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection(
             "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
         )
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="[other-target] ✅ unrelated cycle")],
-            author="collector",
-        )
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="[board-games] ✅ wrote 2 games")],
-            author="collector",
-        )
-        db.memories.append(
-            "collector-runs",
-            [LogEntryInput(content="[board-games] ❌ no source URL found")],
-            author="collector",
-        )
+        _seed_collector_run(db, "other-target", "r0", "worked", "unrelated cycle")
+        _seed_collector_run(db, "board-games", "r1", "worked", "wrote 2 games")
+        _seed_collector_run(db, "board-games", "r2", "failed", "no source URL found")
 
         ws = _MockWs()
         await channel._handle_memory_detail_request(
@@ -1535,9 +1528,9 @@ class TestBrowserMemoryHandlers:
         resp = ws.sent[0]
         runs = resp["collector_runs"]
         assert len(runs) == 2
-        # Newest first.
-        assert runs[0]["content"] == "[board-games] ❌ no source URL found"
-        assert runs[1]["content"] == "[board-games] ✅ wrote 2 games"
+        # Newest first, rendered as records from the promptlog facade.
+        assert runs[0]["content"] == "[board-games] no source URL found"
+        assert runs[1]["content"] == "[board-games] wrote 2 games"
         # Other-target run is excluded.
         assert all("other-target" not in r["content"] for r in runs)
         # Both target runs fit in one page.
@@ -1561,10 +1554,9 @@ class TestBrowserMemoryHandlers:
         newest-first without ever loading the whole history at once."""
         channel, db = self._channel(tmp_path)
         channel._MEMORY_PAGE_SIZE = 2  # shrink the page so 3 entries span 2 pages
-        for content in ("first", "second", "third"):
-            db.memories.append(
-                "collector-runs", [LogEntryInput(content=content)], author="collector"
-            )
+        # collector-runs is a facade over promptlog — its "entries" are runs.
+        for index, marker in enumerate(("first", "second", "third")):
+            _seed_collector_run(db, "knowledge", f"r{index}", "worked", marker)
 
         ws = _MockWs()
         await channel._handle_memory_detail_request(
@@ -1572,7 +1564,10 @@ class TestBrowserMemoryHandlers:
             {"type": "memory_detail_request", "name": "collector-runs"},
         )
         first = ws.sent[0]
-        assert [e["content"] for e in first["entries"]] == ["third", "second"]
+        assert [e["content"] for e in first["entries"]] == [
+            "[knowledge] third",
+            "[knowledge] second",
+        ]
         assert first["entries_has_more"] is True
 
         ws = _MockWs()
@@ -1588,7 +1583,7 @@ class TestBrowserMemoryHandlers:
         page = ws.sent[0]
         assert page["type"] == "memory_page_response"
         assert page["section"] == "entries"
-        assert [e["content"] for e in page["entries"]] == ["first"]
+        assert [e["content"] for e in page["entries"]] == ["[knowledge] first"]
         assert page["has_more"] is False
 
     @pytest.mark.asyncio
@@ -1600,12 +1595,8 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection(
             "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
         )
-        for marker in ("cycle-1", "cycle-2", "cycle-3"):
-            db.memories.append(
-                "collector-runs",
-                [LogEntryInput(content=f"[board-games] {marker}")],
-                author="collector",
-            )
+        for index, marker in enumerate(("cycle-1", "cycle-2", "cycle-3")):
+            _seed_collector_run(db, "board-games", f"r{index}", "worked", marker)
 
         ws = _MockWs()
         await channel._handle_memory_detail_request(
