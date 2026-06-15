@@ -123,24 +123,25 @@ def _resolve(db: Database, name: str) -> Memory:
 
 
 class MemoryTool(Tool):
-    """Base for tools that resolve a memory and operate on it.
+    """Base for tools that operate on a memory.
 
-    ``execute`` runs the subclass's ``_run`` and turns any ``MemoryAccessError``
-    (the memory is missing, the wrong shape for the op, or a read-only facade)
-    into the tool's readable result.  The refusal handling lives here once, so a
-    tool body just calls ``_resolve(...).<op>(...)`` and lets the error propagate
-    — no per-tool try/except, no sentinel return.
+    ``execute`` runs the subclass's ``_run`` and turns any memory exception into
+    the tool's readable result — a ``MemoryAccessError`` (missing / wrong shape /
+    read-only) or a ``MemoryAlreadyExistsError`` (create conflict).  Every such
+    exception renders its own message, so the handling is uniformly
+    ``return str(exc)`` and lives here once: a tool body just calls the op and
+    lets the error propagate — no per-tool try/except, no format strings.
     """
 
     async def execute(self, **kwargs: Any) -> str:
         try:
             return await self._run(**kwargs)
-        except MemoryAccessError as exc:
+        except (MemoryAccessError, MemoryAlreadyExistsError) as exc:
             return str(exc)
 
     @abstractmethod
     async def _run(self, **kwargs: Any) -> str:
-        """Resolve a memory and operate on it; let any ``MemoryAccessError``
+        """Resolve/create a memory and operate on it; let any memory exception
         propagate to :meth:`execute`."""
 
 
@@ -196,7 +197,7 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
-class CollectionCreateTool(Tool):
+class CollectionCreateTool(MemoryTool):
     """Create a new keyed collection.
 
     Description doubles as the chat-agent's guide to writing good
@@ -332,28 +333,25 @@ class CollectionCreateTool(Tool):
         self._db = db
         self._llm_client = llm_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionCreateArgs(**kwargs)
         if error := check_extraction_prompt(args.extraction_prompt):
             return error
         description_embedding = await embed_text(self._llm_client, args.description)
-        try:
-            memory = self._db.memories.create_collection(
-                args.name,
-                args.description,
-                Inclusion(args.inclusion),
-                RecallMode(args.recall),
-                extraction_prompt=args.extraction_prompt,
-                collector_interval_seconds=args.collector_interval_seconds,
-                description_embedding=description_embedding,
-                intent=args.intent,
-            )
-        except MemoryAlreadyExistsError:
-            return f"Collection '{args.name}' already exists."
+        memory = self._db.memories.create_collection(
+            args.name,
+            args.description,
+            Inclusion(args.inclusion),
+            RecallMode(args.recall),
+            extraction_prompt=args.extraction_prompt,
+            collector_interval_seconds=args.collector_interval_seconds,
+            description_embedding=description_embedding,
+            intent=args.intent,
+        )
         return _format_collection_echo(memory, "Created")
 
 
-class LogCreateTool(Tool):
+class LogCreateTool(MemoryTool):
     """Create a new append-only log."""
 
     name = "log_create"
@@ -392,23 +390,20 @@ class LogCreateTool(Tool):
         self._db = db
         self._llm_client = llm_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = LogCreateArgs(**kwargs)
         description_embedding = await embed_text(self._llm_client, args.description)
-        try:
-            self._db.memories.create_log(
-                args.name,
-                args.description,
-                Inclusion(args.inclusion),
-                RecallMode(args.recall),
-                description_embedding=description_embedding,
-            )
-        except MemoryAlreadyExistsError:
-            return f"Log '{args.name}' already exists."
+        self._db.memories.create_log(
+            args.name,
+            args.description,
+            Inclusion(args.inclusion),
+            RecallMode(args.recall),
+            description_embedding=description_embedding,
+        )
         return f"Created log '{args.name}'."
 
 
-class CollectionArchiveTool(Tool):
+class CollectionArchiveTool(MemoryTool):
     """Archive a collection — keeps data, removes it from ambient recall."""
 
     name = "collection_archive"
@@ -425,13 +420,13 @@ class CollectionArchiveTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = MemoryNameArgs(**kwargs)
         self._db.memories.archive(args.memory)
         return f"Archived '{args.memory}'."
 
 
-class CollectionUnarchiveTool(Tool):
+class CollectionUnarchiveTool(MemoryTool):
     """Restore a previously archived collection to ambient recall."""
 
     name = "collection_unarchive"
@@ -445,7 +440,7 @@ class CollectionUnarchiveTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = MemoryNameArgs(**kwargs)
         self._db.memories.unarchive(args.memory)
         return f"Unarchived '{args.memory}'."
@@ -744,7 +739,7 @@ class UpdateEntryTool(MemoryTool):
         return f"Updated '{args.key}' in '{args.memory}'."
 
 
-class CollectionUpdateTool(Tool):
+class CollectionUpdateTool(MemoryTool):
     """Update collection metadata: description, recall, extraction_prompt, interval.
 
     Chat-facing.  Lets the user evolve a collection mid-conversation —
@@ -839,7 +834,7 @@ class CollectionUpdateTool(Tool):
         self._db = db
         self._llm_client = llm_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionUpdateArgs(**kwargs)
         if error := check_extraction_prompt(args.extraction_prompt):
             return error
@@ -851,22 +846,19 @@ class CollectionUpdateTool(Tool):
             if args.description is not None
             else None
         )
-        try:
-            memory = self._db.memories.update_collection_metadata(
-                args.name,
-                description=args.description,
-                inclusion=inclusion,
-                recall=recall,
-                extraction_prompt=args.extraction_prompt,
-                collector_interval_seconds=args.collector_interval_seconds,
-                description_embedding=description_embedding,
-            )
-        except MemoryNotFoundError:
-            return f"Collection '{args.name}' not found."
+        memory = self._db.memories.update_collection_metadata(
+            args.name,
+            description=args.description,
+            inclusion=inclusion,
+            recall=recall,
+            extraction_prompt=args.extraction_prompt,
+            collector_interval_seconds=args.collector_interval_seconds,
+            description_embedding=description_embedding,
+        )
         return _format_collection_echo(memory, "Updated")
 
 
-class MemoryMetadataTool(Tool):
+class MemoryMetadataTool(MemoryTool):
     """Return the metadata fields for a single memory (collection or log).
 
     Genuinely shape-agnostic — metadata describes the memory itself, not its
@@ -891,12 +883,9 @@ class MemoryMetadataTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = MemoryNameArgs(**kwargs)
-        memory = self._db.memories.get(args.memory)
-        if memory is None:
-            return f"Memory '{args.memory}' not found."
-        return self._format(memory)
+        return self._format(_resolve(self._db, args.memory).row)
 
     def _format(self, memory: Any) -> str:
         interval = (

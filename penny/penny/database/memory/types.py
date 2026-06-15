@@ -101,7 +101,17 @@ class MemoryNotFoundError(MemoryAccessError):
 
 
 class MemoryAlreadyExistsError(Exception):
-    """Raised when a collection or log with the given name already exists."""
+    """Raised when a collection or log with the given name already exists.
+
+    Like the access errors, it carries the ``name`` and renders a readable
+    message, so a tool surfaces ``str(self)`` directly with no format string.
+    Kept distinct from ``MemoryAccessError`` (a creation conflict, not an access
+    refusal); the ``MemoryTool`` base catches both and returns ``str(exc)``.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"Memory '{name}' already exists.")
+        self.name = name
 
 
 class DedupThresholds(BaseModel):
