@@ -18,6 +18,7 @@ reads return empty.
 from __future__ import annotations
 
 import logging
+from abc import abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -110,15 +111,37 @@ def _resolve(db: Database, name: str) -> Memory:
     """The ``Memory`` object for ``name``; raises ``MemoryNotFoundError`` when it
     doesn't exist.
 
-    The single dispatch every content tool funnels through.  A tool wraps its
-    resolve + op in one ``try`` and returns ``str(exc)`` for any
-    ``MemoryAccessError`` — missing (here), wrong shape, or read-only (raised by
-    the object) — so there's no per-call type check and no sentinel return.
+    The single dispatch every content tool funnels through.  The ``MemoryTool``
+    base turns any ``MemoryAccessError`` — missing (here), wrong shape, or
+    read-only (raised by the object) — into the tool's readable result, so a
+    tool body just resolves and operates, with no type check or try/except.
     """
     memory = db.memory(name)
     if memory is None:
         raise MemoryNotFoundError(name)
     return memory
+
+
+class MemoryTool(Tool):
+    """Base for tools that resolve a memory and operate on it.
+
+    ``execute`` runs the subclass's ``_run`` and turns any ``MemoryAccessError``
+    (the memory is missing, the wrong shape for the op, or a read-only facade)
+    into the tool's readable result.  The refusal handling lives here once, so a
+    tool body just calls ``_resolve(...).<op>(...)`` and lets the error propagate
+    — no per-tool try/except, no sentinel return.
+    """
+
+    async def execute(self, **kwargs: Any) -> str:
+        try:
+            return await self._run(**kwargs)
+        except MemoryAccessError as exc:
+            return str(exc)
+
+    @abstractmethod
+    async def _run(self, **kwargs: Any) -> str:
+        """Resolve a memory and operate on it; let any ``MemoryAccessError``
+        propagate to :meth:`execute`."""
 
 
 def check_extraction_prompt(prompt: str | None) -> str | None:
@@ -431,7 +454,7 @@ class CollectionUnarchiveTool(Tool):
 # ── Collection reads ────────────────────────────────────────────────────────
 
 
-class CollectionGetTool(Tool):
+class CollectionGetTool(MemoryTool):
     """Exact-key lookup in a collection."""
 
     name = "collection_get"
@@ -451,18 +474,15 @@ class CollectionGetTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionGetArgs(**kwargs)
-        try:
-            rows = _resolve(self._db, args.memory).get(args.key)
-        except MemoryAccessError as exc:
-            return str(exc)
+        rows = _resolve(self._db, args.memory).get(args.key)
         if not rows:
             return f"Key '{args.key}' not found in '{args.memory}'."
         return _format_entries(rows, source=args.memory)
 
 
-class CollectionReadLatestTool(Tool):
+class CollectionReadLatestTool(MemoryTool):
     """Return the newest entries in a collection, newest first.
 
     Collection-only: logs are read through the cursored ``log_read``, never
@@ -487,16 +507,13 @@ class CollectionReadLatestTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = ReadLatestArgs(**kwargs)
-        try:
-            entries = _resolve(self._db, args.memory).read_latest(args.k)
-        except MemoryAccessError as exc:
-            return str(exc)
+        entries = _resolve(self._db, args.memory).read_latest(args.k)
         return _format_entries(entries, source=args.memory, ordering="most recent first")
 
 
-class CollectionReadRandomTool(Tool):
+class CollectionReadRandomTool(MemoryTool):
     """Return entries sampled uniformly at random from a collection."""
 
     name = "collection_read_random"
@@ -513,16 +530,13 @@ class CollectionReadRandomTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = ReadRandomArgs(**kwargs)
-        try:
-            entries = _resolve(self._db, args.memory).read_random(args.k)
-        except MemoryAccessError as exc:
-            return str(exc)
+        entries = _resolve(self._db, args.memory).read_random(args.k)
         return _format_entries(entries, source=args.memory, ordering="random sample")
 
 
-class ReadSimilarTool(Tool):
+class ReadSimilarTool(MemoryTool):
     """Return entries most similar to an anchor phrase (collections or logs)."""
 
     name = "read_similar"
@@ -550,7 +564,7 @@ class ReadSimilarTool(Tool):
         self._db = db
         self._llm = llm_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = ReadSimilarArgs(**kwargs)
         vec = await embed_text(self._llm, args.anchor)
         if vec is None:
@@ -558,14 +572,11 @@ class ReadSimilarTool(Tool):
                 "%s: similarity search unavailable — no embedding model configured", self.name
             )
             return "(similarity search unavailable — no embedding model configured)"
-        try:
-            entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
-        except MemoryAccessError as exc:
-            return str(exc)
+        entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
         return _format_entries(entries, source=args.memory, ordering="most relevant first")
 
 
-class CollectionKeysTool(Tool):
+class CollectionKeysTool(MemoryTool):
     """List the unique keys currently in a collection."""
 
     name = "collection_keys"
@@ -579,12 +590,9 @@ class CollectionKeysTool(Tool):
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = MemoryNameArgs(**kwargs)
-        try:
-            keys = _resolve(self._db, args.memory).keys()
-        except MemoryAccessError as exc:
-            return str(exc)
+        keys = _resolve(self._db, args.memory).keys()
         if not keys:
             return "(no keys)"
         return "\n".join(f"- {key}" for key in keys)
@@ -605,7 +613,7 @@ def _format_duplicate(result: WriteResult) -> str:
     return result.key
 
 
-class CollectionWriteTool(Tool):
+class CollectionWriteTool(MemoryTool):
     """Write entries to a collection with similarity-based dedup."""
 
     name = "collection_write"
@@ -645,18 +653,15 @@ class CollectionWriteTool(Tool):
         self._author = author
         self._scope = scope
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionWriteArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return (
                 f"Refused: this collector can only write to '{self._scope}', not '{args.memory}'."
             )
-        try:
-            memory = _resolve(self._db, args.memory)
-            entries = [await self._build_entry(spec) for spec in args.entries]
-            results = memory.write(entries, author=self._author)
-        except MemoryAccessError as exc:
-            return str(exc)
+        memory = _resolve(self._db, args.memory)
+        entries = [await self._build_entry(spec) for spec in args.entries]
+        results = memory.write(entries, author=self._author)
         return self._format_results(args.memory, results)
 
     async def _build_entry(self, spec: CollectionEntrySpec) -> EntryInput:
@@ -701,7 +706,7 @@ class CollectionWriteTool(Tool):
         return " ".join(parts) if parts else "(no entries written)"
 
 
-class UpdateEntryTool(Tool):
+class UpdateEntryTool(MemoryTool):
     """Replace the content of an existing entry in a collection."""
 
     name = "update_entry"
@@ -727,16 +732,13 @@ class UpdateEntryTool(Tool):
         self._author = author
         self._scope = scope
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = UpdateEntryArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return (
                 f"Refused: this collector can only write to '{self._scope}', not '{args.memory}'."
             )
-        try:
-            outcome = _resolve(self._db, args.memory).update(args.key, args.content, self._author)
-        except MemoryAccessError as exc:
-            return str(exc)
+        outcome = _resolve(self._db, args.memory).update(args.key, args.content, self._author)
         if outcome == "not_found":
             return f"Key '{args.key}' not found in '{args.memory}'."
         return f"Updated '{args.key}' in '{args.memory}'."
@@ -926,7 +928,7 @@ class MemoryMetadataTool(Tool):
         return "\n".join(lines)
 
 
-class CollectionMoveTool(Tool):
+class CollectionMoveTool(MemoryTool):
     """Move an entry between collections by key."""
 
     name = "collection_move"
@@ -964,7 +966,7 @@ class CollectionMoveTool(Tool):
                 "required": ["key", "from_memory"],
             }
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         if self._scope is not None and "to_memory" not in kwargs:
             kwargs["to_memory"] = self._scope
         args = CollectionMoveArgs(**kwargs)
@@ -977,11 +979,8 @@ class CollectionMoveTool(Tool):
                 f"Refused: this collector can only write to '{self._scope}', "
                 f"not '{args.to_memory}'."
             )
-        try:
-            source = _resolve(self._db, args.from_memory)
-            outcome = source.move(args.key, args.to_memory, author=self._author)
-        except MemoryAccessError as exc:
-            return str(exc)
+        source = _resolve(self._db, args.from_memory)
+        outcome = source.move(args.key, args.to_memory, author=self._author)
         if outcome == "not_found":
             return f"Key '{args.key}' not found in '{args.from_memory}'."
         if outcome == "collision":
@@ -989,7 +988,7 @@ class CollectionMoveTool(Tool):
         return f"Moved '{args.key}' from '{args.from_memory}' to '{args.to_memory}'."
 
 
-class CollectionMergeTool(Tool):
+class CollectionMergeTool(MemoryTool):
     """Merge all entries from one collection into another, then archive the source."""
 
     name = "collection_merge"
@@ -1014,16 +1013,13 @@ class CollectionMergeTool(Tool):
         self._db = db
         self._author = author
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionMergeArgs(**kwargs)
         return self._merge(args.from_memory, args.to_memory)
 
     def _merge(self, from_name: str, to_name: str) -> str:
-        try:
-            source = _resolve(self._db, from_name)
-            source_keys = source.keys()
-        except MemoryAccessError as exc:
-            return str(exc)
+        source = _resolve(self._db, from_name)
+        source_keys = source.keys()
         if not source_keys:
             self._db.memories.archive(from_name)
             return f"'{from_name}' was empty — archived with nothing to move."
@@ -1050,7 +1046,7 @@ class CollectionMergeTool(Tool):
         return ", ".join(parts[:2]) + f". {parts[-1]}" if dropped else f"{parts[0]}. {parts[-1]}"
 
 
-class CollectionDeleteEntryTool(Tool):
+class CollectionDeleteEntryTool(MemoryTool):
     """Delete an entry from a collection by key."""
 
     name = "collection_delete_entry"
@@ -1071,16 +1067,13 @@ class CollectionDeleteEntryTool(Tool):
         self._db = db
         self._scope = scope
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = CollectionDeleteEntryArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return (
                 f"Refused: this collector can only write to '{self._scope}', not '{args.memory}'."
             )
-        try:
-            removed = _resolve(self._db, args.memory).delete(args.key)
-        except MemoryAccessError as exc:
-            return str(exc)
+        removed = _resolve(self._db, args.memory).delete(args.key)
         if removed == 0:
             return f"No entry with key '{args.key}' in '{args.memory}'."
         return f"Deleted '{args.key}' from '{args.memory}'."
@@ -1100,7 +1093,7 @@ _LOG_READ_WINDOW_DESCRIPTION = (
 )
 
 
-class LogReadTool(Tool):
+class LogReadTool(MemoryTool):
     """Read entries from a log — one tool, caller-dispatched behaviour.
 
     For a collector (``scope`` set) it's CURSOR-based: it returns the next
@@ -1129,13 +1122,10 @@ class LogReadTool(Tool):
         )
         self._pending: dict[str, datetime] = {}
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = ReadLogArgs(**kwargs)
-        try:
-            memory = _resolve(self._db, args.memory)
-            entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
-        except MemoryAccessError as exc:
-            return str(exc)
+        memory = _resolve(self._db, args.memory)
+        entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
         return _format_entries(entries, source=args.memory, ordering="oldest first")
 
     def _read_cursor(self, memory: Memory) -> list[MemoryEntry]:
@@ -1179,7 +1169,7 @@ class LogReadTool(Tool):
 # ── Log writes ──────────────────────────────────────────────────────────────
 
 
-class LogAppendTool(Tool):
+class LogAppendTool(MemoryTool):
     """Append a keyless entry to a log."""
 
     name = "log_append"
@@ -1198,7 +1188,7 @@ class LogAppendTool(Tool):
         self._llm = llm_client
         self._author = author
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def _run(self, **kwargs: Any) -> str:
         args = LogAppendArgs(**kwargs)
         if args.memory in PennyConstants.SYSTEM_LOGS:
             return (
@@ -1207,13 +1197,10 @@ class LogAppendTool(Tool):
                 "it. Use a collection or a log you created for your own notes."
             )
         vec = await embed_text(self._llm, args.content)
-        try:
-            _resolve(self._db, args.memory).append(
-                [LogEntryInput(content=args.content, content_embedding=vec)],
-                author=self._author,
-            )
-        except MemoryAccessError as exc:
-            return str(exc)
+        _resolve(self._db, args.memory).append(
+            [LogEntryInput(content=args.content, content_embedding=vec)],
+            author=self._author,
+        )
         return f"Appended to '{args.memory}'."
 
 
