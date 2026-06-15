@@ -184,6 +184,15 @@ def _score_no_op(suspect: str) -> CollectorScorer:
     return _score
 
 
+def _score_called_done(db: Database, before: object, sent: list[str]) -> list[str]:
+    """Done-discipline: the cycle must end by calling ``done()`` — whether it
+    fixed something or gave up — never trail off with plain text.  Recreates the
+    prod give-up (run e5a7c9e3 returned a text blob and never called done())."""
+    if not tool_was_called(db, "done"):
+        return ["cycle ended without calling done() — gave up with plain text"]
+    return []
+
+
 # ── Cases ───────────────────────────────────────────────────────────────────
 
 
@@ -366,5 +375,61 @@ async def test_run_failure_is_not_drift(collector_eval) -> None:
         ),
         snapshot=_snapshot(suspect),
         score=_score_no_op(suspect),
+        min_pass_rate=None,
+    )
+
+
+async def test_ends_with_done(collector_eval) -> None:
+    """The cycle must always close with ``done()`` — recreates the prod give-up
+    where the agent dry-ran a fix, then trailed off with a text blob and never
+    called done() (the dry-run cluster was the root cause; this guards the
+    convergence the better feedback should now produce).  A drift scenario is
+    used as the stressor: it forces the full read → dry-run → fix → notify → done
+    hop, the hardest path to land cleanly."""
+    suspect = "espresso-gear"
+    await collector_eval(
+        case_id="quality-ends-with-done",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description="A quiet running list of espresso equipment worth considering.",
+            intent="Keep a quiet running list of espresso equipment worth considering "
+            "— never ping me about it, I'll check the list myself.",
+            prompt=_SILENT_DRIFT_PROMPT,
+            runs=[
+                {
+                    "run_id": "espresso-run-1",
+                    "outcome": RunOutcome.WORKED,
+                    "summary": "wrote 1 entry and sent an update about a new grinder",
+                    "calls": [
+                        (
+                            "collection_write",
+                            {
+                                "memory": suspect,
+                                "entries": [
+                                    {
+                                        "key": "niche-zero-clone",
+                                        "content": "Niche Zero clone grinder, $300",
+                                    }
+                                ],
+                            },
+                        ),
+                        (
+                            "send_message",
+                            {"content": "Found a new espresso grinder: the Niche clone, $300."},
+                        ),
+                        (
+                            "done",
+                            {
+                                "success": True,
+                                "summary": "wrote 1 entry and sent an update about a new grinder",
+                            },
+                        ),
+                    ],
+                }
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_called_done,
         min_pass_rate=None,
     )

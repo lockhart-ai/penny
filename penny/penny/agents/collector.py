@@ -38,6 +38,7 @@ from penny.database import Database
 from penny.database.memory import render_tool_call
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
+from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import (
@@ -360,7 +361,13 @@ class Collector(BackgroundAgent):
                     bool(record.arguments.get("success", False)),
                     str(record.arguments.get("summary", "")),
                 )
-        return (False, "max steps exceeded — no done() call")
+        # No done() — distinguish actually hitting the step cap from the model
+        # trailing off with a text answer (both are failures, but only one is
+        # "max steps").  The loop returns the AGENT_MAX_STEPS sentinel only on the
+        # real cap; anything else is an early give-up without reporting an outcome.
+        if response.answer == PennyResponse.AGENT_MAX_STEPS:
+            return (False, "max steps exceeded — no done() call")
+        return (False, "cycle ended without a done() call")
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
