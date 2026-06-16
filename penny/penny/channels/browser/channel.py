@@ -528,6 +528,13 @@ class BrowserChannel(MessageChannel):
         if memory is None:
             logger.warning("memory_detail_request for unknown memory: %s", req.name)
             return
+        payload = self._build_memory_detail(memory, data)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            await ws.send(payload.model_dump_json())
+
+    def _build_memory_detail(self, memory, data: dict) -> BrowserMemoryDetailResponse:
+        """Assemble the detail payload: metadata + entry count + the first page
+        of each section (entries, collector runs) + the collection's cursors."""
         counts = self._db.memories.entry_counts()
         query = (data.get("query") or "").strip() or None
         record = self._memory_to_record(memory, counts.get(memory.name, 0))
@@ -535,7 +542,7 @@ class BrowserChannel(MessageChannel):
             memory, MEMORY_SECTION_ENTRIES, 0, query
         )
         runs, runs_has_more = self._memory_section_page(memory, MEMORY_SECTION_COLLECTOR_RUNS, 0)
-        payload = BrowserMemoryDetailResponse(
+        return BrowserMemoryDetailResponse(
             memory=record,
             entries=entries,
             entries_has_more=entries_has_more,
@@ -543,8 +550,6 @@ class BrowserChannel(MessageChannel):
             collector_runs_has_more=runs_has_more,
             cursors=self._cursors_for(memory),
         )
-        with contextlib.suppress(websockets.ConnectionClosed):
-            await ws.send(payload.model_dump_json())
 
     async def _handle_memory_page_request(self, ws: ServerConnection, data: dict) -> None:
         """Send one more page of a single memory-detail section (entries or
