@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
 from penny.constants import ProgressEmoji
-from penny.tools.models import ToolCall, ToolDefinition, ToolResult
+from penny.tools.models import ToolCall, ToolDefinition, ToolOutcome, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class Tool(ABC):
             Tool._registry[cls.name] = cls
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs) -> ToolOutcome:
         """
         Execute the tool.
 
@@ -36,7 +36,8 @@ class Tool(ABC):
             **kwargs: Tool parameters
 
         Returns:
-            Tool result (will be serialized to string for model)
+            A ToolOutcome carrying the model-facing message plus the
+            success/mutated/source_urls signals the agent loop records.
         """
         pass
 

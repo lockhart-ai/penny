@@ -87,7 +87,8 @@ async def test_send_message_dispatches_when_not_gated(tmp_path):
 
     result = await tool.execute(content="hey there!")
 
-    assert result == "Message sent."
+    assert result.message == "Message sent."
+    assert result.mutated is True
     channel.send_response.assert_awaited_once()
     kwargs = channel.send_response.await_args.kwargs
     assert kwargs["recipient"] == _RECIPIENT
@@ -105,8 +106,12 @@ async def test_send_message_refuses_when_user_muted(tmp_path):
 
     result = await tool.execute(content="hey there!")
 
-    assert "muted" in result.lower()
-    assert "done" in result.lower()
+    # A muted send is a correct decline, not a failure — nothing was sent
+    # (mutated False) but the call succeeded.
+    assert result.success is True
+    assert result.mutated is False
+    assert "muted" in result.message.lower()
+    assert "done" in result.message.lower()
     channel.send_response.assert_not_awaited()
 
 
@@ -121,25 +126,28 @@ async def test_send_message_refuses_when_content_is_a_refusal(tmp_path):
         content="I'm sorry, I can't help with that as an AI language model."
     )
 
-    assert "refusal" in result.lower()
-    assert "done" in result.lower()
+    # Refusal content is a correct decline, not a failure.
+    assert result.success is True
+    assert result.mutated is False
+    assert "refusal" in result.message.lower()
+    assert "done" in result.message.lower()
     channel.send_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_send_message_rejects_ellipsis_truncated_content(tmp_path):
-    """Content ending mid-thought with '…' returns a failure-prefixed string
-    so the agent loop marks the call as failed; the model retries with the
-    complete body on its next step."""
+    """Content ending mid-thought with '…' returns ``success=False`` so the
+    agent loop marks the call as failed; the model retries with the complete
+    body on its next step."""
     db = _make_db(tmp_path)
     channel = _make_channel()
     tool = _make_tool(db, channel=channel)
 
     result = await tool.execute(content="here's the news, the model …")
 
-    assert result.startswith("Error: ")
-    assert "ended with an ellipsis" in result.lower()
-    assert "complete" in result.lower()
+    assert result.success is False
+    assert "ended with an ellipsis" in result.message.lower()
+    assert "complete" in result.message.lower()
     channel.send_response.assert_not_awaited()
 
 
@@ -153,7 +161,7 @@ async def test_send_message_allows_conversational_mid_sentence_ellipsis(tmp_path
 
     result = await tool.execute(content="anyway… that's the gist 🤓")
 
-    assert result == "Message sent."
+    assert result.message == "Message sent."
     channel.send_response.assert_awaited_once()
 
 
@@ -191,8 +199,11 @@ async def test_send_message_refuses_when_cooldown_not_elapsed(tmp_path):
 
     result = await tool.execute(content="hey again!")
 
-    assert "cooldown" in result.lower()
-    assert "done" in result.lower()
+    # Cooldown is a correct decline, not a failure.
+    assert result.success is True
+    assert result.mutated is False
+    assert "cooldown" in result.message.lower()
+    assert "done" in result.message.lower()
     channel.send_response.assert_not_awaited()
 
 
@@ -214,7 +225,7 @@ async def test_cooldown_skipped_when_user_replied_since_last_send(tmp_path):
 
     result = await tool.execute(content="responding to your follow-up")
 
-    assert result == "Message sent."
+    assert result.message == "Message sent."
     channel.send_response.assert_awaited_once()
 
 

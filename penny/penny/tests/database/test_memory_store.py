@@ -116,23 +116,23 @@ class TestMemoryMetadata:
         )
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="board-games"))
-        assert "board-games" in result
-        assert "collection" in result
-        assert "strategy board games" in result
-        assert "inclusion: never" in result
-        assert "recall: recent" in result
-        assert "300s" in result
-        assert "last collected: never" in result
-        assert "Browse for new board games and write entries." in result
-        assert "created:" in result
-        assert "updated:" in result
+        assert "board-games" in result.message
+        assert "collection" in result.message
+        assert "strategy board games" in result.message
+        assert "inclusion: never" in result.message
+        assert "recall: recent" in result.message
+        assert "300s" in result.message
+        assert "last collected: never" in result.message
+        assert "Browse for new board games and write entries." in result.message
+        assert "created:" in result.message
+        assert "updated:" in result.message
 
     def test_collection_metadata_tool_no_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_collection("plain", "no collector", Inclusion.NEVER, RecallMode.RECENT)
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
-        assert "extraction prompt: none" in result
+        assert "extraction prompt: none" in result.message
 
     def test_updated_at_advances_on_metadata_update(self, tmp_path):
         db = _make_db(tmp_path)
@@ -146,7 +146,7 @@ class TestMemoryMetadata:
         db = _make_db(tmp_path)
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="nonexistent"))
-        assert "not found" in result
+        assert "not found" in result.message
 
 
 class TestCollectionWrites:

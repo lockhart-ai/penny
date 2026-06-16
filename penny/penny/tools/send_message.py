@@ -38,7 +38,7 @@ from penny.constants import PennyConstants
 from penny.llm.refusal import is_refusal
 from penny.tools.base import Tool
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import SendMessageArgs
+from penny.tools.models import SendMessageArgs, ToolOutcome
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel
@@ -87,11 +87,11 @@ class SendMessageTool(Tool):
         'skipped this cycle")`` to exit — do not retry.  This is normal '
         "cycle behaviour, not a failure."
     )
-    # ``Error:`` prefix triggers ``record.failed=True`` in the agent loop,
-    # which counts toward the abort threshold so we don't infinite-loop
-    # if the model keeps producing truncated content.
+    # Returned with ``success=False`` so the agent loop sets
+    # ``record.failed=True``, which counts toward the abort threshold — we don't
+    # infinite-loop if the model keeps producing truncated content.
     _TRUNCATION_REJECTION = (
-        "Error: Message NOT sent: the content ended with an ellipsis "
+        "Message NOT sent: the content ended with an ellipsis "
         "('…' or '...'), which means it was cut off mid-thought.  "
         "Call send_message again with the COMPLETE message body — "
         "finish every sentence and bullet you start, no ellipses, "
@@ -110,24 +110,31 @@ class SendMessageTool(Tool):
         self._db = db
         self._config = config
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolOutcome:
         args = SendMessageArgs(**kwargs)
+        # Nothing-sent gates all carry mutated=False (no message went out).  Most
+        # are *successful* no-ops — a correct decline the model shouldn't retry
+        # (refusal content, no recipient, muted, cooldown), so success=True keeps
+        # them out of the failure budget and matches their "this is normal, not a
+        # failure" message bodies.  Truncation is the one real failure: the model
+        # produced cut-off content, so success=False marks the call failed and
+        # steers a retry with the complete body (and feeds the abort threshold).
         if is_refusal(args.content):
             logger.info("send_message refused (refusal content): %s", self._agent_name)
-            return self._REFUSAL_RESPONSE
+            return ToolOutcome(message=self._REFUSAL_RESPONSE)
         if _appears_truncated(args.content):
             logger.info("send_message rejected (truncation): %s", self._agent_name)
-            return self._TRUNCATION_REJECTION
+            return ToolOutcome(message=self._TRUNCATION_REJECTION, success=False)
         recipient = self._db.users.get_primary_sender()
         if recipient is None:
             logger.info("send_message refused (no primary user): %s", self._agent_name)
-            return self._REFUSAL_RESPONSE
+            return ToolOutcome(message=self._REFUSAL_RESPONSE)
         if self._db.users.is_muted(recipient):
             logger.info("send_message refused (muted): %s", recipient)
-            return self._MUTED_RESPONSE
+            return ToolOutcome(message=self._MUTED_RESPONSE)
         if not self._cooldown_elapsed():
             logger.info("send_message refused (cooldown): %s → %s", self._agent_name, recipient)
-            return self._COOLDOWN_RESPONSE
+            return ToolOutcome(message=self._COOLDOWN_RESPONSE)
         await self._channel.send_response(
             recipient=recipient,
             content=args.content,
@@ -136,7 +143,7 @@ class SendMessageTool(Tool):
             quote_message=None,
         )
         logger.info("send_message: %s → %s", self._agent_name, recipient)
-        return "Message sent."
+        return ToolOutcome(message="Message sent.", mutated=True)
 
     # ── Gating helpers ──────────────────────────────────────────────────
 

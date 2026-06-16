@@ -17,7 +17,7 @@ from penny.llm.models import LlmConnectionError, LlmTimeoutError, LlmToolParseEr
 from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
-from penny.tools.models import SearchResult, ToolResult
+from penny.tools.models import ToolOutcome, ToolResult
 
 
 class StubSearchTool(Tool):
@@ -32,7 +32,7 @@ class StubSearchTool(Tool):
     }
 
     async def execute(self, **kwargs):
-        return "Mock search results for testing"
+        return ToolOutcome(message="Mock search results for testing")
 
 
 def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
@@ -762,12 +762,11 @@ class TestParallelToolCalls:
         page_a = "A" * 15000  # 15k chars — realistic extracted web page
         page_b = "B" * 15000
 
+        sep = PennyConstants.SECTION_SEPARATOR
         agent._tool_executor.execute = AsyncMock(
             return_value=ToolResult(
                 tool="browse",
-                result=SearchResult(
-                    text=f"## page A\n{page_a}{PennyConstants.SECTION_SEPARATOR}## page B\n{page_b}"
-                ),
+                result=ToolOutcome(message=f"## page A\n{page_a}{sep}## page B\n{page_b}"),
             )
         )
 
@@ -822,9 +821,9 @@ class TestParallelToolCalls:
 
         result = await tool.execute(queries=["best pizza toronto"])
 
-        assert PennyConstants.BROWSE_ERROR_HEADER in result.text
-        assert "no browser connected" in result.text
-        assert PennyConstants.BROWSE_PAGE_HEADER not in result.text
+        assert PennyConstants.BROWSE_ERROR_HEADER in result.message
+        assert "no browser connected" in result.message
+        assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
 
     @pytest.mark.asyncio
     async def test_urls_always_route_to_browse(self, test_db, mock_llm):
@@ -870,9 +869,9 @@ class TestParallelToolCalls:
 
         result = await tool.execute(queries=["https://slow.example.com"])
 
-        assert isinstance(result, SearchResult)
-        assert PennyConstants.BROWSE_ERROR_HEADER in result.text
-        assert "slow.example.com" in result.text
+        assert isinstance(result, ToolOutcome)
+        assert PennyConstants.BROWSE_ERROR_HEADER in result.message
+        assert "slow.example.com" in result.message
 
     def test_browse_tool_timeout_exceeds_request_timeout(self):
         """BrowseTool.timeout must exceed TOOL_REQUEST_TIMEOUT.
@@ -1426,7 +1425,7 @@ class TestMalformedUrlCleaning:
         with patch.object(agent._tool_executor, "execute") as mock_exec:
             mock_exec.return_value = ToolResult(
                 tool="search",
-                result=SearchResult(text="result", urls=[source_url]),
+                result=ToolOutcome(message="result", source_urls=[source_url]),
             )
             response = await agent.run("test query", max_steps=max_steps)
 

@@ -21,7 +21,7 @@ from penny.database.models import Media, PromptLog, RuntimeConfig
 from penny.tests.conftest import wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.browse import BrowseTool
-from penny.tools.models import SearchResult
+from penny.tools.models import ToolOutcome
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
@@ -211,22 +211,22 @@ class TestBrowseTool:
 
     @pytest.mark.asyncio
     async def test_returns_channel_content_as_search_result(self):
-        """Tool returns a SearchResult with the channel content."""
+        """Tool returns a ToolOutcome with the channel content."""
         request_fn = AsyncMock(
             return_value=("Title: Example\nURL: https://example.com\n\nPage content.", None)
         )
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, SearchResult)
-        assert "Page content." in result.text
+        assert isinstance(result, ToolOutcome)
+        assert "Page content." in result.message
         request_fn.assert_called_once_with("browse_url", {"url": "https://example.com"})
 
     @pytest.mark.asyncio
     async def test_stores_browsed_image_as_media(self, tmp_path):
         """A page image is stored in the media table with title, URL, and embedding.
 
-        The image no longer rides along on the SearchResult — it's captured
+        The image no longer rides along on the ToolOutcome — it's captured
         side-channel for the egress matcher.
         """
         db = _make_db(tmp_path)
@@ -240,7 +240,7 @@ class TestBrowseTool:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(queries=["https://ex.com/r"])
 
-        assert isinstance(result, SearchResult)
+        assert isinstance(result, ToolOutcome)
         assert not hasattr(result, "image_base64")
         rows = _all_media(db)
         assert len(rows) == 1
@@ -284,20 +284,20 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://kagi.com/search?q=test"])
 
-        assert isinstance(result, SearchResult)
+        assert isinstance(result, ToolOutcome)
         # Signal preserved
-        assert "### Best guitar amps 2026" in result.text
-        assert "Jan 27, 2026 The Catalyst 200" in result.text
-        assert "[guitarworld.com/best-amps]" in result.text
-        assert "### Second result title" in result.text
-        assert "A useful snippet" in result.text
+        assert "### Best guitar amps 2026" in result.message
+        assert "Jan 27, 2026 The Catalyst 200" in result.message
+        assert "[guitarworld.com/best-amps]" in result.message
+        assert "### Second result title" in result.message
+        assert "A useful snippet" in result.message
         # Cruft removed
-        assert "![Favicon" not in result.text
-        assert "p.kagi.com/proxy" not in result.text
-        assert "[](https://" not in result.text
-        assert "1920 x 1080" not in result.text
-        assert "Openverse" not in result.text
-        assert "[www.example.com]" not in result.text
+        assert "![Favicon" not in result.message
+        assert "p.kagi.com/proxy" not in result.message
+        assert "[](https://" not in result.message
+        assert "1920 x 1080" not in result.message
+        assert "Openverse" not in result.message
+        assert "[www.example.com]" not in result.message
 
     @pytest.mark.asyncio
     async def test_no_image_stores_no_media(self, tmp_path):
@@ -310,7 +310,7 @@ class TestBrowseTool:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, SearchResult)
+        assert isinstance(result, ToolOutcome)
         assert _all_media(db) == []
 
     @pytest.mark.asyncio
@@ -324,10 +324,10 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, SearchResult)
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.text
-        assert "extraction failed" in result.text
-        assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.text
+        assert isinstance(result, ToolOutcome)
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
+        assert "extraction failed" in result.message
+        assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self):
@@ -354,8 +354,8 @@ class TestBrowseTool:
 
         result = await tool.execute(queries=["https://blocked.com"])
 
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.text
-        assert "blocked" in result.text
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
+        assert "blocked" in result.message
         request_fn.assert_not_called()
 
     @pytest.mark.asyncio
@@ -372,8 +372,8 @@ class TestBrowseTool:
         tool = self._make_tool(hanging_request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, SearchResult)
-        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.text
+        assert isinstance(result, ToolOutcome)
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
 
 
 class TestBrowseToolMediaCapture:
@@ -397,7 +397,7 @@ class TestBrowseToolMediaCapture:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
         result = await tool.execute(queries=["https://a.com", "https://b.com"])
-        assert isinstance(result, SearchResult)
+        assert isinstance(result, ToolOutcome)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")
         assert [r.source_url for r in rows] == ["https://a.com", "https://b.com"]
         assert [r.data for r in rows] == [b"aaa", b"bbb"]

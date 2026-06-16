@@ -102,12 +102,6 @@ class PennyConstants:
         "play.google.com",
         "apps.apple.com",
     )
-    # Default collector interval for collections whose ``collector_interval_seconds``
-    # is NULL.  Each cycle the dispatcher Collector picks the most-overdue ready
-    # collection; this is the per-collection cadence floor when a collection
-    # doesn't override it.
-    COLLECTOR_DEFAULT_INTERVAL = 300
-
     BROWSE_RETRIES = 4
     BROWSE_RETRY_DELAY = 1.0
     BROWSE_REQUEST_TIMEOUT = 30.0

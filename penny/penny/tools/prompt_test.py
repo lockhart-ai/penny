@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from penny.tools.base import Tool
+from penny.tools.models import ToolOutcome
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
@@ -52,6 +53,9 @@ class PromptTestTool(Tool):
     def __init__(self, collector: Collector) -> None:
         self._collector = collector
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolOutcome:
         args = PromptTestArgs(**kwargs)
-        return await self._collector.dry_run(args.collection, args.extraction_prompt)
+        # A dry run reports what a cycle *would* do — it applies nothing, so it
+        # never mutates.
+        message = await self._collector.dry_run(args.collection, args.extraction_prompt)
+        return ToolOutcome(message=message)

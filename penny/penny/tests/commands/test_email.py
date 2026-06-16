@@ -199,7 +199,7 @@ async def test_read_emails_tool_summarizes_content():
     tool = ReadEmailsTool(mock_jmap, mock_llm, "what packages am I expecting")
     result = await tool.execute(email_ids=["M001"])
 
-    assert result == "Amazon shipped order #123-456, arriving Feb 12."
+    assert result.message == "Amazon shipped order #123-456, arriving Feb 12."
     mock_jmap.read_emails.assert_called_once_with(["M001"])
     mock_llm.chat.assert_called_once()
     prompt = mock_llm.chat.call_args[0][0][0]["content"]
@@ -218,7 +218,7 @@ async def test_read_emails_tool_falls_back_on_empty_summary():
     tool = ReadEmailsTool(mock_jmap, mock_llm, "test query")
     result = await tool.execute(email_ids=["M001"])
 
-    assert "Your order #123-456 has been shipped!" in result
+    assert "Your order #123-456 has been shipped!" in result.message
 
 
 @pytest.mark.asyncio
@@ -230,6 +230,6 @@ async def test_read_emails_tool_no_ids():
     tool = ReadEmailsTool(mock_jmap, mock_llm, "test query")
     result = await tool.execute(email_ids=[])
 
-    assert result == NO_EMAILS_TO_READ
+    assert result.message == NO_EMAILS_TO_READ
     mock_jmap.read_emails.assert_not_called()
     mock_llm.chat.assert_not_called()

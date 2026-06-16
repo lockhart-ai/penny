@@ -15,7 +15,7 @@ import pytest
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
-from penny.constants import PennyConstants, RunOutcome
+from penny.constants import RunOutcome
 from penny.database import Database
 from penny.database.memory import Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
@@ -84,14 +84,14 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
 
     alpha = _log_read_for("alpha")
     alpha_result = await alpha.execute(memory="chatter")
-    assert "hello there" in alpha_result
+    assert "hello there" in alpha_result.message
     # Framing: the read leads with a count + source header so the model reads
     # the body as fetched data, not a fresh instruction.
-    assert "1 entry from `chatter`" in alpha_result
+    assert "1 entry from `chatter`" in alpha_result.message
     alpha.commit_pending()  # advance alpha's cursor past the entry
 
     beta = _log_read_for("beta")
-    assert "hello there" in await beta.execute(memory="chatter"), (
+    assert "hello there" in (await beta.execute(memory="chatter")).message, (
         "beta starved by alpha's cursor — collections share one cursor"
     )
 
@@ -117,6 +117,7 @@ def test_dispatcher_picks_collection_with_extraction_prompt(test_config, tmp_pat
         Inclusion.NEVER,
         RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
+        collector_interval_seconds=3600,
     )
     target = collector._next_ready_collection()
     assert target is not None
@@ -206,19 +207,21 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
     assert target.name == "stale"
 
 
-def test_dispatcher_uses_default_interval_when_unset(test_config, tmp_path):
-    """A collection with NULL collector_interval_seconds falls back to the
-    PennyConstants default."""
+def test_dispatcher_skips_collection_without_interval(test_config, tmp_path):
+    """The interval is required: a collector collection with NULL
+    collector_interval_seconds is skipped entirely — never run at a default
+    cadence — until a cadence is set."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "wired", "x", Inclusion.NEVER, RecallMode.RECENT, extraction_prompt=_VALID_EXTRACTION_PROMPT
     )
-    # Just collected → not ready until DEFAULT_INTERVAL elapses
-    db.memories.mark_collected("wired")
+    # Never collected would be "always ready" with an interval, but a NULL
+    # interval makes the dispatcher skip it.
     assert collector._next_ready_collection() is None
 
-    # Backdate by exactly the default interval
-    backdate = datetime.now(UTC) - timedelta(seconds=PennyConstants.COLLECTOR_DEFAULT_INTERVAL + 1)
+    # Even backdated 30 days, a NULL-interval collection never becomes ready.
+    db.memories.mark_collected("wired")
+    backdate = datetime.now(UTC) - timedelta(days=30)
     with db.engine.connect() as conn:
         from sqlalchemy import text
 
@@ -227,7 +230,10 @@ def test_dispatcher_uses_default_interval_when_unset(test_config, tmp_path):
             {"ts": backdate.isoformat()},
         )
         conn.commit()
+    assert collector._next_ready_collection() is None
 
+    # Setting a cadence makes it eligible.
+    db.memories.update_collection_metadata("wired", collector_interval_seconds=3600)
     assert collector._next_ready_collection() is not None
 
 
@@ -327,7 +333,7 @@ def test_cycle_result_classifies_worked_no_work_failed():
     worked = ControllerResponse(
         answer="",
         tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}),
+            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
             ToolCallRecord(tool="done", arguments={"success": True, "summary": "wrote 2"}),
         ],
     )
@@ -635,10 +641,12 @@ def _idle_response() -> ControllerResponse:
 
 
 def _work_response() -> ControllerResponse:
-    """A cycle that wrote an entry — produced work."""
+    """A cycle that actually wrote an entry — produced work (``mutated=True``)."""
     return ControllerResponse(
         answer="",
-        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=False)],
+        tool_calls=[
+            ToolCallRecord(tool="collection_write", arguments={}, failed=False, mutated=True)
+        ],
     )
 
 
@@ -648,9 +656,18 @@ def test_produced_work_distinguishes_state_changes():
     assert Collector._produced_work(None) is False
     # A failed mutation isn't work.
     failed = ControllerResponse(
-        answer="", tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=True)]
+        answer="",
+        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=True)],
     )
     assert Collector._produced_work(failed) is False
+    # The bug this fix targets: a duplicate-rejected write doesn't error
+    # (``failed=False``) but changed nothing (``mutated=False``), so it must read
+    # as no-work — otherwise the throttle re-arms every cycle and never backs off.
+    duplicate = ControllerResponse(
+        answer="",
+        tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=False)],
+    )
+    assert Collector._produced_work(duplicate) is False
 
 
 def test_create_stamps_base_interval(test_config, tmp_path):

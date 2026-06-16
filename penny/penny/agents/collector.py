@@ -50,6 +50,7 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
     check_extraction_prompt,
 )
+from penny.tools.models import ToolOutcome
 from penny.tools.prompt_test import PromptTestTool
 from penny.tools.send_message import SendMessageTool
 
@@ -270,15 +271,17 @@ class Collector(BackgroundAgent):
     def _produced_work(response: ControllerResponse | None) -> bool:
         """Did this cycle change a collection or message the user?
 
-        True when a state-changing tool (write / update / delete / move /
-        log_append / send_message) succeeded.  A run of only reads + ``done()``
-        is idle — it found nothing to do.
+        Reads the per-call ``ToolCallRecord.mutated`` flag — set from each tool's
+        own structured ``ToolOutcome`` (a row actually written, an entry
+        moved/deleted, a message actually sent).  A *successful no-op* (a
+        duplicate-rejected write, an update/delete/move on a missing key, a
+        muted/cooled-down send) carries ``mutated=False``, so it correctly reads
+        as idle — unlike the old "a write tool didn't error" heuristic, which
+        counted duplicate-rejected writes as work and starved the throttle.
         """
         if response is None:
             return False
-        return any(
-            not record.failed and record.tool in _WORK_TOOLS for record in response.tool_calls
-        )
+        return any(record.mutated for record in response.tool_calls)
 
     @classmethod
     def _cycle_result(cls, response: ControllerResponse | None) -> tuple[RunOutcome, str]:
@@ -305,6 +308,10 @@ class Collector(BackgroundAgent):
         ``COLLECTOR_THROTTLE_AFTER`` consecutive non-``worked`` cycles the
         interval doubles (capped at ``COLLECTOR_MAX_INTERVAL``) and the counter
         resets.  ``COLLECTOR_THROTTLE_AFTER = 0`` disables it.
+
+        Both intervals are guaranteed non-NULL here — only a ready collection
+        runs a cycle, and ``_is_ready`` skips any collector collection without a
+        ``collector_interval_seconds``.  The ``None`` guard is defensive.
         """
         threshold = int(self.config.runtime.COLLECTOR_THROTTLE_AFTER)
         base = collection.base_interval_seconds
@@ -434,11 +441,17 @@ class Collector(BackgroundAgent):
                 len(memory.extraction_prompt),
             )
             return False
+        if memory.collector_interval_seconds is None:
+            logger.warning(
+                "Skipping collection '%s': no collector_interval_seconds set — "
+                "set a cadence via collection_update to enable collection",
+                memory.name,
+            )
+            return False
         if memory.last_collected_at is None:
             return True  # Never run — always ready
-        interval = memory.collector_interval_seconds or PennyConstants.COLLECTOR_DEFAULT_INTERVAL
         elapsed = (now - _aware(memory.last_collected_at)).total_seconds()
-        return elapsed >= interval
+        return elapsed >= memory.collector_interval_seconds
 
     @staticmethod
     def _overdue_sort_key(memory: MemoryRow) -> datetime:
@@ -476,8 +489,9 @@ class _CapturingTool(Tool):
         self.parameters = parameters
         self._canned = canned
 
-    async def execute(self, **kwargs: object) -> str:
-        return self._canned
+    async def execute(self, **kwargs: object) -> ToolOutcome:
+        # A captured (simulated) call applies nothing — never a real mutation.
+        return ToolOutcome(message=self._canned)
 
 
 class _DryRunCollector(Collector):

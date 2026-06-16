@@ -111,13 +111,13 @@ class TestCreateAndList:
         )
         # Structured echo: collection name, interval, recall, prompt body all surfaced
         # so the chat agent can confirm-back without confabulating.
-        assert "Created collection 'likes'" in result
-        assert "interval: 3600s (1h)" in result
-        assert "recall: relevant" in result
-        assert "Extract user likes" in result  # extraction_prompt is echoed verbatim
+        assert "Created collection 'likes'" in result.message
+        assert "interval: 3600s (1h)" in result.message
+        assert "recall: relevant" in result.message
+        assert "Extract user likes" in result.message  # extraction_prompt is echoed verbatim
         # Intent captured at creation is persisted and echoed back so the user
         # can correct it now — the only time it's settable.
-        assert "intent: a running list the user asked me to keep" in result
+        assert "intent: a running list the user asked me to keep" in result.message
         memories = {m.name: m for m in db.memories.list_all()}
         assert memories["likes"].type == "collection"
         assert memories["likes"].recall == "relevant"
@@ -156,8 +156,8 @@ class TestCreateAndList:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        assert "already exists" in result
-        assert "ai-news" in result
+        assert "already exists" in result.message
+        assert "ai-news" in result.message
         # Original collection is unchanged
         memory = db.memories.get("ai-news")
         assert memory is not None
@@ -172,8 +172,8 @@ class TestCreateAndList:
         result = await LogCreateTool(db, None).execute(
             name="events", description="second", inclusion="never", recall="recent"
         )
-        assert "already exists" in result
-        assert "events" in result
+        assert "already exists" in result.message
+        assert "events" in result.message
 
     @pytest.mark.asyncio
     async def test_create_rejects_short_extraction_prompt(self, tmp_path):
@@ -187,8 +187,8 @@ class TestCreateAndList:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        assert "too short" in result
-        assert "minimum" in result
+        assert "too short" in result.message
+        assert "minimum" in result.message
         assert db.memories.get("notes") is None  # collection not created
 
     @pytest.mark.asyncio
@@ -234,7 +234,7 @@ class TestCreateAndList:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        assert "Created" in result
+        assert "Created" in result.message
 
     @pytest.mark.asyncio
     async def test_update_rejects_short_extraction_prompt(self, tmp_path):
@@ -250,7 +250,7 @@ class TestCreateAndList:
             intent="a running list the user asked me to keep",
         )
         result = await CollectionUpdateTool(db, None).execute(name="notes", extraction_prompt="yes")
-        assert "too short" in result
+        assert "too short" in result.message
         # Update rejected — original prompt preserved unchanged
         assert db.memories.get("notes").extraction_prompt == original_prompt
 
@@ -276,10 +276,11 @@ class TestCollectionWritesAndReads:
                 {"key": "cold brew", "content": "enjoys cold brew"},
             ],
         )
-        assert "Wrote 2 entries to 'likes'" in result
+        assert "Wrote 2 entries to 'likes'" in result.message
+        assert result.mutated is True
         latest = await CollectionReadLatestTool(db).execute(memory="likes")
-        assert "dark roast" in latest
-        assert "cold brew" in latest
+        assert "dark roast" in latest.message
+        assert "cold brew" in latest.message
 
     @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, tmp_path, mock_llm):
@@ -301,13 +302,17 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        assert "Rejected as duplicates" in result
+        assert "Rejected as duplicates" in result.message
+        # A fully duplicate-rejected batch wrote nothing — it must read as a
+        # no-op so the collector's work/no-work split (and auto-throttle) sees
+        # the truth rather than counting the rejected write as "work".
+        assert result.mutated is False
         # The candidate's own key is named, *and* the existing key it
         # collided with — gives the model enough context to pivot to
         # update_entry instead of silently dropping fresher info.
-        assert "dark roast coffee" in result
-        assert "matches existing 'dark roast'" in result
-        assert "update_entry" in result
+        assert "dark roast coffee" in result.message
+        assert "matches existing 'dark roast'" in result.message
+        assert "update_entry" in result.message
 
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
@@ -324,9 +329,9 @@ class TestCollectionWritesAndReads:
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="likes", entries=[{"key": "k", "content": "hello"}]
         )
-        assert "hello" in await CollectionGetTool(db).execute(memory="likes", key="k")
+        assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
-        assert "not found" in missing
+        assert "not found" in missing.message
 
     @pytest.mark.asyncio
     async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
@@ -344,7 +349,7 @@ class TestCollectionWritesAndReads:
         await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
         await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
         listing = await CollectionKeysTool(db).execute(memory="likes")
-        assert listing == "- first\n- second"
+        assert listing.message == "- first\n- second"
 
     @pytest.mark.asyncio
     async def test_read_random_returns_all_when_few(self, tmp_path, mock_llm):
@@ -361,7 +366,7 @@ class TestCollectionWritesAndReads:
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
         rendered = await CollectionReadRandomTool(db).execute(memory="likes", k=5)
-        assert "[a] 1" in rendered
+        assert "[a] 1" in rendered.message
 
     @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, tmp_path, mock_llm):
@@ -383,7 +388,7 @@ class TestCollectionWritesAndReads:
         # mock embedding gives meaningful cosine, so the entry survives the
         # adaptive cutoff in ``read_similar``.
         rendered = await ReadSimilarTool(db, client).execute(memory="likes", anchor="coffee please")
-        assert "coffee" in rendered
+        assert "coffee" in rendered.message
 
     @pytest.mark.asyncio
     async def test_read_similar_without_llm_client_returns_sentinel(self, tmp_path):
@@ -398,7 +403,7 @@ class TestCollectionWritesAndReads:
             intent="a running list the user asked me to keep",
         )
         result = await ReadSimilarTool(db, None).execute(memory="likes", anchor="whatever")
-        assert "similarity search unavailable" in result
+        assert "similarity search unavailable" in result.message
 
 
 class TestCollectionMutations:
@@ -420,9 +425,9 @@ class TestCollectionMutations:
         result = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="k", content="new"
         )
-        assert "Updated 'k' in 'likes'" in result
+        assert "Updated 'k' in 'likes'" in result.message
         fetched = await CollectionGetTool(db).execute(memory="likes", key="k")
-        assert "new" in fetched
+        assert "new" in fetched.message
 
     @pytest.mark.asyncio
     async def test_update_missing_reports_not_found(self, tmp_path):
@@ -439,7 +444,7 @@ class TestCollectionMutations:
         result = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="k", content="new"
         )
-        assert "not found" in result
+        assert "not found" in result.message
 
     @pytest.mark.asyncio
     async def test_move_between_collections(self, tmp_path, mock_llm):
@@ -468,7 +473,7 @@ class TestCollectionMutations:
         result = await CollectionMoveTool(db, author="test").execute(
             key="t1", from_memory="unnotified", to_memory="notified"
         )
-        assert "Moved 't1'" in result
+        assert "Moved 't1'" in result.message
 
     @pytest.mark.asyncio
     async def test_move_collision(self, tmp_path, mock_llm):
@@ -497,7 +502,7 @@ class TestCollectionMutations:
         result = await CollectionMoveTool(db, author="test").execute(
             key="k", from_memory="a", to_memory="b"
         )
-        assert "already has a 'k' entry" in result
+        assert "already has a 'k' entry" in result.message
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, tmp_path):
@@ -511,8 +516,13 @@ class TestCollectionMutations:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        assert "Archived 'likes'" in await CollectionArchiveTool(db).execute(memory="likes")
-        assert "Unarchived 'likes'" in await CollectionUnarchiveTool(db).execute(memory="likes")
+        assert (
+            "Archived 'likes'" in (await CollectionArchiveTool(db).execute(memory="likes")).message
+        )
+        assert (
+            "Unarchived 'likes'"
+            in (await CollectionUnarchiveTool(db).execute(memory="likes")).message
+        )
 
 
 class TestLogTools:
@@ -528,8 +538,8 @@ class TestLogTools:
             memory="events", content="first"
         )
         rendered = await CollectionReadLatestTool(db).execute(memory="events")
-        assert "Refused" in rendered
-        assert "log_read" in rendered
+        assert "Refused" in rendered.message
+        assert "log_read" in rendered.message
 
     @pytest.mark.asyncio
     async def test_log_read_window_mode(self, tmp_path, mock_llm):
@@ -543,7 +553,7 @@ class TestLogTools:
             memory="events", content="hello"
         )
         rendered = await LogReadTool(db, "chat", scope=None).execute(memory="events")
-        assert "hello" in rendered
+        assert "hello" in rendered.message
 
     @pytest.mark.asyncio
     async def test_collector_runs_log_renders_runs_from_promptlog(self, tmp_path):
@@ -590,9 +600,9 @@ class TestLogTools:
 
         # collector-runs reads through the uniform log formatter now (it's a log
         # facade like any other) — framed as a fetched batch, runs as records.
-        assert "from `collector-runs`" in rendered
-        assert "[espresso-gear] sent an update about a grinder" in rendered
-        assert "Found a new grinder, $300." in rendered  # the exact message, untruncated
+        assert "from `collector-runs`" in rendered.message
+        assert "[espresso-gear] sent an update about a grinder" in rendered.message
+        assert "Found a new grinder, $300." in rendered.message  # the exact message, untruncated
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, tmp_path, mock_llm):
@@ -604,8 +614,8 @@ class TestLogTools:
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         for system_log in PennyConstants.SYSTEM_LOGS:
             result = await append.execute(memory=system_log, content="forged turn")
-            assert "Refused" in result
-            assert system_log in result
+            assert "Refused" in result.message
+            assert system_log in result.message
         # Nothing was created/written — the refusal short-circuits before the store.
         assert db.memories.get(PennyConstants.MEMORY_PENNY_MESSAGES_LOG) is None
 
@@ -625,7 +635,7 @@ class TestLogTools:
         rendered = await ReadSimilarTool(db, client).execute(
             memory="events", anchor="coffee morning"
         )
-        assert "coffee is great" in rendered
+        assert "coffee is great" in rendered.message
 
     @pytest.mark.asyncio
     async def test_read_next_returns_all_entries_when_no_cursor(self, tmp_path, mock_llm):
@@ -641,8 +651,8 @@ class TestLogTools:
         read_next = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered = await read_next.execute(memory="events")
 
-        assert "first" in rendered
-        assert "second" in rendered
+        assert "first" in rendered.message
+        assert "second" in rendered.message
 
     @pytest.mark.asyncio
     async def test_commit_pending_advances_cursor_to_max_seen(self, tmp_path, mock_llm):
@@ -662,7 +672,7 @@ class TestLogTools:
         # A new instance after commit should see no entries (cursor caught up).
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered = await fresh.execute(memory="events")
-        assert rendered == "(no entries)"
+        assert rendered.message == "(no entries)"
 
     @pytest.mark.asyncio
     async def test_discard_pending_leaves_cursor_unchanged(self, tmp_path, mock_llm):
@@ -681,7 +691,7 @@ class TestLogTools:
         # Cursor still at None; a new read sees the same entries.
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered = await fresh.execute(memory="events")
-        assert "first" in rendered
+        assert "first" in rendered.message
 
     @pytest.mark.asyncio
     async def test_first_cycle_bounded_to_latest_n_entries(self, tmp_path, mock_llm):
@@ -710,10 +720,10 @@ class TestLogTools:
         # Exactly the latest N entries — entry-(n-N) through entry-(n-1)
         # should appear; older entries should not.
         for i in range(n_entries - PennyConstants.LOG_READ_LIMIT, n_entries):
-            assert f"entry-{i:02d}" in rendered
+            assert f"entry-{i:02d}" in rendered.message
         # The first 5 entries must be excluded
-        assert "entry-00" not in rendered
-        assert "entry-04" not in rendered
+        assert "entry-00" not in rendered.message
+        assert "entry-04" not in rendered.message
 
     @pytest.mark.asyncio
     async def test_first_cycle_advances_cursor_so_next_cycle_sees_only_new(
@@ -739,9 +749,9 @@ class TestLogTools:
 
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered = await fresh.execute(memory="events")
-        assert "new-after-cursor" in rendered
+        assert "new-after-cursor" in rendered.message
         # Old entries excluded by the bound stay excluded
-        assert "old-00" not in rendered
+        assert "old-00" not in rendered.message
 
     @pytest.mark.asyncio
     async def test_cursor_read_is_capped_and_advances_by_batch(self, tmp_path, mock_llm):
@@ -771,14 +781,14 @@ class TestLogTools:
         rendered_first = await first.execute(memory="events")
         first.commit_pending()
         # Exactly one batch — the oldest N of the backlog, not all of it.
-        assert rendered_first.count("backlog-") == limit
-        assert "backlog-00" in rendered_first
-        assert f"backlog-{backlog - 1:02d}" not in rendered_first
+        assert rendered_first.message.count("backlog-") == limit
+        assert "backlog-00" in rendered_first.message
+        assert f"backlog-{backlog - 1:02d}" not in rendered_first.message
 
         # The next read picks up the remainder since the advanced cursor.
         second = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered_second = await second.execute(memory="events")
-        assert f"backlog-{backlog - 1:02d}" in rendered_second
+        assert f"backlog-{backlog - 1:02d}" in rendered_second.message
 
     @pytest.mark.asyncio
     async def test_per_agent_cursors_are_independent(self, tmp_path, mock_llm):
@@ -798,7 +808,7 @@ class TestLogTools:
         # Agent B has its own cursor and still sees the entry.
         agent_b = LogReadTool(db, agent_name="b", scope="b")
         rendered = await agent_b.execute(memory="events")
-        assert "hello" in rendered
+        assert "hello" in rendered.message
 
 
 class TestExistsAndDone:
@@ -821,7 +831,7 @@ class TestExistsAndDone:
         result = await ExistsTool(db, client).execute(
             memories=["likes"], key="dark roast", content="body"
         )
-        assert result == "yes"
+        assert result.message == "yes"
 
     @pytest.mark.asyncio
     async def test_exists_no(self, tmp_path, mock_llm):
@@ -838,7 +848,7 @@ class TestExistsAndDone:
         result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
             memories=["likes"], key="not there", content="nothing"
         )
-        assert result == "no"
+        assert result.message == "no"
 
     @pytest.mark.asyncio
     async def test_unicode_hyphen_in_memory_name_normalized(self, tmp_path, mock_llm):
@@ -863,7 +873,7 @@ class TestExistsAndDone:
             memory="board‑games",
             entries=[{"key": "k", "content": "v"}],
         )
-        assert "Wrote 1 entry to 'board-games'" in result
+        assert "Wrote 1 entry to 'board-games'" in result.message
 
     @pytest.mark.asyncio
     async def test_exists_content_only_uses_content_as_key_probe(self, tmp_path, mock_llm):
@@ -902,19 +912,19 @@ class TestExistsAndDone:
         # Probe with content only — what the collector usually does when
         # checking a candidate name before writing.
         result = await ExistsTool(db, client).execute(memories=["board-games"], content="Catan")
-        assert result == "yes"
+        assert result.message == "yes"
 
     @pytest.mark.asyncio
     async def test_done_returns_structured_summary(self):
         result = await DoneTool().execute(success=True, summary="wrote 3 entries")
-        assert "wrote 3 entries" in result
-        assert "success" in result
+        assert "wrote 3 entries" in result.message
+        assert "success" in result.message
 
     @pytest.mark.asyncio
     async def test_done_no_op_marker(self):
         result = await DoneTool().execute(success=False, summary="no new matches")
-        assert "no new matches" in result
-        assert "no-op" in result
+        assert "no new matches" in result.message
+        assert "no-op" in result.message
 
     @pytest.mark.asyncio
     async def test_done_requires_success_and_summary(self):
@@ -972,8 +982,8 @@ class TestCollectionMerge:
 
         result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
 
-        assert "2 moved" in result
-        assert "archived" in result
+        assert "2 moved" in result.message
+        assert "archived" in result.message
         assert db.memories.get("src").archived is True
         assert len(db.memory("dst").read_all()) == 2
         assert len(db.memory("src").read_all()) == 0
@@ -1006,8 +1016,8 @@ class TestCollectionMerge:
 
         result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
 
-        assert "1 moved" in result
-        assert "1 dropped" in result
+        assert "1 moved" in result.message
+        assert "1 dropped" in result.message
         dst_entries = db.memory("dst").read_all()
         assert len(dst_entries) == 2
         contents = {e.key: e.content for e in dst_entries}
@@ -1038,7 +1048,7 @@ class TestCollectionMerge:
 
         result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
 
-        assert "archived" in result
+        assert "archived" in result.message
         assert db.memories.get("src").archived is True
 
 
@@ -1062,24 +1072,24 @@ class TestTestExtractionPromptTool:
         tool = TestExtractionPromptTool(collector)  # ty: ignore[invalid-argument-type]
         result = await tool.execute(memory="board-games")
         assert collector.called_with == "board-games"
-        assert result.startswith("✅")
-        assert "wrote 3 entries" in result
+        assert result.message.startswith("✅")
+        assert "wrote 3 entries" in result.message
 
     @pytest.mark.asyncio
     async def test_failure_returns_x_and_summary(self):
         collector = self._MockCollector((False, "Collector cycle complete. max steps exceeded"))
         tool = TestExtractionPromptTool(collector)  # ty: ignore[invalid-argument-type]
         result = await tool.execute(memory="likes")
-        assert result.startswith("❌")
-        assert "max steps exceeded" in result
+        assert result.message.startswith("❌")
+        assert "max steps exceeded" in result.message
 
     @pytest.mark.asyncio
     async def test_validation_error_returns_x_and_error_message(self):
         collector = self._MockCollector((False, "Collection 'missing' not found."))
         tool = TestExtractionPromptTool(collector)  # ty: ignore[invalid-argument-type]
         result = await tool.execute(memory="missing")
-        assert result.startswith("❌")
-        assert "not found" in result
+        assert result.message.startswith("❌")
+        assert "not found" in result.message
 
     @pytest.mark.asyncio
     async def test_unicode_dash_in_memory_name_normalized(self):
@@ -1174,7 +1184,11 @@ class TestScopedFactory:
         )
         result = await write.execute(memory="dislikes", entries=[{"key": "k", "content": "v"}])
 
-        assert "Refused" in result and "likes" in result and "dislikes" in result
+        assert (
+            "Refused" in result.message
+            and "likes" in result.message
+            and "dislikes" in result.message
+        )
         # And nothing was actually written
         assert db.memory("dislikes").get("k") == []
 
@@ -1196,7 +1210,7 @@ class TestScopedFactory:
         )
         result = await write.execute(memory="likes", entries=[{"key": "k", "content": "v"}])
 
-        assert "Wrote 1 entry" in result
+        assert "Wrote 1 entry" in result.message
         assert db.memory("likes").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
@@ -1204,7 +1218,7 @@ class TestScopedFactory:
         db = _make_db(tmp_path)
         update = UpdateEntryTool(db, author="collector:likes", scope="likes")
         result = await update.execute(memory="dislikes", key="k", content="v")
-        assert "Refused" in result
+        assert "Refused" in result.message
 
     @pytest.mark.asyncio
     async def test_scoped_move_allows_into_target(self, tmp_path, mock_llm):
@@ -1236,7 +1250,7 @@ class TestScopedFactory:
 
         move = CollectionMoveTool(db, author="collector:dst", scope="dst")
         result = await move.execute(key="k", from_memory="src", to_memory="dst")
-        assert "Moved 'k'" in result
+        assert "Moved 'k'" in result.message
         assert db.memory("dst").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
@@ -1267,7 +1281,7 @@ class TestScopedFactory:
 
         move = CollectionMoveTool(db, author="collector:dst", scope="dst")
         result = await move.execute(key="k", from_memory="src")
-        assert "Moved 'k'" in result
+        assert "Moved 'k'" in result.message
         assert db.memory("dst").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
@@ -1281,11 +1295,11 @@ class TestScopedFactory:
         db = _make_db(tmp_path)
         move = CollectionMoveTool(db, author="collector:src", scope="src")
         result = await move.execute(key="k", from_memory="src", to_memory="dst")
-        assert "Refused" in result and "src" in result and "dst" in result
+        assert "Refused" in result.message and "src" in result.message and "dst" in result.message
 
     @pytest.mark.asyncio
     async def test_scoped_delete_rejects_other_collection(self, tmp_path):
         db = _make_db(tmp_path)
         delete = CollectionDeleteEntryTool(db, scope="likes")
         result = await delete.execute(memory="dislikes", key="k")
-        assert "Refused" in result
+        assert "Refused" in result.message

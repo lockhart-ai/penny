@@ -34,6 +34,15 @@ class ToolCallRecord(BaseModel):
     failed: bool = Field(
         default=False, description="Whether the tool returned an error or empty result"
     )
+    mutated: bool = Field(
+        default=False,
+        description=(
+            "Whether this call actually changed durable state (a row written, a "
+            "message sent).  False for reads, refusals, and successful no-ops "
+            "(duplicate-rejected write, update/delete/move on a missing key).  "
+            "Drives the collector's work/no-work split and auto-throttle."
+        ),
+    )
     result: str | None = Field(
         default=None, description="The tool's result/error text, set after execution"
     )

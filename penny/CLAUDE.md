@@ -87,7 +87,7 @@ penny/
     zoho.py           — /zoho: search Zoho Mail via Zoho Mail API (optional)
   tools/
     base.py           — Tool ABC, ToolRegistry, ToolExecutor
-    models.py         — ToolCall, ToolResult, ToolDefinition, SearchResult, and per-tool arg models
+    models.py         — ToolCall, ToolResult, ToolOutcome (uniform structured tool return), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via browser extension
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
     search_emails.py  — SearchEmailsTool (JMAP + Zoho)
@@ -211,7 +211,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 - User-defined collections created via chat (`/collection_create` with an `extraction_prompt`) are picked up automatically on the next tick — no restart required.
 - Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done. The `quality` cycle additionally gets `prompt_test` (dry-runs a candidate prompt on a throwaway `_DryRunCollector` — captured writes/sends, non-consuming reads, no DB clone), gated by bound-target name in `get_tools` — see `docs/self-improvement-loop.md`.
 - Cadence: `COLLECTOR_TICK_INTERVAL` (default 30s, idle-gated) drives the dispatcher; per-collection `collector_interval_seconds` controls each collection's pacing within that.
-- **Auto-throttle** (`_apply_throttle`, runs after each non-cancelled cycle): after `COLLECTOR_THROTTLE_AFTER` (default 3) consecutive idle cycles a collection doubles its `collector_interval_seconds` (capped at `COLLECTOR_MAX_INTERVAL`, default 604800 = weekly) and resets its idle counter; a productive cycle snaps the interval back to `base_interval_seconds` (the user's intended cadence, stamped on create and re-set when the interval is edited) and clears the counter. "Produced work" (`_produced_work`) = a non-failed state-changing tool call this cycle (write/update/delete/move/`log_append`/`send_message`); reads + `done()` = idle. Deterministic in Python — not the quality/model layer.
+- **Auto-throttle** (`_apply_throttle`, runs after each non-cancelled cycle): after `COLLECTOR_THROTTLE_AFTER` (default 3) consecutive idle cycles a collection doubles its `collector_interval_seconds` (capped at `COLLECTOR_MAX_INTERVAL`, default 604800 = weekly) and resets its idle counter; a productive cycle snaps the interval back to `base_interval_seconds` (the user's intended cadence, stamped on create and re-set when the interval is edited) and clears the counter. "Produced work" (`_produced_work`) reads the per-call `ToolCallRecord.mutated` flag — set from each tool's structured `ToolOutcome` — so it counts a cycle as work only when a tool *actually changed durable state* (a row written, an entry moved/deleted, a message sent). A successful no-op (a duplicate-rejected write, an update/delete/move on a missing key, a muted/cooled-down send) carries `mutated=False` and reads as idle, unlike the old "a write tool didn't error" heuristic which counted duplicate-rejected writes as work and starved the throttle. Reads + `done()` = idle. Deterministic in Python — not the quality/model layer.
 
 **ScheduleExecutor** (`scheduler/schedule_runner.py`)
 - Background task: runs user-created cron-based scheduled tasks

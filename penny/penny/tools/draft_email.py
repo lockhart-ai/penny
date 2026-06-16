@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from penny.tools.base import Tool
-from penny.tools.models import DraftEmailArgs
+from penny.tools.models import DraftEmailArgs, ToolOutcome
 from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class DraftEmailTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolOutcome:
         """Save an email draft and return confirmation."""
         args = DraftEmailArgs(**kwargs)
         to_addresses = args.to
@@ -67,15 +67,21 @@ class DraftEmailTool(Tool):
 
             if message_id:
                 recipients = ", ".join(to_addresses)
-                return (
-                    f"Draft saved successfully!\n\n"
-                    f"To: {recipients}\n"
-                    f"Subject: {subject}\n\n"
-                    f"The draft has been saved to your Drafts folder for review before sending."
+                return ToolOutcome(
+                    message=(
+                        f"Draft saved successfully!\n\n"
+                        f"To: {recipients}\n"
+                        f"Subject: {subject}\n\n"
+                        f"The draft has been saved to your Drafts folder for review before sending."
+                    ),
+                    mutated=True,
                 )
             else:
-                return "Draft was saved but could not confirm the message ID."
+                return ToolOutcome(
+                    message="Draft was saved but could not confirm the message ID.",
+                    mutated=True,
+                )
 
         except Exception as e:
             logger.exception("Failed to save draft")
-            return f"Error saving draft: {e}"
+            return ToolOutcome(message=f"Error saving draft: {e}", success=False)
