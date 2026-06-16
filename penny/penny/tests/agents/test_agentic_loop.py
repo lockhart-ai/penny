@@ -813,7 +813,7 @@ class TestParallelToolCalls:
         result = await tool.execute(queries=["best pizza toronto"])
 
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
-        assert "no browser connected" in result.message
+        assert "no browser is connected" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
 
     @pytest.mark.asyncio

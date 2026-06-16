@@ -11,7 +11,10 @@ from penny.tools.models import SearchEmailsArgs, ToolResult
 
 logger = logging.getLogger(__name__)
 
-NO_EMAILS_FOUND = "No emails found matching that query."
+NO_EMAILS_FOUND = (
+    "No emails found matching that query. Try a broader or differently worded search "
+    "(fewer terms, a sender or subject keyword), or use list_folders to confirm where to look."
+)
 
 
 class SearchEmailsTool(Tool):

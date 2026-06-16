@@ -177,7 +177,11 @@ class BrowseTool(Tool):
             if isinstance(result, Exception):
                 logger.warning("Browse sub-call failed (%s%s): %s", header, value, result)
                 error_label = f"{PennyConstants.BROWSE_ERROR_HEADER}{value}"
-                sections.append(f"{error_label}\nCould not read page: {result}")
+                sections.append(
+                    f"{error_label}\nCould not read this page: {result}. "
+                    f"Try a different source or a reworded query; if other queries in this "
+                    f"batch succeeded, work from those instead of retrying this one."
+                )
                 continue
             label = f"{header}{value}"
             text = result.text
@@ -235,7 +239,11 @@ class BrowseTool(Tool):
                     )
                     await asyncio.sleep(delay)
                     continue
-                raise ConnectionError("no browser connected")
+                raise ConnectionError(
+                    "no browser is connected — the browser extension isn't running, so web "
+                    "search and page reads are unavailable; answer from what you already know "
+                    "or tell the user the browser is offline"
+                )
 
             request_fn, permission_manager = connection
             await permission_manager.check_domain(url)
@@ -255,7 +263,8 @@ class BrowseTool(Tool):
                     await asyncio.sleep(delay)
                     continue
                 raise ConnectionError(
-                    f"browser request timed out after {PennyConstants.BROWSE_REQUEST_TIMEOUT}s"
+                    f"browser request timed out after {PennyConstants.BROWSE_REQUEST_TIMEOUT}s — "
+                    f"the page may be slow or blocking automated reads; try a different source"
                 ) from None
             except ConnectionError:
                 if attempt < PennyConstants.BROWSE_RETRIES:

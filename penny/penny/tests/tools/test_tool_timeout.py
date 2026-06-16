@@ -58,7 +58,7 @@ class TestToolTimeout:
         result = await executor.execute(tool_call)
 
         assert result.success is False
-        assert "timeout" in result.message.lower()
+        assert "timed out" in result.message.lower()
 
     @pytest.mark.asyncio
     async def test_tool_completes_within_timeout(self):
@@ -145,5 +145,5 @@ class TestToolTimeout:
         result = await executor.execute(tool_call)
 
         assert result.success is False
-        assert "timeout" in result.message.lower()
+        assert "timed out" in result.message.lower()
         assert "0.05s" in result.message

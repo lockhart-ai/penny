@@ -238,9 +238,16 @@ class ToolExecutor:
         except TimeoutError:
             logger.error("Tool execution timeout: %s", tool_call.tool)
             return ToolResult(
-                message=f"Error: Tool execution timeout after {effective_timeout}s",
+                message=f"Error: '{tool_call.tool}' timed out after {effective_timeout}s. "
+                f"It may be slow or unavailable — try a simpler request (e.g. one URL or a "
+                f"narrower query), or proceed without it rather than retrying the same call.",
                 success=False,
             )
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_call.tool)
-            return ToolResult(message=f"Error: Tool execution error: {e}", success=False)
+            return ToolResult(
+                message=f"Error: '{tool_call.tool}' failed — {e}. Check the arguments you "
+                f"passed against the tool's parameters; if they look right, try a different "
+                f"approach or call done to finish rather than repeating the same call.",
+                success=False,
+            )

@@ -34,7 +34,10 @@ class ListFoldersTool(Tool):
         """List all folders and return formatted list."""
         folders = await self._client.get_folders()
         if not folders:
-            return ToolResult(message="No folders found.")
+            return ToolResult(
+                message="No mail folders returned — this usually means the mail account isn't "
+                "reachable or has no access right now. Let the user know rather than retrying."
+            )
 
         lines = [f"Found {len(folders)} folder(s):\n"]
         for folder in folders:

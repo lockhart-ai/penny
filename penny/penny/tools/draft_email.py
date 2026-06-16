@@ -84,4 +84,9 @@ class DraftEmailTool(Tool):
 
         except Exception as e:
             logger.exception("Failed to save draft")
-            return ToolResult(message=f"Error saving draft: {e}", success=False)
+            return ToolResult(
+                message=f"Could not save the draft — {e}. Verify the recipient addresses are "
+                f"well-formed and the subject and body are non-empty, then try again; if it "
+                f"keeps failing, tell the user the mail service is unavailable.",
+                success=False,
+            )

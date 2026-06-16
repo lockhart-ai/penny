@@ -449,7 +449,8 @@ class TestCollectionWritesAndReads:
             intent="a running list the user asked me to keep",
         )
         result = await ReadSimilarTool(db, None).execute(memory="likes", anchor="whatever")
-        assert "similarity search unavailable" in result.message
+        assert "Similarity search unavailable" in result.message
+        assert "collection_read_latest" in result.message  # points at a working alternative
 
 
 class TestCollectionMutations:

@@ -11,7 +11,10 @@ from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
 
-NO_EMAILS_FOUND = "No emails found in that folder."
+NO_EMAILS_FOUND = (
+    "No emails found in that folder. Confirm the folder name with list_folders, or try a "
+    "different folder."
+)
 
 
 class ListEmailsTool(Tool):

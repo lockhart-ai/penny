@@ -96,7 +96,10 @@ class MemoryNotFoundError(MemoryAccessError):
     """
 
     def __init__(self, name: str) -> None:
-        super().__init__(f"Memory '{name}' not found.")
+        super().__init__(
+            f"Memory '{name}' not found. Check the name (it may be misspelled), or "
+            f"create it first with collection_create / log_create if it should exist."
+        )
         self.name = name
 
 
@@ -110,7 +113,10 @@ class MemoryAlreadyExistsError(Exception):
     """
 
     def __init__(self, name: str) -> None:
-        super().__init__(f"Memory '{name}' already exists.")
+        super().__init__(
+            f"Memory '{name}' already exists. Use it as-is (write to it directly), or "
+            f"choose a different name if you meant to create a separate memory."
+        )
         self.name = name
 
 

@@ -14,7 +14,10 @@ from penny.tools.models import ReadEmailsArgs, ToolResult
 
 logger = logging.getLogger(__name__)
 
-NO_EMAILS_TO_READ = "No email IDs provided."
+NO_EMAILS_TO_READ = (
+    "No emails to read — pass one or more email IDs from a prior search_emails or "
+    "list_emails call (those return the IDs this tool expects)."
+)
 
 
 class ReadEmailsTool(Tool):
