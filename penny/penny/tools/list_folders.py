@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from penny.tools.base import Tool
-from penny.tools.models import ToolOutcome
+from penny.tools.models import ToolResult
 from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
@@ -30,14 +30,14 @@ class ListFoldersTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """List all folders and return formatted list."""
         folders = await self._client.get_folders()
         if not folders:
-            return ToolOutcome(message="No folders found.")
+            return ToolResult(message="No folders found.")
 
         lines = [f"Found {len(folders)} folder(s):\n"]
         for folder in folders:
             lines.append(f"- {folder.folder_name} ({folder.folder_type})")
 
-        return ToolOutcome(message="\n".join(lines))
+        return ToolResult(message="\n".join(lines))

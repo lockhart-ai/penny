@@ -7,7 +7,7 @@ from typing import Any
 
 from penny.email.protocol import EmailClient
 from penny.tools.base import Tool
-from penny.tools.models import SearchEmailsArgs, ToolOutcome
+from penny.tools.models import SearchEmailsArgs, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,11 @@ class SearchEmailsTool(Tool):
     def __init__(self, email_client: EmailClient) -> None:
         self._client = email_client
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Search emails and return formatted summaries."""
         args = SearchEmailsArgs(**kwargs)
         results = await self._client.search_emails(**args.model_dump(exclude_none=True))
         if not results:
-            return ToolOutcome(message=NO_EMAILS_FOUND)
+            return ToolResult(message=NO_EMAILS_FOUND)
         header = f"Found {len(results)} email(s):\n\n"
-        return ToolOutcome(message=header + "\n\n".join(str(r) for r in results))
+        return ToolResult(message=header + "\n\n".join(str(r) for r in results))

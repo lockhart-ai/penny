@@ -57,9 +57,8 @@ class TestToolTimeout:
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is not None
-        assert "timeout" in result.error.lower()
-        assert result.result is None
+        assert result.success is False
+        assert "timeout" in result.message.lower()
 
     @pytest.mark.asyncio
     async def test_tool_completes_within_timeout(self):
@@ -74,8 +73,8 @@ class TestToolTimeout:
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is None
-        assert result.result == "completed"
+        assert result.success is True
+        assert result.message == "completed"
 
     @pytest.mark.asyncio
     async def test_agent_uses_configured_timeout(self, test_db):
@@ -129,8 +128,8 @@ class TestToolTimeout:
         tool_call = ToolCall(tool="long_timeout_tool", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is None
-        assert result.result == "done"
+        assert result.success is True
+        assert result.message == "done"
 
     @pytest.mark.asyncio
     async def test_per_tool_timeout_respected_when_exceeded(self):
@@ -145,6 +144,6 @@ class TestToolTimeout:
         tool_call = ToolCall(tool="slow_tool", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is not None
-        assert "timeout" in result.error.lower()
-        assert "0.05s" in result.error
+        assert result.success is False
+        assert "timeout" in result.message.lower()
+        assert "0.05s" in result.message

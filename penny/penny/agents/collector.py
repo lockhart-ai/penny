@@ -50,7 +50,7 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
     check_extraction_prompt,
 )
-from penny.tools.models import ToolOutcome
+from penny.tools.models import ToolResult
 from penny.tools.prompt_test import PromptTestTool
 from penny.tools.send_message import SendMessageTool
 
@@ -272,7 +272,7 @@ class Collector(BackgroundAgent):
         """Did this cycle change a collection or message the user?
 
         Reads the per-call ``ToolCallRecord.mutated`` flag — set from each tool's
-        own structured ``ToolOutcome`` (a row actually written, an entry
+        own structured ``ToolResult`` (a row actually written, an entry
         moved/deleted, a message actually sent).  A *successful no-op* (a
         duplicate-rejected write, an update/delete/move on a missing key, a
         muted/cooled-down send) carries ``mutated=False``, so it correctly reads
@@ -489,9 +489,9 @@ class _CapturingTool(Tool):
         self.parameters = parameters
         self._canned = canned
 
-    async def execute(self, **kwargs: object) -> ToolOutcome:
+    async def execute(self, **kwargs: object) -> ToolResult:
         # A captured (simulated) call applies nothing — never a real mutation.
-        return ToolOutcome(message=self._canned)
+        return ToolResult(message=self._canned)
 
 
 class _DryRunCollector(Collector):

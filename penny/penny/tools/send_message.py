@@ -38,7 +38,7 @@ from penny.constants import PennyConstants
 from penny.llm.refusal import is_refusal
 from penny.tools.base import Tool
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import SendMessageArgs, ToolOutcome
+from penny.tools.models import SendMessageArgs, ToolResult
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel
@@ -110,7 +110,7 @@ class SendMessageTool(Tool):
         self._db = db
         self._config = config
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         args = SendMessageArgs(**kwargs)
         # Nothing-sent gates all carry mutated=False (no message went out).  Most
         # are *successful* no-ops — a correct decline the model shouldn't retry
@@ -121,20 +121,20 @@ class SendMessageTool(Tool):
         # steers a retry with the complete body (and feeds the abort threshold).
         if is_refusal(args.content):
             logger.info("send_message refused (refusal content): %s", self._agent_name)
-            return ToolOutcome(message=self._REFUSAL_RESPONSE)
+            return ToolResult(message=self._REFUSAL_RESPONSE)
         if _appears_truncated(args.content):
             logger.info("send_message rejected (truncation): %s", self._agent_name)
-            return ToolOutcome(message=self._TRUNCATION_REJECTION, success=False)
+            return ToolResult(message=self._TRUNCATION_REJECTION, success=False)
         recipient = self._db.users.get_primary_sender()
         if recipient is None:
             logger.info("send_message refused (no primary user): %s", self._agent_name)
-            return ToolOutcome(message=self._REFUSAL_RESPONSE)
+            return ToolResult(message=self._REFUSAL_RESPONSE)
         if self._db.users.is_muted(recipient):
             logger.info("send_message refused (muted): %s", recipient)
-            return ToolOutcome(message=self._MUTED_RESPONSE)
+            return ToolResult(message=self._MUTED_RESPONSE)
         if not self._cooldown_elapsed():
             logger.info("send_message refused (cooldown): %s → %s", self._agent_name, recipient)
-            return ToolOutcome(message=self._COOLDOWN_RESPONSE)
+            return ToolResult(message=self._COOLDOWN_RESPONSE)
         await self._channel.send_response(
             recipient=recipient,
             content=args.content,
@@ -143,7 +143,7 @@ class SendMessageTool(Tool):
             quote_message=None,
         )
         logger.info("send_message: %s → %s", self._agent_name, recipient)
-        return ToolOutcome(message="Message sent.", mutated=True)
+        return ToolResult(message="Message sent.", mutated=True)
 
     # ── Gating helpers ──────────────────────────────────────────────────
 

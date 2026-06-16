@@ -21,7 +21,7 @@ from penny.database.models import Media, PromptLog, RuntimeConfig
 from penny.tests.conftest import wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.browse import BrowseTool
-from penny.tools.models import ToolOutcome
+from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
@@ -211,14 +211,14 @@ class TestBrowseTool:
 
     @pytest.mark.asyncio
     async def test_returns_channel_content_as_search_result(self):
-        """Tool returns a ToolOutcome with the channel content."""
+        """Tool returns a ToolResult with the channel content."""
         request_fn = AsyncMock(
             return_value=("Title: Example\nURL: https://example.com\n\nPage content.", None)
         )
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert "Page content." in result.message
         request_fn.assert_called_once_with("browse_url", {"url": "https://example.com"})
 
@@ -226,7 +226,7 @@ class TestBrowseTool:
     async def test_stores_browsed_image_as_media(self, tmp_path):
         """A page image is stored in the media table with title, URL, and embedding.
 
-        The image no longer rides along on the ToolOutcome — it's captured
+        The image no longer rides along on the ToolResult — it's captured
         side-channel for the egress matcher.
         """
         db = _make_db(tmp_path)
@@ -240,7 +240,7 @@ class TestBrowseTool:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(queries=["https://ex.com/r"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert not hasattr(result, "image_base64")
         rows = _all_media(db)
         assert len(rows) == 1
@@ -284,7 +284,7 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://kagi.com/search?q=test"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         # Signal preserved
         assert "### Best guitar amps 2026" in result.message
         assert "Jan 27, 2026 The Catalyst 200" in result.message
@@ -310,7 +310,7 @@ class TestBrowseTool:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert _all_media(db) == []
 
     @pytest.mark.asyncio
@@ -324,7 +324,7 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
         assert "extraction failed" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
@@ -372,7 +372,7 @@ class TestBrowseTool:
         tool = self._make_tool(hanging_request_fn)
         result = await tool.execute(queries=["https://example.com"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
 
 
@@ -397,7 +397,7 @@ class TestBrowseToolMediaCapture:
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
         result = await tool.execute(queries=["https://a.com", "https://b.com"])
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")
         assert [r.source_url for r in rows] == ["https://a.com", "https://b.com"]
         assert [r.data for r in rows] == [b"aaa", b"bbb"]

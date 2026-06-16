@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
 from penny.constants import ProgressEmoji
-from penny.tools.models import ToolCall, ToolDefinition, ToolOutcome, ToolResult
+from penny.tools.models import ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class Tool(ABC):
             Tool._registry[cls.name] = cls
 
     @abstractmethod
-    async def execute(self, **kwargs) -> ToolOutcome:
+    async def execute(self, **kwargs) -> ToolResult:
         """
         Execute the tool.
 
@@ -36,7 +36,7 @@ class Tool(ABC):
             **kwargs: Tool parameters
 
         Returns:
-            A ToolOutcome carrying the model-facing message plus the
+            A ToolResult carrying the model-facing message plus the
             success/mutated/source_urls signals the agent loop records.
         """
         pass
@@ -197,35 +197,33 @@ class ToolExecutor:
         return await self._execute_with_timeout(tool, tool_call)
 
     def _tool_not_found_result(self, tool_call: ToolCall) -> ToolResult:
-        """Build error result when the requested tool doesn't exist."""
+        """Build a failed result when the requested tool doesn't exist."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"
         close = difflib.get_close_matches(tool_call.tool, available_tools, n=1, cutoff=0.6)
         suggestion = f" Did you mean '{close[0]}'?" if close else ""
         return ToolResult(
-            tool=tool_call.tool,
-            result=None,
-            error=(
-                f"Tool '{tool_call.tool}' not found.{suggestion} "
+            message=(
+                f"Error: Tool '{tool_call.tool}' not found.{suggestion} "
                 f"Available tools: {available_list}. "
                 f"You must ONLY use the tools listed above."
             ),
-            id=tool_call.id,
+            success=False,
         )
 
     def _validation_error_result(self, tool_call: ToolCall, error: str) -> ToolResult:
-        """Build error result for argument validation failure."""
+        """Build a failed result for argument validation failure."""
         logger.error("Tool call validation failed: %s - %s", tool_call.tool, error)
-        return ToolResult(
-            tool=tool_call.tool,
-            result=None,
-            error=error,
-            id=tool_call.id,
-        )
+        return ToolResult(message=f"Error: {error}", success=False)
 
     async def _execute_with_timeout(self, tool: Tool, tool_call: ToolCall) -> ToolResult:
-        """Execute tool with timeout and error handling."""
+        """Execute tool with timeout and error handling.
+
+        A tool returns its own ``ToolResult``; a bare string is tolerated and
+        wrapped.  Framework failures the tool can't report (timeout, uncaught
+        exception) are synthesised into a failed ``ToolResult`` here.
+        """
         try:
             logger.info("Executing tool: %s", tool_call.tool)
             logger.debug("Tool arguments: %s", tool_call.arguments)
@@ -236,20 +234,13 @@ class ToolExecutor:
             )
             logger.info("Tool executed successfully: %s", tool_call.tool)
             logger.debug("Tool result: %s", result)
-            return ToolResult(tool=tool_call.tool, result=result, error=None, id=tool_call.id)
+            return result if isinstance(result, ToolResult) else ToolResult(message=str(result))
         except TimeoutError:
             logger.error("Tool execution timeout: %s", tool_call.tool)
             return ToolResult(
-                tool=tool_call.tool,
-                result=None,
-                error=f"Tool execution timeout after {effective_timeout}s",
-                id=tool_call.id,
+                message=f"Error: Tool execution timeout after {effective_timeout}s",
+                success=False,
             )
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_call.tool)
-            return ToolResult(
-                tool=tool_call.tool,
-                result=None,
-                error=f"Tool execution error: {str(e)}",
-                id=tool_call.id,
-            )
+            return ToolResult(message=f"Error: Tool execution error: {e}", success=False)

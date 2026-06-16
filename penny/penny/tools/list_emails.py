@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from penny.tools.base import Tool
-from penny.tools.models import ListEmailsArgs, ToolOutcome
+from penny.tools.models import ListEmailsArgs, ToolResult
 from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
@@ -42,15 +42,15 @@ class ListEmailsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """List emails from a folder and return formatted summaries."""
         args = ListEmailsArgs(**kwargs)
         folder = args.folder
 
         results = await self._client.list_emails(folder_name=folder)
         if not results:
-            return ToolOutcome(message=NO_EMAILS_FOUND)
+            return ToolResult(message=NO_EMAILS_FOUND)
 
         folder_name = folder or "Inbox"
         header = f"Found {len(results)} email(s) in {folder_name}:\n\n"
-        return ToolOutcome(message=header + "\n\n".join(str(r) for r in results))
+        return ToolResult(message=header + "\n\n".join(str(r) for r in results))

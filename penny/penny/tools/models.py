@@ -5,10 +5,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class ToolOutcome(BaseModel):
-    """The single structured result every ``Tool.execute`` returns.
+class ToolResult(BaseModel):
+    """The single structured result of running a tool.
 
-    One uniform contract instead of bare strings (or the ``str | T`` half-measure):
+    One uniform contract — what a tool returns from ``execute`` AND what the
+    ``ToolExecutor`` hands back (it synthesises a failed result for framework
+    errors a tool can't report itself: tool-not-found, bad arguments, timeout,
+    uncaught exception).  No separate envelope, no bare strings, no ``str | T``.
 
     - ``message``: the model-facing body, rendered into the tool result the LLM reads.
     - ``success``: ``False`` for errors, refusals, or empty/no-result outcomes —
@@ -96,15 +99,6 @@ class ToolCall(BaseModel):
 
     tool: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    id: str | None = None
-
-
-class ToolResult(BaseModel):
-    """Result from executing a tool."""
-
-    tool: str
-    result: Any
-    error: str | None = None
     id: str | None = None
 
 

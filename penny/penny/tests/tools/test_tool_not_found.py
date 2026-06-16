@@ -131,8 +131,8 @@ class TestToolNotFoundSuggestion:
         tool_call = ToolCall(tool="read_last", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is not None
-        assert "Did you mean 'read_latest'?" in result.error
+        assert result.success is False
+        assert "Did you mean 'read_latest'?" in result.message
 
     @pytest.mark.asyncio
     async def test_no_suggestion_for_unrecognisable_tool_name(self):
@@ -146,8 +146,8 @@ class TestToolNotFoundSuggestion:
         tool_call = ToolCall(tool="completely_unknown_xyz", arguments={})
         result = await executor.execute(tool_call)
 
-        assert result.error is not None
-        assert "Did you mean" not in result.error
+        assert result.success is False
+        assert "Did you mean" not in result.message
 
 
 class StubDoneTool(Tool):

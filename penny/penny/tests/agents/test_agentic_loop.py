@@ -17,7 +17,7 @@ from penny.llm.models import LlmConnectionError, LlmTimeoutError, LlmToolParseEr
 from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
-from penny.tools.models import ToolOutcome, ToolResult
+from penny.tools.models import ToolResult
 
 
 class StubSearchTool(Tool):
@@ -32,7 +32,7 @@ class StubSearchTool(Tool):
     }
 
     async def execute(self, **kwargs):
-        return ToolOutcome(message="Mock search results for testing")
+        return ToolResult(message="Mock search results for testing")
 
 
 def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
@@ -231,9 +231,7 @@ class TestRepeatCallGuard:
         """Calling the same tool with different arguments is allowed."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
         # Mock tool executor so tool calls don't fail (this test checks dedup, not tools)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="search result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="search result"))
 
         def handler(request, count):
             if count == 1:
@@ -493,9 +491,7 @@ class TestAfterStepHook:
         """after_step receives only the records from the current step."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         # Mock tool executor so tool calls don't fail (this test checks after_step hook)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="search result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="search result"))
 
         captured_step_records = []
 
@@ -536,9 +532,9 @@ class TestAfterStepHook:
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
         agent._tool_executor.execute = AsyncMock(
             side_effect=[
-                ToolResult(tool="search", result="result_A"),
-                ToolResult(tool="search", result="result_B"),
-                ToolResult(tool="search", result="result_C"),
+                ToolResult(message="result_A"),
+                ToolResult(message="result_B"),
+                ToolResult(message="result_C"),
             ]
         )
 
@@ -681,9 +677,7 @@ class TestToolCallCap:
         ensures the model gets a final step before accumulating more than steps-1 records.
         """
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
 
         def handler(request, count):
             # Steps 1 and 2: 2 parallel tool calls each → 4 total records.
@@ -723,7 +717,7 @@ class TestParallelToolCalls:
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent._tool_executor.execute = AsyncMock(
             side_effect=lambda tool_call: ToolResult(
-                tool=tool_call.tool, result=f"result for {tool_call.arguments.get('query', '')}"
+                message=f"result for {tool_call.arguments.get('query', '')}"
             )
         )
 
@@ -764,10 +758,7 @@ class TestParallelToolCalls:
 
         sep = PennyConstants.SECTION_SEPARATOR
         agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(
-                tool="browse",
-                result=ToolOutcome(message=f"## page A\n{page_a}{sep}## page B\n{page_b}"),
-            )
+            return_value=ToolResult(message=f"## page A\n{page_a}{sep}## page B\n{page_b}")
         )
 
         def handler(request, count):
@@ -869,7 +860,7 @@ class TestParallelToolCalls:
 
         result = await tool.execute(queries=["https://slow.example.com"])
 
-        assert isinstance(result, ToolOutcome)
+        assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
         assert "slow.example.com" in result.message
 
@@ -1062,9 +1053,7 @@ class TestEmptyContentAfterToolCalls:
         """After nudge fires, tools are stripped so model must synthesize."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
         # Mock tool executor so tool calls don't fail
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="search result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="search result"))
 
         def handler(request, count):
             if count == 1:
@@ -1122,7 +1111,7 @@ class TestEmptyContentAfterToolCalls:
         mock_llm.set_response_handler(handler)
 
         with patch.object(agent._tool_executor, "execute") as mock_exec:
-            mock_exec.return_value = ToolResult(tool="search", result=large_result)
+            mock_exec.return_value = ToolResult(message=large_result)
             response = await agent.run("test", max_steps=max_steps)
 
         assert response.answer == "done"
@@ -1423,10 +1412,7 @@ class TestMalformedUrlCleaning:
 
         source_url = "https://real-source.com/article"
         with patch.object(agent._tool_executor, "execute") as mock_exec:
-            mock_exec.return_value = ToolResult(
-                tool="search",
-                result=ToolOutcome(message="result", source_urls=[source_url]),
-            )
+            mock_exec.return_value = ToolResult(message="result", source_urls=[source_url])
             response = await agent.run("test query", max_steps=max_steps)
 
         assert "https://bad.example/path-" not in response.answer
@@ -1444,7 +1430,7 @@ class TestAllToolsFailedAbort:
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
         # Mock tool executor to always return an error
         agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result=None, error="API unavailable")
+            return_value=ToolResult(message="API unavailable", success=False)
         )
 
         def handler(request, count):
@@ -1471,8 +1457,8 @@ class TestAllToolsFailedAbort:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return ToolResult(tool="search", result=None, error="API unavailable")
-            return ToolResult(tool="search", result="found some results")
+                return ToolResult(message="API unavailable", success=False)
+            return ToolResult(message="found some results")
 
         agent._tool_executor.execute = alternating_executor
 
@@ -1495,9 +1481,7 @@ class TestOnToolStartCallback:
     async def test_callback_called_once_per_step_with_all_tools(self, test_db, mock_llm):
         """on_tool_start fires once per step with a list of all tools in that step."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
 
         captured: list[list[tuple[str, dict]]] = []
 
@@ -1527,9 +1511,7 @@ class TestOnToolStartCallback:
     async def test_parallel_tools_fire_callback_once_with_both(self, test_db, mock_llm):
         """on_tool_start fires once for a parallel step, receiving both tools together."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
 
         captured: list[list[tuple[str, dict]]] = []
 
@@ -1582,9 +1564,7 @@ class TestOnToolStartCallback:
     async def test_failing_callback_does_not_abort_tool(self, test_db, mock_llm):
         """A callback that raises an exception does not prevent tool execution."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=2)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
 
         async def on_tool_start(tools: list[tuple[str, dict]]) -> None:
             raise RuntimeError("callback exploded")
@@ -1610,9 +1590,7 @@ class TestPromptLogAnnotations:
     async def test_agent_name_and_run_id_written_to_promptlog(self, test_db, mock_llm):
         """Every prompt in an agentic loop gets the agent's name and a shared run_id."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(tool="search", result="result")
-        )
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
 
         # Track callback invocations
         callback_prompts: list[dict] = []

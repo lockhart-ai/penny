@@ -10,7 +10,7 @@ from penny.email.protocol import EmailClient
 from penny.llm.client import LlmClient
 from penny.prompts import Prompt
 from penny.tools.base import Tool
-from penny.tools.models import ReadEmailsArgs, ToolOutcome
+from penny.tools.models import ReadEmailsArgs, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +51,15 @@ class ReadEmailsTool(Tool):
         self._ollama = ollama_client
         self._user_query = user_query
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Read emails and summarize relevant content."""
         args = ReadEmailsArgs(**kwargs)
         email_ids = args.email_ids
         if not email_ids:
-            return ToolOutcome(message=NO_EMAILS_TO_READ)
+            return ToolResult(message=NO_EMAILS_TO_READ)
         emails = await self._client.read_emails(email_ids)
         if not emails:
-            return ToolOutcome(message=NO_EMAILS_TO_READ)
+            return ToolResult(message=NO_EMAILS_TO_READ)
 
         raw_content = PennyConstants.SECTION_SEPARATOR.join(str(e) for e in emails)
         prompt = Prompt.EMAIL_SUMMARIZE_PROMPT.format(
@@ -67,4 +67,4 @@ class ReadEmailsTool(Tool):
             emails=raw_content,
         )
         response = await self._ollama.chat([{"role": "user", "content": prompt}])
-        return ToolOutcome(message=response.content or raw_content)
+        return ToolResult(message=response.content or raw_content)

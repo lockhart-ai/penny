@@ -23,7 +23,7 @@ from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.tools.base import Tool
 from penny.tools.content_cleaning import clean_browser_content
-from penny.tools.models import BrowseArgs, BrowsePage, ToolOutcome
+from penny.tools.models import BrowseArgs, BrowsePage, ToolResult
 
 if TYPE_CHECKING:
     from penny.channels.permission_manager import PermissionManager
@@ -155,7 +155,7 @@ class BrowseTool(Tool):
                 return ProgressEmoji.READING
         return ProgressEmoji.SEARCHING
 
-    async def execute(self, **kwargs: Any) -> ToolOutcome:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension."""
         args = BrowseArgs(**kwargs)
 
@@ -195,7 +195,7 @@ class BrowseTool(Tool):
         # Browse is a *read* for work-accounting (its browse-results log write is
         # incidental), so ``mutated`` stays False — a collector cycle that only
         # browsed found nothing to record.
-        return ToolOutcome(message=PennyConstants.SECTION_SEPARATOR.join(sections))
+        return ToolResult(message=PennyConstants.SECTION_SEPARATOR.join(sections))
 
     async def _append_pages_to_browse_results(self, page_sections: list[str]) -> None:
         """Side-effect-write each successful page as its own log entry.

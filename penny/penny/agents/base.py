@@ -25,7 +25,6 @@ from penny.responses import PennyResponse
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import DoneTool, LogReadTool, build_memory_tools
-from penny.tools.models import ToolOutcome
 from penny.tools.send_message import SendMessageTool
 
 if TYPE_CHECKING:
@@ -909,37 +908,22 @@ class Agent:
 
         record = ToolCallRecord(tool=tool_name, arguments=arguments, reasoning=reasoning)
         tool_call = ToolCall(tool=tool_name, arguments=arguments)
-        tool_result = await self._tool_executor.execute(tool_call)
 
-        # Framework failures (tool-not-found, validation, timeout, uncaught
-        # exception) surface on ``tool_result.error`` with no ToolOutcome.
-        if tool_result.error:
-            result_str = f"Error: {tool_result.error}"
-            record.failed = True
-            record.result = result_str
-            logger.debug("Tool result (failed): %s", result_str[:200])
-            return result_str, record, []
-
-        # Otherwise every tool returns a structured ToolOutcome — one branch,
-        # no string-prefix guessing.  ``success``/``mutated`` are authoritative.
-        outcome = self._coerce_outcome(tool_result.result)
-        record.failed = not outcome.success
-        record.mutated = outcome.mutated
-        record.result = outcome.message
+        # The executor always hands back a structured ToolResult — a tool's own
+        # return, or a synthesised failed one for framework errors (not-found,
+        # timeout, crash).  One branch, no string-prefix guessing; success and
+        # mutated are authoritative.
+        result = await self._tool_executor.execute(tool_call)
+        record.failed = not result.success
+        record.mutated = result.mutated
+        record.result = result.message
         logger.debug(
             "Tool result (success=%s mutated=%s): %s",
-            outcome.success,
-            outcome.mutated,
-            outcome.message[:200],
+            result.success,
+            result.mutated,
+            result.message[:200],
         )
-        return outcome.message, record, outcome.source_urls
-
-    @staticmethod
-    def _coerce_outcome(result: object) -> ToolOutcome:
-        """Every tool returns a ToolOutcome; tolerate a bare string defensively."""
-        if isinstance(result, ToolOutcome):
-            return result
-        return ToolOutcome(message=str(result))
+        return result.message, record, result.source_urls
 
     @staticmethod
     def _make_call_key(tool_name: str, arguments: dict) -> tuple[str, ...]:
