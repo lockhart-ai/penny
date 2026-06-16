@@ -36,6 +36,7 @@ from penny.scheduler import (
     Schedule,
 )
 from penny.scheduler.schedule_runner import ScheduleExecutor
+from penny.scheduler.send_queue_drainer import SendQueueDrainer
 from penny.startup import get_restart_message
 from penny.zoho.models import ZohoCredentials
 
@@ -149,6 +150,9 @@ class Penny:
             db=self.db,
             config=config,
         )
+        # Deterministic task (no LLM) that delivers queued send_message output
+        # once the autonomous-send cooldown clears.
+        self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
 
     def _init_github_client(self, config: Config) -> Any:
         """Initialize GitHub API client if configured. Returns GitHubAPI or None."""
@@ -214,6 +218,7 @@ class Penny:
         )
         self.schedule_executor.set_channel(self.channel)
         self.chat_agent.set_channel(self.channel)
+        self.send_queue_drainer.set_channel(self.channel)
         # Collector needs the channel so notify-style cycles (the collector
         # bound to ``notified-thoughts``) can call send_message.
         self.collector.set_channel(self.channel)
@@ -258,6 +263,15 @@ class Penny:
         """
         schedules: list[Schedule] = [
             AlwaysRunSchedule(agent=self.schedule_executor, interval=60.0),
+            # Drain before the collector so a queued message is delivered
+            # promptly once its cooldown clears, rather than waiting behind a
+            # collection cycle.  Idle-gated: queued autonomous messages never
+            # interrupt an active conversation.
+            PeriodicSchedule(
+                agent=self.send_queue_drainer,
+                interval=lambda: PennyConstants.SEND_QUEUE_DRAIN_INTERVAL,
+                requires_idle=True,
+            ),
             PeriodicSchedule(
                 agent=self.collector,
                 interval=lambda: config.runtime.COLLECTOR_TICK_INTERVAL,

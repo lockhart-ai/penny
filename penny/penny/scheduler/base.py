@@ -6,18 +6,29 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from penny.agents import Agent
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
+
+
+class ScheduledTask(Protocol):
+    """A unit the scheduler can run.
+
+    Structural: anything with a ``name`` (for logging/status) and an async
+    ``execute()`` returning whether it did work this tick.  Background agents
+    (Collector, ScheduleExecutor) satisfy it, and so does the deterministic
+    ``SendQueueDrainer`` — which is not an LLM agent.
+    """
+
+    name: str
+
+    async def execute(self) -> bool: ...
 
 
 class Schedule:
     """Base class for schedule policies."""
 
-    agent: Agent
+    agent: ScheduledTask
 
     def should_run(self, is_idle: bool) -> bool:
         """

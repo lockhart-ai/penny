@@ -291,6 +291,26 @@ class AgentCursor(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class SendQueueItem(SQLModel, table=True):
+    """One outbound message awaiting delivery — the durable send queue.
+
+    ``send_message`` enqueues here instead of dropping a message when the
+    autonomous-send cooldown hasn't elapsed; a background drain schedule
+    delivers the oldest pending row once the cooldown clears, then stamps
+    ``sent_at``.  ``sent_at IS NULL`` is the single source of truth for
+    "still pending".  ``collection`` is the collector that queued it (the
+    bound target name), so delivery is attributable.
+    """
+
+    __tablename__ = "send_queue"
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    content: str
+    collection: str
+    sent_at: datetime | None = None
+
+
 class Media(SQLModel, table=True):
     """Binary media (images) captured while browsing, delivered side-channel.
 

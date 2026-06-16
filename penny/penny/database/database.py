@@ -13,6 +13,7 @@ from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
 from penny.database.preference_store import PreferenceStore
+from penny.database.send_queue_store import SendQueueStore
 from penny.database.thought_store import ThoughtStore
 from penny.database.user_store import UserStore
 
@@ -30,6 +31,7 @@ class Database:
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries
         preferences: User preference CRUD and dedup
+        send_queue: Durable outbound message queue, drained on the send cooldown
         thoughts: Inner monologue persistence (append-only thought log)
         users: UserInfo, sender queries, mute state
     """
@@ -46,6 +48,7 @@ class Database:
         self.memories = MemoryStore(self.engine, runtime=runtime)
         self.messages = MessageStore(self.engine)
         self.preferences = PreferenceStore(self.engine)
+        self.send_queue = SendQueueStore(self.engine)
         self.thoughts = ThoughtStore(self.engine)
         self.users = UserStore(self.engine)
 

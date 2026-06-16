@@ -1,63 +1,60 @@
 """SendMessageTool — model-driven outbound message delivery.
 
-Bound at construction to a (channel, agent_name) pair plus the database
-and runtime config.  The recipient is always the primary user (Penny is
-single-user) and is resolved from ``db`` at execute time, not plumbed
-through agent construction.  The model calls this tool with a message
-body when it has decided what to say.  The tool checks three gates
-before dispatching:
+Bound at construction to an ``agent_name`` (the bound collection, for
+collectors) plus the database.  The recipient is always the primary user
+(Penny is single-user) and is resolved from ``db`` at execute time.  The
+model calls this tool with a message body when it has decided what to say.
+The tool checks three *content/availability* gates, then **enqueues** the
+message for delivery — it does not send directly:
 
 - **Refusal**: if the content is itself a model refusal ("I'm sorry,
-  I can't..."), don't dispatch — that's not a real reply.  Tells
-  the model to call ``done`` instead.
-- **Mute**: if the recipient has muted notifications, the tool
-  refuses with a string that tells the model to call ``done``.
-- **Cooldown**: flat interval between autonomous sends from the same
-  agent.  Bypassed when the user has replied since the agent's last
-  send — the next send is then conversational, not autonomous.
-  Otherwise the cooldown is ``SEND_COOLDOWN_SECONDS`` (runtime-tunable).
+  I can't..."), don't enqueue — that's not a real reply.  Tells the
+  model to call ``done`` instead.
 - **Truncation**: if the content tail looks like a model self-
   truncation (ending in ``…`` or three-or-more dots, mid-thought),
   return a failure string with the ``Error:`` prefix so the agent
-  loop marks the call as failed.  The model sees the rejection on
-  its next step and re-emits with the complete body.
+  loop marks the call as failed and the model re-emits the complete body.
+- **Mute**: if the recipient has muted notifications, the tool refuses
+  with a string that tells the model to call ``done``.
 
-The first three are graceful-exit signals (model is told to call
-``done``); truncation is a retry signal (model is told to redo
-``send_message`` with the complete body).
+If all three pass, the message is appended to ``db.send_queue`` and the
+tool returns ``"Message sent."`` (``mutated=True``).  Enqueue **is** the
+successful handoff: the background drain schedule (``SendQueueDrainer``)
+owns *when* the message actually goes out, honouring the flat-interval
+autonomous-send cooldown and delivering the message later rather than
+dropping it.  The literal ``"Message sent."`` is preserved so the
+collector prompts that gate a follow-up move on it ("only move the entry
+once send_message returned Message sent.") keep working unchanged — from
+the collector's point of view the message has been accepted for delivery,
+which is true.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from penny.constants import PennyConstants
 from penny.llm.refusal import is_refusal
 from penny.tools.base import Tool
 from penny.tools.memory_tools import DoneTool
 from penny.tools.models import SendMessageArgs, ToolResult
 
 if TYPE_CHECKING:
-    from penny.channels.base import MessageChannel
-    from penny.config import Config
     from penny.database import Database
 
 logger = logging.getLogger(__name__)
 
 
 class SendMessageTool(Tool):
-    """Send a message to the user through the bound channel."""
+    """Queue a message to the user for delivery through the bound channel."""
 
     name = "send_message"
     description = (
         "Send a message to the user.  Use this once you have decided "
         "what to say — the ``content`` is the exact text the user will "
-        "see.  The send is gated on refusal detection, mute state, and "
-        "a flat-interval cooldown between autonomous sends; if any "
-        f"refuses, the response will say so and you should call "
+        "see.  The send is gated on refusal detection and mute state; if "
+        f"either refuses, the response will say so and you should call "
         f"``{DoneTool.name}`` to exit."
     )
     parameters = {
@@ -71,6 +68,10 @@ class SendMessageTool(Tool):
         "required": ["content"],
     }
 
+    # Preserved verbatim: collector prompts gate a follow-up ``collection_move``
+    # on this exact string ("only move the entry once send_message returned
+    # Message sent.").  Enqueue is the successful handoff, so it returns this.
+    _SENT_RESPONSE = "Message sent."
     _REFUSAL_RESPONSE = (
         "Message NOT sent: the content reads as a model refusal "
         "(\"I'm sorry, I can't...\") rather than a substantive reply.  "
@@ -80,12 +81,6 @@ class SendMessageTool(Tool):
         "Message NOT sent: the user has muted autonomous messages.  "
         f'Call ``{DoneTool.name}(success=true, summary="muted — skipped")`` '
         "to exit — do not retry.  This is normal cycle behaviour, not a failure."
-    )
-    _COOLDOWN_RESPONSE = (
-        "Message NOT sent: cooldown has not elapsed since the last "
-        f'autonomous send.  Call ``{DoneTool.name}(success=true, summary="cooldown — '
-        'skipped this cycle")`` to exit — do not retry.  This is normal '
-        "cycle behaviour, not a failure."
     )
     # Returned with ``success=False`` so the agent loop sets
     # ``record.failed=True``, which counts toward the abort threshold — we don't
@@ -98,27 +93,19 @@ class SendMessageTool(Tool):
         "no 'etc.', no 'and more', no teaser phrasing."
     )
 
-    def __init__(
-        self,
-        channel: MessageChannel,
-        agent_name: str,
-        db: Database,
-        config: Config,
-    ) -> None:
-        self._channel = channel
+    def __init__(self, agent_name: str, db: Database) -> None:
         self._agent_name = agent_name
         self._db = db
-        self._config = config
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = SendMessageArgs(**kwargs)
-        # Nothing-sent gates all carry mutated=False (no message went out).  Most
+        # Not-enqueued gates all carry mutated=False (nothing was queued).  Most
         # are *successful* no-ops — a correct decline the model shouldn't retry
-        # (refusal content, no recipient, muted, cooldown), so success=True keeps
-        # them out of the failure budget and matches their "this is normal, not a
-        # failure" message bodies.  Truncation is the one real failure: the model
-        # produced cut-off content, so success=False marks the call failed and
-        # steers a retry with the complete body (and feeds the abort threshold).
+        # (refusal content, no recipient, muted), so success=True keeps them out
+        # of the failure budget and matches their "this is normal, not a failure"
+        # bodies.  Truncation is the one real failure: the model produced cut-off
+        # content, so success=False marks the call failed and steers a retry with
+        # the complete body (and feeds the abort threshold).
         if is_refusal(args.content):
             logger.info("send_message refused (refusal content): %s", self._agent_name)
             return ToolResult(message=self._REFUSAL_RESPONSE)
@@ -132,70 +119,11 @@ class SendMessageTool(Tool):
         if self._db.users.is_muted(recipient):
             logger.info("send_message refused (muted): %s", recipient)
             return ToolResult(message=self._MUTED_RESPONSE)
-        if not self._cooldown_elapsed():
-            logger.info("send_message refused (cooldown): %s → %s", self._agent_name, recipient)
-            return ToolResult(message=self._COOLDOWN_RESPONSE)
-        await self._channel.send_response(
-            recipient=recipient,
-            content=args.content,
-            parent_id=None,
-            author=self._agent_name,
-            quote_message=None,
-        )
-        logger.info("send_message: %s → %s", self._agent_name, recipient)
-        return ToolResult(message="Message sent.", mutated=True)
-
-    # ── Gating helpers ──────────────────────────────────────────────────
-
-    def _cooldown_elapsed(self) -> bool:
-        """Flat-interval cooldown between *autonomous* sends.
-
-        The gate stops a background agent from spamming the user when
-        there's been no reply.  When ``count == 0`` the user has spoken
-        since Penny last sent, so the next message is conversational, not
-        autonomous — no cooldown applies.
-
-        Otherwise the next send must wait ``SEND_COOLDOWN_SECONDS`` since
-        Penny's previous outgoing message.  A message has two authors —
-        Penny or the user — so the cooldown is per-Penny, not per-internal-
-        agent: any recent Penny send (a chat reply included) holds off an
-        autonomous ping.
-        """
-        count = self._count_sends_since_user_message()
-        if count == 0:
-            return True
-        latest = self._latest_send_time()
-        if latest is None:
-            return True
-        elapsed = (_naive_utc_now() - _to_naive(latest)).total_seconds()
-        return elapsed >= self._config.runtime.SEND_COOLDOWN_SECONDS
-
-    def _latest_send_time(self) -> datetime | None:
-        """Created-at of Penny's most recent outgoing message."""
-        log = self._db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG)
-        entries = log.newest_entries(k=1) if log is not None else []
-        return entries[0].created_at if entries else None
-
-    def _count_sends_since_user_message(self) -> int:
-        """Number of Penny's outgoing messages newer than the latest user message.
-
-        Bounded read: ``read_since(cutoff)`` pushes the ``timestamp > cutoff``
-        filter into SQL, so this touches only the post-cutoff tail, never the
-        whole (unbounded-growth) outgoing log.  With no user message yet, any
-        prior Penny send counts — a single bounded existence probe."""
-        log = self._db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG)
-        if log is None:
-            return 0
-        cutoff = self._latest_user_message_time()
-        if cutoff is None:
-            return len(log.newest_entries(k=1))
-        return len(log.read_since(cutoff))
-
-    def _latest_user_message_time(self) -> datetime | None:
-        """Created-at of the most recent ``user-messages`` entry."""
-        log = self._db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
-        entries = log.newest_entries(k=1) if log is not None else []
-        return entries[0].created_at if entries else None
+        # Enqueue for delivery — the drain schedule honours the cooldown and
+        # sends later, so a cooldown no longer drops the message.
+        self._db.send_queue.enqueue(content=args.content, collection=self._agent_name)
+        logger.info("send_message queued: %s → %s", self._agent_name, recipient)
+        return ToolResult(message=self._SENT_RESPONSE, mutated=True)
 
 
 _TRUNCATION_TAIL_PATTERN = re.compile(r"(?:…+|\.{3,})\s*[?!.]?\s*$")
@@ -212,16 +140,3 @@ def _appears_truncated(content: str) -> bool:
     after the ellipsis.
     """
     return bool(_TRUNCATION_TAIL_PATTERN.search(content))
-
-
-def _naive_utc_now() -> datetime:
-    """Naive UTC ``now`` to compare against ``MemoryEntry.created_at``,
-    which round-trips through SQLite as a tz-naive value."""
-    return datetime.now(UTC).replace(tzinfo=None)
-
-
-def _to_naive(value: datetime) -> datetime:
-    """Strip tzinfo if present so naive/aware mixes don't crash arithmetic."""
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)

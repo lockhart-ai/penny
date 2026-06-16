@@ -5,12 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
-from penny.scheduler.base import Schedule
-
-if TYPE_CHECKING:
-    from penny.agents import Agent
+from penny.scheduler.base import Schedule, ScheduledTask
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +16,7 @@ class PeriodicSchedule(Schedule):
 
     def __init__(
         self,
-        agent: Agent,
+        agent: ScheduledTask,
         interval: Callable[[], float],
         requires_idle: bool = True,
     ):
@@ -74,7 +70,7 @@ class AlwaysRunSchedule(Schedule):
 
     def __init__(
         self,
-        agent: Agent,
+        agent: ScheduledTask,
         interval: float,
     ):
         """

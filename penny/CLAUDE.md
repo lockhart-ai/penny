@@ -63,6 +63,7 @@ penny/
     base.py           — BackgroundScheduler + Schedule ABC
     schedules.py      — PeriodicSchedule, AlwaysRunSchedule, DelayedSchedule implementations
     schedule_runner.py — ScheduleExecutor: runs user-created cron-based scheduled tasks
+    send_queue_drainer.py — SendQueueDrainer: delivers queued send_message output on the send cooldown
   commands/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry
@@ -112,6 +113,7 @@ penny/
     message_store.py  — MessageStore: log_message, log_prompt, log_command, threads
     thought_store.py  — ThoughtStore: inner monologue persistence
     preference_store.py — PreferenceStore: add, query, dedup, embedding management
+    send_queue_store.py — SendQueueStore: durable outbound queue (enqueue, next_pending, mark_sent)
     user_store.py     — UserStore: get_info, save_info, mute/unmute
     memory/           — the memory layer: `Memory` (base, memory_entry row access + shared similarity/cursor reads + shape-op no-ops) → `Collection` / `Log`, and the read-only facades `MessageLogMemory` (messagelog) / `RunLog` (promptlog); `MemoryStore` registry + the `memory(name)` dispatch factory; `types` (enums, errors, inputs); `_similarity` (pure dedup + retrieval math). `db.memory(name)` returns the right object; `db.memories` is the registry
     cursor_store.py   — CursorStore: per-agent read cursors into log-shaped memories
@@ -241,9 +243,11 @@ The `scheduler/` module manages background tasks:
 
 **PeriodicSchedule**
 - Runs periodically while system is idle at a configurable interval
-- Used for the Collector dispatcher (idle-gated, COLLECTOR_TICK_INTERVAL default 30s); per-collection cadence lives on `memory.collector_interval_seconds`
+- Used for the **SendQueueDrainer** (idle-gated, `SEND_QUEUE_DRAIN_INTERVAL` 60s — scheduled before the collector so queued messages deliver promptly) and the Collector dispatcher (idle-gated, COLLECTOR_TICK_INTERVAL default 30s); per-collection cadence lives on `memory.collector_interval_seconds`
 - Tracks last run time and fires again after interval elapses
 - Resets when a message arrives
+
+Schedules run a `ScheduledTask` (`scheduler/base.py`) — a structural Protocol (`name` + `async execute() -> bool`). Background agents satisfy it, and so does the non-LLM `SendQueueDrainer`.
 
 **DelayedSchedule**
 - Runs after system becomes idle + random delay
@@ -331,6 +335,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **MemoryEntry**: One entry in a memory — `memory_name` FK, `key` (nullable for logs), `content`, `author`, `key_embedding`, `content_embedding`. Entries are immutable once written — `update` replaces content for a given key
 - **AgentCursor**: Per-reader read progress through a log-shaped memory — `(agent_name, memory_name)` PK, `last_read_at` high-water mark. Advanced two-phase by the orchestrator (pending during a run, committed on success). For collectors the cursor owner is the **bound collection name**, not the constant `"collector"` identity — otherwise every collection reading the same log (e.g. the many that read `user-messages`) would collapse onto one shared cursor and starve each other
 - **Media**: Images captured while browsing, delivered side-channel — `mime_type`, `data` (raw bytes), `source_url`, `title`, `embedding` (of title+URL). The browse tool stores every page image here; at channel egress the outgoing message text is embedded and the single nearest image (no floor) is attached. Zero model involvement — no `<media:ID>` tokens, no prompt changes
+- **SendQueueItem** (`send_queue` table): Durable outbound message queue — `content`, `collection` (the collector that queued it), `created_at`, `sent_at` (nullable; `NULL` = still pending, single source of truth — no separate flag). `send_message` enqueues here instead of dropping a message when the autonomous-send cooldown hasn't elapsed; the `SendQueueDrainer` delivers the oldest pending row once the cooldown clears. Kept after delivery (stamped `sent_at`) as an audit trail
 
 ## Message Flow
 
@@ -361,6 +366,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Tool-result framing**: every tool result is wrapped by `Tool.format_result(name, body)` (applied once in `Agent._collect_tool_results`) into `Result of your \`<tool>\` call:\n<body>`. The OpenAI `role: "tool"` + `tool_call_id` envelope is the standard "this is a tool result" signal, but gpt-oss:20b doesn't reliably honour it when the body reads like prose — it can mistake fetched data (e.g. a returned user message that itself reads like an instruction) for a fresh directive. Read tools additionally lead their body with a `N entries from \`<source>\` (ordering):` header via `_format_entries`. Framing happens after `record.failed` is computed (on the raw string) so failure detection is unaffected
 - **Tool parameter validation**: Tool parameters validated before execution; non-existent tools return clear error messages
 - **Actionable tool failures**: Every tool failure (validation error, rejected/degenerate input, refused operation, missing key, external error) MUST return a `ToolResult` whose message tells the model two things: (1) *what went wrong* — the specific reason, naming the offending field/value — and (2) *how to correct it* — the concrete next action (provide a non-empty value, supply the full replacement text, call the right alternative tool, etc.). The tool result is the model's only feedback channel: a bare "rejected" or a silent no-op gives it nothing to recover from, so it retries the same mistake or gives up. A diagnosis without a remedy is a half-failure. Examples: `check_extraction_prompt` quotes the length and the minimum and points at the prompt shape; `update_entry`'s degenerate-content refusal names the reason *and* suggests `collection_delete_entry` if removal was intended. This is a hard rule, enforced in review — see the error-handling section of `docs/pr-review-guide.md`
+- **Queued sends, not dropped**: `send_message` no longer owns *when* a message goes out — it enqueues into `db.send_queue` (after the refusal/truncation/mute content gates) and returns the literal `"Message sent."` (`mutated=True`). The deterministic `SendQueueDrainer` (an idle-gated `PeriodicSchedule`, no LLM) delivers the oldest pending row once the flat-interval cooldown clears: `now - last_penny_message ≥ SEND_COOLDOWN_SECONDS` (bypassed when the user has spoken since Penny's last message — the send is then conversational). So a cooldown *delays* a message instead of losing it. The `"Message sent."` literal is preserved so the collector prompts that gate a follow-up `collection_move` on it ("only move the entry once send_message returned Message sent.") keep working unchanged — enqueue **is** the successful handoff. Timing lives in Python (the drainer), not model-space; mute/refusal/truncation stay on the tool as content/availability gates
 - **Two agent shapes**: ChatAgent (turn-driven, user-facing, lifecycle tools only) and Collector (single dispatcher across all collections, scoped entry-mutation tools).  Plus ScheduleExecutor for user-defined cron tasks
 - **Priority scheduling**: Schedule executor → Collector dispatcher (Collector returns False when no collection is ready, so the scheduler skips it)
 - **Always-run schedules**: User-created schedules run regardless of idle state; the Collector waits for idle
@@ -443,6 +449,7 @@ Notable migrations:
 - 0057: Unify `log_read_next`/`log_read_recent` into one caller-dispatched `log_read` across all seeded extraction_prompts; drop the notify collector's `penny-messages` read (structural dedup via `collection_move`); quality reviews the whole batch
 - 0058: Rework the quality prompt around run inspection — read the `collector-runs` index, `log_get` the suspicious runs for their full trace, judge behaviour-vs-intent; drop the `penny-messages` read (cursor drift); skip `❌` run failures as capacity, not drift
 - 0059: System-log facades (one migration for the refactor) — rename read tools in stored prompts (`read_latest(`→`collection_read_latest(`, `collection_metadata(`→`memory_metadata(`); rewrite the `quality` prompt to review runs via plain `log_read("collector-runs")` (a `promptlog` facade; no `log_get`/`penny-messages`) and `notify` to pick with `collection_read_random`; drop the dead `memory_entry` rows for `collector-runs`/`user-messages`/`penny-messages` (now facades over `promptlog`/`messagelog`; marker rows stay); add the `ix_promptlog_completed_runs` partial index for bounded run-index reads
+- 0061: Add the `send_queue` table — durable outbound message queue (`content`, `collection`, `created_at`, nullable `sent_at`) with a partial index on the pending tail (`WHERE sent_at IS NULL`). Backs `send_message`'s enqueue + the `SendQueueDrainer`
 
 ## Extending
 

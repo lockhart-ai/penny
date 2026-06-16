@@ -131,6 +131,11 @@ class PennyConstants:
     ZOHO_ACCOUNTS_URL = "https://mail.zoho.com/api/accounts"
     ZOHO_API_BASE = "https://mail.zoho.com/api"
 
+    # Send queue — how often the drainer polls for a deliverable message.  The
+    # actual send spacing is governed by SEND_COOLDOWN_SECONDS; this is just the
+    # poll granularity (the drainer checks ~once a minute and sends at most one).
+    SEND_QUEUE_DRAIN_INTERVAL = 60.0
+
     # Signal API connectivity validation
     SIGNAL_VALIDATE_MAX_ATTEMPTS = 12
     SIGNAL_VALIDATE_RETRY_DELAY = 5.0

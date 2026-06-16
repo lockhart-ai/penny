@@ -1149,13 +1149,15 @@ class BackgroundAgent(Agent):
     def get_tools(self) -> list[Tool]:
         tools = super().get_tools()
         tools.append(DoneTool())
+        # send_message only enters the surface when a channel is wired, since the
+        # drain schedule needs one to deliver.  The tool itself only enqueues, so
+        # it takes no channel — it's attributed to the bound collection
+        # (``_memory_scope()``) so the queue records which collector queued it.
         if self._channel is not None:
             tools.append(
                 SendMessageTool(
-                    channel=self._channel,
-                    agent_name=self.name,
+                    agent_name=self._memory_scope() or self.name,
                     db=self.db,
-                    config=self.config,
                 )
             )
         return tools
