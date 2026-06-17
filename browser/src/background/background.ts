@@ -9,6 +9,7 @@ import {
   ConnectionState as CS,
   type DomainAllowlist,
   type DomainPermissionEntry,
+  HEARTBEAT_INTERVAL_MS,
   type MemorySection,
   type PageContext,
   RECONNECT_DELAY_MS,
@@ -25,12 +26,17 @@ import {
   WsOutgoingType,
 } from "../protocol.js";
 import { browseUrl } from "./tools/browse_url.js";
+import { logStep, setWsStateProvider } from "./ws_log.js";
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let deviceLabel: string | null = null;
 let connectionState: ConnectionState = CS.Disconnected;
 let currentPageContext: PageContext | null = null;
+
+// Let the trace logger read the live socket state without importing it back.
+setWsStateProvider(() => (ws ? ws.readyState : undefined));
 
 // URLs we should never try to extract from
 const SKIP_URL_PREFIXES = ["about:", "moz-extension:", "chrome:", "data:", "file:"];
@@ -67,14 +73,16 @@ function handleStorageChange(
 // --- Active tab tracking ---
 
 function handleTabActivated(): void {
+  logStep("tab", "onActivated → extractFromActiveTab");
   extractFromActiveTab();
 }
 
 function handleTabUpdated(
-  _tabId: number,
+  tabId: number,
   changeInfo: browser.tabs._OnUpdatedChangeInfo,
 ): void {
   if (changeInfo.status === "complete") {
+    logStep("tab", `onUpdated complete tab=${tabId} → extractFromActiveTab`);
     extractFromActiveTab();
   }
 }
@@ -82,6 +90,7 @@ function handleTabUpdated(
 async function extractFromActiveTab(): Promise<void> {
   let favicon = "";
   try {
+    logStep("extractActive", "query active tab");
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const tab = tabs[0];
     if (!tab?.id || !tab.url || SKIP_URL_PREFIXES.some((p) => tab.url!.startsWith(p))) {
@@ -92,10 +101,12 @@ async function extractFromActiveTab(): Promise<void> {
 
     favicon = tab.favIconUrl ?? "";
 
+    logStep("extractActive", `executeScript on active tab=${tab.id}`);
     const results = await browser.tabs.executeScript(tab.id, {
       file: "/dist/content/extract_text.js",
       runAt: "document_idle",
     });
+    logStep("extractActive", `executeScript returned tab=${tab.id}`);
 
     if (results?.[0]) {
       const data = results[0] as {
@@ -218,10 +229,13 @@ function connect(): void {
   }
 
   setConnectionState(CS.Reconnecting);
+  logStep("ws", "connect(): new WebSocket()");
   ws = new WebSocket(SERVER_URL);
 
   ws.addEventListener("open", () => {
     console.log("Background: connected to Penny server");
+    logStep("ws", "open");
+    startHeartbeat();
   });
 
   ws.addEventListener("message", (event: MessageEvent) => {
@@ -316,13 +330,16 @@ function connect(): void {
     }
   });
 
-  ws.addEventListener("close", () => {
+  ws.addEventListener("close", (event: CloseEvent) => {
+    logStep("ws", `close: code=${event.code} reason=${event.reason || "(none)"} clean=${event.wasClean}`);
+    stopHeartbeat();
     setConnectionState(CS.Reconnecting);
     scheduleReconnect();
   });
 
   ws.addEventListener("error", () => {
     // Error fires before close — close handler will reconnect
+    logStep("ws", "error");
   });
 }
 
@@ -332,6 +349,18 @@ function scheduleReconnect(): void {
     reconnectTimer = null;
     connect();
   }, RECONNECT_DELAY_MS);
+}
+
+function startHeartbeat(): void {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
 }
 
 function sendChatToServer(content: string, includePage: boolean): void {
@@ -353,7 +382,11 @@ function sendRegister(): void {
 }
 
 function sendHeartbeat(): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    logStep("heartbeat", "skipped — socket not open");
+    return;
+  }
+  logStep("heartbeat", "send");
   ws.send(JSON.stringify({ type: WsOutgoingType.Heartbeat }));
 }
 
@@ -554,7 +587,14 @@ async function setToolUse(enabled: boolean): Promise<void> {
 function sendToolResponse(
   requestId: string, result?: string, error?: string, image?: string,
 ): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    logStep("tool", `sendToolResponse DROPPED (socket not open) id=${requestId}`);
+    return;
+  }
+  logStep(
+    "tool",
+    `sendToolResponse id=${requestId} ${error ? `error=${error}` : `result=${(result ?? "").length}ch`}`,
+  );
   ws.send(JSON.stringify({
     type: WsOutgoingType.ToolResponse,
     request_id: requestId,
@@ -568,16 +608,19 @@ function sendToolResponse(
 
 async function handleToolRequest(request: WsIncomingToolRequestPayload): Promise<void> {
   const { request_id, tool, arguments: args } = request;
+  logStep("tool", `handleToolRequest start tool=${tool} id=${request_id}`);
 
   try {
     if (tool === "browse_url") {
       const result = await executeBrowseUrl(request_id, args);
+      logStep("tool", `browse_url returned id=${request_id}, sending response`);
       sendToolResponse(request_id, result.text, undefined, result.image);
     } else {
       sendToolResponse(request_id, undefined, `Unknown tool: ${tool}`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    logStep("tool", `handleToolRequest threw id=${request_id}: ${message}`);
     sendToolResponse(request_id, undefined, message);
   }
 }

@@ -24,7 +24,8 @@
 
   "background": {
     "scripts": ["dist/background/background.js"],
-    "type": "module"
+    "type": "module",
+    "persistent": true
   },
 
   "icons": {

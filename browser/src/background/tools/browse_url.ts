@@ -6,6 +6,7 @@
  */
 
 import { TAB_LOAD_TIMEOUT_MS } from "../../protocol.js";
+import { logStep } from "../ws_log.js";
 
 const EXTRACT_MAX_RETRIES = 10;
 const EXTRACT_POLL_MS = 500;
@@ -26,15 +27,23 @@ export async function browseUrl(url: string): Promise<BrowseResult> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_TAB_ATTEMPTS; attempt++) {
     console.log(`[browse_url] opening: ${url} (attempt ${attempt}/${MAX_TAB_ATTEMPTS})`);
+    logStep("browse", `attempt ${attempt}/${MAX_TAB_ATTEMPTS} for ${url}`);
     const tab = await openHiddenTab(url);
     try {
+      logStep("browse", `waitForTabLoad tab=${tab.id}`);
       await waitForTabLoad(tab.id!);
+      logStep("browse", `tab loaded tab=${tab.id}, polling content`);
       const pageData = await pollForContent(tab.id!, url);
-      return await formatResult(pageData);
+      logStep("browse", `content settled tab=${tab.id}, formatting result`);
+      const result = await formatResult(pageData);
+      logStep("browse", `result ready tab=${tab.id} (${result.text.length}ch)`);
+      return result;
     } catch (err) {
       console.warn(`[browse_url] attempt ${attempt} failed:`, err);
+      logStep("browse", `attempt ${attempt} failed tab=${tab.id}: ${err}`);
       lastError = err;
     } finally {
+      logStep("browse", `closeTab tab=${tab.id}`);
       await closeTab(tab.id!);
     }
   }
@@ -114,14 +123,19 @@ async function pollForContent(tabId: number, url: string): Promise<PageData> {
 }
 
 async function openHiddenTab(url: string): Promise<browser.tabs.Tab> {
+  logStep("browse", "tabs.create start");
   const tab = await browser.tabs.create({ url, active: false });
+  logStep("browse", `tabs.create done tab=${tab.id}`);
   if (!tab.id) {
     throw new Error("Failed to create tab");
   }
   try {
+    logStep("browse", `tabs.hide tab=${tab.id}`);
     await browser.tabs.hide(tab.id);
+    logStep("browse", `tabs.hide done tab=${tab.id}`);
   } catch {
     // tabHide may not be available — tab stays visible but still works
+    logStep("browse", `tabs.hide unavailable tab=${tab.id}`);
   }
   return tab;
 }
@@ -149,10 +163,12 @@ function waitForTabLoad(tabId: number): Promise<void> {
 }
 
 async function extractPageContent(tabId: number): Promise<PageData> {
+  logStep("browse", `executeScript (extract) tab=${tabId}`);
   const results = await browser.tabs.executeScript(tabId, {
     file: "/dist/content/extract_text.js",
     runAt: "document_idle",
   });
+  logStep("browse", `executeScript returned tab=${tabId}`);
 
   if (!results || !results[0]) {
     throw new Error("Content script returned no results");
@@ -163,9 +179,12 @@ async function extractPageContent(tabId: number): Promise<PageData> {
 
 async function closeTab(tabId: number): Promise<void> {
   try {
+    logStep("browse", `tabs.remove tab=${tabId}`);
     await browser.tabs.remove(tabId);
+    logStep("browse", `tabs.remove done tab=${tabId}`);
   } catch {
     // Tab may already be closed
+    logStep("browse", `tabs.remove failed tab=${tabId}`);
   }
 }
 
@@ -175,7 +194,9 @@ interface BrowseResult {
 }
 
 async function formatResult(data: PageData): Promise<BrowseResult> {
+  if (data.image) logStep("browse", "downloadImageAsDataUri start");
   const image = data.image ? await downloadImageAsDataUri(data.image) : "";
+  if (data.image) logStep("browse", `downloadImageAsDataUri done (${image.length}ch)`);
   console.log(`[browse_url] image: ${image ? `${image.length} chars` : "none"}`);
   return {
     text: `Title: ${data.title}\nURL: ${data.url}\n\n${data.text}`,

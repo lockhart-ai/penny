@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -543,17 +543,29 @@ class TestBrowserHeartbeat:
     """Heartbeat resets the scheduler idle timer without touching schedule intervals."""
 
     @pytest.mark.asyncio
-    async def test_heartbeat_calls_notify_activity(self, tmp_path):
+    async def test_heartbeat_refreshes_liveness_without_resetting_idle(self, tmp_path):
+        """The keepalive heartbeat refreshes the connection's liveness timestamp
+        but must NOT reset the idle timer — a ~15s ping that counted as activity
+        would keep the system perpetually busy and starve the idle-gated
+        collectors."""
         db = _make_db(tmp_path)
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
         scheduler = MagicMock()
         channel.set_scheduler(scheduler)
 
         ws = _MockWs()
-        await channel._process_raw_message(ws, '{"type": "heartbeat"}', None)  # ty: ignore[invalid-argument-type]
+        await channel._process_raw_message(
+            ws,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-1"}),
+            None,
+        )
+        channel._connections["firefox-1"].last_heartbeat = datetime.now(UTC) - timedelta(minutes=5)
+        await channel._process_raw_message(ws, '{"type": "heartbeat"}', "firefox-1")  # ty: ignore[invalid-argument-type]
 
-        scheduler.notify_activity.assert_called_once()
+        scheduler.notify_activity.assert_not_called()
         scheduler.notify_message.assert_not_called()
+        age = (datetime.now(UTC) - channel._connections["firefox-1"].last_heartbeat).total_seconds()
+        assert age < 5
 
     @pytest.mark.asyncio
     async def test_heartbeat_without_scheduler_is_noop(self, tmp_path):
@@ -586,6 +598,38 @@ class TestBrowserRegister:
         assert label == "firefox-macbook"
         assert "firefox-macbook" in channel._connections
         assert channel._connections["firefox-macbook"].ws is ws
+
+    @pytest.mark.asyncio
+    async def test_stale_socket_cleanup_keeps_reconnected_connection(self, tmp_path):
+        """A reconnect rewrites the registry to the new socket; the old socket's
+        delayed cleanup must not evict that live replacement (the flapping-
+        reconnect race that left the addon 'connected but unreachable')."""
+        db = _make_db(tmp_path)
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+
+        ws_old = _MockWs()
+        await channel._process_raw_message(
+            ws_old,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-macbook"}),
+            None,
+        )
+        ws_new = _MockWs()
+        await channel._process_raw_message(
+            ws_new,  # ty: ignore[invalid-argument-type]
+            json.dumps({"type": "register", "sender": "firefox-macbook"}),
+            "firefox-macbook",
+        )
+        assert channel._connections["firefox-macbook"].ws is ws_new
+
+        # Old socket's handler reaches its finally after the reconnect — it must
+        # leave the live ws_new entry intact.
+        channel._cleanup_connection(ws_old, "firefox-macbook")  # ty: ignore[invalid-argument-type]
+        assert "firefox-macbook" in channel._connections
+        assert channel._connections["firefox-macbook"].ws is ws_new
+
+        # The current socket closing for real does evict the entry.
+        channel._cleanup_connection(ws_new, "firefox-macbook")  # ty: ignore[invalid-argument-type]
+        assert "firefox-macbook" not in channel._connections
 
     @pytest.mark.asyncio
     async def test_register_creates_device_in_db(self, tmp_path):
@@ -714,6 +758,42 @@ class TestCapabilitiesAndToolRouting:
         await self._register(channel, "firefox-2")
 
         assert channel._get_tool_connection() is None
+
+    @pytest.mark.asyncio
+    async def test_stale_lone_connection_still_routed_as_fallback(self, tmp_path):
+        """A lone tool connection that has gone quiet is still used — it may be
+        an older addon without the keepalive rather than a dead one, so staleness
+        only *deprioritizes* a socket when a fresher alternative exists; it never
+        declares the sole browser offline."""
+        db = _make_db(tmp_path)
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+
+        ws = await self._register(channel, "firefox-1")
+        await self._set_capabilities(channel, "firefox-1", ws, True)
+
+        # Age the heartbeat past the liveness window — still the only connection.
+        channel._connections["firefox-1"].last_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
+        )
+        assert channel.has_tool_connection
+        assert channel._get_tool_connection() is ws
+
+    @pytest.mark.asyncio
+    async def test_get_tool_connection_prefers_live_over_stale(self, tmp_path):
+        """With one stale and one live tool connection, routing picks the live
+        one rather than the stale (most-recent-heartbeat) socket."""
+        db = _make_db(tmp_path)
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+
+        ws_stale = await self._register(channel, "firefox-stale")
+        await self._set_capabilities(channel, "firefox-stale", ws_stale, True)
+        ws_live = await self._register(channel, "firefox-live")
+        await self._set_capabilities(channel, "firefox-live", ws_live, True)
+
+        channel._connections["firefox-stale"].last_heartbeat = datetime.now(UTC) - timedelta(
+            seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
+        )
+        assert channel._get_tool_connection() is ws_live
 
 
 class TestBrowserPermissionDelegation:

@@ -194,8 +194,20 @@ class PennyConstants:
     SUMMARY_URL_RETRIES = 2
 
     # Browser channel constants
-    TOOL_REQUEST_TIMEOUT = 60.0
     PERMISSION_PROMPT_TIMEOUT = 60.0
+    # Max inbound WebSocket frame size for the browser channel.  The websockets
+    # default is 1 MiB, which a browse tool response overflows once it carries a
+    # page's base64 image data URI (observed ~1.7 MB) — the library then rejects
+    # the frame with a 1009 "message too big" close, dropping the connection
+    # mid-browse.  16 MiB leaves generous headroom for image-bearing responses.
+    BROWSER_WS_MAX_FRAME_BYTES = 16 * 1024 * 1024
+    # A tool connection counts as live only while the addon keeps sending its
+    # app-level heartbeat (HEARTBEAT_INTERVAL_MS = 15s in the extension).  Past
+    # this window with no heartbeat the socket is treated as dead even if TCP is
+    # still open: Firefox answers the WebSocket ping/pong at the network layer
+    # while a suspended background script never processes the tool request, so
+    # the protocol-level ping cannot detect it.  ~3 missed beats of slack.
+    BROWSER_HEARTBEAT_TIMEOUT_SECONDS = 45.0
 
     # System log memories (created by migration 0026) that the channel
     # adapter and browse tool side-effect-write to on every turn.

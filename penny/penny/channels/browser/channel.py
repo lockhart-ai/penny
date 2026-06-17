@@ -204,17 +204,42 @@ class BrowserChannel(MessageChannel):
 
     @property
     def has_tool_connection(self) -> bool:
-        """Whether any browser with tool-use enabled is connected."""
+        """Whether any tool-use-enabled browser is connected.
+
+        Deliberately lenient about heartbeat staleness: a connection that has
+        gone quiet might be a suspended background script, but it might equally
+        be an older addon build that doesn't send the keepalive — so we still let
+        the browse attempt happen rather than declaring the browser offline.
+        ``_get_tool_connection`` prefers a fresh socket when one exists.
+        """
         return any(c.tool_use_enabled for c in self._connections.values())
+
+    def _has_fresh_heartbeat(self, conn: ConnectionInfo) -> bool:
+        """True if this connection has heartbeated within the liveness window.
+
+        A suspended background script keeps its TCP socket alive (Firefox pongs
+        the server's pings at the network layer) but stops sending app
+        heartbeats — so a stale heartbeat marks a socket that is *likely*
+        no longer processing tool requests, to be deprioritized in routing.
+        """
+        age = (datetime.now(UTC) - conn.last_heartbeat).total_seconds()
+        return age <= PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS
 
     # --- WebSocket server ---
 
     async def listen(self) -> None:
-        """Start the WebSocket server and block forever."""
+        """Start the WebSocket server and block forever.
+
+        ``max_size`` lifts the websockets default frame cap (1 MiB) so an addon
+        tool response carrying a page's base64 image data URI doesn't overflow
+        the frame — which the library would otherwise reject with a 1009 close,
+        tearing down the connection mid-browse.
+        """
         self._server = await websockets.serve(
             self._handle_connection,
             self._host,
             self._port,
+            max_size=PennyConstants.BROWSER_WS_MAX_FRAME_BYTES,
         )
         logger.info("Browser channel listening on ws://%s:%d", self._host, self._port)
         await asyncio.Future()
@@ -230,14 +255,44 @@ class BrowserChannel(MessageChannel):
                 device_label = await self._process_raw_message(ws, raw, device_label)
         except websockets.ConnectionClosed:
             pass
+        except Exception:
+            # A handler raising anything other than ConnectionClosed aborts the
+            # receive loop and silently drops the socket — log it loudly so a
+            # handler bug shows up as the cause of a disconnect, not a mystery.
+            logger.exception(
+                "Browser connection handler crashed (device=%s) — closing socket",
+                device_label or "unregistered",
+            )
         finally:
-            self._cleanup_connection(device_label)
+            logger.info(
+                "Browser socket closed (device=%s, code=%s, reason=%r)",
+                device_label or "unregistered",
+                ws.close_code,
+                ws.close_reason,
+            )
+            self._cleanup_connection(ws, device_label)
 
-    def _cleanup_connection(self, device_label: str | None) -> None:
-        """Remove connection and reject pending requests on disconnect."""
+    def _cleanup_connection(self, ws: ServerConnection, device_label: str | None) -> None:
+        """Remove this socket and reject pending requests on disconnect.
+
+        Only evict the registry entry if it still points at *this* socket: when
+        an addon reconnects, ``_handle_register`` rewrites
+        ``connections[label].ws`` to the new socket before the old socket's
+        handler reaches here, so a blind ``pop(label)`` would drop the live
+        replacement and leave the addon "connected but unreachable" until the
+        next message re-registers it.
+        """
         if device_label:
-            self._connections.pop(device_label, None)
-        # Reject any pending tool requests from this connection
+            conn = self._connections.get(device_label)
+            if conn is not None and conn.ws is ws:
+                self._connections.pop(device_label, None)
+            elif conn is not None:
+                logger.info(
+                    "Browser %s already reconnected on a newer socket; keeping it", device_label
+                )
+        # Reject any pending tool requests — they were sent on this socket and
+        # can't be answered now it's gone; the browse tool retries on whatever
+        # connection is live.
         for _request_id, future in list(self._pending_requests.items()):
             if not future.done():
                 future.set_exception(ConnectionError("Browser disconnected"))
@@ -370,9 +425,16 @@ class BrowserChannel(MessageChannel):
         return device_label
 
     def _handle_heartbeat(self, device_label: str | None) -> None:
-        """Reset the idle timer and update heartbeat timestamp."""
-        if self._scheduler:
-            self._scheduler.notify_activity()
+        """Record connection liveness from the addon's keepalive ping.
+
+        This is a liveness signal, not user activity: it refreshes the
+        connection's ``last_heartbeat`` (so ``_get_tool_connection`` can route
+        around stale, JS-suspended sockets) but deliberately does NOT reset the
+        scheduler's idle timer.  The addon pings every ~15s; resetting idle on
+        each would keep the system perpetually "active" and starve the idle-
+        gated background collectors.  Only real conversation (a chat message)
+        counts as activity.
+        """
         if device_label:
             conn = self._connections.get(device_label)
             if conn:
@@ -394,6 +456,10 @@ class BrowserChannel(MessageChannel):
         existing = self._connections.get(device_label)
         if existing:
             existing.ws = ws
+            # A reconnect re-points the entry at the new socket — refresh
+            # liveness so the freshly reconnected addon isn't judged stale by
+            # ``_get_tool_connection`` on its old (pre-suspension) timestamp.
+            existing.last_heartbeat = datetime.now(UTC)
         else:
             self._connections[device_label] = ConnectionInfo(ws=ws)
         self._auto_register_device(device_label)
@@ -1075,6 +1141,13 @@ class BrowserChannel(MessageChannel):
     ) -> tuple[str, str | None]:
         """Send a tool request to a connected browser and await the response.
 
+        The per-request timeout is owned by the caller: the browse tool wraps
+        each call in ``asyncio.wait_for(BROWSE_REQUEST_TIMEOUT)`` and drives the
+        retry/backoff loop.  This transport simply delivers the request and
+        awaits its response future, dropping the pending entry on completion
+        *or* cancellation (when the caller's timeout fires).  A second timeout
+        here would only ever be the longer, losing one — and a response landing
+        in the gap between the two would be discarded as "No pending request".
         Returns (result_text, image_url).
         """
         ws = self._get_tool_connection()
@@ -1090,27 +1163,29 @@ class BrowserChannel(MessageChannel):
             tool=tool,
             arguments=arguments,
         )
+        logger.debug("Sending browser tool request %s (tool=%s)", request_id, tool)
         await self._send_ws(ws, request)
 
         try:
-            return await asyncio.wait_for(future, timeout=PennyConstants.TOOL_REQUEST_TIMEOUT)
-        except TimeoutError as e:
-            raise TimeoutError(
-                f"Browser tool '{tool}' timed out after {PennyConstants.TOOL_REQUEST_TIMEOUT}s"
-            ) from e
+            return await future
         finally:
             self._pending_requests.pop(request_id, None)
 
     def _get_tool_connection(self) -> ServerConnection | None:
         """Get the best browser connection for tool execution.
 
-        Filters to tool-use-enabled connections, picks the one with
-        the most recent heartbeat.
+        Among tool-use-enabled connections, prefer those still heartbeating
+        (routing around a suspended socket whose JS has stopped servicing
+        requests) and pick the most recent.  If none are fresh, fall back to the
+        most-recently-seen connection rather than refusing — a lone quiet socket
+        is still worth trying (it may just be an addon without the keepalive).
         """
-        candidates = [c for c in self._connections.values() if c.tool_use_enabled]
-        if not candidates:
+        tool_conns = [c for c in self._connections.values() if c.tool_use_enabled]
+        if not tool_conns:
             return None
-        return max(candidates, key=lambda c: c.last_heartbeat).ws
+        fresh = [c for c in tool_conns if self._has_fresh_heartbeat(c)]
+        pool = fresh or tool_conns
+        return max(pool, key=lambda c: c.last_heartbeat).ws
 
     # --- Device registration ---
 

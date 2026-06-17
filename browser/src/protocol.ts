@@ -12,6 +12,11 @@
 
 export const SERVER_URL = "ws://localhost:9090";
 export const RECONNECT_DELAY_MS = 3000;
+// Cadence of the keepalive heartbeat the background script sends while
+// connected.  Gives the server a liveness signal (and resets Penny's idle
+// timer); kept well under the server's ~20s ping interval so the socket
+// stays warm rather than relying on tab-activity events alone.
+export const HEARTBEAT_INTERVAL_MS = 15000;
 
 export type ConnectionState = "connected" | "disconnected" | "reconnecting";
 export const ConnectionState = {

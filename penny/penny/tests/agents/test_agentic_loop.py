@@ -842,7 +842,7 @@ class TestParallelToolCalls:
         """When request_fn raises TimeoutError, execute() returns an error section.
 
         This is the regression test for the 'Tool execution timeout: browse' bug:
-        BrowseTool.timeout must exceed TOOL_REQUEST_TIMEOUT so the inner per-URL
+        BrowseTool.timeout must exceed BROWSE_REQUEST_TIMEOUT so the inner per-URL
         timeout fires first and is captured by asyncio.gather(return_exceptions=True),
         allowing execute() to return a graceful error rather than the whole tool
         timing out at the executor level.
@@ -865,15 +865,15 @@ class TestParallelToolCalls:
         assert "slow.example.com" in result.message
 
     def test_browse_tool_timeout_exceeds_request_timeout(self):
-        """BrowseTool.timeout must exceed TOOL_REQUEST_TIMEOUT.
+        """BrowseTool.timeout must exceed the per-URL BROWSE_REQUEST_TIMEOUT.
 
-        Ensures the inner per-URL timeout (TOOL_REQUEST_TIMEOUT=60s) fires before
-        the outer executor timeout, so hung URLs produce graceful error sections
-        instead of cancelling the entire tool call.
+        Ensures the inner per-URL timeout fires before the outer executor
+        timeout, so hung URLs produce graceful error sections instead of
+        cancelling the entire tool call.
         """
         tool = BrowseTool(max_calls=3)
         assert tool.timeout is not None
-        assert tool.timeout > PennyConstants.TOOL_REQUEST_TIMEOUT
+        assert tool.timeout > PennyConstants.BROWSE_REQUEST_TIMEOUT
 
 
 class TestSearchResultTrimming:

@@ -77,10 +77,11 @@ class BrowseTool(Tool):
     """
 
     name = "browse"
-    # Must exceed TOOL_REQUEST_TIMEOUT (60s) so the inner per-URL timeout fires
-    # before the outer executor cancels the whole tool call.  Without this, both
-    # timers fire at ~60s and the outer cancellation wins, surfacing as a tool
-    # execution timeout rather than a graceful per-URL error section.
+    # Whole-tool executor budget.  Must comfortably exceed the per-URL
+    # BROWSE_REQUEST_TIMEOUT across all retries so a slow/hung URL fires its own
+    # per-attempt timeout — captured by ``asyncio.gather(return_exceptions=True)``
+    # as a graceful error section — before the outer executor cancels the whole
+    # browse call (which would surface as a blunt "Tool execution timeout").
     timeout = 300.0
 
     def __init__(
