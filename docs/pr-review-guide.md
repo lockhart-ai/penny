@@ -97,8 +97,19 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 ### Index Every Filter and Sort on a Growing Table
 - [ ] Every WHERE column and ORDER BY column on an unbounded table (`messagelog`, `promptlog`, `memory_entry`) is index-backed — check `models.py` for `index=True` or a composite `__table_args__`
 - [ ] A filter/sort on an unindexed column is a full scan that grows with history — flag it
+- [ ] **A query that BOTH filters (`WHERE a = ?`) and sorts (`ORDER BY b`) needs a composite index that LEADS with the equality-filtered column, then the sort column (`(a, b)`).** An index on the sort column alone (`(b)`) lets the planner walk it already-ordered — but it must read and test `a` on every row, so a *sparse* match (`a = ?` hits few rows among many) walks the entire ordered index before `LIMIT` can fill. This is the trap that bit the per-collection runs panel: an index on `(timestamp)` made the plan *look* indexed while it scanned ~29k rows to find 3, a multi-second freeze
+- [ ] **A partial index (`... WHERE outcome IS NOT NULL`) only helps a query whose filter it covers AND whose remaining filter/sort its key columns serve.** A partial index keyed on `(timestamp) WHERE outcome IS NOT NULL` does nothing for a query that also filters `target = ?` — make `target` the leading key (`(target, timestamp) WHERE outcome IS NOT NULL`). Keep the old index only if a different live query (e.g. the unscoped one) still needs the sort-only shape
 - [ ] Leading-wildcard `LIKE '%x%'` cannot use an index — acceptable only for on-demand, bounded searches (addon entry search), never on a hot path
 - [ ] Loading the full embedded corpus for vector/similarity search is expected (SQLite has no ANN index) — but a cooldown probe, a "latest one" lookup, or a count must be a bounded query, not a corpus load
+
+### Verify the Plan, Not Just That an Index Exists
+- [ ] For any new or changed hot-path query, confirm the plan with `EXPLAIN QUERY PLAN` against a **production-scale** copy of the DB — don't assume an index is used just because one exists on a column the query names
+- [ ] `SEARCH ... USING INDEX (col=?)` is a seek (good). `SCAN ... USING INDEX ...` is a full walk of the index — the planner picked it for ordering or as a covering scan, but it still reads every entry; for a filtered query with `LIMIT`, that walk *is* the regression, not the fix
+- [ ] Test the worst case: a *sparse* filter value (a target/collection/sender with few matching rows among a large total). A query that's fast when matches are dense degrades to a full scan when they're sparse and the `LIMIT` can never fill
+
+### Don't Pay Whole-Corpus Cost on a Single-Item Path
+- [ ] A method that aggregates across EVERY item (counts for all memories, a full-corpus load, a `GROUP BY` over an unbounded table) must not be called on a path that needs one item's value — e.g. a detail/click handler that opens ONE memory. Fetch just the one (a scoped `COUNT(...) WHERE name = ?`, a single-row lookup); reusing the all-items aggregate makes every invocation pay a cost that grows with total history
+- [ ] Reusing a list-view helper on a detail view is the common disguise: it's correct, it's already written, and it's O(whole DB) per call. Flag when a "give me everything" method is called inside a "show me one" handler
 
 ### Aggregate and Detail Must Agree
 - [ ] A count (inventory) and a listing (detail) derived from the same data use equivalent predicates, so the number shown matches what a read returns
@@ -423,6 +434,9 @@ If you see any of these in a PR, flag immediately:
 | CDN link for CSS/JS/fonts | Bundle locally |
 | `for x in store.read_all(): … break` | Loads whole table into memory then paginates in Python — push the filter into SQL |
 | WHERE/ORDER BY on a column with no `index=True` | Full scan that grows with history |
+| `WHERE a = ? ORDER BY b` with an index on `(b)` but not `(a, b)` | Sparse `a` walks the whole sort-ordered index before `LIMIT` fills — lead the index with the filter column |
+| `SCAN … USING INDEX` for a filtered query with `LIMIT` | Index covers the sort but not the filter — still a full walk; confirm `SEARCH … (col=?)` with EXPLAIN QUERY PLAN at production scale |
+| Whole-corpus aggregate (counts-for-all, full-corpus load) called from a single-item/detail handler | Per-call cost grows with total history — fetch just the one item's value |
 | Renaming a `table=True` SQLModel class without `__tablename__` | Silently renames the physical table → breaks FKs and every migration's `UPDATE`/`DELETE` target |
 | Facade/view that overrides only *some* read methods | Returns correct data on some calls, empty on others |
 | Value computed on write path but only persisted by a backfill | Read path stale until next restart |
