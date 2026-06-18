@@ -170,7 +170,12 @@ def test_send_queue_store_round_trip(tmp_path):
     pending = db.send_queue.next_pending()
     assert pending is not None and pending.id == first and pending.content == "one"
 
+    # pending_items returns the whole pending tail, oldest-first (the eval harness
+    # reads a cycle's enqueued sends here, since run_for never runs the drainer).
+    assert [item.content for item in db.send_queue.pending_items()] == ["one", "two"]
+
     db.send_queue.mark_sent(first)
     # First is delivered; the next pending is now "two".
     nxt = db.send_queue.next_pending()
     assert nxt is not None and nxt.content == "two"
+    assert [item.content for item in db.send_queue.pending_items()] == ["two"]

@@ -54,6 +54,22 @@ class SendQueueStore:
                 .limit(1)
             ).first()
 
+    def pending_items(self) -> list[SendQueueItem]:
+        """Every message still awaiting delivery, oldest-first.
+
+        ``next_pending`` returns just the head the drainer pops; this returns the
+        whole pending tail — used to observe what a single cycle enqueued (the
+        eval harness reads sends here, since a collector cycle enqueues but never
+        runs the drainer that would deliver to the channel)."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(SendQueueItem)
+                    .where(SendQueueItem.sent_at.is_(None))  # ty: ignore[unresolved-attribute]
+                    .order_by(SendQueueItem.created_at.asc())  # ty: ignore[unresolved-attribute]
+                )
+            )
+
     def mark_sent(self, item_id: int) -> None:
         """Stamp a row delivered so the drain never re-sends it."""
         with self._session() as session:

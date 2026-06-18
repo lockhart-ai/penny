@@ -329,7 +329,11 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     before = snapshot(penny.db) if snapshot is not None else None
                     sent_before = len(server.outgoing_messages)
                     await penny.collector.run_for(collection)
-                    sent = [
+                    # A collector cycle ENQUEUES sends (send_queue) — the drainer
+                    # that would deliver them to the channel is a separate schedule
+                    # that doesn't run inside run_for.  So read sends off the queue,
+                    # plus anything the drainer happened to deliver to the server.
+                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
                         str(message.get("message", ""))
                         for message in server.outgoing_messages[sent_before:]
                     ]

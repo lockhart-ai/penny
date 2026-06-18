@@ -17,6 +17,12 @@ There is no keyed ``log_get`` and no ``penny-messages`` read.
   silent-drift — intent "never ping me"; a run sent an update → drop send_message.
   healthy      — a run's behaviour matches intent → change nothing.
   run-failure  — a ❌ run (max steps) is capacity, not drift → change nothing.
+  ends-with-done — a drift scenario must close the full read→fix→notify hop with done().
+  triage       — a batch of several collections must still converge on one fix (weakest path).
+  quiet        — a clean batch changes nothing AND stays off the channel (no self-leak).
+
+Sends are observed off ``db.send_queue`` (a collector cycle enqueues; the drainer
+that delivers to the channel doesn't run inside ``run_for``) — see ``collector_eval``.
 """
 
 from __future__ import annotations
@@ -191,6 +197,97 @@ def _score_called_done(db: Database, before: object, sent: list[str]) -> list[st
     if not tool_was_called(db, "done"):
         return ["cycle ended without calling done() — gave up with plain text"]
     return []
+
+
+def _seed_many(specs):
+    """Seeder: several suspect collections, each with its own run(s).
+
+    Stresses the cycle the way a real batch does — multiple collections to
+    triage at once.  Each spec is ``{suspect, description, intent, prompt,
+    runs}``; ``runs`` reuses the ``_seed_run`` shape.
+    """
+
+    def _apply(db: Database) -> None:
+        for spec in specs:
+            db.memories.create_collection(
+                spec["suspect"],
+                spec["description"],
+                Inclusion.RELEVANT,
+                RecallMode.RECENT,
+                extraction_prompt=spec["prompt"],
+                intent=spec["intent"],
+            )
+            for run in spec["runs"]:
+                _seed_run(db, suspect=spec["suspect"], **run)
+
+    return _apply
+
+
+def _snapshot_many(names: list[str]):
+    def _take(db: Database) -> dict[str, str]:
+        prompts = {}
+        for name in names:
+            memory = db.memories.get(name)
+            prompts[name] = (memory.extraction_prompt or "") if memory else ""
+        return prompts
+
+    return _take
+
+
+def _score_triage(drifted: list[str], healthy: list[str]) -> CollectorScorer:
+    """Convergence under load: given a batch of collections to triage, the cycle
+    must (a) close with ``done()`` and (b) actually land a fix on at least one
+    drifted collection — and not touch a healthy one.
+
+    Recreates a production non-convergence: faced with
+    several collections, the model grazed ``memory_metadata`` across all of them,
+    filled its context with "looks fine", and trailed off with text — fixing
+    nothing.  One-drift-per-cycle should make it pick the worst and land it.
+    """
+
+    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+        prompts = cast(dict, before)
+        fails: list[str] = []
+        if not tool_was_called(db, "done"):
+            fails.append("cycle ended without calling done() — gave up with plain text")
+        fixed = [name for name in drifted if _changed(db, name, prompts)]
+        if not fixed:
+            fails.append("fixed none of the drifted collections this cycle")
+        touched_healthy = [name for name in healthy if _changed(db, name, prompts)]
+        if touched_healthy:
+            fails.append(f"over-corrected healthy collection(s): {touched_healthy}")
+        return fails
+
+    return _score
+
+
+def _changed(db: Database, name: str, before: dict) -> bool:
+    memory = db.memories.get(name)
+    now = (memory.extraction_prompt or "") if memory else ""
+    return now != before.get(name, "")
+
+
+def _score_quiet(suspect: str) -> CollectorScorer:
+    """No self-leak on a quiet batch: when nothing drifted, the quality cycle
+    must change nothing AND stay silent — it is not a notifier.
+
+    Recreates a production self-leak: reviewing a notify collection, the
+    model read that collection's "reach out with one thought" prompt and acted it
+    out itself, sending the user an off-intent health fact.  ``_score_no_op`` only
+    guards the prompt; this also guards the channel."""
+
+    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+        original = cast(str, before)
+        memory = db.memories.get(suspect)
+        new_prompt = (memory.extraction_prompt or "") if memory else ""
+        fails: list[str] = []
+        if new_prompt != original:
+            fails.append(f"over-corrected a healthy collection ({suspect!r})")
+        if sent:
+            fails.append(f"sent the user a message on a quiet batch (self-leak): {sent!r}")
+        return fails
+
+    return _score
 
 
 # ── Cases ───────────────────────────────────────────────────────────────────
@@ -431,5 +528,205 @@ async def test_ends_with_done(collector_eval) -> None:
         ),
         snapshot=_snapshot(suspect),
         score=_score_called_done,
+        min_pass_rate=None,
+    )
+
+
+async def test_triage_converges(collector_eval) -> None:
+    """A batch with several collections to triage — two genuinely drifted, two
+    fine — must still converge: land a fix on at least one drifted collection
+    (the rest come round next tick) and leave the healthy ones alone.
+
+    Documents the live multi-collection weakness:
+    with several collections in view the model grazes metadata across all of
+    them and often trails off having fixed nothing.  This is the quality agent's
+    weakest path — it clears it only sometimes per sample (report-only); the
+    single-collection cases above are far more reliable."""
+    digest = "Daily digest — a new co-op title, a reprint, and a sale."
+    drifted = ["daily-digest", "espresso-gear"]
+    healthy = ["houseplant-care", "dev-tools"]
+    await collector_eval(
+        case_id="quality-triage-converges",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed_many(
+            [
+                {
+                    "suspect": "daily-digest",
+                    "description": "A once-daily digest of fresh items worth a heads-up.",
+                    "intent": "Once per cycle, share exactly one fresh thought I haven't "
+                    "seen before, and never resend something you've already sent me.",
+                    "prompt": _DIGEST_PROMPT,
+                    "runs": [
+                        {
+                            "run_id": "digest-run-1",
+                            "outcome": RunOutcome.WORKED,
+                            "summary": "sent the daily digest",
+                            "calls": [
+                                ("send_message", {"content": digest}),
+                                ("done", {"success": True, "summary": "sent the daily digest"}),
+                            ],
+                        },
+                        {
+                            "run_id": "digest-run-2",
+                            "outcome": RunOutcome.WORKED,
+                            "summary": "sent the daily digest",
+                            "calls": [
+                                ("send_message", {"content": digest}),
+                                ("done", {"success": True, "summary": "sent the daily digest"}),
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "suspect": "espresso-gear",
+                    "description": "A quiet running list of espresso equipment worth considering.",
+                    "intent": "Keep a quiet running list of espresso equipment worth "
+                    "considering — never ping me about it, I'll check the list myself.",
+                    "prompt": _SILENT_DRIFT_PROMPT,
+                    "runs": [
+                        {
+                            "run_id": "espresso-run-1",
+                            "outcome": RunOutcome.WORKED,
+                            "summary": "wrote 1 entry and sent an update about a new grinder",
+                            "calls": [
+                                (
+                                    "collection_write",
+                                    {
+                                        "memory": "espresso-gear",
+                                        "entries": [
+                                            {
+                                                "key": "niche-zero-clone",
+                                                "content": "Niche Zero clone grinder, $300",
+                                            }
+                                        ],
+                                    },
+                                ),
+                                (
+                                    "send_message",
+                                    {"content": "Found a new espresso grinder: the clone, $300."},
+                                ),
+                                (
+                                    "done",
+                                    {
+                                        "success": True,
+                                        "summary": "wrote 1 entry and sent an update",
+                                    },
+                                ),
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "suspect": "houseplant-care",
+                    "description": "A list of houseplant-care tips, with a ping on new ones.",
+                    "intent": "Keep a list of houseplant-care tips and ping me when you "
+                    "find a genuinely new one.",
+                    "prompt": _HEALTHY_PROMPT,
+                    "runs": [
+                        {
+                            "run_id": "plant-run-1",
+                            "outcome": RunOutcome.WORKED,
+                            "summary": "wrote 1 new tip and pinged about watering",
+                            "calls": [
+                                (
+                                    "collection_write",
+                                    {
+                                        "memory": "houseplant-care",
+                                        "entries": [
+                                            {
+                                                "key": "bottom-water-pothos",
+                                                "content": "Bottom-water pothos weekly",
+                                            }
+                                        ],
+                                    },
+                                ),
+                                (
+                                    "send_message",
+                                    {"content": "New houseplant tip: bottom-water pothos weekly."},
+                                ),
+                                (
+                                    "done",
+                                    {"success": True, "summary": "wrote 1 new tip and pinged"},
+                                ),
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "suspect": "dev-tools",
+                    "description": "Notable new developer tools, with a ping on good ones.",
+                    "intent": "Track new developer tools and ping me when a good one shows up.",
+                    "prompt": _OK_NEWS_PROMPT,
+                    "runs": [
+                        {
+                            "run_id": "dev-run-1",
+                            "outcome": RunOutcome.FAILED,
+                            "summary": "max steps exceeded, no done() call this cycle",
+                            "calls": [("browse", {"queries": ["new developer tools 2026"]})],
+                        }
+                    ],
+                },
+            ]
+        ),
+        snapshot=_snapshot_many(drifted + healthy),
+        score=_score_triage(drifted=drifted, healthy=healthy),
+        min_pass_rate=None,
+    )
+
+
+async def test_quiet_when_nothing_drifted(collector_eval) -> None:
+    """A clean batch must stay clean: the quality cycle changes nothing AND sends
+    nothing.  Recreates a production self-leak where, reviewing a
+    notify collection, the model acted out that collection's own "share a thought"
+    prompt and messaged the user an off-intent fact.  ``test_healthy`` guards only
+    the prompt; this also guards that the cycle stayed off the channel."""
+    suspect = "houseplant-care"
+    await collector_eval(
+        case_id="quality-quiet-when-healthy",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description="A list of houseplant-care tips, with a ping on genuinely new ones.",
+            intent="Keep a list of houseplant-care tips and ping me when you find a "
+            "genuinely new one.",
+            prompt=_HEALTHY_PROMPT,
+            runs=[
+                {
+                    "run_id": "plant-run-1",
+                    "outcome": RunOutcome.WORKED,
+                    "summary": "wrote 1 new tip and pinged about watering",
+                    "calls": [
+                        (
+                            "collection_write",
+                            {
+                                "memory": suspect,
+                                "entries": [
+                                    {
+                                        "key": "bottom-water-pothos",
+                                        "content": "Bottom-water pothos weekly to avoid root rot",
+                                    }
+                                ],
+                            },
+                        ),
+                        (
+                            "send_message",
+                            {
+                                "content": "New houseplant tip: bottom-water pothos weekly "
+                                "to avoid root rot."
+                            },
+                        ),
+                        (
+                            "done",
+                            {
+                                "success": True,
+                                "summary": "wrote 1 new tip and pinged about watering",
+                            },
+                        ),
+                    ],
+                }
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_quiet(suspect),
         min_pass_rate=None,
     )
