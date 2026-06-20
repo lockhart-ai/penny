@@ -1,10 +1,21 @@
-"""Verbatim collector-prompt replay — the empty-user-turn bailout, on REAL prompts.
+"""Verbatim prompt replay — recreate a real model failure from the promptlog.
 
-The synthetic eval cases approximate the production bailout on privacy-safe topics;
-this replays the EXACT failing prompt straight out of a local promptlog so there's
-no approximation gap.  It carries no prompt content of its own — it reads a row by
-id from a SQLite DB — so it's privacy-safe to commit while the real prompts stay in
-the local (gitignored) DB.
+This is the tool for the **log → test → fix loop** (the project's durable process for
+correcting model behaviour — see "The log → test → fix loop" in `penny/CLAUDE.md`):
+
+  1. find candidates in the DB (promptlog rows exhibiting the failure),
+  2. pull the FULL verbatim input the model saw (this module — read a row BY ID),
+  3. run it to confirm the failure reproduces verbatim,
+  4. genericize PII/real-topic mentions into a committable fixtures.py case,
+  5. run it again to confirm the genericized version still reproduces,
+  6. then tweak the prompt to correct it.
+
+It carries no prompt content of its own — it reads a row by id from a SQLite DB — so
+it's privacy-safe to commit while the real prompts stay in the local (gitignored) DB.
+
+The synthetic eval cases approximate a production failure on privacy-safe topics; this
+replays the EXACT failing prompt straight out of a local promptlog so there's no
+approximation gap.
 
 What it measures: one model turn per sample.  A collector cycle's first turn either
 reaches for ``log_read`` (it's doing the work) or jumps to ``done()`` (it bailed —

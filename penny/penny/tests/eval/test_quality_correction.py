@@ -36,6 +36,7 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import Inclusion, RecallMode
 from penny.tests.eval.conftest import CollectorScorer, looks_numbered, tool_was_called
+from penny.tests.eval.fixtures import WATCHLIST, WATCHLIST_INTENT, WATCHLIST_PROSE_PROMPT
 
 pytestmark = pytest.mark.eval
 
@@ -749,6 +750,73 @@ async def test_rewrites_prose_to_numbered(collector_eval) -> None:
                             {"success": True, "summary": "wrote 1 entry and sent an update"},
                         ),
                     ],
+                }
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_rewrote_numbered(suspect),
+        min_pass_rate=None,
+    )
+
+
+async def test_repairs_done_only_bailout(collector_eval) -> None:
+    """Tier-0 compliance: a collector that jumped straight to done() WITHOUT calling
+    any read/work tool isn't following its own instructions — quality must catch that
+    and repair the prompt (a numbered recipe that actually reads) before any
+    intent-drift reasoning.  Modeled on real done-only no_work runs — the prose
+    collectors bail exactly this way (91 such runs in prod, mostly one prose collector).
+
+    Baseline is RED today: a no_work run renders header-only, so quality is shown a
+    clean-looking quiet cycle and does nothing.  Goes green once the facade surfaces
+    the tool trace (incl. done) AND the prompt gains the tier-0 check."""
+    suspect = WATCHLIST.name
+    await collector_eval(
+        case_id="quality-repairs-done-only",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description=WATCHLIST.description,
+            intent=WATCHLIST_INTENT,
+            prompt=WATCHLIST_PROSE_PROMPT,
+            runs=[
+                {
+                    "run_id": "watchlist-bail-done",
+                    "outcome": RunOutcome.NO_WORK,
+                    "summary": "no new matches this cycle",
+                    "calls": [
+                        ("done", {"success": True, "summary": "no new matches this cycle"}),
+                    ],
+                }
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_rewrote_numbered(suspect),
+        min_pass_rate=None,
+    )
+
+
+async def test_repairs_zero_tool_bailout(collector_eval) -> None:
+    """Tier-0 compliance, the other shape: a run that called NO tools at all (exited
+    immediately, no done()) — it never did any work.  Modeled on real zero-tool failed
+    runs (37 in prod).  Quality must repair the prompt so the collector actually reads
+    before concluding there's nothing to do.
+
+    Baseline RED for the same reason (failed runs render header-only and are skipped)."""
+    suspect = WATCHLIST.name
+    await collector_eval(
+        case_id="quality-repairs-zero-tool",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description=WATCHLIST.description,
+            intent=WATCHLIST_INTENT,
+            prompt=WATCHLIST_PROSE_PROMPT,
+            runs=[
+                {
+                    "run_id": "watchlist-bail-zero",
+                    "outcome": RunOutcome.FAILED,
+                    "summary": "exited without calling any tool",
+                    "calls": [],
                 }
             ],
         ),

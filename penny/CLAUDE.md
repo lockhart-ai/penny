@@ -508,3 +508,33 @@ agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py
 stubbed; a case injects realistic pages via the `browse=` kwarg (query-aware
 `install_browse` / `CannedPage` in `conftest.py`) to score multi-step tool
 reasoning. See `docs/self-improvement-loop.md`.
+
+#### The log → test → fix loop (durable process for correcting model behaviour)
+
+This is the canonical way to identify and fix *any* undesired model behaviour — never
+guess at a fix from the code, drive it from a real failing example:
+
+1. **Find candidates in the DB.** The `promptlog` records every model call (messages,
+   tools, response, outcome). Query it for real instances of the failure (e.g. collector
+   runs whose only tool call is `done()`). There are almost always plenty.
+2. **Pull the full verbatim input.** Extract the *entire* JSON the model saw — system
+   prompt, every chat/tool turn, the tool definitions — the exact one, not a paraphrase.
+   `penny/tests/eval/replay.py` does this: it reads a `promptlog` row **by id** and
+   replays it against the live model (so the harness itself carries no prompt content —
+   privacy-safe to commit while the real prompt stays in the local, gitignored DB).
+3. **Run it to confirm the failure reproduces** verbatim. If it doesn't, you haven't
+   captured the real trigger yet — keep looking.
+4. **Genericize for privacy.** Swap out any PII / real-topic mentions for synthetic
+   equivalents (the repo is public — see the privacy rule). This is what turns a
+   verbatim replay into a committable `fixtures.py` case.
+5. **Run it again to confirm the genericized version still reproduces** the failure. If
+   genericizing killed the repro, the trigger was in the specifics — narrow it back.
+6. **Now tweak the prompt to correct it**, re-running the (now report-only or gated)
+   eval case until it passes — and watch the *other* cases to catch over-correction.
+
+Caveat: the loop only applies when the failure is a *model decision on a visible input*.
+If the model is making the right call on what it's shown but the input itself is wrong
+(e.g. a bailout run rendered header-only, so quality can't see it), that's a
+data/rendering bug — fix it in Python first (so the signal is visible), *then* the loop
+applies. Distinguish "model ignored the signal" from "model was never shown the signal"
+before reaching for a prompt change.
