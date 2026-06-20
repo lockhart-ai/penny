@@ -35,7 +35,8 @@ import pytest
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import Inclusion, RecallMode
-from penny.tests.eval.conftest import CollectorScorer, tool_was_called
+from penny.tests.eval.conftest import CollectorScorer, looks_numbered, tool_was_called
+from penny.tests.eval.fixtures import PROSE_DRIFT_INTENT, PROSE_DRIFT_PROMPT
 
 pytestmark = pytest.mark.eval
 
@@ -171,6 +172,29 @@ def _score_update(suspect: str, forbidden: str | None) -> CollectorScorer:
             fails.append(f"corrected prompt still contains the offending {forbidden!r} step")
         elif len(new_prompt) < 80:
             fails.append(f"corrected prompt looks gutted ({len(new_prompt)} chars)")
+        if not sent:
+            fails.append("did not message the user about the change")
+        return fails
+
+    return _score
+
+
+def _score_rewrote_numbered(suspect: str) -> CollectorScorer:
+    """Format enforcement: a prose extraction_prompt must be rewritten as a NUMBERED
+    instruction/tool-call list (dry-run + apply + notify) — numbered recipes are
+    followed far more reliably than prose, so the correction must not stay prose."""
+
+    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+        original = cast(str, before)
+        memory = db.memories.get(suspect)
+        new_prompt = (memory.extraction_prompt or "") if memory else ""
+        fails = []
+        if not tool_was_called(db, "prompt_test"):
+            fails.append("did not dry-run the fix with prompt_test before applying")
+        if new_prompt == original:
+            fails.append(f"did not rewrite {suspect!r}'s prose extraction_prompt")
+        elif not looks_numbered(new_prompt):
+            fails.append("rewrote the prompt but the result is still not a numbered list")
         if not sent:
             fails.append("did not message the user about the change")
         return fails
@@ -670,6 +694,44 @@ async def test_triage_converges(collector_eval) -> None:
         ),
         snapshot=_snapshot_many(drifted + healthy),
         score=_score_triage(drifted=drifted, healthy=healthy),
+        min_pass_rate=None,
+    )
+
+
+async def test_rewrites_prose_to_numbered(collector_eval) -> None:
+    """A drifted collection whose extraction_prompt is PROSE must be rewritten into a
+    NUMBERED instruction/tool-call recipe — gpt-oss follows numbered lists far more
+    reliably than prose (a prose collector task bails ~60% on the empty user turn;
+    the numbered rewrite ~5%).  So the corrected prompt should come out numbered.
+
+    REPORT-ONLY and currently a NEW target: the quality prompt today corrects
+    behaviour, not format, so this will read low until the enforcement work lands —
+    the printed rate is how we'll watch that work take effect."""
+    suspect = "daily-digest"
+    digest = "Daily digest — a new co-op title, a reprint, and a sale."
+    sent_run = {
+        "outcome": RunOutcome.WORKED,
+        "summary": "sent the daily digest",
+        "calls": [
+            ("send_message", {"content": digest}),
+            ("done", {"success": True, "summary": "sent the daily digest"}),
+        ],
+    }
+    await collector_eval(
+        case_id="quality-rewrites-prose-to-numbered",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description="A once-daily digest of fresh items worth a heads-up.",
+            intent=PROSE_DRIFT_INTENT,
+            prompt=PROSE_DRIFT_PROMPT,
+            runs=[
+                {"run_id": "prose-digest-1", **sent_run},
+                {"run_id": "prose-digest-2", **sent_run},
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_rewrote_numbered(suspect),
         min_pass_rate=None,
     )
 

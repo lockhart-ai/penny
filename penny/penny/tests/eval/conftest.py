@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from math import ceil
@@ -189,6 +190,18 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
         any(call.get("function", {}).get("name") == tool_name for call in _response_tool_calls(row))
         for row in db.messages.recent_prompts(limit=200)
     )
+
+
+_NUMBERED_LINE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
+
+
+def looks_numbered(text: str) -> bool:
+    """True when ``text`` reads as a numbered list (≥2 lines like ``1.`` / ``2)``).
+
+    Used by format contracts: a prompt the model follows reliably is a numbered
+    instruction/tool-call recipe, not flowing prose.
+    """
+    return len(_NUMBERED_LINE.findall(text)) >= 2
 
 
 def _response_tool_calls(prompt_log) -> list[dict]:

@@ -22,7 +22,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput
-from penny.tests.eval.conftest import CollectorScorer, collection_entries
+from penny.tests.eval.conftest import CollectorScorer, collection_entries, looks_numbered
 
 pytestmark = pytest.mark.eval
 
@@ -100,6 +100,21 @@ def _score_delete(existing_key: str) -> CollectorScorer:
         return []
 
     return _score
+
+
+def _score_numbered_steps(db: Database, before: object, sent: list[str]) -> list[str]:
+    """A written skill's STEPS must be a NUMBERED list, not prose — the chat agent
+    follows a numbered recipe far more reliably than a flowing paragraph."""
+    before_entries = cast("dict[str, str]", before)
+    after = collection_entries(db, _SKILLS)
+    new_keys = set(after) - set(before_entries)
+    if not new_keys:
+        return ["expected a new skill written, none added"]
+    return [
+        f"skill {key!r} STEPS are not a numbered list"
+        for key in new_keys
+        if not looks_numbered(after[key])
+    ]
 
 
 def _score_no_op(db: Database, before: object, sent: list[str]) -> list[str]:
@@ -191,6 +206,28 @@ async def test_lift(collector_eval) -> None:
         ),
         snapshot=_snapshot,
         score=_score_write,
+    )
+
+
+async def test_teach_writes_numbered_steps(collector_eval) -> None:
+    """A taught MULTI-STEP behaviour must be written with NUMBERED steps, not prose.
+
+    REPORT-ONLY format contract: the seeded skills already use numbered STEPS, so
+    this guards that the extractor keeps writing them that way (and flags it if a
+    prompt change ever regresses to prose STEPS)."""
+    await collector_eval(
+        case_id="skills-teach-numbered",
+        collection=_SKILLS,
+        seed=_seed(
+            [
+                "help me plan a weekend trip to portland",
+                "from now on when i ask you to plan a trip, first check the weather for those "
+                "dates, then look up well-reviewed hotels, then give me a short day-by-day plan",
+            ]
+        ),
+        snapshot=_snapshot,
+        score=_score_numbered_steps,
+        min_pass_rate=None,
     )
 
 

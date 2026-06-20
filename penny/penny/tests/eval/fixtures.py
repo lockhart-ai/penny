@@ -276,6 +276,101 @@ RESEARCH_PAGES = (
     ),
 )
 
+# ── Digest collector (empty-user-turn bailout reproduction) ──────────────────
+# A read-a-log-first / summarize-into-one-entry collector, shaped exactly like the
+# real "rolling summary" collectors that bail most often in production: the whole
+# task lives in the system prompt, step 1 is a mandatory log_read, and the user
+# turn is empty.  gpt-oss (harmony-trained) reads the blank user turn as "the user
+# said nothing" and frequently jumps straight to done() WITHOUT calling log_read —
+# never checking for the work that's plainly seeded.  This is the baseline the
+# prompt-split experiment must beat.  Topic is generic/privacy-safe.
+WEEKLY_DIGEST = SynthCollection(
+    "weekly-digest",
+    "A single rolling summary of the user's recent messages: what they've been "
+    "up to, key events, and how things are going.",
+    inclusion="never",
+    entries=(),
+)
+WEEKLY_DIGEST_INTENT = "Keep one running summary of what I've been up to lately, updated as I chat."
+WEEKLY_DIGEST_EXTRACTION_PROMPT = (
+    "Summarise the user's recent messages into a single rolling summary entry.\n"
+    '1. log_read("user-messages") — fetch all new user-message entries since the '
+    "last run.\n"
+    '2. collection_read_latest("weekly-digest", k=1) — get the current summary '
+    "entry, if any.\n"
+    "3. Combine both and write a concise paragraph capturing key events, "
+    "activities, and how things are going.\n"
+    '4. collection_write("weekly-digest", entries=[{key: "summary", '
+    "content: <generated summary>}]).\n"
+    "5. done()."
+)
+# Clearly-summarizable synthetic messages — a working cycle MUST produce a summary
+# entry, so a no-write outcome is an unambiguous bailout, not a defensible no-op.
+WEEKLY_DIGEST_MESSAGES = (
+    "just wrapped up a big push at work — shipped the new release on friday and "
+    "the team's pretty happy with how it landed",
+    "been getting back into running too, did my first 10k in ages on saturday "
+    "morning and felt great after",
+    "weekend was nice and low-key otherwise, cooked a bunch and caught up on some "
+    "films i'd been meaning to watch",
+)
+
+
+# ── Prose-vs-numbered format pair (same task, the format is the only variable) ─
+# We found gpt-oss follows a NUMBERED instruction/tool-call recipe far more
+# reliably than the SAME task written as prose (prose-in-system bails ~60% of the
+# time on the empty collector user turn; numbered ~5%).  These two prompts describe
+# an identical read-log → extract → write collector; only the format differs, so a
+# behaviour gap between them isolates the format effect.  Generic/privacy-safe topic.
+WATCHLIST = SynthCollection(
+    "watchlist",
+    "Movies and TV shows the user has said they want to watch.",
+    inclusion="never",
+    entries=(),
+)
+WATCHLIST_INTENT = (
+    "Keep a running list of the movies and shows I want to watch, from what I mention."
+)
+WATCHLIST_PROSE_PROMPT = (
+    "Collect the movies and TV shows the user mentions wanting to watch from their "
+    "recent messages. Read the user-messages log, and for each title the user says they "
+    "want to watch, record the title together with a short note on why, writing them "
+    "with collection_write. Skip anything unrelated. If the user later says they "
+    "finished a title or lost interest, update or delete that entry instead of leaving "
+    "it. Do not add titles the user did not actually mention, and finish by calling done."
+)
+WATCHLIST_NUMBERED_PROMPT = (
+    "Collect the movies and TV shows the user wants to watch.\n"
+    '1. log_read("user-messages") — fetch new user messages since the last run.\n'
+    "2. For each title the user mentions wanting to watch, note the title and a short "
+    "reason.\n"
+    '3. collection_write("watchlist", entries=[{key: <title>, content: <title + '
+    "reason>}]).\n"
+    "4. If the user finished or lost interest in a title, update_entry or "
+    "collection_delete_entry instead of adding.\n"
+    "5. done()."
+)
+WATCHLIST_MESSAGES = (
+    "ooh i really want to watch that new dune movie everyone keeps talking about",
+    "a friend said severance is incredible, i should start that show",
+    "anyway, can you remind me what time my dentist appointment is?",
+)
+
+# Enforcement: a suspect collection whose prompt is PROSE *and* drifted (it re-sends
+# the same digest every cycle).  The quality collector should rewrite it — and the
+# rewrite should come out as a NUMBERED recipe, not more prose.
+PROSE_DRIFT_INTENT = (
+    "Once per cycle, share exactly one fresh thought I haven't seen before, and never "
+    "resend something you've already sent me."
+)
+PROSE_DRIFT_PROMPT = (
+    "Each cycle, share one fresh daily-digest thought with the user. Re-read what you "
+    "already sent by reading the penny-messages log so you don't repeat yourself, then "
+    "compose a short digest of the latest items and send it to the user with "
+    "send_message, finishing by calling done when you're done."
+)
+
+
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
     CannedPage(
