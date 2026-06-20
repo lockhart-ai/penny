@@ -356,21 +356,6 @@ WATCHLIST_MESSAGES = (
     "anyway, can you remind me what time my dentist appointment is?",
 )
 
-# Enforcement: a suspect collection whose prompt is PROSE *and* drifted (it re-sends
-# the same digest every cycle).  The quality collector should rewrite it — and the
-# rewrite should come out as a NUMBERED recipe, not more prose.
-PROSE_DRIFT_INTENT = (
-    "Once per cycle, share exactly one fresh thought I haven't seen before, and never "
-    "resend something you've already sent me."
-)
-PROSE_DRIFT_PROMPT = (
-    "Each cycle, share one fresh daily-digest thought with the user. Re-read what you "
-    "already sent by reading the penny-messages log so you don't repeat yourself, then "
-    "compose a short digest of the latest items and send it to the user with "
-    "send_message, finishing by calling done when you're done."
-)
-
-
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
     CannedPage(

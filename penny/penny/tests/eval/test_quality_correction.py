@@ -36,7 +36,6 @@ from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import Inclusion, RecallMode
 from penny.tests.eval.conftest import CollectorScorer, looks_numbered, tool_was_called
-from penny.tests.eval.fixtures import PROSE_DRIFT_INTENT, PROSE_DRIFT_PROMPT
 
 pytestmark = pytest.mark.eval
 
@@ -699,35 +698,58 @@ async def test_triage_converges(collector_eval) -> None:
 
 
 async def test_rewrites_prose_to_numbered(collector_eval) -> None:
-    """A drifted collection whose extraction_prompt is PROSE must be rewritten into a
-    NUMBERED instruction/tool-call recipe — gpt-oss follows numbered lists far more
-    reliably than prose (a prose collector task bails ~60% on the empty user turn;
-    the numbered rewrite ~5%).  So the corrected prompt should come out numbered.
-
-    REPORT-ONLY and currently a NEW target: the quality prompt today corrects
-    behaviour, not format, so this will read low until the enforcement work lands —
-    the printed rate is how we'll watch that work take effect."""
-    suspect = "daily-digest"
-    digest = "Daily digest — a new co-op title, a reprint, and a sale."
-    sent_run = {
-        "outcome": RunOutcome.WORKED,
-        "summary": "sent the daily digest",
-        "calls": [
-            ("send_message", {"content": digest}),
-            ("done", {"success": True, "summary": "sent the daily digest"}),
-        ],
-    }
+    """When quality rewrites a drifted collection whose prompt is PROSE, the fix must
+    come out as a NUMBERED instruction/tool-call recipe — gpt-oss follows numbered
+    lists far more reliably (a prose collector task bails ~60% on the empty user turn;
+    the numbered rewrite ~5%).  This uses a CLEAR drift (intent says stay quiet, the
+    run sent a ping) so the rewrite is reliably triggered — what we score is that the
+    corrected prompt is numbered, not prose.  Quality is NOT asked to hunt for prose
+    on its own (that over-corrects healthy collections); it only reformats the prompt
+    it is already rewriting to fix a behaviour drift."""
+    suspect = "espresso-gear"
+    prose_prompt = (
+        "Collect espresso equipment worth considering by browsing the web for new "
+        "espresso gear and reading the actual pages, then writing what you find into "
+        "the espresso-gear collection.  Whenever a write succeeds, send the user a "
+        "one-sentence note about the new item with its URL, and finish by calling done."
+    )
     await collector_eval(
         case_id="quality-rewrites-prose-to-numbered",
         collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
         seed=_seed(
             suspect=suspect,
-            description="A once-daily digest of fresh items worth a heads-up.",
-            intent=PROSE_DRIFT_INTENT,
-            prompt=PROSE_DRIFT_PROMPT,
+            description="A quiet running list of espresso equipment worth considering.",
+            intent="Keep a quiet running list of espresso equipment worth considering "
+            "— never ping me about it, I'll check the list myself.",
+            prompt=prose_prompt,
             runs=[
-                {"run_id": "prose-digest-1", **sent_run},
-                {"run_id": "prose-digest-2", **sent_run},
+                {
+                    "run_id": "espresso-prose-1",
+                    "outcome": RunOutcome.WORKED,
+                    "summary": "wrote 1 entry and sent an update about a new grinder",
+                    "calls": [
+                        (
+                            "collection_write",
+                            {
+                                "memory": suspect,
+                                "entries": [
+                                    {
+                                        "key": "niche-zero-clone",
+                                        "content": "Niche Zero clone grinder, $300",
+                                    }
+                                ],
+                            },
+                        ),
+                        (
+                            "send_message",
+                            {"content": "Found a new espresso grinder: the Niche clone, $300."},
+                        ),
+                        (
+                            "done",
+                            {"success": True, "summary": "wrote 1 entry and sent an update"},
+                        ),
+                    ],
+                }
             ],
         ),
         snapshot=_snapshot(suspect),
