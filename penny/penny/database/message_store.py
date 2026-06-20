@@ -29,17 +29,34 @@ class PromptPerf(NamedTuple):
     Sourced from data the real LLM path already records \u2014 ``duration_ms`` per
     call plus the token usage stored inside each response \u2014 so the eval suite
     can report throughput without any new instrumentation.
+
+    ``output_tokens`` (the OpenAI ``completion_tokens``) already *includes* the
+    reasoning trace, so to expose how much of the generation was reasoning we
+    also carry the character lengths of the stored ``thinking`` trace and the
+    visible ``content``; their ratio gives the reasoning share of generation.
     """
 
     calls: int
     duration_ms: int
     input_tokens: int
     output_tokens: int
+    thinking_chars: int = 0
+    output_chars: int = 0
 
     @property
     def tokens_per_second(self) -> float:
         seconds = self.duration_ms / 1000
         return self.output_tokens / seconds if seconds else 0.0
+
+    @property
+    def reasoning_share(self) -> float:
+        """Fraction of generated characters that were reasoning (0.0\u20131.0).
+
+        ``output_tokens`` bundles reasoning + visible output, so this char-based
+        ratio is how we split it \u2014 multiply by ``output_tokens`` for an estimated
+        reasoning-token count."""
+        total = self.thinking_chars + self.output_chars
+        return self.thinking_chars / total if total else 0.0
 
 
 class MessageStore:
@@ -637,13 +654,27 @@ class MessageStore:
             rows = list(session.exec(select(PromptLog)).all())
         input_tokens = 0
         output_tokens = 0
+        thinking_chars = 0
+        output_chars = 0
         for row in rows:
             response = json.loads(row.response) if row.response else {}
             prompt_tokens, completion_tokens = self._extract_token_usage(response)
             input_tokens += prompt_tokens
             output_tokens += completion_tokens
+            thinking_chars += len(row.thinking or "")
+            output_chars += len(self._extract_content(response))
         duration_ms = sum(row.duration_ms or 0 for row in rows)
-        return PromptPerf(len(rows), duration_ms, input_tokens, output_tokens)
+        return PromptPerf(
+            len(rows), duration_ms, input_tokens, output_tokens, thinking_chars, output_chars
+        )
+
+    @staticmethod
+    def _extract_content(response: dict) -> str:
+        """The visible assistant text of a response (excludes the reasoning trace)."""
+        choices = response.get("choices") or []
+        if not choices:
+            return ""
+        return choices[0].get("message", {}).get("content") or ""
 
     @staticmethod
     def _extract_token_usage(response: dict) -> tuple[int, int]:

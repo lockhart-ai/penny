@@ -124,6 +124,60 @@ These are **slow and need a live model**, so they are *not* part of CI or
 They are committable, reproducible **contract tests** that define the behaviours
 we expect — invoked locally on demand, never in CI, never against prod data.
 
+### The canonical use-case matrix
+
+Beyond the self-improvement cases, the eval suite is the **canonical coverage of
+Penny's core use cases** — and, because it gates on real-model behaviour, the
+**yardstick for swapping models** (e.g. off `gpt-oss:20b`). Run the suite against
+a candidate model and read the pass-rates and `PERF` lines side by side.
+
+Everything Penny does reduces to **two agent shapes**, each branching on whether
+it needs the world or just its own memory — what we're really measuring is
+*does the model reason effectively about tool calls* (right tool, right args,
+correct next call from what came back). The suite spans that matrix:
+
+| axis | answer from memory/context | reach for the web (browse → reason) |
+|---|---|---|
+| **chat** (`test_chat_response.py`) | chitchat; recall-grounded answer | browse→answer; multi-hop browse chain |
+| **chat authoring** (`test_collection_lifecycle.py`) | create / update / archive / abstain | — |
+| **collector** (`test_extractors.py`) | likes / dislikes / knowledge / notify send+move | research-watcher; inner-monologue |
+| **meta-collector** | skills (`test_skills_extractor.py`); quality (`test_quality_correction.py`) | — |
+| **routing** (`test_retrieval.py`) | two-stage recall | — |
+| **peripheral** (`test_peripheral.py`) | startup announcement | `/schedule` NL→cron parse |
+
+The built-in collectors (`likes`, `dislikes`, `knowledge`, `unnotified-thoughts`,
+`notified-thoughts`, `skills`, `quality`) already exist with their **canonical
+migration-seeded extraction prompts** in a fresh eval DB, so an extractor case
+only seeds the collector's *input* (the `user-messages` / `browse-results` logs)
+and runs the real prompt.
+
+**Query-aware mock browser.** The isolation core stubs browse with one fixed
+string — enough to check *whether* the model browsed, not *how it reasoned over
+the result*. The `browse=` kwarg on `chat_eval` / `collector_eval` installs
+`CannedPage`s keyed by a query/URL substring (`install_browse` in `conftest.py`),
+so a case returns a realistic page (facts + a source URL in the visible body) and
+a refined follow-up query maps to a different page — letting cases score the
+*subsequent* call (the write, the send, the second browse) and even multi-hop
+chains.
+
+**Score behaviour, not content.** Because browse content is canned and the model
+is stochastic, scorers assert on behaviour (tool called, entry written, message
+queued, fact surfaced, nothing spurious created), never on exact wording. Cases
+whose chain is long/stochastic (multi-hop browse, inner-monologue) are
+`min_pass_rate=None` (report-only) — the X/Y rate prints for inspection without
+gating, same convention as the quality cases.
+
+**Performance metrics (model-swap picture).** Each case prints a `PERF` line:
+calls, full request wall, in/out tokens, the **reasoning split** (`completion_tokens`
+already bundles the thinking trace, so it's split by the stored `thinking`/`content`
+char ratio — surfaces token-waste-on-reasoning, the usual challenger-model failure),
+and an **end-to-end tok/s** (output ÷ full wall, *including* prompt processing — not
+raw decode speed). True decode speed needs Ollama's native timings, which the
+OpenAI-compatible `/v1` endpoint our client uses strips; so `test_perf_probe.py` hits
+the **native `/api/chat`** for the configured model and prints a `PERF-PROBE` line with
+prefill tok/s, decode (generation) tok/s, and reasoning share — the `ollama run
+--verbose` numbers, captured per model for head-to-head comparison.
+
 ## Phase 2 — the dry-run sandbox (over real prod data)
 
 The runtime needs to answer "if I ran *this* candidate prompt against the

@@ -16,6 +16,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from math import ceil
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,8 +27,9 @@ from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow
 from penny.penny import Penny
+from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
-from penny.tests.eval.fixtures import SynthCollection
+from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -68,24 +70,35 @@ class _Perf:
     duration_ms: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_chars: int = 0
+    output_chars: int = 0
 
     def add(self, perf: PromptPerf) -> None:
         self.calls += perf.calls
         self.duration_ms += perf.duration_ms
         self.input_tokens += perf.input_tokens
         self.output_tokens += perf.output_tokens
+        self.thinking_chars += perf.thinking_chars
+        self.output_chars += perf.output_chars
 
     def report(self, case_id: str, samples: int) -> None:
         if not self.calls:
             return
         seconds = self.duration_ms / 1000
+        # tok/s here is END-TO-END (output_tokens / full request wall, which
+        # includes prompt processing) — NOT the model's raw decode rate.  For
+        # true generation tok/s see the native probe in test_perf_probe.py.
         tokens_per_second = self.output_tokens / seconds if seconds else 0.0
         per_call_ms = self.duration_ms / self.calls
+        # output_tokens bundles reasoning + visible; split it by the char ratio.
+        share = self.thinking_chars / (self.thinking_chars + self.output_chars or 1)
+        reasoning_tokens = round(self.output_tokens * share)
         print(
             f"\nPERF [{case_id}] {samples} samples · {self.calls} calls · "
             f"{seconds:.1f}s wall · {per_call_ms:.0f}ms/call · "
-            f"{self.input_tokens} in / {self.output_tokens} out tok · "
-            f"{tokens_per_second:.1f} tok/s"
+            f"{self.input_tokens} in / {self.output_tokens} out tok "
+            f"({reasoning_tokens} reasoning, {share * 100:.0f}%) · "
+            f"{tokens_per_second:.1f} end-to-end tok/s"
         )
 
 
@@ -186,6 +199,43 @@ def _response_tool_calls(prompt_log) -> list[dict]:
     return choices[0].get("message", {}).get("tool_calls") or []
 
 
+# A browse-less query returns this so a case can still exercise the graceful
+# "nothing found" path; matched queries return their CannedPage text instead.
+_NO_RESULTS_PAGE = (
+    "Title: No results\nNo relevant results were found for this query. "
+    "Try a different source or reword the query."
+)
+
+
+def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
+    """Replace the generic browse mock with query-aware canned pages.
+
+    ``run_penny_with_server`` wires a single fixed ``"Mock search results"``
+    string onto every browse call, which only lets a case check *whether* the
+    model browsed.  A real tool-reasoning contract needs to score the model's
+    *subsequent* call — did it extract the right fact/URL and chain to the
+    correct next tool?  So a case seeds realistic pages, each keyed by a
+    ``match`` substring.  A query the model issues becomes a URL (search →
+    ``SEARCH_URL`` + ``quote(query)``; direct read → the URL itself), so a
+    case-token substring matches both shapes, and a refined follow-up query
+    maps to a different page — supporting multi-hop chains.  Installed on BOTH
+    agents (chat + collector) since the generic mock sits on both.
+    """
+
+    async def request_fn(method: str, params: dict) -> tuple[str, str | None]:
+        url = params.get("url", "").lower()
+        for page in pages:
+            if page.match.lower() in url:
+                return page.text, page.image
+        return _NO_RESULTS_PAGE, None
+
+    def provider() -> tuple[Callable, MagicMock]:
+        return request_fn, MagicMock(check_domain=AsyncMock())
+
+    penny.chat_agent._browse_provider = provider
+    penny.collector._browse_provider = provider
+
+
 async def _embed_seeds(penny: Penny) -> None:
     """Vectorize seeded memory so stage-1/2 recall behaves like prod.
 
@@ -249,6 +299,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         message: str,
         score: Scorer,
         seed: Seeder | None = None,
+        browse: list[CannedPage] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
@@ -269,6 +320,8 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                     if seed is not None:
                         seed(penny.db)
                     await _embed_seeds(penny)
+                    if browse is not None:
+                        install_browse(penny, browse)
                     before = collection_names(penny.db)
                     try:
                         await server.push_message(sender=TEST_SENDER, content=message)
@@ -308,6 +361,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
         seed: Seeder,
         score: CollectorScorer,
         snapshot: Snapshotter | None = None,
+        browse: list[CannedPage] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
     ) -> None:
@@ -326,6 +380,8 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     seed_user(penny.db)
                     seed(penny.db)
                     await _embed_seeds(penny)
+                    if browse is not None:
+                        install_browse(penny, browse)
                     before = snapshot(penny.db) if snapshot is not None else None
                     sent_before = len(server.outgoing_messages)
                     await penny.collector.run_for(collection)
@@ -448,5 +504,61 @@ def recall_eval(make_config: Callable[..., Config], tmp_path) -> RecallEval:
                 _assert_threshold(case_id, results, min_pass_rate)
         finally:
             await server.stop()
+
+    return _run
+
+
+# A startup-eval runner: (case_id, commit_message, score) -> asserts threshold.
+StartupEval = Callable[..., Awaitable[None]]
+
+
+@pytest.fixture
+def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
+    """Drive the real startup-announcement prompt N times and score its text.
+
+    ``get_restart_message`` transforms the latest commit (read from the
+    ``GIT_COMMIT_MESSAGE`` env var, set at build time) into a casual one-line
+    announcement — a single-shot generation prompt, no tools.  Each sample sets
+    the env var to the case's commit, calls the real generator against the real
+    model, and scores the returned string; the prior env value is restored.
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        commit_message: str,
+        score: DryRunScorer,
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+    ) -> None:
+        results: list[SampleResult] = []
+        perf = _Perf()
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    seed_user(penny.db)
+                    prior = os.environ.get("GIT_COMMIT_MESSAGE")
+                    os.environ["GIT_COMMIT_MESSAGE"] = commit_message
+                    try:
+                        announcement = await get_restart_message(penny.model_client)
+                    finally:
+                        if prior is None:
+                            os.environ.pop("GIT_COMMIT_MESSAGE", None)
+                        else:
+                            os.environ["GIT_COMMIT_MESSAGE"] = prior
+                    fails = score(announcement)
+                    results.append(SampleResult(not fails, fails))
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
 
     return _run

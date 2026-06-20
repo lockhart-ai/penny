@@ -34,6 +34,24 @@ class SynthCollection:
     entries: tuple[str, ...]  # entry contents (for stage-2 retrieval)
 
 
+@dataclass(frozen=True)
+class CannedPage:
+    """One realistic page the mock browser returns for a matching query/URL.
+
+    ``match`` is a lowercase substring tested against the request URL — a search
+    query becomes ``SEARCH_URL`` + ``quote(query)`` and a direct read is the URL
+    itself, so a single distinctive token (no spaces — URLs are percent-encoded)
+    matches both shapes.  ``text`` must read like a real page: a ``Title:`` first
+    line and the source URL *in the visible body* (the model cites URLs from the
+    text it sees).  For search-shaped pages, put the fact lines adjacent to a
+    solo markdown-link line so search trimming keeps them.  See ``install_browse``.
+    """
+
+    match: str
+    text: str
+    image: str | None = None
+
+
 BOARD_GAMES = SynthCollection(
     "board-games",
     "Heavier euro-style strategy board games and modern tabletop classics: "
@@ -168,4 +186,128 @@ MESSAGES: tuple[Message, ...] = (
         "hey what do you remember, where did we leave off last time?",
         skill=None,
     ),
+)
+
+
+# ── Canned browse pages (for the browse-driven tool-reasoning cases) ──────────
+# All invented, privacy-safe topics on example.com domains.
+
+# chat-browse-answer: one search whose result carries the fact (version 4.2) + URL.
+VERSION_PAGES = (
+    CannedPage(
+        match="quillpad",
+        text=(
+            "Title: Quillpad releases\n"
+            "Quillpad release history and downloads below.\n"
+            "[Quillpad 4.2 release notes](https://quillpad.example.com/releases/4.2)\n"
+            "Quillpad 4.2 is the latest stable release, published this year, "
+            "adding end-to-end sync and a dark theme.\n"
+        ),
+    ),
+)
+
+# chat-browse-multihop: the search page links to a detail page but withholds the
+# date; the year (2031) lives ONLY on the detail page, so a reply that cites it
+# proves the model chained a second browse to the linked URL.
+MULTIHOP_PAGES = (
+    CannedPage(
+        match="mistforge",
+        text=(
+            "Title: Mistforge Tactics — search results\n"
+            "Mistforge Tactics is a turn-based strategy game.\n"
+            "[Mistforge Tactics — official title page]"
+            "(https://gamedb.example.com/titles/mt-clans-2099)\n"
+            "See the official title page for full release details.\n"
+        ),
+    ),
+    CannedPage(
+        match="mt-clans-2099",
+        text=(
+            "Title: Mistforge Tactics — official title page\n"
+            "Mistforge Tactics was released on March 14, 2031 by Emberline Studios. "
+            "It is a turn-based strategy game with co-op campaigns.\n"
+            "Source: https://gamedb.example.com/titles/mt-clans-2099\n"
+        ),
+    ),
+)
+
+# collector-research-browse: a user-created notify-on-new watcher + its page.
+RESEARCH_WATCHER = SynthCollection(
+    "indie-metroidvanias",
+    "Newly released indie metroidvania games worth playing: hand-drawn "
+    "exploration platformers with interconnected maps and new traversal mechanics.",
+    inclusion="relevant",
+    entries=(),
+)
+RESEARCH_WATCHER_INTENT = (
+    "Keep me posted on new indie metroidvania games worth playing, and ping me "
+    "when a good one shows up."
+)
+RESEARCH_WATCHER_EXTRACTION_PROMPT = (
+    "Collect newly released indie metroidvania games worth playing.\n"
+    "1. browse the web for new indie metroidvania releases; read actual pages.\n"
+    "2. Each entry: key = game name; content = name + description + URL.\n"
+    '3. collection_write("indie-metroidvanias", entries=[...]).\n'
+    '4. If a write succeeded, send_message a one-sentence "found a new game" note + URL.\n'
+    "5. done()."
+)
+RESEARCH_PAGES = (
+    CannedPage(
+        match="metroidvania",
+        text=(
+            "Title: New indie metroidvanias this month\n"
+            "Fresh indie metroidvania releases below.\n"
+            "[Hollow Verge — new metroidvania release]"
+            "(https://indiegames.example.com/hollow-verge)\n"
+            "Hollow Verge launched this week — a hand-drawn metroidvania with a "
+            "grappling-hook traversal system and a branching map, priced at $19.\n"
+        ),
+    ),
+    # The detail page, in case the model reads the linked URL ("read actual pages").
+    CannedPage(
+        match="hollow-verge",
+        text=(
+            "Title: Hollow Verge — release page\n"
+            "Hollow Verge is a newly released indie metroidvania, out this week. It "
+            "features hand-drawn art, a grappling-hook traversal system, and a branching "
+            "interconnected map. It is priced at $19 and is available now.\n"
+            "Source: https://indiegames.example.com/hollow-verge\n"
+        ),
+    ),
+)
+
+# thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
+THINKING_PAGES = (
+    CannedPage(
+        match="board",
+        text=(
+            "Title: Board game news\n"
+            "[New cooperative board game spotlight](https://bgnews.example.com/tidewatch)\n"
+            "A new cooperative board game called Tidewatch launched this month, "
+            "featuring a modular ocean board and a 60-minute play time.\n"
+        ),
+    ),
+    # The detail page, in case the model reads the linked URL rather than the snippet.
+    CannedPage(
+        match="tidewatch",
+        text=(
+            "Title: Tidewatch — co-op board game\n"
+            "Tidewatch is a newly released cooperative board game, out this month. It "
+            "features a modular ocean board and a 60-minute play time, for 1-4 players.\n"
+            "Source: https://bgnews.example.com/tidewatch\n"
+        ),
+    ),
+)
+
+# extract-knowledge: a page already in the browse-results log to summarize.
+KNOWLEDGE_PAGE_CONTENT = (
+    "## browse: https://history.example.com/antikythera\n"
+    "Title: The Antikythera Mechanism\n"
+    "The Antikythera mechanism is an ancient Greek hand-powered analog device used "
+    "to predict astronomical positions and eclipses decades in advance. Recovered "
+    "from a Roman-era shipwreck off the Greek island of Antikythera in 1901, it is "
+    "dated to roughly the 2nd century BC. It uses a complex system of at least 30 "
+    "bronze gears to model the motions of the Sun and Moon, and tracked the timing "
+    "of the ancient Olympic Games. It is widely regarded as the oldest known example "
+    "of an analog computer.\n"
 )

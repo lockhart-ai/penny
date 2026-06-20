@@ -493,3 +493,18 @@ Strongly prefer end-to-end integration tests over unit tests. Test through publi
 6. Assert on captured messages, LLM requests, DB state
 
 **Performance**: Test suite runs in ~30s (`scheduler_tick_interval` set to 0.05s in tests)
+
+### Live-model eval suite (`tests/eval/`)
+
+A separate suite of **contract tests against a real Ollama model** — the canonical
+coverage of Penny's core use cases and the yardstick for swapping models. It's
+gated behind the `eval` marker (excluded from `make check`/`make pytest`; run via
+`make eval`, default 5 samples/case, `EVAL_SAMPLES=N` to override). Cases drive the
+real chat/collector loops and score persisted DB state + sends at a `pass_rate`
+threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
+agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py`,
+`test_collection_lifecycle.py`, `test_extractors.py`, `test_skills_extractor.py`,
+`test_quality_correction.py`, `test_retrieval.py`, `test_peripheral.py`. Browse is
+stubbed; a case injects realistic pages via the `browse=` kwarg (query-aware
+`install_browse` / `CannedPage` in `conftest.py`) to score multi-step tool
+reasoning. See `docs/self-improvement-loop.md`.
