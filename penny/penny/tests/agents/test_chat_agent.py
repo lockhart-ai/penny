@@ -163,6 +163,7 @@ target + success marker + done() summary
 - knowledge (collection, 0 entries) — Summarized facts from web pages Penny has read
 - likes (collection, 0 entries) — Topics the user has expressed positive sentiment about
 - notified-thoughts (collection, 0 entries) — Thoughts already shared with the user
+- notifier (collection, 0 entries) — Delivers new finds from published collections to the user.
 - penny-messages (log, 0 entries) — Every outgoing Penny reply
 - playlists (collection, 1 entries) — favorite playlists
 - quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
@@ -1152,6 +1153,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_get" in names
         assert "collection_keys" in names
         assert "memory_metadata" in names
+        assert "read_published_latest" in names
 
         # Loop-control stays background-only — never on the chat surface.
         assert "done" not in names

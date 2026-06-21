@@ -90,6 +90,11 @@ class CollectionCreateArgs(BaseModel):
     extraction_prompt: str
     collector_interval_seconds: int
     intent: str
+    # true when the user wants to be told about new entries (notify-on-new).
+    # Defaults to false (a silent collection) so an omission can't accidentally
+    # notify; the tool description + skills drive the model to set it, and the
+    # eval suite verifies it does when the user asked to be told.
+    published: bool = False
 
 
 class LogCreateArgs(BaseModel):
@@ -128,6 +133,7 @@ class CollectionUpdateArgs(BaseModel):
     recall: OptionalText = None  # "all" | "relevant" | "recent"
     extraction_prompt: OptionalText = None
     collector_interval_seconds: int | None = None
+    published: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
@@ -168,6 +174,19 @@ class ReadSimilarArgs(BaseModel):
 
 
 # ── Log-specific reads ──────────────────────────────────────────────────────
+
+
+class ReadPublishedLatestArgs(BaseModel):
+    """A consumer's fan-in read across every ``published`` collection.
+
+    Returns the ``n`` oldest entries not yet seen by this consumer (across all
+    published sources, merged oldest-first), each tagged with its source.  The
+    consumer names no source — Python picks from whichever published collections
+    have unseen entries, advancing a per-(consumer, source) cursor only for the
+    entries actually returned.
+    """
+
+    n: int = 1
 
 
 class ReadLogArgs(BaseModel):

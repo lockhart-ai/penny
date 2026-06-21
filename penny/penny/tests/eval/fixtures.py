@@ -248,9 +248,12 @@ RESEARCH_WATCHER_EXTRACTION_PROMPT = (
     "1. browse the web for new indie metroidvania releases; read actual pages.\n"
     "2. Each entry: key = game name; content = name + description + URL.\n"
     '3. collection_write("indie-metroidvanias", entries=[...]).\n'
-    '4. If a write succeeded, send_message a one-sentence "found a new game" note + URL.\n'
-    "5. done()."
+    "4. done()."
 )
+
+
+# The notifier (pub/sub consumer) is migration-seeded (0067), so the eval drives the
+# SHIPPED prompt directly (a fresh eval DB runs migrations) — no duplicated copy here.
 RESEARCH_PAGES = (
     CannedPage(
         match="metroidvania",

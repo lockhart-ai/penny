@@ -133,6 +133,7 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
+        published: bool = False,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -145,6 +146,7 @@ class MemoryStore:
             collector_interval_seconds=collector_interval_seconds,
             description_embedding=description_embedding,
             intent=intent,
+            published=published,
         )
 
     def create_log(
@@ -180,6 +182,7 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
+        published: bool = False,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -193,6 +196,7 @@ class MemoryStore:
                 recall=recall.value,
                 description_embedding=sim.maybe_serialize(description_embedding),
                 archived=archived,
+                published=published,
                 extraction_prompt=extraction_prompt,
                 collector_interval_seconds=collector_interval_seconds,
                 # The create cadence is the user's intended cadence — the
@@ -299,6 +303,7 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
+        published: bool | None = None,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
 
@@ -322,6 +327,8 @@ class MemoryStore:
                 memory.inclusion = inclusion.value
             if recall is not None:
                 memory.recall = recall.value
+            if published is not None:
+                memory.published = published
             if extraction_prompt is not None:
                 memory.extraction_prompt = extraction_prompt
             if collector_interval_seconds is not None:

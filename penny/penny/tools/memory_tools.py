@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from penny.constants import PennyConstants
 from penny.database import Database
@@ -57,6 +57,7 @@ from penny.tools.memory_args import (
     MemoryNameArgs,
     ReadLatestArgs,
     ReadLogArgs,
+    ReadPublishedLatestArgs,
     ReadRandomArgs,
     ReadSimilarArgs,
     UpdateEntryArgs,
@@ -203,6 +204,7 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
         f"({_humanize_interval(memory.collector_interval_seconds)})\n"
         f"  inclusion: {memory.inclusion}\n"
         f"  recall: {memory.recall}\n"
+        f"  published: {memory.published}\n"
         f"{intent_line}"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
@@ -265,9 +267,17 @@ class CollectionCreateTool(MemoryTool):
         "words — the goal the collection serves, captured once at creation "
         "and immutable thereafter.  Describe their request, not the "
         "mechanism.\n"
+        "- ``published`` — Set ``true`` when the user wants to be **told "
+        "about / kept posted on / alerted to** new entries as they're found — "
+        "a notifier delivers each new entry to them once.  Leave it ``false`` "
+        "(the default) for a silent collection that just gathers in the "
+        "background for the user to ask about later.  Do NOT add a "
+        "``send_message`` step to the extraction_prompt for this — the "
+        "collector only gathers; ``published=true`` is how new finds reach the "
+        "user.\n"
         "\n"
         "Returns a structured echo of the stored fields (name, interval, "
-        "recall, description, full extraction_prompt).  Use the echo to "
+        "recall, published, description, full extraction_prompt).  Use the echo to "
         "confirm back to the user — don't invent fields it didn't return.\n"
         "\n"
         "For workflow guidance — when to call this vs ``collection_update`` "
@@ -335,6 +345,16 @@ class CollectionCreateTool(MemoryTool):
                     "right; confirm it back to the user."
                 ),
             },
+            "published": {
+                "type": "boolean",
+                "description": (
+                    "true = notify the user about new entries (they asked to be "
+                    "told / kept posted / alerted as new ones are found); false "
+                    "(default) = silent background collection they'll ask about "
+                    "later. Don't add a send_message step to the prompt — "
+                    "published=true is how new finds reach the user."
+                ),
+            },
         },
         "required": [
             "name",
@@ -367,6 +387,7 @@ class CollectionCreateTool(MemoryTool):
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
             intent=args.intent,
+            published=args.published,
         )
         return ToolResult(message=_format_collection_echo(memory, "Created"), mutated=True)
 
@@ -825,6 +846,10 @@ class CollectionUpdateTool(MemoryTool):
         "to always surface it; 'relevant' to gate on the description.\n"
         f"- ``recall`` ({_RECALL_MODES}) — stage-2 entry rendering once "
         "included.\n"
+        "- ``published`` — flip notify-on-new. ``true`` starts telling the "
+        "user about new entries (they asked to be kept posted / alerted); "
+        "``false`` silences it (the collector keeps gathering). Omit to leave "
+        "unchanged.\n"
         "- ``extraction_prompt`` — FULL replacement body, not a diff. "
         "Drives what the collector actually does. Read the current body "
         "via ``memory_metadata`` first if you need to preserve any "
@@ -867,6 +892,14 @@ class CollectionUpdateTool(MemoryTool):
                 "enum": [m.value for m in RecallMode],
                 "description": (
                     "Stage-2 entry rendering once included: 'relevant', 'recent', or 'all'."
+                ),
+            },
+            "published": {
+                "type": "boolean",
+                "description": (
+                    "Flip notify-on-new: true = start telling the user about "
+                    "new entries; false = stop (keep gathering silently). Omit "
+                    "to leave unchanged."
                 ),
             },
             "extraction_prompt": {
@@ -913,6 +946,7 @@ class CollectionUpdateTool(MemoryTool):
             extraction_prompt=args.extraction_prompt,
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
+            published=args.published,
         )
         return ToolResult(message=_format_collection_echo(memory, "Updated"), mutated=True)
 
@@ -966,6 +1000,7 @@ class MemoryMetadataTool(MemoryTool):
             f"intent: {memory.intent or 'none'}",
             f"inclusion: {memory.inclusion}",
             f"recall: {memory.recall}",
+            f"published: {memory.published}",
             f"archived: {memory.archived}",
             f"created: {created}",
             f"updated: {updated}",
@@ -1158,7 +1193,36 @@ _LOG_READ_WINDOW_DESCRIPTION = (
 )
 
 
-class LogReadTool(MemoryTool):
+class CursorReadTool(MemoryTool):
+    """Base for read tools that track a pending per-source cursor advance.
+
+    During a cycle a cursored read records, per source memory, the high-water
+    timestamp it consumed (in ``_pending``).  The orchestration layer commits
+    those advances after a successful cycle and discards them after a failed one
+    — so a cursor only moves forward over input the agent actually processed, and
+    a crash re-reads rather than skips.  Subclasses do the read and populate
+    ``_pending`` (the advance shape differs — a batch's max vs a single returned
+    entry); the commit/discard lifecycle is shared here so the orchestration can
+    treat every cursored tool uniformly (``isinstance(tool, CursorReadTool)``).
+    """
+
+    def __init__(self, db: Database, agent_name: str) -> None:
+        self._db = db
+        self._agent_name = agent_name
+        self._pending: dict[str, datetime] = {}
+
+    def commit_pending(self) -> None:
+        """Persist each source's pending cursor after a successful cycle."""
+        for memory_name, last_read_at in self._pending.items():
+            self._db.cursors.advance_committed(self._agent_name, memory_name, last_read_at)
+        self._pending.clear()
+
+    def discard_pending(self) -> None:
+        """Drop pending cursor advances — a failed cycle keeps cursors put."""
+        self._pending.clear()
+
+
+class LogReadTool(CursorReadTool):
     """Read entries from a log — one tool, caller-dispatched behaviour.
 
     For a collector (``scope`` set) it's CURSOR-based: it returns the next
@@ -1179,13 +1243,11 @@ class LogReadTool(MemoryTool):
     }
 
     def __init__(self, db: Database, agent_name: str, scope: str | None) -> None:
-        self._db = db
-        self._agent_name = agent_name
+        super().__init__(db, agent_name)
         self._cursor_mode = scope is not None
         self.description = (
             _LOG_READ_CURSOR_DESCRIPTION if self._cursor_mode else _LOG_READ_WINDOW_DESCRIPTION
         )
-        self._pending: dict[str, datetime] = {}
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadLogArgs(**kwargs)
@@ -1218,19 +1280,99 @@ class LogReadTool(MemoryTool):
         if prev is None or max_seen > prev:
             self._pending[memory] = max_seen
 
-    def commit_pending(self) -> None:
-        """Persist the highest timestamp seen during this run as the new cursor.
 
-        Called by the orchestration layer after a successful run (cursor mode
-        only — a no-op for window-mode chat reads, which keep no cursor).
-        """
-        for memory_name, last_read_at in self._pending.items():
-            self._db.cursors.advance_committed(self._agent_name, memory_name, last_read_at)
-        self._pending.clear()
+class _PublishedItem(NamedTuple):
+    """One candidate from a published collection: the source name + its intent
+    (for framing) and the entry itself."""
 
-    def discard_pending(self) -> None:
-        """Drop pending cursor advance — used after a failed run."""
-        self._pending.clear()
+    memory_name: str
+    intent: str | None
+    entry: MemoryEntry
+
+
+class ReadPublishedLatestTool(CursorReadTool):
+    """Fan-in cursored read across every ``published`` collection — the consumer
+    side of the pub/sub layer.
+
+    Each call returns the ``n`` oldest entries this consumer hasn't seen yet,
+    pooled across all published (non-archived) collections and ordered oldest
+    first, each tagged with its source collection and that collection's intent so
+    a generic consumer prompt can frame a message without naming sources.  A
+    per-``(consumer, source)`` cursor tracks progress (pending until the cycle
+    commits) and advances **only for the entries actually returned** — never for
+    a source merely scanned — so nothing is skipped.  A source this consumer has
+    no cursor for yet starts ``PUBLISHED_COLDSTART_LOOKBACK_SECONDS`` back, so a
+    freshly published backlog isn't replayed in full.
+
+    Mirrors ``LogReadTool``'s pending/commit lifecycle: the orchestration layer
+    calls ``commit_pending`` after a successful cycle, ``discard_pending`` after
+    a failed one.
+    """
+
+    name = "read_published_latest"
+    description = (
+        "Return the oldest entries you haven't seen yet across every collection "
+        "that publishes to you, each tagged with its source collection and that "
+        "collection's intent.  A cursor tracks where you left off per source, so "
+        "the next call returns the next ones and nothing repeats.  You never name "
+        "a source — this spans all of them.  Use it to find the next new thing "
+        "worth telling the user about."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "n": {
+                "type": "integer",
+                "description": "Max entries to return (default 1 — the single oldest unseen).",
+            },
+        },
+    }
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = ReadPublishedLatestArgs(**kwargs)
+        selected = self._select(args.n)
+        for item in selected:
+            self._advance_pending(item.memory_name, item.entry.created_at)
+        return ToolResult(message=self._format(selected))
+
+    def _select(self, n: int) -> list[_PublishedItem]:
+        """Pool unseen entries from every published source, return the oldest n."""
+        candidates: list[_PublishedItem] = []
+        for row in self._db.memories.list_all():
+            if not row.published or row.archived or row.name == self._agent_name:
+                continue
+            cursor = self._cursor_for(row.name)
+            for entry in self._db.memory(row.name).read_since(cursor, n):
+                candidates.append(_PublishedItem(row.name, row.intent, entry))
+        candidates.sort(key=lambda item: item.entry.created_at)
+        return candidates[:n]
+
+    def _cursor_for(self, memory_name: str) -> datetime:
+        """This consumer's committed cursor for ``memory_name``, or the cold-start
+        window when it has never read this source."""
+        committed = self._db.cursors.get(self._agent_name, memory_name)
+        if committed is not None:
+            return committed
+        return datetime.now(UTC) - timedelta(
+            seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS
+        )
+
+    def _format(self, items: list[_PublishedItem]) -> str:
+        if not items:
+            return "(no new published entries)"
+        lines = []
+        for index, item in enumerate(items, start=1):
+            intent = f" (intent: {item.intent})" if item.intent else ""
+            key = f"[{item.entry.key}] " if item.entry.key else ""
+            lines.append(f"{index}. from `{item.memory_name}`{intent}: {key}{item.entry.content}")
+        noun = "entry" if len(items) == 1 else "entries"
+        return f"{len(items)} new published {noun} (oldest first):\n" + "\n".join(lines)
+
+    def _advance_pending(self, memory_name: str, created_at: datetime) -> None:
+        """Track the highest returned timestamp per source as the pending cursor."""
+        prev = self._pending.get(memory_name)
+        if prev is None or created_at > prev:
+            self._pending[memory_name] = created_at
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────
@@ -1452,6 +1594,7 @@ def build_memory_tools(
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
         LogReadTool(db, agent_name, scope),
+        ReadPublishedLatestTool(db, agent_name),
         ExistsTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [

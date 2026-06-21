@@ -228,6 +228,11 @@ class PennyConstants:
     # bounded batches across cycles instead of flooding one agentic loop with
     # hundreds of entries it can't reason over.
     LOG_READ_LIMIT = 10
+    # Cold-start window for a consumer draining a published collection it has no
+    # cursor for yet.  Rather than replay the whole backlog (a flood) or skip it
+    # entirely, the consumer starts one week back — the user-chosen window: the
+    # last week's finds get delivered once, anything older counts as already-seen.
+    PUBLISHED_COLDSTART_LOOKBACK_SECONDS = 7 * 86400
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
 

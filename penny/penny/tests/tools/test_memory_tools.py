@@ -8,12 +8,16 @@ similarity reads and dedup have something to work with.
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
+from sqlmodel import Session, select
 
 from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.memory import EntryInput, Inclusion, RecallMode
+from penny.database.models import MemoryEntry
 from penny.llm.client import LlmClient
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
@@ -33,6 +37,7 @@ from penny.tools.memory_tools import (
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
+    ReadPublishedLatestTool,
     ReadSimilarTool,
     TestExtractionPromptTool,
     UpdateEntryTool,
@@ -108,12 +113,15 @@ class TestCreateAndList:
             ),
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
+            published=True,
         )
         # Structured echo: collection name, interval, recall, prompt body all surfaced
         # so the chat agent can confirm-back without confabulating.
         assert "Created collection 'likes'" in result.message
         assert "interval: 3600s (1h)" in result.message
         assert "recall: relevant" in result.message
+        # published surfaces in the echo so the chat agent confirms notify-on-new back.
+        assert "published: True" in result.message
         assert "Extract user likes" in result.message  # extraction_prompt is echoed verbatim
         # Intent captured at creation is persisted and echoed back so the user
         # can correct it now — the only time it's settable.
@@ -124,6 +132,8 @@ class TestCreateAndList:
         assert memories["likes"].description == "positive prefs"
         assert memories["likes"].collector_interval_seconds == 3600
         assert memories["likes"].intent == "a running list the user asked me to keep"
+        # The notify-on-new flag persists; omitting it defaults to silent (False).
+        assert memories["likes"].published is True
 
     @pytest.mark.asyncio
     async def test_create_log_persists(self, tmp_path):
@@ -293,12 +303,15 @@ class TestCreateAndList:
             recall="relevant",
             extraction_prompt="",
             description="   ",
+            published=True,
         )
         assert "Updated" in result.message
         updated = db.memories.get("notes")
         assert updated.recall == "relevant"  # the real change landed
         assert updated.extraction_prompt == original_prompt  # blank skipped, not blanked
         assert updated.description == "real description"  # blank skipped, not blanked
+        # published flips on the update path (created silent by default → notify-on-new).
+        assert updated.published is True
 
 
 class TestCollectionWritesAndReads:
@@ -1175,6 +1188,7 @@ class TestFactory:
         "collection_keys",
         "memory_metadata",
         "log_read",
+        "read_published_latest",
         "read_similar",
         "exists",
         # Lifecycle (shape)
@@ -1363,3 +1377,113 @@ class TestScopedFactory:
         delete = CollectionDeleteEntryTool(db, scope="likes")
         result = await delete.execute(memory="dislikes", key="k")
         assert "Refused" in result.message
+
+
+class TestReadPublishedLatest:
+    """The consumer side of the pub/sub layer: a fan-in cursored read across
+    every published collection, oldest-first, advancing only the returned
+    entry's cursor so nothing repeats and nothing is skipped."""
+
+    def _publish(self, db: Database, name: str, *, published: bool = True) -> None:
+        db.memories.create_collection(
+            name, f"{name} desc", Inclusion.NEVER, RecallMode.RECENT, published=published
+        )
+
+    def _write(self, db: Database, name: str, key: str, content: str) -> None:
+        db.memory(name).write([EntryInput(key=key, content=content)], author="producer")
+
+    def _backdate(self, db: Database, name: str, key: str, when: datetime) -> None:
+        with Session(db.engine) as session:
+            row = session.exec(
+                select(MemoryEntry).where(MemoryEntry.memory_name == name, MemoryEntry.key == key)
+            ).first()
+            assert row is not None
+            row.created_at = when
+            session.add(row)
+            session.commit()
+
+    @pytest.mark.asyncio
+    async def test_fan_in_returns_oldest_published_skipping_unpublished(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._publish(db, "silent", published=False)
+        self._publish(db, "games")
+        self._publish(db, "jobs")
+        # The unpublished entry is the oldest of all, yet must stay invisible.
+        self._write(db, "silent", "old", "oldest but unpublished")
+        self._write(db, "games", "stardrift", "Stardrift Saga")
+        self._write(db, "jobs", "role", "New engineering role")
+        result = await ReadPublishedLatestTool(db, "notifier").execute(n=1)
+        # Oldest PUBLISHED entry wins; the older unpublished one is never seen.
+        assert "Stardrift Saga" in result.message
+        assert "from `games`" in result.message
+        assert "unpublished" not in result.message
+        assert "New engineering role" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_advances_only_returned_source_and_never_repeats(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._publish(db, "games")
+        self._publish(db, "jobs")
+        self._write(db, "games", "g1", "game one")  # oldest
+        self._write(db, "jobs", "j1", "job one")  # newer
+        tool = ReadPublishedLatestTool(db, "notifier")
+        first = await tool.execute(n=1)
+        assert "game one" in first.message
+        tool.commit_pending()
+        # Only the returned source's cursor advanced; the scanned-but-unreturned
+        # source is left untouched so its entry isn't skipped.
+        assert db.cursors.get("notifier", "games") is not None
+        assert db.cursors.get("notifier", "jobs") is None
+        # Next read surfaces the next-oldest unseen, never the already-sent game.
+        second = await tool.execute(n=1)
+        assert "job one" in second.message
+        assert "game one" not in second.message
+        tool.commit_pending()
+        # Both caught up now.
+        third = await tool.execute(n=1)
+        assert third.message == "(no new published entries)"
+        # Durable library: entries stay put — drained by cursor, never moved.
+        assert len(db.memory("games").read_all()) == 1
+        assert len(db.memory("jobs").read_all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_discard_pending_does_not_advance(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._publish(db, "games")
+        self._write(db, "games", "g1", "game one")
+        tool = ReadPublishedLatestTool(db, "notifier")
+        await tool.execute(n=1)
+        tool.discard_pending()  # a failed cycle drops the advance
+        assert db.cursors.get("notifier", "games") is None
+        # So the entry is offered again on the next cycle.
+        again = await tool.execute(n=1)
+        assert "game one" in again.message
+
+    @pytest.mark.asyncio
+    async def test_skips_archived_published_collection(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._publish(db, "games")
+        self._write(db, "games", "g1", "game one")
+        db.memories.archive("games")
+        result = await ReadPublishedLatestTool(db, "notifier").execute(n=1)
+        assert result.message == "(no new published entries)"
+
+    @pytest.mark.asyncio
+    async def test_cold_start_ignores_backlog_older_than_window(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._publish(db, "games")
+        self._write(db, "games", "old", "ancient game")
+        # A brand-new consumer must not replay a long-standing backlog the day it
+        # subscribes: an entry older than the cold-start window is treated as seen.
+        self._backdate(
+            db,
+            "games",
+            "old",
+            datetime.now(UTC)
+            - timedelta(seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS + 86400),
+        )
+        tool = ReadPublishedLatestTool(db, "notifier")
+        assert (await tool.execute(n=1)).message == "(no new published entries)"
+        # But a fresh entry (within the window) is surfaced.
+        self._write(db, "games", "new", "fresh game")
+        assert "fresh game" in (await tool.execute(n=1)).message

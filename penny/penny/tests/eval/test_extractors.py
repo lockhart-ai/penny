@@ -83,6 +83,8 @@ def _seed_unnotified(entries: list[EntryInput]):
 
 
 def _seed_research_watcher(db: Database) -> None:
+    # A published producer: it gathers and writes, never sends — delivery is the
+    # notifier consumer's job, gated on the published flag.
     db.memories.create_collection(
         RESEARCH_WATCHER.name,
         RESEARCH_WATCHER.description,
@@ -91,6 +93,30 @@ def _seed_research_watcher(db: Database) -> None:
         extraction_prompt=RESEARCH_WATCHER_EXTRACTION_PROMPT,
         intent=RESEARCH_WATCHER_INTENT,
         collector_interval_seconds=3600,
+        published=True,
+    )
+
+
+def _seed_notifier_with_published_find(db: Database) -> None:
+    """A published producer holding one fresh find. The notifier consumer that
+    delivers it is migration-seeded (0067), so this drives the SHIPPED prompt."""
+    db.memories.create_collection(
+        RESEARCH_WATCHER.name,
+        RESEARCH_WATCHER.description,
+        Inclusion(RESEARCH_WATCHER.inclusion),
+        RecallMode.RELEVANT,
+        intent=RESEARCH_WATCHER_INTENT,
+        published=True,
+    )
+    db.memory(RESEARCH_WATCHER.name).write(
+        [
+            EntryInput(
+                key="Hollow Verge",
+                content="Hollow Verge — a hand-drawn metroidvania with grappling-hook "
+                "traversal and a branching map. https://indiegames.example.com/hollow-verge",
+            )
+        ],
+        author="producer",
     )
 
 
@@ -170,10 +196,23 @@ def _score_research(db: Database, before: object, sent: list[str]) -> list[str]:
     fails = []
     if not (set(after) - set(before_entries)):
         fails.append("did not write the browsed find to the collection")
+    # Pub/sub: a producer gathers and writes only — it must NOT notify (that's the
+    # notifier consumer's job, gated on the published flag).
+    if sent:
+        fails.append(
+            "producer sent a message — notification is the notifier's job, not the producer's"
+        )
+    if not tool_was_called(db, "done"):
+        fails.append("cycle did not close with done()")
+    return fails
+
+
+def _score_notifier(db: Database, before: object, sent: list[str]) -> list[str]:
+    fails = []
     if not sent:
-        fails.append("did not ping the user about the new find")
-    elif not any("http" in message for message in sent):
-        fails.append("notification carried no source URL")
+        fails.append("notifier did not deliver the new published find")
+    elif not any("hollow verge" in message.lower() for message in sent):
+        fails.append("notification did not name the new find")
     if not tool_was_called(db, "done"):
         fails.append("cycle did not close with done()")
     return fails
@@ -261,6 +300,22 @@ async def test_collector_research_browse(collector_eval) -> None:
         snapshot=_snapshot(RESEARCH_WATCHER.name),
         browse=list(RESEARCH_PAGES),
         score=_score_research,
+    )
+
+
+async def test_notifier_delivers_published_find(collector_eval) -> None:
+    """The pub/sub consumer: given a published collection holding a fresh find,
+    the notifier reads it via read_published_latest, grounds it, and delivers it
+    to the user.  Once-only across cycles is a structural cursor guarantee
+    (unit-tested); this validates the notifier prompt drives the model to deliver
+    at all — the contract the seeding migration ships."""
+    await collector_eval(
+        case_id="notifier-delivers-published",
+        collection="notifier",  # migration-seeded (0067) — we drive the shipped prompt
+        seed=_seed_notifier_with_published_find,
+        snapshot=_snapshot("notifier"),
+        score=_score_notifier,
+        min_pass_rate=None,  # report-only: read → ground → compose → send is a long chain
     )
 
 

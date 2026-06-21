@@ -39,13 +39,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse
 from penny.config import Config
-from penny.constants import RunOutcome
+from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
@@ -82,9 +82,6 @@ class Collector(BackgroundAgent):
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
-        "- ``send_message`` (when the prompt above asks for notify-on-new) is gated on a "
-        "successful write: only call it after ``collection_write`` returns without "
-        "duplicate-rejection.\n"
         "- Always end the cycle with ``done(success=<bool>, summary=<one-sentence prose>)``. "
         "``success`` is true if the cycle did what the prompt asked, false on no-op or failure. "
         "``summary`` describes what actually happened (entries written, messages sent, why no-op). "
@@ -276,6 +273,11 @@ class Collector(BackgroundAgent):
         current = collection.collector_interval_seconds
         if threshold <= 0 or base is None or current is None:
             return
+        if self._is_consumer(collection):
+            # A consumer is gate-controlled like a log-driven collection: it only
+            # wakes when a published source has unseen entries, so it never idles
+            # its way into a wider interval.  Pinned at base.
+            return
         if outcome in (RunOutcome.WORKED, RunOutcome.INCOMPLETE):
             interval, idle = base, 0
         elif self._live_cursors(collection):
@@ -435,11 +437,55 @@ class Collector(BackgroundAgent):
         The cursors a collection already holds *are* its declared inputs — no
         separate spec.  ``commit_pending`` advances a cursor to the newest entry
         actually consumed, so ``head > last_read_at`` means unread input exists.
+
+        A *consumer* (its prompt calls ``read_published_latest``) is the pub/sub
+        analogue: its inputs aren't prompt-named logs but every ``published``
+        collection.  It's always gate-eligible — it wakes only when some
+        published source has entries past this consumer's cursor, never on a
+        blind interval.
         """
+        if self._is_consumer(memory):
+            return self._published_pending(memory)
         live = self._live_cursors(memory)
         if not live:
             return None
         return any(self._log_has_new(log_name, position) for log_name, position in live)
+
+    @staticmethod
+    def _is_consumer(memory: MemoryRow) -> bool:
+        """A collection whose prompt drains the published stream via
+        ``read_published_latest`` — identified by the call, exactly as a
+        log-reader is identified by naming a log in ``log_read``."""
+        return (
+            memory.extraction_prompt is not None
+            and "read_published_latest" in memory.extraction_prompt
+        )
+
+    def _published_pending(self, memory: MemoryRow) -> bool:
+        """Does any published collection have an entry this consumer hasn't seen?
+
+        The pub/sub gate: the consumer's inputs are every ``published`` (non-
+        archived) collection other than itself, each read against this consumer's
+        own cursor.  Returns ``False`` (skip) when nothing publishes yet or every
+        source is caught up — a consumer never enters the model with nothing to do.
+        """
+        return any(
+            self._source_has_new(memory.name, source.name)
+            for source in self.db.memories.list_all()
+            if source.published and not source.archived and source.name != memory.name
+        )
+
+    def _source_has_new(self, consumer_name: str, source_name: str) -> bool:
+        """Is there ≥1 entry in published ``source_name`` past ``consumer_name``'s
+        cursor?  A source this consumer has never read starts at the cold-start
+        window, matching ``read_published_latest`` so the gate and the read agree."""
+        cursor = self.db.cursors.get(consumer_name, source_name)
+        if cursor is None:
+            cursor = datetime.now(UTC) - timedelta(
+                seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS
+            )
+        source = self.db.memory(source_name)
+        return bool(source and source.read_since(cursor, 1))
 
     def _live_cursors(self, memory: MemoryRow) -> list[tuple[str, datetime]]:
         """The collection's cursors for logs it *still* reads, with positions.
@@ -448,7 +494,14 @@ class Collector(BackgroundAgent):
         was left behind by a since-dropped read (e.g. a migration that removed a
         ``log_read``); it would lie about what the collection consumes, so it's
         pruned here — an exact identifier match, deterministic, self-healing.
+
+        A consumer is excluded: its cursors are ``(consumer, published-source)``
+        pairs whose source names are deliberately absent from its prompt, so the
+        log-name pruning heuristic would wrongly wipe them.  Consumers gate via
+        :meth:`_published_pending`, never here.
         """
+        if self._is_consumer(memory):
+            return []
         live: list[tuple[str, datetime]] = []
         for log_name, position in self.db.cursors.list_for(memory.name):
             if memory.extraction_prompt is not None and log_name in memory.extraction_prompt:

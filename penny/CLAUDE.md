@@ -203,13 +203,16 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 **Collector** (`agents/collector.py`)
 - One dispatcher agent for every kind of background extraction.  Each tick it picks the most-overdue ready collection from the `memory` table (where `extraction_prompt IS NOT NULL` and `now - last_collected_at >= collector_interval_seconds`), binds itself to that target via `self._current_target`, runs the agent loop with the target's extraction prompt as instructions and a tool surface scoped to writes against that single collection, then stamps `last_collected_at = now`.
 - **Cursor gate (skip-when-no-new-input)** (`_input_pending`/`_live_cursors`, in `_is_ready` after the interval floor): a *log-driven* collection — one that reads a log via `log_read`, leaving a read cursor — is skipped **without entering the model** whenever every one of its live input logs is caught up (`head <= last_read_at`, probed with the same bounded `read_batch` the collector itself uses, uniform across the `messagelog`/`promptlog` facades and real logs). The cursors a collection already holds *are* its declared inputs (no separate spec); the gate ORs across them (any input behind → run). A cursor whose log the current `extraction_prompt` no longer names — left by a since-dropped `log_read` — is pruned (exact identifier substring match) so it can't lie about what the collection consumes. A collection with no live cursor (generative/browse-driven, or one that picks from another *collection*) returns `None` from `_input_pending` — not gate-eligible, runs on its plain interval. This is what lets a quiet log stop a collector cold yet have it resume the instant the log moves, without the catch-up lag a stretched throttle interval caused.
-- Replaces what used to be four bespoke agents: preference-extractor, knowledge-extractor, thinking, notify.  Each is now just a row in the `memory` table with its own `extraction_prompt`, `collector_interval_seconds`, and (for notify-shaped cycles) a system prompt that calls `send_message`.
+- **Pub/sub consumer gate** (`_is_consumer`/`_published_pending`): a *consumer* — a collection whose `extraction_prompt` calls `read_published_latest` (identified by that call, exactly as a log-reader is by `log_read("name")`) — has its inputs be every `published` collection rather than prompt-named logs. It wakes only when some published source has an entry past this consumer's own per-`(consumer, source)` cursor (a never-seen source starts `PUBLISHED_COLDSTART_LOOKBACK_SECONDS` = 1 week back, so a backlog isn't flooded), and it's throttle-exempt like a log-driven collection. Consumers are excluded from `_live_cursors` pruning (their cursors point at sources the prompt deliberately doesn't name).
+- Replaces what used to be four bespoke agents: preference-extractor, knowledge-extractor, thinking, notify.  Each is now just a row in the `memory` table with its own `extraction_prompt` and `collector_interval_seconds`.
+- **Pub/sub (producers + the notifier consumer)**: notification is decoupled from gathering. A *producer* collection just gathers — it sets `published=true` and never calls `send_message`. The `notifier` *consumer* drains the published stream and delivers each new entry once (`read_published_latest` + a forward-only cursor; the entry is never moved, so the source stays a durable library). A consumer owns its own cursors, so a future digest/email consumer drains the same surface independently. The chat agent maps a user's "tell me / keep me posted" request onto the `published` flag (the seeded `skills` teach this); it must NOT add a `send_message` step to a producer prompt. (The `notified-thoughts` move-drain pipeline predates this and still uses `collection_move`; folding it onto the cursor model is Phase 2.)
 - System collections currently driven by collectors:
   - `likes` / `dislikes` — extract user preferences from `user-messages` (300s)
   - `knowledge` — summarize web pages from `browse-results` (300s)
   - `unnotified-thoughts` — inner monologue, picks a random like and drafts a thought (1200s)
   - `notified-thoughts` — picks an unnotified thought, calls `send_message`, moves the entry into its own collection (300s)
   - `skills` — workflow patterns the chat agent follows (TRIGGER + STEPS entries surfaced via recall); its collector extracts/refines/removes skills from chat as the user teaches Penny new behavior (21600s)
+  - `notifier` — pub/sub consumer (migration 0067): each cycle `read_published_latest(n=1)` returns the oldest unseen entry across every `published` collection, grounds it in `penny-messages`/`user-messages`, and `send_message`s it once; the cursor (not a move) guarantees once-only, so the source stays a durable library. Mirrors the `notified-thoughts` compose flow minus the move (600s ≈ the send cooldown). Its prompt is byte-identical to the eval's `notifier-delivers-published` contract.
   - `quality` — self-correcting collector (migration 0055, prompt refined through 0063): reviews recent runs via `log_read("collector-runs")` — a **read facade over `promptlog`** that renders each run as a record (`[target] summary` header + the run's tool trace incl. `done()`; a run that bailed — no tool call other than `done()` — is deterministically flagged `⚠ NO WORK DONE`). It judges each run on two tiers: **tier 0** — did the collector follow its instructions at all? a `⚠ NO WORK DONE` bail is a regression; **tier 1** — for runs that executed, does the behaviour match the collection's `intent`? It rewrites whichever `extraction_prompt` failed (always as a numbered recipe), applies it **directly** with `collection_update`, then messages the user (apply-then-notify). A `❌`/`💤` run that DID call real tools renders header-only and is skipped — capacity/interruption, not drift. (3600s base, auto-throttles toward the weekly cap on quiet cycles like any other collector)
 - User-defined collections created via chat (`/collection_create` with an `extraction_prompt`) are picked up automatically on the next tick — no restart required.
 - Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done — uniform across every collection, including `quality`. (An earlier `prompt_test` dry-run tool, given only to `quality`, was removed: gpt-oss couldn't reliably drive the dry-run → revise → apply loop — it would emit the revised prompt as text instead of a tool call and the cycle died without applying — so quality now rewrites directly and the next cycle re-checks. See `docs/self-improvement-loop.md`.)
@@ -333,7 +336,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Thought**: Inner monologue entries — `content` (full monologue), `title`, `image`, `valence`, `preference_id` FK (seed preference), `run_id`, `notified_at`
 - **Preference**: User sentiment signals — `content`, `valence` (positive/negative), `source` (manual/extracted), `mention_count`, `embedding` (serialized float32 vector), `last_thought_at`. Extracted preferences must reach `PREFERENCE_MENTION_THRESHOLD` mentions before becoming thinking candidates; manual (`/like`) preferences bypass this gate
 - **Knowledge**: Summarized web page content — `url` (unique), `title`, `summary` (prose paragraph), `embedding`, `source_prompt_id` FK (extraction watermark). One entry per URL, upserted on revisit
-- **Memory**: Unified container for the task/memory framework — `name` (PK), `type` (`collection` or `log`), `description` (content-reflective; doubles as the stage-1 routing anchor), `description_embedding` (the anchor vector, backfilled at startup), `inclusion` (stage-1 routing: `always` / `relevant` / `never`), `recall` (stage-2 entry rendering: `all` / `relevant` / `recent`), `archived`. Collections are keyed sets with dedup on write; logs are append-only keyless streams
+- **Memory**: Unified container for the task/memory framework — `name` (PK), `type` (`collection` or `log`), `description` (content-reflective; doubles as the stage-1 routing anchor), `description_embedding` (the anchor vector, backfilled at startup), `inclusion` (stage-1 routing: `always` / `relevant` / `never`), `recall` (stage-2 entry rendering: `all` / `relevant` / `recent`), `published` (pub/sub: when true, a consumer like the `notifier` drains this collection's new entries via `read_published_latest` — orthogonal to recall; opt-in, default false), `archived`. Collections are keyed sets with dedup on write; logs are append-only keyless streams
 - **MemoryEntry**: One entry in a memory — `memory_name` FK, `key` (nullable for logs), `content`, `author`, `key_embedding`, `content_embedding`. Entries are immutable once written — `update` replaces content for a given key
 - **AgentCursor**: Per-reader read progress through a log-shaped memory — `(agent_name, memory_name)` PK, `last_read_at` high-water mark. Advanced two-phase by the orchestrator (pending during a run, committed on success). For collectors the cursor owner is the **bound collection name**, not the constant `"collector"` identity — otherwise every collection reading the same log (e.g. the many that read `user-messages`) would collapse onto one shared cursor and starve each other
 - **Media**: Images captured while browsing, delivered side-channel — `mime_type`, `data` (raw bytes), `source_url`, `title`, `embedding` (of title+URL). The browse tool stores every page image here; at channel egress the outgoing message text is embedded and the single nearest image (no floor) is attached. Zero model involvement — no `<media:ID>` tokens, no prompt changes
@@ -519,8 +522,34 @@ change — **must land with a `tests/eval/` case that encodes the behaviour it
 establishes or fixes.** The eval suite is both the regression net (a future
 prompt tweak can't silently undo it) and the *written contract* for what we
 expect the model to do. A model-facing change without an eval contract is
-incomplete — the next change will regress it and nothing will catch it. The
-workflow:
+incomplete — the next change will regress it and nothing will catch it.
+
+**Authoring a case is not running it.** Every prompt change must be *dry-run through
+the harness against the live model* (`make eval` / a focused case) and the result read
+**before you commit the prompt** — a case you wrote but didn't run tells you nothing
+about whether the model actually complies, and "coverage" without execution has shipped
+broken prompts here before. When it fails, read the model's thinking (auto-dumped on
+failed samples), not just the scorer line — that's where the reason lives.
+
+**The eval runs the SHIPPED prompts, and a failure is often stale data — not model
+incapacity.** A fresh eval DB is built exactly like prod (`create_tables()` then
+`migrate()`), so the seeded skills / `extraction_prompt`s the model follows are the ones
+migrations ship — the eval tests them as deployed, not a hand-built copy. Two consequences:
+
+- *Make a migration the single source of truth for a seeded prompt.* Have the eval drive
+  the **migration-seeded** version (seed only the case's inputs, not a second copy of the
+  prompt) so what's validated is byte-for-byte what ships — no fixture copy to drift.
+- *Suspect stale seeded data before model incapacity.* Real example from this codebase: the
+  chat agent set a new `published` flag **correctly** but *also* bolted on a `send_message`
+  step and created duplicate collections — not because it couldn't reason about the flag,
+  but because the seeded **skills** still taught the old pattern. We nearly renamed a schema
+  field chasing a "comprehension" problem that was actually stale data. The thinking trace
+  tells you which; fix at the highest rung (data/skill > prompt > code — see the root
+  Design Principles). Corollary: adding a seeded collection in a migration changes the chat
+  agent's Memory Inventory, so the verbatim system-prompt test will fail until you update
+  its expected string — that's the test working, not a regression.
+
+The workflow:
 
 1. **While iterating**, drive the fix with `replay.py` / focused low-N runs (below) — fast, throwaway, may read the local prod DB.
 2. **Before opening the PR**, lift the validated behaviour into a committable, privacy-safe `tests/eval/` case: genericize any real data into synthetic topics (per the log→test→fix loop), and assert on persisted DB state / sends / run outcome, never on wording.
@@ -571,3 +600,19 @@ Live-model cases are slow — a quality cycle is ~120-180s **per sample**, so a 
   shows exactly what the model saw and did at each step.
 - Run the FULL suite at the default N **once, at the end**, to confirm nothing
   regressed — not as the iteration loop.
+
+#### Always read the model's thinking on a failure — that's where the "why" lives
+
+When a prompt change doesn't move the pass rate, the reason is almost never visible
+from the scorer's one-line failure — it's in the model's **thinking trace**. (Real
+example: the publish-flag cases failed not because the model misunderstood `published`
+— it set it correctly — but because a *stale seeded skill* still told it to add a
+`send_message` step. Only the thinking + tool trace made that obvious.) So **reviewing
+the thinking is a required step of every prompt-iteration loop, not a last resort.**
+
+The harness does this for you: `_dump_thinking` (in `tests/eval/conftest.py`) prints
+each LLM call's thinking + tool calls for **every failed sample automatically** —
+pytest surfaces captured stdout for failed tests, so the traces land in the failure
+report with no flag needed. Set `EVAL_DUMP_THINKING=1` to also dump passing samples
+when you want the full picture. The eval DB is an ephemeral `--rm` container, so this
+read-before-discard is the only place the reasoning survives — don't skip it.

@@ -11,13 +11,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.constants import RunOutcome
 from penny.database import Database
-from penny.database.memory import Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
 from penny.tools.memory_tools import LogReadTool
@@ -60,8 +61,6 @@ def _memory(db: Database, name: str):
 def _backdate_collected(db: Database, name: str, *, minutes: int) -> None:
     """Push a collection's last_collected_at into the past so its interval floor
     is clear and only the cursor gate decides readiness."""
-    from sqlalchemy import text
-
     with db.engine.connect() as conn:
         conn.execute(
             text("UPDATE memory SET last_collected_at = :ts WHERE name = :name"),
@@ -214,8 +213,6 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
     db.memories.mark_collected("fresh")
     # Backdate `stale`'s last_collected_at by an hour
     with db.engine.connect() as conn:
-        from sqlalchemy import text
-
         conn.execute(
             text("UPDATE memory SET last_collected_at = :ts WHERE name = 'stale'"),
             {"ts": (datetime.now(UTC) - timedelta(hours=1)).isoformat()},
@@ -243,8 +240,6 @@ def test_dispatcher_skips_collection_without_interval(test_config, tmp_path):
     db.memories.mark_collected("wired")
     backdate = datetime.now(UTC) - timedelta(days=30)
     with db.engine.connect() as conn:
-        from sqlalchemy import text
-
         conn.execute(
             text("UPDATE memory SET last_collected_at = :ts WHERE name = 'wired'"),
             {"ts": backdate.isoformat()},
@@ -305,9 +300,6 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
-        "- ``send_message`` (when the prompt above asks for notify-on-new) is gated on a "
-        "successful write: only call it after ``collection_write`` returns without "
-        "duplicate-rejection.\n"
         "- Always end the cycle with ``done(success=<bool>, summary=<one-sentence prose>)``. "
         "``success`` is true if the cycle did what the prompt asked, false on no-op or failure. "
         "``summary`` describes what actually happened (entries written, messages sent, why no-op). "
@@ -938,3 +930,100 @@ def test_input_pending_tristate(test_config, tmp_path):
         [LogEntryInput(content="new", content_embedding=None)], author="user"
     )
     assert collector._input_pending(_get(db, "watcher")) is True
+
+
+# ── Consumer gate (pub/sub fan-in) ────────────────────────────────────────────
+
+
+_NOTIFIER_PROMPT = (
+    "Notifier: call read_published_latest(n=1), ground it in past messages, "
+    "send_message, then done."
+)
+
+
+def _make_consumer(db: Database) -> None:
+    """A consumer collection whose prompt drains the published stream."""
+    db.memories.create_collection(
+        "notifier",
+        "d",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_NOTIFIER_PROMPT,
+        collector_interval_seconds=60,
+    )
+
+
+def _publish_source(db: Database, name: str, key: str, content: str) -> None:
+    db.memories.create_collection(name, "d", Inclusion.NEVER, RecallMode.RECENT, published=True)
+    _memory(db, name).write([EntryInput(key=key, content=content)], author="producer")
+
+
+def _backdate_entry(db: Database, name: str, key: str, *, days: int) -> None:
+    with db.engine.connect() as conn:
+        conn.execute(
+            text("UPDATE memory_entry SET created_at = :ts WHERE memory_name = :n AND key = :k"),
+            {"ts": (datetime.now(UTC) - timedelta(days=days)).isoformat(), "n": name, "k": key},
+        )
+        conn.commit()
+
+
+def test_consumer_skipped_until_a_published_source_advances(test_config, tmp_path):
+    """A consumer (its prompt calls read_published_latest) is gated on the
+    published stream: it runs when a source has an unseen entry, is skipped when
+    caught up on its own cursor, and runs again when a new entry lands."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _publish_source(db, "games", "g1", "game one")
+    _make_consumer(db)
+    # A published source has an unseen entry → the consumer is ready.
+    ready = collector._next_ready_collection()
+    assert ready is not None and ready.name == "notifier"
+
+    # Simulate the consumer having drained it: its cursor sits at the source head.
+    head = _memory(db, "games").read_all()[-1].created_at
+    db.cursors.advance_committed("notifier", "games", head)
+    db.memories.mark_collected("notifier")
+    _backdate_collected(db, "notifier", minutes=10)  # clear the interval floor
+    # Caught up across every published source → the gate skips it.
+    assert collector._next_ready_collection() is None
+
+    # A new published entry past the cursor → ready again.
+    _memory(db, "games").write([EntryInput(key="g2", content="game two")], author="producer")
+    ready2 = collector._next_ready_collection()
+    assert ready2 is not None and ready2.name == "notifier"
+
+
+def test_consumer_not_woken_by_unpublished_source(test_config, tmp_path):
+    """An unpublished collection with fresh entries does not wake a consumer —
+    only published collections feed the stream."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("silent", "d", Inclusion.NEVER, RecallMode.RECENT)
+    _memory(db, "silent").write([EntryInput(key="s1", content="secret")], author="user")
+    _make_consumer(db)
+    # No published source has anything → the consumer is skipped, never run blind.
+    assert collector._next_ready_collection() is None
+
+
+def test_consumer_cold_start_ignores_old_published_backlog(test_config, tmp_path):
+    """A consumer subscribing for the first time ignores a long-standing backlog
+    (entries older than the cold-start window) so it doesn't flood on day one."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _publish_source(db, "games", "old", "ancient game")
+    _backdate_entry(db, "games", "old", days=8)  # beyond the 7-day cold-start window
+    _make_consumer(db)
+    assert collector._next_ready_collection() is None
+    # A fresh entry inside the window wakes it.
+    _memory(db, "games").write([EntryInput(key="new", content="fresh game")], author="producer")
+    ready = collector._next_ready_collection()
+    assert ready is not None and ready.name == "notifier"
+
+
+def test_consumer_is_exempt_from_throttle(test_config, tmp_path):
+    """A consumer is gate-controlled like a log-driven collection: no-work cycles
+    never widen its interval (it only wakes when the stream has something)."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _make_consumer(db)
+    for _ in range(10):
+        collector._apply_throttle(_get(db, "notifier"), RunOutcome.NO_WORK)
+    m = _get(db, "notifier")
+    assert m.collector_interval_seconds == 60
+    assert m.consecutive_idle_runs == 0

@@ -114,6 +114,7 @@ class TestMemoryMetadata:
             RecallMode.RECENT,
             collector_interval_seconds=300,
             extraction_prompt="Browse for new board games and write entries.",
+            published=True,
         )
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="board-games"))
@@ -122,6 +123,8 @@ class TestMemoryMetadata:
         assert "strategy board games" in result.message
         assert "inclusion: never" in result.message
         assert "recall: recent" in result.message
+        # published surfaces in metadata so the chat agent + quality can read notify-on-new.
+        assert "published: True" in result.message
         assert "300s" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
@@ -134,6 +137,8 @@ class TestMemoryMetadata:
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
         assert "extraction prompt: none" in result.message
+        # published is opt-in: a collection created without it defaults to silent.
+        assert "published: False" in result.message
 
     def test_updated_at_advances_on_metadata_update(self, tmp_path):
         db = _make_db(tmp_path)

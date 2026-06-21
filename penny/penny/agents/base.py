@@ -24,7 +24,7 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
-from penny.tools.memory_tools import DoneTool, LogReadTool, build_memory_tools
+from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.tools.send_message import SendMessageTool
 
 if TYPE_CHECKING:
@@ -297,9 +297,9 @@ class Agent:
         Penny user so notify can address them by name and the profile
         section reads correctly.  Reads ``self.name`` (class attr — also
         the prompt type identifier in promptlog) and ``self.terminator_tool``
-        (class attr) to drive the cycle.  If a ``LogReadTool`` is in the
-        surface in cursor mode, its pending cursor is committed on success
-        and discarded on failure.
+        (class attr) to drive the cycle.  Every cursored read in the surface
+        (``CursorReadTool`` — ``log_read`` and ``read_published_latest``) has
+        its pending cursor committed on success and discarded on failure.
 
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces and is what subclass cleanup
@@ -308,7 +308,7 @@ class Agent:
         per-cycle state lives on ``self``.
         """
         tools = self.get_tools()
-        log_read = next((t for t in tools if isinstance(t, LogReadTool)), None)
+        cursor_tools = [t for t in tools if isinstance(t, CursorReadTool)]
         self._install_tools(tools)
 
         primary_user = self.db.users.get_primary_sender()
@@ -338,11 +338,15 @@ class Agent:
                 response.tool_calls.append(ToolCallRecord(tool=DoneTool.name, arguments=args))
         success = any(record.tool == self.terminator_tool for record in response.tool_calls)
 
-        if log_read is not None:
-            if self._consumed_input(success, response):
-                log_read.commit_pending()
+        # Commit every cursored read's pending advance on a productive cycle,
+        # discard on a failed one — uniform across log_read and the published
+        # fan-in read, so a cursor only moves over input actually processed.
+        committed = self._consumed_input(success, response)
+        for cursor_tool in cursor_tools:
+            if committed:
+                cursor_tool.commit_pending()
             else:
-                log_read.discard_pending()
+                cursor_tool.discard_pending()
 
         return CycleResult(success=success, response=response)
 

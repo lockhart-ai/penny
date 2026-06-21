@@ -20,13 +20,14 @@ from math import ceil
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlmodel import Session, select
 
 from penny.config import Config
 from penny.constants import ChannelType
 from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.message_store import PromptPerf
-from penny.database.models import MemoryRow
+from penny.database.models import MemoryRow, PromptLog
 from penny.llm.models import LlmMessage, LlmResponse
 from penny.penny import Penny
 from penny.startup import get_restart_message
@@ -146,6 +147,7 @@ def seed_collection(
     extraction_prompt: str | None = None,
     intent: str | None = None,
     interval: int | None = None,
+    published: bool = False,
 ) -> None:
     """Create a synthetic collection + its entries (key = text before ' — ')."""
     db.memories.create_collection(
@@ -156,6 +158,7 @@ def seed_collection(
         extraction_prompt=extraction_prompt,
         collector_interval_seconds=interval,
         intent=intent,
+        published=published,
     )
     db.memory(synth.name).write(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
@@ -291,6 +294,33 @@ def _assert_threshold(
         pytest.fail(f"{case_id}: {passed}/{total} passed (need >={need}):\n{failures}")
 
 
+def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: bool) -> None:
+    """Print every LLM call's thinking + tool calls for one sample.
+
+    Auto-dumps for any FAILED sample: the reason a prompt change didn't work
+    almost always lives in the model's thinking, so an iteration loop must always
+    surface it (pytest shows captured stdout for failed tests automatically, so
+    these land in the failure report without needing ``-s``).  Set
+    ``EVAL_DUMP_THINKING=1`` to additionally dump passing samples for full
+    visibility.  Reads the ephemeral per-sample promptlog before the DB is
+    discarded — the only place the model's reasoning survives (the eval DB is in
+    a --rm container).
+    """
+    if not failed and not os.environ.get("EVAL_DUMP_THINKING"):
+        return
+    with Session(db.engine) as session:
+        rows = session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all()
+    print(f"\n===== THINKING [{case_id} #{sample_index}] — {len(rows)} LLM call(s) =====")
+    for index, row in enumerate(rows, start=1):
+        label = row.agent_name or row.prompt_type or "?"
+        if row.thinking:
+            print(f"[{index}:{label}] THINKING: {row.thinking.strip()}")
+        for call in _response_tool_calls(row):
+            function = call.get("function", {})
+            print(f"[{index}:{label}] TOOL: {function.get('name')}({function.get('arguments')})")
+    print("===== END THINKING =====\n")
+
+
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
 ChatEval = Callable[..., Awaitable[None]]
 
@@ -345,6 +375,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                         results.append(SampleResult(not fails, fails))
                     except TimeoutError:
                         results.append(SampleResult(False, ["no reply within timeout"]))
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
@@ -409,6 +440,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     ]
                     fails = score(penny.db, before, sent)
                     results.append(SampleResult(not fails, fails))
+                    _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

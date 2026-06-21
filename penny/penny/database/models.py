@@ -210,6 +210,11 @@ class MemoryRow(SQLModel, table=True):
     recall, in two stages: ``inclusion`` decides whether the memory participates
     at all (collection routing), and ``recall`` decides which of its entries
     surface once included (entry rendering).
+
+    A third, independent flag — ``published`` — marks the memory as a consumable
+    stream (pub/sub), unrelated to recall: a downstream consumer (the notifier,
+    later others) drains its new entries via ``read_published_latest``, each
+    consumer tracking its own cursor.
     """
 
     __tablename__ = "memory"
@@ -233,6 +238,12 @@ class MemoryRow(SQLModel, table=True):
     # once on create/description-edit (NULL until backfilled at startup).
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
+    # Pub/sub, orthogonal to inclusion/recall (which govern chat recall): when
+    # true, this collection is a consumable stream — a downstream consumer (the
+    # notifier, later others) drains its new entries via ``read_published_latest``,
+    # each consumer keeping its own cursor.  Opt-in (default false).
+    # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
+    published: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)
     collector_interval_seconds: int | None = Field(default=None)
     # The user's intended cadence — the value the collector snaps back to when a

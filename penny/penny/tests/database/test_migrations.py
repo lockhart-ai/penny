@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 64
+        assert count == 67
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 64
+        assert count1 == 67
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0064 run = 63 migrations
-        assert count == 63
+        # 0001 is skipped; 0002 through 0067 run = 66 migrations
+        assert count == 66
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 64  # all migrations applied
+        assert count == 67  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -553,3 +553,28 @@ class TestMigrate:
             is None
         )
         conn.close()
+
+    def test_0067_seeds_notifier_consumer(self, tmp_path):
+        """Migration 0067 seeds the notifier consumer: a published-stream drainer
+        (prompt calls read_published_latest), silent in chat, not itself a source."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT type, inclusion, published, extraction_prompt "
+            "FROM memory WHERE name = 'notifier'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        type_, inclusion, published, prompt = row
+        assert type_ == "collection"
+        assert inclusion == "never"  # internal — never surfaces in chat
+        assert published == 0  # a consumer, not a source
+        assert "read_published_latest" in prompt  # identified as a consumer by this call
+        assert "send_message" in prompt

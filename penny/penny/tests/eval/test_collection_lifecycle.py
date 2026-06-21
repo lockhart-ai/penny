@@ -35,6 +35,19 @@ def _seed_board_games(db: Database) -> None:
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
         intent=BOARD_GAMES_INTENT,
         interval=3600,
+        published=True,
+    )
+
+
+def _seed_board_games_silent(db: Database) -> None:
+    """The same collection, but silent (not published) — for the notify-on flip."""
+    seed_collection(
+        db,
+        BOARD_GAMES,
+        extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
+        intent=BOARD_GAMES_INTENT,
+        interval=3600,
+        published=False,
     )
 
 
@@ -47,7 +60,7 @@ def _created_collection(db: Database, before: set[str]):
 
 
 def _score_create(
-    db: Database, before: set[str], *, inclusion: str, send_message: bool, interval: int | None
+    db: Database, before: set[str], *, inclusion: str, published: bool, interval: int | None
 ) -> list[str]:
     memory = _created_collection(db, before)
     if memory is None:
@@ -58,10 +71,13 @@ def _score_create(
     body = (memory.extraction_prompt or "").lower()
     if "browse" not in body:
         fails.append("extraction_prompt missing browse step")
-    if send_message and "send_message" not in body:
-        fails.append("notify requested but extraction_prompt has no send_message")
-    if not send_message and "send_message" in body:
-        fails.append("silent requested but extraction_prompt has send_message")
+    # Pub/sub model: notify-on-new is the ``published`` flag, NOT a send_message
+    # step in the producer prompt.  The model must map "ping/tell me" onto the
+    # flag — and producers never send, so no producer prompt should call it.
+    if memory.published != published:
+        fails.append(f"published expected {published}, got {memory.published}")
+    if "send_message" in body:
+        fails.append("producer prompt has send_message — notify is the published flag, not a send")
     if interval is not None and memory.collector_interval_seconds != interval:
         fails.append(f"interval expected {interval}, got {memory.collector_interval_seconds}")
     return fails
@@ -81,13 +97,17 @@ def _score_silent_flip(db: Database, before: set[str], reply: str) -> list[str]:
     memory = db.memories.get("board-games")
     if memory is None:
         return ["board-games disappeared"]
-    # Either routing was turned off (inclusion=never) or the notify step was
-    # removed from the extraction_prompt — either satisfies "stop pinging me".
-    silenced = (
-        memory.inclusion == "never"
-        or "send_message" not in (memory.extraction_prompt or "").lower()
-    )
-    return [] if silenced else ["still notifying — inclusion not 'never' and notify step kept"]
+    # "stop pinging me" = flip ``published`` off.  The collector keeps gathering;
+    # only the notify side is silenced.
+    return [] if not memory.published else ["still publishing — published not flipped to false"]
+
+
+def _score_notify_flip(db: Database, before: set[str], reply: str) -> list[str]:
+    memory = db.memories.get("board-games")
+    if memory is None:
+        return ["board-games disappeared"]
+    # "start telling me" = flip ``published`` on for an existing silent collection.
+    return [] if memory.published else ["did not start publishing — published not flipped to true"]
 
 
 def _score_archive(db: Database, before: set[str], reply: str) -> list[str]:
@@ -113,7 +133,7 @@ async def test_create_notify(chat_eval: ChatEval) -> None:
         message="research heavier euro-style strategy board games for me, "
         "ping me when you find good ones",
         score=lambda db, before, reply: _score_create(
-            db, before, inclusion="relevant", send_message=True, interval=None
+            db, before, inclusion="relevant", published=True, interval=None
         ),
     )
 
@@ -123,7 +143,7 @@ async def test_create_silent(chat_eval: ChatEval) -> None:
         case_id="create-silent",
         message="research fountain pens and inks for me — silent, i'll check the list myself",
         score=lambda db, before, reply: _score_create(
-            db, before, inclusion="never", send_message=False, interval=None
+            db, before, inclusion="never", published=False, interval=None
         ),
     )
 
@@ -133,7 +153,7 @@ async def test_create_cadence(chat_eval: ChatEval) -> None:
         case_id="create-cadence",
         message="research new sci-fi novels for me, check daily, ping me when good ones land",
         score=lambda db, before, reply: _score_create(
-            db, before, inclusion="relevant", send_message=True, interval=86400
+            db, before, inclusion="relevant", published=True, interval=86400
         ),
     )
 
@@ -155,6 +175,15 @@ async def test_update_silent_flip(chat_eval: ChatEval) -> None:
         message="stop pinging me about new board game finds, i'll just check the collection myself",
         seed=_seed_board_games,
         score=_score_silent_flip,
+    )
+
+
+async def test_update_notify_flip(chat_eval: ChatEval) -> None:
+    await chat_eval(
+        case_id="update-notify-flip",
+        message="actually, start telling me when you find new board games",
+        seed=_seed_board_games_silent,
+        score=_score_notify_flip,
     )
 
 
