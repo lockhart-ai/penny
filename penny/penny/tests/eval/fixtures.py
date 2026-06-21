@@ -356,6 +356,12 @@ WATCHLIST_MESSAGES = (
     "anyway, can you remind me what time my dentist appointment is?",
 )
 
+# A plain-text "bail" the nudge-recovery contract forces mid-cycle — a collector
+# narrating completion as prose instead of calling a tool.  The exact wording is
+# irrelevant (the nudge fires on ANY text-only response); this is just a realistic
+# shape observed in production.  Privacy-safe / generic.
+COLLECTOR_PROSE_BAIL = "**Done. Summary: I've handled the recent messages.**"
+
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
     CannedPage(

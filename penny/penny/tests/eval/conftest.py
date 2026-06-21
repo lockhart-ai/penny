@@ -27,6 +27,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow
+from penny.llm.models import LlmMessage, LlmResponse
 from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
@@ -407,6 +408,105 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                         for message in server.outgoing_messages[sent_before:]
                     ]
                     fails = score(penny.db, before, sent)
+                    results.append(SampleResult(not fails, fails))
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+class _InjectTextBail:
+    """Wraps a real ``LlmClient`` to inject ONE plain-text response right after
+    the model's first tool call, then delegate every other call to the real
+    model.
+
+    This reproduces — deterministically, against the live model — a collector
+    that narrates "Done." (or any prose) instead of continuing with / closing
+    via a tool call.  The stochastic ~25% slip can't be reliably reproduced by
+    seeding alone, so we force it once and let the production text-step nudge
+    drive the recovery on the real model.  ``bail_injected`` records that the
+    scenario actually fired (else the contract test would be vacuous).
+    """
+
+    def __init__(self, real, bail_text: str) -> None:
+        self._real = real
+        self._bail_text = bail_text
+        self._saw_tool = False
+        self.bail_injected = False
+
+    async def chat(self, messages, tools=None, **kwargs):
+        if self._saw_tool and not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(message=LlmMessage(role="assistant", content=self._bail_text))
+        response = await self._real.chat(messages, tools=tools, **kwargs)
+        if response.has_tool_calls:
+            self._saw_tool = True
+        return response
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+# A nudge-eval runner: (collection, seed, bail_text) -> asserts recovery.
+NudgeEval = Callable[..., Awaitable[None]]
+
+
+@pytest.fixture
+def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
+    """Contract test for the collector text-step nudge.
+
+    Drives a real collector cycle but forces one plain-text "bail" right after
+    the model's first tool call (via ``_InjectTextBail``).  Without the nudge the
+    loop would treat that text as a final answer and end the cycle with no
+    ``done()`` — marked failed, cursor uncommitted.  With it, the model is nudged
+    back to a tool call and the cycle must recover to a successful close.  Each
+    sample asserts the bail actually fired AND the cycle recovered (``run_for``
+    returned success); an optional ``score`` adds case-specific checks.
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        collection: str,
+        seed: Seeder,
+        bail_text: str,
+        score: CollectorScorer | None = None,
+        snapshot: Snapshotter | None = None,
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+    ) -> None:
+        results: list[SampleResult] = []
+        perf = _Perf()
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    seed_user(penny.db)
+                    seed(penny.db)
+                    await _embed_seeds(penny)
+                    before = snapshot(penny.db) if snapshot is not None else None
+                    sent_before = len(server.outgoing_messages)
+                    wrapper = _InjectTextBail(penny.collector._model_client, bail_text)
+                    penny.collector._model_client = wrapper
+                    success, _ = await penny.collector.run_for(collection)
+                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
+                        str(message.get("message", ""))
+                        for message in server.outgoing_messages[sent_before:]
+                    ]
+                    fails = list(score(penny.db, before, sent)) if score is not None else []
+                    if not wrapper.bail_injected:
+                        fails.append("forced text bail never fired — contract not exercised")
+                    elif not success:
+                        fails.append("cycle did not recover to a successful close after the nudge")
                     results.append(SampleResult(not fails, fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:

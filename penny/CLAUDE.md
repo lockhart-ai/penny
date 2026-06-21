@@ -511,6 +511,22 @@ stubbed; a case injects realistic pages via the `browse=` kwarg (query-aware
 `install_browse` / `CannedPage` in `conftest.py`) to score multi-step tool
 reasoning. See `docs/self-improvement-loop.md`.
 
+#### Every model-facing change ships a durable eval contract (do this last, before landing)
+
+Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,
+a tool description, a loop/nudge/retry/validation mechanism, a tool-surface
+change — **must land with a `tests/eval/` case that encodes the behaviour it
+establishes or fixes.** The eval suite is both the regression net (a future
+prompt tweak can't silently undo it) and the *written contract* for what we
+expect the model to do. A model-facing change without an eval contract is
+incomplete — the next change will regress it and nothing will catch it. The
+workflow:
+
+1. **While iterating**, drive the fix with `replay.py` / focused low-N runs (below) — fast, throwaway, may read the local prod DB.
+2. **Before opening the PR**, lift the validated behaviour into a committable, privacy-safe `tests/eval/` case: genericize any real data into synthetic topics (per the log→test→fix loop), and assert on persisted DB state / sends / run outcome, never on wording.
+3. **If the failure is stochastic** and can't be reproduced by seeding alone, *force the trigger deterministically and let the real model drive the rest* — e.g. `nudge_eval`'s `_InjectTextBail` forces one plain-text bail, then the live model must recover through the production nudge — so the contract is exercised on every run, not ~25% of them.
+4. **Pair it with a deterministic mock test in `tests/`** when there's a mechanism to pin (loop control, branching, bounds): `make check` owns the fast mechanism proof, `make eval` owns the live model-behaviour contract.
+
 #### The log → test → fix loop (durable process for correcting model behaviour)
 
 This is the canonical way to identify and fix *any* undesired model behaviour — never

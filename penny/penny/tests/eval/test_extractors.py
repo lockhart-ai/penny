@@ -27,14 +27,24 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
-from penny.tests.eval.conftest import CollectorScorer, collection_entries, tool_was_called
+from penny.tests.eval.conftest import (
+    CollectorScorer,
+    collection_entries,
+    seed_collection,
+    tool_was_called,
+)
 from penny.tests.eval.fixtures import (
+    COLLECTOR_PROSE_BAIL,
     KNOWLEDGE_PAGE_CONTENT,
     RESEARCH_PAGES,
     RESEARCH_WATCHER,
     RESEARCH_WATCHER_EXTRACTION_PROMPT,
     RESEARCH_WATCHER_INTENT,
     THINKING_PAGES,
+    WATCHLIST,
+    WATCHLIST_INTENT,
+    WATCHLIST_MESSAGES,
+    WATCHLIST_NUMBERED_PROMPT,
 )
 
 pytestmark = pytest.mark.eval
@@ -134,6 +144,12 @@ def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[str]
         fails.append("summary missing the page's subject (antikythera)")
     if "http" not in body:
         fails.append("summary missing the source URL (should lead with it)")
+    # The cycle must close with a real done() call — a run that writes the entry
+    # then narrates "Done. Summary: ..." as prose instead of calling done() is
+    # marked failed and leaves its cursor uncommitted (re-run next tick).  The
+    # text-step nudge exists to keep that slip from ending the cycle.
+    if not tool_was_called(db, "done"):
+        fails.append("wrote the entry but never closed the cycle with done()")
     return fails
 
 
@@ -245,6 +261,38 @@ async def test_collector_research_browse(collector_eval) -> None:
         snapshot=_snapshot(RESEARCH_WATCHER.name),
         browse=list(RESEARCH_PAGES),
         score=_score_research,
+    )
+
+
+def _seed_watchlist(db: Database) -> None:
+    seed_collection(
+        db,
+        WATCHLIST,
+        extraction_prompt=WATCHLIST_NUMBERED_PROMPT,
+        intent=WATCHLIST_INTENT,
+        interval=3600,
+    )
+    for message in WATCHLIST_MESSAGES:
+        db.messages.log_message(_INCOMING, "user", message)
+
+
+async def test_collector_recovers_from_text_bail(nudge_eval) -> None:
+    """Contract: a collector that emits plain text mid-cycle (instead of a tool
+    call) is nudged back to a tool call and recovers to a clean ``done()`` close
+    — rather than the loop treating the text as a final answer and ending the
+    cycle failed with an uncommitted cursor.
+
+    The ~25% terminal slip can't be reproduced reliably by seeding, so the
+    harness forces one plain-text bail right after the model's first tool call;
+    the real model then drives the recovery through the production text-step
+    nudge.  This is the durable, live-model definition of the nudge contract
+    (the mechanism itself is covered deterministically by
+    ``test_agentic_loop.TestCollectorTextNudge``)."""
+    await nudge_eval(
+        case_id="collector-text-bail-recovery",
+        collection=WATCHLIST.name,
+        seed=_seed_watchlist,
+        bail_text=COLLECTOR_PROSE_BAIL,
     )
 
 

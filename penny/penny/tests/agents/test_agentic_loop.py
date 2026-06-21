@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlmodel import Session, select
 
-from penny.agents.base import Agent
+from penny.agents.base import Agent, BackgroundAgent
 from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
@@ -17,6 +17,7 @@ from penny.llm.models import LlmConnectionError, LlmTimeoutError, LlmToolParseEr
 from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
+from penny.tools.memory_tools import DoneTool
 from penny.tools.models import ToolResult
 
 
@@ -1643,5 +1644,124 @@ class TestPromptLogAnnotations:
         assert len(logs) == 2
         assert logs[0].run_id != logs[1].run_id
         assert logs[0].agent_name == logs[1].agent_name == "Agent"
+
+        await agent.close()
+
+
+def _make_background_agent(test_db, *, max_steps=4):
+    """A minimal BackgroundAgent (collector shape) for text-nudge testing.
+
+    Built with both a work tool (search) and the ``done`` terminator in the
+    registry so the model can either continue working or exit — exactly the two
+    legal moves a collector has after a stray text response.  Keeps the default
+    ``_keep_tools_on_final_step=True`` so tools stay available to exit with.
+    """
+    db = Database(test_db)
+    db.create_tables()
+    config = Config(
+        channel_type="signal",
+        signal_number="+15551234567",
+        signal_api_url="http://localhost:8080",
+        discord_bot_token=None,
+        discord_channel_id=None,
+        llm_api_url="http://localhost:11434",
+        llm_model="test-model",
+        log_level="DEBUG",
+        db_path=test_db,
+        runtime=RuntimeParams(db=db, env_overrides={}),
+    )
+    client = LlmClient(
+        api_url="http://localhost:11434",
+        model="test-model",
+        db=db,
+        max_retries=1,
+        retry_delay=0.1,
+    )
+    agent = BackgroundAgent(
+        system_prompt="test",
+        model_client=client,
+        tools=[StubSearchTool(), DoneTool()],
+        db=db,
+        config=config,
+    )
+    return agent, db, max_steps
+
+
+class TestCollectorTextNudge:
+    """A collector that emits plain text instead of a tool call gets nudged to
+    re-emit as a tool call, rather than the loop treating the text as a final
+    answer and ending the cycle without a ``done`` record."""
+
+    @pytest.mark.asyncio
+    async def test_text_bail_is_nudged_and_recovers_with_done(self, test_db, mock_llm):
+        """Prose ("Done. Summary: ...") → nudge → the model re-emits a real done()."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                # The 138673 flavor: the model narrates that it's finished as
+                # prose instead of calling done().
+                return mock_llm._make_text_response(request, "**Done. Summary: wrote the entry.**")
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # The model was called again after the stray text (nudged, not stopped).
+        assert len(mock_llm.requests) == 2
+        # The nudge was injected as the last user turn before the retry.
+        last_user = [m for m in mock_llm.requests[1]["messages"] if m["role"] == "user"][-1]
+        assert "tool call" in last_user["content"].lower()
+        # The cycle closed with a real done() record (not a lost/failed cycle).
+        assert any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_text_bail_can_recover_into_more_work(self, test_db, mock_llm):
+        """Mid-work narration (the 138316 flavor) → nudge → the model continues
+        with a work tool, not a premature done()."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_text_response(
+                    request, "**Observation** the page has an entry."
+                )
+            if count == 2:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "done after more work"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # Nudged into continuing: it ran the work tool, then closed with done().
+        tools_called = [record.tool for record in response.tool_calls]
+        assert "search" in tools_called
+        assert "done" in tools_called
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_persistent_text_bail_is_bounded_by_max_steps(self, test_db, mock_llm):
+        """A model that keeps emitting text never loops forever — the nudge is
+        bounded by max_steps and the cycle ends without a done record."""
+        agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(request, "still just talking")
+        )
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # Exactly max_steps calls — nudged each non-final step, then stopped.
+        assert len(mock_llm.requests) == 3
+        assert not any(record.tool == "done" for record in response.tool_calls)
 
         await agent.close()

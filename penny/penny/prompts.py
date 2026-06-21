@@ -157,6 +157,15 @@ Examples:
         "Do not include any reasoning, preamble, or explanation before the JSON."
     )
 
+    # Injected when a background collector emits plain text instead of a tool call.
+    # Collectors act ONLY through tool calls (done() to finish, otherwise the next
+    # tool), so a text-only response is a bail — nudge it to re-emit as a tool call.
+    COLLECTOR_TOOL_CALL_NUDGE = (
+        "You replied with plain text, but you act only through tool calls — never prose. "
+        "Respond now with a single tool call: call done() if the cycle is complete, "
+        "otherwise call the appropriate tool to continue the cycle."
+    )
+
     # Nudge prompts (injected when model returns empty content)
     FINAL_STEP_NUDGE = (
         "STOP. You cannot search anymore. Tools are no longer available. "

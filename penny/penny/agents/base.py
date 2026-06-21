@@ -1146,6 +1146,29 @@ class BackgroundAgent(Agent):
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
 
+    async def handle_text_step(
+        self, response, messages: list[dict], step: int, is_final: bool
+    ) -> bool:
+        """A collector acts only through tool calls — a text-only response is a bail.
+
+        The model is meant to drive the whole cycle through tools and exit via
+        ``done()``; when it instead emits prose (a "Done. Summary: ..." narration,
+        a mid-work observation, a tool call written as text) the loop would
+        otherwise treat that text as a final answer and stop, leaving the cycle
+        with no ``done`` record — marked ``failed``, cursor uncommitted, re-run
+        next tick.  Since the slip is stochastic (the same context usually
+        produces a clean tool call), append the stray text + a nudge and keep the
+        loop going so the model recovers with a real tool call — ``done()`` if it
+        was finished, otherwise the next work tool.  Bounded by ``max_steps``: on
+        the final step there's no room to retry, so let the loop end and fall
+        through to the post-loop ``_parse_text_form_done`` recovery.
+        """
+        if is_final:
+            return False
+        messages.append(response.message.to_input_message())
+        messages.append({"role": MessageRole.USER, "content": Prompt.COLLECTOR_TOOL_CALL_NUDGE})
+        return True
+
     def get_tools(self) -> list[Tool]:
         tools = super().get_tools()
         tools.append(DoneTool())
