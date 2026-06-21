@@ -47,9 +47,9 @@ Seeder = Callable[[Database], None]
 # sent the user.  ``snapshot`` is whatever the case's ``snapshot`` callback returned.
 Snapshotter = Callable[[Database], object]
 CollectorScorer = Callable[[Database, object, list[str]], list[str]]
-# A dry-run scorer sees only the text ``collector.dry_run`` returns — i.e. exactly
-# what ``prompt_test`` hands back to the model — and returns failure strings.
-DryRunScorer = Callable[[str], list[str]]
+# A text scorer sees only a returned string (e.g. a generated announcement) and
+# returns failure strings — empty means the sample passed.
+TextScorer = Callable[[str], list[str]]
 
 
 @dataclass
@@ -417,63 +417,6 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
     return _run
 
 
-# A dry-run-eval runner: (case_id, suspect, intent, candidate_prompt, score) -> asserts.
-DryRunEval = Callable[..., Awaitable[None]]
-
-
-@pytest.fixture
-def dry_run_eval(make_config: Callable[..., Config], tmp_path) -> DryRunEval:
-    """Drive ``collector.dry_run`` N times for one candidate prompt and score the
-    text it returns — exactly what ``prompt_test`` hands back to the model.
-
-    Each sample is hermetic: seed a suspect collection, run the candidate prompt
-    through a real dry-run cycle against the real model, and score the returned
-    summary string.  Used to pin the feedback the quality agent reasons over —
-    e.g. that a draft calling a non-existent / wrong-shape tool surfaces the error.
-    """
-
-    async def _run(
-        *,
-        case_id: str,
-        suspect: str,
-        intent: str,
-        candidate_prompt: str,
-        score: DryRunScorer,
-        samples: int = SAMPLES,
-        min_pass_rate: float | None = None,
-    ) -> None:
-        results: list[SampleResult] = []
-        perf = _Perf()
-        for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
-                )
-                async with run_penny_with_server(config, server) as penny:
-                    seed_user(penny.db)
-                    penny.db.memories.create_collection(
-                        suspect,
-                        f"Test collection for {suspect}",
-                        Inclusion.RELEVANT,
-                        RecallMode.RECENT,
-                        intent=intent,
-                    )
-                    output = await penny.collector.dry_run(suspect, candidate_prompt)
-                    fails = score(output)
-                    results.append(SampleResult(not fails, fails))
-                    perf.add(penny.db.messages.prompt_perf())
-            finally:
-                await server.stop()
-        perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
-
-    return _run
-
-
 # A recall-eval runner: (seed, check) over a single deterministic pass.
 RecallEval = Callable[..., Awaitable[None]]
 
@@ -540,7 +483,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
         *,
         case_id: str,
         commit_message: str,
-        score: DryRunScorer,
+        score: TextScorer,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
     ) -> None:

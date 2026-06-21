@@ -247,8 +247,7 @@ class PennyConstants:
 
     # The self-correcting collector (seeded by migration 0055): reviews Penny's
     # own runs/messages against each collection's intent and rewrites drifted
-    # extraction_prompts.  The collector gates the ``prompt_test`` dry-run tool
-    # into the surface only for this collection's cycles.
+    # extraction_prompts directly.
     MEMORY_QUALITY_COLLECTION = "quality"
 
     # Centroid-proxy penalty applied during similarity-ranked retrieval:

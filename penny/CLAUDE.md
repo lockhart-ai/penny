@@ -209,9 +209,9 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
   - `unnotified-thoughts` — inner monologue, picks a random like and drafts a thought (1200s)
   - `notified-thoughts` — picks an unnotified thought, calls `send_message`, moves the entry into its own collection (300s)
   - `skills` — workflow patterns the chat agent follows (TRIGGER + STEPS entries surfaced via recall); its collector extracts/refines/removes skills from chat as the user teaches Penny new behavior (21600s)
-  - `quality` — self-correcting collector (migration 0055, prompt refined through 0060): reviews recent runs via `log_read("collector-runs")` — a **read facade over `promptlog`** that renders each run as a record (`[target] summary` header + the worked run's tool trace: the entries written, the exact message sent) — and judges that behaviour against the collection's `intent`, rewriting whichever `extraction_prompt` has drifted, dry-running each candidate with `prompt_test` before applying it, then messaging the user (apply-then-notify). A `❌`/`💤` run (failure or idle) renders header-only — nothing to judge — and is skipped. (3600s base, auto-throttles toward the weekly cap on quiet cycles like any other collector)
+  - `quality` — self-correcting collector (migration 0055, prompt refined through 0063): reviews recent runs via `log_read("collector-runs")` — a **read facade over `promptlog`** that renders each run as a record (`[target] summary` header + the run's tool trace incl. `done()`; a run that bailed — no tool call other than `done()` — is deterministically flagged `⚠ NO WORK DONE`). It judges each run on two tiers: **tier 0** — did the collector follow its instructions at all? a `⚠ NO WORK DONE` bail is a regression; **tier 1** — for runs that executed, does the behaviour match the collection's `intent`? It rewrites whichever `extraction_prompt` failed (always as a numbered recipe), applies it **directly** with `collection_update`, then messages the user (apply-then-notify). A `❌`/`💤` run that DID call real tools renders header-only and is skipped — capacity/interruption, not drift. (3600s base, auto-throttles toward the weekly cap on quiet cycles like any other collector)
 - User-defined collections created via chat (`/collection_create` with an `extraction_prompt`) are picked up automatically on the next tick — no restart required.
-- Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done. The `quality` cycle additionally gets `prompt_test` (dry-runs a candidate prompt on a throwaway `_DryRunCollector` — captured writes/sends, non-consuming reads, no DB clone), gated by bound-target name in `get_tools` — see `docs/self-improvement-loop.md`.
+- Tool surface: reads (unrestricted) + entry mutations (`collection_write`, `update_entry`, `collection_delete_entry`, `collection_move`) pinned to the bound target via the `_memory_scope()` hook + `log_append` + `send_message` (when channel wired) + browse + done — uniform across every collection, including `quality`. (An earlier `prompt_test` dry-run tool, given only to `quality`, was removed: gpt-oss couldn't reliably drive the dry-run → revise → apply loop — it would emit the revised prompt as text instead of a tool call and the cycle died without applying — so quality now rewrites directly and the next cycle re-checks. See `docs/self-improvement-loop.md`.)
 - Cadence: `COLLECTOR_TICK_INTERVAL` (default 30s, idle-gated) drives the dispatcher; per-collection `collector_interval_seconds` controls each collection's pacing within that.
 - **Auto-throttle** (`_apply_throttle`, runs after each non-cancelled cycle): after `COLLECTOR_THROTTLE_AFTER` (default 3) consecutive idle cycles a collection doubles its `collector_interval_seconds` (capped at `COLLECTOR_MAX_INTERVAL`, default 604800 = weekly) and resets its idle counter; a productive cycle snaps the interval back to `base_interval_seconds` (the user's intended cadence, stamped on create and re-set when the interval is edited) and clears the counter. "Produced work" (`_produced_work`) reads the per-call `ToolCallRecord.mutated` flag — set from each tool's structured `ToolResult` — so it counts a cycle as work only when a tool *actually changed durable state* (a row written, an entry moved/deleted, a message sent). A successful no-op (a duplicate-rejected write, an update/delete/move on a missing key, a muted/cooled-down send) carries `mutated=False` and reads as idle, unlike the old "a write tool didn't error" heuristic which counted duplicate-rejected writes as work and starved the throttle. Reads + `done()` = idle. Deterministic in Python — not the quality/model layer.
 
@@ -538,3 +538,18 @@ If the model is making the right call on what it's shown but the input itself is
 data/rendering bug — fix it in Python first (so the signal is visible), *then* the loop
 applies. Distinguish "model ignored the signal" from "model was never shown the signal"
 before reaching for a prompt change.
+
+#### Iterating fast: focused low-N first, full suite last
+
+Live-model cases are slow — a quality cycle is ~120-180s **per sample**, so a careless
+`4 cases × N=5` loop is ~60 min. Don't iterate that way. While converging a fix:
+
+- Run ONLY the case(s) you're actively changing, at low N — `EVAL_SAMPLES=3 pytest
+  "…::test_repairs_done_only_bailout" -m eval -s`. That's ~9 min, not ~60.
+- Add a guard case (e.g. `test_healthy` for over-correction) only when a change could
+  plausibly affect it, not every loop.
+- To inspect *why* a single run failed, run one cycle against the seeded fixture and
+  dump its promptlog rows (input messages, thinking, tool calls) — one cycle, ~3 min,
+  shows exactly what the model saw and did at each step.
+- Run the FULL suite at the default N **once, at the end**, to confirm nothing
+  regressed — not as the iteration loop.

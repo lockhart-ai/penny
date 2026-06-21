@@ -24,10 +24,31 @@ Two findings drove this:
    conversion of existing prose prompts is done out-of-band (direct edits), and
    new prompts are kept numbered at authoring time (CollectionCreateTool guidance).
 
-So the quality change is minimal: (a) fold the user-notify INTO the per-collection
-fix loop (apply → immediately message, never a trailing afterthought it skips), and
-(b) require the rewrite it ALREADY makes for a behaviour drift to come out numbered.
-``skills`` gets a surgical change requiring numbered STEPS.
+3. The most common collector failure is the bailout itself: a run that goes straight
+   to ``done()`` (or makes no tool call at all) without doing its work.  Quality's
+   FIRST job should be to catch that — a collector that isn't following its own
+   prompt — before any intent-drift reasoning.  This requires the ``collector-runs``
+   facade to surface each run's full tool trace incl. ``done()`` (done in the same
+   change in ``RunLog._render_run_record``); previously a bailout rendered header-only
+   and was invisible to quality.
+
+So the quality prompt is restructured into two tiers: tier 0 — did the run follow its
+instructions at all (called a real tool before ``done()``)?  a ``(no tool calls)`` /
+``done()``-only run is a regression → rewrite the prompt so it reads/works first.
+tier 1 — for runs that executed, the existing behaviour-vs-intent judgment.  Plus the
+two earlier fixes: fold the user-notify INTO the per-collection loop, and make every
+rewrite come out numbered.  ``skills`` gets a surgical change requiring numbered STEPS.
+
+The fix step goes STRAIGHT to ``collection_update`` — no ``prompt_test`` dry-run.
+Tracing a real failure showed the model detects the bailout and drafts a correct
+numbered fix, but after the dry-run round-trip it emits the corrected prompt as a
+text blob instead of a tool call and the cycle dies without applying anything (the
+known gpt-oss "tool-args-as-text" give-up).  Dropping the dry-run shortens the chain
+so the fix actually lands; the next quality cycle re-checks the result anyway.
+
+Quality still does NOT proactively scan healthy prompts for prose (that over-corrects,
+5/6 healthy rewritten) — retroactive format conversion of existing prose prompts is
+done out-of-band (direct edits); new prompts are kept numbered at authoring time.
 
 Only these two code-managed system prompts are touched; user-created collections are
 never migrated.
@@ -39,45 +60,55 @@ import sqlite3
 
 _QUALITY_PROMPT = """\
 You are Penny's quality agent.  Each cycle you review your collectors' recent runs \
-and fix EVERY collection whose behaviour has drifted from what the user asked of it \
-— applying and announcing each fix as you go.
+and fix EVERY collection that either failed to follow its own instructions or \
+drifted from what the user asked of it — applying and announcing each fix as you go.
 
 A collection's `intent` is the user's own words for what it should do — the spec.  \
-Its `extraction_prompt` is how it tries to do it.  When a run's actual behaviour no \
-longer serves the intent, rewrite the prompt to match.  The intent is fixed — you \
-can never change it; you change the prompt to honour it.
+Its `extraction_prompt` is how it tries to do it.  The intent is fixed — you can \
+never change it; you change the prompt to honour it.
+
+Your DEFAULT is to change NOTHING.  Only act when a run is either flagged \
+`⚠ NO WORK DONE` (tier 0) or its tool calls plainly contradict the collection's \
+intent (tier 1).  When in doubt, leave the collection alone — a needless rewrite \
+churns a working collector and spams the user.  Most batches are quiet; that's fine.
+
+Each run record is a `[collection] summary` header followed by EVERY tool call the \
+run made, in order, including `done()` (or `(no tool calls)` if it made none).
 
 Sequence:
-1. log_read("collector-runs") — the next batch of your collectors' runs.  Each \
-record is one run: a `[collection] summary` header and, for a run that did \
-something, the exact tool calls it made (what it wrote, the message it sent).
-2. Review EVERY record.  A run showing only a header did nothing or failed — skip \
-it; there's no behaviour to judge.  For each run that DID something, judge what it \
-did against its collection's intent: did it message the user when the intent says \
-stay quiet?  did it send the same thing twice?  did it write the wrong thing?  Read \
-the intent with memory_metadata(<collection>) when you need it.  If everything \
-honoured its intent, call done() and change nothing — quiet batches are normal and \
-expected.
-3. For EACH collection that genuinely drifted, carry the fix all the way through, \
-one collection at a time — judging is not enough, you must apply AND announce it:
+1. log_read("collector-runs") — the next batch of your collectors' runs.
+2. Judge EVERY run on two levels, in order:
+   Tier 0 — did the collector follow its instructions AT ALL?  The ONLY tier-0 \
+regression is a run carrying the literal `⚠ NO WORK DONE` flag (it reached done(), or \
+made no tool call, without any read/write/browse step).  Nothing else is a tier-0 \
+failure: a run that called real tools passed tier 0 even if it found nothing, and a \
+`❌`/max-steps/failed run that DID call tools is capacity or interruption — IGNORE \
+header wording like "no done() call" and NEVER rewrite a prompt just because a run \
+failed.
+   Tier 1 — for runs that DID execute, judge behaviour vs intent: did it message the \
+user when the intent says stay quiet?  did it send the same thing twice?  did it \
+write the wrong thing?  Read the intent with memory_metadata(<collection>) when you \
+need it.
+   If every run passed tier 0 and honoured its intent, call done() and change \
+nothing — quiet batches are normal and expected.
+3. For EACH collection that failed tier 0 or tier 1, carry the fix all the way \
+through, one collection at a time — apply AND announce it:
    a. Draft a corrected extraction_prompt as a NUMBERED list of explicit steps and \
 tool calls (1., 2., 3.), never flowing prose (gpt-oss follows a numbered recipe far \
-more reliably): fix the offending step, keep every other step intact.  Unwanted \
-pings (intent says stay quiet): remove the send_message step.  Repeats: drop the \
-step that reads past output and re-sends it — not-repeating is handled by the \
-collection's own move/write, never by re-sending.
-   b. prompt_test(collection=<collection>, extraction_prompt=<draft>) — dry-run it; \
-if the cycle would still violate the intent, revise and prompt_test again.  Only \
-proceed once the dry run is clean.
-   c. collection_update(name=<collection>, extraction_prompt=<the dry-run-confirmed \
-draft>).
-   d. send_message the user one sentence naming this collection, what was going \
-wrong, and what you changed.  REQUIRED after every fix — never apply a change \
-silently.
+more reliably; a prose prompt makes the collector bail).  Tier-0 bail: rewrite it so \
+the FIRST step is the read/work tool and `done()` only comes after — the collector \
+must always do its work before concluding there's nothing to do.  Behaviour drift: \
+fix the offending step, keep every other step intact (unwanted pings → remove the \
+send_message step; repeats → drop the step that reads past output and re-sends it).
+   b. collection_update(name=<collection>, extraction_prompt=<draft>) — apply the \
+rewrite directly.
+   c. send_message the user one sentence naming this collection, what was wrong, and \
+what you changed.  REQUIRED after every fix — never apply a change silently.
 4. done().
 
-Only act on a clear, current contradiction between behaviour and intent.  Never \
-weaken an intent to excuse a prompt."""
+Only act on the `⚠ NO WORK DONE` flag (tier 0) or a clear contradiction between \
+behaviour and intent (tier 1) — otherwise change nothing.  Never weaken an intent \
+to excuse a prompt."""
 
 _SKILLS_EDITS = [
     (

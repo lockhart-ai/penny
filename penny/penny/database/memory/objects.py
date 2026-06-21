@@ -691,12 +691,10 @@ class MessageLogMemory(Log):
 def render_tool_call(name: str, args: object) -> str:
     """Compact, grokkable render of one tool call (the salient args only).
 
-    The single shared format for tool activity — used by both the
-    ``collector-runs`` run trace and the ``prompt_test`` dry-run trace, so the
-    model reads what a cycle did the same way everywhere.  Reads render under
-    their real tool name (``collection_read_latest('x')`` / ``log_read('y')``) so
-    a wrong-shape or unknown-tool call is identifiable when it's surfaced as an
-    error.  Content is never truncated.
+    The single shared format for the ``collector-runs`` run trace, so the model
+    reads what a cycle did the same way everywhere.  Reads render under their real
+    tool name (``collection_read_latest('x')`` / ``log_read('y')``) so a
+    wrong-shape or unknown-tool call is identifiable.  Content is never truncated.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
     if name == "collection_write":
@@ -868,24 +866,39 @@ class RunLog(Log):
 
     @classmethod
     def _render_run_record(cls, prompts: list[PromptLog]) -> str:
-        """One run as ``[target] summary`` + (for worked runs) its tool trace.
+        """One run as ``[target] summary`` + EVERY tool call it made (incl. ``done()``).
 
-        ``no_work`` / ``failed`` / ``cancelled`` runs render as just the header —
-        there's no behaviour to judge.  A worked run lists what it actually did
-        (the writes, the exact message it sent) so the quality collector can
-        weigh it against the collection's intent.  ``done()`` is omitted: its
-        summary *is* the header.  Content is never truncated."""
+        The quality collector needs to see not just what a worked run produced but
+        *whether the run followed its instructions at all* — so every completed run
+        renders its outcome header plus the full, ordered list of its tool calls,
+        ``done()`` included.  Two failure shapes become visible this way:
+        ``(no tool calls)`` (the run exited without acting) and a lone ``done(...)``
+        (it jumped straight to done without reading/working).  A healthy quiet cycle
+        still shows its read step before ``done()``, so it reads as fine.  Content is
+        never truncated."""
         if not prompts:
             return "[?] (no data)"
         outcome, reason, target = cls._run_outcome(prompts)
         header = f"[{target or '?'}] {reason or outcome or ''}".rstrip()
-        if outcome != RunOutcome.WORKED.value:
-            return header
         lines = [header]
-        for name, args in cls._run_tool_calls(prompts):
-            if name == "done":
-                continue
-            lines.append(render_tool_call(name, args))
+        calls = cls._run_tool_calls(prompts)
+        non_done = [(name, args) for name, args in calls if name != "done"]
+        # A non-worked run that called no tool other than done() (or no tool at all)
+        # bailed — it never read/wrote/browsed.  Flag THAT deterministically (quality
+        # acts on the positive signal, not on inferring an absent read step), and show
+        # the meagre calls.  Worked runs show their trace so intent can be judged.
+        # Everything else (a quiet cycle that DID read, a failed/cancelled run that DID
+        # call real tools) stays header-only — no trace to tempt an over-correction.
+        bailed = outcome in (RunOutcome.NO_WORK.value, RunOutcome.FAILED.value) and not non_done
+        if bailed:
+            lines.append(
+                "⚠ NO WORK DONE — reached done() (or made no tool call) without any "
+                "read/write/browse step first; the collector is not following its "
+                "instructions"
+            )
+            lines.append("(no tool calls)" if not calls else render_tool_call(*calls[0]))
+        elif outcome == RunOutcome.WORKED.value:
+            lines.extend(render_tool_call(name, args) for name, args in non_done)
         return "\n".join(lines)
 
     @staticmethod

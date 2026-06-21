@@ -1438,8 +1438,11 @@ class TestBrowserPromptLogHandlers:
 
 def _seed_collector_run(db, run_target: str, run_id: str, outcome: str, reason: str) -> None:
     """Seed one completed promptlog run — ``collector-runs`` is a read facade
-    over ``promptlog``, so the addon's run views come from there.  With no tool
-    calls the rendered record is just its ``[target] reason`` header."""
+    over ``promptlog``, so the addon's run views come from there.  A worked run
+    renders ``[target] reason`` + its tool trace; a non-worked run that did real
+    work (or a quiet cycle) renders the header only; a non-worked run that bailed
+    (no tool call other than ``done()``) renders the header + a ``⚠ NO WORK DONE``
+    flag."""
     db.messages.log_prompt(
         model="m",
         messages=[],
@@ -1606,7 +1609,10 @@ class TestBrowserMemoryHandlers:
         runs = resp["collector_runs"]
         assert len(runs) == 2
         # Newest first, rendered as records from the promptlog facade.
-        assert runs[0]["content"] == "[board-games] no source URL found"
+        # r2 failed with no tool calls — a bailout, deterministically flagged so the
+        # quality collector can repair the prompt.
+        assert "[board-games] no source URL found" in runs[0]["content"]
+        assert "⚠ NO WORK DONE" in runs[0]["content"]
         assert runs[1]["content"] == "[board-games] wrote 2 games"
         # Other-target run is excluded.
         assert all("other-target" not in r["content"] for r in runs)

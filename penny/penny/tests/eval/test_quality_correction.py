@@ -164,8 +164,6 @@ def _score_update(suspect: str, forbidden: str | None) -> CollectorScorer:
         memory = db.memories.get(suspect)
         new_prompt = (memory.extraction_prompt or "") if memory else ""
         fails = []
-        if not tool_was_called(db, "prompt_test"):
-            fails.append("did not dry-run the fix with prompt_test before applying")
         if new_prompt == original:
             fails.append(f"did not change {suspect!r}'s extraction_prompt")
         elif forbidden is not None and forbidden in new_prompt:
@@ -181,16 +179,14 @@ def _score_update(suspect: str, forbidden: str | None) -> CollectorScorer:
 
 def _score_rewrote_numbered(suspect: str) -> CollectorScorer:
     """Format enforcement: a prose extraction_prompt must be rewritten as a NUMBERED
-    instruction/tool-call list (dry-run + apply + notify) — numbered recipes are
-    followed far more reliably than prose, so the correction must not stay prose."""
+    instruction/tool-call list (apply + notify) — numbered recipes are followed far
+    more reliably than prose, so the correction must not stay prose."""
 
     def _score(db: Database, before: object, sent: list[str]) -> list[str]:
         original = cast(str, before)
         memory = db.memories.get(suspect)
         new_prompt = (memory.extraction_prompt or "") if memory else ""
         fails = []
-        if not tool_was_called(db, "prompt_test"):
-            fails.append("did not dry-run the fix with prompt_test before applying")
         if new_prompt == original:
             fails.append(f"did not rewrite {suspect!r}'s prose extraction_prompt")
         elif not looks_numbered(new_prompt):

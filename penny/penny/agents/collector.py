@@ -31,49 +31,27 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from penny.agents.base import BackgroundAgent
-from penny.agents.models import ControllerResponse, ToolCallRecord
+from penny.agents.models import ControllerResponse
 from penny.config import Config
-from penny.constants import PennyConstants, RunOutcome
+from penny.constants import RunOutcome
 from penny.database import Database
-from penny.database.memory import render_tool_call
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
 from penny.responses import PennyResponse
-from penny.tools.base import Tool
-from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import (
-    CollectionDeleteEntryTool,
-    CollectionMoveTool,
-    CollectionWriteTool,
     DoneTool,
-    LogAppendTool,
-    UpdateEntryTool,
     check_extraction_prompt,
 )
-from penny.tools.models import ToolResult
-from penny.tools.prompt_test import PromptTestTool
-from penny.tools.send_message import SendMessageTool
 
 if TYPE_CHECKING:
-    from penny.channels.base import MessageChannel
+    pass
 
 logger = logging.getLogger(__name__)
+
 
 # Tools whose successful use means a cycle produced work — it changed a
 # collection or reached out to the user.  Reads and ``done()`` don't count; a
 # run of only those is "idle" and feeds the auto-throttle counter.
-_WORK_TOOLS = frozenset(
-    {
-        CollectionWriteTool.name,
-        UpdateEntryTool.name,
-        CollectionDeleteEntryTool.name,
-        CollectionMoveTool.name,
-        LogAppendTool.name,
-        SendMessageTool.name,
-    }
-)
-
-
 class Collector(BackgroundAgent):
     """Single dispatcher agent — picks the most-overdue ready collection per cycle."""
 
@@ -132,23 +110,6 @@ class Collector(BackgroundAgent):
         self._current_target: MemoryRow | None = None
         self._cycle_lock = asyncio.Lock()
 
-    def get_tools(self) -> list[Tool]:
-        """Standard collector surface, plus ``prompt_test`` for the quality cycle.
-
-        The self-correcting ``quality`` collector is the only cycle that revises
-        another collection's extraction_prompt, so it's the only one that
-        dry-runs a candidate first.  It reviews runs by reading the
-        ``collector-runs`` log (a facade over ``promptlog``) with the ordinary
-        ``log_read`` — no special inspection tool.  Gating per bound target keeps
-        ``prompt_test`` out of every other collector's surface (and out of the
-        dry-run's own surface, which bypasses this override — no nesting).
-        """
-        tools = super().get_tools()
-        target = self._current_target
-        if target is not None and target.name == PennyConstants.MEMORY_QUALITY_COLLECTION:
-            tools.append(PromptTestTool(self))
-        return tools
-
     async def execute(self) -> bool:
         target = self._next_ready_collection()
         if target is None:
@@ -178,32 +139,6 @@ class Collector(BackgroundAgent):
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
         return await self._execute_cycle(collection)
-
-    async def dry_run(self, collection_name: str, candidate_prompt: str) -> str:
-        """Simulate one cycle for ``collection_name`` with ``candidate_prompt``,
-        reporting what it WOULD do without applying anything.
-
-        Backs the ``prompt_test`` tool: the self-correcting collector vets a
-        candidate extraction_prompt before committing it.  Runs on a throwaway
-        ``_DryRunCollector`` (its own loop/target state, so it never collides
-        with this live cycle) where reads are real-but-non-consuming and
-        writes/sends/browse are captured rather than executed.
-        """
-        collection = self.db.memories.get(collection_name)
-        if collection is None:
-            return f"Collection '{collection_name}' not found."
-        if error := check_extraction_prompt(candidate_prompt):
-            return f"Candidate prompt rejected: {error}"
-        runner = _DryRunCollector(
-            model_client=self._model_client,
-            db=self.db,
-            config=self.config,
-            embedding_model_client=self._embedding_model_client,
-            channel=self._channel,
-            candidate_prompt=candidate_prompt,
-        )
-        records = await runner.simulate(collection)
-        return _summarize_dry_run(collection_name, records)
 
     async def _execute_cycle(self, collection: MemoryRow) -> tuple[bool, str]:
         """Run one full agent cycle bound to ``collection`` with audit cleanup.
@@ -466,133 +401,3 @@ class Collector(BackgroundAgent):
 def _aware(dt: datetime) -> datetime:
     """SQLite returns naive datetimes; assume UTC and attach tzinfo."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-# ── Dry-run sandbox (backs the prompt_test tool) ──────────────────────────────
-
-
-class _CapturingTool(Tool):
-    """Stands in for a side-effecting (or networked) tool during a dry run.
-
-    Presents the wrapped tool's real name/description/parameters so the model
-    sees the identical surface, but ``execute`` returns a canned result instead
-    of mutating the DB, messaging the user, or hitting the network — so the cycle
-    runs end to end without side effects.  The call itself is still recorded in
-    the cycle's ``ControllerResponse.tool_calls`` (every call is), which is what
-    the dry-run summary renders; this wrapper only neutralises the *effect*.  No
-    class-level ``name`` so it isn't entered in the Tool registry.
-    """
-
-    def __init__(self, name: str, description: str, parameters: dict, canned: str) -> None:
-        self.name = name
-        self.description = description
-        self.parameters = parameters
-        self._canned = canned
-
-    async def execute(self, **kwargs: object) -> ToolResult:
-        # A captured (simulated) call applies nothing — never a real mutation.
-        return ToolResult(message=self._canned)
-
-
-class _DryRunCollector(Collector):
-    """A throwaway collector that simulates one cycle with a candidate prompt.
-
-    Lives only for the duration of a ``prompt_test`` call.  It binds the suspect
-    collection and runs the real agent loop, but: the system prompt uses the
-    *candidate* extraction_prompt; the write/send/browse tools are captured (no
-    DB mutation, no outbound message, no network); and the log-read cursor is
-    never committed, so reads are real but non-consuming.  Its own loop/target
-    state means it never collides with the live cycle that triggered it.
-    """
-
-    def __init__(
-        self,
-        model_client: LlmClient,
-        db: Database,
-        config: Config,
-        *,
-        embedding_model_client: LlmClient | None,
-        channel: MessageChannel | None,
-        candidate_prompt: str,
-    ) -> None:
-        super().__init__(
-            model_client=model_client,
-            db=db,
-            config=config,
-            embedding_model_client=embedding_model_client,
-        )
-        self._candidate_prompt = candidate_prompt
-        # send_message only enters the surface when a channel is bound; bind the
-        # live one so the model can "call" it — the capturing wrapper means it's
-        # never actually used.
-        if channel is not None:
-            self.set_channel(channel)
-
-    def _should_commit_cursor(self, success: bool) -> bool:
-        return False  # a simulation never consumes the reads it makes
-
-    async def _build_system_prompt(self, user: str | None) -> str:
-        target = self._require_target()
-        return (
-            f"You are the collector for the `{target.name}` collection.\n"
-            f"Description: {target.description}\n\n"
-            f"{self._candidate_prompt}\n\n"
-            f"{self._RUNTIME_RULES}"
-        )
-
-    def get_tools(self) -> list[Tool]:
-        # BackgroundAgent surface (memory + browse + done + send_message),
-        # skipping Collector's _extra_tools, then sandboxed.
-        return [self._sandbox(tool) for tool in super(Collector, self).get_tools()]
-
-    def _sandbox(self, tool: Tool) -> Tool:
-        if tool.name in _WORK_TOOLS:
-            return _CapturingTool(
-                tool.name,
-                tool.description,
-                tool.parameters,
-                canned=f"(dry run) recorded {tool.name} — not applied",
-            )
-        if tool.name == BrowseTool.name:
-            return _CapturingTool(
-                tool.name,
-                tool.description,
-                tool.parameters,
-                canned="(dry run) browse simulated — assume a few relevant items were found",
-            )
-        return tool
-
-    async def simulate(self, collection: MemoryRow) -> list[ToolCallRecord]:
-        """Run the candidate cycle and return EVERY tool call it made, with each
-        call's result/error — reads, refusals, and unknown-tool errors included,
-        not just the side-effecting writes/sends.  This is what the dry-run
-        summary renders so the model can see exactly what its draft would do."""
-        self._current_target = collection
-        try:
-            result = await self._run_cycle(uuid.uuid4().hex)
-        finally:
-            self._current_target = None
-        return result.response.tool_calls if result.response else []
-
-
-def _summarize_dry_run(collection_name: str, records: list[ToolCallRecord]) -> str:
-    """Render the dry run's tool calls — the exact calls the candidate prompt
-    would make this cycle (nothing applied), in the same format as the
-    ``collector-runs`` trace.  A failed call (unknown tool, wrong shape for the
-    memory, or any refusal) is surfaced as an error with its reason, so the model
-    can see its draft is broken and correct it rather than guessing from counts.
-    """
-    header = (
-        f"Dry run of `{collection_name}` with the candidate prompt — the exact tool "
-        "calls it WOULD make this cycle (nothing was applied):"
-    )
-    if not records:
-        return f"{header}\n(the prompt produced no tool calls)"
-    lines = [header]
-    for index, record in enumerate(records, 1):
-        rendered = render_tool_call(record.tool, record.arguments)
-        if record.failed:
-            lines.append(f"{index}. Error: {rendered} → {record.result or 'failed'}")
-        else:
-            lines.append(f"{index}. {rendered}")
-    return "\n".join(lines)

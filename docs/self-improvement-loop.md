@@ -180,6 +180,15 @@ prefill tok/s, decode (generation) tok/s, and reasoning share — the `ollama ru
 
 ## Phase 2 — the dry-run sandbox (over real prod data)
 
+> **REMOVED (migration 0063).** The `prompt_test` dry-run tool and its
+> `_DryRunCollector` sandbox described in this section were taken out. In practice
+> gpt-oss couldn't reliably drive the dry-run → read-result → revise → apply loop:
+> tracing real failures, it would detect the problem and draft a correct fix, then
+> emit the revised prompt as a **text blob instead of a tool call**, and the cycle
+> died without applying anything. So the quality collector now rewrites a drifted
+> `extraction_prompt` **directly** with `collection_update` (no dry-run) and relies
+> on the next cycle to re-check. The rest of this section is kept as design history.
+
 The runtime needs to answer "if I ran *this* candidate prompt against the
 *current* state, what would happen?" without persisting anything. That's the
 eval core with a different DB/side-effect policy:
