@@ -1213,14 +1213,18 @@ class BrowserChannel(MessageChannel):
             page_context=raw_data.get("page_context"),
         )
 
-    async def send_message(
+    async def _send_raw(
         self,
         recipient: str,
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
     ) -> int | None:
-        """Send a message to a browser client by device label."""
+        """Deliver a prepared message to a browser client by device label.
+
+        Logging happens in the base ``_log_and_send`` chokepoint before this
+        is called.
+        """
         conn = self._connections.get(recipient)
         if not conn:
             logger.warning("No browser connection for device: %s", recipient)

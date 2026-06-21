@@ -193,7 +193,7 @@ class DiscordChannel(MessageChannel):
         while self._running:
             await asyncio.sleep(1)
 
-    async def send_message(
+    async def _send_raw(
         self,
         recipient: str,
         message: str,
@@ -201,7 +201,10 @@ class DiscordChannel(MessageChannel):
         quote_message: MessageLog | None = None,
     ) -> int | None:
         """
-        Send a message via Discord.
+        Deliver a prepared message via Discord.
+
+        Logging happens in the base ``_log_and_send`` chokepoint before this
+        is called.
 
         Args:
             recipient: Channel ID (for Discord, we send to the configured channel)

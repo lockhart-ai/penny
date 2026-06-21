@@ -257,9 +257,10 @@ Schedules run a `ScheduledTask` (`scheduler/base.py`) — a structural Protocol 
 ## Channel System
 
 ### MessageChannel ABC (`channels/base.py`)
-- Defines interface: `listen()`, `send_message()`, `send_typing()`, `extract_message()`
-- Implements shared logic: `handle_message()`, `send_response()`, `_typing_loop()`
+- Defines interface: `listen()`, `_send_raw()`, `send_typing()`, `extract_message()`
+- Implements shared logic: `handle_message()`, `send_message()`, `send_response()`, `_log_and_send()`, `_typing_loop()`
 - Holds references to chat agent, database, and scheduler
+- **Outgoing chokepoint — every send is logged**: `_send_raw()` is the single abstract per-channel delivery primitive (the raw Signal REST / Discord / browser-WS send) and does NO logging. Both concrete base methods funnel through `_log_and_send()`, which logs an `OUTGOING` row to `messagelog` (so it surfaces in the `penny-messages` facade) immediately before calling `_send_raw()` — so nothing Penny sends can bypass the conversation record. `send_message(recipient, content, ...)` is the plain path (command results, error notices, onboarding/profile prompts, threading rejections, permission prompts, startup announcements) — it logs the text but computes no embedding and attaches no media (the embedding is filled by the startup backfill) and returns the platform external id. `send_response(recipient, content, parent_id, author, ...)` is the conversational path (chat replies, queued collector sends via the drainer, scheduled tasks) — it additionally embeds the text (stored on the row + reused for nearest-image matching) and returns the DB message id. `ChannelManager` overrides only `_send_raw()` to route to the resolved concrete channel, so the inherited base methods log exactly once (using the shared db) and the routed concrete channel never double-logs.
 - **Progress tracker hook**: `_begin_progress(message)` is an optional override that returns a `ProgressTracker` (defined in `channels/base.py`). The tracker has two methods: `update(tools)` (called when a tool batch starts) and `clear()` (idempotent, called once on success and once again from the dispatch loop's `finally`). The default `_make_handle_kwargs` wires `progress.update` as `on_tool_start` for free, and the final response is always delivered via `send_response` so attachments and quote-replies work normally. Channels without a progress UI return `None`
 
 ### SignalChannel (`channels/signal/channel.py`)
@@ -350,7 +351,7 @@ All tables defined in `database/models.py` as SQLModel classes:
      - Walks thread history for context
      - Runs agentic loop with tools
    - Logs incoming message to DB
-   - Sends response via `send_response()` (logs + sends)
+   - Sends response via `send_response()` (logs + sends); every other outgoing message (commands, status, prompts) goes through `send_message()`, which logs too — all sends funnel through `_log_and_send()` → `_send_raw()`
    - Stops typing indicator, resumes background tasks
 
 ## Thread/Context System

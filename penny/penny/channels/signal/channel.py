@@ -377,22 +377,21 @@ class SignalChannel(MessageChannel):
             text = text.replace(f"\x00CODE{i}\x00", block)
         return text
 
-    async def send_message(
+    async def _send_raw(
         self,
         recipient: str,
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
     ) -> int | None:
-        """Send a message via Signal.
+        """Deliver a prepared message via the Signal REST API.
+
+        Empty-message validation and logging happen in the base
+        ``_log_and_send`` chokepoint before this is called.
 
         Returns:
             Signal timestamp (ms since epoch) on success, None on failure
         """
-        if (not message or not message.strip()) and not attachments:
-            logger.error("Attempted to send empty message to %s", recipient)
-            raise ValueError("Cannot send empty or whitespace-only message")
-
         request = self._build_send_request(recipient, message, attachments, quote_message)
         return await self._post_message(request, recipient, message)
 

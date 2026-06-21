@@ -90,16 +90,22 @@ class ChannelManager(MessageChannel):
         tasks = [channel.listen() for channel in self._channels.values()]
         await asyncio.gather(*tasks)
 
-    async def send_message(
+    async def _send_raw(
         self,
         recipient: str,
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
     ) -> int | None:
-        """Route an outgoing message to the correct channel via device lookup."""
+        """Route a prepared message to the correct channel via device lookup.
+
+        Logging happens once in the inherited base ``send_message`` /
+        ``send_response`` (using the shared db) before this routes the raw send
+        to the resolved concrete channel — so manager-routed sends are logged
+        exactly once, not double-logged by the concrete channel.
+        """
         channel = self._resolve_channel(recipient)
-        return await channel.send_message(recipient, message, attachments, quote_message)
+        return await channel._send_raw(recipient, message, attachments, quote_message)
 
     async def send_typing(self, recipient: str, typing: bool) -> bool:
         """Route a typing indicator to the correct channel."""

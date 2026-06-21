@@ -158,7 +158,7 @@ class MessageChannel(ABC):
         pass
 
     @abstractmethod
-    async def send_message(
+    async def _send_raw(
         self,
         recipient: str,
         message: str,
@@ -166,7 +166,14 @@ class MessageChannel(ABC):
         quote_message: MessageLog | None = None,
     ) -> int | None:
         """
-        Send a message to a recipient.
+        Deliver an already-prepared message to the platform.
+
+        This is the single per-channel delivery primitive — the raw network
+        send (Signal REST, Discord, browser WebSocket). It performs NO logging:
+        every outgoing message is logged exactly once in ``send_message`` /
+        ``send_response`` (which funnel through ``_log_and_send`` before calling
+        this), so no send can bypass the conversation record. ``ChannelManager``
+        overrides this to route to the resolved concrete channel.
 
         Args:
             recipient: Identifier for the recipient (platform-specific)
@@ -175,7 +182,7 @@ class MessageChannel(ABC):
             quote_message: Optional message to quote-reply to
 
         Returns:
-            Signal timestamp (ms since epoch) on success, None on failure
+            Platform message id / timestamp on success, None on failure
         """
         pass
 
@@ -271,25 +278,30 @@ class MessageChannel(ABC):
         except asyncio.CancelledError:
             pass
 
-    async def send_status_message(self, recipient: str, content: str) -> bool:
+    async def send_message(
+        self,
+        recipient: str,
+        content: str,
+        attachments: list[str] | None = None,
+        quote_message: MessageLog | None = None,
+    ) -> int | None:
         """
-        Send a status message without logging to database.
+        Log and deliver a plain outgoing message.
 
-        Used for ephemeral status indicators like startup announcements
-        that shouldn't be part of conversation history.
+        The chokepoint for every non-conversational send — command results,
+        error notices, onboarding prompts, threading rejections, permission
+        prompts, startup announcements. The message is logged ``OUTGOING`` to
+        ``messagelog`` (so it surfaces in the ``penny-messages`` facade) before
+        delivery, so nothing Penny sends can skip the conversation record.
+        Unlike ``send_response`` it computes no embedding and attaches no
+        nearest-image media — the embedding is filled by the startup backfill.
 
-        Args:
-            recipient: Identifier for the recipient
-            content: Message content
-
-        Returns:
-            True if send was successful, False otherwise
+        Returns the platform external id (or None on failure).
         """
         prepared = self.prepare_outgoing(content)
-        external_id = await self.send_message(
-            recipient, prepared, attachments=None, quote_message=None
-        )
-        return external_id is not None
+        _, external_id = await self._log_and_send(recipient, prepared, attachments, quote_message)
+        logger.info("Sent message to %s (%d chars)", recipient, len(prepared))
+        return external_id
 
     async def send_response(
         self,
@@ -302,7 +314,7 @@ class MessageChannel(ABC):
         thought_id: int | None = None,
     ) -> int | None:
         """
-        Log and send an outgoing message with optional image attachments.
+        Log and deliver a conversational reply with embedding + nearest-image media.
 
         Args:
             recipient: Identifier for the recipient
@@ -319,15 +331,47 @@ class MessageChannel(ABC):
         Returns:
             Database message ID if send was successful, None otherwise
         """
-
-        # Apply channel-specific formatting
-        # We log the prepared content so quote matching works correctly
         prepared = self.prepare_outgoing(content)
-        device = self._db.devices.get_by_identifier(recipient)
-        device_id = device.id if device else None
         # Embed once: stored on the messagelog row (the penny-messages facade's
         # read_similar ranks on it) and reused for nearest-image matching.
         embedding = await embed_text(self._embedding_model_client, prepared)
+        attachments = self._resolve_media(attachments, embedding)
+        message_id, external_id = await self._log_and_send(
+            recipient,
+            prepared,
+            attachments,
+            quote_message,
+            parent_id=parent_id,
+            thought_id=thought_id,
+            embedding=embedding,
+        )
+        logger.info("Sent response to %s (%d chars)", recipient, len(content))
+        return message_id if external_id is not None else None
+
+    async def _log_and_send(
+        self,
+        recipient: str,
+        prepared: str,
+        attachments: list[str] | None,
+        quote_message: MessageLog | None,
+        *,
+        parent_id: int | None = None,
+        thought_id: int | None = None,
+        embedding: list[float] | None = None,
+    ) -> tuple[int | None, int | None]:
+        """Log an ``OUTGOING`` message to messagelog, deliver it, stamp external_id.
+
+        The single funnel both ``send_message`` and ``send_response`` pass
+        through, so logging happens exactly once immediately before the raw
+        platform send and no outgoing message can bypass the record. We log the
+        prepared content so quote matching works correctly. Returns
+        ``(message_id, external_id)``.
+        """
+        if (not prepared or not prepared.strip()) and not attachments:
+            logger.error("Attempted to send empty message to %s", recipient)
+            raise ValueError("Cannot send empty or whitespace-only message")
+        device = self._db.devices.get_by_identifier(recipient)
+        device_id = device.id if device else None
         message_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.OUTGOING,
             self.sender_id,
@@ -338,13 +382,11 @@ class MessageChannel(ABC):
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
-        attachments = self._resolve_media(attachments, embedding)
-        external_id = await self.send_message(recipient, prepared, attachments, quote_message)
+        external_id = await self._send_raw(recipient, prepared, attachments, quote_message)
         # Store the external ID for future reactions and quote replies
         if external_id and message_id:
             self._db.messages.set_external_id(message_id, str(external_id))
-        logger.info("Sent response to %s (%d chars)", recipient, len(content))
-        return message_id if external_id is not None else None
+        return message_id, external_id
 
     def _resolve_media(
         self, attachments: list[str] | None, embedding: list[float] | None
@@ -399,9 +441,7 @@ class MessageChannel(ABC):
         if message.images:
             vision_model = self._config.llm_vision_model if self._config else None
             if not vision_model:
-                await self.send_status_message(
-                    message.sender, PennyResponse.VISION_NOT_CONFIGURED_MESSAGE
-                )
+                await self.send_message(message.sender, PennyResponse.VISION_NOT_CONFIGURED_MESSAGE)
                 return False
 
         if self._scheduler:
@@ -420,8 +460,7 @@ class MessageChannel(ABC):
         commands_supporting_quotes = {"bug"}
 
         if message.quoted_text and command_name not in commands_supporting_quotes:
-            prepared = self.prepare_outgoing(PennyResponse.THREADING_NOT_SUPPORTED_COMMANDS)
-            await self.send_message(message.sender, prepared, attachments=None, quote_message=None)
+            await self.send_message(message.sender, PennyResponse.THREADING_NOT_SUPPORTED_COMMANDS)
             return True
 
         await self._handle_command(message)
@@ -434,8 +473,7 @@ class MessageChannel(ABC):
     async def _reject_unsupported_thread(self, message: IncomingMessage) -> bool:
         """Reject thread replies to commands. Returns True if rejected."""
         if self._is_thread_reply_to_command(message):
-            prepared = self.prepare_outgoing(PennyResponse.THREADING_NOT_SUPPORTED_COMMANDS)
-            await self.send_message(message.sender, prepared, attachments=None, quote_message=None)
+            await self.send_message(message.sender, PennyResponse.THREADING_NOT_SUPPORTED_COMMANDS)
             return True
 
         return False
@@ -518,7 +556,7 @@ class MessageChannel(ABC):
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,
         )
-        await self.send_status_message(message.sender, PennyResponse.PROFILE_REQUIRED)
+        await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
     async def _run_message_through_agent(
         self,
@@ -596,7 +634,7 @@ class MessageChannel(ABC):
         )
         if sent is None:
             logger.error("Failed to deliver response to %s — notifying user", message.sender)
-            await self.send_status_message(message.sender, PennyResponse.DELIVERY_FAILURE)
+            await self.send_message(message.sender, PennyResponse.DELIVERY_FAILURE)
 
     async def _handle_reaction(self, message: IncomingMessage) -> None:
         """Log a reaction as a regular incoming message in the thread."""
@@ -655,9 +693,8 @@ class MessageChannel(ABC):
             result = await command.execute(command_args, context)
             response = result.text
 
-            prepared = self.prepare_outgoing(response) if response else ""
             await self.send_message(
-                message.sender, prepared, attachments=result.attachments, quote_message=None
+                message.sender, response, attachments=result.attachments, quote_message=None
             )
             self._log_command_result(user_sender, command_name, command_args, response)
             logger.info("Executed command /%s for %s", command_name, message.sender)
@@ -665,8 +702,7 @@ class MessageChannel(ABC):
         except Exception as e:
             logger.exception("Error executing command /%s: %s", command_name, e)
             error_response = PennyResponse.COMMAND_ERROR.format(error=e)
-            prepared = self.prepare_outgoing(error_response)
-            await self.send_message(message.sender, prepared, attachments=None, quote_message=None)
+            await self.send_message(message.sender, error_response)
             self._log_command_result(
                 user_sender, command_name, command_args, error_response, error=str(e)
             )
@@ -703,8 +739,7 @@ class MessageChannel(ABC):
 
         if not command:
             response = PennyResponse.UNKNOWN_COMMAND.format(command_name=command_name)
-            prepared = self.prepare_outgoing(response)
-            await self.send_message(message.sender, prepared, attachments=None, quote_message=None)
+            await self.send_message(message.sender, response)
             user_sender = self._resolve_user_sender(message.sender)
             self._log_command_result(
                 user_sender, command_name, command_args, response, error="unknown command"

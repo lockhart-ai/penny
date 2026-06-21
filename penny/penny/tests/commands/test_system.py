@@ -2,6 +2,7 @@
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.tests.conftest import TEST_SENDER
 
 
@@ -67,20 +68,30 @@ async def test_command_logging(signal_server, test_config, mock_llm, running_pen
 
 
 @pytest.mark.asyncio
-async def test_command_not_logged_to_message_table(
+async def test_command_response_logged_to_message_table(
     signal_server, test_config, mock_llm, running_penny
 ):
-    """Test that commands are NOT logged to MessageLog table."""
+    """Command responses go through the channel send chokepoint, so they ARE
+    logged as outgoing messages (visible in the penny-messages facade) in
+    addition to the CommandLog audit row."""
     async with running_penny(test_config) as penny:
         # Send a command
         await signal_server.push_message(sender=TEST_SENDER, content="/commands")
         await signal_server.wait_for_message(timeout=5.0)
 
-        # Check that no messages were logged
+        # The command's acknowledgment is logged as an outgoing message
         from penny.database.models import MessageLog
 
         with penny.db.get_session() as session:
             from sqlmodel import select
 
             logs = list(session.exec(select(MessageLog)).all())
-            assert len(logs) == 0
+            assert len(logs) == 1
+            assert logs[0].direction == PennyConstants.MessageDirection.OUTGOING
+            # Outgoing content is stored formatting-stripped (markdown removed)
+            assert "Available Commands" in logs[0].content
+
+        # And surfaces through the penny-messages facade
+        outgoing = penny.db.memory("penny-messages").read_all()
+        assert any("Available Commands" in e.content for e in outgoing)
+        assert all(e.author == "penny" for e in outgoing)

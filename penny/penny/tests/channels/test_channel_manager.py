@@ -21,7 +21,9 @@ def _make_db(tmp_path) -> Database:
 def _make_mock_channel(channel_type: str) -> MagicMock:
     """Create a mock MessageChannel with async methods."""
     channel = MagicMock()
-    channel.send_message = AsyncMock(return_value=123)
+    # The manager routes the raw delivery (_send_raw); base send_message/
+    # send_response on the manager do the logging once before routing.
+    channel._send_raw = AsyncMock(return_value=123)
     channel.send_typing = AsyncMock(return_value=True)
     channel.listen = AsyncMock()
     channel.close = AsyncMock()
@@ -50,8 +52,14 @@ class TestChannelManagerRouting:
         db.devices.register(ChannelType.BROWSER, "firefox-laptop", "Firefox")
 
         await manager.send_message("+15551234567", "hello")
-        signal_ch.send_message.assert_called_once()
-        browser_ch.send_message.assert_not_called()
+        signal_ch._send_raw.assert_called_once()
+        browser_ch._send_raw.assert_not_called()
+
+        # The manager logs the outgoing message exactly once (not double-logged
+        # by the concrete channel) and it surfaces in the penny-messages facade.
+        outgoing = db.memory("penny-messages").read_all()
+        assert len(outgoing) == 1
+        assert outgoing[0].content == "hello"
 
     @pytest.mark.asyncio
     async def test_routes_to_browser_device(self, tmp_path):
@@ -68,8 +76,8 @@ class TestChannelManagerRouting:
         db.devices.register(ChannelType.BROWSER, "firefox-laptop", "Firefox")
 
         await manager.send_message("firefox-laptop", "hello from browser")
-        browser_ch.send_message.assert_called_once()
-        signal_ch.send_message.assert_not_called()
+        browser_ch._send_raw.assert_called_once()
+        signal_ch._send_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unknown_recipient_falls_back_to_default(self, tmp_path):
@@ -83,7 +91,7 @@ class TestChannelManagerRouting:
         db.devices.register(ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True)
 
         await manager.send_message("unknown-device", "hello")
-        signal_ch.send_message.assert_called_once()
+        signal_ch._send_raw.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_typing_routes_to_correct_channel(self, tmp_path):

@@ -510,7 +510,7 @@ class Penny:
             announcement = f"👋 {restart_msg}"
 
             logger.info("Sending startup announcement to %s", sender)
-            await self.channel.send_status_message(sender, announcement)
+            await self.channel.send_message(sender, announcement)
         except Exception as e:
             logger.warning("Failed to send startup announcement: %s", e)
 
@@ -525,7 +525,7 @@ class Penny:
             for sender in senders:
                 try:
                     logger.info("User %s has no profile, sending prompt", sender)
-                    await self.channel.send_status_message(sender, PennyResponse.PROFILE_REQUIRED)
+                    await self.channel.send_message(sender, PennyResponse.PROFILE_REQUIRED)
                 except Exception as e:
                     logger.warning("Failed to send profile prompt to %s: %s", sender, e)
         except Exception as e:

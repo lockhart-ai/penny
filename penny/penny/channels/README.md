@@ -35,8 +35,14 @@ To add support for a new platform (e.g., Slack, Telegram):
 from penny.channels.base import MessageChannel, IncomingMessage
 
 class SlackChannel(MessageChannel):
-    async def send_message(self, recipient: str, message: str) -> bool:
-        """Send a message to a recipient."""
+    async def _send_raw(self, recipient, message, attachments=None, quote_message=None) -> int | None:
+        """Deliver a prepared message to the platform — the raw network send.
+
+        Implement ONLY this. The base class's concrete `send_message` /
+        `send_response` log every outgoing message to `messagelog` (so it
+        surfaces in the `penny-messages` facade) before calling `_send_raw`,
+        so no send can bypass the conversation record. Do not log here.
+        """
         # Implementation here
         pass
 

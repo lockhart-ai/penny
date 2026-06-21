@@ -16,6 +16,12 @@ async def test_mute_command(signal_server, test_config, mock_llm, running_penny)
         assert "Use /unmute" in response["message"]
         assert penny.db.users.is_muted(TEST_SENDER) is True
 
+        # Command responses now go through the channel send chokepoint, so the
+        # acknowledgment is logged as an outgoing message and surfaces in the
+        # penny-messages facade (previously command output bypassed messagelog).
+        outgoing = penny.db.memory("penny-messages").read_all()
+        assert any("Notifications muted" in e.content for e in outgoing)
+
 
 @pytest.mark.asyncio
 async def test_unmute_command(signal_server, test_config, mock_llm, running_penny):
