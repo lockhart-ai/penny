@@ -1128,6 +1128,7 @@ class TestFactory:
         "collection_read_random",
         "collection_keys",
         "memory_metadata",
+        "collection_catalog",
         "log_read",
         "read_published_latest",
         "read_similar",

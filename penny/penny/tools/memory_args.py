@@ -117,6 +117,10 @@ class MemoryNameArgs(BaseModel):
     memory: MemoryName
 
 
+class CatalogArgs(BaseModel):
+    """No-field args for ``collection_catalog`` — it spans every collection."""
+
+
 class CollectionUpdateArgs(BaseModel):
     """Update a collection's metadata.
 

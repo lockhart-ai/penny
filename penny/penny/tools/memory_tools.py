@@ -33,15 +33,17 @@ from penny.database.memory import (
     MemoryAccessError,
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
+    MemoryType,
     RecallMode,
     WriteResult,
     degenerate_reason,
     is_blank,
 )
-from penny.database.models import MemoryEntry
+from penny.database.models import MemoryEntry, MemoryRow
 from penny.llm.similarity import embed_text
 from penny.tools.base import Tool
 from penny.tools.memory_args import (
+    CatalogArgs,
     CollectionCreateArgs,
     CollectionDeleteEntryArgs,
     CollectionEntrySpec,
@@ -1010,6 +1012,62 @@ class MemoryMetadataTool(MemoryTool):
         return "\n".join(lines)
 
 
+class CollectionCatalogTool(MemoryTool):
+    """List every active collection with its full gather recipe.
+
+    The skills collector's window onto real use: each non-archived collection
+    (logs and framework collectors excluded) with its description, intent,
+    ``published`` flag, and full ``extraction_prompt`` — the prompts that
+    actually run.  The skills loop distils reusable workflow patterns from these
+    and reconciles them against the existing skills, so skills stay grounded in
+    the collections that exist rather than in hypothetical teachings.
+    """
+
+    name = "collection_catalog"
+    description = (
+        "List every active collection with its full gather recipe: name, "
+        "description, intent (the user's goal in their words), whether it "
+        "notifies the user (published), and its extraction_prompt.  Use it to "
+        "see what Penny actually collects and how each collection is built.  "
+        "Logs and framework collectors are omitted."
+    )
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        CatalogArgs(**kwargs)
+        rows = sorted(
+            (row for row in self._db.memories.list_all() if self._is_user_collection(row)),
+            key=lambda row: row.name,
+        )
+        if not rows:
+            return ToolResult(message="(no active collections)")
+        return ToolResult(message="\n\n".join(self._format(row) for row in rows))
+
+    @staticmethod
+    def _is_user_collection(row: MemoryRow) -> bool:
+        """A non-archived, prompt-bearing collection that gathers user data —
+        not a log, not a framework collector (skills/quality/notifier)."""
+        return (
+            row.type == MemoryType.COLLECTION
+            and not row.archived
+            and row.extraction_prompt is not None
+            and row.name not in PennyConstants.SYSTEM_COLLECTIONS
+        )
+
+    @staticmethod
+    def _format(row: MemoryRow) -> str:
+        return (
+            f"## {row.name}\n"
+            f"description: {row.description}\n"
+            f"intent: {row.intent or '(none)'}\n"
+            f"published: {row.published}\n"
+            f"extraction_prompt:\n{row.extraction_prompt}"
+        )
+
+
 class CollectionMergeTool(MemoryTool):
     """Merge all entries from one collection into another, then archive the source."""
 
@@ -1520,6 +1578,7 @@ def build_memory_tools(
         CollectionReadRandomTool(db),
         CollectionKeysTool(db),
         MemoryMetadataTool(db),
+        CollectionCatalogTool(db),
         LogReadTool(db, agent_name, scope),
         ReadPublishedLatestTool(db, agent_name),
         ExistsTool(db, llm_client),

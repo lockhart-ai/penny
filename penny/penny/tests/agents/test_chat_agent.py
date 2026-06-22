@@ -1150,6 +1150,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_get" in names
         assert "collection_keys" in names
         assert "memory_metadata" in names
+        assert "collection_catalog" in names
         assert "read_published_latest" in names
 
         # Loop-control stays background-only — never on the chat surface.

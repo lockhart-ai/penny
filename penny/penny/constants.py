@@ -257,6 +257,38 @@ class PennyConstants:
     # extraction_prompts directly.
     MEMORY_QUALITY_COLLECTION = "quality"
 
+    # The skills collector (seeded by migration 0043): distils reusable workflow
+    # patterns from the real collections that exist, surfaced to chat via recall.
+    MEMORY_SKILLS_COLLECTION = "skills"
+    # The pub/sub notifier consumer (seeded by migration 0067): drains every
+    # ``published`` collection's new entries and delivers them to the user.
+    MEMORY_NOTIFIER_COLLECTION = "notifier"
+    # Built-in preference / knowledge / inner-monologue extractors, seeded by
+    # migration (0027/0031/0068) — Penny's own machinery, not collections the
+    # user built.
+    MEMORY_LIKES_COLLECTION = "likes"
+    MEMORY_DISLIKES_COLLECTION = "dislikes"
+    MEMORY_KNOWLEDGE_COLLECTION = "knowledge"
+    MEMORY_THOUGHTS_COLLECTION = "thoughts"
+
+    # Built-in framework collections, seeded by migration rather than created by
+    # the user.  ``collection_catalog`` hides them: the skills collector distils
+    # reusable patterns from the collections the *user* builds, and these are
+    # Penny's own machinery (the skills/self-correction/notification loops and
+    # the preference/knowledge/thought extractors) — distilling skills from them
+    # would only mint meta-noise.  Parallels ``SYSTEM_LOGS``.
+    SYSTEM_COLLECTIONS = frozenset(
+        {
+            MEMORY_SKILLS_COLLECTION,
+            MEMORY_QUALITY_COLLECTION,
+            MEMORY_NOTIFIER_COLLECTION,
+            MEMORY_LIKES_COLLECTION,
+            MEMORY_DISLIKES_COLLECTION,
+            MEMORY_KNOWLEDGE_COLLECTION,
+            MEMORY_THOUGHTS_COLLECTION,
+        }
+    )
+
     # Centroid-proxy penalty applied during similarity-ranked retrieval:
     # ``adjusted = max(weighted, current_cos) - α * cos(entry, corpus_centroid)``.
     # The proxy is rank-equivalent to mean cosine to every other entry in the
