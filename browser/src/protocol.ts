@@ -315,6 +315,8 @@ export interface MemoryRecord {
   inclusion: "always" | "relevant" | "never";
   /** Stage-2 entry rendering once included. */
   recall: "all" | "relevant" | "recent";
+  /** Pub/sub: when true the notifier delivers new entries to the user. Orthogonal to recall. */
+  published: boolean;
   archived: boolean;
   extraction_prompt: string | null;
   collector_interval_seconds: number | null;
@@ -734,6 +736,8 @@ export interface RuntimeMemoryCreate {
   intent: string;
   inclusion: "always" | "relevant" | "never";
   recall: "recent" | "relevant" | "all";
+  /** Pub/sub: notify the user of new entries (default false). */
+  published?: boolean;
   extraction_prompt?: string | null;
   collector_interval_seconds?: number | null;
 }
@@ -746,6 +750,8 @@ export interface RuntimeMemoryUpdate {
   intent?: string | null;
   inclusion?: "always" | "relevant" | "never" | null;
   recall?: "recent" | "relevant" | "all" | null;
+  /** Pub/sub: flip notify-on-new; omit/null leaves it unchanged. */
+  published?: boolean | null;
   extraction_prompt?: string | null;
   collector_interval_seconds?: number | null;
 }

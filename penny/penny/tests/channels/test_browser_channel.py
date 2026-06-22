@@ -1800,6 +1800,7 @@ class TestBrowserMemoryHandlers:
                     "description": "board games",
                     "inclusion": "relevant",
                     "recall": "relevant",
+                    "published": True,
                     "extraction_prompt": "extract games",
                     "collector_interval_seconds": 600,
                 }
@@ -1810,6 +1811,7 @@ class TestBrowserMemoryHandlers:
         assert memory.type == "collection"
         assert memory.inclusion == "relevant"
         assert memory.recall == "relevant"
+        assert memory.published is True  # pub/sub flag persisted from the addon
         assert memory.extraction_prompt == "extract games"
         assert memory.collector_interval_seconds == 600
 
@@ -1855,6 +1857,7 @@ class TestBrowserMemoryHandlers:
                     # collection_update tool, which has no intent field).
                     "intent": "track only co-op games now",
                     "recall": None,
+                    "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
                     "collector_interval_seconds": None,
                 }
@@ -1865,6 +1868,7 @@ class TestBrowserMemoryHandlers:
         assert memory.description == "new description"
         assert memory.intent == "track only co-op games now"
         assert memory.recall == "recent"
+        assert memory.published is True  # supplied flag applied
         assert memory.extraction_prompt == "old prompt"
         assert memory.collector_interval_seconds == 300
 

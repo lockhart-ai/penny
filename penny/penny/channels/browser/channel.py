@@ -740,6 +740,7 @@ class BrowserChannel(MessageChannel):
             intent=memory.intent,
             inclusion=memory.inclusion,
             recall=memory.recall,
+            published=memory.published,
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
             collector_interval_seconds=memory.collector_interval_seconds,
@@ -813,6 +814,7 @@ class BrowserChannel(MessageChannel):
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,
                 intent=req.intent,
+                published=req.published,
             )
         except MemoryAlreadyExistsError:
             logger.warning("memory_create with duplicate name: %s", req.name)
@@ -848,6 +850,7 @@ class BrowserChannel(MessageChannel):
                 extraction_prompt=req.extraction_prompt,
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,
+                published=req.published,
             )
         except (MemoryNotFoundError, MemoryTypeError) as exc:
             logger.warning("memory_update failed for %s: %s", req.name, exc)

@@ -490,6 +490,7 @@ function sendMemoryCreate(message: {
   intent: string;
   inclusion: string;
   recall: string;
+  published?: boolean;
   extraction_prompt?: string | null;
   collector_interval_seconds?: number | null;
 }): void {
@@ -501,6 +502,7 @@ function sendMemoryCreate(message: {
     intent: message.intent,
     inclusion: message.inclusion,
     recall: message.recall,
+    published: message.published ?? false,
     extraction_prompt: message.extraction_prompt ?? null,
     collector_interval_seconds: message.collector_interval_seconds ?? null,
   }));
@@ -512,6 +514,7 @@ function sendMemoryUpdate(message: {
   intent?: string | null;
   inclusion?: string | null;
   recall?: string | null;
+  published?: boolean | null;
   extraction_prompt?: string | null;
   collector_interval_seconds?: number | null;
 }): void {
@@ -523,6 +526,7 @@ function sendMemoryUpdate(message: {
     intent: message.intent ?? null,
     inclusion: message.inclusion ?? null,
     recall: message.recall ?? null,
+    published: message.published ?? null,
     extraction_prompt: message.extraction_prompt ?? null,
     collector_interval_seconds: message.collector_interval_seconds ?? null,
   }));

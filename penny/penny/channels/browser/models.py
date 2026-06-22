@@ -252,6 +252,7 @@ class MemoryRecord(BaseModel):
     intent: str | None  # the user's stated goal at creation (editable only here)
     inclusion: str  # "always" | "relevant" | "never" — stage-1 routing
     recall: str  # "all" | "relevant" | "recent" — stage-2 entry rendering
+    published: bool  # pub/sub: when true the notifier delivers new entries — orthogonal to recall
     archived: bool
     extraction_prompt: str | None
     collector_interval_seconds: int | None
@@ -347,6 +348,7 @@ class BrowserMemoryCreate(BaseModel):
     intent: str | None = None  # the user's goal for this collection
     inclusion: str | None = None  # "always" | "relevant" | "never" (default relevant)
     recall: str  # "all" | "relevant" | "recent" (legacy "off" → inclusion=never)
+    published: bool = False  # notify-on-new: a consumer delivers new entries (default silent)
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
 
@@ -363,6 +365,7 @@ class BrowserMemoryUpdate(BaseModel):
     intent: str | None = None
     inclusion: str | None = None  # "always" | "relevant" | "never"
     recall: str | None = None  # "all" | "relevant" | "recent"
+    published: bool | None = None  # flip notify-on-new; None = leave unchanged
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
 

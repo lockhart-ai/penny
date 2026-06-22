@@ -1359,6 +1359,11 @@ h1 {
   color: #c08c00;
 }
 
+.memory-type-badge.published {
+  background: rgba(80, 200, 120, 0.18);
+  color: #2e9e5b;
+}
+
 .memory-description {
   flex: 1;
   color: var(--text-muted);
@@ -1649,6 +1654,14 @@ h1 {
 
 .memory-form-input:focus {
   border-color: var(--accent);
+}
+
+.memory-form-checkbox {
+  width: 16px;
+  height: 16px;
+  align-self: flex-start;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .memory-form-prompt {

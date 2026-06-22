@@ -1282,6 +1282,7 @@ function createNewMemoryForm(): HTMLElement {
     intent: "",
     inclusion: "relevant",
     recall: "relevant",
+    published: false,
     extraction_prompt: "",
     collector_interval_seconds: null,
   });
@@ -1295,6 +1296,7 @@ function createNewMemoryForm(): HTMLElement {
   form.appendChild(labelled("Intent", fields.intent));
   form.appendChild(labelled("Inclusion", fields.inclusion));
   form.appendChild(labelled("Recall", fields.recall));
+  form.appendChild(labelled("Notify on new (published)", fields.published));
   form.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
   form.appendChild(labelled("Collector interval (seconds)", fields.intervalInput));
 
@@ -1329,6 +1331,7 @@ function createNewMemoryForm(): HTMLElement {
       intent: intentValue,
       inclusion: fields.inclusion.value as "always" | "relevant" | "never",
       recall: fields.recall.value as "recent" | "relevant" | "all",
+      published: fields.published.checked,
       extraction_prompt: promptValue || null,
       collector_interval_seconds: intervalValue ? Number(intervalValue) : null,
     });
@@ -1346,6 +1349,7 @@ interface MemoryFormFields {
   intent: HTMLTextAreaElement;
   inclusion: HTMLSelectElement;
   recall: HTMLSelectElement;
+  published: HTMLInputElement;
   extractionPrompt: HTMLTextAreaElement;
   intervalInput: HTMLInputElement;
 }
@@ -1368,6 +1372,7 @@ function createMemoryFormFields(initial: {
   intent: string;
   inclusion: string;
   recall: string;
+  published: boolean;
   extraction_prompt: string;
   collector_interval_seconds: number | null;
 }): MemoryFormFields {
@@ -1385,6 +1390,12 @@ function createMemoryFormFields(initial: {
   // Stage-1 routing and stage-2 entry rendering are independent flags.
   const inclusion = selectOf(["always", "relevant", "never"], initial.inclusion);
   const recall = selectOf(["recent", "relevant", "all"], initial.recall);
+
+  // Pub/sub: when checked, the notifier delivers new entries to the user.
+  const published = document.createElement("input");
+  published.type = "checkbox";
+  published.className = "memory-form-checkbox";
+  published.checked = initial.published;
 
   const extractionPrompt = document.createElement("textarea");
   extractionPrompt.className = "memory-form-input memory-form-prompt";
@@ -1405,7 +1416,7 @@ function createMemoryFormFields(initial: {
     intervalInput.value = String(initial.collector_interval_seconds);
   }
 
-  return { description, intent, inclusion, recall, extractionPrompt, intervalInput };
+  return { description, intent, inclusion, recall, published, extractionPrompt, intervalInput };
 }
 
 function labelled(label: string, control: HTMLElement): HTMLElement {
@@ -1447,6 +1458,12 @@ function createMemoryRow(memory: MemoryRecord): HTMLElement {
 
   row.appendChild(name);
   row.appendChild(badge);
+  if (memory.published) {
+    const publishedBadge = document.createElement("span");
+    publishedBadge.className = "memory-type-badge published";
+    publishedBadge.textContent = "published";
+    row.appendChild(publishedBadge);
+  }
   row.appendChild(description);
   row.appendChild(meta);
 
@@ -1706,6 +1723,7 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
     intent: memory.intent ?? "",
     inclusion: memory.inclusion,
     recall: memory.recall,
+    published: memory.published,
     extraction_prompt: memory.extraction_prompt ?? "",
     collector_interval_seconds: memory.collector_interval_seconds,
   });
@@ -1714,6 +1732,7 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
   section.appendChild(labelled("Intent", fields.intent));
   section.appendChild(labelled("Inclusion", fields.inclusion));
   section.appendChild(labelled("Recall", fields.recall));
+  section.appendChild(labelled("Notify on new (published)", fields.published));
   section.appendChild(labelled("Extraction prompt", fields.extractionPrompt));
   section.appendChild(labelled("Collector interval (seconds)", fields.intervalInput));
 
@@ -1756,6 +1775,7 @@ function createCollectionMetadataSection(memory: MemoryRecord): HTMLElement {
       intent: fields.intent.value.trim(),
       inclusion: fields.inclusion.value as "always" | "relevant" | "never",
       recall: fields.recall.value as "recent" | "relevant" | "all",
+      published: fields.published.checked,
       extraction_prompt: fields.extractionPrompt.value.trim() || null,
       collector_interval_seconds: intervalValue ? Number(intervalValue) : null,
     });
