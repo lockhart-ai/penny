@@ -234,6 +234,83 @@ class TestMigrate:
         assert 'read_latest("user-messages")' in prompt
         conn.close()
 
+    def test_0069_regrounds_and_cleans_skills(self, tmp_path):
+        """Migration 0069 swaps the skills prompt to the catalog-driven loop, drops
+        the chat-derived one-offs + Scheduled digest, rewrites the seeded skills
+        into clean positive recipes (no ``[key]`` prefix, no send_message negatives),
+        and leaves deployment-specific chat-authored entries untouched."""
+
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, extraction_prompt TEXT)")
+        conn.execute(
+            "CREATE TABLE memory_entry (id INTEGER PRIMARY KEY, memory_name TEXT, "
+            "key TEXT, content TEXT, author TEXT, content_embedding BLOB)"
+        )
+        conn.execute("INSERT INTO memory (name, extraction_prompt) VALUES ('skills', 'old prompt')")
+        seeded = [
+            (
+                "Research collection — notify on new finds",
+                "[Research collection — notify on new finds] TRIGGER\nuser wants research.\n"
+                "STEPS\npublished: true; do NOT add a send_message step to the body.",
+                "system",
+            ),
+            ("Scheduled digest", "TRIGGER\nsend_message at the scheduled time.", "system"),
+            ("shorten-greeting", "TRIGGER\na one-off correction.", "skills"),
+            (
+                "my custom watcher",
+                "TRIGGER\na user-taught recipe with a send_message step.",
+                "chat",
+            ),
+        ]
+        for key, content, author in seeded:
+            conn.execute(
+                "INSERT INTO memory_entry (memory_name, key, content, author, content_embedding) "
+                "VALUES ('skills', ?, ?, ?, X'00')",
+                (key, content, author),
+            )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0069_reground_skills_on_collections.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0069", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+
+        # Prompt swapped to the catalog-driven reconcile loop.
+        prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name='skills'"
+        ).fetchone()[0]
+        assert "collection_catalog" in prompt
+
+        entries = dict(
+            conn.execute(
+                "SELECT key, content FROM memory_entry WHERE memory_name='skills'"
+            ).fetchall()
+        )
+        # One-offs and the orphan digest are gone; chat-authored entry is untouched.
+        assert "shorten-greeting" not in entries
+        assert "Scheduled digest" not in entries
+        assert "my custom watcher" in entries and "send_message" in entries["my custom watcher"]
+        # The seeded research skill is rewritten clean: no bracket prefix, no
+        # send_message negative, still a TRIGGER recipe on the published model.
+        research = entries["Research collection — notify on new finds"]
+        assert not research.lstrip().startswith("[")
+        assert "send_message" not in research
+        assert "TRIGGER" in research and "published: true" in research
+        conn.close()
+
     def test_0037_fixes_knowledge_extraction_prompt(self, tmp_path):
         """Migration 0037 replaces collection_update with update_entry in the
         knowledge extraction_prompt for databases seeded by migration 0031."""
