@@ -45,6 +45,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from penny.llm.client import LlmClient
+from penny.llm.models import LlmError
 
 _DEFAULT_DB = "/penny/data/penny/penny.db"
 _RUNTIME_MARKER = "## Runtime rules"
@@ -64,6 +65,7 @@ class _Tally:
     bailed: int = 0  # first move was done()
     engaged: int = 0  # first move was a real tool (a read, a browse, …)
     no_tool: int = 0  # emitted text, no tool call
+    errored: int = 0  # the call raised (e.g. an un-parseable tool-call argument)
     bail_thinking_chars: int = 0
     engaged_thinking_chars: int = 0
     first_tools: dict[str, int] = field(default_factory=dict)
@@ -82,13 +84,22 @@ class _Tally:
             self.engaged += 1
             self.engaged_thinking_chars += chars
 
+    def record_error(self) -> None:
+        """An API error on this sample — the model produced output the backend
+        couldn't parse (e.g. a tool-call argument wrapped in markdown backticks),
+        which in production aborts the turn and lands no change."""
+        self.samples += 1
+        self.errored += 1
+        self.first_tools["<error>"] = self.first_tools.get("<error>", 0) + 1
+
     def report(self, label: str) -> None:
         bail_rate = 100 * self.bailed / self.samples if self.samples else 0
         avg_engaged = self.engaged_thinking_chars / self.engaged if self.engaged else 0
         print(
             f"\n[{label}] {self.samples} samples · "
             f"BAILED {self.bailed} ({bail_rate:.0f}%) · engaged {self.engaged} · "
-            f"no-tool {self.no_tool} · {avg_engaged:.0f} avg reasoning chars when engaged · "
+            f"no-tool {self.no_tool} · errored {self.errored} · "
+            f"{avg_engaged:.0f} avg reasoning chars when engaged · "
             f"first-tools {self.first_tools}"
         )
 
@@ -108,6 +119,22 @@ def _load_prompt(db_path: str, prompt_id: int) -> tuple[list[dict], list[dict] |
     messages, tools, agent_name, run_target = row
     print(f"loaded id={prompt_id} agent={agent_name} target={run_target}")
     return json.loads(messages), (json.loads(tools) if tools else None)
+
+
+def _is_collector_prompt(messages: list[dict]) -> bool:
+    """True when the row is a collector cycle (has both structural markers).
+
+    Only collector prompts carry the ``## Runtime rules`` + ``You are the collector``
+    markers the placement experiment splits on.  Any other prompt (a chat turn, a
+    schedule task) is replayed verbatim instead — the loop's core move (read a row by
+    id, replay it N times) works for every prompt; the system/user split does not.
+    """
+    system = next((message for message in messages if message["role"] == "system"), None)
+    return (
+        system is not None
+        and _RUNTIME_MARKER in system["content"]
+        and _COLLECTOR_MARKER in system["content"]
+    )
 
 
 def _parse_system(messages: list[dict]) -> tuple[str, str, str, list[dict]]:
@@ -171,7 +198,12 @@ async def _replay(
 ) -> _Tally:
     tally = _Tally()
     for index in range(samples):
-        response = await client.chat(messages, tools=tools, prompt_type=f"replay-{label}")
+        try:
+            response = await client.chat(messages, tools=tools, prompt_type=f"replay-{label}")
+        except LlmError as error:
+            tally.record_error()
+            print(f"  [{label} {index + 1}/{samples}] ERROR {type(error).__name__}: {error}")
+            continue
         calls = response.message.tool_calls or []
         names = [call.function.name for call in calls]
         first = names[0] if names else None
@@ -183,11 +215,6 @@ async def _replay(
 
 async def _main(args: argparse.Namespace) -> None:
     messages, tools = _load_prompt(args.db, args.id)
-    date, body, runtime, rest = _parse_system(messages)
-    if args.body_file:
-        with open(args.body_file) as handle:
-            body = handle.read().strip()
-        print(f"swapped collector body from {args.body_file} ({len(body)} chars)")
     client = LlmClient(
         api_url=os.environ.get("LLM_API_URL", "http://host.docker.internal:11434"),
         model=os.environ.get("LLM_MODEL", "gpt-oss:20b"),
@@ -195,6 +222,17 @@ async def _main(args: argparse.Namespace) -> None:
         retry_delay=1.0,
         timeout=120.0,
     )
+    if args.mode == "plain" or not _is_collector_prompt(messages):
+        # Non-collector (e.g. a chat turn): replay the verbatim messages as-is —
+        # the placement split doesn't apply.  ``no_tool`` in the tally is the bail
+        # signal here (the model narrated "done" instead of calling a tool).
+        (await _replay(client, messages, tools, args.samples, "verbatim")).report("verbatim")
+        return
+    date, body, runtime, rest = _parse_system(messages)
+    if args.body_file:
+        with open(args.body_file) as handle:
+            body = handle.read().strip()
+        print(f"swapped collector body from {args.body_file} ({len(body)} chars)")
     placements = ("system", "user") if args.mode == "both" else (args.mode,)
     for placement in placements:
         composed = _compose(date, body, runtime, rest, placement=placement, nudge=args.nudge)
@@ -209,9 +247,10 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=12, help="replays per placement")
     parser.add_argument(
         "--mode",
-        choices=("system", "user", "both"),
+        choices=("system", "user", "both", "plain"),
         default="both",
-        help="where the collector body goes: system (current shape) / user (split) / both",
+        help="where the collector body goes: system (current shape) / user (split) / both; "
+        "'plain' forces a verbatim replay (auto-selected for non-collector prompts)",
     )
     parser.add_argument(
         "--body-file",

@@ -93,6 +93,26 @@ def _score_update_scope(db: Database, before: set[str], *, added: tuple[str, ...
     return []
 
 
+def _score_update_source(db: Database, before: set[str], *, url_token: str) -> list[str]:
+    """The new source URL must land in the collection's extraction_prompt.
+
+    Changing where a collection gathers from (the source URL the collector browses)
+    is a ``collection_update`` of the ``extraction_prompt`` — the same field a scope
+    change rewrites.  The contract is the PERSISTED prompt now names the new source;
+    a model that only says "done" (no tool call), confabulates the change, or rewrites
+    the prompt while dropping the URL all fail this — exactly the production failure
+    where three "all set!" replies never wrote the URL.  Match on the host+path token,
+    not the verbatim ``https://`` string, so dropping the scheme isn't a false miss.
+    """
+    memory = db.memories.get("board-games")
+    if memory is None:
+        return ["board-games disappeared"]
+    body = memory.extraction_prompt or ""
+    if url_token not in body:
+        return [f"source URL not applied — {url_token!r} absent from extraction_prompt: {body!r}"]
+    return []
+
+
 def _score_silent_flip(db: Database, before: set[str], reply: str) -> list[str]:
     memory = db.memories.get("board-games")
     if memory is None:
@@ -165,6 +185,39 @@ async def test_update_add_scope(chat_eval: ChatEval) -> None:
         seed=_seed_board_games,
         score=lambda db, before, reply: _score_update_scope(
             db, before, added=("solo", "co-op", "cooperative")
+        ),
+    )
+
+
+# A distinctive synthetic source the model must browse instead of the generic query
+# the seeded prompt currently uses.  Host+path token is what the scorer matches on.
+_NEW_SOURCE_URL = "https://tabletop.example.com/hotness"
+_NEW_SOURCE_TOKEN = "tabletop.example.com/hotness"
+
+
+async def test_update_source_url(chat_eval: ChatEval) -> None:
+    """Pointing an existing collection at a new source URL must persist into the
+    extraction_prompt.
+
+    Contract for the "Change collection source" skill (migration 0070).  The
+    failure is an INTERPRETATION gap, not an inability to update: phrased
+    explicitly ("update the prompt so it browses this url from now on") the model
+    nails it; phrased the way users actually do ("for X you should browse this url
+    to find good games") it reads the request as "go browse that now" — a one-shot
+    action — and never reconfigures the collector.  Before the skill this case was
+    0/8; the skill (seeded by the migration the eval DB runs, so this drives the
+    SHIPPED text) frames "point X at this url" as a collection_update and lifts it.
+    Only the board-games collection is seeded here — the skill comes from the
+    migration, the single source of truth."""
+    await chat_eval(
+        case_id="update-source-url",
+        message=(
+            "actually, for the board games collection you should browse this url to "
+            f"find good games: {_NEW_SOURCE_URL}"
+        ),
+        seed=_seed_board_games,
+        score=lambda db, before, reply: _score_update_source(
+            db, before, url_token=_NEW_SOURCE_TOKEN
         ),
     )
 
