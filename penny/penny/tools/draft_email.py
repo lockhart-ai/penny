@@ -45,6 +45,7 @@ class DraftEmailTool(Tool):
         },
         "required": ["to", "subject", "body"],
     }
+    args_model = DraftEmailArgs
 
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client

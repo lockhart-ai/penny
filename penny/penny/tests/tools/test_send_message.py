@@ -1,24 +1,30 @@
-"""Tests for SendMessageTool — content/availability gates + enqueue.
+"""Tests for SendMessageTool — message-validity validation + delivery + enqueue.
 
-The tool no longer delivers directly: it enqueues into ``db.send_queue`` and
-the ``SendQueueDrainer`` delivers later (see ``test_send_queue_drainer.py``),
-so a cooldown delays a message rather than dropping it.  Three gates run before
-the enqueue:
+Two layers, tested where each lives:
 
-1. Refusal content ("I'm sorry, I can't...") — not a real reply, refuse.
-2. Truncation (``…``/``...`` tail) — ``success=False`` so the loop retries.
-3. ``users.is_muted(recipient)`` — refuse with a string that says to call ``done``.
+- **Message validity** is a validator on ``SendMessageArgs`` (the tool's
+  ``args_model``), so a half-formed body — blank / punctuation-only, bare URL,
+  bail-out phrase, unfinished fragment (``"Hi there! ......???"``), or
+  ellipsis-truncated tail — fails validation BEFORE ``execute`` runs.  ``Tool.run``
+  turns that into a ``success=False`` actionable error tool response.  This is the
+  shared ``half_formed_send_reason`` rule the run-health classifier flags
+  ``⚠ HALF-FORMED SEND`` on — one definition for both.
+- **Delivery decisions** live in ``execute`` (they need runtime state or are
+  correct no-op declines): a refusal body, no recipient, a muted user.
 
-A clean send is appended to the queue and returns the literal ``"Message sent."``
+The tool enqueues into ``db.send_queue`` rather than delivering directly (see
+``test_send_queue_drainer.py``); a clean send returns ``"Message sent."``
 (``mutated=True``) — the successful handoff the collector prompts gate on.
 """
 
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from penny.database import Database
-from penny.tools.send_message import SendMessageTool, _appears_truncated
+from penny.tools.models import SendMessageArgs
+from penny.tools.send_message import SendMessageTool
 
 _RECIPIENT = "+15551234567"
 _AGENT = "notify"
@@ -96,18 +102,22 @@ async def test_send_message_refuses_when_content_is_a_refusal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_message_rejects_ellipsis_truncated_content(tmp_path):
-    """Content ending mid-thought with '…' returns ``success=False`` so the
-    agent loop marks the call as failed; the model retries with the complete
-    body on its next step. Nothing is queued."""
+async def test_run_refuses_half_formed_with_actionable_error(tmp_path):
+    """Going through ``Tool.run`` (the executor's entry point), a half-formed body
+    is refused by the ``args_model`` validator with a ``success=False`` actionable
+    error tool response — names the field + the reason + how to fix — and
+    ``execute`` never runs, so nothing is queued.  This is the unfinished-fragment
+    shape the old truncation regex missed."""
     db = _make_db(tmp_path)
     tool = _make_tool(db)
 
-    result = await tool.execute(content="here's the news, the model …")
+    result = await tool.run(content="Hi there! ......???")
 
     assert result.success is False
-    assert "ended with an ellipsis" in result.message.lower()
-    assert "complete" in result.message.lower()
+    assert result.mutated is False
+    assert "unfinished fragment" in result.message.lower()  # the specific reason
+    assert "complete message" in result.message.lower()  # how to fix
+    assert "send_message" in result.message  # which tool to retry
     assert db.send_queue.next_pending() is None
 
 
@@ -138,26 +148,35 @@ async def test_send_message_refuses_when_no_primary_user(tmp_path):
     assert db.send_queue.next_pending() is None
 
 
-def test_appears_truncated_detects_production_failure_tails():
-    """Regression cases captured from production: model self-truncations."""
-    truncated = [
+def test_send_message_args_rejects_half_formed_bodies():
+    """The ``SendMessageArgs`` validator is the single message-validity gate the
+    ToolExecutor enforces before ``execute`` ever runs.  It rejects every
+    half-formed shape — blank / punctuation-only, bare URL, bail-out phrase,
+    unfinished fragment, and the ellipsis-truncated tails captured from production
+    — and accepts complete messages (including a conversational mid-text ellipsis
+    and a link with surrounding prose)."""
+    half_formed = [
         "lets you play 2-player co-op in style-themed ……",
         "still uses the original …",
-        "precision engineering. Scientists …",
         "all-time-best-efficiency - …?",
         "Hello world...",
+        "Hi there! ......???",
+        "???!!! ...",
+        "https://example.com/page",
+        "I don't know",
     ]
-    for body in truncated:
-        assert _appears_truncated(body), f"should detect truncation in: {body!r}"
+    for body in half_formed:
+        with pytest.raises(ValidationError):
+            SendMessageArgs(content=body)
 
     complete = [
         "anyway… that's the gist 🤓",
-        "Hello world.",
         "What a great find!",
         "Source: https://example.com/page 🚀",
+        "Heads up — a new title dropped, details inside.",
     ]
     for body in complete:
-        assert not _appears_truncated(body), f"should NOT detect truncation in: {body!r}"
+        SendMessageArgs(content=body)  # must not raise
 
 
 def test_send_queue_store_round_trip(tmp_path):

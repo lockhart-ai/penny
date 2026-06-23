@@ -59,6 +59,7 @@ from penny.database.memory.types import (
     slug,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ class Memory:
         if exclude_contents:
             rows = [row for row in rows if row.content not in exclude_contents]
         if self.is_log:
-            rows = [row for row in rows if not sim.is_low_info(row.content)]
+            rows = [row for row in rows if not is_low_info(row.content)]
         valid = [
             (row, row.content_embedding, row.id)
             for row in rows
@@ -500,7 +501,7 @@ class Collection(Memory):
         existing: list[EntrySide],
         thresholds: DedupThresholds,
     ) -> WriteResult:
-        rejection_reason = sim.degenerate_reason(entry.content)
+        rejection_reason = degenerate_reason(entry.content)
         if rejection_reason is not None:
             logger.debug("Rejected degenerate collection entry %r: %s", entry.key, rejection_reason)
             return WriteResult(key=entry.key, outcome="rejected", reason=rejection_reason)
@@ -766,9 +767,9 @@ def _run_tool_failures(prompts: list[PromptLog]) -> int:
 def _is_degenerate_send(content: str) -> bool:
     """True if a sent message has no real content the user should have received.
 
-    Reuses the corpus content filter (blank / bare-URL / bail-out phrase) and
-    adds the unfinished-fragment fingerprint (``"Hi there! ......???"``)."""
-    return sim.degenerate_reason(content) is not None or sim.is_unfinished_fragment(content)
+    The flag side of the shared :func:`half_formed_send_reason` rule — the same
+    test the ``send_message`` tool gates on before delivery."""
+    return half_formed_send_reason(content) is not None
 
 
 class RunHealth(BaseModel):

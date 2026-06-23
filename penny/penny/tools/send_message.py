@@ -4,20 +4,26 @@ Bound at construction to an ``agent_name`` (the bound collection, for
 collectors) plus the database.  The recipient is always the primary user
 (Penny is single-user) and is resolved from ``db`` at execute time.  The
 model calls this tool with a message body when it has decided what to say.
-The tool checks three *content/availability* gates, then **enqueues** the
-message for delivery — it does not send directly:
+
+**Message-validity is validated before ``execute`` runs**, on ``SendMessageArgs``
+(the tool's ``args_model``): a half-formed body — blank / punctuation-only, a
+bare URL, a bail-out phrase, an unfinished fragment like ``"Hi there! ......???"``,
+or an ellipsis-truncated tail — fails validation via the shared
+``half_formed_send_reason`` rule (the same one the run-health classifier flags
+``⚠ HALF-FORMED SEND`` on), so the ``ToolExecutor`` returns an actionable error
+tool response and ``execute`` never sees it.  ``execute`` is therefore left with
+only the *delivery decisions* — ones that need runtime state or are correct
+no-op declines rather than content failures — then **enqueues**; it does not
+send directly:
 
 - **Refusal**: if the content is itself a model refusal ("I'm sorry,
-  I can't..."), don't enqueue — that's not a real reply.  Tells the
-  model to call ``done`` instead.
-- **Truncation**: if the content tail looks like a model self-
-  truncation (ending in ``…`` or three-or-more dots, mid-thought),
-  return a failure string with the ``Error:`` prefix so the agent
-  loop marks the call as failed and the model re-emits the complete body.
-- **Mute**: if the recipient has muted notifications, the tool refuses
-  with a string that tells the model to call ``done``.
+  I can't..."), don't enqueue — that's not a real reply.  A correct no-op
+  decline (``success=True``); tells the model to call ``done`` instead.
+- **No recipient / Mute**: if there's no primary user, or the user has muted
+  autonomous messages, decline as a no-op — normal cycle behaviour, not a
+  failure.
 
-If all three pass, the message is appended to ``db.send_queue`` and the
+If those pass, the message is appended to ``db.send_queue`` and the
 tool returns ``"Message sent."`` (``mutated=True``).  Enqueue **is** the
 successful handoff: the background drain schedule (``SendQueueDrainer``)
 owns *when* the message actually goes out, honouring the flat-interval
@@ -32,7 +38,6 @@ which is true.
 from __future__ import annotations
 
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
 from penny.llm.refusal import is_refusal
@@ -67,6 +72,7 @@ class SendMessageTool(Tool):
         },
         "required": ["content"],
     }
+    args_model = SendMessageArgs
 
     # The success signal a consumer's prompt can key on. Enqueue is the
     # successful handoff (delivery is the drainer's job), so it returns this.
@@ -81,16 +87,6 @@ class SendMessageTool(Tool):
         f'Call ``{DoneTool.name}(success=true, summary="muted — skipped")`` '
         "to exit — do not retry.  This is normal cycle behaviour, not a failure."
     )
-    # Returned with ``success=False`` so the agent loop sets
-    # ``record.failed=True``, which counts toward the abort threshold — we don't
-    # infinite-loop if the model keeps producing truncated content.
-    _TRUNCATION_REJECTION = (
-        "Message NOT sent: the content ended with an ellipsis "
-        "('…' or '...'), which means it was cut off mid-thought.  "
-        "Call send_message again with the COMPLETE message body — "
-        "finish every sentence and bullet you start, no ellipses, "
-        "no 'etc.', no 'and more', no teaser phrasing."
-    )
 
     def __init__(self, agent_name: str, db: Database) -> None:
         self._agent_name = agent_name
@@ -98,19 +94,15 @@ class SendMessageTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = SendMessageArgs(**kwargs)
-        # Not-enqueued gates all carry mutated=False (nothing was queued).  Most
-        # are *successful* no-ops — a correct decline the model shouldn't retry
-        # (refusal content, no recipient, muted), so success=True keeps them out
-        # of the failure budget and matches their "this is normal, not a failure"
-        # bodies.  Truncation is the one real failure: the model produced cut-off
-        # content, so success=False marks the call failed and steers a retry with
-        # the complete body (and feeds the abort threshold).
+        # Content validity is already enforced (the args_model validator ran in
+        # ToolExecutor before we got here).  What's left are delivery decisions —
+        # correct no-op declines (success=True, mutated=False) that need runtime
+        # state, not content failures: a refusal body, no recipient, or a muted
+        # user.  Each says "this is normal, call done", so it stays out of the
+        # failure budget.
         if is_refusal(args.content):
             logger.info("send_message refused (refusal content): %s", self._agent_name)
             return ToolResult(message=self._REFUSAL_RESPONSE)
-        if _appears_truncated(args.content):
-            logger.info("send_message rejected (truncation): %s", self._agent_name)
-            return ToolResult(message=self._TRUNCATION_REJECTION, success=False)
         recipient = self._db.users.get_primary_sender()
         if recipient is None:
             logger.info("send_message refused (no primary user): %s", self._agent_name)
@@ -123,19 +115,3 @@ class SendMessageTool(Tool):
         self._db.send_queue.enqueue(content=args.content, collection=self._agent_name)
         logger.info("send_message queued: %s → %s", self._agent_name, recipient)
         return ToolResult(message=self._SENT_RESPONSE, mutated=True)
-
-
-_TRUNCATION_TAIL_PATTERN = re.compile(r"(?:…+|\.{3,})\s*[?!.]?\s*$")
-
-
-def _appears_truncated(content: str) -> bool:
-    """Return True if ``content`` looks like a model self-truncation.
-
-    Matches a tail of one-or-more ``…`` characters or three-or-more ASCII
-    dots, optionally followed by a single ``?``/``!``/``.`` and trailing
-    whitespace.  Production failures look like ``"...the original …"`` or
-    ``"all-time-best ‑ …?"``.  Conversational mid-sentence ellipsis
-    (``"Anyway… 🤓"``) doesn't match because the message ends with text
-    after the ellipsis.
-    """
-    return bool(_TRUNCATION_TAIL_PATTERN.search(content))

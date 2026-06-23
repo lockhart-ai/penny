@@ -77,6 +77,7 @@ class BrowseTool(Tool):
     """
 
     name = "browse"
+    args_model = BrowseArgs
     # Whole-tool executor budget.  Must comfortably exceed the per-URL
     # BROWSE_REQUEST_TIMEOUT across all retries so a slow/hung URL fires its own
     # per-attempt timeout — captured by ``asyncio.gather(return_exceptions=True)``

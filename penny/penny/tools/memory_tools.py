@@ -367,6 +367,7 @@ class CollectionCreateTool(MemoryTool):
             "intent",
         ],
     }
+    args_model = CollectionCreateArgs
 
     def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
         self._db = db
@@ -427,6 +428,7 @@ class LogCreateTool(MemoryTool):
         },
         "required": ["name", "description", "inclusion", "recall"],
     }
+    args_model = LogCreateArgs
 
     def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
         self._db = db
@@ -460,6 +462,7 @@ class CollectionArchiveTool(MemoryTool):
         "properties": {"memory": {"type": "string"}},
         "required": ["memory"],
     }
+    args_model = MemoryNameArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -480,6 +483,7 @@ class CollectionUnarchiveTool(MemoryTool):
         "properties": {"memory": {"type": "string"}},
         "required": ["memory"],
     }
+    args_model = MemoryNameArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -509,6 +513,7 @@ class CollectionGetTool(MemoryTool):
         },
         "required": ["memory", "key"],
     }
+    args_model = CollectionGetArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -546,6 +551,7 @@ class CollectionReadLatestTool(MemoryTool):
         },
         "required": ["memory"],
     }
+    args_model = ReadLatestArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -571,6 +577,7 @@ class CollectionReadRandomTool(MemoryTool):
         },
         "required": ["memory"],
     }
+    args_model = ReadRandomArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -606,6 +613,7 @@ class ReadSimilarTool(MemoryTool):
         },
         "required": ["memory", "anchor"],
     }
+    args_model = ReadSimilarArgs
 
     def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
         self._db = db
@@ -640,6 +648,7 @@ class CollectionKeysTool(MemoryTool):
         "properties": {"memory": {"type": "string"}},
         "required": ["memory"],
     }
+    args_model = MemoryNameArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -694,6 +703,7 @@ class CollectionWriteTool(MemoryTool):
         },
         "required": ["memory", "entries"],
     }
+    args_model = CollectionWriteArgs
 
     def __init__(
         self,
@@ -789,6 +799,7 @@ class UpdateEntryTool(MemoryTool):
         },
         "required": ["memory", "key", "content"],
     }
+    args_model = UpdateEntryArgs
 
     def __init__(self, db: Database, author: str, scope: str | None = None) -> None:
         self._db = db
@@ -922,6 +933,7 @@ class CollectionUpdateTool(MemoryTool):
         },
         "required": ["name"],
     }
+    args_model = CollectionUpdateArgs
 
     def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
         self._db = db
@@ -973,6 +985,7 @@ class MemoryMetadataTool(MemoryTool):
         },
         "required": ["memory"],
     }
+    args_model = MemoryNameArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1032,6 +1045,7 @@ class CollectionCatalogTool(MemoryTool):
         "Logs and framework collectors are omitted."
     )
     parameters = {"type": "object", "properties": {}}
+    args_model = CatalogArgs
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1088,6 +1102,7 @@ class CollectionMergeTool(MemoryTool):
         },
         "required": ["from_memory", "to_memory"],
     }
+    args_model = CollectionMergeArgs
 
     def __init__(self, db: Database, author: str) -> None:
         self._db = db
@@ -1142,6 +1157,7 @@ class CollectionDeleteEntryTool(MemoryTool):
         },
         "required": ["memory", "key"],
     }
+    args_model = CollectionDeleteEntryArgs
 
     def __init__(self, db: Database, scope: str | None = None) -> None:
         self._db = db
@@ -1226,6 +1242,7 @@ class LogReadTool(CursorReadTool):
         "properties": {"memory": {"type": "string"}},
         "required": ["memory"],
     }
+    args_model = ReadLogArgs
 
     def __init__(self, db: Database, agent_name: str, scope: str | None) -> None:
         super().__init__(db, agent_name)
@@ -1312,6 +1329,7 @@ class ReadPublishedLatestTool(CursorReadTool):
             },
         },
     }
+    args_model = ReadPublishedLatestArgs
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadPublishedLatestArgs(**kwargs)
@@ -1376,6 +1394,7 @@ class LogAppendTool(MemoryTool):
         },
         "required": ["memory", "content"],
     }
+    args_model = LogAppendArgs
 
     def __init__(self, db: Database, llm_client: LlmClient | None, author: str) -> None:
         self._db = db
@@ -1430,6 +1449,7 @@ class ExistsTool(Tool):
         },
         "required": ["memories", "content"],
     }
+    args_model = ExistsArgs
 
     def __init__(
         self,
@@ -1488,6 +1508,7 @@ class DoneTool(Tool):
         },
         "required": ["success", "summary"],
     }
+    args_model = DoneArgs
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = DoneArgs(**kwargs)
@@ -1519,6 +1540,7 @@ class TestExtractionPromptTool(Tool):
         },
         "required": ["memory"],
     }
+    args_model = MemoryNameArgs
 
     def __init__(self, collector: Collector) -> None:
         self._collector = collector

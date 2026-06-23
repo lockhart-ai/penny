@@ -6,8 +6,10 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+from pydantic import BaseModel, ValidationError
+
 from penny.constants import ProgressEmoji
-from penny.tools.models import ToolCall, ToolDefinition, ToolResult
+from penny.tools.models import NoArgs, ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,13 @@ class Tool(ABC):
     name: str
     description: str
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
+    # The Pydantic model that validates this tool's call arguments — the tool's
+    # "validator" (Django-form style).  ``run`` constructs it before ``execute``,
+    # so every validity criterion (required fields, types, custom field/model
+    # validators like send_message's half-formed-content check) lives here, on the
+    # model, and is enforced uniformly BEFORE the tool runs — never ad-hoc inside
+    # ``execute``.  Defaults to ``NoArgs`` (a no-op) for argless tools.
+    args_model: type[BaseModel] = NoArgs
     timeout: float | None = None  # None = use ToolExecutor's global timeout
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
@@ -27,13 +36,59 @@ class Tool(ABC):
         if "name" in cls.__dict__:
             Tool._registry[cls.name] = cls
 
+    async def run(self, **kwargs: Any) -> ToolResult:
+        """Validate the call's arguments via ``args_model``, then ``execute``.
+
+        The single validate-then-handle gate every tool goes through (the
+        ``ToolExecutor`` calls this, not ``execute``).  A validation failure
+        returns an actionable error tool response and ``execute`` is never reached
+        with invalid args — so ``execute`` can trust its inputs and concern itself
+        only with the work + any runtime/availability decisions (e.g. mute state)
+        that aren't expressible as arg validation.
+        """
+        try:
+            self.args_model(**kwargs)
+        except ValidationError as exc:
+            return ToolResult(message=self._validation_error_message(exc), success=False)
+        return await self.execute(**kwargs)
+
+    def _validation_error_message(self, exc: ValidationError) -> str:
+        """Actionable rejection: each bad field, why, and how to fix it.
+
+        Pairs Pydantic's per-error reason (required / wrong type / custom-validator
+        message) with the field's type + description from ``parameters`` (the
+        model-facing schema), so the model gets the same rich hint the hand-rolled
+        check used to give plus any custom-validator guidance."""
+        properties = self.parameters.get("properties", {})
+        parts = [self._format_field_error(error, properties) for error in exc.errors()]
+        return (
+            f"Error: invalid arguments for {self.name} — {'; '.join(parts)}. "
+            f"Call {self.name} again with valid arguments."
+        )
+
+    @staticmethod
+    def _format_field_error(error: Any, properties: dict[str, Any]) -> str:
+        """One ``field (type: description): reason`` line for a Pydantic error."""
+        field = str(error["loc"][0]) if error.get("loc") else "(arguments)"
+        prop = properties.get(field, {})
+        param_type = prop.get("type", "")
+        param_desc = prop.get("description", "")
+        if param_type and param_desc:
+            descriptor = f"{field} ({param_type}: {param_desc})"
+        elif param_type:
+            descriptor = f"{field} ({param_type})"
+        else:
+            descriptor = field
+        reason = str(error.get("msg", "invalid value")).removeprefix("Value error, ")
+        return f"{descriptor}: {reason}"
+
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
         """
-        Execute the tool.
+        Execute the tool with already-validated arguments.
 
-        Args:
-            **kwargs: Tool parameters
+        ``run`` validates ``kwargs`` against ``args_model`` before this is
+        called, so ``execute`` never sees invalid args.
 
         Returns:
             A ToolResult carrying the model-facing message plus the
@@ -158,42 +213,16 @@ class ToolExecutor:
         self.registry = registry
         self.timeout = timeout
 
-    def _validate_arguments(self, tool: Tool, arguments: dict[str, Any]) -> str | None:
-        """Validate that all required parameters are present in arguments."""
-        parameters = tool.parameters
-        required_params = parameters.get("required", [])
-        missing_params = [param for param in required_params if param not in arguments]
-        if missing_params:
-            return self._missing_params_error(missing_params, parameters.get("properties", {}))
-        return None
-
-    @staticmethod
-    def _missing_params_error(missing: list[str], properties: dict[str, Any]) -> str:
-        """Build a hint-rich error message listing missing params with their types/descriptions."""
-        hints = []
-        for param in missing:
-            prop = properties.get(param, {})
-            param_type = prop.get("type", "")
-            param_desc = prop.get("description", "")
-            if param_type and param_desc:
-                hints.append(f"{param} ({param_type}: {param_desc})")
-            elif param_type:
-                hints.append(f"{param} ({param_type})")
-            else:
-                hints.append(param)
-        return (
-            f"Missing required parameter(s): {', '.join(hints)}. "
-            f"Please call the tool again with all required parameters."
-        )
-
     async def execute(self, tool_call: ToolCall) -> ToolResult:
-        """Execute a tool call."""
+        """Run a tool call: resolve the tool, then drive it through ``tool.run``
+        (which validates args against the tool's ``args_model`` before executing).
+
+        The executor owns only the framework concerns the tool can't: an unknown
+        tool name, a timeout, an uncaught exception.  Argument validation lives on
+        the tool (its ``args_model``), not here."""
         tool = self.registry.get(tool_call.tool)
         if tool is None:
             return self._tool_not_found_result(tool_call)
-        validation_error = self._validate_arguments(tool, tool_call.arguments)
-        if validation_error:
-            return self._validation_error_result(tool_call, validation_error)
         return await self._execute_with_timeout(tool, tool_call)
 
     def _tool_not_found_result(self, tool_call: ToolCall) -> ToolResult:
@@ -212,24 +241,19 @@ class ToolExecutor:
             success=False,
         )
 
-    def _validation_error_result(self, tool_call: ToolCall, error: str) -> ToolResult:
-        """Build a failed result for argument validation failure."""
-        logger.error("Tool call validation failed: %s - %s", tool_call.tool, error)
-        return ToolResult(message=f"Error: {error}", success=False)
-
     async def _execute_with_timeout(self, tool: Tool, tool_call: ToolCall) -> ToolResult:
-        """Execute tool with timeout and error handling.
+        """Drive the tool through ``run`` (validate-then-execute) under a timeout.
 
-        A tool returns its own ``ToolResult``; a bare string is tolerated and
-        wrapped.  Framework failures the tool can't report (timeout, uncaught
-        exception) are synthesised into a failed ``ToolResult`` here.
+        ``run`` returns its own ``ToolResult`` — including the actionable failure
+        for invalid arguments.  Framework failures the tool can't report (timeout,
+        uncaught exception) are synthesised into a failed ``ToolResult`` here.
         """
+        effective_timeout = tool.timeout if tool.timeout is not None else self.timeout
         try:
             logger.info("Executing tool: %s", tool_call.tool)
             logger.debug("Tool arguments: %s", tool_call.arguments)
-            effective_timeout = tool.timeout if tool.timeout is not None else self.timeout
             result = await asyncio.wait_for(
-                tool.execute(**tool_call.arguments),
+                tool.run(**tool_call.arguments),
                 timeout=effective_timeout,
             )
             logger.info("Tool executed successfully: %s", tool_call.tool)

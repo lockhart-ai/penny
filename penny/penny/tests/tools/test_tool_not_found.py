@@ -7,6 +7,7 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
+from penny.tools.memory_args import DoneArgs
 from penny.tools.memory_tools import UpdateEntryTool
 
 
@@ -169,24 +170,24 @@ class StubDoneTool(Tool):
         },
         "required": ["success", "summary"],
     }
+    args_model = DoneArgs
 
     async def execute(self, **kwargs):
         return "done"
 
 
 class TestMissingRequiredParameters:
-    """Validation error messages include parameter type and description hints."""
+    """``Tool.run`` validates args against ``args_model`` before ``execute`` and,
+    on failure, returns an actionable error tool response that names each bad
+    field with the type + description hint from ``parameters``."""
 
-    def test_missing_params_error_includes_type_and_description(self):
-        """Error message includes type and description for each missing parameter."""
-        registry = ToolRegistry()
-        tool = StubDoneTool()
-        registry.register(tool)
-        executor = ToolExecutor(registry)
+    @pytest.mark.asyncio
+    async def test_missing_params_error_includes_type_and_description(self):
+        """Error names type and description for each missing required parameter."""
+        result = await StubDoneTool().run()
 
-        error = executor._validate_arguments(tool, {})
-
-        assert error is not None
+        assert result.success is False
+        error = result.message
         assert "success" in error
         assert "boolean" in error
         assert "True if the cycle succeeded" in error
@@ -194,31 +195,24 @@ class TestMissingRequiredParameters:
         assert "string" in error
         assert "One-sentence description" in error
 
-    def test_missing_params_error_only_lists_absent_params(self):
+    @pytest.mark.asyncio
+    async def test_missing_params_error_only_lists_absent_params(self):
         """Only the actually-missing parameter appears in the error."""
-        registry = ToolRegistry()
-        tool = StubDoneTool()
-        registry.register(tool)
-        executor = ToolExecutor(registry)
+        result = await StubDoneTool().run(success=True)
 
-        error = executor._validate_arguments(tool, {"success": True})
+        assert result.success is False
+        assert "summary" in result.message
+        assert "success" not in result.message
 
-        assert error is not None
-        assert "summary" in error
-        assert "success" not in error
+    @pytest.mark.asyncio
+    async def test_no_error_when_all_required_params_present(self):
+        """With all required params, validation passes and execute runs."""
+        result = await StubDoneTool().run(success=True, summary="done")
 
-    def test_no_error_when_all_required_params_present(self):
-        """Returns None when all required parameters are provided."""
-        registry = ToolRegistry()
-        tool = StubDoneTool()
-        registry.register(tool)
-        executor = ToolExecutor(registry)
+        assert result == "done"  # the stub's execute output — no validation failure
 
-        error = executor._validate_arguments(tool, {"success": True, "summary": "done"})
-
-        assert error is None
-
-    def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
         """update_entry validation error names 'Collection name' and 'Entry key' so the
         LLM understands which identifier each parameter represents."""
         from penny.database import Database
@@ -226,15 +220,12 @@ class TestMissingRequiredParameters:
         db = Database(str(tmp_path / "test.db"))
         db.create_tables()
         tool = UpdateEntryTool(db=db, author="test")
-        registry = ToolRegistry()
-        registry.register(tool)
-        executor = ToolExecutor(registry)
 
-        error = executor._validate_arguments(tool, {"content": "new value"})
+        result = await tool.run(content="new value")
 
-        assert error is not None
-        assert "Collection name" in error
-        assert "Entry key within the collection" in error
+        assert result.success is False
+        assert "Collection name" in result.message
+        assert "Entry key within the collection" in result.message
 
     @pytest.mark.asyncio
     async def test_agent_sends_hint_rich_error_to_model_on_missing_params(self, test_db, mock_llm):

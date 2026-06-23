@@ -54,6 +54,7 @@ class SearchEmailsTool(Tool):
         },
         "required": [],
     }
+    args_model = SearchEmailsArgs
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:

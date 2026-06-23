@@ -420,6 +420,10 @@ class Agent:
                 return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR)
 
             if response.has_tool_calls:
+                if await self.handle_premature_terminator(
+                    response, messages, tool_call_records, is_final_step
+                ):
+                    continue
                 result = await self._process_tool_calls(response, called_tools, on_tool_start)
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
@@ -492,6 +496,21 @@ class Agent:
 
         Base returns False — text response = final answer.
         Override to inject continuation messages and keep the loop going.
+        """
+        return False
+
+    async def handle_premature_terminator(
+        self,
+        response,
+        messages: list[dict],
+        tool_call_records: list[ToolCallRecord],
+        is_final: bool,
+    ) -> bool:
+        """Reject a terminator tool call made before any real work. Return True to
+        continue, False to process the call normally.
+
+        Base returns False — no agent shape forbids an early terminator.
+        ``BackgroundAgent`` overrides this to refuse a first-move ``done()``.
         """
         return False
 
@@ -1176,6 +1195,52 @@ class BackgroundAgent(Agent):
             return False
         messages.append(response.message.to_input_message())
         messages.append({"role": MessageRole.USER, "content": Prompt.COLLECTOR_TOOL_CALL_NUDGE})
+        return True
+
+    async def handle_premature_terminator(
+        self,
+        response,
+        messages: list[dict],
+        tool_call_records: list[ToolCallRecord],
+        is_final: bool,
+    ) -> bool:
+        """Refuse a first-move ``done()`` — a collector must do real work first.
+
+        A cycle whose very first tool call is ``done()`` (with no prior read /
+        write / browse) is the ``⚠ NO WORK DONE`` bail: the model declared the
+        cycle finished without even checking its inputs.  The model made a
+        *coherent* tool call, so the correction is an **error tool response**
+        (not a text-step nudge): append the assistant turn + a failed tool-result
+        for the done call explaining why it was refused, exactly as
+        ``_dedup_tool_calls`` rejects a repeat in place.  A failed ``done`` doesn't
+        stop the loop (see ``should_stop_loop``), so the model sees the error and
+        retries with a real tool call.  Bounded by ``max_steps``: on the final
+        step there's no room to retry, so let the done close the cycle.
+
+        Premature only when (a) this step's calls are all ``done`` and (b) no
+        non-``done`` tool call has run yet this cycle — the same "no real work"
+        test the run-health classifier uses for ``bailed``.  A batched
+        ``[log_read, done]`` or a ``done`` after any earlier read is left alone.
+        """
+        if is_final:
+            return False
+        calls = response.message.tool_calls or []
+        if not calls or any(call.function.name != DoneTool.name for call in calls):
+            return False
+        if any(record.tool != DoneTool.name for record in tool_call_records):
+            return False
+        messages.append(response.message.to_input_message())
+        for call in calls:
+            messages.append(
+                {
+                    "role": MessageRole.TOOL,
+                    "content": Tool.format_result(
+                        DoneTool.name, Prompt.COLLECTOR_PREMATURE_DONE_REJECTION
+                    ),
+                    "tool_call_id": call.id,
+                }
+            )
+        logger.info("Rejected premature done() (no prior work) for %s", self.name)
         return True
 
     def get_tools(self) -> list[Tool]:

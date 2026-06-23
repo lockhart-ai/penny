@@ -2,7 +2,16 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from penny.text_validity import half_formed_send_reason
+
+
+class NoArgs(BaseModel):
+    """Args model for a tool that takes no parameters.
+
+    The default ``Tool.args_model`` — validation is a no-op (extra keys the model
+    may pass are ignored), so an argless tool needs no per-tool model."""
 
 
 class ToolResult(BaseModel):
@@ -58,9 +67,30 @@ class BrowseArgs(BaseModel):
 
 
 class SendMessageArgs(BaseModel):
-    """Validated arguments for the send_message tool."""
+    """Validated arguments for the send_message tool.
+
+    The ``content`` validator is the tool's *message-validity* gate: it rejects a
+    half-formed body (blank / punctuation-only, bare URL, bail-out phrase,
+    unfinished fragment, ellipsis-truncated) via the shared
+    ``half_formed_send_reason`` — the same rule the run-health classifier flags
+    ``⚠ HALF-FORMED SEND`` on.  Running here (not inside ``execute``) means the
+    ``ToolExecutor`` refuses the call with an actionable error tool response
+    before the tool runs; ``execute`` then handles only delivery decisions
+    (refusal/mute/recipient).
+    """
 
     content: str
+
+    @field_validator("content")
+    @classmethod
+    def _reject_half_formed(cls, value: str) -> str:
+        if reason := half_formed_send_reason(value):
+            raise ValueError(
+                f"{reason} — that is not a complete message the user should receive. "
+                "Send the COMPLETE message body: a finished, substantive sentence (or "
+                "more), no placeholder punctuation, no bare link, no trailing ellipsis."
+            )
+        return value
 
 
 class SearchEmailsArgs(BaseModel):

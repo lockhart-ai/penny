@@ -166,6 +166,22 @@ Examples:
         "otherwise call the appropriate tool to continue the cycle."
     )
 
+    # Returned (in the tool-result field, success=False) when a collector calls
+    # done() as its very first move — before reading any input or doing any work.
+    # Unlike COLLECTOR_TOOL_CALL_NUDGE this is NOT a user-turn nudge: the model
+    # made a coherent tool call, so the correction goes back as that call's error
+    # result.  A first-move done() is the ⚠ NO WORK DONE bail (deciding "no new
+    # matches" without even checking), so it must read its inputs first.
+    COLLECTOR_PREMATURE_DONE_REJECTION = (
+        "Error: you called done() before doing anything this cycle.  You cannot "
+        "conclude the cycle without first reading your inputs — a done() with no "
+        "prior tool call is a no-op bail, not a real quiet cycle.  Make at least "
+        "one real tool call first (read the log / collection the prompt names, e.g. "
+        "log_read or collection_read_latest), THEN decide: write what you found, or "
+        "call done(success=true) only after a read confirms there is genuinely "
+        "nothing new."
+    )
+
     # Nudge prompts (injected when model returns empty content)
     FINAL_STEP_NUDGE = (
         "STOP. You cannot search anymore. Tools are no longer available. "

@@ -1694,13 +1694,19 @@ class TestCollectorTextNudge:
 
     @pytest.mark.asyncio
     async def test_text_bail_is_nudged_and_recovers_with_done(self, test_db, mock_llm):
-        """Prose ("Done. Summary: ...") → nudge → the model re-emits a real done()."""
+        """Work, then prose ("Done. Summary: ...") → nudge → re-emits a real done().
+
+        The realistic production shape (and what the eval's ``_InjectTextBail`` forces):
+        the model does real work, THEN narrates completion as prose instead of
+        calling done().  Work-first matters — a done() after the nudge is only
+        honoured because a real tool call already ran; a bare done() with no work
+        would itself be refused by the premature-done guard."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
             if count == 1:
-                # The 138673 flavor: the model narrates that it's finished as
-                # prose instead of calling done().
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
                 return mock_llm._make_text_response(request, "**Done. Summary: wrote the entry.**")
             return mock_llm._make_tool_call_response(
                 request, "done", {"success": True, "summary": "wrote the entry"}
@@ -1711,9 +1717,9 @@ class TestCollectorTextNudge:
         response = await agent.run("", max_steps=max_steps)
 
         # The model was called again after the stray text (nudged, not stopped).
-        assert len(mock_llm.requests) == 2
+        assert len(mock_llm.requests) == 3
         # The nudge was injected as the last user turn before the retry.
-        last_user = [m for m in mock_llm.requests[1]["messages"] if m["role"] == "user"][-1]
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
         assert "tool call" in last_user["content"].lower()
         # The cycle closed with a real done() record (not a lost/failed cycle).
         assert any(record.tool == "done" for record in response.tool_calls)
@@ -1722,8 +1728,8 @@ class TestCollectorTextNudge:
 
     @pytest.mark.asyncio
     async def test_text_bail_can_recover_into_more_work(self, test_db, mock_llm):
-        """Mid-work narration (the 138316 flavor) → nudge → the model continues
-        with a work tool, not a premature done()."""
+        """Mid-work narration → nudge → the model continues with a work tool, not
+        a premature done()."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -1763,5 +1769,126 @@ class TestCollectorTextNudge:
         # Exactly max_steps calls — nudged each non-final step, then stopped.
         assert len(mock_llm.requests) == 3
         assert not any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+
+class TestCollectorPrematureDone:
+    """A collector whose very first tool call is done() — with no prior read /
+    write / browse — is refused with an ERROR TOOL RESPONSE (not a text-step
+    nudge: the model made a coherent tool call, so the correction goes back as
+    that call's failed result).  A failed done() doesn't stop the loop, so the
+    model sees the error and recovers with a real tool call first."""
+
+    @pytest.mark.asyncio
+    async def test_first_move_done_is_rejected_and_recovers(self, test_db, mock_llm):
+        """done() as the opening move → error tool response → model reads, then
+        legitimately closes with done()."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                # The production flavor: "no new matches" without reading anything.
+                return mock_llm._make_tool_call_response(
+                    request, "done", {"success": True, "summary": "no new matches this cycle"}
+                )
+            if count == 2:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # The premature done() did NOT stop the loop — the model was called again.
+        assert len(mock_llm.requests) == 3
+        # The rejection came back as a TOOL result (not a user-turn nudge).
+        retry_messages = mock_llm.requests[1]["messages"]
+        tool_results = [m for m in retry_messages if m["role"] == "tool"]
+        assert tool_results, "premature done() should be refused via a tool result"
+        assert "before doing anything" in tool_results[-1]["content"].lower()
+        assert not any(
+            m["role"] == "user" and "before doing" in m["content"] for m in retry_messages
+        )
+        # It recovered: a real work tool ran, then the cycle closed with done().
+        tools_called = [record.tool for record in response.tool_calls]
+        assert "search" in tools_called
+        assert "done" in tools_called
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_done_after_real_work_is_not_rejected(self, test_db, mock_llm):
+        """A done() that follows a real tool call is legitimate — the guard only
+        fires on a FIRST-move done(), so a normal read-then-done cycle is untouched."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # Two calls only — the done() on step 2 closed cleanly, never refused.
+        assert len(mock_llm.requests) == 2
+        done_records = [r for r in response.tool_calls if r.tool == "done"]
+        assert len(done_records) == 1
+        assert done_records[0].failed is False
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_batched_read_and_done_is_not_premature(self, test_db, mock_llm):
+        """A single response that batches [search, done] is not a bail — a real
+        tool call rode along, so the done() is honoured and closes the cycle."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            return mock_llm._make_parallel_tool_calls_response(
+                request,
+                [
+                    ("search", {"query": "inputs"}),
+                    ("done", {"success": True, "summary": "wrote the entry"}),
+                ],
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # One model call: the batched done() stopped the loop, never refused.
+        assert len(mock_llm.requests) == 1
+        tools_called = [record.tool for record in response.tool_calls]
+        assert "search" in tools_called and "done" in tools_called
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_persistent_first_move_done_is_bounded_by_max_steps(self, test_db, mock_llm):
+        """A model that keeps opening with done() never loops forever — refused on
+        each non-final step, bounded by max_steps.  On the final step there's no
+        room to retry (like the text-bail fallback), so that done is honoured and
+        is the only recorded one — the refused earlier ones leave no record."""
+        agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "no new matches this cycle"}
+            )
+        )
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # Bounded at max_steps (didn't loop forever); only the final-step done()
+        # was accepted — the two refused first-move dones left no record.
+        assert len(mock_llm.requests) == 3
+        assert len([r for r in response.tool_calls if r.tool == "done"]) == 1
 
         await agent.close()

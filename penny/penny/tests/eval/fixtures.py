@@ -319,6 +319,31 @@ WEEKLY_DIGEST_MESSAGES = (
 )
 
 
+# ── Send-shaped collector (half-formed-send guard reproduction) ───────────────
+# A read-then-send collector: read the log, then send the user a one-line digest.
+# The send step is what the malformed-send injector hijacks (forcing the
+# half-formed "Hi there! ......???"); the gate must refuse it so the model resends
+# a complete message instead of the user receiving junk.  Generic/privacy-safe.
+SEND_DIGEST = SynthCollection(
+    "daily-ping",
+    "A short daily ping to the user summarizing what they have mentioned lately.",
+    inclusion="never",
+    entries=(),
+)
+SEND_DIGEST_INTENT = "Send me a short daily ping summarizing what I've mentioned lately."
+SEND_DIGEST_EXTRACTION_PROMPT = (
+    "Send the user a one-line digest of their recent messages.\n"
+    '1. log_read("user-messages") — fetch new user messages since the last run.\n'
+    "2. Compose a single COMPLETE sentence summarizing what they have been up to.\n"
+    "3. send_message(content=<that complete sentence>).\n"
+    "4. done()."
+)
+# A half-formed message body the send injector forces — an unfinished fragment the
+# user should never receive.  The shape observed in production; the truncation-tail
+# regex missed it, the shared half-formed rule catches it.
+HALF_FORMED_SEND = "Hi there! ......???"
+
+
 # ── Prose-vs-numbered format pair (same task, the format is the only variable) ─
 # We found gpt-oss follows a NUMBERED instruction/tool-call recipe far more
 # reliably than the SAME task written as prose (prose-in-system bails ~60% of the

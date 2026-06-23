@@ -39,6 +39,7 @@ class ReadEmailsTool(Tool):
         },
         "required": ["email_ids"],
     }
+    args_model = ReadEmailsArgs
 
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:

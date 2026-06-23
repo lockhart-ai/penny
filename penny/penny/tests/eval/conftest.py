@@ -28,7 +28,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog
-from penny.llm.models import LlmMessage, LlmResponse
+from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
@@ -450,10 +450,28 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
     return _run
 
 
-class _InjectTextBail:
-    """Wraps a real ``LlmClient`` to inject ONE plain-text response right after
-    the model's first tool call, then delegate every other call to the real
-    model.
+class _InjectingClient:
+    """Base for the eval injectors that wrap a real ``LlmClient`` to force ONE bad
+    response deterministically, then delegate every other call to the real model.
+
+    Holds the wrapped client and ``bail_injected`` (a declared attribute, so
+    callers read ``wrapper.bail_injected`` directly — no ``getattr`` probing) and
+    forwards every other attribute to the real client.  Subclasses override
+    ``chat`` to decide when, and what, to inject."""
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.bail_injected = False
+
+    async def chat(self, messages, tools=None, **kwargs):
+        raise NotImplementedError
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _InjectTextBail(_InjectingClient):
+    """Injects ONE plain-text response right after the model's first tool call.
 
     This reproduces — deterministically, against the live model — a collector
     that narrates "Done." (or any prose) instead of continuing with / closing
@@ -464,10 +482,9 @@ class _InjectTextBail:
     """
 
     def __init__(self, real, bail_text: str) -> None:
-        self._real = real
+        super().__init__(real)
         self._bail_text = bail_text
         self._saw_tool = False
-        self.bail_injected = False
 
     async def chat(self, messages, tools=None, **kwargs):
         if self._saw_tool and not self.bail_injected:
@@ -477,9 +494,6 @@ class _InjectTextBail:
         if response.has_tool_calls:
             self._saw_tool = True
         return response
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
 
 
 # A nudge-eval runner: (collection, seed, bail_text) -> asserts recovery.
@@ -540,6 +554,141 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                     elif not success:
                         fails.append("cycle did not recover to a successful close after the nudge")
                     results.append(SampleResult(not fails, fails))
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+class _InjectDoneBail(_InjectingClient):
+    """Forces a ``done()`` tool call as the model's FIRST response — the first-move
+    bail the premature-done guard must refuse.
+
+    Reproduces, deterministically against the live model, a collector that opens
+    with ``done(success=true, "no new matches")`` before reading anything.  Pre-fix
+    that bail closes the cycle; post-fix the guard returns an error tool response
+    and the real model must recover (read its inputs, then do the work).
+    ``bail_injected`` records the scenario actually fired."""
+
+    async def chat(self, messages, tools=None, **kwargs):
+        if not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-done",
+                            function=LlmToolCallFunction(
+                                name="done",
+                                arguments={
+                                    "success": True,
+                                    "summary": "no new matches this cycle",
+                                },
+                            ),
+                        )
+                    ],
+                )
+            )
+        return await self._real.chat(messages, tools=tools, **kwargs)
+
+
+class _InjectSendBail(_InjectingClient):
+    """Injects ONE malformed ``send_message`` tool call right after the model's
+    first real tool call.
+
+    Reproduces a collector that emits a half-formed send (``"Hi there! ......???"``)
+    mid-cycle.  Pre-fix the send gate let that shape through (the truncation regex
+    missed it) and the user received junk; post-fix the gate refuses it with an
+    error tool response and the model must resend a complete message.
+    ``bail_injected`` records the scenario actually fired."""
+
+    def __init__(self, real, junk: str) -> None:
+        super().__init__(real)
+        self._junk = junk
+        self._saw_tool = False
+
+    async def chat(self, messages, tools=None, **kwargs):
+        if self._saw_tool and not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-send",
+                            function=LlmToolCallFunction(
+                                name="send_message", arguments={"content": self._junk}
+                            ),
+                        )
+                    ],
+                )
+            )
+        response = await self._real.chat(messages, tools=tools, **kwargs)
+        if response.has_tool_calls:
+            self._saw_tool = True
+        return response
+
+
+# A guard-recovery runner: (collection, seed, wrap_client, score) -> asserts recovery.
+GuardRecoveryEval = Callable[..., Awaitable[None]]
+
+
+@pytest.fixture
+def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRecoveryEval:
+    """Contract test for a runtime guard that refuses a bad tool call.
+
+    Drives a real collector cycle but forces one bad tool call via an injector
+    (``wrap_client(real) -> injector`` with a ``bail_injected`` flag).  The guard
+    must refuse it with an error tool response (not stop the cycle), and the live
+    model must recover.  Each sample asserts the bail actually fired AND the
+    case's ``score(db, sent) -> [fails]`` passed.  Mirrors ``nudge_eval`` but for
+    the coherent-but-wrong tool-call path rather than the plain-text-bail path."""
+
+    async def _run(
+        *,
+        case_id: str,
+        collection: str,
+        seed: Seeder,
+        wrap_client: Callable[[object], _InjectingClient],
+        score: Callable[[Database, list[str]], list[str]],
+        browse: list[CannedPage] | None = None,
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+    ) -> None:
+        results: list[SampleResult] = []
+        perf = _Perf()
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    seed_user(penny.db)
+                    seed(penny.db)
+                    await _embed_seeds(penny)
+                    if browse is not None:
+                        install_browse(penny, browse)
+                    sent_before = len(server.outgoing_messages)
+                    wrapper = wrap_client(penny.collector._model_client)
+                    penny.collector._model_client = wrapper
+                    await penny.collector.run_for(collection)
+                    sent = [item.content for item in penny.db.send_queue.pending_items()] + [
+                        str(message.get("message", ""))
+                        for message in server.outgoing_messages[sent_before:]
+                    ]
+                    fails = list(score(penny.db, sent))
+                    if not wrapper.bail_injected:
+                        fails.append("forced bail never fired — contract not exercised")
+                    results.append(SampleResult(not fails, fails))
+                    _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

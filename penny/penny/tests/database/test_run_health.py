@@ -10,9 +10,9 @@ worked run and a healthy quiet read carry no flags.
 
 import json
 
-from penny.database.memory import classify_run, render_run_record
-from penny.database.memory._similarity import is_unfinished_fragment
+from penny.database.memory import classify_run, half_formed_send_reason, render_run_record
 from penny.database.models import PromptLog
+from penny.text_validity import is_unfinished_fragment
 
 
 def _call(name: str, args: dict) -> dict:
@@ -147,3 +147,17 @@ def test_unfinished_fragment_predicate_is_narrow():
     assert is_unfinished_fragment("Wait... what?!") is False
     assert is_unfinished_fragment("Hmm...?") is False
     assert is_unfinished_fragment("Heads up — a new title dropped, details inside.") is False
+
+
+def test_half_formed_send_reason_is_the_shared_rule():
+    """The one rule the send_message gate refuses on AND classify_run flags on:
+    blank/punctuation, bare URL, bail-out phrase, and unfinished fragment are all
+    half-formed; a real message is not.  ``_is_degenerate_send`` (the flag side)
+    is defined as ``half_formed_send_reason(...) is not None``, so this predicate
+    is the single source of truth for both."""
+    assert half_formed_send_reason("Hi there! ......???") is not None
+    assert half_formed_send_reason("???!!! ...") is not None
+    assert half_formed_send_reason("https://example.com/page") is not None
+    assert half_formed_send_reason("I don't know") is not None
+    assert half_formed_send_reason("still uses the original …") is not None  # truncation tail
+    assert half_formed_send_reason("Heads up — a new title dropped, details inside.") is None

@@ -14,7 +14,6 @@ testable and reusable from both the entity classes and the registry.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 
 import numpy as np
@@ -103,97 +102,6 @@ def _safe_cosine(a: list[float] | None, b: list[float] | None) -> float | None:
     if a is None or b is None:
         return None
     return cosine_similarity(a, b)
-
-
-# ── Content filters ──────────────────────────────────────────────────────────
-
-_WORD_TOKEN_RE = re.compile(r"\w+")
-
-# Matches content that is a bare URL with no surrounding description.
-_BARE_URL_RE = re.compile(r"^https?://\S+$")
-
-# LLM bail-out phrases that produce useless knowledge entries.
-_WRITE_BAILOUT_PHRASES: frozenset[str] = frozenset(
-    {
-        "not sure",
-        "i'm not sure",
-        "i am not sure",
-        "i cannot help with that",
-        "i can't help with that",
-        "i don't know",
-        "i do not know",
-        "n/a",
-        "no information",
-        "no information available",
-        "unable to summarize",
-        "unable to provide a summary",
-        "no content available",
-        "content not available",
-        "page not available",
-        "content unavailable",
-        "access denied",
-        "error",
-    }
-)
-
-
-# A message that trails off into a run of dots followed by question/exclamation
-# spam with no closing clause — the fingerprint of a half-formed generation.  The
-# real case this targets: a notifier cycle that sent "Hi there! ......???" before
-# the actual notification.  Deliberately narrow (≥3 dots immediately followed by
-# ≥2 ?/!) so legitimate punctuation ("Wait... what?!", "Hmm...?") is never caught.
-_UNFINISHED_FRAGMENT_RE = re.compile(r"\.{3,}\s*[?!]{2,}")
-
-
-def is_unfinished_fragment(content: str) -> bool:
-    """True if ``content`` ends in ellipsis + ?/! spam — a half-formed message.
-
-    Complements :func:`degenerate_reason` (which only catches blank / bare-URL /
-    bail-out content): a message can carry word tokens yet still be an unfinished
-    fragment a user should never have received.
-    """
-    return bool(_UNFINISHED_FRAGMENT_RE.search(content))
-
-
-def is_blank(content: str) -> bool:
-    """Return True if ``content`` carries no word tokens at all.
-
-    The conservative "is this empty?" predicate — whitespace, punctuation, or
-    ellipsis only.  Distinct from the fuller :func:`degenerate_reason` (which
-    also rejects bare URLs and bail-out phrases): a blank check is safe for any
-    text field, including log appends where a bare URL may be legitimate.
-    """
-    return not _WORD_TOKEN_RE.findall(content)
-
-
-def degenerate_reason(content: str) -> str | None:
-    """Return a rejection reason if ``content`` is too degenerate to store.
-
-    Catches empty/pure-punctuation strings, bare URLs, and known LLM
-    bail-out phrases.  Returns ``None`` when content is acceptable.
-    Applied at collection write time to keep the corpus clean.
-    """
-    stripped = content.strip()
-    if is_blank(stripped):
-        return "content has no word tokens (empty, punctuation, or ellipsis only)"
-    if _BARE_URL_RE.match(stripped):
-        return "content is a bare URL with no descriptive text"
-    if stripped.lower() in _WRITE_BAILOUT_PHRASES:
-        return f"content matches a known LLM bail-out phrase: {stripped!r}"
-    return None
-
-
-def is_low_info(content: str) -> bool:
-    """Return True if ``content`` carries less than the configured minimum word
-    count and should be filtered from similarity scoring.
-
-    The filter targets entries that geometrically dominate cosine rankings on
-    short keyword anchors despite having no topical payload — empty strings,
-    lone punctuation, stock greetings, bare URL fragments.  Entries that pass
-    still appear in other recall paths (recent / all / read_latest); only the
-    relevant-mode similarity corpus is filtered.
-    """
-    return len(_WORD_TOKEN_RE.findall(content)) < PennyConstants.MEMORY_RELEVANT_MIN_WORDS
 
 
 # ── Retrieval scoring ────────────────────────────────────────────────────────

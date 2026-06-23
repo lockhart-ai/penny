@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from penny.tools.base import Tool
-from penny.tools.models import ToolResult
+from penny.tools.models import NoArgs, ToolResult
 from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ class ListFoldersTool(Tool):
         "properties": {},
         "required": [],
     }
+    args_model = NoArgs
 
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client

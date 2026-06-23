@@ -41,6 +41,7 @@ class ListEmailsTool(Tool):
         },
         "required": [],
     }
+    args_model = ListEmailsArgs
 
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client

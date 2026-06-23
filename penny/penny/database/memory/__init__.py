@@ -7,7 +7,6 @@ backfill).  The shapes and facades live in :mod:`objects`; the registry and
 dispatch in :mod:`store`; shared value types in :mod:`types`.
 """
 
-from penny.database.memory._similarity import degenerate_reason, is_blank
 from penny.database.memory.objects import (
     Collection,
     Log,
@@ -40,11 +39,17 @@ from penny.database.memory.types import (
     WrongShapeError,
     slug,
 )
+from penny.text_validity import (
+    degenerate_reason,
+    half_formed_send_reason,
+    is_blank,
+)
 
 __all__ = [
     "Collection",
     "DedupThresholds",
     "degenerate_reason",
+    "half_formed_send_reason",
     "EntryInput",
     "EntrySide",
     "Inclusion",
