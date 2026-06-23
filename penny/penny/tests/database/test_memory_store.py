@@ -384,6 +384,20 @@ class TestDegenerateContentRejection:
         )
         assert results[0].outcome == "rejected"
 
+    def test_failed_browse_placeholder_rejected(self, tmp_path):
+        """A failed/empty browse extraction ("No summary available") must not enter
+        the corpus.  Real production case: a published collection wrote this as an
+        entry, so the notifier drained it and delivered a confusing non-find to the
+        user — the bail-phrase filter stops it at write time."""
+        db = self._make_collection(tmp_path)
+        results = db.memories.memory("knowledge").write(
+            [EntryInput(key="We can't find that page", content="No summary available")],
+            author="collector",
+        )
+        assert results[0].outcome == "rejected"
+        assert results[0].reason is not None
+        assert len(db.memories.memory("knowledge").read_all()) == 0
+
     def test_short_but_valid_content_accepted(self, tmp_path):
         db = self._make_collection(tmp_path)
         results = db.memories.memory("knowledge").write(
