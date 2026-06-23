@@ -459,27 +459,6 @@ def test_should_stop_loop_ignores_failed_done(test_config, tmp_path):
     assert collector.should_stop_loop([valid_done]) is True
 
 
-def test_text_form_done_is_recovered(test_config, tmp_path):
-    """Regression: gpt-oss occasionally emits ``done(...)`` as plain text
-    content instead of as a structured tool call.  The agent loop now
-    parses the text-form back into a synthesised ``ToolCallRecord`` so
-    ``_extract_done_args`` sees the model's intent rather than reporting
-    a spurious ``"max steps exceeded"``."""
-    from penny.agents.base import _parse_text_form_done
-
-    raw_args = _parse_text_form_done('{"reasoning":"x","success":true,"summary":"wrote 2 entries"}')
-    assert raw_args == {"reasoning": "x", "success": True, "summary": "wrote 2 entries"}
-
-    wrapped_args = _parse_text_form_done('done({"success": false, "summary": "no-op"})')
-    assert wrapped_args == {"success": False, "summary": "no-op"}
-
-    # Genuinely text content (not a done call) returns None.
-    assert _parse_text_form_done("Hi there!") is None
-    assert _parse_text_form_done("") is None
-    # JSON without success/summary isn't a done call.
-    assert _parse_text_form_done('{"some": "other"}') is None
-
-
 # ── run_for: on-demand cycle trigger ────────────────────────────────────────
 
 

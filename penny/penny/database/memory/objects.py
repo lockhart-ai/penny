@@ -42,7 +42,7 @@ from pydantic import BaseModel, computed_field
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
-from penny.constants import PennyConstants, RunHealthFlag, RunOutcome
+from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory import _similarity as sim
 from penny.database.memory.types import (
     DedupThresholds,
@@ -60,6 +60,7 @@ from penny.database.memory.types import (
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
+from penny.validation.conditions import ConditionKey, run_flag_conditions
 
 logger = logging.getLogger(__name__)
 
@@ -796,13 +797,13 @@ class RunHealth(BaseModel):
         """Stable flag keys for badges / filtering, in render order."""
         out: list[str] = []
         if self.bailed:
-            out.append(RunHealthFlag.NO_WORK_DONE.value)
+            out.append(ConditionKey.NO_WORK_DONE.value)
         if self.incomplete:
-            out.append(RunHealthFlag.INCOMPLETE.value)
+            out.append(ConditionKey.INCOMPLETE.value)
         if self.tool_failures:
-            out.append(RunHealthFlag.TOOL_FAILURES.value)
+            out.append(ConditionKey.TOOL_FAILURES.value)
         if self.degenerate_send:
-            out.append(RunHealthFlag.HALF_FORMED_SEND.value)
+            out.append(ConditionKey.HALF_FORMED_SEND.value)
         return out
 
     @computed_field
@@ -838,46 +839,38 @@ def _send_content(args: object) -> str:
     return str(content) if content is not None else ""
 
 
-# The ``⚠`` marker that prefixes every run-health flag line, and the per-flag
-# markers built from it — the literal sentinels the ``quality`` collector reads
-# (and the addon's TS regex colours by).  Defined once so the render never spells
-# them inline; they must stay in lockstep with the markers the seeded ``quality``
-# prompt names (see migration 0072, which keeps its own frozen copies).
-HEALTH_MARKER = "⚠"
-_MARK_NO_WORK = f"{HEALTH_MARKER} NO WORK DONE"
-_MARK_INCOMPLETE = f"{HEALTH_MARKER} INCOMPLETE"
-_MARK_TOOL_FAILURES = f"{HEALTH_MARKER} TOOL FAILURES"
-_MARK_HALF_FORMED = f"{HEALTH_MARKER} HALF-FORMED SEND"
+# Which ``RunHealth`` field gates each run-flag condition, in canonical render
+# order — the marker/detail text itself lives once in the shared catalog
+# (``penny.validation.conditions``), so the render never spells the ``⚠`` lines
+# inline and the seeded ``quality`` prompt + the addon TS mirror stay in lockstep.
+def _flag_is_set(health: RunHealth, key: ConditionKey) -> bool:
+    return {
+        ConditionKey.NO_WORK_DONE: health.bailed,
+        ConditionKey.INCOMPLETE: health.incomplete,
+        ConditionKey.TOOL_FAILURES: bool(health.tool_failures),
+        ConditionKey.HALF_FORMED_SEND: health.degenerate_send,
+    }[key]
+
+
+def _flag_line(health: RunHealth, condition_key: ConditionKey, marker: str, detail: str) -> str:
+    """One ⚠ line — ``{marker} — {detail}``, with the failure count inserted
+    after the marker for TOOL FAILURES (``⚠ TOOL FAILURES (n) — …``)."""
+    if condition_key == ConditionKey.TOOL_FAILURES:
+        return f"{marker} ({health.tool_failures}) — {detail}"
+    return f"{marker} — {detail}"
 
 
 def _health_lines(health: RunHealth) -> list[str]:
     """The ⚠ explanation lines for a run record, one per set flag, in order.
 
     The verbose form Penny's ``quality`` collector reads; the addon derives its
-    compact badges from the same ``RunHealth.flags``."""
-    lines: list[str] = []
-    if health.bailed:
-        lines.append(
-            f"{_MARK_NO_WORK} — reached done() (or made no tool call) without any "
-            "read/write/browse step first; the collector is not following its "
-            "instructions"
-        )
-    if health.incomplete:
-        lines.append(
-            f"{_MARK_INCOMPLETE} — hit the step ceiling without a closing done(); work "
-            "landed but the cycle never finished cleanly"
-        )
-    if health.tool_failures:
-        lines.append(
-            f"{_MARK_TOOL_FAILURES} ({health.tool_failures}) — a tool call returned an "
-            "error and the run kept going"
-        )
-    if health.degenerate_send:
-        lines.append(
-            f"{_MARK_HALF_FORMED} — a message went out with no real content (empty, "
-            "punctuation-only, or an unfinished fragment)"
-        )
-    return lines
+    compact badges from the same ``RunHealth.flags``.  Marker + detail come from
+    the shared catalog so the run record and the quality prompt name one text."""
+    return [
+        _flag_line(health, entry.key, entry.marker, entry.detail)
+        for entry in run_flag_conditions()
+        if entry.marker is not None and entry.detail is not None and _flag_is_set(health, entry.key)
+    ]
 
 
 def render_run_record(prompts: list[PromptLog]) -> str:

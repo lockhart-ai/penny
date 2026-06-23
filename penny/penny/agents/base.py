@@ -3,157 +3,54 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
-import urllib.parse as _urlparse
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 from penny.agents.models import ChatMessage, ControllerResponse, MessageRole, ToolCallRecord
 from penny.config import Config
-from penny.constants import PennyConstants, ValidationReason
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.llm.models import LlmError, LlmTimeoutError, LlmToolParseError
-from penny.llm.refusal import is_refusal
+from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.tools.send_message import SendMessageTool
+from penny.validation import (
+    ConditionKey,
+    LoopContext,
+    NudgeContinue,
+    Proceed,
+    RejectToolCall,
+    Repair,
+    ResponseValidator,
+    Retry,
+    Stop,
+    run_validators,
+)
+from penny.validation.response_validators import (
+    EmptyResponseValidator,
+    HallucinatedToolCallRepair,
+    HallucinatedUrlValidator,
+    PrematureDoneValidator,
+    RefusalValidator,
+    TextInsteadOfToolValidator,
+    XmlTagValidator,
+    build_strong_nudge,
+    clean_malformed_urls,
+    strip_think_tags,
+)
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel
 
 logger = logging.getLogger(__name__)
-
-
-# Matches paired XML-like tags in content, e.g. <function=search>...</function>
-# or <tools><search>...</search></tools>
-_XML_TAG_PATTERN = re.compile(r"<[a-zA-Z]\w*[\s=>].*</[a-zA-Z]\w*>", re.DOTALL)
-
-# Matches <think>...</think> blocks emitted inline by some models (e.g. DeepSeek-R1, Qwen3)
-_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
-
-# Matches markdown links [text](url) and bare URLs for validation
-_MARKDOWN_LINK_URL_PATTERN = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
-_BARE_URL_PATTERN = re.compile(r"(?<!\()(https?://\S+)")
-
-
-def _is_url_truncated(url: str) -> bool:
-    """Return True if url appears truncated or malformed.
-
-    Checks for missing host and trailing hyphen (the most common sign of a cut-off path).
-    Strips trailing prose punctuation before validation so sentence-ending periods
-    don't cause false positives.
-    """
-    cleaned = url.rstrip(".,;:!?\"')>}]")
-    try:
-        parsed = _urlparse.urlparse(cleaned)
-    except Exception:
-        return True
-    if not parsed.netloc or "." not in parsed.netloc:
-        return True
-    return cleaned.endswith("-")
-
-
-def _clean_malformed_urls(content: str) -> str:
-    """Remove truncated or malformed URLs from model-generated content.
-
-    For markdown links [text](bad_url), the link text is preserved.
-    For bare malformed URLs, the URL token is removed entirely.
-    Valid URLs are left unchanged.
-    """
-
-    def fix_md_link(m: re.Match) -> str:
-        text, url = m.group(1), m.group(2)
-        if _is_url_truncated(url):
-            logger.warning("Stripped malformed URL from markdown link: %.120s", url)
-            return text
-        return m.group(0)
-
-    def fix_bare_url(m: re.Match) -> str:
-        url = m.group(1)
-        if _is_url_truncated(url):
-            logger.warning("Stripped malformed bare URL: %.120s", url)
-            return ""
-        return m.group(0)
-
-    content = _MARKDOWN_LINK_URL_PATTERN.sub(fix_md_link, content)
-    content = _BARE_URL_PATTERN.sub(fix_bare_url, content)
-    return content
-
-
-def _has_xml_tags(content: str) -> bool:
-    """Return True if content contains XML-like tag pairs."""
-    return bool(_XML_TAG_PATTERN.search(content))
-
-
-def _strip_think_tags(content: str) -> tuple[str, str | None]:
-    """Strip <think>...</think> blocks from content.
-
-    Returns (cleaned_content, extracted_thinking) where extracted_thinking
-    contains the concatenated text from all stripped blocks.
-    """
-    thinking_parts: list[str] = []
-
-    def _collect(m: re.Match) -> str:
-        thinking_parts.append(m.group(1).strip())
-        return ""
-
-    cleaned = _THINK_TAG_PATTERN.sub(_collect, content).strip()
-    extracted = "\n\n".join(thinking_parts) if thinking_parts else None
-    return cleaned, extracted
-
-
-def _parse_text_form_done(content: str) -> dict | None:
-    """Recover an intended ``done(...)`` call from text content.
-
-    Models occasionally emit the done args as plain content instead of a
-    structured tool call.  Two observed shapes:
-      * ``done({"success": true, "summary": "..."})``  (wrapped form)
-      * ``{"success": true, "summary": "..."}``        (raw args JSON)
-
-    Returns the parsed args dict if the content matches either shape and
-    contains at least ``success`` or ``summary``, else ``None``.  Used in
-    ``BackgroundAgent._run_cycle`` to synthesise a real ``ToolCallRecord``
-    so the cycle's intent isn't lost when the model flubs the tool call.
-    """
-    text = content.strip()
-    if text.startswith("done(") and text.endswith(")"):
-        text = text[5:-1].strip()
-    if not (text.startswith("{") and text.endswith("}")):
-        return None
-    try:
-        args = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(args, dict):
-        return None
-    if "success" not in args and "summary" not in args:
-        return None
-    return args
-
-
-def _build_strong_nudge(messages: list[dict]) -> str:
-    """Build a context-aware nudge that includes the original user question.
-
-    Called when many preceding tool calls may have saturated the model's context.
-    Uses forceful language to break the model out of search-fixation loops.
-    Including the original question gives the model a clear target after heavy tool use.
-    """
-    user_messages = [
-        m["content"]
-        for m in messages
-        if m.get("role") == MessageRole.USER and not m["content"].startswith("STOP")
-    ]
-    original_question = user_messages[-1]
-    return Prompt.FINAL_STEP_NUDGE.format(original_question=original_question)
 
 
 @dataclass
@@ -204,6 +101,29 @@ class Agent:
     # default; ``send_message`` for agents that signal completion by
     # delivering a message (notify).
     terminator_tool: str = DoneTool.name
+
+    # The composable response-validation chain — one validator per live
+    # condition, run in order by ``run_validators`` each model call.  Reads
+    # like a table of contents: a future guard is one more entry here, not a
+    # new branch in the loop.  ``ChatAgent`` and ``BackgroundAgent`` compose
+    # their own chains; the base agent (ad-hoc command agents) inherits this
+    # response-shape set.  ``HallucinatedToolCallRepair`` runs first so a
+    # tools-stripped final-step hallucination is cleaned before the
+    # content-shape validators see it.
+    response_validators: list[ResponseValidator] = [
+        HallucinatedToolCallRepair(),
+        XmlTagValidator(),
+        EmptyResponseValidator(),
+        RefusalValidator(),
+        HallucinatedUrlValidator(),
+    ]
+
+    # The run-shape chain — guards that depend on the run's tool-call history
+    # (premature ``done()``, prose-instead-of-tool), applied at the loop's
+    # tool-call / text branch points.  Empty on the base agent (no shape forbids
+    # an early terminator or a text answer); ``BackgroundAgent`` adds the
+    # collector guards.  A future shape guard is one more entry here.
+    run_shape_validators: list[ResponseValidator] = []
 
     def __init__(
         self,
@@ -321,21 +241,11 @@ class Agent:
             run_id=run_id,
             prompt_type=self.name,
         )
-        # Recover from a text-form ``done(...)`` — model occasionally
-        # emits the args as plain content instead of a structured tool
-        # call, especially toward the end of a long cycle.  Synthesising
-        # the missing record means cleanup (audit log, promptlog tag,
-        # success bool) sees the model's intent rather than reporting a
-        # spurious ``"max steps exceeded"``.
-        if (
-            self.terminator_tool == DoneTool.name
-            and response.answer
-            and not any(r.tool == DoneTool.name for r in response.tool_calls)
-        ):
-            args = _parse_text_form_done(response.answer)
-            if args is not None:
-                logger.info("Recovered text-form %s() call for run %s", DoneTool.name, run_id)
-                response.tool_calls.append(ToolCallRecord(tool=DoneTool.name, arguments=args))
+        # A cycle ends successfully only on a real ``done()`` tool call.  A
+        # model that signals completion as prose instead of calling the tool is
+        # not accommodated (no text-form parsing) — the cycle is not successful,
+        # its cursor doesn't commit, and it re-runs next tick; the model is
+        # guided toward a structured ``done()`` by the in-loop tool-call nudge.
         success = any(record.tool == self.terminator_tool for record in response.tool_calls)
 
         # Commit every cursored read's pending advance on a productive cycle,
@@ -419,10 +329,9 @@ class Agent:
             if response is None:
                 return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR)
 
+            ctx = self._loop_context(step, is_final_step, step_tools, messages, tool_call_records)
             if response.has_tool_calls:
-                if await self.handle_premature_terminator(
-                    response, messages, tool_call_records, is_final_step
-                ):
+                if self._reject_premature_terminator(response, messages, ctx):
                     continue
                 result = await self._process_tool_calls(response, called_tools, on_tool_start)
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
@@ -435,7 +344,7 @@ class Agent:
                     return abort
                 continue
 
-            if await self.handle_text_step(response, messages, step, is_final_step):
+            if self._nudge_text_step(response, messages, ctx):
                 continue
 
             return self._build_final_response(response, source_urls, tool_call_records)
@@ -451,6 +360,87 @@ class Agent:
             logger.debug("Final step — tools removed, model must produce text")
             return []
         return tools
+
+    def _loop_context(
+        self,
+        step: int,
+        is_final_step: bool,
+        step_tools: list[dict],
+        messages: list[dict],
+        records: list[ToolCallRecord],
+    ) -> LoopContext:
+        """Snapshot the run state a validator reads — built fresh per branch so
+        ``records`` reflects the work done before this response.  ``retried`` is
+        managed inside ``_call_model_validated`` (per model call), so the
+        run-shape disposition context carries the empty default."""
+        return LoopContext(
+            step=step,
+            is_final_step=is_final_step,
+            tools_available=bool(step_tools),
+            source_text=self._get_source_text(messages),
+            records=list(records),
+        )
+
+    def _reject_premature_terminator(
+        self, response: LlmResponse, messages: list[dict], ctx: LoopContext
+    ) -> bool:
+        """Run the run-shape chain over a tool-call response; apply a
+        ``RejectToolCall`` (premature first-move ``done()``) in place.
+
+        Returns True when the loop should ``continue`` (the call was refused with
+        an error tool-result), False to process the tool calls normally."""
+        match run_validators(self.run_shape_validators, response, ctx):
+            case RejectToolCall(message=message):
+                self._append_rejected_tool_calls(response, messages, message)
+                logger.info("Rejected premature done() (no prior work) for %s", self.name)
+                return True
+            case Proceed():
+                return False
+            case Retry() | Repair() | NudgeContinue() | Stop():
+                raise AssertionError(
+                    "run-shape validators produced an unexpected disposition on a "
+                    "tool-call response"
+                )
+            case unreachable:
+                assert_never(unreachable)
+
+    def _nudge_text_step(
+        self, response: LlmResponse, messages: list[dict], ctx: LoopContext
+    ) -> bool:
+        """Run the run-shape chain over a text-only response; apply a
+        ``NudgeContinue`` (collector narrated prose where a tool call was due).
+
+        Returns True when the loop should ``continue`` (response + nudge appended),
+        False to treat the text as the final answer."""
+        match run_validators(self.run_shape_validators, response, ctx):
+            case NudgeContinue(message=message):
+                messages.append(response.message.to_input_message())
+                messages.append({"role": MessageRole.USER, "content": message})
+                return True
+            case Proceed():
+                return False
+            case Retry() | Repair() | RejectToolCall() | Stop():
+                raise AssertionError(
+                    "run-shape validators produced an unexpected disposition on a text response"
+                )
+            case unreachable:
+                assert_never(unreachable)
+
+    @staticmethod
+    def _append_rejected_tool_calls(
+        response: LlmResponse, messages: list[dict], message: str
+    ) -> None:
+        """Append the assistant turn + a failed tool-result for each call, exactly
+        as ``_dedup_tool_calls`` rejects a repeat in place."""
+        messages.append(response.message.to_input_message())
+        for call in response.message.tool_calls or []:
+            messages.append(
+                {
+                    "role": MessageRole.TOOL,
+                    "content": Tool.format_result(call.function.name, message),
+                    "tool_call_id": call.id,
+                }
+            )
 
     def _absorb_tool_step_result(
         self,
@@ -489,31 +479,6 @@ class Agent:
         Override to capture content from all responses (e.g. inner monologue).
         """
 
-    async def handle_text_step(
-        self, response, messages: list[dict], step: int, is_final: bool
-    ) -> bool:
-        """Handle a text-only model response. Return True to continue, False to stop.
-
-        Base returns False — text response = final answer.
-        Override to inject continuation messages and keep the loop going.
-        """
-        return False
-
-    async def handle_premature_terminator(
-        self,
-        response,
-        messages: list[dict],
-        tool_call_records: list[ToolCallRecord],
-        is_final: bool,
-    ) -> bool:
-        """Reject a terminator tool call made before any real work. Return True to
-        continue, False to process the call normally.
-
-        Base returns False — no agent shape forbids an early terminator.
-        ``BackgroundAgent`` overrides this to refuse a first-move ``done()``.
-        """
-        return False
-
     async def after_step(
         self,
         step_records: list[ToolCallRecord],
@@ -546,56 +511,126 @@ class Agent:
         run_id: str | None = None,
         prompt_type: str | None = None,
     ):
-        """Call the model, retrying on invalid outputs.
+        """Call the model, driving the response-validation chain on each output.
 
-        Checks for (in order): XML markup, empty content, refusal, hallucinated URLs,
-        tool parse errors (500 plain-text-instead-of-JSON).
-        Each invalid output type gets one retry. Tool call responses are returned
-        immediately without validation. When tools are stripped (None) but the model
-        hallucinates tool calls, they are cleared and content falls through to
-        normal validation — which triggers the appropriate nudge for empty responses.
+        Builds a ``LoopContext`` and runs ``self.response_validators`` via
+        ``run_validators`` (XML / empty / refusal / hallucinated-URL, with the
+        no-tools tool-call strip as a ``Repair``).  A ``Retry`` appends the bad
+        response + its nudge and re-calls — once per condition (``retried``).  A
+        ``Proceed`` returns the (possibly-repaired) response.  Tool-call responses
+        with tools available short-circuit unvalidated.  ``LlmToolParseError``
+        (no response to inspect) routes through the same retried-set bookkeeping
+        as a ``TOOL_PARSE_ERROR`` retry.
         """
         max_retries = PennyConstants.RESPONSE_VALIDATION_RETRIES
         effective_tools = tools if tools else None
-        retried: set[ValidationReason] = set()
+        retried: set[ConditionKey] = set()
         response = None
 
         for attempt in range(max_retries):
             try:
                 response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
             except LlmToolParseError:
-                if ValidationReason.TOOL_PARSE_ERROR not in retried:
-                    retried.add(ValidationReason.TOOL_PARSE_ERROR)
-                    logger.warning(
-                        "Tool parse error on attempt %d/%d — retrying with format nudge",
-                        attempt + 1,
-                        max_retries,
-                    )
-                    messages.append({"role": MessageRole.USER, "content": Prompt.TOOL_FORMAT_NUDGE})
+                if self._retry_tool_parse_error(messages, retried, attempt, max_retries):
                     continue
-                logger.error("Tool parse error on repeated attempt — aborting")
                 return None
             if response is None:
                 return None
 
             if response.has_tool_calls and effective_tools is not None:
                 return response
-            if response.has_tool_calls and effective_tools is None:
-                logger.warning("Model hallucinated tool calls without tools — stripping")
-                response.message.tool_calls = None
 
             self.on_response(response)
-            reason = self._check_response(response.content.strip(), retried, messages)
-            if reason is None:
-                return response
-
-            retried.add(reason)
-            logger.warning(
-                "Invalid response (%s) on attempt %d/%d", reason, attempt + 1, max_retries
+            ctx = LoopContext(
+                step=0,
+                is_final_step=False,
+                tools_available=effective_tools is not None,
+                source_text=self._get_source_text(messages),
+                retried=retried,
             )
-            self._append_retry_nudge(messages, response, reason, effective_tools)
+            match run_validators(self.response_validators, response, ctx):
+                case Proceed(response=validated):
+                    return validated if validated is not None else response
+                case Retry(condition=condition, nudge=nudge):
+                    # Append the post-repair response (tool calls stripped when
+                    # tools were unavailable) — the chain may have stripped a
+                    # hallucinated call before a content validator asked to retry.
+                    appended = self._repaired_for_append(response, effective_tools)
+                    self._apply_retry(
+                        messages, appended, condition, nudge, retried, attempt, max_retries
+                    )
+                case Repair() | RejectToolCall() | NudgeContinue() | Stop():
+                    raise AssertionError("response validators produced an unexpected disposition")
+                case unreachable:
+                    assert_never(unreachable)
 
-        return response
+        # Retries exhausted — return the (tool-stripped, if no tools) last response
+        # so the loop's text/tool branching matches the validated form.
+        return self._repaired_for_append(response, effective_tools) if response else response
+
+    @staticmethod
+    def _repaired_for_append(
+        response: LlmResponse, effective_tools: list[dict] | None
+    ) -> LlmResponse:
+        """The response form to re-append on a retry — tool calls stripped when no
+        tools were available, mirroring ``HallucinatedToolCallRepair``."""
+        if effective_tools is not None or not response.has_tool_calls:
+            return response
+        repaired = response.model_copy(deep=True)
+        repaired.message.tool_calls = None
+        return repaired
+
+    def _retry_tool_parse_error(
+        self,
+        messages: list[dict],
+        retried: set[ConditionKey],
+        attempt: int,
+        max_retries: int,
+    ) -> bool:
+        """Inject a format nudge and signal a retry for a tool-parse 500, once.
+
+        Returns True to retry (nudge appended), False to abort — the error has no
+        response to inspect, so it's keyed into the same retried set the
+        response-validator chain uses (one retry per condition)."""
+        if ConditionKey.TOOL_PARSE_ERROR in retried:
+            logger.error("Tool parse error on repeated attempt — aborting")
+            return False
+        retried.add(ConditionKey.TOOL_PARSE_ERROR)
+        logger.warning(
+            "Tool parse error on attempt %d/%d — retrying with format nudge",
+            attempt + 1,
+            max_retries,
+        )
+        messages.append({"role": MessageRole.USER, "content": Prompt.TOOL_FORMAT_NUDGE})
+        return True
+
+    def _apply_retry(
+        self,
+        messages: list[dict],
+        response: LlmResponse,
+        condition: ConditionKey,
+        nudge: str,
+        retried: set[ConditionKey],
+        attempt: int,
+        max_retries: int,
+    ) -> None:
+        """Apply a ``Retry`` disposition: record the condition, append the bad
+        response, then its nudge (if any).
+
+        ``EMPTY`` carries ``CONTINUE_NUDGE`` mid-loop and an empty nudge on the
+        final step (tools stripped); the loop substitutes the forceful
+        ``build_strong_nudge`` there, since the strong builder needs the message
+        history a pure validator can't hold.  Other conditions just re-append the
+        response (empty nudge)."""
+        retried.add(condition)
+        logger.warning(
+            "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries
+        )
+        messages.append(response.message.to_input_message())
+        if condition == ConditionKey.EMPTY and not nudge:
+            nudge = build_strong_nudge(messages)
+        if nudge:
+            messages.append({"role": MessageRole.USER, "content": nudge})
 
     async def _invoke_model(
         self,
@@ -635,60 +670,6 @@ class Agent:
             logger.error("LLM chat failed: %s", exception)
             return None
 
-    def _append_retry_nudge(
-        self,
-        messages: list[dict],
-        response: Any,
-        reason: ValidationReason,
-        effective_tools: list[dict] | None,
-    ) -> None:
-        """Append the bad response and, for empty content, a nudge prompting synthesis."""
-        messages.append(response.message.to_input_message())
-        if reason != ValidationReason.EMPTY:
-            return
-        # Empty content: nudge depends on whether the model still has tools.
-        # Final step (tools stripped) gets a strong synthesis demand; mid-loop
-        # gets a gentle continue.
-        nudge = _build_strong_nudge(messages) if effective_tools is None else Prompt.CONTINUE_NUDGE
-        messages.append({"role": MessageRole.USER, "content": nudge})
-
-    def _check_response(
-        self,
-        content: str,
-        already_retried: set[ValidationReason],
-        messages: list[dict] | None = None,
-    ) -> ValidationReason | None:
-        """Check a text response for problems. Returns reason or None if valid."""
-        if _has_xml_tags(content) and ValidationReason.XML not in already_retried:
-            return ValidationReason.XML
-
-        effective_content, _ = _strip_think_tags(content)
-        letter_count = sum(1 for c in effective_content if c.isalpha())
-        if (
-            letter_count < PennyConstants.MIN_RESPONSE_LETTERS
-            and ValidationReason.EMPTY not in already_retried
-        ):
-            return ValidationReason.EMPTY
-
-        if (
-            effective_content
-            and is_refusal(effective_content)
-            and ValidationReason.REFUSAL not in already_retried
-        ):
-            return ValidationReason.REFUSAL
-
-        source_text = self._get_source_text(messages)
-        if source_text and effective_content:
-            bad_urls = self._find_hallucinated_urls(effective_content, source_text)
-            if bad_urls and ValidationReason.HALLUCINATED_URLS not in already_retried:
-                logger.warning(
-                    "Hallucinated URL(s): %s",
-                    ", ".join(url[:80] for url in bad_urls),
-                )
-                return ValidationReason.HALLUCINATED_URLS
-
-        return None
-
     def _build_final_response(
         self,
         response,
@@ -715,7 +696,7 @@ class Agent:
 
         # Strip <think>...</think> blocks emitted inline by some models.
         # Move extracted content to the thinking field if not already populated.
-        content, inline_thinking = _strip_think_tags(content)
+        content, inline_thinking = strip_think_tags(content)
         if not thinking and inline_thinking:
             thinking = inline_thinking
 
@@ -731,14 +712,11 @@ class Agent:
             )
             return ControllerResponse(answer=fallback)
 
-        content = _clean_malformed_urls(content)
+        content = clean_malformed_urls(content)
 
         if source_urls and "http" not in content:
             content = f"{content}\n\n{source_urls[0]}"
 
-        word_count = len(content.split())
-        if word_count < 10:
-            logger.warning("Short response detected (word_count=%d): %s", word_count, content[:100])
         logger.info("Got final answer (length: %d)", len(content))
         return ControllerResponse(
             answer=content,
@@ -961,28 +939,6 @@ class Agent:
 
     # ── URL validation ──────────────────────────────────────────────────
 
-    @staticmethod
-    def _extract_urls(text: str) -> list[str]:
-        """Extract all URLs from text (both markdown links and bare URLs)."""
-        md_urls = [m.group(2) for m in _MARKDOWN_LINK_URL_PATTERN.finditer(text)]
-        bare_urls = [m.group(1) for m in _BARE_URL_PATTERN.finditer(text)]
-        seen: set[str] = set()
-        urls: list[str] = []
-        for url in md_urls + bare_urls:
-            cleaned = url.rstrip(".,;:!?\"')>}]")
-            if cleaned not in seen:
-                seen.add(cleaned)
-                urls.append(cleaned)
-        return urls
-
-    @classmethod
-    def _find_hallucinated_urls(cls, text: str, source_text: str) -> list[str]:
-        """Return URLs in text that don't appear verbatim in the source text."""
-        urls = cls._extract_urls(text)
-        if not urls:
-            return []
-        return [url for url in urls if url not in source_text]
-
     def _get_source_text(self, messages: list[dict] | None = None) -> str:
         """Combined source text for URL validation.
 
@@ -1171,77 +1127,19 @@ class BackgroundAgent(Agent):
     it instead of producing a reply.
     """
 
+    # A collector acts only through tool calls, so two run-shape guards apply
+    # that don't on chat: a prose answer where a tool call was due
+    # (``TextInsteadOfToolValidator`` → ``NudgeContinue``) and a first-move
+    # ``done()`` before any real work (``PrematureDoneValidator`` →
+    # ``RejectToolCall``).  Applied at the loop's text / tool-call branch points;
+    # both honour ``max_steps`` (no retry room on the final step).
+    run_shape_validators: list[ResponseValidator] = [
+        PrematureDoneValidator(),
+        TextInsteadOfToolValidator(),
+    ]
+
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
-
-    async def handle_text_step(
-        self, response, messages: list[dict], step: int, is_final: bool
-    ) -> bool:
-        """A collector acts only through tool calls — a text-only response is a bail.
-
-        The model is meant to drive the whole cycle through tools and exit via
-        ``done()``; when it instead emits prose (a "Done. Summary: ..." narration,
-        a mid-work observation, a tool call written as text) the loop would
-        otherwise treat that text as a final answer and stop, leaving the cycle
-        with no ``done`` record — marked ``failed``, cursor uncommitted, re-run
-        next tick.  Since the slip is stochastic (the same context usually
-        produces a clean tool call), append the stray text + a nudge and keep the
-        loop going so the model recovers with a real tool call — ``done()`` if it
-        was finished, otherwise the next work tool.  Bounded by ``max_steps``: on
-        the final step there's no room to retry, so let the loop end and fall
-        through to the post-loop ``_parse_text_form_done`` recovery.
-        """
-        if is_final:
-            return False
-        messages.append(response.message.to_input_message())
-        messages.append({"role": MessageRole.USER, "content": Prompt.COLLECTOR_TOOL_CALL_NUDGE})
-        return True
-
-    async def handle_premature_terminator(
-        self,
-        response,
-        messages: list[dict],
-        tool_call_records: list[ToolCallRecord],
-        is_final: bool,
-    ) -> bool:
-        """Refuse a first-move ``done()`` — a collector must do real work first.
-
-        A cycle whose very first tool call is ``done()`` (with no prior read /
-        write / browse) is the ``⚠ NO WORK DONE`` bail: the model declared the
-        cycle finished without even checking its inputs.  The model made a
-        *coherent* tool call, so the correction is an **error tool response**
-        (not a text-step nudge): append the assistant turn + a failed tool-result
-        for the done call explaining why it was refused, exactly as
-        ``_dedup_tool_calls`` rejects a repeat in place.  A failed ``done`` doesn't
-        stop the loop (see ``should_stop_loop``), so the model sees the error and
-        retries with a real tool call.  Bounded by ``max_steps``: on the final
-        step there's no room to retry, so let the done close the cycle.
-
-        Premature only when (a) this step's calls are all ``done`` and (b) no
-        non-``done`` tool call has run yet this cycle — the same "no real work"
-        test the run-health classifier uses for ``bailed``.  A batched
-        ``[log_read, done]`` or a ``done`` after any earlier read is left alone.
-        """
-        if is_final:
-            return False
-        calls = response.message.tool_calls or []
-        if not calls or any(call.function.name != DoneTool.name for call in calls):
-            return False
-        if any(record.tool != DoneTool.name for record in tool_call_records):
-            return False
-        messages.append(response.message.to_input_message())
-        for call in calls:
-            messages.append(
-                {
-                    "role": MessageRole.TOOL,
-                    "content": Tool.format_result(
-                        DoneTool.name, Prompt.COLLECTOR_PREMATURE_DONE_REJECTION
-                    ),
-                    "tool_call_id": call.id,
-                }
-            )
-        logger.info("Rejected premature done() (no prior work) for %s", self.name)
-        return True
 
     def get_tools(self) -> list[Tool]:
         tools = super().get_tools()

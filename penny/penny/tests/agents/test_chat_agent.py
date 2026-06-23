@@ -465,42 +465,6 @@ async def test_xml_tool_call_not_leaked_to_user(
 
 
 @pytest.mark.asyncio
-async def test_short_response_logged_as_warning(
-    signal_server, mock_llm, test_config, test_user_info, running_penny, caplog
-):
-    """
-    Regression test for #775: short/apologetic responses should be logged as warnings.
-
-    When the model returns a very short response (< 10 words), a warning is logged
-    to make these cases visible for debugging. The response is still delivered to
-    the user — the warning is diagnostic, not suppressive.
-    """
-    import logging
-
-    apologetic_response = "I'm sorry, but I can't help with that."
-
-    def handler(request, count):
-        return mock_llm._make_text_response(request, apologetic_response)
-
-    mock_llm.set_response_handler(handler)
-
-    with caplog.at_level(logging.WARNING, logger="penny.agents.base"):
-        async with running_penny(test_config):
-            await signal_server.push_message(
-                sender=TEST_SENDER,
-                content="what are the best vegan restaurants in downtown metropolis?",
-            )
-            response = await signal_server.wait_for_message(timeout=10.0)
-
-    # Response is still delivered to the user
-    assert response["message"] == apologetic_response
-
-    # Warning was logged for the short response
-    short_response_warnings = [r for r in caplog.records if "Short response detected" in r.message]
-    assert len(short_response_warnings) >= 1, "Should log a warning for short responses"
-
-
-@pytest.mark.asyncio
 async def test_signal_progress_reactions_track_tool_calls(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):

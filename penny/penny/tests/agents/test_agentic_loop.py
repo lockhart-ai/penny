@@ -7,18 +7,47 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.agents.base import Agent, BackgroundAgent
+from penny.agents.models import ToolCallRecord
 from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.models import PromptLog
 from penny.llm import LlmClient
-from penny.llm.models import LlmConnectionError, LlmTimeoutError, LlmToolParseError
+from penny.llm.models import (
+    LlmConnectionError,
+    LlmMessage,
+    LlmResponse,
+    LlmTimeoutError,
+    LlmToolCall,
+    LlmToolCallFunction,
+    LlmToolParseError,
+)
 from penny.responses import PennyResponse
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
 from penny.tools.models import ToolResult
+from penny.validation import (
+    ConditionKey,
+    LoopContext,
+    NudgeContinue,
+    Proceed,
+    RejectToolCall,
+    Repair,
+    Retry,
+    run_validators,
+)
+from penny.validation.response_validators import (
+    EmptyResponseValidator,
+    HallucinatedToolCallRepair,
+    HallucinatedUrlValidator,
+    PrematureDoneValidator,
+    RefusalValidator,
+    TextInsteadOfToolValidator,
+    XmlTagValidator,
+    build_strong_nudge,
+)
 
 
 class StubSearchTool(Tool):
@@ -816,6 +845,19 @@ class TestParallelToolCalls:
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
         assert "no browser is connected" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
+
+    @pytest.mark.asyncio
+    async def test_empty_queries_rejected_at_arg_gate(self, test_db, mock_llm):
+        """An empty ``queries`` list is rejected by ``BrowseArgs`` at the ``run``
+        gate before ``execute`` runs — so an empty browse can't silently no-op —
+        with an actionable message pointing at queries."""
+        tool = BrowseTool(max_calls=5)
+
+        result = await tool.run(queries=[])
+
+        assert result.success is False
+        assert "queries" in result.message
+        assert "search query or URL" in result.message
 
     @pytest.mark.asyncio
     async def test_urls_always_route_to_browse(self, test_db, mock_llm):
@@ -1892,3 +1934,162 @@ class TestCollectorPrematureDone:
         assert len([r for r in response.tool_calls if r.tool == "done"]) == 1
 
         await agent.close()
+
+
+def _text_response(content: str) -> LlmResponse:
+    return LlmResponse(message=LlmMessage(role="assistant", content=content))
+
+
+def _tool_response(name: str, args: dict) -> LlmResponse:
+    return LlmResponse(
+        message=LlmMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                LlmToolCall(id="c1", function=LlmToolCallFunction(name=name, arguments=args))
+            ],
+        )
+    )
+
+
+def _ctx(
+    *,
+    step: int = 0,
+    is_final_step: bool = False,
+    tools_available: bool = True,
+    source_text: str = "",
+    records: list[ToolCallRecord] | None = None,
+    retried: set[ConditionKey] | None = None,
+) -> LoopContext:
+    return LoopContext(
+        step=step,
+        is_final_step=is_final_step,
+        tools_available=tools_available,
+        source_text=source_text,
+        records=records if records is not None else [],
+        retried=retried if retried is not None else set(),
+    )
+
+
+class TestResponseValidators:
+    """Each validator owns one condition and returns its disposition — the unit
+    contract behind the integration behaviour exercised above.  A new guard is a
+    new validator with its own disposition, composed into an agent's chain."""
+
+    def test_xml_validator_retries_then_proceeds_once_retried(self):
+        resp = _text_response("<function=search>x</function>")
+        outcome = XmlTagValidator().check(resp, _ctx())
+        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.XML
+        # No extra nudge — XML just re-appends the bad response.
+        assert outcome.nudge == ""
+        # Already retried → proceeds (retry-once-per-condition).
+        assert isinstance(XmlTagValidator().check(resp, _ctx(retried={ConditionKey.XML})), Proceed)
+
+    def test_empty_validator_nudge_depends_on_tools(self):
+        empty = _text_response("\n\n---")
+        mid = EmptyResponseValidator().check(empty, _ctx(tools_available=True))
+        assert isinstance(mid, Retry) and mid.condition == ConditionKey.EMPTY
+        assert mid.nudge == "Please provide your response."
+        # Final step (tools stripped): empty nudge sentinel → loop builds strong nudge.
+        final = EmptyResponseValidator().check(empty, _ctx(tools_available=False))
+        assert isinstance(final, Retry) and final.nudge == ""
+        # Real content proceeds.
+        assert isinstance(
+            EmptyResponseValidator().check(_text_response("a real answer"), _ctx()), Proceed
+        )
+
+    def test_refusal_validator(self):
+        resp = _text_response("I'm sorry, but I can't help with that.")
+        outcome = RefusalValidator().check(resp, _ctx())
+        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.REFUSAL
+
+    def test_hallucinated_url_validator_uses_source_text(self):
+        resp = _text_response("See https://made-up.example/never for details.")
+        # No source text → nothing to check.
+        assert isinstance(HallucinatedUrlValidator().check(resp, _ctx(source_text="")), Proceed)
+        # URL absent from source → retry.
+        bad = HallucinatedUrlValidator().check(resp, _ctx(source_text="unrelated text"))
+        assert isinstance(bad, Retry) and bad.condition == ConditionKey.HALLUCINATED_URLS
+        # URL present in source → proceed.
+        ok = HallucinatedUrlValidator().check(
+            resp, _ctx(source_text="ref https://made-up.example/never here")
+        )
+        assert isinstance(ok, Proceed)
+
+    def test_hallucinated_tool_call_repair_strips_when_no_tools(self):
+        resp = _tool_response("search", {"query": "x"})
+        outcome = HallucinatedToolCallRepair().check(resp, _ctx(tools_available=False))
+        assert isinstance(outcome, Repair)
+        assert outcome.response.message.tool_calls is None
+        # Original untouched (pure validator, deep copy).
+        assert resp.message.tool_calls is not None
+        # Tools available → no repair.
+        assert isinstance(
+            HallucinatedToolCallRepair().check(resp, _ctx(tools_available=True)), Proceed
+        )
+
+    def test_text_instead_of_tool_validator(self):
+        prose = _text_response("Done. Wrote the entry.")
+        outcome = TextInsteadOfToolValidator().check(prose, _ctx(is_final_step=False))
+        assert isinstance(outcome, NudgeContinue)
+        assert "tool call" in outcome.message.lower()
+        # Final step → no nudge (no retry room).
+        assert isinstance(
+            TextInsteadOfToolValidator().check(prose, _ctx(is_final_step=True)), Proceed
+        )
+        # A tool call → not a text bail.
+        assert isinstance(
+            TextInsteadOfToolValidator().check(_tool_response("search", {}), _ctx()), Proceed
+        )
+
+    def test_premature_done_validator(self):
+        done = _tool_response("done", {"success": True, "summary": "no matches"})
+        # First-move done() with no prior records → reject.
+        reject = PrematureDoneValidator().check(done, _ctx(records=[]))
+        assert isinstance(reject, RejectToolCall)
+        assert "before doing anything" in reject.message.lower()
+        # done() after real work → honoured.
+        after_work = PrematureDoneValidator().check(
+            done, _ctx(records=[ToolCallRecord(tool="search", arguments={})])
+        )
+        assert isinstance(after_work, Proceed)
+        # Final step → honoured (no retry room).
+        assert isinstance(PrematureDoneValidator().check(done, _ctx(is_final_step=True)), Proceed)
+
+    def test_chain_composition_is_one_list_entry_per_guard(self):
+        """The base chain runs the response-shape guards; the collector chain adds
+        the two run-shape guards.  A new guard = one more list entry."""
+        assert Agent.response_validators[0].__class__ is HallucinatedToolCallRepair
+        chat_conditions = {
+            XmlTagValidator,
+            EmptyResponseValidator,
+            RefusalValidator,
+            HallucinatedUrlValidator,
+            HallucinatedToolCallRepair,
+        }
+        assert {v.__class__ for v in Agent.response_validators} == chat_conditions
+        # Collector run-shape chain = the two collector-only guards.
+        assert {v.__class__ for v in BackgroundAgent.run_shape_validators} == {
+            PrematureDoneValidator,
+            TextInsteadOfToolValidator,
+        }
+        # Base agent has no run-shape guards (no shape forbids an early terminator).
+        assert Agent.run_shape_validators == []
+
+    def test_run_validators_threads_repair_then_short_circuits(self):
+        """A Repair threads its transformed response into the rest of the chain;
+        the first non-proceed short-circuits and is returned."""
+        resp = _tool_response("search", {"query": "x"})
+        # Tools unavailable → repair strips tool calls, then empty content retries.
+        outcome = run_validators(Agent.response_validators, resp, _ctx(tools_available=False))
+        assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.EMPTY
+
+    def test_build_strong_nudge_uses_last_non_stop_question(self):
+        messages = [
+            {"role": "user", "content": "first question"},
+            {"role": "user", "content": "STOP. tools gone."},
+            {"role": "user", "content": "the real last question"},
+        ]
+        nudge = build_strong_nudge(messages)
+        assert "the real last question" in nudge
+        assert "STOP" in nudge  # the FINAL_STEP_NUDGE template leads with STOP

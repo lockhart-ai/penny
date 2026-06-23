@@ -50,10 +50,8 @@ from penny.database import Database
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
 from penny.responses import PennyResponse
-from penny.tools.memory_tools import (
-    DoneTool,
-    check_extraction_prompt,
-)
+from penny.text_validity import check_extraction_prompt
+from penny.tools.memory_tools import DoneTool
 
 if TYPE_CHECKING:
     pass
