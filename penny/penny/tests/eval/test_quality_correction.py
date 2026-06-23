@@ -550,6 +550,37 @@ async def test_incomplete_run_is_not_drift(collector_eval) -> None:
     )
 
 
+async def test_max_steps_no_calls_is_not_drift(collector_eval) -> None:
+    """A run that recorded NO tool call and hit the step ceiling — the model spun
+    on rejected premature-done()s until max-steps — is capacity, NOT drift, so
+    quality must leave the prompt alone.  This is the real entry-#9 shape: a
+    healthy collector (its other cycles wrote fine) whose one stalled cycle used to
+    render ``⚠ NO WORK DONE`` and trigger a needless rewrite (over-correction
+    guard; the classify_run fix renders it ``⚠ INCOMPLETE`` instead)."""
+    suspect = "dev-tools"
+    await collector_eval(
+        case_id="quality-max-steps-no-calls-not-drift",
+        collection=PennyConstants.MEMORY_QUALITY_COLLECTION,
+        seed=_seed(
+            suspect=suspect,
+            description="Notable new developer tools, with a ping on good ones.",
+            intent="Track new developer tools and ping me when a good one shows up.",
+            prompt=_OK_NEWS_PROMPT,
+            runs=[
+                {
+                    "run_id": "dev-maxsteps-1",
+                    "outcome": RunOutcome.FAILED,
+                    "summary": "max steps exceeded — no done() call",
+                    "calls": [],
+                }
+            ],
+        ),
+        snapshot=_snapshot(suspect),
+        score=_score_no_op(suspect),
+        min_pass_rate=None,
+    )
+
+
 async def test_tool_failure_is_not_drift(collector_eval) -> None:
     """A ``⚠ TOOL FAILURES`` run (a tool errored and the run kept going) is
     transience, NOT drift — quality must leave the prompt alone."""

@@ -781,10 +781,12 @@ class RunHealth(BaseModel):
     regressed is exactly what Penny sees of it.
 
     All signals are deterministic and read from stored data — no model judgment:
-    ``bailed`` (did no real work — reached ``done()`` / made no tool call without
-    any read/write/browse first), ``incomplete`` (hit the step ceiling without a
-    closing ``done()``), ``tool_failures`` (count of failed tool calls in the
-    run), ``degenerate_send`` (a message went out with no real content)."""
+    ``bailed`` (did no real work — recorded a terminating ``done()`` without any
+    read/write/browse first), ``incomplete`` (hit the step ceiling without a
+    closing ``done()`` — including a run that recorded no tool call at all, having
+    spun on rejected premature-``done()``s until the ceiling), ``tool_failures``
+    (count of failed tool calls in the run), ``degenerate_send`` (a message went
+    out with no real content)."""
 
     bailed: bool = False
     incomplete: bool = False
@@ -820,13 +822,28 @@ def classify_run(prompts: list[PromptLog]) -> RunHealth:
     outcome, _reason, _target = _run_outcome(prompts)
     calls = _run_tool_calls(prompts)
     non_done = [name for name, _ in calls if name != "done"]
-    bailed = outcome in (RunOutcome.NO_WORK.value, RunOutcome.FAILED.value) and not non_done
+    # A bail is a *deliberate* early close: the model recorded a terminating
+    # done() with no real read/write/browse first.  A run that recorded NO tool
+    # call at all never decided to stop — it spun on rejected premature-done()s
+    # (or empty/text steps) until the step ceiling, which is capacity, not drift.
+    # Surface that as INCOMPLETE (which quality ignores), not NO WORK DONE (which
+    # churned a healthy collector whose other cycles worked fine).
+    bailed = (
+        bool(calls)
+        and not non_done
+        and outcome
+        in (
+            RunOutcome.NO_WORK.value,
+            RunOutcome.FAILED.value,
+        )
+    )
+    exhausted_no_call = not calls and outcome == RunOutcome.FAILED.value
     degenerate = any(
         name == "send_message" and _is_degenerate_send(_send_content(args)) for name, args in calls
     )
     return RunHealth(
         bailed=bailed,
-        incomplete=outcome == RunOutcome.INCOMPLETE.value,
+        incomplete=outcome == RunOutcome.INCOMPLETE.value or exhausted_no_call,
         tool_failures=_run_tool_failures(prompts),
         degenerate_send=degenerate,
     )

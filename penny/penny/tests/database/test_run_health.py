@@ -75,6 +75,21 @@ def test_incomplete_run_is_flagged_and_shows_trace():
     assert "write(games" in record  # trace shown so the run can be judged
 
 
+def test_no_tool_call_run_is_incomplete_not_bailed():
+    """A run that recorded NO tool call and hit the step ceiling (the model spun on
+    rejected premature-done()s until max-steps) is capacity, not a deliberate bail
+    — INCOMPLETE, never NO WORK DONE.  Regression: this used to flag NO WORK DONE
+    and churn a collector whose other cycles worked fine."""
+    run = [_prompt([], outcome="failed", reason="max steps exceeded — no done() call")]
+    health = classify_run(run)
+    assert health.bailed is False
+    assert health.incomplete is True
+    assert health.flags == ["incomplete"]
+    record = render_run_record(run)
+    assert "⚠ NO WORK DONE" not in record
+    assert "⚠ INCOMPLETE" in record
+
+
 def test_tool_failure_count_is_flagged():
     """A run that hit tool failures and kept going is flagged with the count."""
     run = [
