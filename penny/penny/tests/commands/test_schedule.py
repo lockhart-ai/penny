@@ -7,6 +7,7 @@ import pytest
 
 from penny.database.models import Schedule, UserInfo
 from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.tools.browse import BrowseTool
 
 
 def _has_message(server, text: str) -> bool:
@@ -232,14 +233,15 @@ async def test_schedule_delete_invalid_index(signal_server, test_config, mock_ll
 async def test_schedule_executor_fires_through_chat_agent(
     signal_server, test_config, mock_llm, running_penny
 ):
-    """A due schedule must execute through ChatAgent and deliver a response.
+    """A due schedule must execute through ChatAgent.handle() — installing tools
+    and building the recall-grounded prompt — and deliver a response.
 
-    Regression test: ScheduleExecutor calls ``chat_agent.run()`` directly
-    instead of going through ``handle()``, so ``_pending_page_context`` was
-    never initialized as an instance attribute. The first scheduled fire
-    crashed with ``AttributeError: 'ChatAgent' object has no attribute
-    '_pending_page_context'`` and no message was ever delivered.
-    """
+    Regression test: ScheduleExecutor called ``chat_agent.run()`` directly
+    instead of going through ``handle()``.  That skipped ``_install_tools``, so a
+    scheduled prompt ran with NO tools offered to the model — a "fetch me the
+    news" schedule could only emit a browse call the loop stripped as a tool-less
+    hallucination, then apologize it had nothing.  We assert the scheduled run
+    offers the browse tool to the model, proving it goes through handle()."""
 
     def handler(request, count):
         return mock_llm._make_text_response(request, "morning! here's the news.")
@@ -280,3 +282,14 @@ async def test_schedule_executor_fires_through_chat_agent(
             lambda: _has_message(signal_server, "morning! here's the news."),
             timeout=5.0,
         )
+
+        # The scheduled prompt must run with tools installed (browse + memory).
+        # Find the LLM request for the scheduled prompt and assert browse was
+        # offered — a tool-less request is the regression this guards.
+        scheduled_request = next(
+            r
+            for r in mock_llm.requests
+            if any("fetch the news" in str(m.get("content", "")) for m in r["messages"])
+        )
+        offered_tools = {t["function"]["name"] for t in (scheduled_request["tools"] or [])}
+        assert BrowseTool.name in offered_tools

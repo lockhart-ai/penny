@@ -89,16 +89,24 @@ class ScheduleExecutor(Agent):
             return executed_any
 
     async def _execute_scheduled_prompt(self, schedule: Schedule) -> None:
-        """Execute a scheduled prompt as if the user sent it."""
+        """Execute a scheduled prompt as if the user sent it.
+
+        Drive it through ``ChatAgent.handle`` — the same entry point a real user
+        message takes — so the agent installs its tools (browse, memory) and
+        builds the recall-grounded system prompt.  Calling ``run`` directly here
+        skipped ``_install_tools``, leaving the scheduled cycle to read whatever
+        the *last* ``handle`` call left in the shared tool registry: tools after a
+        recent chat, but EMPTY after a restart or a vision message (which installs
+        ``[]``).  So a "fetch me the news" schedule worked only by accident — when
+        a chat happened to precede it — and otherwise the model's browse call was
+        stripped as a tool-less hallucination and Penny apologized she had nothing
+        to report.  Going through ``handle`` installs tools deterministically.
+        """
         if not self._channel:
             return
 
-        # Get the message agent from the channel
         message_agent = self._channel._message_agent
-
-        # Run the prompt through the message agent
-        max_steps = int(self.config.runtime.MAX_STEPS)
-        response = await message_agent.run(prompt=schedule.prompt_text, max_steps=max_steps)
+        response = await message_agent.handle(content=schedule.prompt_text, sender=schedule.user_id)
 
         answer = response.answer.strip() if response.answer else None
         if not answer:
