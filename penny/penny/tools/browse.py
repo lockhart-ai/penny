@@ -176,7 +176,7 @@ class BrowseTool(Tool):
         page_sections: list[str] = []
         captures: list[BrowsePage] = []
         for (header, value, _), result in zip(tasks, results, strict=True):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("Browse sub-call failed (%s%s): %s", header, value, result)
                 error_label = f"{PennyConstants.BROWSE_ERROR_HEADER}{value}"
                 sections.append(

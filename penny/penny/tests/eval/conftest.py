@@ -28,6 +28,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog
+from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.penny import Penny
 from penny.startup import get_restart_message
@@ -450,20 +451,22 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
     return _run
 
 
-class _InjectingClient:
+class _InjectingClient(LlmClient):
     """Base for the eval injectors that wrap a real ``LlmClient`` to force ONE bad
     response deterministically, then delegate every other call to the real model.
 
-    Holds the wrapped client and ``bail_injected`` (a declared attribute, so
-    callers read ``wrapper.bail_injected`` directly — no ``getattr`` probing) and
-    forwards every other attribute to the real client.  Subclasses override
-    ``chat`` to decide when, and what, to inject."""
+    Subclasses ``LlmClient`` (so it's assignable to ``collector._model_client``)
+    but deliberately skips its ``__init__`` — it owns no real connection, only the
+    wrapped client.  Holds ``bail_injected`` (a declared attribute, so callers read
+    ``wrapper.bail_injected`` directly — no ``getattr`` probing); ``chat`` is
+    overridden by subclasses and every other attribute (e.g. ``model``) forwards to
+    the real client."""
 
-    def __init__(self, real) -> None:
+    def __init__(self, real: LlmClient) -> None:
         self._real = real
         self.bail_injected = False
 
-    async def chat(self, messages, tools=None, **kwargs):
+    async def chat(self, messages, tools=None, *args, **kwargs):
         raise NotImplementedError
 
     def __getattr__(self, name):
@@ -486,11 +489,11 @@ class _InjectTextBail(_InjectingClient):
         self._bail_text = bail_text
         self._saw_tool = False
 
-    async def chat(self, messages, tools=None, **kwargs):
+    async def chat(self, messages, tools=None, *args, **kwargs):
         if self._saw_tool and not self.bail_injected:
             self.bail_injected = True
             return LlmResponse(message=LlmMessage(role="assistant", content=self._bail_text))
-        response = await self._real.chat(messages, tools=tools, **kwargs)
+        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
         if response.has_tool_calls:
             self._saw_tool = True
         return response
@@ -573,7 +576,7 @@ class _InjectDoneBail(_InjectingClient):
     and the real model must recover (read its inputs, then do the work).
     ``bail_injected`` records the scenario actually fired."""
 
-    async def chat(self, messages, tools=None, **kwargs):
+    async def chat(self, messages, tools=None, *args, **kwargs):
         if not self.bail_injected:
             self.bail_injected = True
             return LlmResponse(
@@ -593,7 +596,7 @@ class _InjectDoneBail(_InjectingClient):
                     ],
                 )
             )
-        return await self._real.chat(messages, tools=tools, **kwargs)
+        return await self._real.chat(messages, *args, tools=tools, **kwargs)
 
 
 class _InjectSendBail(_InjectingClient):
@@ -611,7 +614,7 @@ class _InjectSendBail(_InjectingClient):
         self._junk = junk
         self._saw_tool = False
 
-    async def chat(self, messages, tools=None, **kwargs):
+    async def chat(self, messages, tools=None, *args, **kwargs):
         if self._saw_tool and not self.bail_injected:
             self.bail_injected = True
             return LlmResponse(
@@ -627,7 +630,7 @@ class _InjectSendBail(_InjectingClient):
                     ],
                 )
             )
-        response = await self._real.chat(messages, tools=tools, **kwargs)
+        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
         if response.has_tool_calls:
             self._saw_tool = True
         return response

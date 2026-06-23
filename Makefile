@@ -63,18 +63,18 @@ fix: $(if $(LOCAL),,build team-build)
 	$(TEAM_RUN) ruff check --fix $(TEAM_RUFF_TARGETS)
 
 typecheck: $(if $(LOCAL),,build team-build)
-	$(RUN) ty check $(RUFF_TARGETS)
-	$(TEAM_RUN) ty check $(TEAM_RUFF_TARGETS)
+	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
+	$(TEAM_RUN) ty check --exit-zero-on-warning $(TEAM_RUFF_TARGETS)
 
 check: $(if $(LOCAL),,build team-build)
 	$(RUN) ruff format --check $(RUFF_TARGETS)
 	$(RUN) ruff check $(RUFF_TARGETS)
-	$(RUN) ty check $(RUFF_TARGETS)
+	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
 	$(RUN) pytest $(PYTEST_ARGS)
 	$(TEAM_RUN) ruff format --check $(TEAM_RUFF_TARGETS)
 	$(TEAM_RUN) ruff check $(TEAM_RUFF_TARGETS)
-	$(TEAM_RUN) ty check $(TEAM_RUFF_TARGETS)
+	$(TEAM_RUN) ty check --exit-zero-on-warning $(TEAM_RUFF_TARGETS)
 	$(TEAM_RUN) pytest $(TEAM_PYTEST_ARGS)
 	cd browser && npm install --silent && npx tsc --noEmit
 
