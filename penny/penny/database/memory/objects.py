@@ -59,7 +59,6 @@ from penny.database.memory.types import (
     slug,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
-from penny.datetime_utils import format_log_timestamp
 from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
 from penny.validation.conditions import ConditionKey, run_flag_conditions
 
@@ -892,13 +891,18 @@ def _health_lines(health: RunHealth) -> list[str]:
 
 
 def render_run_record(prompts: list[PromptLog]) -> str:
-    """One run as ``[target] summary`` + its health flags + tool-call trace.
+    """One run: a ``[target] summary`` line, any ⚠ health-flag lines, then the
+    run's tool calls, one per line.
 
-    The single representation shared by Penny's self-review (the ``collector-runs``
-    record her ``quality`` collector reads) and the addon's prompts tab.
-    ``classify_run`` determines the run's health; ``_health_lines`` renders the ⚠
-    flags (the addon derives its compact badges from the same ``RunHealth``).  The
-    trace shows:
+    Carries NO timestamp — each consumer supplies its own (the model via the
+    ``log_read`` entry stamp, the addon via the run's ``created_at`` field), so
+    embedding one here just duplicated it.  Kept deliberately flat: a format
+    bake-off (``format_bakeoff.py``) found markdown headers / numbered tool lists
+    gave gpt-oss no reading-comprehension gain over plain text on these records
+    (numbering slightly hurt), so the simplest rendering wins.  ``classify_run``
+    determines health; ``_health_lines`` renders the ⚠ flags.
+
+    The trace shows:
 
     - **bailed** — the single meagre call (or ``(no tool calls)``): the run jumped
       to ``done()`` / acted not at all, so there's nothing but the bail to see;
@@ -906,19 +910,15 @@ def render_run_record(prompts: list[PromptLog]) -> str:
       non-``done()`` trace, so the work (or the failing/degenerate call) can be
       judged in context;
     - **everything else** (a quiet cycle that DID read, a failed/cancelled run that
-      DID call real tools with no new flag) — header-only, no trace to tempt an
-      over-correction.
+      DID call real tools with no new flag) — summary-line only, no trace to tempt
+      an over-correction.
 
     Content is never truncated."""
     if not prompts:
-        return "[?] (no data)"
+        return "(no data)"
     health = classify_run(prompts)
     outcome, reason, target = _run_outcome(prompts)
-    # The completion row (carrying the outcome) is the run's last prompt — its
-    # timestamp is when the run finished, so the model/quality can place it in time.
-    when = format_log_timestamp(prompts[-1].timestamp)
-    header = f"[{when}] [{target or '?'}] {reason or outcome or ''}".rstrip()
-    lines = [header, *_health_lines(health)]
+    lines = [f"[{target or '?'}] {reason or outcome or ''}".rstrip(), *_health_lines(health)]
     calls = _run_tool_calls(prompts)
     non_done = [(name, args) for name, args in calls if name != "done"]
     if health.bailed:

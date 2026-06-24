@@ -50,14 +50,24 @@ _DONE_OK = _call("done", {"success": True, "summary": "done"})
 
 
 def test_bailed_run_is_flagged():
-    """A no_work/failed run whose only call is done() did no work — bailed."""
+    """A no_work/failed run whose only call is done() did no work — bailed.
+
+    Full verbatim render: the ``[target] summary`` line, the NO-WORK-DONE flag
+    line, then the single tool call.  No ``#``/timestamp — each
+    consumer supplies its own (see ``render_run_record``)."""
     run = [_prompt([_DONE_OK], outcome="no_work", reason="nothing new")]
     health = classify_run(run)
     assert health.bailed is True
     assert health.flags == ["no_work_done"]
     assert health.regressive is True
-    record = render_run_record(run)
-    assert "⚠ NO WORK DONE" in record
+    assert (
+        render_run_record(run)
+        == """\
+[games] nothing new
+⚠ NO WORK DONE — reached done() (or made no tool call) without any \
+read/write/browse step first; the collector is not following its instructions
+done(success=True, summary='done')"""
+    )
 
 
 def test_incomplete_run_is_flagged_and_shows_trace():
@@ -69,10 +79,14 @@ def test_incomplete_run_is_flagged_and_shows_trace():
     health = classify_run(run)
     assert health.incomplete is True
     assert health.bailed is False
-    assert "incomplete" in health.flags
-    record = render_run_record(run)
-    assert "⚠ INCOMPLETE" in record
-    assert "write(games" in record  # trace shown so the run can be judged
+    assert (
+        render_run_record(run)
+        == """\
+[games] max steps exceeded
+⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
+the cycle never finished cleanly
+write(games, 'x')"""
+    )
 
 
 def test_no_tool_call_run_is_incomplete_not_bailed():
@@ -85,9 +99,13 @@ def test_no_tool_call_run_is_incomplete_not_bailed():
     assert health.bailed is False
     assert health.incomplete is True
     assert health.flags == ["incomplete"]
-    record = render_run_record(run)
-    assert "⚠ NO WORK DONE" not in record
-    assert "⚠ INCOMPLETE" in record
+    assert (
+        render_run_record(run)
+        == """\
+[games] max steps exceeded — no done() call
+⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
+the cycle never finished cleanly"""
+    )
 
 
 def test_tool_failure_count_is_flagged():
@@ -98,13 +116,19 @@ def test_tool_failure_count_is_flagged():
     ]
     health = classify_run(run)
     assert health.tool_failures == 2
-    assert "tool_failures" in health.flags
-    assert "⚠ TOOL FAILURES (2)" in render_run_record(run)
+    assert (
+        render_run_record(run)
+        == """\
+[games] wrote one
+⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
+write(games, 'x')"""
+    )
 
 
 def test_half_formed_send_is_flagged_on_a_worked_run():
     """The real notifier shape: a worked run that ALSO sent a half-formed message
-    ("Hi there! ......???") before the real one.  The bad send is flagged."""
+    ("Hi there! ......???") before the real one.  The bad send is flagged and shown
+    in the trace, untruncated."""
     run = [
         _prompt(
             [
@@ -120,10 +144,15 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
     ]
     health = classify_run(run)
     assert health.degenerate_send is True
-    assert "half_formed_send" in health.flags
-    record = render_run_record(run)
-    assert "⚠ HALF-FORMED SEND" in record
-    assert "Hi there! ......???" in record  # the offending send shown, untruncated
+    assert (
+        render_run_record(run)
+        == """\
+[games] delivered a notification
+⚠ HALF-FORMED SEND — a message went out with no real content (empty, \
+punctuation-only, or an unfinished fragment)
+send('Hi there! ......???')
+send('Heads up — a new title dropped, details inside.')"""
+    )
 
 
 def test_healthy_worked_run_has_no_flags():
@@ -134,14 +163,17 @@ def test_healthy_worked_run_has_no_flags():
     health = classify_run(run)
     assert health.flags == []
     assert health.regressive is False
-    record = render_run_record(run)
-    assert "⚠" not in record
-    assert "write(games" in record
+    assert (
+        render_run_record(run)
+        == """\
+[games] wrote one
+write(games, 'x')"""
+    )
 
 
 def test_healthy_quiet_read_is_not_a_bail():
     """A no_work run that DID read before done() is a healthy quiet cycle, not a
-    bail — no flags, header-only (no trace to tempt an over-correction)."""
+    bail — no flags, heading-only (no trace to tempt an over-correction)."""
     run = [
         _prompt(
             [_call("log_read", {"memory": "user-messages"}), _DONE_OK],
@@ -151,9 +183,7 @@ def test_healthy_quiet_read_is_not_a_bail():
     ]
     health = classify_run(run)
     assert health.flags == []
-    record = render_run_record(run)
-    assert "⚠" not in record
-    assert "log_read" not in record  # header-only
+    assert render_run_record(run) == "[games] nothing new"
 
 
 def test_unfinished_fragment_predicate_is_narrow():
