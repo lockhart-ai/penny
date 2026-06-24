@@ -48,6 +48,7 @@ from penny.config import Config
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.models import MemoryRow
+from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
@@ -369,7 +370,31 @@ class Collector(BackgroundAgent):
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        return self._compose_prompt(fresh)
+        return self._compose_prompt(fresh) + self._run_history_section(fresh.name)
+
+    def _run_history_section(self, target_name: str) -> str:
+        """A trailing block of this collector's own recent ``done`` summaries
+        (newest first) so each cycle knows what its prior invocations did.
+
+        Empty when disabled (``COLLECTOR_RUN_HISTORY`` = 0) or there's no history
+        yet.  Framed as reference, not instruction — the summaries are the model's
+        own past outputs, so the heading tells it to use them to avoid repeating
+        work, not to replicate them (guards against fixation on its own output).
+        """
+        limit = int(self.config.runtime.COLLECTOR_RUN_HISTORY)
+        summaries = self.db.messages.recent_run_summaries(target_name, limit)
+        if not summaries:
+            return ""
+        lines = "\n".join(
+            f"{index}. [{format_log_timestamp(when)}] {summary}"
+            for index, (when, summary) in enumerate(summaries, start=1)
+        )
+        return (
+            "\n\n## Your recent runs (newest first)\n"
+            "What your previous cycles did, and when — context to avoid repeating "
+            "work or re-sending, not an instruction to repeat.\n"
+            f"{lines}"
+        )
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:

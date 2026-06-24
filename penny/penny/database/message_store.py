@@ -11,7 +11,7 @@ from sqlalchemy import bindparam, func, text
 from sqlmodel import Session, select
 
 from penny.agents.models import MessageRole
-from penny.constants import PennyConstants
+from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory.objects import classify_run, render_run_record
 from penny.database.models import CommandLog, MessageLog, PromptLog
 
@@ -542,6 +542,32 @@ class MessageStore:
                         self._on_run_outcome_set(run_id, outcome, reason)
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
+
+    def recent_run_summaries(self, run_target: str, limit: int) -> list[tuple[datetime, str]]:
+        """A collector's own most recent completed runs as ``(timestamp, summary)``,
+        newest first — what its previous invocations did, and when.
+
+        Each run stamps ``run_outcome`` + ``run_reason`` (the ``done()`` summary)
+        on exactly one prompt row, so the completion rows ARE the run index — one
+        row per run, served by ``ix_promptlog_target_runs`` (a bounded
+        ``ORDER BY ... LIMIT``, not a scan).  Cancelled runs (preempted by a
+        foreground message — not a real cycle outcome) are excluded.  The
+        completion-row timestamp is the run's finish time.
+        """
+        if limit <= 0:
+            return []
+        with self._session() as session:
+            rows = session.exec(
+                select(PromptLog.timestamp, PromptLog.run_reason)
+                .where(
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_target == run_target,
+                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                )
+                .order_by(PromptLog.timestamp.desc())
+                .limit(limit)
+            ).all()
+        return [(timestamp, reason) for timestamp, reason in rows if reason]
 
     def get_prompt_log_runs(
         self,

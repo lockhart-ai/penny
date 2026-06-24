@@ -210,6 +210,19 @@ ConfigParam(
 )
 
 ConfigParam(
+    key="COLLECTOR_RUN_HISTORY",
+    description=(
+        "How many of a collector's own recent run summaries (the ``done`` summary "
+        "of each past cycle) to show it at the top of every cycle, so it knows what "
+        "its previous invocations did.  0 disables the section."
+    ),
+    type=int,
+    default=10,
+    validator=_validate_non_negative_int,
+    group=GROUP_BACKGROUND,
+)
+
+ConfigParam(
     key="IDLE_SECONDS",
     description="Seconds of silence before idle-gated background agents become eligible",
     type=float,

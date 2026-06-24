@@ -8,6 +8,7 @@ plus the migrated likes/dislikes/knowledge prompts.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -316,6 +317,56 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     assert composed == expected, (
         f"Composed prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_path):
+    """Each cycle's system prompt carries this collector's own recent run
+    summaries — newest first, each stamped with when it ran — so the model knows
+    what its prior invocations did and when (without timestamps it mistakes the
+    timing of past events)."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "board-games", "games", Inclusion.RELEVANT, RecallMode.RECENT, extraction_prompt="x" * 30
+    )
+    for run_id, summary in [
+        ("run-a", "wrote 2 new strategy games"),
+        ("run-b", "no new matches this cycle"),
+    ]:
+        db.messages.log_prompt(
+            model="t",
+            messages=[],
+            response={},
+            agent_name="collector",
+            run_id=run_id,
+            run_target="board-games",
+        )
+        collector._tag_promptlog_run(run_id, RunOutcome.WORKED, summary, 0)
+    collector._current_target = db.memories.get("board-games")
+
+    prompt = await collector._build_system_prompt(None)
+
+    assert "## Your recent runs (newest first)" in prompt
+    assert "wrote 2 new strategy games" in prompt
+    assert "no new matches this cycle" in prompt
+    # Each summary is stamped with an absolute UTC timestamp the model can compare
+    # against the "Current date and time: … UTC" line.
+    assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", prompt)
+
+
+@pytest.mark.asyncio
+async def test_run_history_section_absent_without_runs(test_config, tmp_path):
+    """A collection with no prior completed runs gets no run-history block —
+    a fresh collector's prompt is unchanged."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "board-games", "games", Inclusion.RELEVANT, RecallMode.RECENT, extraction_prompt="x" * 30
+    )
+    collector._current_target = db.memories.get("board-games")
+
+    prompt = await collector._build_system_prompt(None)
+
+    assert "## Your recent runs" not in prompt
 
 
 # ── Collector-runs audit log ─────────────────────────────────────────────
