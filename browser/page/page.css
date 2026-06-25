@@ -1622,6 +1622,23 @@ h1 {
   color: var(--text-primary);
 }
 
+.memory-detail-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.memory-tab-panel {
+  display: none;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.memory-tab-panel.active {
+  display: flex;
+}
+
 .memory-detail-section {
   background: var(--bg-secondary);
   border-radius: 8px;
@@ -1671,7 +1688,7 @@ h1 {
 .memory-entries-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 
 .memory-entries-section h3 {
@@ -1685,16 +1702,36 @@ h1 {
 
 .memory-entry {
   background: var(--bg-secondary);
-  border-radius: 6px;
-  padding: 10px 14px;
+  border-radius: 8px;
+  padding: 16px 18px;
+  transition: background 0.15s ease;
+}
+
+.memory-entry:hover {
+  background: var(--bg-tertiary);
 }
 
 .memory-entry-header {
   display: flex;
   gap: 12px;
-  align-items: baseline;
+  /* Center vertically: the key is a larger monospace font, so baseline
+     alignment leaves the date/actions visibly floating above it. */
+  align-items: center;
   font-size: 12px;
-  margin-bottom: 6px;
+  /* Pull out to the card edges so the divider spans full width. */
+  margin: 0 -18px 12px -18px;
+  padding: 0 18px 10px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The title takes the row; the date + actions stay pinned right (the date's
+   margin-left:auto), and a long title ellipsizes rather than shoving them off. */
+.memory-entry-header .memory-entry-key {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .memory-entry-key {

@@ -56,7 +56,6 @@ from penny.channels.browser.models import (
     BROWSER_RESP_TYPE_STATUS,
     BROWSER_RESP_TYPE_TYPING,
     MEMORY_SECTION_COLLECTOR_RUNS,
-    MEMORY_SECTION_ENTRIES,
     BrowserCapabilitiesUpdate,
     BrowserCollectionTrigger,
     BrowserCollectionTriggerResult,
@@ -611,10 +610,8 @@ class BrowserChannel(MessageChannel):
         counts = self._db.memories.entry_counts()
         query = (data.get("query") or "").strip() or None
         record = self._memory_to_record(memory, counts.get(memory.name, 0))
-        entries, entries_has_more = self._memory_section_page(
-            memory, MEMORY_SECTION_ENTRIES, 0, query
-        )
-        runs, runs_has_more = self._memory_section_page(memory, MEMORY_SECTION_COLLECTOR_RUNS, 0)
+        entries, entries_has_more = self._entries_page(memory, 0, query)
+        runs, runs_has_more = self._collector_runs_page(memory, 0)
         return BrowserMemoryDetailResponse(
             memory=record,
             entries=entries,
@@ -636,13 +633,25 @@ class BrowserChannel(MessageChannel):
         if memory is None:
             logger.warning("memory_page_request for unknown memory: %s", req.name)
             return
-        query = (data.get("query") or "").strip() or None
-        entries, has_more = self._memory_section_page(memory, req.section, req.offset, query)
-        payload = BrowserMemoryPageResponse(
-            name=req.name, section=req.section, entries=entries, has_more=has_more
-        )
+        payload = self._memory_page_payload(memory, req, data)
         with contextlib.suppress(websockets.ConnectionClosed):
             await ws.send(payload.model_dump_json())
+
+    def _memory_page_payload(
+        self, memory, req: BrowserMemoryPageRequest, data: dict
+    ) -> BrowserMemoryPageResponse:
+        """One page of the requested section: collector runs serialize as full
+        runs (run → prompts → turns), entries as entry records."""
+        if req.section == MEMORY_SECTION_COLLECTOR_RUNS:
+            runs, has_more = self._collector_runs_page(memory, req.offset)
+            return BrowserMemoryPageResponse(
+                name=req.name, section=req.section, runs=runs, has_more=has_more
+            )
+        query = (data.get("query") or "").strip() or None
+        entries, has_more = self._entries_page(memory, req.offset, query)
+        return BrowserMemoryPageResponse(
+            name=req.name, section=req.section, entries=entries, has_more=has_more
+        )
 
     async def _handle_collection_trigger(self, ws: ServerConnection, data: dict) -> None:
         """Run a collection's extractor on demand and report the outcome back
@@ -686,17 +695,14 @@ class BrowserChannel(MessageChannel):
         self._db.cursors.clear(req.name, req.log_name)
         self._on_memory_changed(req.name)
 
-    def _memory_section_page(
-        self, memory, section: str, offset: int, query: str | None = None
+    def _entries_page(
+        self, memory, offset: int, query: str | None = None
     ) -> tuple[list[MemoryEntryRecord], bool]:
-        """One newest-first page of a memory-detail section.  ``has_more`` is
-        true when the page filled the page size, matching the prompts tab.
-        ``query`` filters the *entries* section to matching key/content so the
-        detail view mirrors the Memories-list search; collector runs are
-        activity, not search results, so they're never filtered."""
-        if section == MEMORY_SECTION_COLLECTOR_RUNS:
-            rows = self._collector_runs_for(memory, self._MEMORY_PAGE_SIZE, offset)
-        elif memory.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
+        """One newest-first page of a memory's entries.  ``has_more`` is true
+        when the page filled the page size, matching the prompts tab.  ``query``
+        filters to matching key/content so the detail view mirrors the
+        Memories-list search."""
+        if memory.name == PennyConstants.MEMORY_COLLECTOR_RUNS_LOG:
             # The collector-runs log is itself a facade over promptlog — its
             # "entries" are runs (every collection's), not stored rows.
             run_log = self._db.memories.run_log()
@@ -715,17 +721,15 @@ class BrowserChannel(MessageChannel):
         records = [self._entry_to_record(row) for row in rows]
         return records, len(records) == self._MEMORY_PAGE_SIZE
 
-    def _collector_runs_for(self, memory, limit: int, offset: int) -> list:
-        """Newest-first ``collector-runs`` for this collection.
-
-        ``collector-runs`` is a read facade over ``promptlog`` (no stored
-        entries), so the runs come from the ``RunLog`` scoped to this
-        collection's ``run_target``, rendered as records.  Empty for logs
-        (collectors only target collections)."""
+    def _collector_runs_page(self, memory, offset: int) -> tuple[list[dict], bool]:
+        """One newest-first page of this collection's collector runs as full
+        serialized runs (run → prompts → turns), so the Activity tab renders the
+        same cards as the prompts tab.  Empty for logs (collectors only target
+        collections)."""
         if memory.type != "collection":
-            return []
-        run_log = self._db.memories.run_log(target=memory.name)
-        return run_log.newest_entries(limit, offset) if run_log is not None else []
+            return [], False
+        runs = self._db.messages.get_target_runs(memory.name, self._MEMORY_PAGE_SIZE, offset)
+        return runs, len(runs) == self._MEMORY_PAGE_SIZE
 
     def _cursors_for(self, memory) -> list[CursorRecord]:
         """The collection's read positions over the logs it reads, oldest log

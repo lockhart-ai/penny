@@ -287,29 +287,34 @@ class BrowserMemoriesResponse(BaseModel):
 
 class BrowserMemoryDetailResponse(BaseModel):
     """One memory's metadata + the first page of entries (newest-first), plus
-    the first page of this collection's matching ``collector-runs`` entries
-    when the memory is a collection (empty for logs).  The addon renders the
-    collector activity inline on the collection's detail page.  Each section
-    paginates independently via :class:`BrowserMemoryPageRequest`; the
+    the first page of this collection's collector runs when the memory is a
+    collection (empty for logs).  The addon's Activity tab renders the runs with
+    the same run → prompts → turns cards as the prompts tab, so each run is a
+    full serialized :class:`PromptLogRun` (dict), not a flattened record.  Each
+    section paginates independently via :class:`BrowserMemoryPageRequest`; the
     ``*_has_more`` flags tell the addon whether to show a "load more" control."""
 
     type: str = BROWSER_RESP_TYPE_MEMORY_DETAIL
     memory: MemoryRecord
     entries: list[MemoryEntryRecord]
     entries_has_more: bool = False
-    collector_runs: list[MemoryEntryRecord] = []
+    collector_runs: list[dict] = []  # full serialized runs (run → prompts → turns)
     collector_runs_has_more: bool = False
     cursors: list[CursorRecord] = []  # read positions over the logs this collection reads
 
 
 class BrowserMemoryPageResponse(BaseModel):
     """One more page of a single memory-detail section, newest-first, in
-    response to a :class:`BrowserMemoryPageRequest`."""
+    response to a :class:`BrowserMemoryPageRequest`.  ``entries`` carries the
+    entries section; ``runs`` carries the collector-runs section (full
+    serialized runs) — exactly one is populated per response, keyed by
+    ``section``."""
 
     type: str = BROWSER_RESP_TYPE_MEMORY_PAGE
     name: str
     section: Literal["entries", "collector_runs"]
-    entries: list[MemoryEntryRecord]
+    entries: list[MemoryEntryRecord] = []
+    runs: list[dict] = []
     has_more: bool
 
 

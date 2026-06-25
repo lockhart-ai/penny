@@ -88,14 +88,14 @@ class MemoryStore:
             if not row.archived and row.inclusion != Inclusion.NEVER
         ]
 
-    def run_log(self, target: str | None = None) -> RunLog | None:
-        """The ``collector-runs`` facade, optionally scoped to one collection's
-        runs (the addon's per-collection panel).  ``None`` if the marker row is
-        somehow absent."""
+    def run_log(self) -> RunLog | None:
+        """The ``collector-runs`` facade over every collector run.  ``None`` if
+        the marker row is somehow absent.  (Per-collection run views go through
+        ``messages.get_target_runs`` — full runs for the addon's Activity tab.)"""
         row = self.get(PennyConstants.MEMORY_COLLECTOR_RUNS_LOG)
         if row is None:
             return None
-        return RunLog(row, self.engine, target=target, on_changed=self._on_memory_changed)
+        return RunLog(row, self.engine, on_changed=self._on_memory_changed)
 
     def _build(self, row: MemoryRow) -> Memory:
         """Construct the right ``Memory`` subclass for an already-loaded row."""

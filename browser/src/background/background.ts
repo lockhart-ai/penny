@@ -313,6 +313,7 @@ function connect(): void {
         name: data.name,
         section: data.section,
         entries: data.entries,
+        runs: data.runs,
         has_more: data.has_more,
       });
     } else if (data.type === WsIn.MemoryChanged) {

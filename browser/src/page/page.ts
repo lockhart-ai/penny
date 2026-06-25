@@ -94,7 +94,7 @@ let memorySearch = "";
 let activeMemory: MemoryRecord | null = null;
 let memoryEntries: MemoryEntryRecord[] = [];
 let memoryEntriesHasMore = false;
-let memoryRuns: MemoryEntryRecord[] = [];
+let memoryRuns: PromptLogRun[] = [];
 let memoryRunsHasMore = false;
 let memoryCursors: CursorRecord[] = [];
 // Name of the collection whose extractor is currently running on demand
@@ -420,6 +420,9 @@ function appendRuns(newRuns: PromptLogRun[]): void {
   }
 }
 
+// The collapsible run card — a clickable `.run-summary` (header + optional
+// outcome + health badges) that toggles `.expanded` to reveal the run body.
+// Shared by the Prompts tab and the memory Activity tab (run → prompts → turns).
 function createRunRow(run: PromptLogRun): HTMLElement {
   const row = document.createElement("div");
   row.className = "run";
@@ -427,26 +430,16 @@ function createRunRow(run: PromptLogRun): HTMLElement {
 
   const summary = document.createElement("div");
   summary.className = "run-summary";
-
-  const header = createRunHeader(run);
-  summary.appendChild(header);
-
+  summary.appendChild(createRunHeader(run));
   if (run.run_outcome !== null || run.run_reason) {
-    summary.appendChild(
-      createRunOutcome(run.run_outcome, run.run_reason ?? "", run.run_target),
-    );
+    summary.appendChild(createRunOutcome(run.run_outcome, run.run_reason ?? "", run.run_target));
   }
-
   const badges = createHealthBadges(run.health);
   if (badges) summary.appendChild(badges);
 
   row.appendChild(summary);
   row.appendChild(createRunBody(run));
-
-  summary.addEventListener("click", () => {
-    row.classList.toggle("expanded");
-  });
-
+  summary.addEventListener("click", () => row.classList.toggle("expanded"));
   return row;
 }
 
@@ -1427,7 +1420,7 @@ function handleMemoryPageResponse(message: RuntimeMemoryPageResponse): void {
   // Drop pages for a memory the user already navigated away from.
   if (!activeMemory || message.name !== activeMemory.name) return;
   if (message.section === "collector_runs") {
-    memoryRuns = memoryRuns.concat(message.entries);
+    memoryRuns = memoryRuns.concat(message.runs);
     memoryRunsHasMore = message.has_more;
   } else {
     memoryEntries = memoryEntries.concat(message.entries);
@@ -1740,22 +1733,84 @@ function renderMemoryDetail(): void {
   memoryDetailContent.innerHTML = "";
 
   memoryDetailContent.appendChild(createMemoryHeader(memory));
-  memoryDetailContent.appendChild(createMemoryMetadataSection(memory));
-  // A collection's read positions over the logs it consumes — empty for logs
-  // and for collections that have not yet read any log.
+  memoryDetailContent.appendChild(createMemoryDetailTabs(memory));
+}
+
+// Entries / Activity / Config as switchable panels under the header, replacing
+// the old single-page vertical stack.  Defaults to Entries.
+function createMemoryDetailTabs(memory: MemoryRecord): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "memory-detail-tabs-wrapper";
+
+  const tabs = [
+    { label: "Entries", panel: createEntriesPanel(memory) },
+    { label: "Activity", panel: createActivityPanel(memory) },
+    { label: "Config", panel: createConfigPanel(memory) },
+  ];
+
+  const bar = document.createElement("div");
+  bar.className = "memory-detail-tabs";
+  tabs.forEach((tab, index) => {
+    const button = document.createElement("button");
+    button.className = index === 0 ? "sub-tab active" : "sub-tab";
+    button.textContent = tab.label;
+    tab.panel.classList.toggle("active", index === 0);
+    button.addEventListener("click", () => activateMemoryDetailTab(bar, tabs, index));
+    bar.appendChild(button);
+  });
+
+  wrapper.appendChild(bar);
+  for (const tab of tabs) wrapper.appendChild(tab.panel);
+  return wrapper;
+}
+
+function activateMemoryDetailTab(
+  bar: HTMLElement,
+  tabs: { label: string; panel: HTMLElement }[],
+  active: number,
+): void {
+  const buttons = Array.from(bar.querySelectorAll(".sub-tab"));
+  buttons.forEach((button, index) => button.classList.toggle("active", index === active));
+  tabs.forEach((tab, index) => tab.panel.classList.toggle("active", index === active));
+}
+
+function createMemoryTabPanel(): HTMLElement {
+  const panel = document.createElement("div");
+  panel.className = "memory-tab-panel";
+  return panel;
+}
+
+// The collection's stored entries (and, for collections, the add-entry form).
+function createEntriesPanel(memory: MemoryRecord): HTMLElement {
+  const panel = createMemoryTabPanel();
+  panel.appendChild(createMemoryEntriesSection(memory, memoryEntries, memoryEntriesHasMore));
+  return panel;
+}
+
+// Collector run history plus a collection's read positions over the logs it
+// consumes — both empty for logs, which aren't driven by a collector cycle.
+function createActivityPanel(memory: MemoryRecord): HTMLElement {
+  const panel = createMemoryTabPanel();
   if (memory.type === "collection" && memoryCursors.length > 0) {
-    memoryDetailContent.appendChild(createCursorsSection(memory, memoryCursors));
+    panel.appendChild(createCursorsSection(memory, memoryCursors));
   }
-  memoryDetailContent.appendChild(
-    createMemoryEntriesSection(memory, memoryEntries, memoryEntriesHasMore),
-  );
-  // Collector activity is per-collection — empty for logs (they aren't
-  // driven by a collector cycle).
   if (memoryRuns.length > 0) {
-    memoryDetailContent.appendChild(
-      createCollectorRunsSection(memory, memoryRuns, memoryRunsHasMore),
-    );
+    panel.appendChild(createCollectorRunsSection(memoryRuns, memoryRunsHasMore));
   }
+  if (!panel.hasChildNodes()) {
+    const empty = document.createElement("div");
+    empty.className = "memory-entries-empty";
+    empty.textContent = "No collector activity yet.";
+    panel.appendChild(empty);
+  }
+  return panel;
+}
+
+// Editable configuration (read-only metadata for system-managed logs).
+function createConfigPanel(memory: MemoryRecord): HTMLElement {
+  const panel = createMemoryTabPanel();
+  panel.appendChild(createMemoryMetadataSection(memory));
+  return panel;
 }
 
 function createCursorsSection(memory: MemoryRecord, cursors: CursorRecord[]): HTMLElement {
@@ -1854,9 +1909,10 @@ function createLoadMoreButton(onClick: () => void): HTMLElement {
   return wrapper;
 }
 
+// Collector activity is the prompts tab scoped to this collection: each run is
+// a full run → prompts → turns card via the shared `createRunRow`.
 function createCollectorRunsSection(
-  memory: MemoryRecord,
-  runs: MemoryEntryRecord[],
+  runs: PromptLogRun[],
   hasMore: boolean,
 ): HTMLElement {
   const section = document.createElement("div");
@@ -1869,7 +1925,7 @@ function createCollectorRunsSection(
   section.appendChild(title);
 
   for (const run of runs) {
-    section.appendChild(createCollectorRunEntry(memory, run));
+    section.appendChild(createRunRow(run));
   }
   if (hasMore) {
     section.appendChild(
@@ -1877,38 +1933,6 @@ function createCollectorRunsSection(
     );
   }
   return section;
-}
-
-function createCollectorRunEntry(memory: MemoryRecord, run: MemoryEntryRecord): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "memory-entry";
-
-  // Strip the ``[<collection>] `` prefix the Collector writes — the
-  // section is already scoped to one target so the prefix is redundant
-  // noise on every line.
-  const prefix = `[${memory.name}] `;
-  const body = run.content.startsWith(prefix) ? run.content.slice(prefix.length) : run.content;
-
-  const header = document.createElement("div");
-  header.className = "memory-entry-header";
-
-  const time = document.createElement("span");
-  time.className = "memory-entry-date memory-entry-date-primary";
-  time.textContent = formatDateTime(run.created_at);
-  header.appendChild(time);
-
-  const author = document.createElement("span");
-  author.className = "memory-entry-author";
-  author.textContent = run.author;
-  header.appendChild(author);
-
-  const content = document.createElement("div");
-  content.className = "memory-entry-content";
-  content.textContent = body;
-
-  row.appendChild(header);
-  row.appendChild(content);
-  return row;
 }
 
 function createMemoryHeader(memory: MemoryRecord): HTMLElement {
@@ -2149,10 +2173,14 @@ function createMemoryEntry(memory: MemoryRecord, entry: MemoryEntryRecord): HTML
   time.textContent = formatDateTime(entry.created_at);
   header.appendChild(time);
 
-  const author = document.createElement("span");
-  author.className = "memory-entry-author";
-  author.textContent = entry.author;
-  header.appendChild(author);
+  // Logs distinguish authors (user vs penny); a collection's entries are all
+  // its collector's, so the author just repeats the collection name — drop it.
+  if (memory.type === "log") {
+    const author = document.createElement("span");
+    author.className = "memory-entry-author";
+    author.textContent = entry.author;
+    header.appendChild(author);
+  }
 
   // Edit/delete only for collection entries (entry_update / entry_delete are keyed).
   if (memory.type === "collection" && entry.key) {

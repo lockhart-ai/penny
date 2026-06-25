@@ -601,6 +601,35 @@ class MessageStore:
             run_ids_ordered = self._page_of_run_ids(session, limit, offset, agent_name, query)
             return self._runs_for(session, run_ids_ordered)
 
+    def get_target_runs(self, run_target: str, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Full serialized runs for one collection's collector, newest-first —
+        the per-collection Activity panel (run → prompts → turns, the same shape
+        the prompts tab renders).  Each completed run stamps ``run_outcome`` on
+        exactly one row (its last prompt), so the completion rows ARE the run
+        index — one per run, served by ``ix_promptlog_target_runs`` (a bounded
+        ``ORDER BY ... LIMIT``, not a scan), matching the old record-only panel's
+        filter (``run_outcome IS NOT NULL AND run_target = ?``)."""
+        with self._session() as session:
+            run_ids = self._page_of_target_run_ids(session, run_target, limit, offset)
+            return self._runs_for(session, run_ids)
+
+    @staticmethod
+    def _page_of_target_run_ids(
+        session: Session, run_target: str, limit: int, offset: int
+    ) -> list[str]:
+        """One newest-first page of completed run_ids for ``run_target``."""
+        rows = session.exec(
+            select(PromptLog.run_id)
+            .where(
+                PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                PromptLog.run_target == run_target,
+            )
+            .order_by(PromptLog.timestamp.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return [run_id for run_id in rows if run_id is not None]
+
     def _runs_for(self, session: Session, run_ids_ordered: list[str]) -> list[dict]:
         """Load + serialize the given runs (heavy prompt rows), preserving order."""
         if not run_ids_ordered:

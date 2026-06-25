@@ -369,7 +369,9 @@ export interface WsIncomingMemoryDetailPayload {
   memory: MemoryRecord;
   entries: MemoryEntryRecord[];
   entries_has_more: boolean;
-  collector_runs: MemoryEntryRecord[];
+  // Collector runs render as the prompts tab's run → prompts → turns cards, so
+  // each is a full run, not a flattened record.
+  collector_runs: PromptLogRun[];
   collector_runs_has_more: boolean;
   cursors: CursorRecord[];
 }
@@ -378,7 +380,10 @@ export interface WsIncomingMemoryPagePayload {
   type: typeof WsIncomingType.MemoryPageResponse;
   name: string;
   section: MemorySection;
+  // Exactly one is populated, keyed by ``section``: entries for "entries",
+  // runs for "collector_runs".
   entries: MemoryEntryRecord[];
+  runs: PromptLogRun[];
   has_more: boolean;
 }
 
@@ -702,7 +707,8 @@ export interface RuntimeMemoryDetailResponse {
   memory: MemoryRecord;
   entries: MemoryEntryRecord[];
   entries_has_more: boolean;
-  collector_runs: MemoryEntryRecord[];
+  /** Full runs (run → prompts → turns), rendered with the prompts-tab cards. */
+  collector_runs: PromptLogRun[];
   collector_runs_has_more: boolean;
   /** Read positions over the logs this collection reads (empty for logs). */
   cursors: CursorRecord[];
@@ -718,12 +724,14 @@ export interface RuntimeMemoryPageRequest {
   query?: string;
 }
 
-/** Background → memories tab: one more page of a detail section */
+/** Background → memories tab: one more page of a detail section.  Exactly one
+ *  of ``entries`` / ``runs`` is populated, keyed by ``section``. */
 export interface RuntimeMemoryPageResponse {
   type: typeof RuntimeMessageType.MemoryPageResponse;
   name: string;
   section: MemorySection;
   entries: MemoryEntryRecord[];
+  runs: PromptLogRun[];
   has_more: boolean;
 }
 

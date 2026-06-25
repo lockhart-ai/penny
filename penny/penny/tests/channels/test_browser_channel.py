@@ -1685,8 +1685,9 @@ class TestBrowserMemoryHandlers:
 
     @pytest.mark.asyncio
     async def test_memory_detail_request_includes_matching_collector_runs(self, tmp_path):
-        """A collection's drill-in view includes the ``collector-runs``
-        entries scoped to that target — newest-first, prefix-filtered."""
+        """A collection's drill-in view includes its collector runs scoped to
+        that target — newest-first, as full runs (the Activity tab renders them
+        as the prompts tab's run → prompts → turns cards)."""
         channel, db = self._channel(tmp_path)
         db.memories.create_collection(
             "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
@@ -1704,15 +1705,17 @@ class TestBrowserMemoryHandlers:
         resp = ws.sent[0]
         runs = resp["collector_runs"]
         assert len(runs) == 2
-        # Newest first, rendered as records from the promptlog facade.
+        # Full serialized runs (run_id, prompts, health, record), newest first.
+        assert all(r["run_target"] == "board-games" for r in runs)
+        assert all(r["prompts"] for r in runs)
+        # The shared run record carries the [target] summary + run-health flags.
         # r2 failed with no tool calls — it spun until the step ceiling, which is
         # capacity (⚠ INCOMPLETE, ignored by quality), not a deliberate NO WORK
         # DONE bail (which requires a recorded done() with no real work first).
-        assert "[board-games] no source URL found" in runs[0]["content"]
-        assert "⚠ INCOMPLETE" in runs[0]["content"]
-        assert runs[1]["content"] == "[board-games] wrote 2 games"
-        # Other-target run is excluded.
-        assert all("other-target" not in r["content"] for r in runs)
+        assert "[board-games] no source URL found" in runs[0]["record"]
+        assert "⚠ INCOMPLETE" in runs[0]["record"]
+        assert runs[1]["record"] == "[board-games] wrote 2 games"
+        assert runs[1]["run_reason"] == "wrote 2 games"
         # Both target runs fit in one page.
         assert resp["collector_runs_has_more"] is False
 
@@ -1768,8 +1771,8 @@ class TestBrowserMemoryHandlers:
 
     @pytest.mark.asyncio
     async def test_memory_page_request_collector_runs_paginate(self, tmp_path):
-        """The inline collector-activity section paginates independently of the
-        entries section, scoped to the collection's target prefix."""
+        """The Activity section paginates independently of the entries section,
+        scoped to the collection's target, carried in the ``runs`` field."""
         channel, db = self._channel(tmp_path)
         channel._MEMORY_PAGE_SIZE = 2
         db.memories.create_collection(
@@ -1784,7 +1787,7 @@ class TestBrowserMemoryHandlers:
             {"type": "memory_detail_request", "name": "board-games"},
         )
         first = ws.sent[0]
-        assert [r["content"] for r in first["collector_runs"]] == [
+        assert [r["record"] for r in first["collector_runs"]] == [
             "[board-games] cycle-3",
             "[board-games] cycle-2",
         ]
@@ -1802,7 +1805,7 @@ class TestBrowserMemoryHandlers:
         )
         page = ws.sent[0]
         assert page["section"] == "collector_runs"
-        assert [r["content"] for r in page["entries"]] == ["[board-games] cycle-1"]
+        assert [r["record"] for r in page["runs"]] == ["[board-games] cycle-1"]
         assert page["has_more"] is False
 
     @pytest.mark.asyncio

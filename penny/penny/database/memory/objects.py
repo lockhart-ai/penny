@@ -942,15 +942,10 @@ class RunLog(Log):
     tool-call trace.  Read-only; has no embeddings (so ``read_similar`` is empty
     and it never enters relevant recall — ``collector-runs`` is inclusion=never).
 
-    ``target`` scopes to one collection's runs (the addon's per-collection
-    panel); ``None`` is every collector run (the log itself).
+    Scoped to every collector run (the log itself).  A single collection's runs
+    are served as full runs by ``MessageStore.get_target_runs`` (the addon's
+    Activity tab renders them as the prompts tab's run → prompts → turns cards).
     """
-
-    def __init__(
-        self, row: MemoryRow, engine, *, target: str | None = None, on_changed=None
-    ) -> None:
-        super().__init__(row, engine, on_changed=on_changed)
-        self._target = target
 
     def append(self, entries: list[LogEntryInput], author: str) -> list[MemoryEntry]:
         raise ReadOnlyMemoryError(
@@ -964,12 +959,10 @@ class RunLog(Log):
         return self.read_recent(window_seconds, limit or PennyConstants.LOG_READ_LIMIT)
 
     def _completion_clauses(self) -> list:
-        clauses: list = [PromptLog.run_outcome.isnot(None)]  # ty: ignore[unresolved-attribute]
-        if self._target is not None:
-            clauses.append(PromptLog.run_target == self._target)
-        else:
-            clauses.append(PromptLog.run_target.isnot(None))  # ty: ignore[unresolved-attribute]
-        return clauses
+        return [
+            PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+            PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+        ]
 
     def _all_rows(self) -> list[MemoryEntry]:
         return self._records(newest_first=False)
