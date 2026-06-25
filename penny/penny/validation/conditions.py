@@ -51,6 +51,7 @@ class ConditionKey(StrEnum):
     HALF_FORMED_SEND = "half_formed_send"
     NO_WORK_DONE = "no_work_done"
     # ── Run-level: only emergent across a whole run ──────────────────────────
+    NO_WRITES = "no_writes"
     INCOMPLETE = "incomplete"
     TOOL_FAILURES = "tool_failures"
 
@@ -103,8 +104,9 @@ def _condition(
 
 
 # The catalog.  Insertion order is the canonical render order for run-record
-# flags (NO_WORK_DONE → INCOMPLETE → TOOL_FAILURES → HALF_FORMED_SEND, the order
-# the old ``RunHealth.flags`` emitted).
+# flags (NO_WORK_DONE → NO_WRITES → INCOMPLETE → TOOL_FAILURES → HALF_FORMED_SEND).
+# The two "the collector didn't deliver" flags (NO_WORK_DONE, NO_WRITES) lead; the
+# capacity/transience ones (INCOMPLETE, TOOL_FAILURES) follow.
 _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     # ── Response-shape conditions (live only; chat + collector) ──────────────
     _condition(
@@ -150,6 +152,14 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
             "reached done() (or made no tool call) without any read/write/browse "
             "step first; the collector is not following its instructions"
         ),
+    ),
+    _condition(
+        ConditionKey.NO_WRITES,
+        "Run had browse failures and wrote nothing",
+        run_flag=True,
+        collector_only=True,
+        marker="NO WRITES",
+        detail="one or more browses failed this cycle and the run wrote nothing",
     ),
     _condition(
         ConditionKey.INCOMPLETE,

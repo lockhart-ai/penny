@@ -10,6 +10,7 @@ worked run and a healthy quiet read carry no flags.
 
 import json
 
+from penny.constants import PennyConstants
 from penny.database.memory import classify_run, half_formed_send_reason, render_run_record
 from penny.database.models import PromptLog
 from penny.text_validity import is_unfinished_fragment
@@ -23,6 +24,19 @@ def _call(name: str, args: dict) -> dict:
     }
 
 
+def _browse_messages(*, pages: int = 0, searches: int = 0, errors: int = 0) -> str:
+    """A tool-result message JSON carrying ``pages``/``searches`` browse successes and
+    ``errors`` failures — the section headers ``_run_io_tally`` counts.  Lives on the
+    run's last prompt (where the full accumulated conversation sits)."""
+    sections = (
+        [f"{PennyConstants.BROWSE_PAGE_HEADER}url\ntext"] * pages
+        + [f"{PennyConstants.BROWSE_SEARCH_HEADER}query\nresults"] * searches
+        + [f"{PennyConstants.BROWSE_ERROR_HEADER}url\nCould not read this page"] * errors
+    )
+    content = PennyConstants.SECTION_SEPARATOR.join(sections)
+    return json.dumps([{"role": "tool", "tool_call_id": "b", "content": content}])
+
+
 def _prompt(
     calls: list[dict],
     *,
@@ -30,13 +44,15 @@ def _prompt(
     reason: str | None = None,
     target: str = "games",
     tool_failures: int | None = None,
+    messages: str = "[]",
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
-    (that's how ``set_run_outcome`` stamps it)."""
+    (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
+    turns (browse sections) the I/O tally reads off the final prompt."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
     return PromptLog(
         model="m",
-        messages="[]",
+        messages=messages,
         response=json.dumps({"choices": [{"message": message}]}),
         run_id="r",
         run_target=target,
@@ -83,6 +99,7 @@ def test_incomplete_run_is_flagged_and_shows_trace():
         render_run_record(run)
         == """\
 [games] max steps exceeded
+writes: 1
 ⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
 the cycle never finished cleanly
 write(games, 'x')"""
@@ -120,6 +137,7 @@ def test_tool_failure_count_is_flagged():
         render_run_record(run)
         == """\
 [games] wrote one
+writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
 write(games, 'x')"""
     )
@@ -148,6 +166,7 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
         render_run_record(run)
         == """\
 [games] delivered a notification
+writes: 0 · sends: 2
 ⚠ HALF-FORMED SEND — a message went out with no real content (empty, \
 punctuation-only, or an unfinished fragment)
 send('Hi there! ......???')
@@ -167,6 +186,7 @@ def test_healthy_worked_run_has_no_flags():
         render_run_record(run)
         == """\
 [games] wrote one
+writes: 1
 write(games, 'x')"""
     )
 
@@ -184,6 +204,85 @@ def test_healthy_quiet_read_is_not_a_bail():
     health = classify_run(run)
     assert health.flags == []
     assert render_run_record(run) == "[games] nothing new"
+
+
+def test_no_writes_flagged_when_browses_fail_and_nothing_written():
+    """The ai-news shape: the run browsed, browses failed, and it wrote nothing —
+    yet its done() summary claims otherwise.  ``no_writes`` is the two bare facts (a
+    browse failed AND zero writes); the counts line under the summary makes the
+    contradiction with the prose plain.  What it means is the model's to reason
+    about — the flag asserts nothing about cause or remedy."""
+    run = [
+        _prompt(
+            [_call("browse", {"queries": ["a", "b"]}), _DONE_OK],
+            outcome="no_work",
+            reason="wrote 3 new entries",
+            messages=_browse_messages(pages=1, errors=2),
+        )
+    ]
+    health = classify_run(run)
+    assert health.no_writes is True
+    assert health.flags == ["no_writes"]
+    assert (
+        render_run_record(run)
+        == """\
+[games] wrote 3 new entries
+browses: 1 ok, 2 failed · writes: 0
+⚠ NO WRITES — one or more browses failed this cycle and the run wrote nothing
+browse(['a', 'b'])"""
+    )
+
+
+def test_clean_browse_quiet_cycle_is_not_no_writes():
+    """Browsed fine, found nothing to write — a healthy quiet cycle, not NO WRITES.
+    The flag needs a browse *failure*; clean reads that simply yielded nothing don't
+    trip it.  Counts still render (so the shape is legible) but no flag, no trace."""
+    run = [
+        _prompt(
+            [_call("browse", {"queries": ["a"]}), _DONE_OK],
+            outcome="no_work",
+            reason="no new matches this cycle",
+            messages=_browse_messages(pages=1),
+        )
+    ]
+    health = classify_run(run)
+    assert health.no_writes is False
+    assert health.flags == []
+    assert (
+        render_run_record(run)
+        == """\
+[games] no new matches this cycle
+browses: 1 ok, 0 failed · writes: 0"""
+    )
+
+
+def test_browse_failures_but_wrote_is_not_no_writes():
+    """A partial browse failure that still produced a write is not NO WRITES — the
+    run wrote from the sources that succeeded, exactly what browse's partial-failure
+    contract intends."""
+    run = [
+        _prompt(
+            [
+                _call("browse", {"queries": ["a", "b"]}),
+                _call("collection_write", {"memory": "games", "entries": [{"content": "x"}]}),
+                _DONE_OK,
+            ],
+            outcome="worked",
+            reason="wrote one despite a dead source",
+            messages=_browse_messages(pages=1, errors=1),
+        )
+    ]
+    health = classify_run(run)
+    assert health.no_writes is False
+    assert health.flags == []
+    assert (
+        render_run_record(run)
+        == """\
+[games] wrote one despite a dead source
+browses: 1 ok, 1 failed · writes: 1
+browse(['a', 'b'])
+write(games, 'x')"""
+    )
 
 
 def test_unfinished_fragment_predicate_is_narrow():

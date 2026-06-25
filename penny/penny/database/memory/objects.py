@@ -765,6 +765,79 @@ def _run_tool_failures(prompts: list[PromptLog]) -> int:
     return 0
 
 
+_WRITE_TOOLS = frozenset(
+    {"collection_write", "update_entry", "collection_delete_entry", "log_append"}
+)
+
+
+def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
+    """Structural I/O counts for a run: ``(browses_ok, browses_failed, reads,
+    writes, sends)``.
+
+    Pure description of what the run *did* — no judgment of why or what to do about
+    it.  Two kinds of read are kept apart because they behave differently:
+
+    - **browses** — external web reads, counted at sub-result granularity from the
+      ``## browse`` / ``## browse search`` / ``## browse error`` section headers in
+      the tool-result messages.  Browse always returns ``success=True`` even when
+      every page errors (a partial failure is normal — the model works from
+      whatever succeeded), so a browse failure is visible *only* in the result
+      text, never in ``tool_failures``.
+    - **reads** — internal collection/log reads (``log_read``,
+      ``collection_read_*``, ``read_published_latest``, ``read_similar``,
+      ``collection_catalog``, …): every tool call that isn't a browse, write, send,
+      or ``done()``.  These don't meaningfully fail, so they're a plain call count.
+
+    Writes and sends count the model's own tool *calls* (each appears once across
+    the per-step responses), so ``writes == 0`` is the hard fact that nothing was
+    ever written — whatever a ``done()`` summary claims.
+
+    Browse results are read off the final prompt's ``messages`` (the full
+    accumulated conversation, so every result bar the last step's — which is almost
+    always ``done()`` — appears there exactly once); the call counts come from the
+    responses, so they're complete regardless."""
+    calls = _run_tool_calls(prompts)
+    writes = sum(1 for name, _ in calls if name in _WRITE_TOOLS)
+    sends = sum(1 for name, _ in calls if name == "send_message")
+    reads = sum(
+        1
+        for name, _ in calls
+        if name not in _WRITE_TOOLS and name not in {"browse", "send_message", "done"}
+    )
+    browses_ok = browses_failed = 0
+    messages = json.loads(prompts[-1].messages) if prompts and prompts[-1].messages else []
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content") or ""
+        browses_ok += content.count(PennyConstants.BROWSE_PAGE_HEADER)
+        browses_ok += content.count(PennyConstants.BROWSE_SEARCH_HEADER)
+        browses_failed += content.count(PennyConstants.BROWSE_ERROR_HEADER)
+    return browses_ok, browses_failed, reads, writes, sends
+
+
+def _io_tally_line(prompts: list[PromptLog]) -> str | None:
+    """The descriptive counts line for a run record, or ``None`` for a read-only
+    quiet cycle (nothing notable to tally).
+
+    Shown whenever the run browsed, wrote, or sent — the cases where the tally is
+    informative.  ``writes`` is always part of the line (so ``writes: 0`` against a
+    ``done()`` summary that claims otherwise is plain to see); browses, reads, and
+    sends appear only when nonzero, so the line stays as short as the run was."""
+    browses_ok, browses_failed, reads, writes, sends = _run_io_tally(prompts)
+    if not (browses_ok or browses_failed or writes or sends):
+        return None
+    segments: list[str] = []
+    if browses_ok or browses_failed:
+        segments.append(f"browses: {browses_ok} ok, {browses_failed} failed")
+    if reads:
+        segments.append(f"reads: {reads}")
+    segments.append(f"writes: {writes}")
+    if sends:
+        segments.append(f"sends: {sends}")
+    return " · ".join(segments)
+
+
 def _is_degenerate_send(content: str) -> bool:
     """True if a sent message has no real content the user should have received.
 
@@ -782,13 +855,16 @@ class RunHealth(BaseModel):
 
     All signals are deterministic and read from stored data — no model judgment:
     ``bailed`` (did no real work — recorded a terminating ``done()`` without any
-    read/write/browse first), ``incomplete`` (hit the step ceiling without a
-    closing ``done()`` — including a run that recorded no tool call at all, having
-    spun on rejected premature-``done()``s until the ceiling), ``tool_failures``
-    (count of failed tool calls in the run), ``degenerate_send`` (a message went
-    out with no real content)."""
+    read/write/browse first), ``no_writes`` (a browse read failed *and* the run
+    made no write — the two structural facts only; what they mean is the model's to
+    reason about), ``incomplete`` (hit the step ceiling without a closing ``done()``
+    — including a run that recorded no tool call at all, having spun on rejected
+    premature-``done()``s until the ceiling), ``tool_failures`` (count of failed
+    tool calls in the run — note browse never sets this, see ``_run_io_tally``),
+    ``degenerate_send`` (a message went out with no real content)."""
 
     bailed: bool = False
+    no_writes: bool = False
     incomplete: bool = False
     tool_failures: int = 0
     degenerate_send: bool = False
@@ -800,6 +876,8 @@ class RunHealth(BaseModel):
         out: list[str] = []
         if self.bailed:
             out.append(ConditionKey.NO_WORK_DONE.value)
+        if self.no_writes:
+            out.append(ConditionKey.NO_WRITES.value)
         if self.incomplete:
             out.append(ConditionKey.INCOMPLETE.value)
         if self.tool_failures:
@@ -841,8 +919,10 @@ def classify_run(prompts: list[PromptLog]) -> RunHealth:
     degenerate = any(
         name == "send_message" and _is_degenerate_send(_send_content(args)) for name, args in calls
     )
+    _browses_ok, browses_failed, _reads, writes, _sends = _run_io_tally(prompts)
     return RunHealth(
         bailed=bailed,
+        no_writes=browses_failed > 0 and writes == 0,
         incomplete=outcome == RunOutcome.INCOMPLETE.value or exhausted_no_call,
         tool_failures=_run_tool_failures(prompts),
         degenerate_send=degenerate,
@@ -863,6 +943,7 @@ def _send_content(args: object) -> str:
 def _flag_is_set(health: RunHealth, key: ConditionKey) -> bool:
     return {
         ConditionKey.NO_WORK_DONE: health.bailed,
+        ConditionKey.NO_WRITES: health.no_writes,
         ConditionKey.INCOMPLETE: health.incomplete,
         ConditionKey.TOOL_FAILURES: bool(health.tool_failures),
         ConditionKey.HALF_FORMED_SEND: health.degenerate_send,
@@ -900,7 +981,10 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     bake-off (``format_bakeoff.py``) found markdown headers / numbered tool lists
     gave gpt-oss no reading-comprehension gain over plain text on these records
     (numbering slightly hurt), so the simplest rendering wins.  ``classify_run``
-    determines health; ``_health_lines`` renders the ⚠ flags.
+    determines health; ``_health_lines`` renders the ⚠ flags.  A descriptive
+    ``_io_tally_line`` (reads ok/failed · writes · sends) sits under the summary
+    when the run did any browse/write/send — the bare structural facts, against
+    which a ``done()`` summary's claims can be read.
 
     The trace shows:
 
@@ -918,7 +1002,11 @@ def render_run_record(prompts: list[PromptLog]) -> str:
         return "(no data)"
     health = classify_run(prompts)
     outcome, reason, target = _run_outcome(prompts)
-    lines = [f"[{target or '?'}] {reason or outcome or ''}".rstrip(), *_health_lines(health)]
+    lines = [f"[{target or '?'}] {reason or outcome or ''}".rstrip()]
+    tally = _io_tally_line(prompts)
+    if tally:
+        lines.append(tally)
+    lines.extend(_health_lines(health))
     calls = _run_tool_calls(prompts)
     non_done = [(name, args) for name, args in calls if name != "done"]
     if health.bailed:

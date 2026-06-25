@@ -291,11 +291,17 @@ export interface PromptLogRun {
 export type RunOutcome = "failed" | "no_work" | "worked" | "incomplete" | "cancelled";
 
 /** A run-health flag key (mirrors penny's RunHealth.flags). */
-export type RunHealthFlag = "no_work_done" | "incomplete" | "tool_failures" | "half_formed_send";
+export type RunHealthFlag =
+  | "no_work_done"
+  | "no_writes"
+  | "incomplete"
+  | "tool_failures"
+  | "half_formed_send";
 
 /** Structural failure signals for one collector run (mirrors penny's RunHealth). */
 export interface RunHealth {
   bailed: boolean;
+  no_writes: boolean;
   incomplete: boolean;
   tool_failures: number;
   degenerate_send: boolean;

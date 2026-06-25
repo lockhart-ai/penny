@@ -302,10 +302,14 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "\n"
         "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
         "- Always end the cycle with ``done(success=<bool>, summary=<one-sentence prose>)``. "
-        "``success`` is true if the cycle did what the prompt asked, false on no-op or failure. "
-        "``summary`` describes what actually happened (entries written, messages sent, why no-op). "
-        'If nothing matches the prompt, call ``done(success=true, summary="no new matches this '
-        'cycle")`` — quiet cycles are normal.\n'
+        "``success`` is true only if the cycle did what the prompt asked, false on no-op or "
+        "failure.  ``summary`` must state what *actually* happened this cycle — never claim "
+        "entries were written unless a ``collection_write`` succeeded.  If your sources could "
+        "not be read (every browse failed), say so and set ``success=false`` (e.g. "
+        '``done(success=false, summary="could not read any source this cycle; 0 entries '
+        'written")``).  If the sources read fine but nothing new matched, call '
+        '``done(success=true, summary="no new matches this cycle")`` — quiet cycles are '
+        "normal.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, ``update_entry`` or ``collection_delete_entry`` "
         "rather than appending alongside.\n"

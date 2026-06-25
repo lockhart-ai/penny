@@ -312,7 +312,7 @@ function insertNewRun(prompt: PromptLogEntry & { run_id: string }): void {
     run_target: prompt.run_target ?? null,
     // A live, mid-flight run has no completed-run health/record yet — they're
     // computed once the run is tagged and re-fetched.  Empty until then.
-    health: { bailed: false, incomplete: false, tool_failures: 0, degenerate_send: false, flags: [], regressive: false },
+    health: { bailed: false, no_writes: false, incomplete: false, tool_failures: 0, degenerate_send: false, flags: [], regressive: false },
     record: "",
     prompts: [prompt],
   };
@@ -602,6 +602,7 @@ function highlightCall(line: string, into: HTMLElement): void {
 
 const RUN_HEALTH_LABEL: Record<RunHealthFlag, string> = {
   no_work_done: "no work done",
+  no_writes: "no writes",
   incomplete: "incomplete",
   tool_failures: "tool failures",
   half_formed_send: "half-formed send",
