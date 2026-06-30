@@ -1,8 +1,10 @@
 # Plan — Give Penny structural signals to reason about fruitless collector runs
 
-> **Status:** In progress on branch `collector-fruitless-run-detection`.
-> Phases 1–3 are committed (one commit). Phases 4–6 are not started.
-> **A validation step was skipped — see "Validation discipline (READ THIS)".**
+> **Status:** All six phases committed on branch `collector-fruitless-run-detection`
+> and validated live (see each phase + §3). Phase 5/6 adopted the **suggest-not-apply**
+> pivot (quality proposes a fix message; it never calls `collection_update`). Optional
+> pre-merge confirmations remain in §3 (full quality-suite run + real-prod-DB
+> `render_run_record` dry-run).
 
 This doc is the full plan from the start, written so a fresh context can pick it
 up. It is privacy-safe on purpose (the repo is public): it names **no** real
@@ -109,7 +111,9 @@ From the root `CLAUDE.md` and `docs/self-improvement-loop.md`:
 2. **`make eval` for the model-facing prompt changes** — phase 1's `done()`
    guidance: ✅ DONE — `tests/eval/test_collector_honesty.py` validates it live,
    baseline (no phase 1) **0/3** → with phase-1 wording **3/3** (working-source guard
-   3/3); no wording iteration needed. Phase 5's quality prompt: still TODO with the PR.
+   3/3); no wording iteration needed. Phase 5's quality prompt (suggest-not-apply, 0073):
+   ✅ DONE — persistent-no-writes 3/3, single-no-writes 3/3, healthy 3/3, rebroadcast 3/3
+   (after a tier-1 nudge), silent-drift 2/3, **0 `collection_update` calls across every case**.
    *(P2/P3 non-regression also ✅: the six quality over-correction guards — `healthy`,
    `incomplete`/`max-steps`/`tool-failure`/`run-failure`-not-drift, `quiet-when-healthy`
    — all hold with the new rendering; the lone `quiet` 1/3 slip was flag-INDEPENDENT
@@ -129,7 +133,8 @@ then read `/tmp/check-output.txt`. Never `make pytest` / `make check` alone /
 - Branch: `collector-fruitless-run-detection` (off latest `main`).
 - The earlier Memories-tab UI work shipped separately as **PR #1291** (merged).
 - Phases 1–3 are in **one commit**: "Make collector runs structurally describe
-  browse/write outcomes". Phases 4–6 are unstarted.
+  browse/write outcomes". Phases 4–6 are now committed too (run-history tool;
+  migration 0073 suggest-not-apply quality; flipped eval contracts).
 - Always branch from latest main; use `make token` for any `gh`/push
   (assert non-empty token → must be the bot identity); check the PR is still open
   before pushing.
@@ -219,7 +224,7 @@ EXIT_CODE=0) — but see §3 for the missing real-data dry-run + eval.
 
 ---
 
-### Phase 4 — A tool to read one collector's run history  ⬜ TODO
+### Phase 4 — A tool to read one collector's run history  ✅ committed (collector_run_history)
 
 So quality can do "find a failing run → **read that collector's recent runs** →
 decide if it's a consistent pattern", instead of judging a single cycle.
@@ -266,7 +271,7 @@ decide if it's a consistent pattern", instead of judging a single cycle.
 Tests: an integration test that the tool returns recent records for a target
 (fold into existing collector/memory-tool tests where one fits).
 
-### Phase 5 — Quality prompt: reason over the pattern  ⬜ TODO (model-facing → eval)
+### Phase 5 — Quality prompt: suggest, not apply  ✅ committed + eval-validated (migration 0073)
 
 **DESIGN PIVOT (confirmed by the user, June 2026): quality SUGGESTS, never applies.**
 See `project_quality_collector_suggest_not_apply`. Quality recently made destructive
@@ -315,7 +320,7 @@ Constraints:
   tools already; the work is making sure the approved suggestion carries enough to
   execute from (and that the suggestion surfaces in history, now that it does).
 
-### Phase 6 — Eval contract (do last, before landing)  ⬜ TODO (live model)
+### Phase 6 — Eval contract (suggest-not-apply)  ✅ committed + eval-validated
 
 Add to `penny/penny/tests/eval/test_quality_correction.py` a **pair** (the
 drift-N/quirk-N discipline used by PR #1276) — scored on the **suggest-not-apply**
