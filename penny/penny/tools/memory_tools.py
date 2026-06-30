@@ -18,6 +18,7 @@ reads return empty.
 from __future__ import annotations
 
 import logging
+import random
 from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -1316,11 +1317,19 @@ class ReadPublishedLatestTool(CursorReadTool):
     """Fan-in cursored read across every ``published`` collection — the consumer
     side of the pub/sub layer.
 
-    Each call returns the ``n`` oldest entries this consumer hasn't seen yet,
-    pooled across all published (non-archived) collections and ordered oldest
-    first, each tagged with its source collection and that collection's intent so
-    a generic consumer prompt can frame a message without naming sources.  A
-    per-``(consumer, source)`` cursor tracks progress (pending until the cycle
+    Each call picks **one** published (non-archived) collection *at random* among
+    those with an entry this consumer hasn't seen, and returns its ``n`` oldest
+    unseen entries, each tagged with its source collection and that collection's
+    intent so a generic consumer prompt can frame a message without naming
+    sources.  Random rotation — rather than a global oldest-first pool — is what
+    keeps any one collection's burst from monopolizing delivery: a single
+    collector run stamps many entries with near-identical timestamps, so a global
+    oldest-first drain delivered a whole burst back-to-back (hours of one topic)
+    and starved low-volume collections for days.  Picking a random eligible
+    collection each cycle gives every collection with something new an equal shot,
+    so they drain evenly and no burst blocks the rest.
+
+    A per-``(consumer, source)`` cursor tracks progress (pending until the cycle
     commits) and advances **only for the entries actually returned** — never for
     a source merely scanned — so nothing is skipped.  A source this consumer has
     no cursor for yet starts ``PUBLISHED_COLDSTART_LOOKBACK_SECONDS`` back, so a
@@ -1359,16 +1368,27 @@ class ReadPublishedLatestTool(CursorReadTool):
         return ToolResult(message=self._format(selected))
 
     def _select(self, n: int) -> list[_PublishedItem]:
-        """Pool unseen entries from every published source, return the oldest n."""
-        candidates: list[_PublishedItem] = []
+        """Pick one published source at random among those with unseen entries and
+        return its oldest n — random rotation so no one collection's burst
+        monopolizes delivery (see the class docstring)."""
+        sources = self._sources_with_unseen()
+        if not sources:
+            return []
+        source = random.choice(sources)
+        cursor = self._cursor_for(source.name)
+        entries = self._db.memory(source.name).read_since(cursor, n)
+        return [_PublishedItem(source.name, source.intent, entry) for entry in entries]
+
+    def _sources_with_unseen(self) -> list[MemoryRow]:
+        """Published, non-archived collections (this consumer aside) holding at
+        least one entry past this consumer's cursor."""
+        sources: list[MemoryRow] = []
         for row in self._db.memories.list_all():
             if not row.published or row.archived or row.name == self._agent_name:
                 continue
-            cursor = self._cursor_for(row.name)
-            for entry in self._db.memory(row.name).read_since(cursor, n):
-                candidates.append(_PublishedItem(row.name, row.intent, entry))
-        candidates.sort(key=lambda item: item.entry.created_at)
-        return candidates[:n]
+            if self._db.memory(row.name).read_since(self._cursor_for(row.name), 1):
+                sources.append(row)
+        return sources
 
     def _cursor_for(self, memory_name: str) -> datetime:
         """This consumer's committed cursor for ``memory_name``, or the cold-start
