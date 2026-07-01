@@ -235,11 +235,13 @@ class Agent:
 
         primary_user = self.db.users.get_primary_sender()
         system_prompt = await self._build_system_prompt(primary_user)
+        injected_context = await self._build_injected_context(primary_user, "")
 
         response = await self.run(
             prompt="",
             max_steps=self.get_max_steps(),
             system_prompt=system_prompt,
+            injected_context=injected_context,
             run_id=run_id,
             prompt_type=self.name,
         )
@@ -290,15 +292,24 @@ class Agent:
         max_steps: int,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
+        injected_context: str = "",
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         run_id: str | None = None,
         prompt_type: str | None = None,
     ) -> ControllerResponse:
-        """Run the agentic loop — prompt in, response out."""
+        """Run the agentic loop — prompt in, response out.
+
+        ``system_prompt`` is the *static* prompt body (identity, instructions,
+        inventory) — it stays byte-stable across turns so the local KV cache
+        can reuse it.  ``injected_context`` is the *volatile* per-turn block
+        (recall, run history); ``_build_messages`` rides it in a conversation
+        turn behind the shared Live-context header rather than in the system
+        prompt, so it never invalidates the cached prefix.
+        """
         if run_id is None:
             run_id = uuid.uuid4().hex
         self._tool_result_text = []
-        messages = self._build_messages(prompt, history, system_prompt)
+        messages = self._build_messages(prompt, history, system_prompt, injected_context)
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
             messages, tools, max_steps, on_tool_start, run_id, prompt_type
@@ -1013,16 +1024,21 @@ class Agent:
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
+        injected_context: str = "",
     ) -> list[dict]:
-        """Build message list for Ollama chat API.
+        """Assemble the message list, splitting static from volatile content.
 
-        The system_prompt is the full prompt body (identity, context,
-        instructions) built by each agent's _build_system_prompt method.
-        This method only prepends the timestamp.
+        The date and the shared ``INJECTED_CONTEXT_NOTE`` sit in the *system*
+        prompt — both stable across a day / all turns, so the local KV cache
+        keeps the whole system prefix warm.  The volatile bits — the current
+        *time* and ``injected_context`` (recall, run history) — ride in the
+        final user turn behind the shared Live-context header, out of the
+        cached prefix.
         """
         effective = system_prompt or self.system_prompt
-        now = datetime.now(UTC).strftime("%A, %B %d, %Y at %I:%M %p UTC")
-        system_content = f"Current date and time: {now}\n\n{effective}"
+        now = datetime.now(UTC)
+        today = now.strftime("%A, %B %d, %Y")
+        system_content = f"Today is {today}.\n\n{Prompt.INJECTED_CONTEXT_NOTE}\n\n{effective}"
 
         messages = [ChatMessage(role=MessageRole.SYSTEM, content=system_content).to_dict()]
 
@@ -1030,8 +1046,34 @@ class Agent:
             for role, content in history:
                 messages.append(ChatMessage(role=MessageRole(role), content=content).to_dict())
 
-        messages.append(ChatMessage(role=MessageRole.USER, content=prompt).to_dict())
+        user_content = self._final_user_turn(prompt, now, injected_context)
+        messages.append(ChatMessage(role=MessageRole.USER, content=user_content).to_dict())
         return messages
+
+    def _final_user_turn(self, prompt: str, now: datetime, injected_context: str) -> str:
+        """The current message prefixed with the Live-context block.
+
+        The block carries the current *time* and any ``injected_context``
+        (recall / run history) behind the shared header.  For chat, ``prompt``
+        is the user's message; for background agents it is empty, so the turn
+        is just the Live-context block.
+        """
+        time_now = now.strftime("%I:%M %p UTC")
+        block = f"The current time is {time_now}."
+        if injected_context:
+            block = f"{block}\n\n{injected_context}"
+        live = f"{Prompt.INJECTED_CONTEXT_HEADER}\n{block}"
+        return f"{live}\n\n---\n\n{prompt}" if prompt else live
+
+    async def _build_injected_context(self, user: str | None, content: str | None) -> str:
+        """Volatile per-turn context to ride in the Live-context turn.
+
+        Empty for plain agents.  ChatAgent overrides this to return ambient
+        recall + the browser page hint; Collector returns its run history.
+        Kept out of the system prompt so it never invalidates the cached
+        static prefix.
+        """
+        return ""
 
     # ── System prompt building (template method pattern) ─────────────────
 

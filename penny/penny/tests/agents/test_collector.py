@@ -289,15 +289,8 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     composed = Collector._compose_prompt(target)
 
     expected = (
-        "You are the collector for the `board-games` collection.\n"
-        "Description: Strategy board games worth buying\n"
-        "\n"
-        "Collect board games from chat and browse logs.\n"
-        '1. log_read("user-messages")\n'
-        "2. browse for new games\n"
-        '3. collection_write("board-games", entries=[...])\n'
-        "4. done().\n"
-        "\n"
+        # Runtime rules lead — shared byte-for-byte across every collector, so the
+        # prefix stays warm in the KV cache — then the per-collection body.
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
@@ -315,7 +308,16 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "rather than appending alongside.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically."
+        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
+        "\n"
+        "You are the collector for the `board-games` collection.\n"
+        "Description: Strategy board games worth buying\n"
+        "\n"
+        "Collect board games from chat and browse logs.\n"
+        '1. log_read("user-messages")\n'
+        "2. browse for new games\n"
+        '3. collection_write("board-games", entries=[...])\n'
+        "4. done()."
     )
 
     assert composed == expected, (
@@ -348,13 +350,15 @@ async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_
         collector._tag_promptlog_run(run_id, RunOutcome.WORKED, summary, 0)
     collector._current_target = db.memories.get("board-games")
 
-    prompt = await collector._build_system_prompt(None)
+    # Run history is volatile per-cycle context now — it rides in the Live-context
+    # turn (built by _build_injected_context), not the static system prompt.
+    prompt = await collector._build_injected_context(None, "")
 
     assert "## Your recent runs (newest first)" in prompt
     assert "wrote 2 new strategy games" in prompt
     assert "no new matches this cycle" in prompt
     # Each summary is stamped with an absolute UTC timestamp the model can compare
-    # against the "Current date and time: … UTC" line.
+    # against the "The current time is … UTC" line in the Live-context turn.
     assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", prompt)
 
 
@@ -368,9 +372,9 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     )
     collector._current_target = db.memories.get("board-games")
 
-    prompt = await collector._build_system_prompt(None)
+    injected = await collector._build_injected_context(None, "")
 
-    assert "## Your recent runs" not in prompt
+    assert "## Your recent runs" not in injected
 
 
 # ── Collector-runs audit log ─────────────────────────────────────────────

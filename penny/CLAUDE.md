@@ -177,9 +177,11 @@ The base `Agent` class implements the core agentic loop:
 - Appends source URLs to responses when model omits them
 
 **System prompt building (template method pattern):**
-Each agent overrides `_build_system_prompt(user)` to compose its prompt from reusable building blocks on the base class: `_identity_section()`, `_profile_section()`, `_instructions_section()`, `_context_block()`. No flags or conditionals — each agent explicitly declares what goes in its prompt. Tests assert on the exact full system prompt string to catch structural drift.
+Each agent splits its prompt into a **static** body and a **volatile** block, so the local KV cache keeps the static prefix warm across turns/cycles (see *Static vs. dynamic prompt split* below). `_build_system_prompt(user)` composes the static body from reusable building blocks on the base class: `_identity_section()`, `_profile_section()`, `_instructions_section()`, `_context_block()`. `_build_injected_context(user, content)` returns the volatile block (empty by default; ChatAgent → recall + page hint, Collector → run history). No flags or conditionals — each agent explicitly declares what goes where. Tests assert on the exact full system prompt string to catch structural drift.
 
-**Memory recall** is the single mechanism for surfacing memory contents in the system prompt, assembled in **two stages** (`_recall_section` in `agents/chat.py`):
+**Static vs. dynamic prompt split (`_build_messages`):** the system prompt holds only content that's stable within a day / across a run — the **date** line, the shared `INJECTED_CONTEXT_NOTE`, identity, instructions, memory inventory. Everything per-turn-volatile — the **time**, ambient recall, the browser page hint, collector run history — rides in the *final user turn* behind the shared `INJECTED_CONTEXT_HEADER` (`### Live context …`), assembled by `_final_user_turn`. This keeps the system prefix byte-stable so Ollama/llama.cpp reuse its KV cache instead of re-prefilling it every turn (a per-minute timestamp at char 0 previously voided the whole prefix each turn). The `INJECTED_CONTEXT_NOTE`/`_HEADER` constants are one shared source (`prompts.py`) so chat and collector emit byte-identical framing.
+
+**Memory recall** is the single mechanism for surfacing memory contents, rendered into the Live-context turn (not the system prompt), assembled in **two stages** (`_recall_section` in `agents/chat.py`, invoked by `_build_injected_context`):
 
 1. **Stage 1 — collection routing** (`inclusion` flag: `always` / `relevant` / `never`): decides whether a memory participates at all. `always` is unconditional; `relevant` participates only when the conversation window embeds close to the memory's content-reflective `description` anchor (cosine ≥ `MEMORY_INCLUSION_THRESHOLD`, default 0.40); `never` is excluded. This is the prompt-shortening gate — off-topic collections drop out entirely.
 2. **Stage 2 — entry rendering** (`recall` flag: `all` / `relevant` / `recent`): for each included memory, picks which entries surface. `recent` is the newest-first slice; `all` is the full set; `relevant` is a hybrid ranking (embedding cosine fused with IDF-weighted lexical coverage via reciprocal-rank fusion, top-N, **no floor** — stage 1 already decided relevance). Lexical fusion surfaces instruction-shaped entries (skills, recipes) whose absolute cosine is low but whose vocabulary overlaps the query.
@@ -201,7 +203,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 
 **ChatAgent** (`agents/chat.py`)
 - Handles incoming user messages with the full tool surface
-- Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
+- Prompt: static system = identity + (profile + inventory) + instructions; the recall block + page hint are **volatile per-turn context** that ride in the Live-context user turn (`_build_injected_context`), not the system prompt. Recall routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
 

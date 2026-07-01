@@ -366,15 +366,25 @@ class Collector(BackgroundAgent):
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
     async def _build_system_prompt(self, user: str | None) -> str:
-        """System prompt for the bound target — re-fetched each cycle.
+        """Static system prompt for the bound target — re-fetched each cycle.
 
         Reading from the DB instead of caching means a chat-side
         ``collection_update`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
+
+        The shared runtime rules lead (identical across every collector, so
+        the prefix stays warm in the KV cache), then the per-collection body.
+        The volatile run history rides in the Live-context turn via
+        ``_build_injected_context`` rather than here.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        return self._compose_prompt(fresh) + self._run_history_section(fresh.name)
+        return self._compose_prompt(fresh)
+
+    async def _build_injected_context(self, user: str | None, content: str | None) -> str:
+        """Volatile collector context for the Live-context turn: recent run history."""
+        target = self._require_target()
+        return self._run_history_section(target.name)
 
     def _run_history_section(self, target_name: str) -> str:
         """A trailing block of this collector's own recent ``done`` summaries
@@ -394,7 +404,7 @@ class Collector(BackgroundAgent):
             for index, (when, summary) in enumerate(summaries, start=1)
         )
         return (
-            "\n\n## Your recent runs (newest first)\n"
+            "## Your recent runs (newest first)\n"
             "What your previous cycles did, and when — context to avoid repeating "
             "work or re-sending, not an instruction to repeat.\n"
             f"{lines}"
@@ -402,20 +412,21 @@ class Collector(BackgroundAgent):
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:
-        """Frame the user-authored extraction_prompt with target identity + runtime rules.
+        """Frame the user-authored extraction_prompt with runtime rules + target identity.
 
-        The runtime-rules tail is appended structurally — not relayed through
-        Penny when she authors the extraction_prompt.  This guarantees the
-        rules apply on every cycle regardless of how the prompt was written
-        (or whether Penny remembered to include them).  The chat-facing
-        ``collection_create`` description only carries authoring-shape
-        guidance; the runtime invariants live here.
+        The runtime rules lead — prepended structurally, not relayed through
+        Penny when she authors the extraction_prompt — so they apply on every
+        cycle regardless of how the prompt was written (or whether Penny
+        remembered to include them).  Leading with them (identical across every
+        collector) also keeps the shared prefix warm in the KV cache.  The
+        chat-facing ``collection_create`` description only carries
+        authoring-shape guidance; the runtime invariants live here.
         """
         return (
+            f"{cls._RUNTIME_RULES}\n\n"
             f"You are the collector for the `{target.name}` collection.\n"
             f"Description: {target.description}\n\n"
-            f"{target.extraction_prompt}\n\n"
-            f"{cls._RUNTIME_RULES}"
+            f"{target.extraction_prompt}"
         )
 
     def _memory_scope(self) -> str:
