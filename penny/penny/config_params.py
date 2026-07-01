@@ -265,13 +265,27 @@ ConfigParam(
 ConfigParam(
     key="MEMORY_INCLUSION_THRESHOLD",
     description=(
-        "Stage-1 routing gate: minimum cosine between the conversation and a "
+        "Stage-1 routing gate: minimum cosine between the current message and a "
         "relevant-inclusion memory's description anchor for it to participate "
         "in recall"
     ),
     type=float,
     default=0.40,
     validator=_validate_unit_float,
+    group=GROUP_MEMORY,
+)
+
+ConfigParam(
+    key="RECALL_TOP_K",
+    description=(
+        "Stage-1 routing: max number of relevant-inclusion collections admitted to "
+        "recall per turn, ranked by current-message cosine to their description "
+        "anchor (1 = only the single most relevant collection; always/never "
+        "collections are unaffected)"
+    ),
+    type=int,
+    default=1,
+    validator=_validate_positive_int,
     group=GROUP_MEMORY,
 )
 
