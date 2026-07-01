@@ -47,6 +47,7 @@ class ConditionKey(StrEnum):
     HALLUCINATED_URLS = "hallucinated_urls"
     TOOL_PARSE_ERROR = "tool_parse_error"
     TEXT_INSTEAD_OF_TOOL = "text_instead_of_tool"
+    DEGENERATE_OUTPUT = "degenerate_output"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
     NO_WORK_DONE = "no_work_done"
@@ -139,6 +140,11 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         "Collector narrated prose where a tool call was required",
         live=True,
         collector_only=True,
+    ),
+    _condition(
+        ConditionKey.DEGENERATE_OUTPUT,
+        "Model output collapsed into a punctuation run ('...??…?..')",
+        live=True,
     ),
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     _condition(

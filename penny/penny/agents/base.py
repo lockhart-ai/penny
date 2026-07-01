@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,6 +19,7 @@ from penny.llm import LlmClient
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
+from penny.text_validity import is_degenerate_run
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
@@ -529,7 +531,9 @@ class Agent:
 
         for attempt in range(max_retries):
             try:
-                response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+                response = await self._invoke_nondegenerate(
+                    messages, effective_tools, run_id, prompt_type
+                )
             except LlmToolParseError:
                 if self._retry_tool_parse_error(messages, retried, attempt, max_retries):
                     continue
@@ -669,6 +673,53 @@ class Agent:
         except LlmError as exception:
             logger.error("LLM chat failed: %s", exception)
             return None
+
+    async def _invoke_nondegenerate(
+        self,
+        messages: list[dict],
+        effective_tools: list[dict] | None,
+        run_id: str | None,
+        prompt_type: str | None,
+    ) -> LlmResponse | None:
+        """Call the model, discarding degenerate (punctuation-collapse) output and
+        re-rolling on the *unchanged* context.
+
+        gpt-oss occasionally collapses into a run of ``…?.`` — most often inside a
+        tool-call argument, which the validation chain never sees (tool-call
+        responses short-circuit it).  So the check runs here, on the raw output of
+        every call, before the loop parses or acts on it.  The bad response is
+        DROPPED, never appended: re-appending it would feed the collapse back into
+        the conversation, and a poisoned step makes the next step ~4× more likely to
+        collapse too.  A fresh draw on the same messages usually clears it (the
+        collapse is a sampling artifact); after ``DEGENERATE_REROLL_ATTEMPTS`` it
+        returns ``None`` so the caller throws out the whole run rather than act on,
+        or store, poison.  ``LlmToolParseError`` propagates unchanged — the
+        format-nudge retry in ``_call_model_validated`` still owns that path.
+        """
+        attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        for attempt in range(attempts):
+            response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+            if response is None or not self._response_is_degenerate(response):
+                return response
+            logger.warning(
+                "Degenerate model output (%s) — discarding and re-rolling %d/%d",
+                ConditionKey.DEGENERATE_OUTPUT,
+                attempt + 1,
+                attempts,
+            )
+        logger.error("Model output still degenerate after %d re-rolls — aborting run", attempts)
+        return None
+
+    @staticmethod
+    def _response_is_degenerate(response: LlmResponse) -> bool:
+        """True if the raw output — text content OR any tool-call argument — carries
+        a degeneration-collapse run.  Serialising the tool-call arguments is what
+        lets the guard catch the common case, where the collapse lands in a
+        ``collection_write`` / ``done`` argument rather than in visible prose."""
+        parts = [response.message.content or ""]
+        for call in response.message.tool_calls or []:
+            parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
+        return any(is_degenerate_run(part) for part in parts)
 
     def _build_final_response(
         self,

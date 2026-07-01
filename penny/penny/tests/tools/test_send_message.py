@@ -106,8 +106,9 @@ async def test_run_refuses_half_formed_with_actionable_error(tmp_path):
     """Going through ``Tool.run`` (the executor's entry point), a half-formed body
     is refused by the ``args_model`` validator with a ``success=False`` actionable
     error tool response — names the field + the reason + how to fix — and
-    ``execute`` never runs, so nothing is queued.  This is the unfinished-fragment
-    shape the old truncation regex missed."""
+    ``execute`` never runs, so nothing is queued.  ``"Hi there! ......???"`` is a
+    degeneration-collapse run (a superset of the unfinished-fragment shape), caught
+    by the shared corpus/send content gate."""
     db = _make_db(tmp_path)
     tool = _make_tool(db)
 
@@ -115,7 +116,7 @@ async def test_run_refuses_half_formed_with_actionable_error(tmp_path):
 
     assert result.success is False
     assert result.mutated is False
-    assert "unfinished fragment" in result.message.lower()  # the specific reason
+    assert "degenerate" in result.message.lower()  # the specific reason
     assert "complete message" in result.message.lower()  # how to fix
     assert "send_message" in result.message  # which tool to retry
     assert db.send_queue.next_pending() is None
@@ -164,6 +165,11 @@ def test_send_message_args_rejects_half_formed_bodies():
         "???!!! ...",
         "https://example.com/page",
         "I don't know",
+        # Degeneration-collapse runs embedded in otherwise-wordful text — poison
+        # that carries word tokens (so it clears the blank check) but is corrupt.
+        "New restaurant … … … … openings this week",
+        "Big AI update ……? for you today",
+        "Delivered a find about Boss ..??.. gear",
     ]
     for body in half_formed:
         with pytest.raises(ValidationError):

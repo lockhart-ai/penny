@@ -185,6 +185,14 @@ class PennyConstants:
     # Agent loop constants
     VISION_MAX_STEPS = 1
     RESPONSE_VALIDATION_RETRIES = 5
+    # How many times the loop re-rolls a degenerate (punctuation-collapse) model
+    # output before throwing out the whole run.  The bad output is DISCARDED, never
+    # appended — a re-roll on the unchanged context, since the collapse is a
+    # sampling artifact that a fresh draw usually clears.  Kept small: each re-roll
+    # is a full model call, and a run that collapses 3× in a row is stuck (the
+    # context is too large — see the ~4K-token cliff) and better abandoned than fed
+    # poison downstream.
+    DEGENERATE_REROLL_ATTEMPTS = 3
     # Minimum count of alphabetic characters for a model response to be
     # considered substantive. Catches garbage shapes — bare separators
     # (`---`), lone punctuation, emoji-only, runs of stars/dashes — without

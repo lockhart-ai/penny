@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 73
+        assert count == 74
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 73
+        assert count1 == 74
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0073 run = 72 migrations
-        assert count == 72
+        # 0001 is skipped; 0002 through 0074 run = 73 migrations
+        assert count == 73
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 73  # all migrations applied
+        assert count == 74  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -687,3 +687,49 @@ class TestMigrate:
         assert "send_message" not in prompt  # producer gathers only; notifier delivers
         # The old move-drain pair is retired (archived), not dispatched.
         assert archived == {"unnotified-thoughts": 1, "notified-thoughts": 1}
+
+    def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
+        """Migration 0074 deletes entries whose key or content carries a
+        degeneration-collapse run (in content or key), and leaves clean entries —
+        including ones with an ordinary trailing ellipsis — untouched."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE memory_entry (id INTEGER PRIMARY KEY, memory_name TEXT, "
+            "key TEXT, content TEXT, author TEXT)"
+        )
+        rows = [
+            (1, "knowledge", "Clean title", "A real summary of a page.", "knowledge"),
+            (2, "knowledge", "Anyway…", "A find dropped this week…", "knowledge"),  # clean ellipsis
+            (3, "knowledge", "Boss delay", "Delivered a find about Boss ..??.. gear", "knowledge"),
+            (4, "knowledge", "New … … … … openings", "poison in the key", "knowledge"),
+            (5, "news", "Falcon 9", "Starlink launch summary ……? today", "news"),
+        ]
+        conn.executemany(
+            "INSERT INTO memory_entry (id, memory_name, key, content, author) VALUES (?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0074_delete_degenerate_memory_entries.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0074", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        surviving = {row[0] for row in conn.execute("SELECT id FROM memory_entry").fetchall()}
+        conn.close()
+
+        # 1 (clean) and 2 (ordinary trailing ellipsis) survive; 3/4/5 (poison in
+        # content or key) are deleted.
+        assert surviving == {1, 2}

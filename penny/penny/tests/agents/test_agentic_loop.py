@@ -429,6 +429,75 @@ class TestToolParseErrorRetry:
         await agent.close()
 
 
+class TestDegenerateOutputGuard:
+    """gpt-oss occasionally collapses into a punctuation run ("...??…?..").  The
+    loop discards that output and re-rolls on the UNCHANGED context (never appending
+    the garbage — that's the contagion path), and throws the run out if it can't
+    recover, so no poison is ever fed back to the model or reaches a tool call."""
+
+    @pytest.mark.asyncio
+    async def test_tool_arg_poison_discarded_and_rerolled(self, test_db, mock_llm):
+        """A degenerate run inside a tool-call argument (the common case, which the
+        validation chain never sees) is discarded and re-rolled — the poison turn is
+        never appended, so the reroll re-sends the exact same context."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "the new Air‑...??…?..?????"}
+                )
+            return mock_llm._make_text_response(request, "recovered cleanly")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test query", max_steps=max_steps)
+        assert response.answer == "recovered cleanly"
+        # Exactly one reroll, both calls inside the same step.
+        assert len(mock_llm.requests) == 2
+        # The garbage was DISCARDED, not appended — it never reached the context.
+        assert "?????" not in str(mock_llm.requests[-1]["messages"])
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_content_poison_discarded_and_rerolled(self, test_db, mock_llm):
+        """A degenerate run in plain text content is caught on the same path."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_text_response(request, "Here you go … … … … …")
+            return mock_llm._make_text_response(request, "here is the real answer")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "here is the real answer"
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_persistent_degeneration_aborts_run(self, test_db, mock_llm):
+        """When every reroll is still degenerate, the run is thrown out with
+        AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — poison is
+        never acted on or stored."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            return mock_llm._make_tool_call_response(request, "search", {"query": "...??…?..?????"})
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test prompt", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+
+        await agent.close()
+
+
 class TestEmptyContentFallback:
     """Test that an empty model response falls back to AGENT_EMPTY_RESPONSE."""
 

@@ -68,6 +68,50 @@ _WRITE_BAILOUT_PHRASES: frozenset[str] = frozenset(
 # ≥2 ?/!) so legitimate punctuation ("Wait... what?!", "Hmm...?") is never caught.
 _UNFINISHED_FRAGMENT_RE = re.compile(r"\.{3,}\s*[?!]{2,}")
 
+# Separator characters gpt-oss threads through a degeneration collapse — the run
+# is rarely pure punctuation; it's laced with the "smart typography" the model
+# slides into just before it loses coherence: NBSP / narrow-NBSP (both already
+# matched by `\s`), plus zero-width space, soft hyphen, and the hyphen/dash family
+# (spelled as escapes so the source carries no invisible bytes).
+_DEGEN_SEP = r"\s\u200b\u00ad\u2010\u2011\u2013\u2014"
+
+# The fingerprint of a gpt-oss degeneration collapse — a run of `.` / `…` / `?`
+# (optionally `!`) that the model emits when it "gives up" mid-generation on a
+# large context, e.g.  "...??…?..?????"  or  "New … … … … …".  This is the
+# *poison*: it corrupts the tool-call argument or message it lands in, and once
+# fed back into the conversation it degrades the next step too (measured ~4×
+# elevated collapse once a step has gone bad).  A union of high-precision
+# sub-patterns, each individually rare in real text — tuned against the prompt
+# log corpus for zero false positives on legitimate punctuation ("Wait... what?!",
+# "Really...?", "to be continued…", code "[1, 2, 3, ...]"):
+#   1. 3+ ellipsis chars in a row (nobody types "………")
+#   2. two ellipsis-runs bridged only by punctuation/spacing ("… … …", "...??..")
+#   3. two punctuation clusters separated only by spacing/dashes ("?? ..??")
+#   4. a mixed cluster of ≥2 dots/ellipses AND ≥2 ?/! ("..??", "...???")
+#   5. one long ≥5-char run of mixed `.`/`…`/`?`
+_DEGENERATE_RUN_RE = re.compile(
+    r"…{3,}"
+    r"|(?:…|\.\.\.)[" + _DEGEN_SEP + r"?!.]*(?:…|\.\.\.)"
+    r"|[.?!]{2,}[" + _DEGEN_SEP + r"]+[.?!…]{2,}"
+    r"|[.…]{2,}[?!]{2,}|[?!]{2,}[.…]{2,}"
+    r"|[.…?]{5,}"
+)
+
+
+def is_degenerate_run(content: str) -> bool:
+    """True if ``content`` contains a gpt-oss degeneration-collapse run.
+
+    The shared detector for the *poison* fingerprint, used at every gate that
+    keeps it from spreading: the agent loop discards + re-rolls model output that
+    matches (never appending it — that feeds the collapse back in), and the corpus
+    write / send gates (via :func:`degenerate_reason`) refuse content that carries
+    it so no poison reaches ``memory_entry`` / ``messagelog``.  Substring match —
+    a run anywhere in otherwise-wordful text ("Delivered deliver...???") still
+    counts, because that entry/message is corrupt.
+    """
+    return bool(_DEGENERATE_RUN_RE.search(content))
+
+
 # A message cut off mid-thought on an ellipsis TAIL — one-or-more "…" or 3+ ASCII
 # dots, optionally a single trailing ?/!/. — the model self-truncating.  Real
 # failures: "...the original …", "all-time-best ‑ …?", "Hello world...".  A
@@ -121,6 +165,8 @@ def degenerate_reason(content: str) -> str | None:
         return "content is a bare URL with no descriptive text"
     if stripped.lower() in _WRITE_BAILOUT_PHRASES:
         return f"content matches a known LLM bail-out phrase: {stripped!r}"
+    if is_degenerate_run(stripped):
+        return "content carries a degenerate punctuation run (a '…'/'.'/'?' collapse)"
     return None
 
 
