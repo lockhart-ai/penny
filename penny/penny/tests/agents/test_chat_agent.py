@@ -375,6 +375,40 @@ espresso uses 9 bars of pressure"""
     )
 
 
+@pytest.mark.asyncio
+async def test_stage1_admits_only_top_relevant_collection(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """Stage-1 competitive routing (`RECALL_TOP_K`, default 1): among relevant
+    collections that BOTH clear the threshold, only the single top one by
+    current-message cosine is admitted — the adjacent runner-up is dropped, not
+    appended (the old behaviour admitted every collection over the floor).
+    """
+    async with running_penny(make_config()) as penny:
+        agent = penny.chat_agent
+        # Two relevant collections with known description anchors.  espresso is the
+        # closest to the current-message anchor; tea is a plausible runner-up that
+        # STILL clears the 0.40 floor (cosine ≈ 0.71), so only top-1 can drop it.
+        penny.db.memories.create_collection(
+            "espresso-facts",
+            "espresso brewing",
+            Inclusion.RELEVANT,
+            RecallMode.RELEVANT,
+            description_embedding=[1.0, 0.0, 0.0],
+        )
+        penny.db.memories.create_collection(
+            "tea-facts",
+            "tea steeping",
+            Inclusion.RELEVANT,
+            RecallMode.RELEVANT,
+            description_embedding=[1.0, 1.0, 0.0],
+        )
+        included = {m.name for m in agent._included_memories([1.0, 0.0, 0.0])}
+
+    assert "espresso-facts" in included
+    assert "tea-facts" not in included, "runner-up above the floor should be dropped by top-1"
+
+
 # ── 2. Special success cases ──────────────────────────────────────────────
 
 

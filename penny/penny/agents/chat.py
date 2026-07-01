@@ -262,9 +262,10 @@ class ChatAgent(Agent):
         """Ambient recall content, assembled in two stages.
 
         Stage 1 (collection routing) — each active memory's ``inclusion`` flag
-        decides whether it participates: ``always`` unconditionally,
-        ``relevant`` only when the conversation embeds close to the memory's
-        description anchor, ``never`` not at all (already excluded).
+        decides whether it participates: ``always`` unconditionally, ``relevant``
+        only by winning a competition (the top ``RECALL_TOP_K`` collections by
+        *current-message* cosine to their description anchor that clear
+        ``MEMORY_INCLUSION_THRESHOLD``), ``never`` not at all (already excluded).
 
         Stage 2 (entry rendering) — for each included memory, its ``recall``
         mode picks which entries surface:
@@ -284,10 +285,9 @@ class ChatAgent(Agent):
         query_text = " ".join(
             t for t in [*(conversation_history or []), current_message or ""] if t
         )
+        current_anchor = anchors[-1] if anchors else None
         sections: list[str] = []
-        for memory in self._active_memories():
-            if not self._passes_inclusion(memory, anchors):
-                continue
+        for memory in self._included_memories(current_anchor):
             section = self._render_recall_memory(
                 memory, anchors, query_text, limit, anchor_contents
             )
@@ -299,26 +299,46 @@ class ChatAgent(Agent):
         """Memory objects for every non-archived, routable memory (inclusion != 'never')."""
         return self.db.memories.active_memories()
 
-    def _passes_inclusion(self, memory: Memory, anchors: list[list[float]] | None) -> bool:
-        """Stage-1 gate: does this memory participate in recall for this turn.
+    def _included_memories(self, current_anchor: list[float] | None) -> list[Memory]:
+        """Stage-1 routing: which memories participate in recall this turn.
 
-        ``always`` always passes; ``relevant`` passes only when the best cosine
-        between the conversation window and the memory's description anchor
-        clears ``MEMORY_INCLUSION_THRESHOLD``.  Fails open (includes) when there
-        is no embedding to compare — no anchors (no embedding model / cold
-        message) or no description anchor yet (pre-backfill) — so a missing
-        vector never silently drops a collection.
+        ``always`` memories participate unconditionally; ``relevant`` memories
+        *compete* — only the top ``RECALL_TOP_K`` by current-message cosine to
+        their description anchor (clearing ``MEMORY_INCLUSION_THRESHOLD``) are
+        admitted, so the single on-topic collection surfaces and the long tail of
+        adjacent collections is dropped.  Returned in ``active_memories`` order so
+        rendering stays stable regardless of the competition outcome.
         """
-        inclusion = Inclusion(memory.inclusion)
-        if inclusion == Inclusion.ALWAYS:
-            return True
-        if inclusion == Inclusion.NEVER:
-            return False
-        if anchors is None or memory.description_embedding is None:
-            return True
-        description_anchor = deserialize_embedding(memory.description_embedding)
+        active = self._active_memories()
+        relevant = [m for m in active if Inclusion(m.inclusion) == Inclusion.RELEVANT]
+        winners = {m.name for m in self._top_relevant(relevant, current_anchor)}
+        return [
+            m for m in active if Inclusion(m.inclusion) == Inclusion.ALWAYS or m.name in winners
+        ]
+
+    def _top_relevant(
+        self, relevant: list[Memory], current_anchor: list[float] | None
+    ) -> list[Memory]:
+        """The top ``RECALL_TOP_K`` relevant memories by current-message description cosine.
+
+        Scores against the *current message alone* — not the whole history window
+        — so a collection can't stay "sticky" for later, unrelated turns.  Fails
+        open: a memory with no description anchor yet (pre-backfill), or a turn
+        with no anchor at all (no embedding model / cold message), is included
+        rather than silently dropped and doesn't consume a top-K slot.
+        """
+        if current_anchor is None:
+            return relevant
         threshold = float(self.config.runtime.MEMORY_INCLUSION_THRESHOLD)
-        return max(cosine_similarity(a, description_anchor) for a in anchors) >= threshold
+        top_k = int(self.config.runtime.RECALL_TOP_K)
+        no_anchor = [m for m in relevant if m.description_embedding is None]
+        scored = [
+            (cosine_similarity(current_anchor, deserialize_embedding(m.description_embedding)), m)
+            for m in relevant
+            if m.description_embedding is not None
+        ]
+        passing = sorted((p for p in scored if p[0] >= threshold), key=lambda pair: -pair[0])
+        return no_anchor + [m for _, m in passing[:top_k]]
 
     async def embed_description(self, text: str) -> list[float] | None:
         """Embed a memory description into its stage-1 routing anchor.
