@@ -727,11 +727,25 @@ class TestCapabilitiesAndToolRouting:
         db = _make_db(tmp_path)
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
 
+        assert not channel.has_browser_connection
+
         ws = await self._register(channel, "firefox-1")
+        assert channel.has_browser_connection
         assert not channel.has_tool_connection
 
         await self._set_capabilities(channel, "firefox-1", ws, True)
         assert channel.has_tool_connection
+
+    @pytest.mark.asyncio
+    async def test_send_tool_request_explains_connected_but_tool_use_disabled(self, tmp_path):
+        """A connected browser without tool-use reports the actionable cause."""
+        db = _make_db(tmp_path)
+        channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
+
+        await self._register(channel, "firefox-1")
+
+        with pytest.raises(RuntimeError, match="tool use is disabled"):
+            await channel.send_tool_request("browse_url", {"url": "https://example.com"})
 
     @pytest.mark.asyncio
     async def test_get_tool_connection_picks_enabled_addon(self, tmp_path):

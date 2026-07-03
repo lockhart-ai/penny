@@ -199,6 +199,15 @@ class MessageChannel(ABC):
         """
         return
 
+    async def wait_until_ready(self) -> None:
+        """Wait until the channel can accept proactive outgoing sends.
+
+        Channels whose send path depends on an async listener becoming ready
+        override this. The default covers channels that can send immediately
+        after construction/connectivity validation.
+        """
+        return
+
     def prepare_outgoing(self, text: str) -> str:
         """
         Prepare text for sending via this channel.

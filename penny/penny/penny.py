@@ -243,7 +243,7 @@ class Penny:
 
         # Browse provider — agents build fresh BrowseTools each cycle.
         def browse_provider():
-            if not browser_ch.has_tool_connection:
+            if not browser_ch.has_browser_connection:
                 return None
             return browser_ch.send_tool_request, perm_mgr
 
@@ -481,16 +481,27 @@ class Penny:
             if total_messages:
                 logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
-        await self._send_startup_announcement()
-        await self._prompt_for_missing_profiles()
-
         try:
             await asyncio.gather(
                 self.channel.listen(),
                 self.scheduler.run(),
+                self._run_startup_notifications(),
             )
         finally:
             await self.shutdown()
+
+    async def _run_startup_notifications(self) -> None:
+        """Send startup notifications after the outgoing channel is ready."""
+        try:
+            await self.channel.wait_until_ready()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Startup notifications skipped; channel never became ready: %s", e)
+            return
+
+        await self._send_startup_announcement()
+        await self._prompt_for_missing_profiles()
 
     async def _send_startup_announcement(self) -> None:
         """Send a startup announcement to the user's default device."""

@@ -1,11 +1,57 @@
 """Integration tests for startup announcement feature."""
 
+import asyncio
+import contextlib
 import logging
 
 import pytest
 
+from penny.channels.base import IncomingMessage, MessageChannel
+from penny.constants import PennyConstants
 from penny.llm.models import LlmConnectionError
+from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, wait_until
+
+
+class StartupReadyChannel(MessageChannel):
+    """Fake channel whose sends are blocked on listener readiness."""
+
+    def __init__(self, message_agent, db):
+        super().__init__(message_agent=message_agent, db=db)
+        self.listen_started = asyncio.Event()
+        self.ready = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.sent: list[tuple[str, str]] = []
+
+    @property
+    def sender_id(self) -> str:
+        return "startup-ready"
+
+    async def listen(self) -> None:
+        self.listen_started.set()
+        await self.closed.wait()
+
+    async def wait_until_ready(self) -> None:
+        await self.ready.wait()
+
+    async def _send_raw(
+        self,
+        recipient: str,
+        message: str,
+        attachments: list[str] | None = None,
+        quote_message=None,
+    ) -> int | None:
+        self.sent.append((recipient, message))
+        return len(self.sent)
+
+    async def send_typing(self, recipient: str, typing: bool) -> bool:
+        return True
+
+    def extract_message(self, raw_data: dict) -> IncomingMessage | None:
+        return None
+
+    async def close(self) -> None:
+        self.closed.set()
 
 
 @pytest.mark.asyncio
@@ -43,7 +89,6 @@ async def test_startup_announcement_with_commit(
     mock_llm.set_default_flow(final_response="i added a cool new feature! check it out")
 
     async with running_penny(test_config):
-        # Announcement is sent before WebSocket listener starts
         await wait_until(lambda: len(signal_server.outgoing_messages) > 0)
 
         # Should have received startup announcement
@@ -158,11 +203,45 @@ async def test_startup_announcement_no_recipients(
 ):
     """Test that Penny doesn't crash when there are no recipients."""
     # Start Penny without any prior message history.
-    # Announcement runs before WebSocket listener starts, so by the time
-    # running_penny yields (WebSocket connected), the code has already
-    # completed. No sleep needed — check immediately.
     async with running_penny(test_config):
         assert len(signal_server.outgoing_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_announcement_waits_for_channel_ready(make_config, mock_llm, monkeypatch):
+    """Startup sends must not block listener startup before the channel is ready."""
+    monkeypatch.setenv("GIT_COMMIT_MESSAGE", "unknown")
+    config = make_config()
+    penny = Penny(config, channel=None)
+    channel = StartupReadyChannel(message_agent=penny.chat_agent, db=penny.db)
+    penny._init_channel(config, channel)
+    penny._connect_scheduler(config)
+    penny.db.users.save_info(
+        sender=TEST_SENDER,
+        name="Test User",
+        location="Seattle, WA",
+        timezone="America/Los_Angeles",
+        date_of_birth="1990-01-01",
+    )
+    penny.db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content="hello",
+    )
+
+    task = asyncio.create_task(penny.run())
+    try:
+        await wait_until(channel.listen_started.is_set)
+        assert channel.sent == []
+
+        channel.ready.set()
+        await wait_until(lambda: len(channel.sent) == 1)
+        assert channel.sent[0] == (TEST_SENDER, "👋 I just restarted!")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await penny.shutdown()
 
 
 @pytest.mark.asyncio

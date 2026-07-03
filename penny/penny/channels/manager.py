@@ -90,6 +90,10 @@ class ChannelManager(MessageChannel):
         tasks = [channel.listen() for channel in self._channels.values()]
         await asyncio.gather(*tasks)
 
+    async def wait_until_ready(self) -> None:
+        """Wait until the default outgoing channel can send."""
+        await self._get_default_channel().wait_until_ready()
+
     async def _send_raw(
         self,
         recipient: str,

@@ -202,6 +202,11 @@ class BrowserChannel(MessageChannel):
         self._collector = collector
 
     @property
+    def has_browser_connection(self) -> bool:
+        """Whether any browser addon websocket is connected."""
+        return bool(self._connections)
+
+    @property
     def has_tool_connection(self) -> bool:
         """Whether any tool-use-enabled browser is connected.
 
@@ -1166,6 +1171,11 @@ class BrowserChannel(MessageChannel):
         """
         ws = self._get_tool_connection()
         if ws is None:
+            if self._connections:
+                raise RuntimeError(
+                    "browser is connected, but tool use is disabled — enable Tool use in the "
+                    "browser extension to let collectors search and read pages"
+                )
             raise RuntimeError("No browser with tool-use enabled is connected")
 
         request_id = str(uuid.uuid4())

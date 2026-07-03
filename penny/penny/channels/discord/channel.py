@@ -55,7 +55,6 @@ class DiscordChannel(MessageChannel):
         super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
         self._token = token
         self.channel_id = channel_id
-        self._running = True
 
         # Set up Discord intents - need guilds to see channels and reactions
         intents = discord.Intents.default()
@@ -183,15 +182,12 @@ class DiscordChannel(MessageChannel):
     async def listen(self) -> None:
         """Start listening for messages via Discord gateway."""
         logger.info("Starting Discord client...")
-        asyncio.create_task(self.client.start(self._token))
+        await self.client.start(self._token)
 
-        # Wait for the client to be ready
+    async def wait_until_ready(self) -> None:
+        """Wait until the Discord gateway has resolved the target channel."""
         await self._ready.wait()
         logger.info("Discord client is ready, channel_id=%s", self.channel_id)
-
-        # Keep running until shutdown
-        while self._running:
-            await asyncio.sleep(1)
 
     async def _send_raw(
         self,
@@ -334,7 +330,6 @@ class DiscordChannel(MessageChannel):
 
     async def close(self) -> None:
         """Stop listening and close Discord client."""
-        self._running = False
         logger.info("Closing Discord client...")
         await self.client.close()
         logger.info("Discord channel closed")
