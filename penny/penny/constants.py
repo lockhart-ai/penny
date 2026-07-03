@@ -225,6 +225,13 @@ class PennyConstants:
     # adapter and browse tool side-effect-write to on every turn.
     MEMORY_USER_MESSAGES_LOG = "user-messages"
     MEMORY_COLLECTOR_RUNS_LOG = "collector-runs"
+    # ``promptlog.agent_name`` stamped on every chat-agent prompt — the structural
+    # marker the ``read_run_calls`` tool uses to find conversational runs (a turn's
+    # user message → the tool calls it drove).  Mirrors ``ChatAgent.name``.
+    CHAT_AGENT_NAME = "chat"
+    # How many recent conversational runs ``read_run_calls`` returns per batch —
+    # bounded like every other cursored log read (``LOG_READ_LIMIT``).
+    RUN_CALLS_LIMIT = 10
 
     # ``log_read`` cursor-mode batch bound — entries returned per call for a
     # collector.  Applies to every call: the first read (no cursor → most-recent

@@ -1016,6 +1016,91 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     return "\n".join(lines)
 
 
+# ── The tool-call-sequence lens ───────────────────────────────────────────────
+# A second projection of the same run primitive (grouped promptlog rows), distinct
+# from the collector-audit ``render_run_record`` above.  This one drops the health
+# signals and shows a run purely as *what it did*: origin → the ordered tool calls
+# → conclusion.  It's orthogonal to the target — a chat turn (origin = the user's
+# message) or a collector cycle (origin = its bound target) both render through it.
+
+_ROLE_USER = "user"
+
+
+def _opening_user_message(prompts: list[PromptLog]) -> str:
+    """The user's message that opened a run, or ``""`` when there is none.
+
+    The message is the last ``user`` turn of the run's first prompt with the
+    injected Live-context block (fused into that turn) stripped back off, so a
+    reader sees what the user actually said — not the recall/time scaffolding.
+    A collector/background run opens with an empty prompt (pure injected context,
+    no separator), so this is ``""`` — the structural signal it had no user intent.
+    """
+    if not prompts or not prompts[0].messages:
+        return ""
+    messages = json.loads(prompts[0].messages)
+    user_turns = [m.get("content") or "" for m in messages if m.get("role") == _ROLE_USER]
+    if not user_turns:
+        return ""
+    raw = user_turns[-1]
+    if PennyConstants.SECTION_SEPARATOR not in raw:
+        return ""
+    return raw.split(PennyConstants.SECTION_SEPARATOR, 1)[1].strip()
+
+
+def _final_assistant_text(prompts: list[PromptLog]) -> str:
+    """The run's closing plain-text assistant reply (no tool calls) — Penny's reply
+    in a chat turn; absent in a collector run (which ends with ``done()``)."""
+    for prompt in reversed(prompts):
+        response = json.loads(prompt.response) if prompt.response else {}
+        for choice in response.get("choices", []):
+            message = choice.get("message") or {}
+            content = (message.get("content") or "").strip()
+            if content and not message.get("tool_calls"):
+                return content
+    return ""
+
+
+def _run_origin(prompts: list[PromptLog]) -> str:
+    """What prompted the run: ``user: <message>`` (turn-driven) or ``[target]``
+    (collector) — resolved by structure, a run has one or the other."""
+    message = _opening_user_message(prompts)
+    if message:
+        return f"user: {message}"
+    _, _, target = _run_outcome(prompts)
+    return f"[{target}]" if target else ""
+
+
+def _run_conclusion(prompts: list[PromptLog]) -> str:
+    """How the run ended: ``penny: <reply>`` (chat) or ``done: <summary>`` (collector)."""
+    _, reason, _ = _run_outcome(prompts)
+    if reason:
+        return f"done: {reason}"
+    reply = _final_assistant_text(prompts)
+    return f"penny: {reply}" if reply else ""
+
+
+def render_run_calls(prompts: list[PromptLog]) -> str:
+    """One run as its tool-call SEQUENCE: ``origin → the tool calls → conclusion``.
+
+    The sequence lens — what a run *did*, with no health/regression signals (that's
+    ``render_run_record``'s job).  A run that produced tool calls is a candidate
+    workflow (the sequence IS the skill); a pure-reply turn shows just origin +
+    conclusion.  Reuses the shared ``render_tool_call`` so a tool reads the same
+    everywhere.  Content is never truncated."""
+    if not prompts:
+        return "(no data)"
+    lines = [_run_origin(prompts)]
+    lines.extend(
+        f"    -> {render_tool_call(name, args)}"
+        for name, args in _run_tool_calls(prompts)
+        if name != "done"
+    )
+    conclusion = _run_conclusion(prompts)
+    if conclusion:
+        lines.append(conclusion)
+    return "\n".join(line for line in lines if line)
+
+
 class RunLog(Log):
     """Read facade over ``promptlog`` for the ``collector-runs`` log.
 
@@ -1145,6 +1230,7 @@ __all__ = [
     "Memory",
     "render_tool_call",
     "render_run_record",
+    "render_run_calls",
     "classify_run",
     "RunHealth",
     "MessageLogMemory",

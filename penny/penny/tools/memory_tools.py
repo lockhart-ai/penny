@@ -37,6 +37,7 @@ from penny.database.memory import (
     MemoryType,
     RecallMode,
     WriteResult,
+    render_run_calls,
 )
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
@@ -61,6 +62,7 @@ from penny.tools.memory_args import (
     ReadLogArgs,
     ReadPublishedLatestArgs,
     ReadRandomArgs,
+    ReadRunCallsArgs,
     ReadSimilarArgs,
     UpdateEntryArgs,
 )
@@ -1185,6 +1187,15 @@ class CursorReadTool(MemoryTool):
         """Drop pending cursor advances — a failed cycle keeps cursors put."""
         self._pending.clear()
 
+    def _advance_pending(self, memory: str, timestamps: list[datetime]) -> None:
+        """Track the highest timestamp seen this run as the pending cursor."""
+        if not timestamps:
+            return
+        max_seen = max(timestamps)
+        prev = self._pending.get(memory)
+        if prev is None or max_seen > prev:
+            self._pending[memory] = max_seen
+
 
 class LogReadTool(CursorReadTool):
     """Read entries from a log — one tool, caller-dispatched behaviour.
@@ -1236,14 +1247,82 @@ class LogReadTool(CursorReadTool):
     def _read_window(self, memory: Memory) -> list[MemoryEntry]:
         return memory.read_window(PennyConstants.LOG_READ_WINDOW_SECONDS)
 
-    def _advance_pending(self, memory: str, timestamps: list[datetime]) -> None:
-        """Track the highest timestamp seen this run as the pending cursor."""
-        if not timestamps:
-            return
-        max_seen = max(timestamps)
-        prev = self._pending.get(memory)
-        if prev is None or max_seen > prev:
-            self._pending[memory] = max_seen
+
+class ReadRunCallsTool(CursorReadTool):
+    """Read a source's recent runs as their tool-call SEQUENCES.
+
+    A sibling of ``log_read`` — same cursored machinery (the next bounded batch
+    since this reader's committed cursor, oldest-first, pending until the cycle
+    succeeds) — but a different lens: each run renders as its ``origin → the tool
+    calls → conclusion`` (``render_run_calls``), the sequence-lens view of what a run
+    *did*.  Orthogonal to the target: ``"chat"`` renders conversational runs
+    (``user: <message>`` → tools → ``penny: <reply>``); a collector's name renders
+    that collector's runs (``[target]`` → tools → ``done: <summary>``).  Lets a
+    reader see the tool sequence a request drove — for authoring skills, or for
+    inspecting what a collector actually did.  The runs come from ``promptlog``; the
+    cursor is per-target.
+    """
+
+    name = "read_run_calls"
+    args_model = ReadRunCallsArgs
+
+    def __init__(self, db: Database, agent_name: str) -> None:
+        super().__init__(db, agent_name)
+        # Discover the valid targets from the DB so the model sees the current set —
+        # 'chat' plus every collector (a collection with an extraction_prompt).
+        targets = self._available_targets()
+        listed = ", ".join(targets)
+        self.description = (
+            "Return a source's recent runs as tool-call sequences — each run shows its "
+            "origin (the user's message, or the collector's bound target), the tool "
+            "calls made, and the outcome. Returns the next batch since you last read; "
+            f"call again for older runs. target is one of: {listed} "
+            '("chat" for conversations, a collector name for that collector\'s runs).'
+        )
+        self.parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "enum": targets, "description": f"one of {listed}"}
+            },
+            "required": ["target"],
+        }
+
+    def _available_targets(self) -> list[str]:
+        collectors = sorted(
+            row.name
+            for row in self._db.memories.list_all()
+            if row.extraction_prompt and not row.archived
+        )
+        return [PennyConstants.CHAT_AGENT_NAME, *collectors]
+
+    @staticmethod
+    def _cursor_key(target: str) -> str:
+        # Namespaced so a per-target run-calls cursor never collides with a real
+        # memory's cursor (a collector named ``target`` also has log cursors).
+        return f"run-calls:{target}"
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = ReadRunCallsArgs(**kwargs)
+        key = self._cursor_key(args.target)
+        cursor = self._db.cursors.get(self._agent_name, key)
+        groups = self._db.messages.run_call_groups(
+            args.target, cursor, PennyConstants.RUN_CALLS_LIMIT
+        )
+        entries = [
+            MemoryEntry(
+                memory_name=key,
+                key=None,
+                content=render_run_calls(group),
+                author=PennyConstants.MessageAuthor.COLLECTOR,
+                created_at=group[-1].timestamp,
+            )
+            for group in groups
+            if group
+        ]
+        self._advance_pending(key, [entry.created_at for entry in entries])
+        return ToolResult(
+            message=_format_entries(entries, source=args.target, ordering="oldest first")
+        )
 
 
 class CollectorRunHistoryTool(MemoryTool):
@@ -1364,7 +1443,7 @@ class ReadPublishedLatestTool(CursorReadTool):
         args = ReadPublishedLatestArgs(**kwargs)
         selected = self._select(args.n)
         for item in selected:
-            self._advance_pending(item.memory_name, item.entry.created_at)
+            self._advance_pending(item.memory_name, [item.entry.created_at])
         return ToolResult(message=self._format(selected))
 
     def _select(self, n: int) -> list[_PublishedItem]:
@@ -1413,12 +1492,6 @@ class ReadPublishedLatestTool(CursorReadTool):
             )
         noun = "entry" if len(items) == 1 else "entries"
         return f"{len(items)} new published {noun} (oldest first):\n" + "\n".join(lines)
-
-    def _advance_pending(self, memory_name: str, created_at: datetime) -> None:
-        """Track the highest returned timestamp per source as the pending cursor."""
-        prev = self._pending.get(memory_name)
-        if prev is None or created_at > prev:
-            self._pending[memory_name] = created_at
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────
@@ -1633,6 +1706,7 @@ def build_memory_tools(
         MemoryMetadataTool(db),
         CollectionCatalogTool(db),
         LogReadTool(db, agent_name, scope),
+        ReadRunCallsTool(db, agent_name),
         CollectorRunHistoryTool(db),
         ReadPublishedLatestTool(db, agent_name),
         ExistsTool(db, llm_client),

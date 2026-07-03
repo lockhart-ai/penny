@@ -591,6 +591,52 @@ class MessageStore:
             grouped = self._group_runs(session, run_ids)
         return [self._run_record_entry(run_target, run_id, grouped[run_id]) for run_id in run_ids]
 
+    def run_call_groups(
+        self, target: str, cursor: datetime | None, limit: int
+    ) -> list[list[PromptLog]]:
+        """Recent runs for ``target`` as raw prompt groups, oldest-first — the raw
+        material ``read_run_calls`` renders into tool-call sequences (``render_run_calls``
+        does the shaping; this only selects and groups).
+
+        ``target`` is either ``"chat"`` (conversational chat-agent runs — chat stamps no
+        ``run_outcome``, so the run index is the distinct ``run_id``s under
+        ``agent_name='chat'``) or a collector/collection name (that collector's completed
+        runs, keyed on ``run_target`` + a non-null, non-cancelled ``run_outcome``).  One
+        group per run, its representative time the run's last prompt.  Cursor semantics
+        mirror ``Log.read_batch``: no cursor → the most recent ``limit`` (returned
+        oldest-first); a cursor → the next ``limit`` since it.
+        """
+        if limit <= 0:
+            return []
+        finished = func.max(PromptLog.timestamp)
+        with self._session() as session:
+            query = (
+                select(PromptLog.run_id, finished.label("finished"))
+                .where(PromptLog.run_id.isnot(None))  # ty: ignore[unresolved-attribute]
+                .group_by(PromptLog.run_id)
+            )
+            if target == PennyConstants.CHAT_AGENT_NAME:
+                query = query.where(PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME)
+            else:
+                query = query.where(
+                    PromptLog.run_target == target,
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                )
+            if cursor is not None:
+                rows = session.exec(
+                    query.having(finished > cursor).order_by(finished.asc()).limit(limit)
+                ).all()
+            else:
+                rows = list(
+                    reversed(session.exec(query.order_by(finished.desc()).limit(limit)).all())
+                )
+            run_ids = [run_id for run_id, _ in rows if run_id is not None]
+            if not run_ids:
+                return []
+            grouped = self._group_runs(session, run_ids)
+        return [grouped[run_id] for run_id in run_ids if run_id in grouped]
+
     @staticmethod
     def _group_runs(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
         """Load every prompt of the given runs, grouped by ``run_id`` (each run's
