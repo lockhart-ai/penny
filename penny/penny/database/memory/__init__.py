@@ -15,6 +15,7 @@ from penny.database.memory.objects import (
     RunHealth,
     RunLog,
     classify_run,
+    render_run_calls,
     render_run_record,
     render_tool_call,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "RunLog",
     "classify_run",
     "render_run_record",
+    "render_run_calls",
     "render_tool_call",
     "UpdateOutcome",
     "WriteOutcome",

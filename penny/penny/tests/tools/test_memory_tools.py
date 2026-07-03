@@ -40,6 +40,7 @@ from penny.tools.memory_tools import (
     LogCreateTool,
     LogReadTool,
     ReadPublishedLatestTool,
+    ReadRunCallsTool,
     ReadSimilarTool,
     TestExtractionPromptTool,
     UpdateEntryTool,
@@ -607,6 +608,32 @@ class TestLogTools:
         assert "log_read" in rendered.message
 
     @pytest.mark.asyncio
+    async def test_read_latest_rejects_zero_count(self, tmp_path, mock_llm):
+        """``k=0`` (a model guessing zero means "unlimited") reads no entries, so
+        the tool would look empty — the arg model refuses it before execute with
+        an actionable message (omit k for all), via the Tool.run gate."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, None).execute(
+            name="notes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+            memory="notes", entries=[{"key": "a", "content": "first"}]
+        )
+        rejected = await CollectionReadLatestTool(db).run(memory="notes", k=0)
+        assert rejected.success is False
+        assert "at least 1" in rejected.message
+        assert "Omit k" in rejected.message
+        # A valid read still returns the entry (the guard only rejects k < 1).
+        ok = await CollectionReadLatestTool(db).run(memory="notes")
+        assert "first" in ok.message
+
+    @pytest.mark.asyncio
     async def test_log_read_window_mode(self, tmp_path, mock_llm):
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
@@ -673,6 +700,96 @@ class TestLogTools:
         assert "from `collector-runs`" in rendered.message
         assert "[espresso-gear] sent an update about a grinder" in rendered.message
         assert "Found a new grinder, $300." in rendered.message  # the exact message, untruncated
+
+    @pytest.mark.asyncio
+    async def test_read_run_calls_renders_by_target(self, tmp_path):
+        """read_run_calls is the SEQUENCE lens over runs, orthogonal to target: a
+        collector's name renders its runs as ``[target] -> tools -> done``; ``chat``
+        renders conversations as ``user -> tools -> penny``.  The valid targets are
+        discovered from the DB into its description."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, None).execute(
+            name="espresso-gear",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="1. browse for new espresso gear. 2. write it. 3. done().",
+            collector_interval_seconds=3600,
+            intent="track espresso gear",
+        )
+        # One completed collector run for espresso-gear.
+        coll_resp = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "collection_write",
+                                    "arguments": '{"memory": "espresso-gear", '
+                                    '"entries": [{"content": "Niche grinder"}]}',
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response=coll_resp,
+            agent_name="collector",
+            run_id="coll-1",
+            run_target="espresso-gear",
+        )
+        db.messages.set_run_outcome("coll-1", "worked", "wrote a new grinder")
+        # One chat run: user message + a tool call, then Penny's reply.
+        user_turn = f"live{PennyConstants.SECTION_SEPARATOR}find me a grinder"
+        db.messages.log_prompt(
+            model="m",
+            messages=[{"role": "user", "content": user_turn}],
+            response={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "browse",
+                                        "arguments": '{"queries": ["espresso grinder"]}',
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            agent_name=PennyConstants.CHAT_AGENT_NAME,
+            run_id="chat-1",
+        )
+        db.messages.log_prompt(
+            model="m",
+            messages=[],
+            response={"choices": [{"message": {"content": "Here's a good grinder."}}]},
+            agent_name=PennyConstants.CHAT_AGENT_NAME,
+            run_id="chat-1",
+        )
+
+        tool = ReadRunCallsTool(db, "quality")
+        # Targets discovered from the DB (chat + the collector) are in the description.
+        assert "espresso-gear" in tool.description
+        assert "chat" in tool.description
+
+        collector = await tool.run(target="espresso-gear")
+        assert "[espresso-gear]" in collector.message
+        assert "write(espresso-gear" in collector.message
+        assert "done: wrote a new grinder" in collector.message
+
+        chat = await tool.run(target="chat")
+        assert "user: find me a grinder" in chat.message
+        assert "browse(['espresso grinder'])" in chat.message
+        assert "penny: Here's a good grinder." in chat.message
 
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
@@ -1291,6 +1408,7 @@ class TestFactory:
         "memory_metadata",
         "collection_catalog",
         "log_read",
+        "read_run_calls",
         "collector_run_history",
         "read_published_latest",
         "read_similar",

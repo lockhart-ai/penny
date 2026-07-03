@@ -53,6 +53,27 @@ MemoryName = Annotated[str, BeforeValidator(_normalize_dashes)]
 MemoryNameList = Annotated[list[str], BeforeValidator(_normalize_dash_list)]
 
 
+def _reject_nonpositive_count(value: int | None) -> int | None:
+    """Reject a read count of zero (or negative) with an actionable message.
+
+    ``k``/``n`` cap a read; ``None`` means "no cap — every entry".  A model that
+    wants *all* entries sometimes guesses ``k=0`` (reading it as "unlimited"),
+    but ``.limit(0)`` returns **zero** rows — so the model sees an empty memory
+    and wrongly concludes it's empty (observed: the skills collector read
+    ``collection_read_latest(k=0)``, saw no skills, and wrote a duplicate instead
+    of updating the existing one).  Fail loudly with the fix rather than silently
+    return nothing."""
+    if value is not None and value < 1:
+        raise ValueError(
+            f"k={value} would read zero entries — a read count must be at least 1. "
+            "Omit k entirely to read every entry."
+        )
+    return value
+
+
+ReadCount = Annotated[int | None, AfterValidator(_reject_nonpositive_count)]
+
+
 def _blank_to_none(value: object) -> object:
     """Collapse a blank string to ``None`` so an update treats it as "omitted".
 
@@ -240,14 +261,14 @@ class ReadLatestArgs(BaseModel):
     """Newest-first; ``k=None`` returns all."""
 
     memory: MemoryName
-    k: int | None = None
+    k: ReadCount = None
 
 
 class ReadRandomArgs(BaseModel):
     """Random sample; ``k=None`` returns all."""
 
     memory: MemoryName
-    k: int | None = None
+    k: ReadCount = None
 
 
 class ReadSimilarArgs(BaseModel):
@@ -260,7 +281,7 @@ class ReadSimilarArgs(BaseModel):
 
     memory: MemoryName
     anchor: str
-    k: int | None = None
+    k: ReadCount = None
 
 
 # ── Log-specific reads ──────────────────────────────────────────────────────
@@ -276,7 +297,7 @@ class ReadPublishedLatestArgs(BaseModel):
     entries actually returned.
     """
 
-    n: int = 1
+    n: Annotated[int, AfterValidator(_reject_nonpositive_count)] = 1
 
 
 class ReadLogArgs(BaseModel):
@@ -293,6 +314,13 @@ class CollectorRunHistoryArgs(BaseModel):
     by the model, like every other read tool."""
 
     collector: MemoryName
+
+
+class ReadRunCallsArgs(BaseModel):
+    """One ``read_run_calls`` over a run source — ``"chat"`` for conversational runs,
+    or a collector's name for that collector's runs.  Batch size is fixed in Python."""
+
+    target: MemoryName
 
 
 # ── Collection writes ───────────────────────────────────────────────────────
