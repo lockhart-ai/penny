@@ -7,9 +7,35 @@ translates provider-specific responses into these models.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# ── Tool-name normalization ──────────────────────────────────────────────
+
+# gpt-oss emits tool calls in the Harmony format, whose names are wrapped with
+# control tokens like ``<|channel|>commentary``.  Local Ollama strips these
+# before returning the tool call, but some remote OpenAI-compatible backends
+# (e.g. OpenRouter serving gpt-oss) leak them, so the raw name arrives as
+# e.g. ``done<|channel|>commentary`` or ``collection_read_latest<|channel|>``.
+# The real tool name is always the leading identifier before the first control
+# token, so everything from the first ``<|`` marker onward is stripped.  A
+# legitimate tool name is a plain identifier and never contains ``<|``.
+_HARMONY_CONTROL_TOKEN = re.compile(r"<\|.*", re.DOTALL)
+
+
+def strip_harmony_control_tokens(name: str) -> str:
+    """Strip leaked Harmony control tokens from a tool-call name.
+
+    Defensive normalization so tool dispatch is robust to any backend that
+    doesn't fully parse the Harmony format.  Applied where the tool name is
+    read off the model response (``LlmToolCallFunction.name``), so every
+    downstream consumer — registry lookup, done-detection, dedup, result
+    framing — sees the clean identifier.
+    """
+    return _HARMONY_CONTROL_TOKEN.sub("", name).strip()
+
 
 # ── Error types ──────────────────────────────────────────────────────────
 
@@ -51,6 +77,15 @@ class LlmToolCallFunction(BaseModel):
 
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_harmony_control_tokens(cls, value: str) -> str:
+        """Normalize the tool name at the read-off boundary — see
+        ``strip_harmony_control_tokens``.  This is the single point where a raw
+        model-response tool name enters our models, so cleaning here keeps
+        dispatch, done-detection, dedup, and result framing all consistent."""
+        return strip_harmony_control_tokens(value)
 
 
 class LlmToolCall(BaseModel):
