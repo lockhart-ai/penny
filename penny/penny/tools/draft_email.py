@@ -17,9 +17,9 @@ class DraftEmailTool(Tool):
 
     name = "draft_email"
     description = (
-        "Compose an email and save it as a draft for the user to review before sending. "
-        "The draft will be saved to the Drafts folder where the user can edit and send it. "
-        "Use this after reading emails to compose responses."
+        "Compose an email and save it as a draft for the user to review — it is saved to "
+        "the Drafts folder for them to edit and send, and is NEVER sent automatically. Use "
+        "this after `read_emails(email_ids=[<id>])` when the user asks you to reply."
     )
     parameters: dict[str, Any] = {
         "type": "object",

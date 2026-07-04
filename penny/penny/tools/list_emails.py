@@ -12,8 +12,8 @@ from penny.zoho import ZohoClient
 logger = logging.getLogger(__name__)
 
 NO_EMAILS_FOUND = (
-    "No emails found in that folder. Confirm the folder name with list_folders, or try a "
-    "different folder."
+    "No emails found in that folder. Confirm the folder name with `list_folders()`, or try "
+    "a different folder."
 )
 
 
@@ -22,10 +22,11 @@ class ListEmailsTool(Tool):
 
     name = "list_emails"
     description = (
-        "List emails from a specific folder in the user's mailbox. "
-        "Available folders include: Inbox, Sent, Drafts, Trash, Spam. "
-        "Returns email summaries with IDs, subjects, senders, dates, and previews. "
-        "Use this to browse a folder, then use read_emails to get full details."
+        "List emails from one folder of the user's mailbox (Inbox, Sent, Drafts, Trash, "
+        "Spam; defaults to Inbox). Returns email summaries — each with an id, subject, "
+        "sender, date, and preview. Browse a folder here, then pass ids to "
+        "`read_emails(email_ids=[<id>])` for full bodies. Call `list_folders()` first if "
+        "you are unsure which folders exist."
     )
     parameters: dict[str, Any] = {
         "type": "object",

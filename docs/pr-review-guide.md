@@ -277,6 +277,35 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 - [ ] Every agent overrides `_build_system_prompt(user)` composing from building blocks
 - [ ] Tests assert on the exact full system prompt string to catch structural drift
 
+### Canonical Call Notation (Model-Facing Prompts)
+
+Every model-facing string that names a tool call — agent system prompts, tool descriptions, collector `extraction_prompt`s (in migrations), nudge/error text, and history/run renderings — writes it in the one canonical dialect. The spec is [`prompt-writing-guide.md` → "The canonical call notation"](prompt-writing-guide.md#the-canonical-call-notation); this checklist enforces it at review time so the notation doesn't erode.
+
+- [ ] **Steps are bare calls: `N. tool(args) — purpose`.** No `Call`/`Run` verb in front of the call, no backticks around it inside a numbered step
+- [ ] **Every tool mention carries its parens+args** — `browse(queries=["<seed topic>"])`, never a bare `browse`. A parens-less mention reads as "a thing that exists," not "the call to make," and trains the model to invent one (it once hallucinated a nonexistent `search` tool)
+- [ ] **Backtick dialect is uniform:** single markdown backticks ONLY, and only for a tool name mentioned inline in prose (`` `browse` `` in a sentence). No RST double-backticks (```` ``tool`` ````) anywhere in a model-facing string
+- [ ] **Quoted literals are deliberate sentinels only.** A quoted example value is copied verbatim ~82% of the time — quote a literal ONLY when you want it copied as a fixed machine-readable token (`summary="no new matches this cycle"`). Anything the model must compose is a placeholder, never a quoted string
+- [ ] **`<angle placeholders>` for every composed value** — `<seed topic>`, `<collection>`, `<one sentence on what actually happened>`. Never `[square brackets]` as a placeholder: the entry renderer displays keys as `[key]`, and the model copies the display brackets straight into the argument (`key="[key]"` → "not found")
+- [ ] **Kwargs when non-obvious, positional only for one obvious arg** — `tool(name=<x>, k=5)` whenever a call has more than one argument or any optional one; a single obvious argument may be positional (`collection_read_latest("<collection>")`). Never a bare positional list of two-plus values — the model mis-slots them
+- [ ] **No framework-injected `reasoning` param and no raw JSON/payload snippets** (`{"name": "done", "arguments": {…}}`) in any written example — a payload-shaped example gets adopted as the model's *output* format, so it emits calls as plain text instead of real tool calls. Show the call, never its wire form
+- [ ] **`done()` is the canonical form:** `done(success=<true|false>, summary="<one sentence on what actually happened>")` — lowercase JSON booleans (`true`/`false`, not `True`/`False`), the worked-cycle summary a placeholder, the quiet-cycle sentinel (`summary="no new matches this cycle"`) the one deliberately-quoted string
+
+**Paired process rules** — enforced in full elsewhere; verify the PR honored them, don't re-litigate them here:
+
+- [ ] A model-facing change ships with a committed `tests/eval/` contract AND was dry-run against the live model before commit (see "Dry-Run Prompt Changes" below and `CLAUDE.md`)
+- [ ] ONE lever changed per PR — a batched style+structure+rule change makes a regression un-attributable
+- [ ] Verbatim prompt-dump tests updated in lockstep (the full-string assertions from "System Prompt Structure" above)
+- [ ] A drifted prompt is rewritten WHOLE, not patched by accretion (bolting on more `MUST`/`don't-forget` caveats) — see `prompt-writing-guide.md` → "The anti-pattern: accretion"
+
+**Notation smells** — pattern-match these in the diff:
+
+- A tool name with no parens (`use browse to …`) where a call shape belongs
+- A payload-shaped example — a `{"name": …, "arguments": {…}}` envelope or a visible `reasoning=` argument
+- A quoted example value the model shouldn't copy verbatim — a `summary="…"` describing *this cycle's* work rather than a fixed sentinel
+- Mixed backtick dialects in one file — single and RST double-backticks together, or backticked calls inside numbered steps
+- A `[square-bracket]` placeholder standing in for "fill this in"
+- A new model-facing prompt string added outside its established home (`prompts.py`, a tool description, a migration's `extraction_prompt`, `constants.py`) with no justification
+
 ### No Conflicting Instructions
 - [ ] Read each instruction and verify it doesn't contradict another
 - [ ] Thinking models are especially sensitive — contradictory signals cause extensive deliberation and empty output
@@ -441,6 +470,9 @@ If you see any of these in a PR, flag immediately:
 | Facade/view that overrides only *some* read methods | Returns correct data on some calls, empty on others |
 | Value computed on write path but only persisted by a backfill | Read path stale until next restart |
 | Renamed/removed tool still named in a tool description or stored prompt | Model follows a dead pointer to a tool that no longer exists |
+| Bare tool name with no parens in a model-facing prompt (`use browse to …`) | Trains the model to invent a call — every mention carries `parens+args` (canonical call notation) |
+| `{"name": …, "arguments": {…}}` payload or a visible `reasoning=` in a prompt example | Payload-shaped example gets adopted as output format — model emits calls as text; show the call, not its wire form |
+| `[square-bracket]` placeholder or a copy-me `summary="…"` in a prompt | Model copies brackets/quoted literals verbatim into args — use `<angle placeholders>`; quote only fixed sentinels |
 | `if name in SET:` / `if obj.type == X:` repeated across methods or callers | Scatter-branching on type/shape — dispatch once to a polymorphic object, delete the conditionals |
 | `x = f(...); if isinstance(x, str): return x` | Error returned as a foreign-typed sentinel — raise a typed exception and catch it |
 | Exception caught then wrapped in `f"... {name} ..."` while a sibling self-renders | Make the exception render its own message; handle uniformly via `str(exc)` |
