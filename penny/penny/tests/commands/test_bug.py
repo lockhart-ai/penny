@@ -41,6 +41,7 @@ def bug_context(bug_db):
         db=bug_db,
         config=config,
         model_client=ollama,
+        embedding_model_client=ollama,
         user=TEST_SENDER,
         channel_type="signal",
         start_time=datetime.now(UTC),

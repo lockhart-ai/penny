@@ -28,6 +28,7 @@ async def test_validate_connectivity_success(signal_server, test_config, mock_ll
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -61,6 +62,7 @@ async def test_validate_connectivity_dns_failure(test_db, mock_llm):
         discord_channel_id=None,
         llm_api_url="http://localhost:11434",
         llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
         log_level="DEBUG",
         db_path=test_db,
     )
@@ -78,6 +80,7 @@ async def test_validate_connectivity_dns_failure(test_db, mock_llm):
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=config,
@@ -117,6 +120,7 @@ async def test_validate_connectivity_connection_refused(test_db, mock_llm):
         discord_channel_id=None,
         llm_api_url="http://localhost:11434",
         llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
         log_level="DEBUG",
         db_path=test_db,
     )
@@ -134,6 +138,7 @@ async def test_validate_connectivity_connection_refused(test_db, mock_llm):
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=config,
@@ -184,6 +189,7 @@ async def test_validate_connectivity_retries_then_succeeds(
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -239,6 +245,7 @@ async def test_validate_connectivity_exhausts_attempts_then_logs_and_raises(
         discord_channel_id=None,
         llm_api_url="http://localhost:11434",
         llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
         log_level="DEBUG",
         db_path=test_db,
     )
@@ -254,6 +261,7 @@ async def test_validate_connectivity_exhausts_attempts_then_logs_and_raises(
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=config,
@@ -299,6 +307,7 @@ async def test_send_message_rejects_empty_without_attachments(signal_server, tes
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -338,6 +347,7 @@ async def test_send_message_allows_empty_text_with_attachments(
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -379,6 +389,7 @@ async def test_send_message_retries_on_socket_exception_400(signal_server, test_
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -431,6 +442,7 @@ async def test_send_message_no_retry_on_non_transient_400(signal_server, test_co
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -481,6 +493,7 @@ async def test_send_message_gives_up_after_max_retries(signal_server, test_confi
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -700,7 +713,7 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
     from penny.database.migrate import migrate
     from penny.llm.embeddings import serialize_embedding
     from penny.prompts import Prompt
-    from penny.tests.mocks.llm_patches import MockLlmClient
+    from penny.tests.mocks.llm_patches import MockLlmClient, deterministic_embed
 
     db = Database(test_config.db_path)
     db.create_tables()
@@ -716,6 +729,7 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
     message_agent = ChatAgent(
         system_prompt=Prompt.CONVERSATION_PROMPT,
         model_client=client,
+        embedding_model_client=client,
         tools=[],
         db=db,
         config=test_config,
@@ -726,8 +740,8 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         message_agent=message_agent,
         db=db,
     )
-    # Default mock embed returns a fixed non-zero vector, so the outgoing text
-    # and the media metadata embed identically — a guaranteed match.
+    # The default mock embeds deterministically per text, so storing the media
+    # embedding as the vector of the outgoing text guarantees the nearest match.
     channel._embedding_model_client = cast(Any, MockLlmClient())
 
     raw = b"\xff\xd8 jpeg bytes"
@@ -736,7 +750,7 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
         "image/jpeg",
         source_url="https://ex.com",
         title="Ex",
-        embedding=serialize_embedding([1.0, 0.0, 0.0, 0.0]),
+        embedding=serialize_embedding(deterministic_embed("tell me about ex")),
     )
 
     await channel.send_response(TEST_SENDER, "tell me about ex", parent_id=None, author="penny")

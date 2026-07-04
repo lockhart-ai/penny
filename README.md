@@ -125,7 +125,7 @@ Penny uses up to four LLM model roles, all running locally by default:
 | Role | Env | Purpose | Required? |
 |---|---|---|---|
 | **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat, background work, scheduled tasks | Yes |
-| **Embedding** | `LLM_EMBEDDING_MODEL` | Embeddings for knowledge retrieval, message similarity, and preference dedup | Optional |
+| **Embedding** | `LLM_EMBEDDING_MODEL` | Embeddings for knowledge retrieval, message similarity, and preference dedup | Yes |
 | **Vision** | `LLM_VISION_MODEL` | Image captioning when users send photos | Optional |
 | **Image** | `LLM_IMAGE_MODEL` | Image generation via `/draw` | Optional |
 
@@ -235,7 +235,7 @@ LLM_API_URL="http://host.docker.internal:11434/v1"
 LLM_MODEL="gpt-oss:20b"                   # Single model for all agents
 # LLM_API_KEY="not-needed"                # Default fine for unauthenticated local backends
 # LLM_VISION_MODEL="qwen3-vl"             # Optional, enables vision/image messages
-# LLM_EMBEDDING_MODEL="embeddinggemma"    # Optional, enables preference/knowledge embeddings
+LLM_EMBEDDING_MODEL="embeddinggemma"      # Required — backs memory (preference dedup + similarity recall)
 # LLM_IMAGE_MODEL="x/z-image-turbo"       # Optional, enables /draw (uses LLM_IMAGE_API_URL)
 # LLM_IMAGE_API_URL="http://host.docker.internal:11434"  # Ollama REST for /draw
 
@@ -277,7 +277,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `LLM_API_KEY`: API key (default: `"not-needed"`, fine for unauthenticated local backends)
 - `LLM_VISION_MODEL`: Vision model for image understanding (e.g., `qwen3-vl`). Optional; enables image messages
 - `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override API URL/key for the vision model (e.g., to run vision on a different host)
-- `LLM_EMBEDDING_MODEL`: Dedicated embedding model (e.g., `embeddinggemma`). Optional; enables preference/knowledge/message embeddings
+- `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., `embeddinggemma`) that backs preference/knowledge/message embeddings — Penny fails fast at startup if it is unset
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override API URL/key for the embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., `x/z-image-turbo`). Optional; enables `/draw`. Image generation is the one non-OpenAI endpoint — it talks to Ollama's `/api/generate` directly
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: `http://host.docker.internal:11434`)

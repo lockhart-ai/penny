@@ -293,8 +293,6 @@ async def _embed_seeds(penny: Penny) -> None:
     Penny's startup backfill ran on the empty DB before we seeded; re-run it so
     seeded descriptions/entries get embeddings the recall path can match.
     """
-    if penny.embedding_model_client is None:
-        return
     await penny._backfill_memory_embeddings(_EMBED_BATCH)
     await penny._backfill_description_embeddings(_EMBED_BATCH)
 

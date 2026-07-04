@@ -17,6 +17,7 @@ from penny.llm.embeddings import (
     deserialize_embedding,
     serialize_embedding,
 )
+from penny.tests.mocks.llm_patches import EMBED_DIM, deterministic_embed
 
 
 class TestSerializeDeserialize:
@@ -216,7 +217,7 @@ class TestLlmClientEmbed:
 
     @pytest.mark.asyncio
     async def test_embed_default_mock(self, mock_llm):
-        """Default mock returns unit vectors."""
+        """Default mock returns a deterministic, L2-normalised unit vector."""
         client = LlmClient(
             api_url="http://localhost:11434",
             model="nomic-embed-text",
@@ -226,7 +227,9 @@ class TestLlmClientEmbed:
         result = await client.embed("test")
 
         assert len(result) == 1
-        assert result[0] == [1.0, 0.0, 0.0, 0.0]
+        assert len(result[0]) == EMBED_DIM
+        assert result[0] == deterministic_embed("test")
+        assert abs(sum(v * v for v in result[0]) - 1.0) < 1e-9
 
     @pytest.mark.asyncio
     async def test_embed_404_raises_immediately_without_retry(self, mock_llm):

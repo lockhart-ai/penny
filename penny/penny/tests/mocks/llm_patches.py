@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+
+# Dimension of the deterministic default embedding.  The embedding model is a
+# required prerequisite, so every test constructs an embedding client and the
+# startup backfill vectorizes seeded memories through this mock.  A single
+# fixed dimension (shared by every embed path, including the recall tests'
+# anchors) keeps vectors comparable — a mixed-dimension corpus would crash
+# cosine similarity.
+EMBED_DIM = 4096
+
+
+def deterministic_embed(text: str, dim: int = EMBED_DIM) -> list[float]:
+    """Bag-of-words deterministic embedding for tests.
+
+    Each word picks an axis via SHA-256; the vector is L2-normalised so cosine
+    is comparable across strings.  Identical strings map to identical vectors,
+    strings sharing words have cosine > 0, and fully-distinct strings map to
+    cosine ≈ 0 — so recall behaves realistically (unrelated content doesn't
+    spuriously match) instead of collapsing every pair to cosine 1.0.
+    """
+    vec = [0.0] * dim
+    words = text.lower().split() or [text]
+    for word in words:
+        digest = hashlib.sha256(word.encode("utf-8")).digest()
+        axis = int.from_bytes(digest[:8], "big") % dim
+        vec[axis] += 1.0
+    norm = sum(v * v for v in vec) ** 0.5
+    if norm > 0:
+        vec = [v / norm for v in vec]
+    return vec
 
 
 class MockEmbedResponse:
@@ -100,9 +130,10 @@ class MockLlmClient:
         if self._embed_handler:
             return self._embed_handler(self.model, text)
 
-        # Default: return unit vectors (non-zero so cosine similarity works)
+        # Default: deterministic, distinct, dimension-consistent vectors so
+        # backfilled seeds and recall-test anchors never clash on dimension.
         texts = [text] if isinstance(text, str) else text
-        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+        return [deterministic_embed(t) for t in texts]
 
     async def close(self) -> None:
         """Mock close."""

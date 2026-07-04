@@ -58,6 +58,7 @@ class EmailCommand(Command):
             agent = Agent(
                 system_prompt=Prompt.EMAIL_SYSTEM_PROMPT,
                 model_client=context.model_client,
+                embedding_model_client=context.embedding_model_client,
                 tools=tools,
                 db=context.db,
                 config=context.config,

@@ -29,6 +29,7 @@ def draw_context(mock_image_client):
         db=MagicMock(),
         config=config,
         model_client=AsyncMock(),
+        embedding_model_client=AsyncMock(),
         user=TEST_SENDER,
         channel_type="signal",
         start_time=datetime.now(UTC),

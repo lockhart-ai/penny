@@ -16,11 +16,6 @@ from penny.llm.similarity import embed_text
 
 class TestEmbedText:
     @pytest.mark.asyncio
-    async def test_returns_none_when_no_client(self) -> None:
-        result = await embed_text(None, "hello")
-        assert result is None
-
-    @pytest.mark.asyncio
     async def test_returns_vector_on_success(self) -> None:
         client = AsyncMock()
         client.embed.return_value = [[1.0, 2.0, 3.0]]

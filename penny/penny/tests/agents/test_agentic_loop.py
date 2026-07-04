@@ -1,6 +1,7 @@
 """Tests for agentic loop changes: reasoning, last step, and after_step hook."""
 
 import logging
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from penny.llm.models import (
     LlmToolParseError,
 )
 from penny.responses import PennyResponse
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
@@ -81,6 +83,7 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
         discord_channel_id=None,
         llm_api_url="http://localhost:11434",
         llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
         log_level="DEBUG",
         db_path=test_db,
         runtime=RuntimeParams(db=db, env_overrides=runtime_overrides or {}),
@@ -96,6 +99,7 @@ def _make_agent(test_db, mock_llm, *, max_steps=3, runtime_overrides=None):
     agent = Agent(
         system_prompt="test",
         model_client=client,
+        embedding_model_client=client,
         tools=[stub_tool],
         db=db,
         config=config,
@@ -920,7 +924,7 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5)
+        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         await tool.execute(queries=["best pizza toronto"])
@@ -935,7 +939,7 @@ class TestParallelToolCalls:
         """Without a browser, queries surface a structured browse error section."""
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
-        tool = BrowseTool(max_calls=5)
+        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
 
         result = await tool.execute(queries=["best pizza toronto"])
 
@@ -948,7 +952,7 @@ class TestParallelToolCalls:
         """An empty ``queries`` list is rejected by ``BrowseArgs`` at the ``run``
         gate before ``execute`` runs — so an empty browse can't silently no-op —
         with an actionable message pointing at queries."""
-        tool = BrowseTool(max_calls=5)
+        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
 
         result = await tool.run(queries=[])
 
@@ -968,7 +972,7 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5)
+        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         await tool.execute(queries=["https://example.com/page", "https://other.com"])
@@ -995,7 +999,7 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=timed_out_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5)
+        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
         result = await tool.execute(queries=["https://slow.example.com"])
@@ -1011,7 +1015,7 @@ class TestParallelToolCalls:
         timeout, so hung URLs produce graceful error sections instead of
         cancelling the entire tool call.
         """
-        tool = BrowseTool(max_calls=3)
+        tool = BrowseTool(max_calls=3, embedding_client=cast(Any, MockLlmClient()))
         assert tool.timeout is not None
         assert tool.timeout > PennyConstants.BROWSE_REQUEST_TIMEOUT
 
@@ -1805,6 +1809,7 @@ def _make_background_agent(test_db, *, max_steps=4):
         discord_channel_id=None,
         llm_api_url="http://localhost:11434",
         llm_model="test-model",
+        llm_embedding_model="test-embedding-model",
         log_level="DEBUG",
         db_path=test_db,
         runtime=RuntimeParams(db=db, env_overrides={}),
@@ -1819,6 +1824,7 @@ def _make_background_agent(test_db, *, max_steps=4):
     agent = BackgroundAgent(
         system_prompt="test",
         model_client=client,
+        embedding_model_client=client,
         tools=[StubSearchTool(), DoneTool()],
         db=db,
         config=config,

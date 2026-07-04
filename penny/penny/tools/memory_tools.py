@@ -349,7 +349,7 @@ class CollectionCreateTool(MemoryTool):
     }
     args_model = CollectionCreateArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
 
@@ -406,7 +406,7 @@ class LogCreateTool(MemoryTool):
     }
     args_model = LogCreateArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
 
@@ -589,7 +589,7 @@ class ReadSimilarTool(MemoryTool):
     }
     args_model = ReadSimilarArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm = llm_client
 
@@ -597,13 +597,11 @@ class ReadSimilarTool(MemoryTool):
         args = ReadSimilarArgs(**kwargs)
         vec = await embed_text(self._llm, args.anchor)
         if vec is None:
-            logger.warning(
-                "%s: similarity search unavailable — no embedding model configured", self.name
-            )
+            logger.warning("%s: anchor embedding failed transiently", self.name)
             return ToolResult(
-                message="Similarity search unavailable — no embedding model is configured. "
-                "Read this memory with collection_read_latest (collections) or log_read (logs) "
-                "instead; they don't need embeddings.",
+                message="Couldn't embed the anchor (a transient embedding error). "
+                "Retry, or read this memory with collection_read_latest (collections) "
+                "or log_read (logs) instead.",
                 success=False,
             )
         entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
@@ -685,7 +683,7 @@ class CollectionWriteTool(MemoryTool):
     def __init__(
         self,
         db: Database,
-        llm_client: LlmClient | None,
+        llm_client: LlmClient,
         author: str,
         scope: str | None = None,
     ) -> None:
@@ -903,7 +901,7 @@ class CollectionUpdateTool(MemoryTool):
     }
     args_model = CollectionUpdateArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient | None) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
 
@@ -1512,7 +1510,7 @@ class LogAppendTool(MemoryTool):
     }
     args_model = LogAppendArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient | None, author: str) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
@@ -1558,7 +1556,7 @@ class ExistsTool(Tool):
     def __init__(
         self,
         db: Database,
-        llm_client: LlmClient | None,
+        llm_client: LlmClient,
         thresholds: DedupThresholds | None = None,
     ) -> None:
         self._db = db
@@ -1661,7 +1659,7 @@ class TestExtractionPromptTool(Tool):
 
 def build_memory_tools(
     db: Database,
-    llm_client: LlmClient | None,
+    llm_client: LlmClient,
     agent_name: str,
     scope: str | None = None,
 ) -> list[Tool]:

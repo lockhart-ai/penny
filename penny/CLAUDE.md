@@ -37,7 +37,7 @@ flowchart TD
 - **Ollama**: Local LLM inference (default model: gpt-oss:20b)
 - **Vision**: Optional vision model (e.g., qwen3-vl) for processing image attachments from Signal
 - **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via `/draw` command
-- **Embedding Model**: Optional dedicated embedding model (e.g., embeddinggemma) for preference deduplication and history embeddings
+- **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for preference deduplication and history embeddings — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
 - **SQLite**: Logs all prompts and messages; stores preferences, thoughts, and conversation history
 
@@ -194,7 +194,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 
 - `model_client`: Text model for all agents and commands
 - `vision_model_client`: Optional vision model for image understanding
-- `embedding_model_client`: Optional embedding model for preference deduplication
+- `embedding_model_client`: Required embedding model for preference deduplication and similarity recall (always present — the model is a hard prerequisite)
 - `image_model_client`: `OllamaImageClient` for `/draw` (image generation uses Ollama's native REST API, not OpenAI-compatible)
 
 ### Specialized Agents
