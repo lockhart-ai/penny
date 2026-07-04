@@ -52,6 +52,7 @@ penny/
   prompts.py          — LLM prompt templates (chat conversation, vision, email/zoho).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
   startup.py          — Startup announcement message generation (git commit info)
+  preflight.py        — Setup-health / preflight checks: one legible startup summary (Preflight → PreflightReport). Hard-fails (PreflightError, caught in main → exit 1) on an unreachable LLM endpoint or an unresolvable chat/embedding model; soft-warns on a missing vision/image model, a disconnected browser addon, or a mis-routed primary channel (routing-bug guard). Runs in Penny.run() after channel connectivity, before backfills
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration
@@ -122,7 +123,7 @@ penny/
     migrate.py        — Migration runner: file discovery, tracking table, validation
     migrations/       — Numbered migration files (0001–0025)
   llm/
-    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed) for any OpenAI-compatible backend (Ollama, omlx, etc.)
+    client.py         — LlmClient: OpenAI SDK wrapper (chat + embed + list_models via /v1/models) for any OpenAI-compatible backend (Ollama, omlx, etc.). list_models translates SDK errors into the LlmError hierarchy so the preflight can tell an unreachable endpoint from an unverifiable one
     image_client.py   — OllamaImageClient: Ollama-specific HTTP client for image generation and model listing
     models.py         — LlmMessage, LlmResponse, LlmToolCall, LlmError hierarchy (SDK-decoupled Pydantic types)
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package

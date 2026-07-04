@@ -56,14 +56,10 @@ class ChannelManager(MessageChannel):
 
     def _get_default_channel(self) -> MessageChannel:
         """Get the default channel for proactive messages."""
-        default = self._db.devices.get_default()
-        if default:
-            channel = self._channels.get(default.channel_type)
-            if channel:
-                return channel
-        if self._default_channel_type:
-            return self._channels[self._default_channel_type]
-        raise RuntimeError("No channels registered")
+        resolved = self.default_channel_type
+        if resolved is None:
+            raise RuntimeError("No channels registered")
+        return self._channels[resolved]
 
     def _resolve_channel(self, recipient: str) -> MessageChannel:
         """Look up the channel for a recipient via the device table."""
@@ -77,6 +73,20 @@ class ChannelManager(MessageChannel):
     def get_channel(self, channel_type: str) -> MessageChannel | None:
         """Get a specific channel by type."""
         return self._channels.get(channel_type)
+
+    @property
+    def default_channel_type(self) -> str | None:
+        """Channel type proactive sends resolve to (default device, else first registered).
+
+        The single source of the default-resolution rule: ``_get_default_channel()``
+        indexes ``self._channels`` with this, and the startup preflight compares it
+        against the configured primary channel — so the check can't drift from what
+        actually routes. ``None`` only when no channel is registered.
+        """
+        default = self._db.devices.get_default()
+        if default and default.channel_type in self._channels:
+            return default.channel_type
+        return self._default_channel_type
 
     # --- MessageChannel interface ---
 

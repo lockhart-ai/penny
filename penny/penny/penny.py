@@ -28,6 +28,7 @@ from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError
+from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
     AlwaysRunSchedule,
@@ -302,40 +303,47 @@ class Penny:
         logger.info("Received shutdown signal, stopping agent...")
         self.scheduler.stop()
 
-    async def _validate_optional_models(self) -> None:
+    async def _run_preflight(self) -> None:
+        """Run the startup setup-health checks; abort on a hard prerequisite failure.
+
+        Consolidates the startup prerequisite checks (LLM endpoint + chat model,
+        embedding model, vision/image models, browser addon, primary-channel
+        routing) into one legible log summary. Hard failures raise
+        ``PreflightError`` — caught in ``main()`` and surfaced in ``penny.log``
+        before exiting — instead of letting every downstream call fail opaquely.
         """
-        Check that all configured optional Ollama models are available on the host.
+        report = await self._build_preflight().run()
+        report.log(logger)
+        if report.has_failures:
+            raise PreflightError(report.failure_summary())
 
-        Logs a warning for each model that is configured but not yet pulled.
-        This surfaces misconfigured model names immediately at startup rather than
-        letting background tasks fail repeatedly with opaque 404 errors.
-        """
-        optional_models: list[tuple[str, str]] = []
-        if self.config.llm_vision_model:
-            optional_models.append((self.config.llm_vision_model, "LLM_VISION_MODEL"))
-        if self.config.llm_image_model:
-            optional_models.append((self.config.llm_image_model, "LLM_IMAGE_MODEL"))
-        optional_models.append((self.config.llm_embedding_model, "LLM_EMBEDDING_MODEL"))
+    def _build_preflight(self) -> Preflight:
+        """Assemble the preflight with a snapshot of the current channel/routing facts."""
+        browser = self._browser_channel()
+        return Preflight(
+            config=self.config,
+            model_client=self.model_client,
+            embedding_client=self.embedding_model_client,
+            vision_client=self.vision_model_client,
+            image_client=self.image_client,
+            browser_enabled=self.config.browser_enabled,
+            browser_connected=bool(browser and browser.has_browser_connection),
+            configured_channel_type=self.config.channel_type,
+            resolved_channel_type=self._resolved_channel_type(),
+        )
 
-        if not optional_models:
-            return
+    def _browser_channel(self) -> BrowserChannel | None:
+        """The registered browser channel, if the channel manager has one."""
+        if not isinstance(self.channel, ChannelManager):
+            return None
+        channel = self.channel.get_channel(ChannelType.BROWSER)
+        return channel if isinstance(channel, BrowserChannel) else None
 
-        if not self.image_client:
-            return
-        available = await self.image_client.list_models()
-        for model_name, env_var in optional_models:
-            # Strip tag for comparison since some models report without tag
-            base_name = model_name.split(":")[0]
-            is_available = any(m == model_name or m.split(":")[0] == base_name for m in available)
-            if not is_available:
-                logger.warning(
-                    "Configured model %r (%s) is not available on the Ollama host. "
-                    "Run `ollama pull %s` to download it. "
-                    "Features depending on this model will be disabled until it is pulled.",
-                    model_name,
-                    env_var,
-                    model_name,
-                )
+    def _resolved_channel_type(self) -> str | None:
+        """Channel type proactive sends will route to (for the routing preflight)."""
+        if isinstance(self.channel, ChannelManager):
+            return self.channel.default_channel_type
+        return self.config.channel_type
 
     async def _backfill_preference_embeddings(self, batch_limit: int) -> int:
         """Backfill preferences with missing embeddings. Returns count embedded."""
@@ -457,7 +465,7 @@ class Penny:
         # Validate channel connectivity before starting
         await self.channel.validate_connectivity()
 
-        await self._validate_optional_models()
+        await self._run_preflight()
         await self._run_startup_backfills()
 
         try:
@@ -581,4 +589,9 @@ if __name__ == "__main__":
         # Surface startup connectivity failures (e.g. signal-api) in penny.log
         # so the docker restart loop is debuggable from the file logs alone.
         logger.error("Startup connectivity check failed: %s", connection_error)
+        sys.exit(1)
+    except PreflightError as preflight_error:
+        # Surface hard setup-health failures (unreachable LLM endpoint, an
+        # unresolvable chat/embedding model) in penny.log before exiting.
+        logger.error("Setup preflight failed:\n%s", preflight_error)
         sys.exit(1)
