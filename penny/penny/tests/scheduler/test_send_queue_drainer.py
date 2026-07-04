@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from penny.constants import PennyConstants
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import Inclusion, RecallMode
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
@@ -44,6 +44,7 @@ def _make_db(tmp_path) -> Database:
         timezone="America/Toronto",
         date_of_birth="1990-01-01",
     )
+    db.devices.register(ChannelType.SIGNAL, _RECIPIENT, "Signal", is_default=True)
     return db
 
 

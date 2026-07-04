@@ -181,6 +181,21 @@ class Device(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class IosDeviceRegistration(SQLModel, table=True):
+    """iOS-specific state for a registered Penny client device."""
+
+    __tablename__ = "ios_device_registration"
+
+    device_id: int = Field(foreign_key="device.id", primary_key=True)
+    apns_token: str | None = Field(default=None, index=True)
+    apns_environment: str = Field(default="sandbox")
+    app_version: str | None = None
+    device_secret_hash: str | None = None
+    push_enabled: bool = Field(default=True)
+    last_seen_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    token_updated_at: datetime | None = None
+
+
 class Knowledge(SQLModel, table=True):
     """Legacy summarized-page table.  No Python readers anymore — kept so
     ``create_tables()`` materialises the schema that migration 0027 reads
@@ -324,6 +339,26 @@ class SendQueueItem(SQLModel, table=True):
     content: str
     collection: str
     sent_at: datetime | None = None
+
+
+class IosOutboxItem(SQLModel, table=True):
+    """One message available for an iOS client to pull and acknowledge."""
+
+    __tablename__ = "ios_outbox"
+
+    id: int | None = Field(default=None, primary_key=True)
+    device_id: int = Field(foreign_key="device.id", index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
+    content: str
+    attachments_json: str | None = None
+    source_type: str | None = Field(default=None, index=True)
+    source_name: str | None = Field(default=None, index=True)
+    source_hint: str | None = None
+    push_title: str
+    push_summary: str
+    push_sent_at: datetime | None = None
+    push_error: str | None = None
+    acked_at: datetime | None = Field(default=None, index=True)
 
 
 class Media(SQLModel, table=True):

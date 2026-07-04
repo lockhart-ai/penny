@@ -214,6 +214,7 @@ class DiscordChannel(MessageChannel):
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
+        source_name: str | None = None,
     ) -> int | None:
         """
         Deliver a prepared message via Discord.

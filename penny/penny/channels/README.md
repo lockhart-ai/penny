@@ -17,10 +17,15 @@ penny/channels/
 │   ├── __init__.py
 │   ├── channel.py         # SignalChannel class
 │   └── models.py          # Signal-specific Pydantic models
-└── discord/                # Discord template
+├── discord/                # Discord implementation
+│   ├── __init__.py
+│   ├── channel.py         # DiscordChannel class
+│   └── models.py          # Discord-specific Pydantic models
+└── ios/                    # iOS WebSocket + APNs implementation
     ├── __init__.py
-    ├── channel.py         # DiscordChannel class
-    └── models.py          # Discord-specific Pydantic models
+    ├── apns.py            # APNs HTTP/2 client
+    ├── channel.py         # IosChannel class
+    └── models.py          # iOS WebSocket protocol models
 ```
 
 ## Creating a New Channel
@@ -112,6 +117,64 @@ See the [`signal/`](./signal/) directory for a complete reference implementation
 - [`signal/models.py`](./signal/models.py) - Signal-specific Pydantic models
 - [`signal/__init__.py`](./signal/__init__.py) - Module exports
 
+## iOS channel
+
+The iOS channel is designed for a native client with foreground WebSocket
+delivery and background APNs notifications:
+
+- The app connects to `ws://<host>:9091` by default.
+- The app must send `register` first. If `IOS_PAIRING_TOKEN` is configured, the
+  registration's `pairing_token` must match.
+- Penny stores/updates the generic device row and the iOS APNs registration, then
+  responds with `registered`.
+- Outgoing Penny messages always go into `ios_outbox`.
+- If the target device has an active WebSocket connection, Penny sends
+  `outbox_changed`; the client should then send `pull_messages`.
+- If the target device is disconnected, Penny sends an APNs alert preview with a
+  summarized body and source hint, then the client pulls the durable outbox on
+  next open.
+
+### Client messages
+
+- `register`: `device_id`, `label`, optional `pairing_token`,
+  optional `device_secret`, optional `apns_token`, `apns_environment`,
+  optional `app_version`
+- `message`: `content`
+- `pull_messages`: optional `limit`
+- `ack_messages`: `ids`
+- `heartbeat`
+
+### Server messages
+
+- `status`: connection or protocol error status
+- `registered`: device id, default status, pending count
+- `outbox_changed`: pending count hint
+- `messages`: durable outbox rows
+- `messages_acked`: ack count
+- `typing`: typing indicator
+
+### APNs configuration
+
+Set these environment variables for background notifications:
+
+- `IOS_APNS_TEAM_ID`
+- `IOS_APNS_KEY_ID`
+- `IOS_APNS_KEY_PATH`
+- `IOS_BUNDLE_ID`
+- `IOS_APNS_SANDBOX`
+
+`IOS_APNS_KEY_PATH` must point to an Apple `.p8` APNs auth key inside the
+container. The project mounts `./data` at `/penny/data`, so
+`/penny/data/private/AuthKey_XXXX.p8` is a convenient location. `.p8` files are
+gitignored.
+
+### Diagnostics
+
+When testing APNs from the iOS client, send a normal `message` whose content is
+`send me a test push`, `test push`, or `send a test notification`. Penny bypasses
+the chat agent and forces an APNs test notification to the registered device even
+when the WebSocket is currently connected.
+
 ## Discord configuration
 
 To use the Discord channel integration you need:
@@ -152,4 +215,3 @@ Set the following in your environment (see `.env.example`):
 
 - `DISCORD_BOT_TOKEN="..."`
 - `DISCORD_CHANNEL_ID=...`
-

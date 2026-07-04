@@ -169,6 +169,7 @@ class MessageChannel(ABC):
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
+        source_name: str | None = None,
     ) -> int | None:
         """
         Deliver an already-prepared message to the platform.
@@ -185,6 +186,7 @@ class MessageChannel(ABC):
             message: Message content (already prepared via prepare_outgoing)
             attachments: Optional list of base64-encoded attachments
             quote_message: Optional message to quote-reply to
+            source_name: Optional source attribution for durable channels
 
         Returns:
             Platform message id / timestamp on success, None on failure
@@ -358,6 +360,7 @@ class MessageChannel(ABC):
             parent_id=parent_id,
             thought_id=thought_id,
             embedding=embedding,
+            source_name=author,
         )
         logger.info("Sent response to %s (%d chars)", recipient, len(content))
         return message_id if external_id is not None else None
@@ -372,6 +375,7 @@ class MessageChannel(ABC):
         parent_id: int | None = None,
         thought_id: int | None = None,
         embedding: list[float] | None = None,
+        source_name: str | None = None,
     ) -> tuple[int | None, int | None]:
         """Log an ``OUTGOING`` message to messagelog, deliver it, stamp external_id.
 
@@ -396,7 +400,9 @@ class MessageChannel(ABC):
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
-        external_id = await self._send_raw(recipient, prepared, attachments, quote_message)
+        external_id = await self._send_raw(
+            recipient, prepared, attachments, quote_message, source_name
+        )
         # Store the external ID for future reactions and quote replies
         if external_id and message_id:
             self._db.messages.set_external_id(message_id, str(external_id))

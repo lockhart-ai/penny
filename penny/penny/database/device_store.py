@@ -35,6 +35,11 @@ class DeviceStore:
                 select(Device).where(Device.is_default == True)  # noqa: E712
             ).first()
 
+    def get_default_identifier(self) -> str | None:
+        """Return the default device identifier for proactive sends."""
+        device = self.get_default()
+        return device.identifier if device else None
+
     def get_all(self) -> list[Device]:
         """Get all registered devices."""
         with self._session() as session:

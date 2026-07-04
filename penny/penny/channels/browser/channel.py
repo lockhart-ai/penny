@@ -1234,6 +1234,7 @@ class BrowserChannel(MessageChannel):
         message: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
+        source_name: str | None = None,
     ) -> int | None:
         """Deliver a prepared message to a browser client by device label.
 

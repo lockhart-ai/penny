@@ -14,6 +14,7 @@
 ![OpenAI-compatible LLM](https://img.shields.io/badge/LLM-OpenAI--compatible-blueviolet)
 ![Signal](https://img.shields.io/badge/Signal-messaging-3a76f0)
 ![Discord](https://img.shields.io/badge/Discord-bot-5865f2)
+![iOS](https://img.shields.io/badge/iOS-WebSocket%20%2B%20APNs-111111)
 ![Firefox](https://img.shields.io/badge/Firefox-extension-ff7139)
 
 <p align="center">
@@ -28,7 +29,7 @@ Ask Penny anything and she'll search the web and text you back, always with sour
 
 But she's not just a question-answering bot. She pays attention. She remembers your conversations, learns what you're into, and starts sharing things she thinks you'd like on her own. She follows up on old topics when she finds something new. She gets to know you over time and her responses get more personal because of it.
 
-Penny communicates via Signal, Discord, or a Firefox browser extension — all channels share the same conversation history. The browser extension gives her direct access to the web: she can browse pages with the full rendering engine and your session, see what you're currently looking at, and present her discoveries as a browsable feed of thought cards.
+Penny communicates via Signal, Discord, iOS, or a Firefox browser extension — all channels share the same conversation history. The browser extension gives her direct access to the web: she can browse pages with the full rendering engine and your session, see what you're currently looking at, and present her discoveries as a browsable feed of thought cards.
 
 Penny is a feed only for you. Private, personal, and local.
 
@@ -38,7 +39,7 @@ Penny is a feed only for you. Private, personal, and local.
 
 When you send Penny a message, she always searches the web before responding — she never makes things up from model knowledge. A local LLM reads the search results and writes a response in her own voice: casual, calm, with sources. Penny uses the OpenAI Python SDK against any OpenAI-compatible endpoint, so you can run her against [Ollama](https://ollama.com), [omlx](https://github.com/madroidmaq/omlx), the OpenAI cloud, vLLM, or anything else that speaks the protocol.
 
-Penny talks to you over [Signal](https://signal.org), [Discord](https://discord.com), or a [Firefox sidebar extension](docs/browser-extension-architecture.md) — the same apps you already use. All channels share conversation history: ask on Signal, follow up in the browser. Quote-reply to continue a thread; she'll walk the conversation history for context.
+Penny talks to you over [Signal](https://signal.org), [Discord](https://discord.com), an iOS client, or a [Firefox sidebar extension](docs/browser-extension-architecture.md) — the same apps you already use. All channels share conversation history: ask on Signal, follow up in the browser. Quote-reply to continue a thread; she'll walk the conversation history for context.
 
 ### Preferences
 
@@ -163,15 +164,30 @@ npm run dev    # Build, watch, and launch Firefox with auto-reload
 
 See [docs/browser-extension-architecture.md](docs/browser-extension-architecture.md) for the full architecture and security model.
 
+## iOS Channel
+
+The iOS channel is a foreground WebSocket plus APNs preview-notification path:
+
+- **Foreground app** — the iOS app connects to Penny's WebSocket, registers its device/APNs token, sends chat messages, and pulls queued outbox rows. When Penny has a new message while the socket is connected, she sends an `outbox_changed` hint and the app pulls messages.
+- **Background/offline app** — Penny still writes every outgoing message to the durable iOS outbox. If the device is not connected, Penny sends an APNs alert containing a short summary and source hint, such as `Notifier`, `Chat`, or `Collector: flight-deals`.
+- **Reconnect** — the app sends `pull_messages`, displays/persists the returned rows, then sends `ack_messages` so Penny can mark them delivered.
+
+Device registration is gated by `IOS_PAIRING_TOKEN` when configured. The client sends a `register` WebSocket message with `device_id`, `label`, `pairing_token`, optional `device_secret`, `apns_token`, `apns_environment`, and `app_version`. The registered iOS device becomes the default channel target.
+
+For APNs setup, create an Apple Push Notifications authentication key in the Apple Developer portal. `IOS_APNS_KEY_ID` is the Key ID shown for that key, and `IOS_APNS_KEY_PATH` should point at the downloaded `.p8` file inside the container. The repo mounts `./data` at `/penny/data`, so a common setup is to put the key under `data/private/AuthKey_XXXX.p8` and set `IOS_APNS_KEY_PATH="/penny/data/private/AuthKey_XXXX.p8"`. `.p8` files are ignored by git.
+
+Diagnostic phrase: send `send me a test push` from the iOS app to force a test APNs notification to that registered device, even while the WebSocket is connected. Similar phrases such as `test push` and `send a test notification` work too.
+
 ## Setup & Running
 
 ### Prerequisites
 
 1. **For Signal**: [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) running on host (port 8080)
 2. **For Discord**: Discord bot token and channel ID
-3. **An OpenAI-compatible LLM endpoint** running on host or reachable from the container. Set `LLM_API_URL` to point at it. Common choices: [Ollama](https://ollama.com), [omlx](https://github.com/madroidmaq/omlx), [vLLM](https://github.com/vllm-project/vllm), the OpenAI cloud
-4. **Browser extension** loaded in Firefox (for web search, page reading, and the visual UI)
-5. Docker & Docker Compose installed
+3. **For iOS**: an iOS client that speaks the Penny WebSocket protocol; APNs credentials if you want background notifications
+4. **An OpenAI-compatible LLM endpoint** running on host or reachable from the container. Set `LLM_API_URL` to point at it. Common choices: [Ollama](https://ollama.com), [omlx](https://github.com/madroidmaq/omlx), [vLLM](https://github.com/vllm-project/vllm), the OpenAI cloud
+5. **Browser extension** loaded in Firefox (for web search, page reading, and the visual UI)
+6. Docker & Docker Compose installed
 
 ### Quick Start
 
@@ -189,6 +205,7 @@ make up
 ```bash
 make up               # Build and start all services (foreground)
 make prod             # Deploy penny only (no team, no override)
+make prod-ios         # Run Penny as the iOS channel without starting signal-api
 make kill             # Tear down containers and remove local images
 make build            # Build the penny Docker image
 make team-build       # Build the penny-team Docker image
@@ -214,7 +231,7 @@ Configuration is managed via a `.env` file in the project root:
 # .env
 
 # Channel type (optional — auto-detected from credentials)
-# CHANNEL_TYPE="signal"  # or "discord"
+# CHANNEL_TYPE="signal"  # "signal", "discord", or "ios"
 
 # Signal Configuration (required for Signal)
 SIGNAL_NUMBER="+1234567890"
@@ -228,6 +245,17 @@ DISCORD_CHANNEL_ID="your-channel-id"
 BROWSER_ENABLED=true
 BROWSER_HOST="0.0.0.0"                    # Use 0.0.0.0 in Docker
 BROWSER_PORT=9090
+
+# iOS Channel (optional)
+IOS_ENABLED=false
+IOS_HOST="0.0.0.0"                        # Use 0.0.0.0 in Docker
+IOS_PORT=9091
+IOS_PAIRING_TOKEN=""                      # Required by server if set; client sends it in register
+IOS_APNS_TEAM_ID=""                       # Apple Developer Team ID
+IOS_APNS_KEY_ID=""                        # APNs auth key ID
+IOS_APNS_KEY_PATH=""                      # Container path to .p8, e.g. /penny/data/private/AuthKey_XXXX.p8
+IOS_BUNDLE_ID=""                          # iOS app bundle id, e.g. com.example.Penny
+IOS_APNS_SANDBOX=true                     # true for development builds, false for production/TestFlight
 
 # LLM Configuration — any OpenAI-compatible endpoint (Ollama, omlx, vLLM,
 # OpenAI cloud, ...). The example URL points at a local Ollama instance.
@@ -267,7 +295,8 @@ LOG_LEVEL="INFO"
 Penny auto-detects which channel to use based on configured credentials:
 - If `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set (and Signal is not), uses Discord
 - If `SIGNAL_NUMBER` is set, uses Signal
-- Set `CHANNEL_TYPE` explicitly to override auto-detection
+- Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` for the iOS channel.
+- Signal and iOS are intended to be mutually exclusive primary channels. Use `make prod-ios` to run Penny with `CHANNEL_TYPE=ios` without starting the Signal container.
 
 ### Configuration Reference
 
@@ -293,6 +322,17 @@ Penny auto-detects which channel to use based on configured credentials:
 - `BROWSER_ENABLED`: `true` to start the WebSocket server (default: false)
 - `BROWSER_HOST`: bind address (default: `localhost`; use `0.0.0.0` in Docker)
 - `BROWSER_PORT`: WebSocket port (default: `9090`)
+
+**iOS Channel** (optional):
+- `IOS_ENABLED`: `true` to enable the iOS channel when building a multi-channel manager
+- `IOS_HOST`: WebSocket bind address (default: `localhost`; use `0.0.0.0` in Docker)
+- `IOS_PORT`: WebSocket port (default: `9091`)
+- `IOS_PAIRING_TOKEN`: optional shared token required during device registration when set
+- `IOS_APNS_TEAM_ID`: Apple Developer Team ID
+- `IOS_APNS_KEY_ID`: APNs auth key ID from the Apple Developer portal
+- `IOS_APNS_KEY_PATH`: container path to the APNs `.p8` auth key
+- `IOS_BUNDLE_ID`: iOS app bundle identifier used as the APNs topic
+- `IOS_APNS_SANDBOX`: `true` for development builds, `false` for production/TestFlight
 
 **Behavior:**
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 120)

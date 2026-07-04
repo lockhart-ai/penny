@@ -9,6 +9,7 @@ class ChannelType(StrEnum):
     SIGNAL = "signal"
     DISCORD = "discord"
     BROWSER = "browser"
+    IOS = "ios"
 
 
 class DomainPermissionValue(StrEnum):

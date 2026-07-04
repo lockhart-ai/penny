@@ -61,7 +61,7 @@ class SendQueueDrainer:
             return False
         if not self._cooldown_elapsed():
             return False
-        recipient = self._db.users.get_primary_sender()
+        recipient = self._db.devices.get_default_identifier()
         if recipient is None:
             return False
         await self._channel.send_response(

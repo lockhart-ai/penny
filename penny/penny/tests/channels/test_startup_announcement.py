@@ -3,12 +3,13 @@
 import asyncio
 import contextlib
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from penny.channels.base import IncomingMessage, MessageChannel
-from penny.constants import PennyConstants
+from penny.constants import ChannelType, PennyConstants
 from penny.llm.models import LlmConnectionError
 from penny.penny import Penny
 from penny.preflight import CheckStatus, PreflightCheck, PreflightError
@@ -51,6 +52,7 @@ class StartupReadyChannel(MessageChannel):
         message: str,
         attachments: list[str] | None = None,
         quote_message=None,
+        source_name: str | None = None,
     ) -> int | None:
         self.sent.append((recipient, message))
         return len(self.sent)
@@ -282,6 +284,21 @@ async def test_startup_announcement_skipped_with_profile_but_no_messages(
 
 
 @pytest.mark.asyncio
+async def test_ios_default_gets_operational_startup_announcement(test_config, test_user_info):
+    """iOS default channel gets a startup operational notification without history gates."""
+    channel = MagicMock()
+    channel.send_message = AsyncMock()
+    penny = Penny(test_config, channel=channel)
+    device = penny.db.devices.register(ChannelType.IOS, "ios-device-id", "iPad", is_default=True)
+    assert device.id is not None
+    penny.db.devices.set_default(device.id)
+
+    await penny._send_startup_announcement()
+
+    penny.channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
+
+
+@pytest.mark.asyncio
 async def test_startup_announcement_multiple_devices(
     signal_server, test_config, mock_llm, running_penny, monkeypatch
 ):
@@ -300,8 +317,6 @@ async def test_startup_announcement_multiple_devices(
             timezone="America/Los_Angeles",
             date_of_birth="1990-01-01",
         )
-        from penny.constants import ChannelType
-
         penny.db.devices.register(ChannelType.SIGNAL, TEST_SENDER, "Signal", is_default=True)
 
         # Send from primary device

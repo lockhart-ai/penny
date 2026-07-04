@@ -10,7 +10,7 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
-.PHONY: up prod kill build team-build browser-build fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill build team-build browser-build fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -25,6 +25,12 @@ prod: browser-build
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml up --build penny signal-api
+
+prod-ios: browser-build
+	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
+	SNAPSHOT=1 \
+	docker compose -f docker-compose.yml run --rm --service-ports --no-deps --build -e CHANNEL_TYPE=ios penny
 
 kill:
 	docker compose --profile team down --rmi local --remove-orphans

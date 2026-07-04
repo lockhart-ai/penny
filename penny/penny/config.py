@@ -35,6 +35,7 @@ def _detect_channel_type() -> str:
     signal_number = os.getenv("SIGNAL_NUMBER")
     discord_bot_token = os.getenv("DISCORD_BOT_TOKEN")
     discord_channel_id = os.getenv("DISCORD_CHANNEL_ID")
+    ios_enabled = os.getenv("IOS_ENABLED", "").lower() in ("1", "true", "yes")
 
     channel_type = os.getenv("CHANNEL_TYPE", "").lower()
     if channel_type:
@@ -47,6 +48,8 @@ def _detect_channel_type() -> str:
 
     if has_discord and not has_signal:
         return "discord"
+    if ios_enabled:
+        return "ios"
     if has_signal:
         return "signal"
     raise ValueError(
@@ -68,6 +71,20 @@ def _validate_channel_config(channel_type: str) -> None:
             )
         if not os.getenv("DISCORD_CHANNEL_ID"):
             raise ValueError("DISCORD_CHANNEL_ID is required for Discord channel")
+    if channel_type == "ios":
+        # APNs credentials are optional so websocket-only local development works.
+        # If any APNs field is provided, require the complete token-auth set.
+        apns_fields = (
+            os.getenv("IOS_APNS_TEAM_ID"),
+            os.getenv("IOS_APNS_KEY_ID"),
+            os.getenv("IOS_APNS_KEY_PATH"),
+            os.getenv("IOS_BUNDLE_ID"),
+        )
+        if any(apns_fields) and not all(apns_fields):
+            raise ValueError(
+                "IOS_APNS_TEAM_ID, IOS_APNS_KEY_ID, IOS_APNS_KEY_PATH, and "
+                "IOS_BUNDLE_ID are all required when APNs is configured"
+            )
 
 
 def _validate_embedding_config() -> None:
@@ -125,6 +142,14 @@ def _collect_env_vars(channel_type: str) -> dict:
         "browser_enabled": os.getenv("BROWSER_ENABLED", "").lower() in ("1", "true", "yes"),
         "browser_host": os.getenv("BROWSER_HOST", "localhost"),
         "browser_port": int(os.getenv("BROWSER_PORT", "9090")),
+        "ios_host": os.getenv("IOS_HOST", "0.0.0.0"),
+        "ios_port": int(os.getenv("IOS_PORT", "9091")),
+        "ios_pairing_token": os.getenv("IOS_PAIRING_TOKEN"),
+        "ios_apns_team_id": os.getenv("IOS_APNS_TEAM_ID"),
+        "ios_apns_key_id": os.getenv("IOS_APNS_KEY_ID"),
+        "ios_apns_key_path": os.getenv("IOS_APNS_KEY_PATH"),
+        "ios_bundle_id": os.getenv("IOS_BUNDLE_ID"),
+        "ios_apns_sandbox": os.getenv("IOS_APNS_SANDBOX", "true").lower() in ("1", "true", "yes"),
     }
 
 
@@ -210,6 +235,16 @@ class Config:
     browser_enabled: bool = False
     browser_host: str = "localhost"
     browser_port: int = 9090
+
+    # iOS primary channel
+    ios_host: str = "0.0.0.0"
+    ios_port: int = 9091
+    ios_pairing_token: str | None = None
+    ios_apns_team_id: str | None = None
+    ios_apns_key_id: str | None = None
+    ios_apns_key_path: str | None = None
+    ios_bundle_id: str | None = None
+    ios_apns_sandbox: bool = True
 
     # Runtime-configurable params (DB override → env override → default)
     runtime: RuntimeParams = field(default_factory=RuntimeParams)

@@ -468,14 +468,32 @@ class Penny:
         await self._run_preflight()
         await self._run_startup_backfills()
 
+        listen_task = asyncio.create_task(self.channel.listen(), name="channel.listen")
+        scheduler_task = asyncio.create_task(self.scheduler.run(), name="scheduler.run")
+        startup_task = asyncio.create_task(
+            self._run_startup_notifications(), name="startup.notifications"
+        )
+        tasks = {listen_task, scheduler_task, startup_task}
         try:
-            await asyncio.gather(
-                self.channel.listen(),
-                self.scheduler.run(),
-                self._run_startup_notifications(),
-            )
+            while True:
+                done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    exception = task.exception()
+                    if exception is not None:
+                        raise exception
+                if scheduler_task in done:
+                    logger.info("Scheduler stopped; shutting down channel listener")
+                    break
+                if listen_task in done:
+                    logger.info("Channel listener stopped; shutting down scheduler")
+                    break
+                tasks -= done
         finally:
             await self.shutdown()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_startup_backfills(self) -> None:
         """Vectorize any embedding-less rows across the embedding-bearing tables.
@@ -514,6 +532,9 @@ class Penny:
     async def _send_startup_announcement(self) -> None:
         """Send a startup announcement to the user's default device."""
         try:
+            if await self._send_ios_operational_announcement():
+                return
+
             sender = self.db.users.get_primary_sender()
             if not sender:
                 logger.info("No user profile found for startup announcement")
@@ -532,6 +553,15 @@ class Penny:
             await self.channel.send_message(sender, announcement)
         except Exception as e:
             logger.warning("Failed to send startup announcement: %s", e)
+
+    async def _send_ios_operational_announcement(self) -> bool:
+        """Send a simple startup notification when iOS is the default channel."""
+        default = self.db.devices.get_default()
+        if default is None or default.channel_type != ChannelType.IOS:
+            return False
+        logger.info("Sending iOS operational startup announcement to %s", default.identifier)
+        await self.channel.send_message(default.identifier, "Penny is operational.")
+        return True
 
     async def _prompt_for_missing_profiles(self) -> None:
         """Prompt the user if they don't have a profile set up yet (single-user)."""

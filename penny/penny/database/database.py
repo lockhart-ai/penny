@@ -9,6 +9,7 @@ from penny.config_params import RuntimeParams
 from penny.database.cursor_store import CursorStore
 from penny.database.device_store import DeviceStore
 from penny.database.domain_permission_store import DomainPermissionStore
+from penny.database.ios_store import IosStore
 from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
@@ -44,6 +45,7 @@ class Database:
         self.cursors = CursorStore(self.engine)
         self.devices = DeviceStore(self.engine)
         self.domain_permissions = DomainPermissionStore(self.engine)
+        self.ios = IosStore(self.engine)
         self.media = MediaStore(self.engine)
         self.memories = MemoryStore(self.engine, runtime=runtime)
         self.messages = MessageStore(self.engine)
