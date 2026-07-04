@@ -1,6 +1,7 @@
 """Tests for ``Config.load()`` env-var → ``Config`` field wiring."""
 
 import httpx
+import pytest
 
 from penny.config import Config
 from penny.constants import PennyConstants
@@ -14,6 +15,7 @@ class TestLlmTimeoutEnvWiring:
         """``LLM_TIMEOUT=120`` lands as ``Config.llm_timeout == 120.0``."""
         monkeypatch.setenv("LLM_TIMEOUT", "120")
         monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")  # satisfy channel validation
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")  # required prerequisite
 
         config = Config.load()
 
@@ -23,10 +25,32 @@ class TestLlmTimeoutEnvWiring:
         """``LLM_TIMEOUT`` absent → ``Config.llm_timeout is None`` (use SDK default)."""
         monkeypatch.delenv("LLM_TIMEOUT", raising=False)
         monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
 
         config = Config.load()
 
         assert config.llm_timeout is None
+
+
+class TestEmbeddingModelRequired:
+    """``LLM_EMBEDDING_MODEL`` is a hard prerequisite — ``Config.load`` fails fast."""
+
+    def test_missing_embedding_model_raises_at_load(self, monkeypatch):
+        """Unset ``LLM_EMBEDDING_MODEL`` → ``Config.load`` raises an actionable error."""
+        monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")  # satisfy channel validation
+        monkeypatch.delenv("LLM_EMBEDDING_MODEL", raising=False)
+
+        with pytest.raises(ValueError, match="LLM_EMBEDDING_MODEL is required"):
+            Config.load()
+
+    def test_embedding_model_lands_on_config(self, monkeypatch):
+        """A configured ``LLM_EMBEDDING_MODEL`` threads onto ``Config``."""
+        monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+
+        config = Config.load()
+
+        assert config.llm_embedding_model == "embeddinggemma"
 
     def test_client_timeout_overrides_only_read_write(self):
         """Constructing ``LlmClient(timeout=120)`` configures httpx read/write

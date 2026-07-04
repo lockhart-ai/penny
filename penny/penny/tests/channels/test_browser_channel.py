@@ -205,7 +205,7 @@ class TestBrowseTool:
     def _make_tool(request_fn, permission_manager=None):
         """Create a BrowseTool wired to a mock browse provider."""
         perm = permission_manager or MagicMock(check_domain=AsyncMock())
-        tool = BrowseTool(max_calls=3)
+        tool = BrowseTool(max_calls=3, embedding_client=cast(Any, MockLlmClient()))
         tool.set_browse_provider(lambda: (request_fn, perm))
         return tool
 

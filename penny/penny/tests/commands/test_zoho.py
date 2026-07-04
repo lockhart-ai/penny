@@ -75,6 +75,7 @@ def zoho_context():
         db=MagicMock(),
         config=config,
         model_client=MagicMock(),
+        embedding_model_client=MagicMock(),
         user=TEST_SENDER,
         channel_type="signal",
         start_time=datetime.now(UTC),

@@ -166,7 +166,7 @@ class ChannelManager(MessageChannel):
         channel_type: str,
         start_time: datetime,
         model_client: LlmClient,
-        embedding_model_client: LlmClient | None = None,
+        embedding_model_client: LlmClient,
         image_model_client: OllamaImageClient | None = None,
     ) -> None:
         """Forward command context to all registered channels."""

@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.models import MemoryEntry
 from penny.llm.client import LlmClient
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
     CollectionCreateTool,
@@ -106,7 +108,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_collection_persists(self, tmp_path):
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db, None).execute(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="positive prefs",
             inclusion="relevant",
@@ -141,7 +143,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_persists(self, tmp_path):
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="user-messages", description="inbound", inclusion="always", recall="recent"
         )
         memories = {m.name: m for m in db.memories.list_all()}
@@ -151,7 +153,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_collection_duplicate_returns_user_friendly_message(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="ai-news",
             description="first",
             inclusion="never",
@@ -160,7 +162,7 @@ class TestCreateAndList:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        result = await CollectionCreateTool(db, None).execute(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="ai-news",
             description="second slightly different",
             inclusion="relevant",
@@ -179,10 +181,10 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_log_duplicate_returns_user_friendly_message(self, tmp_path):
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="first", inclusion="always", recall="recent"
         )
-        result = await LogCreateTool(db, None).execute(
+        result = await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="second", inclusion="never", recall="recent"
         )
         assert "already exists" in result.message
@@ -194,7 +196,7 @@ class TestCreateAndList:
         # the rejection is produced by the pre-execute Tool.run gate — an
         # actionable validation envelope naming the field and the fix.
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db, None).run(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
             description="x",
             inclusion="never",
@@ -216,7 +218,7 @@ class TestCreateAndList:
         # blank-check lives on the args_model, so the refusal comes from the
         # pre-execute Tool.run gate.
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db, None).run(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
             description="   ",
             inclusion="never",
@@ -235,7 +237,7 @@ class TestCreateAndList:
         # actionable message that lists the valid modes (not a bare ValueError
         # bubbling from the store-layer Inclusion(...) cast).
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db, None).run(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
             description="real description",
             inclusion="sometimes",
@@ -252,7 +254,7 @@ class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_rejects_invalid_recall_with_valid_modes(self, tmp_path):
         db = _make_db(tmp_path)
-        result = await CollectionCreateTool(db, None).run(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
             description="real description",
             inclusion="never",
@@ -272,7 +274,7 @@ class TestCreateAndList:
         # (nothing fills it), so the tool surface refuses to create one.
         db = _make_db(tmp_path)
         with pytest.raises(ValidationError):
-            await CollectionCreateTool(db, None).execute(
+            await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
                 name="notes",
                 description="x",
                 inclusion="never",
@@ -287,7 +289,7 @@ class TestCreateAndList:
         # has no cadence and never runs.
         db = _make_db(tmp_path)
         with pytest.raises(ValidationError):
-            await CollectionCreateTool(db, None).execute(
+            await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
                 name="notes",
                 description="x",
                 inclusion="never",
@@ -300,7 +302,7 @@ class TestCreateAndList:
     async def test_create_accepts_long_enough_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         prompt = "Extract likes from user-messages log and write to collection."
-        result = await CollectionCreateTool(db, None).execute(
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
             description="x",
             inclusion="never",
@@ -315,7 +317,7 @@ class TestCreateAndList:
     async def test_update_rejects_short_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         original_prompt = "test fixture extraction prompt"
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
             description="x",
             inclusion="never",
@@ -326,7 +328,9 @@ class TestCreateAndList:
         )
         # The optional extraction_prompt rule on CollectionUpdateArgs validates
         # only when present, via the pre-execute Tool.run gate.
-        result = await CollectionUpdateTool(db, None).run(name="notes", extraction_prompt="yes")
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
+            name="notes", extraction_prompt="yes"
+        )
         assert result.success is False
         assert "extraction_prompt" in result.message
         assert "too short" in result.message
@@ -341,7 +345,7 @@ class TestCreateAndList:
         # while the existing prompt/description survive untouched.
         db = _make_db(tmp_path)
         original_prompt = "test fixture extraction prompt that is long enough"
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
             description="real description",
             inclusion="relevant",
@@ -350,7 +354,7 @@ class TestCreateAndList:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        result = await CollectionUpdateTool(db, None).execute(
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
             recall="relevant",
             extraction_prompt="",
@@ -370,7 +374,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_write_read_roundtrip(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="relevant",
@@ -399,7 +403,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -431,7 +435,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -450,7 +454,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -468,7 +472,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_read_random_returns_all_when_few(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -485,7 +489,7 @@ class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -504,28 +508,12 @@ class TestCollectionWritesAndReads:
         rendered = await ReadSimilarTool(db, client).execute(memory="likes", anchor="coffee please")
         assert "coffee" in rendered.message
 
-    @pytest.mark.asyncio
-    async def test_read_similar_without_llm_client_returns_sentinel(self, tmp_path):
-        db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
-            name="likes",
-            description="x",
-            inclusion="never",
-            recall="recent",
-            extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
-            intent="a running list the user asked me to keep",
-        )
-        result = await ReadSimilarTool(db, None).execute(memory="likes", anchor="whatever")
-        assert "Similarity search unavailable" in result.message
-        assert "collection_read_latest" in result.message  # points at a working alternative
-
 
 class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_update_replaces_content(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -556,7 +544,7 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_update_missing_reports_not_found(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -573,7 +561,7 @@ class TestCollectionMutations:
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -597,7 +585,7 @@ class TestLogTools:
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
@@ -613,7 +601,7 @@ class TestLogTools:
         the tool would look empty — the arg model refuses it before execute with
         an actionable message (omit k for all), via the Tool.run gate."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
             description="x",
             inclusion="never",
@@ -638,7 +626,7 @@ class TestLogTools:
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -658,7 +646,7 @@ class TestLogTools:
         worked run as a record (``[target] summary`` + its tool trace) — no
         stored entries, no keys, no get.  This is the quality collector's review."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="collector-runs", description="audit", inclusion="never", recall="recent"
         )
         response = {
@@ -708,7 +696,7 @@ class TestLogTools:
         renders conversations as ``user -> tools -> penny``.  The valid targets are
         discovered from the DB into its description."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="espresso-gear",
             description="x",
             inclusion="never",
@@ -834,7 +822,7 @@ class TestLogTools:
 
     @staticmethod
     async def _create_collection(db, name: str) -> None:
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name=name,
             description="x",
             inclusion="never",
@@ -880,7 +868,7 @@ class TestLogTools:
         sentinel — distinct from the unknown-name error, so the model judges it
         from its current run rather than reading absence as health."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="fresh-feed",
             description="x",
             inclusion="never",
@@ -914,7 +902,7 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_log_similar_with_client(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="relevant", recall="relevant"
         )
         client = _make_llm_client(mock_llm)
@@ -933,7 +921,7 @@ class TestLogTools:
     async def test_read_next_returns_all_entries_when_no_cursor(self, tmp_path, mock_llm):
         """Without a stored cursor, read_next returns every entry in the log."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -950,7 +938,7 @@ class TestLogTools:
     async def test_commit_pending_advances_cursor_to_max_seen(self, tmp_path, mock_llm):
         """commit_pending writes the highest timestamp seen during the run."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -970,7 +958,7 @@ class TestLogTools:
     async def test_discard_pending_leaves_cursor_unchanged(self, tmp_path, mock_llm):
         """discard_pending drops the in-memory state without touching the DB cursor."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -997,7 +985,7 @@ class TestLogTools:
         from penny.constants import PennyConstants
 
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -1025,7 +1013,7 @@ class TestLogTools:
         incrementally — even entries that the first cycle's bound excluded
         stay excluded (since they're older than the cursor)."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -1054,7 +1042,7 @@ class TestLogTools:
 
         limit = PennyConstants.LOG_READ_LIMIT
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
@@ -1086,7 +1074,7 @@ class TestLogTools:
     async def test_per_agent_cursors_are_independent(self, tmp_path, mock_llm):
         """Two agents reading the same log have independent cursor state."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, None).execute(
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="x", inclusion="always", recall="recent"
         )
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
@@ -1107,7 +1095,7 @@ class TestExistsAndDone:
     @pytest.mark.asyncio
     async def test_exists_yes_via_exact_key(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -1128,7 +1116,7 @@ class TestExistsAndDone:
     @pytest.mark.asyncio
     async def test_exists_no(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -1149,7 +1137,7 @@ class TestExistsAndDone:
         comparison in tool args.  Memory-name fields normalise on the way
         in so the rest of the stack sees the canonical form."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="board-games",
             description="x",
             inclusion="never",
@@ -1176,7 +1164,7 @@ class TestExistsAndDone:
         into the key slot when the model omits it, letting key-TCR fire
         in the dedup rule."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="board-games",
             description="x",
             inclusion="never",
@@ -1229,7 +1217,7 @@ class TestAuthorAttribution:
     async def test_writes_stamp_constructor_author(self, tmp_path, mock_llm):
         """Author is bound at tool construction (not pulled from ambient state)."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -1250,7 +1238,7 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_moves_entries_and_archives_source(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="src",
             description="x",
             inclusion="never",
@@ -1259,7 +1247,7 @@ class TestCollectionMerge:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="dst",
             description="x",
             inclusion="never",
@@ -1283,7 +1271,7 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_drops_colliding_keys(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="src",
             description="x",
             inclusion="never",
@@ -1292,7 +1280,7 @@ class TestCollectionMerge:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="dst",
             description="x",
             inclusion="never",
@@ -1319,7 +1307,7 @@ class TestCollectionMerge:
     @pytest.mark.asyncio
     async def test_merge_empty_source_archives_it(self, tmp_path):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="src",
             description="x",
             inclusion="never",
@@ -1328,7 +1316,7 @@ class TestCollectionMerge:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="dst",
             description="x",
             inclusion="never",
@@ -1455,7 +1443,7 @@ class TestScopedFactory:
         """A scoped collector that tries to write to a different collection
         gets a clean refusal rather than silently corrupting unrelated data."""
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",
@@ -1464,7 +1452,7 @@ class TestScopedFactory:
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="dislikes",
             description="x",
             inclusion="never",
@@ -1490,7 +1478,7 @@ class TestScopedFactory:
     @pytest.mark.asyncio
     async def test_scoped_write_allows_target_collection(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await CollectionCreateTool(db, None).execute(
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="likes",
             description="x",
             inclusion="never",

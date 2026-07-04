@@ -9,7 +9,6 @@ Test organization:
 6. Tool surface (chat-only — entry-mutation tools removed)
 """
 
-import hashlib
 import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -20,6 +19,7 @@ from sqlmodel import Session, select
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryEntry, MessageLog
 from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.tests.mocks.llm_patches import deterministic_embed
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -95,6 +95,13 @@ async def test_basic_message_flow(
             author="user",
         )
         penny.db.memories.archive("old-facts")
+        # The seeded skills collection is inclusion=always; embeddings are now a
+        # required prerequisite, so its entries would surface here in a ranking
+        # that's an artifact of the deterministic test embedder, not production.
+        # Neutralize its recall so this test asserts only its own seeded memories
+        # (relevant-mode skill rendering is covered by the recall tests below);
+        # it stays listed in the Memory Inventory.
+        penny.db.memories.update_collection_metadata("skills", inclusion=Inclusion.NEVER)
 
         # Send incoming message
         await signal_server.push_message(
@@ -301,9 +308,14 @@ async def test_chat_prompt_renders_relevant_mode_via_embedding(
     it's included too, but only the matching one is asserted.
     """
     config = make_config()
-    match_vec = [1.0, 0.0, 0.0]
+    # Dimension-consistent with the seeded corpus (embeddings are a required
+    # prerequisite, so the startup backfill vectorizes seeded memories).
+    match_vec = deterministic_embed("espresso")
 
     async with running_penny(config) as penny:
+        # The seeded skills collection is inclusion=always; neutralize its recall
+        # so this test asserts only its own trivia entry (it stays in inventory).
+        penny.db.memories.update_collection_metadata("skills", inclusion=Inclusion.NEVER)
         penny.db.memories.create_collection(
             "trivia", "facts", Inclusion.RELEVANT, RecallMode.RELEVANT
         )
@@ -356,23 +368,26 @@ async def test_stage1_admits_only_top_relevant_collection(
     async with running_penny(make_config()) as penny:
         agent = penny.chat_agent
         # Two relevant collections with known description anchors.  espresso is the
-        # closest to the current-message anchor; tea is a plausible runner-up that
-        # STILL clears the 0.40 floor (cosine ≈ 0.71), so only top-1 can drop it.
+        # closest to the current-message anchor (cosine 1.0); tea is a plausible
+        # runner-up that STILL clears the 0.40 floor (cosine ≈ 0.71 — one shared
+        # word out of two), so only top-1 can drop it.  All vectors come from the
+        # shared deterministic embedder so they match the seeded corpus dimension.
+        anchor = deterministic_embed("espresso")
         penny.db.memories.create_collection(
             "espresso-facts",
             "espresso brewing",
             Inclusion.RELEVANT,
             RecallMode.RELEVANT,
-            description_embedding=[1.0, 0.0, 0.0],
+            description_embedding=deterministic_embed("espresso"),
         )
         penny.db.memories.create_collection(
             "tea-facts",
             "tea steeping",
             Inclusion.RELEVANT,
             RecallMode.RELEVANT,
-            description_embedding=[1.0, 1.0, 0.0],
+            description_embedding=deterministic_embed("espresso tea"),
         )
-        included = {m.name for m in agent._included_memories([1.0, 0.0, 0.0])}
+        included = {m.name for m in agent._included_memories(anchor)}
 
     assert "espresso-facts" in included
     assert "tea-facts" not in included, "runner-up above the floor should be dropped by top-1"
@@ -644,24 +659,14 @@ async def test_inventory_excludes_archived(signal_server, mock_llm, test_config,
 # ── 5. Ambient recall ─────────────────────────────────────────────────────
 
 
-def _hash_embed_vec(text: str, dim: int = 4096) -> list[float]:
-    """Bag-of-words deterministic embedding for similarity tests.
+def _hash_embed_vec(text: str) -> list[float]:
+    """Deterministic embedding for similarity tests.
 
-    Each word picks an axis via SHA-256; the vector is L2-normalised so
-    cosine is comparable across strings.  Identical strings map to
-    identical vectors; strings sharing words have meaningful cosine > 0;
-    fully-distinct strings map to cosine = 0.
+    Shares the mock's ``deterministic_embed`` so test-written entries, test
+    anchors, and the startup backfill of seeded memories all use one embedder
+    at one dimension — a mixed-dimension corpus would crash cosine similarity.
     """
-    vec = [0.0] * dim
-    words = text.lower().split() or [text]
-    for word in words:
-        digest = hashlib.sha256(word.encode("utf-8")).digest()
-        axis = int.from_bytes(digest[:8], "big") % dim
-        vec[axis] += 1.0
-    norm = sum(v * v for v in vec) ** 0.5
-    if norm > 0:
-        vec = [v / norm for v in vec]
-    return vec
+    return deterministic_embed(text)
 
 
 def _install_hash_embedding(agent) -> None:
@@ -1011,29 +1016,6 @@ async def test_recall_relevant_collection_gated_by_stage1_anchor(
         on_topic = await penny.chat_agent._recall_section(current_message="dark roast coffee")
         assert on_topic is not None
         assert "really loves dark roast coffee in the morning" in on_topic
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_without_embedding_client_returns_none(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """No embedding client → relevant memories contribute nothing."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "prefs-test", "user prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        penny.db.memory("prefs-test").write(
-            [EntryInput(key="coffee", content="loves coffee")],
-            author="test",
-        )
-        penny.chat_agent._embedding_model_client = None
-
-        result = await penny.chat_agent._recall_section(current_message="coffee")
-
-        # The test-only relevant memory can't render without embeddings;
-        # any pre-existing system memory in non-relevant mode might still
-        # render, so just assert the test-only entry is absent.
-        assert result is None or "loves coffee" not in result
 
 
 @pytest.mark.asyncio

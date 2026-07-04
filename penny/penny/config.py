@@ -70,6 +70,23 @@ def _validate_channel_config(channel_type: str) -> None:
             raise ValueError("DISCORD_CHANNEL_ID is required for Discord channel")
 
 
+def _validate_embedding_config() -> None:
+    """Ensure the required embedding model is configured.
+
+    Embeddings back Penny's memory — preference dedup and similarity recall.
+    Without one those features silently no-op, so the embedding model is a hard
+    prerequisite rather than an optional degraded mode. Fail fast at startup
+    with an actionable message instead of running memory-blind.
+    """
+    if not os.getenv("LLM_EMBEDDING_MODEL"):
+        raise ValueError(
+            "LLM_EMBEDDING_MODEL is required — Penny's memory (preference dedup and "
+            "similarity recall) depends on it. Set LLM_EMBEDDING_MODEL in .env to a "
+            "dedicated embedding model (e.g. embeddinggemma) and pull it with "
+            "`ollama pull embeddinggemma`."
+        )
+
+
 def _collect_env_vars(channel_type: str) -> dict:
     """Read all config environment variables and return as constructor kwargs."""
     return {
@@ -140,6 +157,7 @@ class Config:
     # LLM configuration (works with Ollama, omlx, or any OpenAI-compatible API)
     llm_api_url: str
     llm_model: str  # Text model for all agents
+    llm_embedding_model: str  # Required embedding model (e.g. embeddinggemma) — backs memory
 
     # Logging configuration
     log_level: str
@@ -156,7 +174,6 @@ class Config:
     llm_vision_api_url: str | None = None  # Override API URL for vision model
     llm_vision_api_key: str | None = None  # Override API key for vision model
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
-    llm_embedding_model: str | None = None  # Embedding model (e.g., embeddinggemma)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
     image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for /draw
@@ -203,6 +220,7 @@ class Config:
         _load_dotenv()
         channel_type = _detect_channel_type()
         _validate_channel_config(channel_type)
+        _validate_embedding_config()
         return cls(**_collect_env_vars(channel_type), runtime=_build_runtime_params(db))
 
 

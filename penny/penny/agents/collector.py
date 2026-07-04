@@ -104,7 +104,7 @@ class Collector(BackgroundAgent):
         db: Database,
         config: Config,
         *,
-        embedding_model_client: LlmClient | None = None,
+        embedding_model_client: LlmClient,
         vision_model_client: LlmClient | None = None,
     ) -> None:
         super().__init__(

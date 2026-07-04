@@ -41,6 +41,7 @@ def feature_context(feature_db):
         db=feature_db,
         config=config,
         model_client=ollama,
+        embedding_model_client=ollama,
         user=TEST_SENDER,
         channel_type="signal",
         start_time=datetime.now(UTC),

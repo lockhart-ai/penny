@@ -314,8 +314,8 @@ class ChatAgent(Agent):
         Scores against the *current message alone* — not the whole history window
         — so a collection can't stay "sticky" for later, unrelated turns.  Fails
         open: a memory with no description anchor yet (pre-backfill), or a turn
-        with no anchor at all (no embedding model / cold message), is included
-        rather than silently dropped and doesn't consume a top-K slot.
+        with no anchor at all (a transient embed failure or a cold message), is
+        included rather than silently dropped and doesn't consume a top-K slot.
         """
         if current_anchor is None:
             return relevant
@@ -333,12 +333,10 @@ class ChatAgent(Agent):
     async def embed_description(self, text: str) -> list[float] | None:
         """Embed a memory description into its stage-1 routing anchor.
 
-        Exposed for the browser channel's memory create/edit path, which —
-        unlike the chat tool surface — has no embedding client of its own.
-        Returns None when no embedding model is configured or the call fails.
+        Exposed for the browser channel's memory create/edit path, which — unlike
+        the chat tool surface — computes embeddings through the agent rather than
+        a memory tool.  Returns None only on a transient embed failure.
         """
-        if self._embedding_model_client is None:
-            return None
         try:
             vecs = await self._embedding_model_client.embed([text])
             return vecs[0]
@@ -351,11 +349,11 @@ class ChatAgent(Agent):
     ) -> list[list[float]] | None:
         """Embed history + current_message as ordered anchors (oldest→newest).
 
-        Returns ``None`` when no current message is available, when no
-        embedding client is configured, or when the embed call fails.
-        Empty history is fine — the result is just ``[current_embedding]``.
+        Returns ``None`` when no current message is available or when the embed
+        call fails transiently.  Empty history is fine — the result is just
+        ``[current_embedding]``.
         """
-        if not current_message or self._embedding_model_client is None:
+        if not current_message:
             return None
         texts = [*(history or []), current_message]
         try:

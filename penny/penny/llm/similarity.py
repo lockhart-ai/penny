@@ -20,12 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 async def embed_text(
-    client: LlmClient | None,
+    client: LlmClient,
     text: str,
 ) -> list[float] | None:
-    """Embed a single text string.  Returns None if no client or on failure."""
-    if client is None:
-        return None
+    """Embed a single text string.  Returns None only on a transient embed failure.
+
+    The embedding model is a required prerequisite, so the client is always
+    present — there is no "no model configured" degraded path here.  A ``None``
+    return means the embed call itself failed transiently; the caller keeps its
+    non-embedded write and the startup backfill vectorizes it later.
+    """
     try:
         vecs = await client.embed(text)
         return vecs[0]

@@ -133,9 +133,9 @@ class Agent:
         db: Database,
         config: Config,
         vision_model_client: LlmClient | None = None,
-        embedding_model_client: LlmClient | None = None,
         allow_repeat_tools: bool = False,
         *,
+        embedding_model_client: LlmClient,
         system_prompt: str | None = None,
         tools: list[Tool] | None = None,
     ):

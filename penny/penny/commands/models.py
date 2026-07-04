@@ -28,7 +28,7 @@ class CommandContext:
     user: str  # Signal number or Discord user ID
     channel_type: str  # "signal" or "discord"
     start_time: datetime  # Penny startup time for uptime calculation
-    embedding_model_client: LlmClient | None = None
+    embedding_model_client: LlmClient  # Shared embedding client (required prerequisite)
     image_model_client: OllamaImageClient | None = None
     scheduler: BackgroundScheduler | None = None  # Background task scheduler
     message: IncomingMessage | None = None  # The incoming message (for quote-reply metadata)

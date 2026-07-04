@@ -102,14 +102,13 @@ class Penny:
             if config.llm_vision_model
             else None
         )
-        self.embedding_model_client = (
-            self._create_llm_client(
-                config.llm_embedding_model,
-                api_url=config.llm_embedding_api_url,
-                api_key=config.llm_embedding_api_key,
-            )
-            if config.llm_embedding_model
-            else None
+        # Embedding model is a required prerequisite (validated at config load),
+        # so the client is always constructed — memory dedup and similarity
+        # recall never run in a degraded, embedding-less mode.
+        self.embedding_model_client = self._create_llm_client(
+            config.llm_embedding_model,
+            api_url=config.llm_embedding_api_url,
+            api_key=config.llm_embedding_api_key,
         )
         self.image_client = (
             OllamaImageClient(
@@ -149,6 +148,7 @@ class Penny:
             model_client=self.model_client,
             db=self.db,
             config=config,
+            embedding_model_client=self.embedding_model_client,
         )
         # Deterministic task (no LLM) that delivers queued send_message output
         # once the autonomous-send cooldown clears.
@@ -315,8 +315,7 @@ class Penny:
             optional_models.append((self.config.llm_vision_model, "LLM_VISION_MODEL"))
         if self.config.llm_image_model:
             optional_models.append((self.config.llm_image_model, "LLM_IMAGE_MODEL"))
-        if self.config.llm_embedding_model:
-            optional_models.append((self.config.llm_embedding_model, "LLM_EMBEDDING_MODEL"))
+        optional_models.append((self.config.llm_embedding_model, "LLM_EMBEDDING_MODEL"))
 
         if not optional_models:
             return
@@ -340,7 +339,6 @@ class Penny:
 
     async def _backfill_preference_embeddings(self, batch_limit: int) -> int:
         """Backfill preferences with missing embeddings. Returns count embedded."""
-        assert self.embedding_model_client is not None
         total = 0
         while True:
             prefs = self.db.preferences.get_without_embeddings(limit=batch_limit)
@@ -369,7 +367,6 @@ class Penny:
         logs (``collector-runs``) are skipped.  Embeds both key and content
         so keyed entries are matchable by ``read_similar``.
         """
-        assert self.embedding_model_client is not None
         total = 0
         while True:
             entries = self.db.memories.get_entries_without_embeddings(limit=batch_limit)
@@ -405,8 +402,6 @@ class Penny:
         table with an embedding column gets vectorized here (no row is copied
         from another table).  Idempotent: a row keeps its embedding once set.
         """
-        if self.embedding_model_client is None:
-            return 0
         total = 0
         while True:
             messages = self.db.messages.messages_without_embeddings(limit=batch_limit)
@@ -432,7 +427,6 @@ class Penny:
         them at startup — scoped by the store to active, routable memories.
         Returns count embedded.
         """
-        assert self.embedding_model_client is not None
         total = 0
         while True:
             memories = self.db.memories.get_memories_without_description_embedding(
@@ -464,22 +458,7 @@ class Penny:
         await self.channel.validate_connectivity()
 
         await self._validate_optional_models()
-        if self.embedding_model_client:
-            batch_limit = int(self.config.runtime.EMBEDDING_BACKFILL_BATCH_LIMIT)
-            total_prefs = await self._backfill_preference_embeddings(batch_limit)
-            if total_prefs:
-                logger.info("Startup embedding backfill complete: %d preferences", total_prefs)
-            total_entries = await self._backfill_memory_embeddings(batch_limit)
-            if total_entries:
-                logger.info("Startup embedding backfill complete: %d memory entries", total_entries)
-            total_descriptions = await self._backfill_description_embeddings(batch_limit)
-            if total_descriptions:
-                logger.info(
-                    "Startup embedding backfill complete: %d descriptions", total_descriptions
-                )
-            total_messages = await self._backfill_message_embeddings(batch_limit)
-            if total_messages:
-                logger.info("Startup embedding backfill complete: %d messages", total_messages)
+        await self._run_startup_backfills()
 
         try:
             await asyncio.gather(
@@ -489,6 +468,27 @@ class Penny:
             )
         finally:
             await self.shutdown()
+
+    async def _run_startup_backfills(self) -> None:
+        """Vectorize any embedding-less rows across the embedding-bearing tables.
+
+        The embedding model is a required prerequisite, so this always runs —
+        preferences, memory entries, description anchors, and message rows all
+        get vectors at startup rather than lazily.
+        """
+        batch_limit = int(self.config.runtime.EMBEDDING_BACKFILL_BATCH_LIMIT)
+        total_prefs = await self._backfill_preference_embeddings(batch_limit)
+        if total_prefs:
+            logger.info("Startup embedding backfill complete: %d preferences", total_prefs)
+        total_entries = await self._backfill_memory_embeddings(batch_limit)
+        if total_entries:
+            logger.info("Startup embedding backfill complete: %d memory entries", total_entries)
+        total_descriptions = await self._backfill_description_embeddings(batch_limit)
+        if total_descriptions:
+            logger.info("Startup embedding backfill complete: %d descriptions", total_descriptions)
+        total_messages = await self._backfill_message_embeddings(batch_limit)
+        if total_messages:
+            logger.info("Startup embedding backfill complete: %d messages", total_messages)
 
     async def _run_startup_notifications(self) -> None:
         """Send startup notifications after the outgoing channel is ready."""

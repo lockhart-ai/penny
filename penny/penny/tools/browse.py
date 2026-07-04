@@ -90,8 +90,9 @@ class BrowseTool(Tool):
         max_calls: int,
         search_url: str = "https://duckduckgo.com/?q=",
         db: Database | None = None,
-        embedding_client: LlmClient | None = None,
         author: str = "unknown",
+        *,
+        embedding_client: LlmClient,
     ):
         self._max_calls = max_calls
         self._search_url = search_url

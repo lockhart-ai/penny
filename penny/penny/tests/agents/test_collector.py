@@ -41,6 +41,7 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
         model_client=_llm_client(),
         db=db,
         config=test_config,
+        embedding_model_client=_llm_client(),
     )
     return collector, db
 

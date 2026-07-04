@@ -31,6 +31,9 @@ DEFAULT_TEST_CONFIG = {
     "discord_channel_id": None,
     "llm_api_url": "http://localhost:11434",
     "llm_model": "test-model",
+    # Embedding model is a required prerequisite — always configured in tests
+    # so the shared embedding client is constructed (patched via mock_llm).
+    "llm_embedding_model": "test-embedding-model",
     "log_level": "DEBUG",
     "tool_timeout": 60.0,
     # Fast scheduler ticks for tests
