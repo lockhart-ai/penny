@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 # Sender ID for Discord bot messages in the database
 DISCORD_SENDER_ID = "penny"
 
+# Discord developer portal where privileged gateway intents are toggled.
+DISCORD_DEVELOPER_PORTAL_URL = "https://discord.com/developers/applications"
+
+# Actionable one-liner emitted when Discord rejects the connection because the
+# Message Content Intent hasn't been enabled for the bot. Surfaced instead of a
+# raw PrivilegedIntentsRequired traceback so a first-boot user knows the exact fix.
+DISCORD_PRIVILEGED_INTENTS_ERROR = (
+    "Discord refused the connection: enable the Message Content Intent for this bot "
+    "under Bot -> Privileged Gateway Intents in the Discord developer portal "
+    f"({DISCORD_DEVELOPER_PORTAL_URL}), then restart Penny."
+)
+
 
 class DiscordChannel(MessageChannel):
     """
@@ -182,7 +194,14 @@ class DiscordChannel(MessageChannel):
     async def listen(self) -> None:
         """Start listening for messages via Discord gateway."""
         logger.info("Starting Discord client...")
-        await self.client.start(self._token)
+        try:
+            await self.client.start(self._token)
+        except discord.errors.PrivilegedIntentsRequired as intents_error:
+            # Surface an actionable one-liner (which intent to enable + portal link)
+            # instead of dumping a raw traceback, then exit via the ConnectionError
+            # path main() already handles for startup connectivity failures.
+            logger.error(DISCORD_PRIVILEGED_INTENTS_ERROR)
+            raise ConnectionError(DISCORD_PRIVILEGED_INTENTS_ERROR) from intents_error
 
     async def wait_until_ready(self) -> None:
         """Wait until the Discord gateway has resolved the target channel."""

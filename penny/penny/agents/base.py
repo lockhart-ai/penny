@@ -8,8 +8,9 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any, assert_never
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from penny.agents.models import ChatMessage, ControllerResponse, MessageRole, ToolCallRecord
 from penny.config import Config
@@ -1021,8 +1022,9 @@ class Agent:
         This method only prepends the timestamp.
         """
         effective = system_prompt or self.system_prompt
-        now = datetime.now(UTC).strftime("%A, %B %d, %Y at %I:%M %p UTC")
-        system_content = f"Current date and time: {now}\n\n{effective}"
+        now = datetime.now(self._user_timezone())
+        stamp = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
+        system_content = f"Current date and time: {stamp}\n\n{effective}"
 
         messages = [ChatMessage(role=MessageRole.SYSTEM, content=system_content).to_dict()]
 
@@ -1032,6 +1034,34 @@ class Agent:
 
         messages.append(ChatMessage(role=MessageRole.USER, content=prompt).to_dict())
         return messages
+
+    def _user_timezone(self) -> tzinfo:
+        """The primary user's IANA timezone for the current-date/time anchor.
+
+        The profile advertises the user's timezone, so the clock the model
+        reasons from must match it — otherwise Penny is told the wrong
+        time-of-day always, and (for the hours around local midnight) the
+        wrong calendar day.  Falls back to UTC when there's no profile /
+        timezone (fresh install) or the stored zone is unknown.  Entry/log
+        timestamps stay UTC via ``format_log_timestamp`` — those are absolute
+        historical markers, not the current-now anchor.
+        """
+        iana = self._user_timezone_name()
+        if iana is None:
+            return UTC
+        try:
+            return ZoneInfo(iana)
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown profile timezone %r — anchoring in UTC", iana)
+            return UTC
+
+    def _user_timezone_name(self) -> str | None:
+        """The primary user's stored IANA timezone, or None with no profile."""
+        sender = self.db.users.get_primary_sender()
+        if sender is None:
+            return None
+        user_info = self.db.users.get_info(sender)
+        return user_info.timezone if user_info is not None else None
 
     # ── System prompt building (template method pattern) ─────────────────
 

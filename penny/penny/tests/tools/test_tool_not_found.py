@@ -99,6 +99,68 @@ class TestToolNotFound:
 
         await agent.close()
 
+    @pytest.mark.asyncio
+    async def test_harmony_suffixed_tool_name_still_dispatches(self, test_db, mock_llm):
+        """A backend that leaks Harmony control tokens into the tool name
+        (``search<|channel|>commentary``) still resolves to the real tool —
+        the name is normalized at the read-off boundary, so dispatch succeeds
+        instead of logging 'Tool not found'."""
+        db = Database(test_db)
+        db.create_tables()
+
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            log_level="DEBUG",
+            db_path=test_db,
+        )
+        search_tool = StubSearchTool()
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="test-model",
+            db=db,
+            max_retries=1,
+            retry_delay=0.1,
+        )
+        agent = Agent(
+            system_prompt="test",
+            model_client=client,
+            tools=[search_tool],
+            db=db,
+            config=config,
+        )
+
+        messages_sent = []
+
+        def handler(request: dict, count: int) -> dict:
+            messages_sent.append(request["messages"])
+            if count == 1:
+                # Harmony-suffixed name — the leak this fix defends against.
+                return mock_llm._make_tool_call_response(
+                    request, "search<|channel|>commentary", {"query": "test"}
+                )
+            return mock_llm._make_text_response(request, "Done searching.")
+
+        mock_llm.set_response_handler(handler)
+
+        await agent.run("test prompt", max_steps=3)
+
+        # The tool result fed back must be the successful search output, not a
+        # 'not found' error — i.e. the Harmony-suffixed name dispatched cleanly.
+        second_call_messages = messages_sent[1]
+        tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert len(tool_messages) > 0
+        result_content = tool_messages[0]["content"]
+        assert "Mock search results for testing" in result_content
+        assert "not found" not in result_content.lower()
+
+        await agent.close()
+
 
 class StubReadLatestTool(Tool):
     """Stub for read_latest — used in close-match suggestion tests."""

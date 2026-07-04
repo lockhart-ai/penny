@@ -73,7 +73,7 @@ async def test_image_with_text_captions_then_forwards(
             for m in user_msgs
         )
         # Combined prompt should contain user text and caption
-        expected = PennyResponse.VISION_IMAGE_CONTEXT.format(
+        expected = Prompt.VISION_IMAGE_CONTEXT.format(
             user_text="what's in this photo?", caption="a cute orange cat"
         )
         assert any(expected in m.get("content", "") for m in user_msgs)

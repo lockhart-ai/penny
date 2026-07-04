@@ -35,6 +35,47 @@ logger = logging.getLogger(__name__)
 # Default API key for local inference servers that require one but don't check it
 _DEFAULT_API_KEY = "not-needed"
 
+# Fallback when an error response carries no content-type header.
+_UNKNOWN_CONTENT_TYPE = "unknown"
+
+
+def _summarize_llm_error(error: Exception) -> str:
+    """Summarize an LLM API error for logging without dumping the raw body.
+
+    Some OpenAI-compatible endpoints serve a non-JSON error (e.g. a 404 as an
+    HTML page); logging the raw body dumps thousands of characters per line and
+    buries real signal.  A structured JSON error surfaces its short ``message``
+    field; an HTML / non-JSON body is reported by its content type and length
+    only — never its content.
+    """
+    status = getattr(error, "status_code", None)
+    prefix = f"HTTP {status}" if status is not None else type(error).__name__
+    return f"{prefix}: {_llm_error_detail(error)}"
+
+
+def _llm_error_detail(error: Exception) -> str:
+    """Extract a short, body-free detail string from an LLM API error."""
+    response = getattr(error, "response", None)
+    if response is None:
+        # Connection/timeout errors carry no HTTP body; their own message is short.
+        return str(error)
+    message = _json_error_message(getattr(error, "body", None))
+    if message is not None:
+        return message
+    content_type = response.headers.get("content-type", _UNKNOWN_CONTENT_TYPE)
+    return f"non-JSON error body (content-type={content_type}, {len(response.text)} chars)"
+
+
+def _json_error_message(body: Any) -> str | None:
+    """Pull the ``message`` field from a structured OpenAI-style JSON error body."""
+    if not isinstance(body, dict):
+        return None
+    error_field = body.get("error")
+    if isinstance(error_field, dict) and isinstance(error_field.get("message"), str):
+        return error_field["message"]
+    message = body.get("message")
+    return message if isinstance(message, str) else None
+
 
 class LlmClient:
     """Client for LLM inference via OpenAI-compatible APIs.
@@ -121,8 +162,9 @@ class LlmClient:
             except LlmError:
                 raise
             except openai.NotFoundError as error:
-                logger.error("LLM chat failed (model not found, no retry): %s", error)
-                raise LlmNotFoundError(str(error)) from error
+                summary = _summarize_llm_error(error)
+                logger.error("LLM chat failed (model not found, no retry): %s", summary)
+                raise LlmNotFoundError(summary) from error
             except openai.APITimeoutError as error:
                 last_error = LlmTimeoutError(str(error))
                 logger.warning(
@@ -141,21 +183,20 @@ class LlmClient:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay)
             except openai.OpenAIError as error:
-                error_str = str(error)
+                summary = _summarize_llm_error(error)
                 # 500 "error parsing tool call" means the model produced plain text
                 # instead of a JSON tool call. Retrying with the same messages won't
                 # help — raise immediately so the agent can inject a format nudge.
-                if (
-                    getattr(error, "status_code", None) == 500
-                    and "error parsing tool call" in error_str
+                if getattr(error, "status_code", None) == 500 and "error parsing tool call" in str(
+                    error
                 ):
                     logger.warning(
                         "Tool parse error — model returned plain text instead of JSON tool call"
                     )
-                    raise LlmToolParseError(error_str) from error
-                last_error = LlmResponseError(error_str)
+                    raise LlmToolParseError(summary) from error
+                last_error = LlmResponseError(summary)
                 logger.warning(
-                    "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
+                    "LLM chat error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay)
@@ -208,8 +249,9 @@ class LlmClient:
             except LlmError:
                 raise
             except openai.NotFoundError as error:
-                logger.error("LLM embed failed (model not found, no retry): %s", error)
-                raise LlmNotFoundError(str(error)) from error
+                summary = _summarize_llm_error(error)
+                logger.error("LLM embed failed (model not found, no retry): %s", summary)
+                raise LlmNotFoundError(summary) from error
             except openai.APIConnectionError as error:
                 last_error = LlmConnectionError(str(error))
                 logger.warning(
@@ -218,9 +260,10 @@ class LlmClient:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay)
             except openai.OpenAIError as error:
-                last_error = LlmResponseError(str(error))
+                summary = _summarize_llm_error(error)
+                last_error = LlmResponseError(summary)
                 logger.warning(
-                    "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, error
+                    "LLM embed error (attempt %d/%d): %s", attempt + 1, self.max_retries, summary
                 )
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(self.retry_delay)
