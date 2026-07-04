@@ -297,7 +297,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - If `SIGNAL_NUMBER` is set, uses Signal
 - If `IOS_ENABLED=true` is set with Signal, the iOS WebSocket/APNs channel starts in parallel and Signal remains the primary/default channel
 - If only `IOS_ENABLED=true` is set, uses iOS
-- Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` to make iOS the primary/default channel. If `SIGNAL_NUMBER` is also configured, Signal still starts alongside it.
+- Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` to make iOS the primary/default channel without starting Signal.
 - Use `make prod-ios` to run Penny with `CHANNEL_TYPE=ios` without starting the Signal container.
 
 ### Configuration Reference

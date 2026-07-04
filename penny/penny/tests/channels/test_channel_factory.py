@@ -24,13 +24,13 @@ async def test_ios_enabled_registers_ios_alongside_signal(make_config):
 
 
 @pytest.mark.asyncio
-async def test_ios_primary_can_run_signal_sidecar(make_config):
-    """CHANNEL_TYPE=ios can still run Signal in parallel when Signal is configured."""
+async def test_ios_primary_does_not_register_signal_sidecar(make_config):
+    """CHANNEL_TYPE=ios stays iOS-only so prod-ios works without signal-api."""
     config = make_config(channel_type=ChannelType.IOS)
     manager = create_channel_manager(config, message_agent=MagicMock(), db=MagicMock())
     try:
         assert isinstance(manager.get_channel(ChannelType.IOS), IosChannel)
-        assert isinstance(manager.get_channel(ChannelType.SIGNAL), SignalChannel)
+        assert manager.get_channel(ChannelType.SIGNAL) is None
         assert manager.default_channel_type == ChannelType.IOS
     finally:
         await manager.close()

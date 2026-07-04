@@ -35,15 +35,6 @@ def create_channel_manager(
 
     if config.ios_enabled and config.channel_type != ChannelType.IOS:
         _register_ios_channel(config, message_agent, db, command_registry, manager)
-    elif config.channel_type == ChannelType.IOS and config.signal_number:
-        _register_signal_channel(
-            config,
-            message_agent,
-            db,
-            command_registry,
-            manager,
-            is_default_device=False,
-        )
 
     if config.browser_enabled:
         _register_browser_channel(config, message_agent, db, command_registry, manager)
