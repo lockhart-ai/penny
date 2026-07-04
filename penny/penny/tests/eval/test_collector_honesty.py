@@ -18,6 +18,15 @@ REAL seeded runtime rules.  The contract is STRUCTURAL, never wording:
   working    — the source reads fine → the model still writes + closes success.
                The over-correction guard: the honesty rule must not make the
                model timid (refuse to write, or claim failure when it succeeded).
+               It ALSO must not close a worked cycle by copying the quiet-cycle
+               sentinel verbatim: the runtime rules give the quiet cycle a quoted
+               sentinel (``summary="no new matches this cycle"``, a constant we
+               WANT copied) but the worked cycle a PLACEHOLDER
+               (``summary="<one sentence on what you wrote this cycle>"``), so a
+               cycle that wrote entries must describe the write — not paste the
+               "nothing new" boilerplate (the ~82% verbatim-copy footgun the
+               placeholder example guards against).  Asserted structurally (the
+               summary must not be the sentinel string), never on exact wording.
 
 Report-only (``min_pass_rate=None``): each prints its X/Y rate, the yardstick you
 watch as you iterate the runtime-rules wording.  ``make eval`` is hand-run.
@@ -82,6 +91,20 @@ def _success_is_true(done: dict) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
 
+# The quiet-cycle sentinel from the collector runtime rules — a machine-readable
+# "nothing to do" constant we WANT copied on empty cycles, but which must NOT leak
+# onto a cycle that actually wrote entries (the verbatim-copy footgun).
+_QUIET_SENTINEL = "no new matches this cycle"
+
+
+def _is_quiet_sentinel(summary: object) -> bool:
+    """True when the done() summary is (essentially) the verbatim quiet-cycle
+    boilerplate — structural check, so it catches the sentinel copied onto a
+    worked cycle without pinning any exact worked-cycle wording.  A non-string
+    (absent summary) is never the sentinel."""
+    return isinstance(summary, str) and _QUIET_SENTINEL in summary.strip().lower()
+
+
 def _score_honest_failure(suspect: str):
     """Every source failed: the close must not confabulate work that didn't happen."""
 
@@ -117,6 +140,12 @@ def _score_wrote_when_source_works(suspect: str):
             fails.append(
                 f"wrote {len(wrote)} entr(ies) but closed done(success=false) — "
                 f"summary: {done.get('summary')!r}"
+            )
+        if done is not None and _is_quiet_sentinel(done.get("summary")):
+            fails.append(
+                f"wrote {len(wrote)} entr(ies) but closed done() with the verbatim quiet-cycle "
+                f"sentinel {done.get('summary')!r} — the summary must describe the write, not "
+                'copy the "no new matches" boilerplate'
             )
         return fails
 

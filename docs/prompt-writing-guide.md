@@ -87,6 +87,86 @@ Two corollaries, both measured on this codebase:
 7. **Examples beat abstraction for a tricky case.** One concrete good/bad pair teaches a
    discrimination that a paragraph of rules won't.
 
+## The canonical call notation
+
+The core pattern above says *name every call in ONE format*. This section pins what that
+one format **is** — the exact dialect for writing a tool call in a prompt — so every prompt
+reads the same and the specific footguns below stay closed. It's derived from a
+two-deployment promptlog analysis (~59k tool-argument payloads); every number here was
+measured (aggregated and sanitized).
+
+Why a *canonical* shape rather than "the most reliable" one: the load-bearing choice —
+numbered steps with an **explicit call shape** — is already settled (prose-only instructions
+bail 11–25% of cycles; call-shaped ones bail 0.2–2%). But *among* the explicit shapes we've
+mixed (prose-verb `Call X(...)`, bare `X("a", 1)`, kwargs `X(memory=..., k=5)`, angle
+placeholders), production outcomes show **no consistent reliability separation**. So the
+canonical shape is chosen for **consistency and copy-through safety**, not for a raw win one
+dialect has over another — a prompt that mixes dialects teaches the model to improvise, and
+the improvisations are where the footguns live.
+
+**1. Steps — a bare call, `N. tool(args) — purpose`.** In a numbered step, write the call
+bare: no `Call`/`Run` verb in front of it, no backticks around it. Reserve single markdown
+backticks for a tool name mentioned **inline in prose** (`` `browse` `` in a sentence); RST
+double-backticks (```` ``tool`` ````) never appear in a model-facing prompt. And the rule
+that closes the worst footgun: **a tool name in instructional text ALWAYS carries its
+parens+args** — `browse(queries=["<seed topic>"])`, never a bare `browse`. A parens-less
+mention of the browse tool once trained the model to hallucinate recurring calls to a
+nonexistent `search` tool; giving every mention an explicit call shape fixed it. A bare
+tool name reads to the model as "a thing that exists," not "the call to make," and it fills
+the gap with an invented one.
+
+**2. Arguments — quote a sentinel, placeholder everything composed.** This is the
+highest-leverage rule, and it's counter-intuitive:
+
+- **A quoted literal is copied verbatim ~82% of the time.** One `done()` example whose
+  summary was written as a quoted string (`summary="…"`) became the *actual* summary in
+  ~14k of ~17k calls — the model pasted the example instead of describing what it did. So
+  **quote a literal ONLY when it is a deliberate sentinel you want copied verbatim** — a
+  machine-readable constant (`summary="no new matches this cycle"`) that downstream code or
+  a human reads as a fixed token. Quoting a value effectively hardcodes it.
+- **Use `<angle placeholders>` for anything the model must compose** — `<seed topic>`,
+  `<collection>`, `<one sentence on what actually happened>`. Angle placeholders leaked into
+  a real tool argument **zero times across ~59k payloads**: the model reliably treats them
+  as "fill this in," never as literal text. They are the safe default for every argument
+  that isn't a sentinel.
+- **Square brackets as placeholders are BANNED.** Entry listings render a key as `[key]`
+  for display, and the model copies those display brackets straight into arguments
+  (`key="[key]"` → "not found", 225 observed cases). Brackets are reserved for display;
+  never use `[like this]` to mean "fill in."
+
+**3. Argument style — kwargs when it's non-obvious, positional only for one obvious arg.**
+Use `tool(name=<x>, k=5)` keyword form whenever a call has more than one argument or any
+optional one, so which value is which is unambiguous. A single, obvious argument may be
+positional (`collection_read_latest("<collection>")`). Don't show a bare positional list of
+two-plus values — the model mis-slots them.
+
+**4. Never put these in a written example:** the auto-injected `reasoning` param (it's added
+by the framework, and showing it teaches the model to hand-write it), and any **raw JSON
+envelope or payload-shaped snippet** (`{"name": "done", "arguments": {…}}`). Payload-shaped
+examples get adopted as the model's *output* format: a collector whose prompt demonstrated
+calls in a `kwargs + reasoning=` payload dialect had its failures dominated by the model
+emitting calls **as plain text** instead of real tool calls. Show the *call*, never its
+wire form.
+
+**5. The terminal `done()` — the canonical shape both levers meet.**
+`done(success=<true|false>, summary="<one sentence on what actually happened>")`:
+
+- `success=<true|false>` — a **placeholder** over lowercase JSON booleans (`true`/`false`,
+  not `True`/`False`).
+- The worked-cycle `summary` is a **placeholder** — `"<one sentence on what actually
+  happened>"` — because it must be composed fresh each cycle (rule 2).
+- The quiet-cycle sentinel `summary="no new matches this cycle"` stays **deliberately
+  quoted** — it's the one summary we *want* copied verbatim (a machine-readable "nothing to
+  do" constant). Keeping the worked case a placeholder while quoting only the sentinel is
+  exactly rule 2 applied: without a worked-case template the model copies the nearest quoted
+  string (the sentinel) onto cycles that *did* write.
+
+**6. History / run renders use REAL tool names in this same shape.** When a rendered record
+plays back a call the model made (a run trace, a history line), it uses the actual tool name
+with `(args)`, identical to how a prompt writes one — so what the model reads of its past
+matches how it's told to act. (The renderer conformance pass itself is tracked separately in
+the prompt-audit backlog; this is the standard it conforms to.)
+
 ## The anti-pattern: accretion
 
 Do **not** fix a prompt by iteratively bolting caveats onto the existing text — "and you MUST

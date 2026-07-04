@@ -200,8 +200,8 @@ Explain what you're looking for, what you already know, \
 and what you'll do with the result.
 
 Search memory first. The recall block above shows the most relevant \
-entries verbatim, and your memory tools (`collection_read_latest`, \
-`read_similar`, `log_read`, etc.) cover everything else stored. \
+entries verbatim, and your memory tools (`collection_read_latest(<collection>)`, \
+`read_similar(<query>)`, `log_read(<log>)`, etc.) cover everything else stored. \
 Only browse if memory \
 doesn't have what the user needs, or for current/external info \
 (news, products, prices, fresh facts).
