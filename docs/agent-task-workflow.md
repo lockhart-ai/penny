@@ -34,6 +34,7 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - **Build the image fresh so local tooling matches CI.** A cached local `penny` image can carry stale *pinned* tools (e.g. an old `ty`) and pass while CI's fresh build fails on the pinned version. `make build` before trusting the gate (`--no-cache` if a pin changed recently) so your local `ty`/`ruff` match CI's.
 - **All code changes require tests.** Prefer folding assertions into an existing test over a new function; prefer integration tests through public entry points over unit tests.
 - **Model-facing change?** (prompt / `extraction_prompt` / tool description / what the model reads) → it MUST land with a `tests/eval/` contract, and you must **dry-run it against the live model** (`make eval` / focused case) and read the result *before* committing. Validate each lever as you build it, not batched at the end.
+  - **`make eval` self-serializes on the GPU — just run it.** The local GPU is single-tenant (only one eval can hold the model at a time), so the `eval` target first **loops, polling `docker ps` about once a minute** for any other in-progress eval and waiting until the GPU is free, then runs. So it's safe to run even while sibling agents are active — it simply queues its turn rather than colliding. No coordination on your part.
 - `EXIT_CODE=0` is a hard gate. Do not open a PR on red.
 
 ## 5. Quality review — before you publish
