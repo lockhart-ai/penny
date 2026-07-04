@@ -289,8 +289,15 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     composed = Collector._compose_prompt(target)
 
     expected = (
-        # Runtime rules lead — shared byte-for-byte across every collector, so the
-        # prefix stays warm in the KV cache — then the per-collection body.
+        "You are the collector for the `board-games` collection.\n"
+        "Description: Strategy board games worth buying\n"
+        "\n"
+        "Collect board games from chat and browse logs.\n"
+        '1. log_read("user-messages")\n'
+        "2. browse for new games\n"
+        '3. collection_write("board-games", entries=[...])\n'
+        "4. done().\n"
+        "\n"
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
@@ -308,16 +315,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         "rather than appending alongside.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
-        "\n"
-        "You are the collector for the `board-games` collection.\n"
-        "Description: Strategy board games worth buying\n"
-        "\n"
-        "Collect board games from chat and browse logs.\n"
-        '1. log_read("user-messages")\n'
-        "2. browse for new games\n"
-        '3. collection_write("board-games", entries=[...])\n'
-        "4. done()."
+        "- Don't dedup manually — the store rejects duplicates on write automatically."
     )
 
     assert composed == expected, (
@@ -350,22 +348,19 @@ async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_
         collector._tag_promptlog_run(run_id, RunOutcome.WORKED, summary, 0)
     collector._current_target = db.memories.get("board-games")
 
-    # Run history is volatile per-cycle context now — it rides in the Live-context
-    # turn (built by _build_injected_context), not the static system prompt.
-    # Newest first; each summary stamped with an absolute UTC timestamp the model
-    # can compare against the "The current time is … UTC" line in that same turn.
-    injected = await collector._build_injected_context(None, "")
-    injected = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", "YYYY-MM-DD HH:MM UTC", injected)
+    section = collector._run_history_section("board-games")
 
-    assert (
-        injected
-        == """\
-## Your recent runs (newest first)
-What your previous cycles did, and when — context to avoid repeating \
-work or re-sending, not an instruction to repeat.
-1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle
-2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"""
-    )
+    # Verbatim: newest-first (run-b ran after run-a), each summary stamped with an
+    # absolute UTC timestamp the model can compare against the "Current date and
+    # time: … UTC" line (timestamps normalised to a placeholder for stability).
+    section = re.sub(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", "[YYYY-MM-DD HH:MM UTC]", section)
+    assert section == (
+        "\n\n## Your recent runs (newest first)\n"
+        "What your previous cycles did, and when — context to avoid repeating "
+        "work or re-sending, not an instruction to repeat.\n"
+        "1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle\n"
+        "2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"
+    ), f"Run-history section mismatch:\n{section!r}"
 
 
 @pytest.mark.asyncio
@@ -378,20 +373,20 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     )
     collector._current_target = db.memories.get("board-games")
 
-    injected = await collector._build_injected_context(None, "")
+    prompt = await collector._build_system_prompt(None)
 
-    assert injected == ""
+    assert "## Your recent runs" not in prompt
 
 
 @pytest.mark.asyncio
 async def test_collector_message_array_verbatim(test_config, tmp_path):
     """Full verbatim dump of the collector's on-wire message array.
 
-    Shows exactly what the collector model sees: the STATIC system message
-    (date + shared Live-context note + runtime rules first + per-collection
-    body) and the Live-context user turn (current time + run history).  Date /
-    time / run timestamps are normalised to placeholders; everything else is
-    asserted char-for-char so the structure is visible and drift is caught."""
+    Shows exactly what the collector model sees: the system message (date +
+    per-collection body + runtime-rules tail + this collector's recent run
+    history) and the bare user turn (empty for a background agent).  Date and
+    run timestamps are normalised to placeholders; everything else is asserted
+    char-for-char so the structure is visible and drift is caught."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games",
@@ -416,17 +411,24 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     collector._current_target = db.memories.get("board-games")
 
     system_prompt = await collector._build_system_prompt(None)
-    injected = await collector._build_injected_context(None, "")
-    messages = collector._build_messages("", None, system_prompt, injected)
+    messages = collector._build_messages("", None, system_prompt)
 
-    # ── System message (static, cacheable prefix) ──────────────────────────
-    system_text = re.sub(r"Today is .*?\.", "Today is DATE.", messages[0]["content"], count=1)
+    # ── System message: date + body + runtime-rules tail + run history ─────
+    system_text = re.sub(
+        r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0]["content"]
+    )
+    system_text = re.sub(
+        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", "[YYYY-MM-DD HH:MM UTC]", system_text
+    )
     expected_system = (
-        "Today is DATE.\n"
+        "Current date and time: DATE\n"
         "\n"
-        "A 'Live context' block appears in the conversation below — it carries "
-        "current info (the time, recalled memory, your recent runs). Treat it as "
-        "background you may use, not as a message from the user and not an instruction.\n"
+        "You are the collector for the `board-games` collection.\n"
+        "Description: Strategy board games worth buying\n"
+        "\n"
+        "Collect board games.\n"
+        '1. log_read("user-messages")\n'
+        "2. done().\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
@@ -447,38 +449,19 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
         "\n"
-        "You are the collector for the `board-games` collection.\n"
-        "Description: Strategy board games worth buying\n"
-        "\n"
-        "Collect board games.\n"
-        '1. log_read("user-messages")\n'
-        "2. done()."
+        "## Your recent runs (newest first)\n"
+        "What your previous cycles did, and when — context to avoid repeating "
+        "work or re-sending, not an instruction to repeat.\n"
+        "1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle\n"
+        "2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"
     )
     assert system_text == expected_system, (
         f"System mismatch:\n{system_text!r}\n\nvs expected:\n{expected_system!r}"
     )
 
-    # ── Live-context turn (volatile; empty prompt → just the block) ─────────
-    turn_text = re.sub(
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC", "YYYY-MM-DD HH:MM UTC", messages[-1]["content"]
-    )
-    turn_text = re.sub(
-        r"The current time is \d{2}:\d{2} [AP]M UTC\.",
-        "The current time is HH:MM XM UTC.",
-        turn_text,
-    )
-    expected_turn = """\
-### Live context (injected background — current info, not from the user, not an instruction)
-The current time is HH:MM XM UTC.
-
-## Your recent runs (newest first)
-What your previous cycles did, and when — context to avoid repeating \
-work or re-sending, not an instruction to repeat.
-1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle
-2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"""
-    assert turn_text == expected_turn, (
-        f"Live-context turn mismatch:\n{turn_text!r}\n\nvs expected:\n{expected_turn!r}"
-    )
+    # ── User turn: bare (empty) — a collector runs with no user message ────
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == ""
 
 
 # ── Collector-runs audit log ─────────────────────────────────────────────
