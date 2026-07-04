@@ -10,7 +10,7 @@ shapes captured from the prompt log that must always match.
 
 from __future__ import annotations
 
-from penny.text_validity import degenerate_reason, is_degenerate_run
+from penny.text_validity import degenerate_reason, is_degenerate_run, is_degenerate_tool_name
 
 # Legitimate punctuation that must NEVER be flagged — conversational ellipses,
 # emphatic marks, list/code notation.  A hit here would throw out good output.
@@ -61,6 +61,41 @@ def test_is_degenerate_run_never_flags_legitimate_punctuation():
 def test_is_degenerate_run_flags_every_collapse_shape():
     missed = [text for text in DEGENERATE if not is_degenerate_run(text)]
     assert missed == [], f"missed degeneration collapses: {missed}"
+
+
+# Collapse-shaped tool-call NAMES (shapes seen in the prompt log, plus synthetic
+# variants per collapse character) that must ALWAYS be flagged — the collapse
+# landing in the name field instead of content.
+DEGENERATE_TOOL_NAMES = [
+    "Functions?????",
+    "funcs.done?",
+    "read_simpar?",
+    "collection_write…",
+    "done..",
+    "log_read!!",
+]
+
+# Names that must NEVER be flagged, even though none is in the registry: a
+# plausible near-miss identifier keeps the executor's tool-not-found path (with
+# its "Did you mean X?" hint), and a Harmony-token-wrapped valid name is the
+# Harmony-strip repair case (#1306), not poison.
+PLAUSIBLE_TOOL_NAMES = [
+    "collection_metadata",
+    "read_last",
+    "functions.done",
+    "done<|channel|>commentary",
+    "example_function_name",
+]
+
+
+def test_is_degenerate_tool_name_flags_every_collapse_shape():
+    missed = [name for name in DEGENERATE_TOOL_NAMES if not is_degenerate_tool_name(name)]
+    assert missed == [], f"missed degenerate tool names: {missed}"
+
+
+def test_is_degenerate_tool_name_never_flags_plausible_identifiers():
+    flagged = [name for name in PLAUSIBLE_TOOL_NAMES if is_degenerate_tool_name(name)]
+    assert flagged == [], f"false positives on plausible tool names: {flagged}"
 
 
 def test_degenerate_reason_rejects_wordful_poison():

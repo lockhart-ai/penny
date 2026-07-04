@@ -68,6 +68,25 @@ class TestLlmToolCallRequiresIdAndFunctionName:
             LlmToolCall(id="call_1")  # ty: ignore[missing-argument]
 
 
+class TestLlmToolCallStripsHarmonyControlTokens:
+    """A backend that leaks gpt-oss Harmony control tokens into the tool-call
+    name (e.g. ``done<|channel|>commentary``) must not break dispatch — the
+    name is normalized at the read-off boundary so registry lookup,
+    done-detection, and dedup all see the clean identifier."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("done<|channel|>commentary", "done"),
+            ("collection_write<|channel|>commentary", "collection_write"),
+            ("collection_read_latest<|channel|>", "collection_read_latest"),
+            ("done", "done"),  # a clean name is untouched
+        ],
+    )
+    def test_name_is_normalized(self, raw: str, expected: str) -> None:
+        assert LlmToolCallFunction(name=raw, arguments={}).name == expected
+
+
 class TestCollectionEntrySpecCoercesStringifiedObjects:
     """CollectionEntrySpec must accept JSON-stringified dicts in addition to plain dicts.
 

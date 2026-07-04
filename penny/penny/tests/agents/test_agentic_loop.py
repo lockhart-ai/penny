@@ -480,6 +480,34 @@ class TestDegenerateOutputGuard:
         await agent.close()
 
     @pytest.mark.asyncio
+    async def test_degenerate_tool_name_discarded_and_rerolled(self, test_db, mock_llm):
+        """A collapse landing in the tool-call NAME field (an unregistered,
+        collapse-shaped name like `Functions?????`) is the same poison as an
+        argument collapse: the response is discarded and re-rolled on the
+        unchanged context — no tool-not-found error result ever enters the
+        conversation (that feedback is the contagion path)."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "Functions?????", {"query": "x"})
+            return mock_llm._make_text_response(request, "recovered cleanly")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test query", max_steps=max_steps)
+        assert response.answer == "recovered cleanly"
+        # Exactly one reroll on the unchanged context.
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        # Neither the garbage name nor a tool-not-found result reached the context.
+        reroll_messages = str(mock_llm.requests[-1]["messages"])
+        assert "?????" not in reroll_messages
+        assert "not found" not in reroll_messages.lower()
+
+        await agent.close()
+
+    @pytest.mark.asyncio
     async def test_persistent_degeneration_aborts_run(self, test_db, mock_llm):
         """When every reroll is still degenerate, the run is thrown out with
         AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — poison is
