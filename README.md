@@ -313,8 +313,9 @@ Penny auto-detects which channel to use based on configured credentials:
 
 1. Create a Discord application at https://discord.com/developers/applications
 2. Create a bot for the application and copy the token
-3. Enable these intents in the Bot settings:
-   - Message Content Intent
+3. Enable these intents in the Bot settings under **Privileged Gateway Intents**:
+   - **Message Content Intent** — **required**. Without it Discord refuses the gateway
+     connection and Penny exits at startup with an actionable log line pointing you here.
    - Server Members Intent (optional)
 4. Invite the bot to your server with the OAuth2 URL Generator:
    - Scopes: `bot`

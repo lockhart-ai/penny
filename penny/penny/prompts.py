@@ -67,9 +67,6 @@ class Prompt:
         "source URL so the user can follow up."
     )
 
-    # Browse nudge — injected after search-only tool results in thinking loop
-    BROWSE_NUDGE = "Now pick a URL from those results and browse it."
-
     # Search result header — injected into trimmed search results
     SEARCH_RESULT_HEADER = (
         "These are search results — titles and links only. "
