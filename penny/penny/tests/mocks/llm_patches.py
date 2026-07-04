@@ -250,11 +250,20 @@ def mock_llm(monkeypatch: pytest.MonkeyPatch) -> MockLlmClient:
 
     monkeypatch.setattr("penny.llm.client.openai.AsyncOpenAI", _MockOpenAIClient)
 
-    # Prevent list_models from hitting the real API
-    async def _mock_list_models(self: object) -> list[str]:
+    # Prevent list_models from hitting the real API. The Ollama image client
+    # reports nothing; the OpenAI-compatible LlmClient reports its own configured
+    # model as available so the startup preflight resolves the chat + embedding
+    # models cleanly instead of hard-failing every test.
+    async def _mock_image_list_models(self: object) -> list[str]:
         return []
 
-    monkeypatch.setattr("penny.llm.image_client.OllamaImageClient.list_models", _mock_list_models)
+    async def _mock_llm_list_models(self: Any) -> list[str]:
+        return [self.model]
+
+    monkeypatch.setattr(
+        "penny.llm.image_client.OllamaImageClient.list_models", _mock_image_list_models
+    )
+    monkeypatch.setattr("penny.llm.client.LlmClient.list_models", _mock_llm_list_models)
 
     return _mock_client
 

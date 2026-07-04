@@ -273,6 +273,27 @@ class LlmClient:
             raise LlmResponseError("LLM embed exhausted retries without a recorded error")
         raise last_error
 
+    # ── Model listing ────────────────────────────────────────────────────
+
+    async def list_models(self) -> list[str]:
+        """List model ids available at the endpoint (OpenAI-compatible /v1/models).
+
+        Used by the startup preflight to verify an endpoint is reachable and a
+        configured model resolves. Translates SDK errors into the ``LlmError``
+        hierarchy so callers can distinguish an unreachable endpoint
+        (``LlmConnectionError`` / ``LlmTimeoutError``) from a reachable one
+        whose model listing failed (``LlmResponseError``).
+        """
+        try:
+            response = await self.client.models.list()
+        except openai.APITimeoutError as error:
+            raise LlmTimeoutError(str(error)) from error
+        except openai.APIConnectionError as error:
+            raise LlmConnectionError(str(error)) from error
+        except openai.OpenAIError as error:
+            raise LlmResponseError(_summarize_llm_error(error)) from error
+        return [model.id for model in response.data]
+
     # ── Cleanup ──────────────────────────────────────────────────────────
 
     async def close(self) -> None:
