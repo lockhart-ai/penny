@@ -15,8 +15,8 @@ from penny.tools.models import ReadEmailsArgs, ToolResult
 logger = logging.getLogger(__name__)
 
 NO_EMAILS_TO_READ = (
-    "No emails to read — pass one or more email IDs from a prior search_emails or "
-    "list_emails call (those return the IDs this tool expects)."
+    "No emails to read — pass one or more ids from a prior `search_emails(text=<keywords>)` "
+    "or `list_emails(folder=<folder>)` call (those return the ids this tool expects)."
 )
 
 
@@ -25,8 +25,9 @@ class ReadEmailsTool(Tool):
 
     name = "read_emails"
     description = (
-        "Read the full content of one or more emails by their IDs. "
-        "Use this after search_emails to get the complete bodies of relevant emails."
+        "Read the full content of one or more emails by their ids. Run this after a search "
+        "(`search_emails(text=<keywords>)`) or a folder listing to get the complete "
+        "bodies — pass every relevant id in ONE call, not one at a time."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -34,7 +35,9 @@ class ReadEmailsTool(Tool):
             "email_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of email IDs from search_emails results",
+                "description": (
+                    "The ids to read, from a prior search_emails or list_emails result"
+                ),
             },
         },
         "required": ["email_ids"],

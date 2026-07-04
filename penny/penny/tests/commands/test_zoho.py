@@ -131,8 +131,10 @@ async def test_zoho_search_and_answer(mock_zoho_client, zoho_context):
 
 
 @pytest.mark.asyncio
-async def test_zoho_agent_created_with_repeat_tools(mock_zoho_client, zoho_context):
-    """Test that the zoho agent is created with allow_repeat_tools=True."""
+async def test_zoho_agent_construction(mock_zoho_client, zoho_context):
+    """The zoho agent is built with allow_repeat_tools=True and the verbatim
+    house-style ZOHO_SYSTEM_PROMPT (numbered call steps for all five tools,
+    canonical notation, explicit plain-text terminal answer)."""
     with (
         patch("penny.commands.zoho.ZohoClient", return_value=mock_zoho_client),
         patch("penny.commands.zoho.Agent") as mock_agent_cls,
@@ -144,9 +146,33 @@ async def test_zoho_agent_created_with_repeat_tools(mock_zoho_client, zoho_conte
         cmd = ZohoCommand(FAKE_CLIENT_ID, FAKE_CLIENT_SECRET, FAKE_REFRESH_TOKEN)
         await cmd.execute("check my email", zoho_context)
 
-    # Verify allow_repeat_tools was passed
     call_kwargs = mock_agent_cls.call_args
     assert call_kwargs.kwargs["allow_repeat_tools"] is True
+    assert (
+        call_kwargs.kwargs["system_prompt"]
+        == """\
+You are searching the user's Zoho email to answer their question. Work in order:
+
+1. search_emails(text=<keywords>) — find candidate emails across the mailbox; \
+narrow with from_addr=<sender>, subject=<subject text>, after=<ISO date>, or \
+before=<ISO date>. To browse a whole folder instead, \
+list_emails(folder=<folder name>); call list_folders() first if you are unsure \
+which folders exist. Each result carries an id.
+2. read_emails(email_ids=[<id>, <id>]) — read the full bodies of the promising \
+results, passing ALL relevant ids in ONE call.
+3. If the answer is still incomplete, search or list again and \
+read_emails(email_ids=[<id>]) the new hits.
+4. If the user asked you to reply, draft_email(to=[<address>], subject=<subject>, \
+body=<text>) — this saves a draft to their Drafts folder for review; it NEVER \
+sends.
+5. Answer the user in plain text with the concrete details you found — specific \
+dates, names, and amounts — and name the email (sender + subject) each fact \
+came from.
+
+ALWAYS ground every claim in an email you actually read — NEVER guess at a date, \
+sender, or amount you did not see. Use **bold** for the load-bearing terms \
+(dates, names, amounts) and bullet points when summarizing more than one email."""
+    )
 
 
 @pytest.mark.asyncio

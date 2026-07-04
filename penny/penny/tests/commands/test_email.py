@@ -131,8 +131,10 @@ async def test_email_search_and_answer(mock_jmap_client, email_context):
 
 
 @pytest.mark.asyncio
-async def test_email_agent_created_with_repeat_tools(mock_jmap_client, email_context):
-    """Test that the email agent is created with allow_repeat_tools=True."""
+async def test_email_agent_construction(mock_jmap_client, email_context):
+    """The email agent is built with allow_repeat_tools=True and the verbatim
+    house-style EMAIL_SYSTEM_PROMPT (numbered call steps, canonical notation,
+    explicit plain-text terminal answer)."""
     with (
         patch("penny.commands.email.JmapClient", return_value=mock_jmap_client),
         patch("penny.commands.email.Agent") as mock_agent_cls,
@@ -144,9 +146,28 @@ async def test_email_agent_created_with_repeat_tools(mock_jmap_client, email_con
         cmd = EmailCommand(FAKE_TOKEN)
         await cmd.execute("check my email", email_context)
 
-    # Verify allow_repeat_tools was passed
     call_kwargs = mock_agent_cls.call_args
     assert call_kwargs.kwargs["allow_repeat_tools"] is True
+    assert (
+        call_kwargs.kwargs["system_prompt"]
+        == """\
+You are searching the user's email to answer their question. Work in order:
+
+1. search_emails(text=<keywords>) — find candidate emails; you can also narrow \
+with from_addr=<sender>, subject=<subject text>, after=<ISO date>, or \
+before=<ISO date>. Each result carries an id you pass to the next step.
+2. read_emails(email_ids=[<id>, <id>]) — read the full bodies of the promising \
+results. Pass ALL relevant ids in ONE call, not one at a time.
+3. If the answer is still incomplete, search_emails(text=<other keywords>) again \
+and read_emails(email_ids=[<id>]) the new hits.
+4. Answer the user in plain text with the concrete details you found — specific \
+dates, names, and amounts — and name the email (sender + subject) each fact \
+came from.
+
+ALWAYS ground every claim in an email you actually read — NEVER guess at a date, \
+sender, or amount you did not see. Use **bold** for the load-bearing terms \
+(dates, names, amounts) and bullet points when summarizing more than one email."""
+    )
 
 
 @pytest.mark.asyncio
