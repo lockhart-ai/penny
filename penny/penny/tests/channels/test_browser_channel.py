@@ -722,19 +722,15 @@ class TestCapabilitiesAndToolRouting:
         assert not channel._connections["firefox-1"].tool_use_enabled
 
     @pytest.mark.asyncio
-    async def test_has_tool_connection_requires_tool_use_enabled(self, tmp_path):
-        """has_tool_connection is False when connections exist but none have tool_use enabled."""
+    async def test_has_browser_connection_tracks_any_connection(self, tmp_path):
+        """has_browser_connection is True once any addon connects, tool-use or not."""
         db = _make_db(tmp_path)
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
 
         assert not channel.has_browser_connection
 
-        ws = await self._register(channel, "firefox-1")
+        await self._register(channel, "firefox-1")
         assert channel.has_browser_connection
-        assert not channel.has_tool_connection
-
-        await self._set_capabilities(channel, "firefox-1", ws, True)
-        assert channel.has_tool_connection
 
     @pytest.mark.asyncio
     async def test_send_tool_request_explains_connected_but_tool_use_disabled(self, tmp_path):
@@ -789,7 +785,6 @@ class TestCapabilitiesAndToolRouting:
         channel._connections["firefox-1"].last_heartbeat = datetime.now(UTC) - timedelta(
             seconds=PennyConstants.BROWSER_HEARTBEAT_TIMEOUT_SECONDS + 5
         )
-        assert channel.has_tool_connection
         assert channel._get_tool_connection() is ws
 
     @pytest.mark.asyncio

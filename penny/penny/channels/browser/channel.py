@@ -206,18 +206,6 @@ class BrowserChannel(MessageChannel):
         """Whether any browser addon websocket is connected."""
         return bool(self._connections)
 
-    @property
-    def has_tool_connection(self) -> bool:
-        """Whether any tool-use-enabled browser is connected.
-
-        Deliberately lenient about heartbeat staleness: a connection that has
-        gone quiet might be a suspended background script, but it might equally
-        be an older addon build that doesn't send the keepalive — so we still let
-        the browse attempt happen rather than declaring the browser offline.
-        ``_get_tool_connection`` prefers a fresh socket when one exists.
-        """
-        return any(c.tool_use_enabled for c in self._connections.values())
-
     def _has_fresh_heartbeat(self, conn: ConnectionInfo) -> bool:
         """True if this connection has heartbeated within the liveness window.
 
