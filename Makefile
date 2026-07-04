@@ -5,6 +5,8 @@ RUFF_TARGETS = penny/
 PYTEST_ARGS = penny/tests/ -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
+# FIFO ticket directory for serializing make eval on the single-tenant GPU.
+EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
@@ -88,11 +90,31 @@ pytest: $(if $(LOCAL),,build team-build)
 # Forwards the model endpoint into the container (defaulting to the docker host,
 # where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
 # the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
+# GPU queue: strictly first-come-first-served via ticket files. Each invocation
+# takes a ticket in EVAL_QUEUE_DIR and runs only when its ticket is the oldest
+# LIVE one (tickets whose holder PID is gone are reaped, so a killed waiter can
+# never wedge the line) and no eval container already holds the GPU. The ticket
+# is held until the eval finishes — later arrivals cannot jump the queue. While
+# waiting, prints queue position and the current GPU holder for observability.
 eval: $(if $(LOCAL),,build)
-	@while docker ps --no-trunc --format '{{.Command}}' 2>/dev/null | grep -qE 'tests/eval|-m eval'; do \
-		echo "waiting for an in-progress eval to finish (GPU is single-tenant)..."; \
-		sleep $$((50 + $$$$ % 20)); \
-	done
+	@mkdir -p "$(EVAL_QUEUE_DIR)"; \
+	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
+	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
+	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
+	while :; do \
+		head=""; ahead=0; \
+		for t in $$(ls "$(EVAL_QUEUE_DIR)" 2>/dev/null | sort); do \
+			pid=$$(cat "$(EVAL_QUEUE_DIR)/$$t" 2>/dev/null || true); \
+			if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then rm -f "$(EVAL_QUEUE_DIR)/$$t"; continue; fi; \
+			if [ -z "$$head" ]; then head="$$t"; fi; \
+			if [ "$$t" = "$$ticket" ]; then break; fi; \
+			ahead=$$((ahead + 1)); \
+		done; \
+		busy=$$(docker ps --no-trunc --format '{{.Names}} {{.Command}}' 2>/dev/null | grep -E 'tests/eval|-m eval' | awk '{print $$1}' | head -1); \
+		if [ "$$head" = "$$ticket" ] && [ -z "$$busy" ]; then break; fi; \
+		echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
+		sleep $$((15 + $$$$ % 10)); \
+	done; \
 	$(RUN) env \
 		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
 		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \

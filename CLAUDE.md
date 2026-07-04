@@ -24,6 +24,16 @@ Branch protection is enabled on `main`. All changes must go through pull request
   - Agent containers already have `GH_TOKEN` set by the orchestrator — just use `gh` directly
 - The user will review and merge the PR
 
+## Agent Supervision (task-agent fleets)
+
+When work is fanned out to task agents (each owning one issue per `docs/agent-task-workflow.md`), a **supervisor** — the parent Claude session or the user — owns the fleet. The SOP is the child's contract; these are the supervisor's duties:
+
+- **Assignment**: one issue per agent, an explicit scope boundary, the SOP as its operating contract.
+- **Heartbeat (the load-bearing duty)**: while any child is blocked on a serialized resource (the eval GPU queue) or a long external wait, check the fleet on a timer — every 30–60 minutes. Verify each waiting child's watched process still exists and its result artifact is progressing. A dead waiter never resurrects itself, and a resting agent wakes only when something wakes it: an unheartbeated fleet can sleep all night on top of finished results (this happened — four green-gated branches sat unpushed for ~7 hours).
+- **Stall recovery**: wake a stalled child with "check your result log/artifacts FIRST — the result may already exist — then relaunch only what's missing", plus anything that changed while it slept (main moved, SOP amended).
+- **Resource arbitration**: full-suite eval runs need explicit user approval; cross-session GPU contention is the supervisor's to surface to the user, not the children's to fight over.
+- **Lifecycle**: relay merge/close events so children run their §9 cleanup; file the follow-up issues children report as out-of-scope findings.
+
 ## Documentation Maintenance
 
 **IMPORTANT**: Always update CLAUDE.md and README.md after making significant changes to the codebase. This includes:
