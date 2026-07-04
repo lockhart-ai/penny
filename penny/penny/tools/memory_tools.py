@@ -212,59 +212,65 @@ class CollectionCreateTool(MemoryTool):
         "Create a keyed collection memory with a background collector.\n"
         "\n"
         "A collection is a long-lived task: every "
-        "``collector_interval_seconds`` the Collector subagent runs the "
-        "``extraction_prompt`` you supply here against the bound collection, "
+        "`collector_interval_seconds` the Collector subagent runs the "
+        "`extraction_prompt` you supply here against the bound collection, "
         "browsing or reading logs, writing structured entries, and "
-        "(optionally) calling ``send_message`` to ping the user.\n"
+        "(optionally) calling `send_message(<message>)` to ping the user.\n"
         "\n"
         "Fields:\n"
-        "- ``name`` — unique slug (lowercase, hyphens).\n"
-        "- ``description`` — a content-reflective one-line summary of what "
+        "- `name` — unique slug (lowercase, hyphens).\n"
+        "- `description` — a content-reflective one-line summary of what "
         "this collection holds.  This IS the routing anchor: a "
         "relevant-inclusion collection is only surfaced when the conversation "
         'matches this text, so describe the actual subject matter ("heavy '
         'euro-style strategy board games"), not the mechanism ("a collection '
         'that stores games").\n'
-        f"- ``inclusion`` ({_INCLUSION_MODES}) — stage-1 routing.  ``always``: "
-        "always in recall (identity, conventions).  ``relevant``: in only when "
+        f"- `inclusion` ({_INCLUSION_MODES}) — stage-1 routing.  `always`: "
+        "always in recall (identity, conventions).  `relevant`: in only when "
         "the conversation matches the description — the default for research "
-        "collections.  ``never``: silent — never surfaced in chat, only its "
+        "collections.  `never`: silent — never surfaced in chat, only its "
         "collector runs in the background.\n"
-        f"- ``recall`` ({_RECALL_MODES}) — stage-2 entry rendering once a "
-        "collection is included.  ``relevant`` ranks entries against the "
-        "conversation (default), ``recent`` shows newest, ``all`` shows every "
+        f"- `recall` ({_RECALL_MODES}) — stage-2 entry rendering once a "
+        "collection is included.  `relevant` ranks entries against the "
+        "conversation (default), `recent` shows newest, `all` shows every "
         "entry.\n"
-        "- ``extraction_prompt`` — REQUIRED.  The system prompt the "
+        "- `extraction_prompt` — REQUIRED.  The system prompt the "
         "collector subagent runs each cycle.  Write it as a NUMBERED list of "
         "explicit steps and tool calls (1., 2., 3.) — never flowing prose: a "
         "numbered recipe is followed far more reliably, while a prose prompt "
         "makes the collector bail without doing the work.  The runtime "
         "appends invariants (quiet-cycle escape, batched writes, "
-        "send_message gating, structured ``done(success, summary)``); you "
+        "`send_message(<message>)` gating, structured "
+        "`done(success=<true|false>, summary=<summary>)`); you "
         "supply only the workflow.\n"
-        "- ``collector_interval_seconds`` — REQUIRED.  How often the "
+        "- `collector_interval_seconds` — REQUIRED.  How often the "
         "collector runs.\n"
-        "- ``intent`` — REQUIRED.  What the user asked for, in their own "
+        "- `intent` — REQUIRED.  What the user asked for, in their own "
         "words — the goal the collection serves, captured once at creation "
         "and immutable thereafter.  Describe their request, not the "
         "mechanism.\n"
-        "- ``published`` — Set ``true`` when the user wants to be **told "
+        "- `published` — Set `true` when the user wants to be **told "
         "about / kept posted on / alerted to** new entries as they're found — "
-        "a notifier delivers each new entry to them once.  Leave it ``false`` "
+        "a notifier delivers each new entry to them once.  Leave it `false` "
         "(the default) for a silent collection that just gathers in the "
         "background for the user to ask about later.  Do NOT add a "
-        "``send_message`` step to the extraction_prompt for this — the "
-        "collector only gathers; ``published=true`` is how new finds reach the "
+        "`send_message(<message>)` step to the extraction_prompt for this — the "
+        "collector only gathers; `published=true` is how new finds reach the "
         "user.\n"
         "\n"
         "Returns a structured echo of the stored fields (name, interval, "
         "recall, published, description, full extraction_prompt).  Use the echo to "
         "confirm back to the user — don't invent fields it didn't return.\n"
         "\n"
-        "For workflow guidance — when to call this vs ``collection_update`` "
-        "or just ``browse``, how to shape the extraction_prompt for common "
-        "intents (research+notify, digest, silent research, etc.) — see the "
-        "skills surfaced in your recall context.\n"
+        "For workflow guidance — when to call this vs "
+        "`collection_update(name=<collection>)` or just "
+        '`browse(queries=["<topic>"])`, how to shape the extraction_prompt for '
+        "common intents (research+notify, digest, silent research, etc.) — see "
+        "the skills surfaced in your recall context.\n"
+        "\n"
+        "IMPORTANT: the `extraction_prompt` MUST be a numbered list of "
+        "tool-call steps (1., 2., 3.), never flowing prose — a prose prompt "
+        "makes the collector bail without doing the work.\n"
     )
     parameters = {
         "type": "object",
@@ -332,7 +338,7 @@ class CollectionCreateTool(MemoryTool):
                     "true = notify the user about new entries (they asked to be "
                     "told / kept posted / alerted as new ones are found); false "
                     "(default) = silent background collection they'll ask about "
-                    "later. Don't add a send_message step to the prompt — "
+                    "later. Don't add a send_message(<message>) step to the prompt — "
                     "published=true is how new finds reach the user."
                 ),
             },
@@ -499,7 +505,7 @@ class CollectionGetTool(MemoryTool):
             return ToolResult(
                 message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
                 f"keys with collection_keys('{args.memory}'), or search by content with "
-                f"read_similar."
+                f"read_similar(memory='{args.memory}', anchor=<what you're looking for>)."
             )
         return ToolResult(message=_format_entries(rows, source=args.memory))
 
@@ -514,8 +520,8 @@ class CollectionReadLatestTool(MemoryTool):
 
     name = "collection_read_latest"
     description = (
-        "Return the newest entries in a collection, newest first. Omit ``k`` to "
-        "return every entry. Collections only — to read a log use log_read."
+        "Return the newest entries in a collection, newest first. Omit `k` to "
+        "return every entry. Collections only — to read a log use `log_read(<log>)`."
     )
     parameters = {
         "type": "object",
@@ -542,7 +548,7 @@ class CollectionReadRandomTool(MemoryTool):
     """Return entries sampled uniformly at random from a collection."""
 
     name = "collection_read_random"
-    description = "Return ``k`` entries sampled uniformly at random. Omit ``k`` to return all."
+    description = "Return `k` entries sampled uniformly at random. Omit `k` to return all."
     parameters = {
         "type": "object",
         "properties": {
@@ -570,9 +576,9 @@ class ReadSimilarTool(MemoryTool):
     name = "read_similar"
     description = (
         "Return entries from a memory ordered by content similarity to an "
-        "``anchor`` phrase. Works for both collections and logs — use this "
-        "to find past conversations on a topic (search ``user-messages`` or "
-        "``penny-messages``), past browse results, related preferences or "
+        "`anchor` phrase. Works for both collections and logs — use this "
+        "to find past conversations on a topic (search `user-messages` or "
+        "`penny-messages`), past browse results, related preferences or "
         "facts, or any other historically-relevant entry."
     )
     parameters = {
@@ -600,8 +606,8 @@ class ReadSimilarTool(MemoryTool):
             logger.warning("%s: anchor embedding failed transiently", self.name)
             return ToolResult(
                 message="Couldn't embed the anchor (a transient embedding error). "
-                "Retry, or read this memory with collection_read_latest (collections) "
-                "or log_read (logs) instead.",
+                "Retry, or read a collection with collection_read_latest(<collection>) "
+                "or a log with log_read(<log>) instead.",
                 success=False,
             )
         entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
@@ -642,18 +648,18 @@ _SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', n
 # hands the matched key straight to ``update_entry`` instead of guessing keys or
 # re-reading the collection (the step-budget burn this rejection used to cause).
 _DUPLICATE_REMEDY_SOME = (
-    "Call ``update_entry`` with the existing key to refresh that entry with richer "
-    "info, or skip it."
+    "Call update_entry(key=<existing key>, content=<richer info>) to refresh that "
+    "entry, or skip it."
 )
 # All proposed entries were duplicates — nothing new landed.  The collector variant
 # names ``done()`` (its close tool); the chat variant must NOT (chat has no ``done``).
 _DUPLICATE_REMEDY_ALL_COLLECTOR = (
-    "Nothing new to add — call ``update_entry`` with the existing key if you have "
-    "richer info, otherwise call ``done()`` to close the cycle."
+    "Nothing new to add — call update_entry(key=<existing key>, content=<richer info>) "
+    "if you have richer info, otherwise call done() to close the cycle."
 )
 _DUPLICATE_REMEDY_ALL_CHAT = (
-    "Nothing new to add this time — call ``update_entry`` with the existing key if "
-    "you have richer info."
+    "Nothing new to add this time — call update_entry(key=<existing key>, "
+    "content=<richer info>) if you have richer info."
 )
 
 
@@ -674,7 +680,7 @@ class CollectionWriteTool(MemoryTool):
     name = "collection_write"
     description = (
         "Write one or more entries to a collection. Each entry has a short "
-        "``key`` (topic/identifier) and a longer ``content`` body. Dedup runs "
+        "`key` (topic/identifier) and a longer `content` body. Dedup runs "
         "per entry — duplicates are reported but not treated as errors."
     )
     parameters = {
@@ -817,8 +823,10 @@ class UpdateEntryTool(MemoryTool):
         if outcome == "not_found":
             return ToolResult(
                 message=f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
-                f"existing entries. Write it as a new entry with collection_write, or list the "
-                f"current keys with collection_keys('{args.memory}') if you expected it to exist."
+                f"existing entries. Write it as a new entry with "
+                f"collection_write(memory='{args.memory}', entries=<the new key and content>), "
+                f"or list the current keys with collection_keys('{args.memory}') if you "
+                f"expected it to exist."
             )
         return ToolResult(message=f"Updated '{args.key}' in '{args.memory}'.", mutated=True)
 
@@ -839,26 +847,26 @@ class CollectionUpdateTool(MemoryTool):
         "are changed.\n"
         "\n"
         "Fields:\n"
-        "- ``name`` (required) — the collection to update.\n"
-        "- ``description`` — content-reflective one-line summary AND the "
+        "- `name` (required) — the collection to update.\n"
+        "- `description` — content-reflective one-line summary AND the "
         "stage-1 routing anchor. Changing it re-embeds and re-routes when "
         "the collection surfaces, so keep it an accurate summary of the "
         "subject matter. It does not drive the collector — change the "
         "extraction_prompt for that.\n"
-        f"- ``inclusion`` ({_INCLUSION_MODES}) — stage-1 routing. Flip to "
+        f"- `inclusion` ({_INCLUSION_MODES}) — stage-1 routing. Flip to "
         "'never' to silence a collection (its collector still runs); 'always' "
         "to always surface it; 'relevant' to gate on the description.\n"
-        f"- ``recall`` ({_RECALL_MODES}) — stage-2 entry rendering once "
+        f"- `recall` ({_RECALL_MODES}) — stage-2 entry rendering once "
         "included.\n"
-        "- ``published`` — flip notify-on-new. ``true`` starts telling the "
+        "- `published` — flip notify-on-new. `true` starts telling the "
         "user about new entries (they asked to be kept posted / alerted); "
-        "``false`` silences it (the collector keeps gathering). Omit to leave "
+        "`false` silences it (the collector keeps gathering). Omit to leave "
         "unchanged.\n"
-        "- ``extraction_prompt`` — FULL replacement body, not a diff. "
+        "- `extraction_prompt` — FULL replacement body, not a diff. "
         "Drives what the collector actually does. Read the current body "
-        "via ``memory_metadata`` first if you need to preserve any "
+        "via `memory_metadata(<collection>)` first if you need to preserve any "
         "of it.\n"
-        "- ``collector_interval_seconds`` — cadence in seconds.\n"
+        "- `collector_interval_seconds` — cadence in seconds.\n"
         "\n"
         "Returns a structured echo of the updated state. The echo is "
         "authoritative — if a field you tried to set isn't in it, the "
@@ -866,8 +874,12 @@ class CollectionUpdateTool(MemoryTool):
         "\n"
         "For workflow guidance — which field maps to which user intent "
         "(scope change vs cadence change vs silent flip), when to call "
-        "``memory_metadata`` first, when to propose before applying — "
-        "see the skills surfaced in your recall context."
+        "`memory_metadata(<collection>)` first, when to propose before "
+        "applying — see the skills surfaced in your recall context.\n"
+        "\n"
+        "IMPORTANT: `extraction_prompt` is a FULL replacement — the whole "
+        "prompt body, never a diff or a fragment; read the current body via "
+        "`memory_metadata(<collection>)` first if you need to keep any of it."
     )
     parameters = {
         "type": "object",
@@ -911,8 +923,8 @@ class CollectionUpdateTool(MemoryTool):
                 "description": (
                     "FULL rewritten body — replaces the whole prompt, not "
                     "a diff. Drives what the collector actually does. Read "
-                    "current body via memory_metadata first for scope "
-                    "or silent-flip changes."
+                    "current body via memory_metadata(<collection>) first for "
+                    "scope or silent-flip changes."
                 ),
             },
             "collector_interval_seconds": {
@@ -1077,8 +1089,8 @@ class CollectionMergeTool(MemoryTool):
 
     name = "collection_merge"
     description = (
-        "Move every entry from ``from_memory`` into ``to_memory``, then archive "
-        "``from_memory``.  Entries whose key already exists in ``to_memory`` are "
+        "Move every entry from `from_memory` into `to_memory`, then archive "
+        "`from_memory`.  Entries whose key already exists in `to_memory` are "
         "dropped (destination wins).  Use this to resolve duplicate collections."
     )
     parameters = {
@@ -1561,8 +1573,9 @@ class ExistsTool(Tool):
     description = (
         "Check whether an entry equivalent to the given key/content already "
         "exists in any of the listed memories. Uses the same similarity-based "
-        "dedup rule as ``collection_write``. Use this before writing to avoid "
-        "duplicates that span multiple collections."
+        "dedup rule as `collection_write(memory=<collection>, entries=<key + "
+        "content>)`. Use this before writing to avoid duplicates that span "
+        "multiple collections."
     )
     parameters = {
         "type": "object",
@@ -1616,11 +1629,11 @@ class DoneTool(Tool):
 
     name = "done"
     description = (
-        "Call this when the cycle is finished.  Pass ``success`` (true if "
+        "Call this when the cycle is finished.  Pass `success` (true if "
         "you did what the prompt asked, false on no-op or failure) and "
-        "``summary`` (one-sentence prose describing what the cycle actually "
+        "`summary` (one-sentence prose describing what the cycle actually "
         "did — entries written, messages sent, why no-op).  Both are logged "
-        "to ``collector-runs`` for auditing."
+        "to `collector-runs` for auditing."
     )
     parameters = {
         "type": "object",
