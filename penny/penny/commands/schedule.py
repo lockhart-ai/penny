@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
 from penny.database.models import Schedule, UserInfo
+from penny.datetime_utils import current_datetime_line
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 
@@ -79,8 +80,13 @@ class ScheduleCommand(Command):
 
             user_timezone = user_info.timezone
 
-        # Parse command using LLM
-        prompt = Prompt.SCHEDULE_PARSE_PROMPT.format(timezone=user_timezone, command=command)
+        # Parse command using LLM — ground it in today's date so relative
+        # cadences ("every other friday") resolve against the right calendar day.
+        prompt = Prompt.SCHEDULE_PARSE_PROMPT.format(
+            today=current_datetime_line(context.db),
+            timezone=user_timezone,
+            command=command,
+        )
 
         try:
             response = await context.model_client.generate(

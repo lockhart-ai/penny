@@ -7,6 +7,7 @@ import logging
 from penny.agents.base import Agent
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
+from penny.datetime_utils import current_datetime_line
 from penny.jmap import JmapClient
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -52,7 +53,9 @@ class EmailCommand(Command):
         try:
             tools: list[Tool] = [
                 SearchEmailsTool(jmap_client),
-                ReadEmailsTool(jmap_client, context.model_client, prompt),
+                ReadEmailsTool(
+                    jmap_client, context.model_client, prompt, current_datetime_line(context.db)
+                ),
             ]
 
             agent = Agent(

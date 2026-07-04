@@ -517,7 +517,7 @@ class Penny:
                 logger.info("No message history yet, skipping startup announcement")
                 return
 
-            restart_msg = await get_restart_message(self.model_client)
+            restart_msg = await get_restart_message(self.db, self.model_client)
             announcement = f"👋 {restart_msg}"
 
             logger.info("Sending startup announcement to %s", sender)

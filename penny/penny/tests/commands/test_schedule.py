@@ -5,9 +5,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database.models import Schedule, UserInfo
 from penny.tests.conftest import TEST_SENDER, wait_until
 from penny.tools.browse import BrowseTool
+
+
+def _find_request(mock_llm, needle: str) -> str:
+    """The content of the first captured LLM request containing needle."""
+    for request in mock_llm.requests:
+        for message in request["messages"]:
+            if needle in message["content"]:
+                return message["content"]
+    raise AssertionError(f"No LLM request containing {needle!r}")
 
 
 def _has_message(server, text: str) -> bool:
@@ -151,6 +161,20 @@ async def test_schedule_create_and_list(signal_server, test_config, mock_llm, ru
 
         # Should confirm creation
         await wait_until(lambda: _has_message(signal_server, "Added daily 9am: what's the news?"))
+
+        # The parse prompt is grounded in the current date, rendered in the user's
+        # profile timezone (LA) — never a bare UTC now() — so relative cadences
+        # resolve against the right calendar day.  Bracket the render so a minute
+        # rollover between snapshots can't flake the exact-stamp assertion.
+        before = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
+            PennyConstants.CURRENT_DATETIME_FORMAT
+        )
+        parse_prompt = _find_request(mock_llm, "Parse this schedule command")
+        after = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
+            PennyConstants.CURRENT_DATETIME_FORMAT
+        )
+        assert "Current date and time: " in parse_prompt
+        assert any(f"Current date and time: {stamp}" in parse_prompt for stamp in (before, after))
 
         # List schedules
         await signal_server.push_message(sender=TEST_SENDER, content="/schedule")

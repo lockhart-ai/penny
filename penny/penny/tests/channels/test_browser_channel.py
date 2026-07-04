@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlmodel import Session, select
@@ -1109,9 +1110,15 @@ class TestBrowserScheduleHandlers:
         channel._model_client = mock_client
 
         ws = _MockWs()
+        before = datetime.now(ZoneInfo("America/New_York")).strftime(
+            PennyConstants.CURRENT_DATETIME_FORMAT
+        )
         await channel._handle_schedule_add(
             ws,  # ty: ignore[invalid-argument-type]
             {"type": "schedule_add", "command": "daily 9am check the news"},
+        )
+        after = datetime.now(ZoneInfo("America/New_York")).strftime(
+            PennyConstants.CURRENT_DATETIME_FORMAT
         )
 
         resp = ws.sent[0]
@@ -1120,6 +1127,13 @@ class TestBrowserScheduleHandlers:
         assert resp["schedules"][0]["timing_description"] == "daily 9am"
         assert resp["schedules"][0]["prompt_text"] == "check the news"
         assert resp["schedules"][0]["cron_expression"] == "0 9 * * *"
+
+        # The parse prompt is grounded in the current date, rendered in the user's
+        # profile timezone (New York) — the browser's ad-hoc schedule parse gets the
+        # same dated anchor the agent-loop envelope injects, never a bare UTC now().
+        parse_prompt = mock_client.generate.call_args.kwargs["prompt"]
+        assert "Current date and time: " in parse_prompt
+        assert any(f"Current date and time: {stamp}" in parse_prompt for stamp in (before, after))
 
     @pytest.mark.asyncio
     async def test_schedule_add_without_timezone_returns_error(self, tmp_path, monkeypatch):

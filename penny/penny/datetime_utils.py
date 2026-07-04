@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, tzinfo
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from penny.constants import PennyConstants
+
+if TYPE_CHECKING:
+    from penny.database.database import Database
 
 try:
     from geopy.geocoders import Nominatim
@@ -73,3 +79,47 @@ async def get_timezone(location: str) -> str | None:
     except Exception as e:
         logger.warning("Timezone derivation failed for %s: %s", location, e)
         return None
+
+
+def current_datetime_line(db: Database) -> str:
+    """The 'Current date and time: <stamp>' anchor line handed to the model.
+
+    The single source of the dated clock.  The agent-loop envelope
+    (``Agent._build_messages``) and every ad-hoc one-shot LLM flow — the
+    ``/schedule`` natural-language parse, the ``/profile`` parse, the startup
+    announcement, the email summarize — render through here so they all reason
+    from the same wall clock, in the user's profile timezone (never a bare UTC
+    ``now()``).  Falls back to UTC on a fresh install / unknown zone, exactly like
+    the envelope.
+    """
+    stamp = datetime.now(user_timezone(db)).strftime(PennyConstants.CURRENT_DATETIME_FORMAT)
+    return f"{PennyConstants.CURRENT_DATETIME_PREFIX}{stamp}"
+
+
+def user_timezone(db: Database) -> tzinfo:
+    """The primary user's IANA timezone for the current-date/time anchor.
+
+    The profile advertises the user's timezone, so the clock the model reasons
+    from must match it — otherwise Penny is told the wrong time-of-day always,
+    and (for the hours around local midnight) the wrong calendar day.  Falls back
+    to UTC when there's no profile / timezone (fresh install) or the stored zone
+    is unknown.  Entry/log timestamps stay UTC via ``format_log_timestamp`` —
+    those are absolute historical markers, not the current-now anchor.
+    """
+    iana = _user_timezone_name(db)
+    if iana is None:
+        return UTC
+    try:
+        return ZoneInfo(iana)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown profile timezone %r — anchoring in UTC", iana)
+        return UTC
+
+
+def _user_timezone_name(db: Database) -> str | None:
+    """The primary user's stored IANA timezone, or None with no profile."""
+    sender = db.users.get_primary_sender()
+    if sender is None:
+        return None
+    user_info = db.users.get_info(sender)
+    return user_info.timezone if user_info is not None else None

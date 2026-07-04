@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,6 +13,15 @@ from penny.constants import PennyConstants
 from penny.llm.models import LlmConnectionError
 from penny.penny import Penny
 from penny.tests.conftest import TEST_SENDER, wait_until
+
+
+def _find_request(mock_llm, needle: str) -> str:
+    """The content of the first captured LLM request containing needle."""
+    for request in mock_llm.requests:
+        for message in request["messages"]:
+            if needle in message["content"]:
+                return message["content"]
+    raise AssertionError(f"No LLM request containing {needle!r}")
 
 
 class StartupReadyChannel(MessageChannel):
@@ -88,6 +99,9 @@ async def test_startup_announcement_with_commit(
     # Second run: configure restart message and verify announcement
     mock_llm.set_default_flow(final_response="i added a cool new feature! check it out")
 
+    before = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
+        PennyConstants.CURRENT_DATETIME_FORMAT
+    )
     async with running_penny(test_config):
         await wait_until(lambda: len(signal_server.outgoing_messages) > 0)
 
@@ -109,6 +123,18 @@ async def test_startup_announcement_with_commit(
         assert message.startswith("👋"), f"Expected message to start with 👋, got: {message}"
         assert "i added a cool new feature! check it out" in message, (
             f"Expected restart message in announcement, got: {message}"
+        )
+
+        # The commit-transform prompt is grounded in the current date, rendered in
+        # the user's profile timezone (LA) — the ad-hoc startup flow gets the same
+        # dated anchor as the agent-loop envelope, never a bare UTC now().
+        after = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
+            PennyConstants.CURRENT_DATETIME_FORMAT
+        )
+        transform_prompt = _find_request(mock_llm, "Transform this git commit message")
+        assert "Current date and time: " in transform_prompt
+        assert any(
+            f"Current date and time: {stamp}" in transform_prompt for stamp in (before, after)
         )
 
 

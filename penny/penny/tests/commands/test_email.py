@@ -71,8 +71,13 @@ def email_context():
     runtime.EMAIL_BODY_MAX_LENGTH = 4000
     runtime.EMAIL_SEARCH_LIMIT = 10
     config.runtime = runtime
+    db = MagicMock()
+    # current_datetime_line() reads the primary user's profile timezone for the dated
+    # anchor injected into the email-summarize prompt.
+    db.users.get_primary_sender.return_value = TEST_SENDER
+    db.users.get_info.return_value = MagicMock(timezone="America/Los_Angeles")
     return CommandContext(
-        db=MagicMock(),
+        db=db,
         config=config,
         model_client=MagicMock(),
         embedding_model_client=MagicMock(),
@@ -199,7 +204,12 @@ async def test_read_emails_tool_summarizes_content():
         content="Amazon shipped order #123-456, arriving Feb 12."
     )
 
-    tool = ReadEmailsTool(mock_jmap, mock_llm, "what packages am I expecting")
+    tool = ReadEmailsTool(
+        mock_jmap,
+        mock_llm,
+        "what packages am I expecting",
+        "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
+    )
     result = await tool.execute(email_ids=["M001"])
 
     assert result.message == "Amazon shipped order #123-456, arriving Feb 12."
@@ -207,6 +217,9 @@ async def test_read_emails_tool_summarizes_content():
     mock_llm.chat.assert_called_once()
     prompt = mock_llm.chat.call_args[0][0][0]["content"]
     assert "what packages am I expecting" in prompt
+    # The summarize prompt is grounded in the current date so the model can resolve
+    # relative dates in email bodies ("arriving next Tuesday").
+    assert "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT" in prompt
 
 
 @pytest.mark.asyncio
@@ -218,7 +231,12 @@ async def test_read_emails_tool_falls_back_on_empty_summary():
     mock_llm = AsyncMock()
     mock_llm.chat.return_value = MagicMock(content="")
 
-    tool = ReadEmailsTool(mock_jmap, mock_llm, "test query")
+    tool = ReadEmailsTool(
+        mock_jmap,
+        mock_llm,
+        "test query",
+        "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
+    )
     result = await tool.execute(email_ids=["M001"])
 
     assert "Your order #123-456 has been shipped!" in result.message
@@ -232,7 +250,12 @@ async def test_read_emails_tool_no_ids():
     mock_jmap = AsyncMock()
     mock_llm = AsyncMock()
 
-    tool = ReadEmailsTool(mock_jmap, mock_llm, "test query")
+    tool = ReadEmailsTool(
+        mock_jmap,
+        mock_llm,
+        "test query",
+        "Current date and time: Friday, May 09, 2025 at 03:00 PM PDT",
+    )
     result = await tool.run(email_ids=[])
 
     assert result.success is False

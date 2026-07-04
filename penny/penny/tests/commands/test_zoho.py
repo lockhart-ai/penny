@@ -71,8 +71,13 @@ def zoho_context():
     runtime.EMAIL_SEARCH_LIMIT = 10
     runtime.EMAIL_LIST_LIMIT = 10
     config.runtime = runtime
+    db = MagicMock()
+    # current_datetime_line() reads the primary user's profile timezone for the dated
+    # anchor injected into the email-summarize prompt.
+    db.users.get_primary_sender.return_value = TEST_SENDER
+    db.users.get_info.return_value = MagicMock(timezone="America/Los_Angeles")
     return CommandContext(
-        db=MagicMock(),
+        db=db,
         config=config,
         model_client=MagicMock(),
         embedding_model_client=MagicMock(),

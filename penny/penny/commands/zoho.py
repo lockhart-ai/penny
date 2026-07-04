@@ -7,6 +7,7 @@ import logging
 from penny.agents.base import Agent
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
+from penny.datetime_utils import current_datetime_line
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tools import Tool
@@ -67,7 +68,9 @@ class ZohoCommand(Command):
                 SearchEmailsTool(zoho_client),
                 ListEmailsTool(zoho_client),
                 ListFoldersTool(zoho_client),
-                ReadEmailsTool(zoho_client, context.model_client, prompt),
+                ReadEmailsTool(
+                    zoho_client, context.model_client, prompt, current_datetime_line(context.db)
+                ),
                 DraftEmailTool(zoho_client),
             ]
 

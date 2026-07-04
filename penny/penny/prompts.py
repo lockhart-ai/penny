@@ -106,6 +106,7 @@ class Prompt:
     )
 
     EMAIL_SUMMARIZE_PROMPT = (
+        "{today}\n\n"
         'The user asked: "{query}"\n\n'
         "Extract the key information from these emails that is relevant to the user's question. "
         "Be concise — include specific dates, names, amounts, and actionable details. "
@@ -122,6 +123,7 @@ Extract:
 3. A cron expression representing the timing (use standard cron format)
    Format: minute hour day month weekday
 
+{today}
 User timezone: {timezone}
 
 Command: {command}

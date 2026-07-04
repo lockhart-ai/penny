@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from penny.commands.base import Command
 from penny.commands.models import CommandContext, CommandResult
-from penny.datetime_utils import get_timezone
+from penny.datetime_utils import current_datetime_line, get_timezone
 from penny.responses import PennyResponse
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class ProfileCommand(Command):
     )
 
     async def _parse_profile_create(
-        self, args: str, ollama_client: Any
+        self, args: str, ollama_client: Any, today: str
     ) -> ProfileCreateParse | None:
         """
         Parse profile creation arguments using LLM.
@@ -65,12 +65,15 @@ class ProfileCommand(Command):
         Args:
             args: User input string
             ollama_client: Ollama client for structured parsing
+            today: The current date/time anchor, so relative dates ("30 years
+                ago") resolve against the right calendar day
 
         Returns:
             ProfileCreateParse if parsing succeeded, None otherwise
         """
         try:
             prompt = (
+                f"{today}\n\n"
                 f"Extract the user's name, location, and date of birth "
                 f'from this input: "{args}"\n\n'
                 "Return your response as JSON matching this schema:\n"
@@ -94,7 +97,7 @@ class ProfileCommand(Command):
             return None
 
     async def _parse_profile_update(
-        self, args: str, ollama_client: Any
+        self, args: str, ollama_client: Any, today: str
     ) -> ProfileUpdateParse | None:
         """
         Parse profile update arguments using LLM.
@@ -102,12 +105,14 @@ class ProfileCommand(Command):
         Args:
             args: User input string
             ollama_client: Ollama client for structured parsing
+            today: The current date/time anchor for grounding
 
         Returns:
             ProfileUpdateParse if parsing succeeded, None otherwise
         """
         try:
             prompt = (
+                f"{today}\n\n"
                 f'Extract the user\'s name and/or location from this input: "{args}"\n\n'
                 "Return your response as JSON matching this schema:\n"
                 "- name (string or null): user's name, or null if not mentioned\n"
@@ -158,7 +163,9 @@ class ProfileCommand(Command):
         # NEW PROFILE CREATION (no existing profile)
         if not user_info:
             # Use LLM to parse profile creation arguments
-            parsed = await self._parse_profile_create(args, context.model_client)
+            parsed = await self._parse_profile_create(
+                args, context.model_client, current_datetime_line(context.db)
+            )
             if not parsed:
                 return CommandResult(text=PennyResponse.PROFILE_CREATE_PARSE_ERROR)
 
@@ -200,7 +207,9 @@ class ProfileCommand(Command):
         # PROFILE UPDATE (existing profile)
 
         # Use LLM to parse profile update arguments
-        parsed = await self._parse_profile_update(args, context.model_client)
+        parsed = await self._parse_profile_update(
+            args, context.model_client, current_datetime_line(context.db)
+        )
         if not parsed:
             return CommandResult(text=PennyResponse.PROFILE_UPDATE_PARSE_ERROR)
 

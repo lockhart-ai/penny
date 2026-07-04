@@ -3,6 +3,8 @@
 import logging
 import os
 
+from penny.database.database import Database
+from penny.datetime_utils import current_datetime_line
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmError
 from penny.responses import PennyResponse
@@ -10,11 +12,12 @@ from penny.responses import PennyResponse
 logger = logging.getLogger(__name__)
 
 
-async def get_restart_message(ollama_client: LlmClient) -> str:
+async def get_restart_message(db: Database, ollama_client: LlmClient) -> str:
     """
     Generate a casual restart announcement based on the latest git commit.
 
     Args:
+        db: Database, for the current-date/time anchor (user timezone)
         ollama_client: Ollama client for transforming commit message
 
     Returns:
@@ -32,6 +35,7 @@ async def get_restart_message(ollama_client: LlmClient) -> str:
 
     # Transform commit message into casual first-person announcement
     prompt = (
+        f"{current_datetime_line(db)}\n\n"
         f"Transform this git commit message into a casual, first-person "
         f"announcement (one sentence, under 100 characters). "
         f"Keep it friendly and simple, like texting a friend.\n\n"

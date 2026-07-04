@@ -50,10 +50,12 @@ class ReadEmailsTool(Tool):
         email_client: EmailClient,
         ollama_client: LlmClient,
         user_query: str,
+        today: str,
     ) -> None:
         self._client = email_client
         self._ollama = ollama_client
         self._user_query = user_query
+        self._today = today
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Read emails and summarize relevant content."""
@@ -64,6 +66,7 @@ class ReadEmailsTool(Tool):
 
         raw_content = PennyConstants.SECTION_SEPARATOR.join(str(e) for e in emails)
         prompt = Prompt.EMAIL_SUMMARIZE_PROMPT.format(
+            today=self._today,
             query=self._user_query,
             emails=raw_content,
         )

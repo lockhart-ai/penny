@@ -818,7 +818,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
                     prior = os.environ.get("GIT_COMMIT_MESSAGE")
                     os.environ["GIT_COMMIT_MESSAGE"] = commit_message
                     try:
-                        announcement = await get_restart_message(penny.model_client)
+                        announcement = await get_restart_message(penny.db, penny.model_client)
                     finally:
                         if prior is None:
                             os.environ.pop("GIT_COMMIT_MESSAGE", None)

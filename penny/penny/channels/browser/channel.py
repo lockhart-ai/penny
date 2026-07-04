@@ -108,6 +108,7 @@ from penny.database.memory import (
     RecallMode,
 )
 from penny.database.models import RuntimeConfig, Schedule, UserInfo
+from penny.datetime_utils import current_datetime_line
 from penny.prompts import Prompt
 from penny.tools.base import Tool
 
@@ -1009,7 +1010,9 @@ class BrowserChannel(MessageChannel):
             user_timezone = user_info.timezone
 
         prompt = Prompt.SCHEDULE_PARSE_PROMPT.format(
-            timezone=user_timezone, command=req.command.strip()
+            today=current_datetime_line(self._db),
+            timezone=user_timezone,
+            command=req.command.strip(),
         )
         try:
             response = await self._model_client.generate(prompt=prompt, format="json")
