@@ -64,9 +64,13 @@ You are **not done when the PR opens.** Do not exit — stay alive and shepherd 
 - **Never destructively escape a rebase;** resolve conflicts in place. Re-verify the PR is still open before each push — if it merged, stop and go to §9.
 - When CI is green, the branch is current on `main`, and there are no open review threads: report "green · current · awaiting merge" and **pause** — you'll be resumed on new CI / review / `main` activity. Don't busy-spin; pause between cycles.
 
-## 9. Merge → cleanup
+## 9. Terminal cleanup — the REQUIRED last step of every task
 - The **user** merges (branch protection: no self-merge to `main`).
-- **Only once the PR is merged:** remove your worktree (`git worktree remove …`), delete the local and remote branch, and discard the task plan file. Keep everything in place until then.
+- **Cleanup is not optional and not someone else's job — it is the final step of YOUR task, and your task is not complete until it's done.** The trigger is your PR reaching a **terminal state, either way**:
+  - **Merged** → clean up.
+  - **Closed without merge** (superseded, deferred, rejected) → clean up all the same. A closed PR's worktree is exactly as dead as a merged one's; this is the case that orphans trees.
+- Cleanup = remove your worktree (`git worktree remove <path>`), delete the local **and** remote branch (skip the remote if GitHub already deleted it on merge), and discard the task plan file. Keep everything in place until the terminal state; nothing in place after it.
+- Each pause-cycle while shepherding (§8), re-check the PR's state first — if it went terminal while you slept, run cleanup **now**, report "merged → cleaned up" (or "closed → cleaned up"), and end. Never end your final turn with the worktree still in place.
 - If the change warrants it, update `CLAUDE.md` / `README.md` (docs-maintenance rule) — as part of the PR, not after.
 
 ---
@@ -80,4 +84,4 @@ You are **not done when the PR opens.** Do not exit — stay alive and shepherd 
 6. **PII pre-publish check** before anything leaves the machine.
 7. **Model-facing change ⇒ committed `tests/eval/` contract, dry-run first.**
 8. **Rebase, never destructively escape;** keep the branch current on `main` on a loop, not once.
-9. **Stay alive shepherding the PR** — CI green, reviews addressed, rebased on latest `main` — **until it's MERGED; only then clean up.**
+9. **Stay alive shepherding the PR** — CI green, reviews addressed, rebased on latest `main` — until it reaches a **terminal state (merged OR closed)**; then **cleanup is the required last step** — worktree, branches, plan file — before you end.
