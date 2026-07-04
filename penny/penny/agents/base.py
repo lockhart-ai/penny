@@ -622,11 +622,12 @@ class Agent:
         """Apply a ``Retry`` disposition: record the condition, append the bad
         response, then its nudge (if any).
 
-        ``EMPTY`` carries ``CONTINUE_NUDGE`` mid-loop and an empty nudge on the
-        final step (tools stripped); the loop substitutes the forceful
-        ``build_strong_nudge`` there, since the strong builder needs the message
-        history a pure validator can't hold.  Other conditions just re-append the
-        response (empty nudge)."""
+        ``EMPTY`` carries the empty validator's per-agent mid-loop nudge
+        (``CONTINUE_NUDGE`` for chat, ``COLLECTOR_CONTINUE_NUDGE`` for collectors)
+        and an empty nudge on the final step (tools stripped); the loop substitutes
+        the forceful ``build_strong_nudge`` there, since the strong builder needs
+        the message history a pure validator can't hold.  Other conditions just
+        re-append the response (empty nudge)."""
         retried.add(condition)
         logger.warning(
             "Invalid response (%s) on attempt %d/%d", condition, attempt + 1, max_retries
@@ -1194,6 +1195,20 @@ class BackgroundAgent(Agent):
     either — having ``done`` available there causes the model to call
     it instead of producing a reply.
     """
+
+    # The collector response-shape chain — same guards as the base/chat chain, but
+    # the empty-response validator carries ``COLLECTOR_CONTINUE_NUDGE`` instead of
+    # the chat ``CONTINUE_NUDGE``: a collector acts only through tool calls, so
+    # "provide your response" invites an unparseable prose reply — its mid-loop
+    # empty-content nudge must demand a tool call.  Composed explicitly (not
+    # inherited) so the swap reads here as a table of contents, one differing entry.
+    response_validators: list[ResponseValidator] = [
+        HallucinatedToolCallRepair(),
+        XmlTagValidator(),
+        EmptyResponseValidator(continue_nudge=Prompt.COLLECTOR_CONTINUE_NUDGE),
+        RefusalValidator(),
+        HallucinatedUrlValidator(),
+    ]
 
     # A collector acts only through tool calls, so two run-shape guards apply
     # that don't on chat: a prose answer where a tool call was due

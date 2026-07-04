@@ -32,6 +32,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.tests.eval.conftest import (
     CollectorScorer,
+    _InjectEmptyResponse,
     collection_entries,
     seed_collection,
     tool_was_called,
@@ -315,6 +316,35 @@ async def test_collector_recovers_from_text_bail(nudge_eval) -> None:
         collection=WATCHLIST.name,
         seed=_seed_watchlist,
         bail_text=COLLECTOR_PROSE_BAIL,
+    )
+
+
+def _score_watchlist_recovered(db: Database, before: object, sent: list[str]) -> list[str]:
+    """Pass iff the cycle recovered from the forced empty response with a REAL tool
+    call — it wrote the watchlist entries the seeded messages clearly warrant, not
+    just any close.  (``nudge_eval`` separately asserts the cycle closed with a
+    genuine ``done()``; this proves the recovery move was real work, not prose.)"""
+    if collection_entries(db, WATCHLIST.name) and tool_was_called(db, "collection_write"):
+        return []
+    return ["did not recover with a real write after the forced empty response"]
+
+
+async def test_collector_recovers_from_empty_response(nudge_eval) -> None:
+    """Contract: a collector that returns EMPTY content mid-cycle (no text, no tool
+    call) is nudged for a TOOL CALL — the collector nudge demands one and names
+    done(), not the chat 'Please provide your response.' that would invite an
+    unparseable prose reply — and recovers to a real write + a genuine done().
+
+    The empty slip is stochastic, so the harness forces one empty response right
+    after the model's first tool call; the live model then drives the recovery
+    through the production ``COLLECTOR_CONTINUE_NUDGE`` (the mechanism itself is
+    covered deterministically by ``test_agentic_loop.TestCollectorEmptyNudge``)."""
+    await nudge_eval(
+        case_id="collector-empty-response-recovery",
+        collection=WATCHLIST.name,
+        seed=_seed_watchlist,
+        wrap=_InjectEmptyResponse,
+        score=_score_watchlist_recovered,
     )
 
 
