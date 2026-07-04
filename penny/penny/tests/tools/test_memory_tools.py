@@ -427,10 +427,62 @@ class TestCollectionWritesAndReads:
         assert result.mutated is False
         # The candidate's own key is named, *and* the existing key it
         # collided with — gives the model enough context to pivot to
-        # update_entry instead of silently dropping fresher info.
+        # update_entry with that key instead of guessing keys or re-reading.
         assert "dark roast coffee" in result.message
-        assert "matches existing 'dark roast'" in result.message
+        assert "duplicates existing 'dark roast'" in result.message
         assert "update_entry" in result.message
+        # Whole batch was duplicates → the "nothing new" hint fires.  This is a
+        # chat-scope write (scope=None), which has no ``done`` tool, so the hint
+        # must NOT name it — chat and collector share this tool surface.
+        assert "Nothing new to add this time" in result.message
+        assert "done()" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_write_all_duplicates_collector_scope_hints_done(self, tmp_path, mock_llm):
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        # A collector binds its writes to one collection via ``scope``.
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
+        await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        all_duplicates = await write.execute(
+            memory="likes",
+            entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
+        )
+        # Whole batch was duplicates and this is a collector, so the hint names
+        # ``done()`` — the model can close the cycle instead of key-hunting.
+        assert "Nothing new to add" in all_duplicates.message
+        assert "done()" in all_duplicates.message
+        assert "update_entry" in all_duplicates.message
+        # A re-write under the SAME key can't name a distinct existing key — the
+        # fallback still labels the collision instead of echoing a bare key.
+        same_key = await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        assert "'dark roast' duplicates an existing entry" in same_key.message
+        # A batch with a genuinely new entry alongside a duplicate gets the
+        # per-entry remedy (refresh-or-skip), never the "nothing new" close.
+        partial = await write.execute(
+            memory="likes",
+            entries=[
+                {"key": "cold brew", "content": "a brand new distinct entry"},
+                {"key": "dark roast blend", "content": "first body"},
+            ],
+        )
+        assert "Wrote 1 entry" in partial.message
+        assert "Rejected as duplicates" in partial.message
+        assert "or skip it" in partial.message
+        assert "Nothing new to add" not in partial.message
+        assert partial.mutated is True
 
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):

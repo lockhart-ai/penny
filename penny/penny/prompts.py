@@ -192,3 +192,15 @@ Examples:
         "The user asked: {original_question}"
     )
     CONTINUE_NUDGE = "Please provide your response."
+
+    # The collector counterpart to CONTINUE_NUDGE, injected when a background
+    # collector returns empty content mid-loop (no text AND no tool call).  The
+    # chat CONTINUE_NUDGE ("Please provide your response.") invites a prose reply,
+    # but a collector acts only through tool calls — a prose "response" fails to
+    # parse and can kill the cycle — so demand a tool call, naming done() the same
+    # way COLLECTOR_TOOL_CALL_NUDGE does.
+    COLLECTOR_CONTINUE_NUDGE = (
+        "You returned nothing, but you act only through tool calls — never prose. "
+        "Make a tool call now: call done() if the cycle is complete, otherwise call "
+        "the appropriate tool to continue the cycle."
+    )

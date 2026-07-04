@@ -190,10 +190,20 @@ class EmptyResponseValidator:
     bare ``<think>`` block with no body) — retry once.
 
     The nudge depends on whether tools are still available: mid-loop (tools live)
-    a gentle ``CONTINUE_NUDGE``; on the final step (tools stripped) the loop swaps
-    in the forceful ``build_strong_nudge`` carrying the original question.  The
-    empty-string sentinel signals "loop, build the strong nudge from messages" —
-    the strong builder needs the message history a pure validator can't hold."""
+    the ``continue_nudge`` this validator was composed with; on the final step
+    (tools stripped) the loop swaps in the forceful ``build_strong_nudge`` carrying
+    the original question.  The empty-string sentinel signals "loop, build the
+    strong nudge from messages" — the strong builder needs the message history a
+    pure validator can't hold.
+
+    ``continue_nudge`` is the mid-loop nudge and is composed per-agent: chat/base
+    keep the default ``CONTINUE_NUDGE`` ("Please provide your response."), while
+    the collector chain passes ``COLLECTOR_CONTINUE_NUDGE`` — a collector acts only
+    through tool calls, so "provide your response" would invite an unparseable prose
+    reply; it must be told to make a tool call instead."""
+
+    def __init__(self, continue_nudge: str = Prompt.CONTINUE_NUDGE) -> None:
+        self._continue_nudge = continue_nudge
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ConditionKey.EMPTY in ctx.retried:
@@ -202,7 +212,7 @@ class EmptyResponseValidator:
         letter_count = sum(1 for character in effective_content if character.isalpha())
         if letter_count >= PennyConstants.MIN_RESPONSE_LETTERS:
             return Proceed(response=response)
-        nudge = Prompt.CONTINUE_NUDGE if ctx.tools_available else ""
+        nudge = self._continue_nudge if ctx.tools_available else ""
         return Retry(condition=ConditionKey.EMPTY, nudge=nudge)
 
 

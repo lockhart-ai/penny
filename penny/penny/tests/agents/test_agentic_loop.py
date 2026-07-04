@@ -8,7 +8,7 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.agents.base import Agent, BackgroundAgent
-from penny.agents.models import ToolCallRecord
+from penny.agents.models import MessageRole, ToolCallRecord
 from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
@@ -305,6 +305,21 @@ class TestRepeatCallGuard:
         assert response.answer == "done"
         # Only first call should have executed
         assert len(response.tool_calls) == 1
+
+        # The repeat rejection is framed like every real tool result — routed
+        # through Tool.format_result — so the model reads it as the response to
+        # its own call, not a fresh instruction.
+        repeat_tool_messages = [
+            message
+            for request in mock_llm.requests
+            for message in request["messages"]
+            if message.get("role") == MessageRole.TOOL
+            and "You already made this exact tool call" in message["content"]
+        ]
+        assert repeat_tool_messages
+        assert repeat_tool_messages[0]["content"] == Tool.format_result(
+            "search", "You already made this exact tool call. Try a different query or tool."
+        )
 
         await agent.close()
 
@@ -1918,6 +1933,49 @@ class TestCollectorTextNudge:
         await agent.close()
 
 
+class TestCollectorEmptyNudge:
+    """A collector that returns EMPTY content mid-loop (no text, no tool call) is
+    retried with the collector-flavored nudge — one that demands a tool call and
+    names done() — NOT the chat 'Please provide your response.', which would invite
+    an unparseable prose reply that kills the cycle."""
+
+    @pytest.mark.asyncio
+    async def test_empty_response_is_nudged_for_a_tool_call_and_recovers(self, test_db, mock_llm):
+        """Work, then an empty response → collector nudge → re-emits a real done().
+
+        The empty-content retry happens within a single loop step (the validator
+        chain re-calls the model with the nudge appended), so a genuine tool call
+        must land on the retry for the cycle to close cleanly."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                # Empty mid-loop: no text, no tool call.
+                return mock_llm._make_text_response(request, "")
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # The empty response triggered a retry (nudge appended), not a stop.
+        assert len(mock_llm.requests) == 3
+        # The nudge demands a tool call and names done() — NOT the chat nudge.
+        retry_messages = mock_llm.requests[2]["messages"]
+        last_user = [m for m in retry_messages if m["role"] == "user"][-1]
+        assert last_user["content"] != "Please provide your response."
+        assert "tool call" in last_user["content"].lower()
+        assert "done()" in last_user["content"]
+        # The cycle closed with a real done() record (not a lost/failed cycle).
+        assert any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+
 class TestCollectorPrematureDone:
     """A collector whose very first tool call is done() — with no prior read /
     write / browse — is refused with an ERROR TOOL RESPONSE (not a text-step
@@ -2100,6 +2158,13 @@ class TestResponseValidators:
         assert isinstance(
             EmptyResponseValidator().check(_text_response("a real answer"), _ctx()), Proceed
         )
+        # The mid-loop nudge is composable per-agent: the collector chain swaps in a
+        # tool-call-demanding nudge (chat "provide your response" would invite prose).
+        collector = EmptyResponseValidator(continue_nudge="make a tool call")
+        collector_mid = collector.check(empty, _ctx(tools_available=True))
+        assert isinstance(collector_mid, Retry) and collector_mid.nudge == "make a tool call"
+        # Final-step behaviour is unchanged by the swap (still the strong-nudge sentinel).
+        assert collector.check(empty, _ctx(tools_available=False)).nudge == ""
 
     def test_refusal_validator(self):
         resp = _text_response("I'm sorry, but I can't help with that.")
@@ -2171,6 +2236,18 @@ class TestResponseValidators:
             HallucinatedToolCallRepair,
         }
         assert {v.__class__ for v in Agent.response_validators} == chat_conditions
+        # The collector composes the SAME response-shape guards, but its empty
+        # validator carries the collector nudge (a tool-call demand, not the chat
+        # "provide your response.").
+        assert {v.__class__ for v in BackgroundAgent.response_validators} == chat_conditions
+        collector_empty = next(
+            v for v in BackgroundAgent.response_validators if isinstance(v, EmptyResponseValidator)
+        )
+        collector_nudge = collector_empty.check(
+            _text_response("\n\n---"), _ctx(tools_available=True)
+        ).nudge
+        assert collector_nudge != "Please provide your response."
+        assert "tool call" in collector_nudge.lower() and "done()" in collector_nudge
         # Collector run-shape chain = the two collector-only guards.
         assert {v.__class__ for v in BackgroundAgent.run_shape_validators} == {
             PrematureDoneValidator,
