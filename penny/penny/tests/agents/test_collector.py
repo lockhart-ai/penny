@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import text
@@ -462,6 +463,49 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     # ── User turn: bare (empty) — a collector runs with no user message ────
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == ""
+
+
+def _datetime_line(messages: list[dict]) -> str:
+    """The rendered 'Current date and time:' anchor line from a message array."""
+    return messages[0]["content"].split("\n", 1)[0]
+
+
+def test_datetime_anchor_renders_in_profile_timezone(test_config, tmp_path):
+    """The 'Current date and time' anchor renders in the user's profile timezone,
+    not UTC.  A Kolkata profile (IST, UTC+5:30, no DST) gets an IST-labelled clock
+    — otherwise the model is handed a UTC time under a non-UTC profile and, near
+    local midnight, the wrong calendar day."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.users.save_info(
+        sender="+15550001111",
+        name="Ada",
+        location="Bengaluru, India",
+        timezone="Asia/Kolkata",
+        date_of_birth="1990-01-01",
+    )
+
+    # Bracket the render with before/after snapshots so a minute rollover between
+    # them can't flake the exact-stamp assertion.
+    fmt = "%A, %B %d, %Y at %I:%M %p IST"
+    before = datetime.now(ZoneInfo("Asia/Kolkata")).strftime(fmt)
+    line = _datetime_line(collector._build_messages("", None, "body"))
+    after = datetime.now(ZoneInfo("Asia/Kolkata")).strftime(fmt)
+
+    assert line.startswith("Current date and time: ")
+    assert line.endswith(" IST"), line
+    assert "UTC" not in line
+    # The local wall-clock stamp matches now-in-Kolkata, not now-in-UTC.
+    assert any(stamp in line for stamp in (before, after)), line
+
+
+def test_datetime_anchor_falls_back_to_utc_without_profile(test_config, tmp_path):
+    """No profile / timezone (fresh install) → the anchor stays UTC."""
+    collector, _ = _make_collector(test_config, tmp_path)
+
+    line = _datetime_line(collector._build_messages("", None, "body"))
+
+    assert line.startswith("Current date and time: ")
+    assert line.endswith(" UTC"), line
 
 
 # ── Collector-runs audit log ─────────────────────────────────────────────

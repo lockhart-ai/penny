@@ -1480,9 +1480,7 @@ class TestScopedFactory:
         result = await write.execute(memory="dislikes", entries=[{"key": "k", "content": "v"}])
 
         assert (
-            "Refused" in result.message
-            and "likes" in result.message
-            and "dislikes" in result.message
+            result.message == "Refused: this collector can only write to 'likes', not 'dislikes'."
         )
         # And nothing was actually written
         assert db.memory("dislikes").get("k") == []

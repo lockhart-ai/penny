@@ -638,6 +638,9 @@ class CollectionKeysTool(MemoryTool):
 # ── Collection writes ───────────────────────────────────────────────────────
 
 
+_SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{memory}'."
+
+
 def _format_duplicate(result: WriteResult) -> str:
     """Format one duplicate result for the rejection message.
 
@@ -695,8 +698,7 @@ class CollectionWriteTool(MemoryTool):
         args = CollectionWriteArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return ToolResult(
-                message=f"Refused: this collector can only write to '{self._scope}', "
-                f"not '{args.memory}'.",
+                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
         memory = _resolve(self._db, args.memory)
@@ -784,8 +786,7 @@ class UpdateEntryTool(MemoryTool):
         args = UpdateEntryArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return ToolResult(
-                message=f"Refused: this collector can only write to '{self._scope}', "
-                f"not '{args.memory}'.",
+                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
         outcome = _resolve(self._db, args.memory).update(args.key, args.content, self._author)
@@ -1132,8 +1133,7 @@ class CollectionDeleteEntryTool(MemoryTool):
         args = CollectionDeleteEntryArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
             return ToolResult(
-                message=f"Refused: this collector can only write to '{self._scope}', "
-                f"not '{args.memory}'.",
+                message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
         removed = _resolve(self._db, args.memory).delete(args.key)

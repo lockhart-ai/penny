@@ -67,9 +67,6 @@ class Prompt:
         "source URL so the user can follow up."
     )
 
-    # Browse nudge — injected after search-only tool results in thinking loop
-    BROWSE_NUDGE = "Now pick a URL from those results and browse it."
-
     # Search result header — injected into trimmed search results
     SEARCH_RESULT_HEADER = (
         "These are search results — titles and links only. "
@@ -149,6 +146,8 @@ Examples:
     VISION_RESPONSE_PROMPT = (
         "The user sent an image. Respond naturally to the image description provided."
     )
+
+    VISION_IMAGE_CONTEXT = "User said '{user_text}' and included an image of: {caption}"
 
     # Injected after a tool-parse 500 — model returned plain text instead of a JSON tool call
     TOOL_FORMAT_NUDGE = (
