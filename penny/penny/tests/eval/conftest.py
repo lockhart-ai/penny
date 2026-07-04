@@ -376,6 +376,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         score: Scorer,
         seed: Seeder | None = None,
         browse: list[CannedPage] | None = None,
+        browser_connected: bool = True,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
@@ -398,6 +399,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                     await _embed_seeds(penny)
                     if browse is not None:
                         install_browse(penny, browse)
+                    if not browser_connected:
+                        # Simulate a disconnected browser extension — the provider
+                        # returns None, exactly as prod does with no addon attached,
+                        # so browse is unavailable and browse-dependent creates flag it.
+                        penny.chat_agent._browse_provider = lambda: None
                     before = collection_names(penny.db)
                     try:
                         await server.push_message(sender=TEST_SENDER, content=message)

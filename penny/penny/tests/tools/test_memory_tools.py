@@ -141,6 +141,69 @@ class TestCreateAndList:
         assert memories["likes"].published is True
 
     @pytest.mark.asyncio
+    async def test_browse_collection_create_flags_offline_browser(self, tmp_path):
+        # A browse-dependent collector created while the browser is disconnected
+        # can't fetch anything, so the create result carries an honest, actionable
+        # degraded-state signal instead of a bare success — the truth the chat
+        # agent needs so its reply doesn't over-claim recurring delivery is live.
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), browser_connected=lambda: False
+        ).execute(
+            name="tech-news",
+            description="fresh tech headlines",
+            inclusion="relevant",
+            recall="recent",
+            extraction_prompt=(
+                "Collect fresh tech headlines.\n"
+                "1. browse a tech-news source; read the pages.\n"
+                '2. collection_write("tech-news", entries=[...]).\n'
+                "3. done()."
+            ),
+            collector_interval_seconds=3600,
+            intent="keep me posted on fresh tech headlines",
+            published=True,
+        )
+        assert "Created collection 'tech-news'" in result.message
+        assert "no browser" in result.message.lower()
+        assert result.mutated is True  # the collection was still created
+
+    @pytest.mark.asyncio
+    async def test_browse_collection_create_silent_when_browser_connected(self, tmp_path):
+        # Browser up → no caveat; the result reads as a plain success.
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), browser_connected=lambda: True
+        ).execute(
+            name="tech-news",
+            description="fresh tech headlines",
+            inclusion="relevant",
+            recall="recent",
+            extraction_prompt="1. browse a tech-news source.\n2. done().",
+            collector_interval_seconds=3600,
+            intent="keep me posted on fresh tech headlines",
+        )
+        assert "no browser" not in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_browse_collection_create_never_flags_browser(self, tmp_path):
+        # A collector that reads a log (not the web) is browser-independent, so an
+        # offline browser is irrelevant — no caveat even when disconnected.
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), browser_connected=lambda: False
+        ).execute(
+            name="watchlist",
+            description="titles the user mentions wanting to watch",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt='1. log_read("user-messages").\n2. done().',
+            collector_interval_seconds=3600,
+            intent="keep a running watchlist from what I mention",
+        )
+        assert "no browser" not in result.message.lower()
+
+    @pytest.mark.asyncio
     async def test_create_log_persists(self, tmp_path):
         db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(

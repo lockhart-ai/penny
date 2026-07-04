@@ -245,6 +245,16 @@ source URL, mention it without a URL.
 
 When the user changes topics, just go with it.
 
+Ground what you claim in the tool results you actually got back — describe \
+what happened, not what you intended. Never assert an action succeeded, or \
+that something will recur or be delivered on a schedule, unless the tool \
+result confirms the capability behind it is really in place. When a tool \
+result flags an unmet prerequisite (e.g. 'no browser extension is connected \
+so it can't fetch yet'), say so plainly and phrase the outcome conditionally \
+— "I've set this up; it'll start pulling headlines once your browser \
+extension is connected" — never an unconditional "it's running and I'll \
+ping you every hour."
+
 Always include specific details (specs, dates, prices) and at least one \
 source URL so the user can follow up."""
         assert rest == expected, f"System prompt mismatch:\n{rest!r}\n\nvs expected:\n{expected!r}"

@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import random
 from abc import abstractmethod
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -168,6 +169,35 @@ def _humanize_interval(seconds: int | None) -> str:
         minutes = seconds // 60
         return f"{minutes}m"
     return f"{seconds}s"
+
+
+# The web-access tool a collector calls; a collection whose extraction_prompt names
+# it can't gather anything while the browser extension is offline.
+_BROWSE_TOOL_NAME = "browse"
+
+# Appended to a browse-dependent collection's create echo when no browser is
+# connected — the honest, actionable degraded-state signal (extending "actionable
+# tool failures" to success-with-caveats).  It gives the model the truth to reflect
+# so its reply doesn't over-claim that recurring gathering/notifying is already live.
+_NO_BROWSER_CAVEAT = (
+    "\n\nHeads-up: this collector reaches the web with ``browse``, but no browser "
+    "extension is connected right now — so it CANNOT fetch anything (and can't "
+    "notify) until the user's browser extension is connected.  Tell the user it's "
+    "set up and will start collecting once their browser is connected; do NOT tell "
+    "them it's already gathering results or that you'll ping them on a schedule."
+)
+
+
+def _is_browse_dependent(extraction_prompt: str | None) -> bool:
+    """Whether a collection's collector needs the browser to do its job.
+
+    Identified by the collector's ``browse`` call in its ``extraction_prompt`` —
+    the same call-name identification used elsewhere (a log-reader by ``log_read``,
+    a consumer by ``read_published_latest``).  A browse-dependent collector created
+    while the browser is offline can't gather anything, so its create result must
+    say so rather than read as a bare success.
+    """
+    return extraction_prompt is not None and _BROWSE_TOOL_NAME in extraction_prompt.lower()
 
 
 def _format_collection_echo(memory: Any, verb: str) -> str:
@@ -349,9 +379,18 @@ class CollectionCreateTool(MemoryTool):
     }
     args_model = CollectionCreateArgs
 
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlmClient,
+        browser_connected: Callable[[], bool] | None = None,
+    ) -> None:
         self._db = db
         self._llm_client = llm_client
+        # A predicate reporting whether a browser extension is currently reachable
+        # for web access.  ``None`` when the caller doesn't wire browser awareness
+        # (unit tests, non-browser deployments) — the caveat is then never added.
+        self._browser_connected = browser_connected
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionCreateArgs(**kwargs)
@@ -367,7 +406,18 @@ class CollectionCreateTool(MemoryTool):
             intent=args.intent,
             published=args.published,
         )
-        return ToolResult(message=_format_collection_echo(memory, "Created"), mutated=True)
+        message = _format_collection_echo(memory, "Created")
+        if self._browser_offline() and _is_browse_dependent(args.extraction_prompt):
+            message += _NO_BROWSER_CAVEAT
+        return ToolResult(message=message, mutated=True)
+
+    def _browser_offline(self) -> bool:
+        """True only when browser awareness is wired AND the browser is disconnected.
+
+        Unknown (predicate unwired) reads as *not offline* — no caveat — so the
+        signal only fires when we can positively confirm the browser is down.
+        """
+        return self._browser_connected is not None and not self._browser_connected()
 
 
 class LogCreateTool(MemoryTool):
@@ -1662,6 +1712,7 @@ def build_memory_tools(
     llm_client: LlmClient,
     agent_name: str,
     scope: str | None = None,
+    browser_connected: Callable[[], bool] | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -1710,7 +1761,7 @@ def build_memory_tools(
         ExistsTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionCreateTool(db, llm_client),
+        CollectionCreateTool(db, llm_client, browser_connected=browser_connected),
         CollectionUpdateTool(db, llm_client),
         CollectionMergeTool(db, agent_name),
         CollectionArchiveTool(db),

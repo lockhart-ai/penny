@@ -834,9 +834,20 @@ class Agent:
             self._embedding_model_client,
             agent_name=scope or self.name,
             scope=scope,
+            browser_connected=self._browser_connected,
         )
         tools.append(self._build_browse_tool(author=self.name))
         return tools
+
+    def _browser_connected(self) -> bool:
+        """Whether a browser extension is currently reachable for web access.
+
+        Derived from the same ``_browse_provider`` the browse tool uses (it returns
+        ``None`` when no browser is connected, or is itself unset in a non-browser
+        deployment).  Lets a browse-dependent ``collection_create`` report that its
+        collector can't fetch yet — the honest degraded-state signal.
+        """
+        return self._browse_provider is not None and self._browse_provider() is not None
 
     def _build_browse_tool(self, author: str) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool."""
