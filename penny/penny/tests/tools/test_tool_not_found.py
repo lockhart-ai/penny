@@ -124,6 +124,7 @@ class TestToolNotFound:
             discord_channel_id=None,
             llm_api_url="http://localhost:11434",
             llm_model="test-model",
+            llm_embedding_model="test-embedding-model",
             log_level="DEBUG",
             db_path=test_db,
         )
@@ -138,6 +139,7 @@ class TestToolNotFound:
         agent = Agent(
             system_prompt="test",
             model_client=client,
+            embedding_model_client=client,
             tools=[search_tool],
             db=db,
             config=config,
