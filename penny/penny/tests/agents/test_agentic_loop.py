@@ -8,7 +8,7 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.agents.base import Agent, BackgroundAgent
-from penny.agents.models import ToolCallRecord
+from penny.agents.models import MessageRole, ToolCallRecord
 from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
@@ -305,6 +305,21 @@ class TestRepeatCallGuard:
         assert response.answer == "done"
         # Only first call should have executed
         assert len(response.tool_calls) == 1
+
+        # The repeat rejection is framed like every real tool result — routed
+        # through Tool.format_result — so the model reads it as the response to
+        # its own call, not a fresh instruction.
+        repeat_tool_messages = [
+            message
+            for request in mock_llm.requests
+            for message in request["messages"]
+            if message.get("role") == MessageRole.TOOL
+            and "You already made this exact tool call" in message["content"]
+        ]
+        assert repeat_tool_messages
+        assert repeat_tool_messages[0]["content"] == Tool.format_result(
+            "search", "You already made this exact tool call. Try a different query or tool."
+        )
 
         await agent.close()
 

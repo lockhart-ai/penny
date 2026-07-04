@@ -50,6 +50,10 @@ class ChatAgent(Agent):
 
     name: str = "chat"
     system_prompt = Prompt.CONVERSATION_PROMPT
+    # Stable id linking the synthetic page-context tool-call to its tool-result
+    # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not
+    # an ad-hoc ``tool_name`` field.
+    PAGE_CONTEXT_TOOL_CALL_ID = "page-context"
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -140,7 +144,12 @@ class ChatAgent(Agent):
         """Inject a synthetic search call + result for page context.
 
         Uses the BrowseTool format so the synthetic history matches the tool
-        the model actually sees in its tool definitions.
+        the model actually sees in its tool definitions, the standard
+        ``tool_call_id`` envelope (linked to the synthetic call by
+        ``PAGE_CONTEXT_TOOL_CALL_ID``), and the same ``Tool.format_result``
+        framing every real tool result gets — so this arbitrary web content
+        is unmistakably a browse result, never a fresh instruction to the
+        model.
         """
         if not page_context.text:
             return
@@ -156,6 +165,8 @@ class ChatAgent(Agent):
                 "content": "",
                 "tool_calls": [
                     {
+                        "id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
+                        "type": "function",
                         "function": {
                             "name": BrowseTool.name,
                             "arguments": {
@@ -166,12 +177,12 @@ class ChatAgent(Agent):
                 ],
             }
         )
-        # Tool "returned" the page content
+        # Tool "returned" the page content — framed like every real tool result
         messages.append(
             {
                 "role": "tool",
-                "content": page_content,
-                "tool_name": BrowseTool.name,
+                "content": Tool.format_result(BrowseTool.name, page_content),
+                "tool_call_id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
             }
         )
 

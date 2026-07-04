@@ -922,7 +922,11 @@ class Agent:
                 logger.info("Skipping repeat: %s(%s)", tool_name, arguments)
                 repeat_msg = "You already made this exact tool call. Try a different query or tool."
                 messages.append(
-                    {"role": MessageRole.TOOL, "content": repeat_msg, "tool_call_id": tool_call_id}
+                    {
+                        "role": MessageRole.TOOL,
+                        "content": Tool.format_result(tool_name, repeat_msg),
+                        "tool_call_id": tool_call_id,
+                    }
                 )
                 continue
 

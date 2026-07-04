@@ -124,6 +124,7 @@ def test_page_context_injected_as_synthetic_tool_call():
     """Page context is injected as a search tool call + result in messages."""
     from penny.agents.chat import ChatAgent
     from penny.channels.base import PageContext
+    from penny.tools import Tool
 
     page_context = PageContext(
         title="Example Product Page",
@@ -138,14 +139,21 @@ def test_page_context_injected_as_synthetic_tool_call():
 
     assert len(messages) == 4
     # Assistant tool call uses BrowseTool format (name="browse", URL in queries)
+    # and carries the standard id/type so the result can reference it.
     assert messages[2]["role"] == "assistant"
+    assert messages[2]["tool_calls"][0]["id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
+    assert messages[2]["tool_calls"][0]["type"] == "function"
     assert messages[2]["tool_calls"][0]["function"]["name"] == "browse"
     assert messages[2]["tool_calls"][0]["function"]["arguments"]["queries"] == [
         "https://example.com/product"
     ]
-    # Tool result
+    # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the
+    # same framing every real tool result gets, so the web content can't read as
+    # a fresh instruction.
     assert messages[3]["role"] == "tool"
-    assert messages[3]["tool_name"] == "browse"
+    assert messages[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
+    assert "tool_name" not in messages[3]
+    assert messages[3]["content"].startswith(Tool.format_result("browse", ""))
     assert "$49.99" in messages[3]["content"]
     assert "Example Product Page" in messages[3]["content"]
 
