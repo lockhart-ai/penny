@@ -32,22 +32,27 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - **Model-facing change?** (prompt / `extraction_prompt` / tool description / what the model reads) → it MUST land with a `tests/eval/` contract, and you must **dry-run it against the live model** (`make eval` / focused case) and read the result *before* committing. Validate each lever as you build it, not batched at the end.
 - `EXIT_CODE=0` is a hard gate. Do not open a PR on red.
 
-## 5. Privacy gate — the repo is PUBLIC
+## 5. Quality review — before you publish
+- With the test gate green, review your **full diff** against the project's canonical checklist *before* you commit or push. Invoke the **`/quality`** skill if it's available to you; otherwise read **`docs/pr-review-guide.md`** and self-review the diff against every applicable rule (error handling, forbidden patterns, async patterns, testing discipline, prompt engineering).
+- Fix everything it surfaces. If you changed code, **re-run the §4 gate** (`EXIT_CODE=0`) before continuing.
+- Don't push a diff you haven't run the checklist over.
+
+## 6. Privacy gate — the repo is PUBLIC
 - Before **any** commit or push, run the pre-publish PII checklist: no real user names, topics, dates, collections, handles, channel IDs, or run IDs in code, tests, fixtures, commit messages, or PR text. Genericize to synthetic equivalents.
 - This is a hard line — it has been violated before. When in doubt, scrub.
 
-## 6. Commit + open the PR
+## 7. Commit + open the PR
 - `TOK=$(make token)` and **assert it's non-empty** before any `gh`/push — an empty token silently falls back to the wrong identity and creates PRs under the wrong author (immutable; must be closed + recreated).
 - **Push the branch first** (`GH_TOKEN=$TOK git push -u origin <branch>`), *then* `GH_TOKEN=$TOK gh pr create`.
 - Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
 - PR body: what changed + why, the scope, **test evidence** (`EXIT_CODE=0`), eval results if applicable, and `Closes #<issue>`.
 
-## 7. Address review feedback
+## 8. Address review feedback
 - **Before every push**, verify the PR is still open (`gh pr list --head <branch>`). If it's merged, stop — start a fresh branch for follow-ups, don't push to the merged one.
 - Rebase on latest `main` as needed (in place — no destructive escape).
 - Re-run the **§4** gate after every change; `EXIT_CODE=0` before pushing.
 
-## 8. Merge → cleanup
+## 9. Merge → cleanup
 - The **user** merges (branch protection: no self-merge to `main`).
 - After merge: remove your worktree (`git worktree remove …`), delete the local and remote branch, and discard the task plan file.
 - If the change warrants it, update `CLAUDE.md` / `README.md` (docs-maintenance rule) — as part of the PR, not after.
@@ -59,7 +64,8 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 2. **Isolated worktree, branched from `origin/main`.** Never main's tree, never another agent's.
 3. **`make token` non-empty check** before every GitHub op.
 4. **`make fix check` is the only test path; `EXIT_CODE=0` is the gate.**
-5. **PII pre-publish check** before anything leaves the machine.
+5. **Quality-review the diff** against `docs/pr-review-guide.md` (or `/quality`) before publishing.
+6. **PII pre-publish check** before anything leaves the machine.
 6. **Model-facing change ⇒ committed `tests/eval/` contract, dry-run first.**
 7. **Rebase, don't destructively escape;** commit before any branch/rebase probing.
 8. **Green + reviewed + user-merged** — then, and only then, clean up.
