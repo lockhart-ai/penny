@@ -25,8 +25,10 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - If `main` moves under you, **rebase** on it (`git rebase origin/main`) — resolve conflicts in place; never checkout/reset/branch-switch to escape a rebase.
 
 ## 4. Test — the one and only gate
-- Run **exactly**: `make fix check 2>&1 | tee /tmp/check-output.txt; echo "EXIT_CODE=$pipestatus[1]" >> /tmp/check-output.txt`
-- Then read `/tmp/check-output.txt`: check **`EXIT_CODE` first** (must be `0`), then grep for `FAILED` / `error[`.
+- Run **exactly**: `make fix check 2>&1 | tee /tmp/check-output-$(git branch --show-current).txt; echo "EXIT_CODE=$pipestatus[1]" >> /tmp/check-output-$(git branch --show-current).txt`
+  — the output path is **per-branch** because agents run concurrently: a shared `/tmp/check-output.txt` interleaves `EXIT_CODE` lines from sibling worktrees and makes a green line unattributable.
+- Then read your branch's output file: check **`EXIT_CODE` first** (must be `0`), then grep for `FAILED` / `error[`.
+- **If the run is interrupted** (e.g. `make: *** Error 130` from contention with a concurrent agent's Docker run), the output file is garbage — discard it and re-run the full gate cleanly. Never judge from a partial file.
 - Never use `make pytest`, `make check` alone, or `docker compose run` directly.
 - **All code changes require tests.** Prefer folding assertions into an existing test over a new function; prefer integration tests through public entry points over unit tests.
 - **Model-facing change?** (prompt / `extraction_prompt` / tool description / what the model reads) → it MUST land with a `tests/eval/` contract, and you must **dry-run it against the live model** (`make eval` / focused case) and read the result *before* committing. Validate each lever as you build it, not batched at the end.
@@ -43,6 +45,7 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 
 ## 7. Commit + open the PR
 - `TOK=$(make token)` and **assert it's non-empty** before any `gh`/push — an empty token silently falls back to the wrong identity and creates PRs under the wrong author (immutable; must be closed + recreated).
+- **Worktree gotcha:** a fresh worktree has no `.env` (it's gitignored), and Docker Compose creates a *directory* placeholder in its place — so `make token` fails inside the worktree with `failed to read .env: is a directory`. Run it against the primary checkout instead: `TOK=$(make -C <path-to-main-checkout> token)`. Token generation only reads config; it never touches that checkout's tree.
 - **Push the branch first** (`GH_TOKEN=$TOK git push -u origin <branch>`), *then* `GH_TOKEN=$TOK gh pr create`.
 - Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
 - PR body: what changed + why, the scope, **test evidence** (`EXIT_CODE=0`), eval results if applicable, and `Closes #<issue>`.
@@ -63,9 +66,9 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 1. **One ticket per agent; hold the scope boundary.** Adjacent work → a new issue, not this PR.
 2. **Isolated worktree, branched from `origin/main`.** Never main's tree, never another agent's.
 3. **`make token` non-empty check** before every GitHub op.
-4. **`make fix check` is the only test path; `EXIT_CODE=0` is the gate.**
+4. **`make fix check` is the only test path; `EXIT_CODE=0` is the gate** — written to your branch's own output file, re-run cleanly if interrupted.
 5. **Quality-review the diff** against `docs/pr-review-guide.md` (or `/quality`) before publishing.
 6. **PII pre-publish check** before anything leaves the machine.
-6. **Model-facing change ⇒ committed `tests/eval/` contract, dry-run first.**
-7. **Rebase, don't destructively escape;** commit before any branch/rebase probing.
-8. **Green + reviewed + user-merged** — then, and only then, clean up.
+7. **Model-facing change ⇒ committed `tests/eval/` contract, dry-run first.**
+8. **Rebase, don't destructively escape;** commit before any branch/rebase probing.
+9. **Green + reviewed + user-merged** — then, and only then, clean up.
