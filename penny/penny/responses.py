@@ -32,7 +32,6 @@ class PennyResponse:
     VISION_NOT_CONFIGURED_MESSAGE = (
         "I can see you sent an image but I don't have vision configured right now."
     )
-    VISION_IMAGE_CONTEXT = "User said '{user_text}' and included an image of: {caption}"
     VISION_IMAGE_ONLY_CONTEXT = "User sent an image of: {caption}"
 
     # ── Config ───────────────────────────────────────────────────────────────
