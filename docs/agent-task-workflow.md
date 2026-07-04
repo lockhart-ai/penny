@@ -30,8 +30,11 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - Then read your branch's output file: check **`EXIT_CODE` first** (must be `0`), then grep for `FAILED` / `error[`.
 - **If the run is interrupted** (e.g. `make: *** Error 130` from contention with a concurrent agent's Docker run), the output file is garbage — discard it and re-run the full gate cleanly. Never judge from a partial file.
 - Never use `make pytest`, `make check` alone, or `docker compose run` directly.
+- **Run the gate from *inside your worktree*, never the top-level checkout.** `make`/compose mount `./penny/penny` relative to the compose-file directory, so running `make` from the main repo dir tests *main*, not your branch — a green result there is meaningless. (This is separate from the §7 `make token` gotcha, which is the one thing you run against the main checkout.)
+- **Build the image fresh so local tooling matches CI.** A cached local `penny` image can carry stale *pinned* tools (e.g. an old `ty`) and pass while CI's fresh build fails on the pinned version. `make build` before trusting the gate (`--no-cache` if a pin changed recently) so your local `ty`/`ruff` match CI's.
 - **All code changes require tests.** Prefer folding assertions into an existing test over a new function; prefer integration tests through public entry points over unit tests.
 - **Model-facing change?** (prompt / `extraction_prompt` / tool description / what the model reads) → it MUST land with a `tests/eval/` contract, and you must **dry-run it against the live model** (`make eval` / focused case) and read the result *before* committing. Validate each lever as you build it, not batched at the end.
+  - **`make eval` self-serializes on the GPU — just run it.** The local GPU is single-tenant (only one eval can hold the model at a time), so the `eval` target first **loops, polling `docker ps` about once a minute** for any other in-progress eval and waiting until the GPU is free, then runs. So it's safe to run even while sibling agents are active — it simply queues its turn rather than colliding. No coordination on your part.
 - `EXIT_CODE=0` is a hard gate. Do not open a PR on red.
 
 ## 5. Quality review — before you publish
@@ -50,14 +53,17 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
 - PR body: what changed + why, the scope, **test evidence** (`EXIT_CODE=0`), eval results if applicable, and `Closes #<issue>`.
 
-## 8. Address review feedback
-- **Before every push**, verify the PR is still open (`gh pr list --head <branch>`). If it's merged, stop — start a fresh branch for follow-ups, don't push to the merged one.
-- Rebase on latest `main` as needed (in place — no destructive escape).
-- Re-run the **§4** gate after every change; `EXIT_CODE=0` before pushing.
+## 8. Shepherd the PR to merge (stay alive until MERGED)
+You are **not done when the PR opens.** Do not exit — stay alive and shepherd the PR until it is **merged**, so a red CI or a moved `main` never sits unattended (that's exactly how a green PR silently rots). Loop:
+- **CI:** poll `gh pr checks <n>`. If red, diagnose from the CI log (`gh run view <id> --log-failed`), fix, re-run the §4 gate (from your worktree), and push.
+- **Keep current with `main`:** whenever `origin/main` advances, `git fetch origin main`, **rebase** your branch onto it (`git rebase origin/main`), re-run the §4 gate, and `git push --force-with-lease`. Do this on a loop, not just once — it surfaces *semantic* merge conflicts early (a required-arg or signature change landing in `main` while you were heads-down) instead of at merge time, which is the exact trap that turns a green PR red.
+- **Review:** address every review comment; re-gate; push.
+- **Never destructively escape a rebase;** resolve conflicts in place. Re-verify the PR is still open before each push — if it merged, stop and go to §9.
+- When CI is green, the branch is current on `main`, and there are no open review threads: report "green · current · awaiting merge" and **pause** — you'll be resumed on new CI / review / `main` activity. Don't busy-spin; pause between cycles.
 
 ## 9. Merge → cleanup
 - The **user** merges (branch protection: no self-merge to `main`).
-- After merge: remove your worktree (`git worktree remove …`), delete the local and remote branch, and discard the task plan file.
+- **Only once the PR is merged:** remove your worktree (`git worktree remove …`), delete the local and remote branch, and discard the task plan file. Keep everything in place until then.
 - If the change warrants it, update `CLAUDE.md` / `README.md` (docs-maintenance rule) — as part of the PR, not after.
 
 ---
@@ -66,9 +72,9 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 1. **One ticket per agent; hold the scope boundary.** Adjacent work → a new issue, not this PR.
 2. **Isolated worktree, branched from `origin/main`.** Never main's tree, never another agent's.
 3. **`make token` non-empty check** before every GitHub op.
-4. **`make fix check` is the only test path; `EXIT_CODE=0` is the gate** — written to your branch's own output file, re-run cleanly if interrupted.
+4. **`make fix check` is the only test path; `EXIT_CODE=0` is the gate** — run it *from your worktree* on a *freshly built* image, to your branch's own output file, re-run cleanly if interrupted.
 5. **Quality-review the diff** against `docs/pr-review-guide.md` (or `/quality`) before publishing.
 6. **PII pre-publish check** before anything leaves the machine.
 7. **Model-facing change ⇒ committed `tests/eval/` contract, dry-run first.**
-8. **Rebase, don't destructively escape;** commit before any branch/rebase probing.
-9. **Green + reviewed + user-merged** — then, and only then, clean up.
+8. **Rebase, never destructively escape;** keep the branch current on `main` on a loop, not once.
+9. **Stay alive shepherding the PR** — CI green, reviews addressed, rebased on latest `main` — **until it's MERGED; only then clean up.**

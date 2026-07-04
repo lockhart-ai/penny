@@ -89,6 +89,10 @@ pytest: $(if $(LOCAL),,build team-build)
 # where Ollama runs); override LLM_MODEL / LLM_EMBEDDING_MODEL / EVAL_SAMPLES on
 # the host to taste, e.g. `EVAL_SAMPLES=2 make eval`.
 eval: $(if $(LOCAL),,build)
+	@while docker ps --no-trunc --format '{{.Command}}' 2>/dev/null | grep -qE 'tests/eval|-m eval'; do \
+		echo "waiting for an in-progress eval to finish (GPU is single-tenant)..."; \
+		sleep $$((50 + $$$$ % 20)); \
+	done
 	$(RUN) env \
 		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
 		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
