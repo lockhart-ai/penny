@@ -823,7 +823,7 @@ class TestLogTools:
 
         collector = await tool.run(target="espresso-gear")
         assert "[espresso-gear]" in collector.message
-        assert "write(espresso-gear" in collector.message
+        assert "collection_write(memory='espresso-gear'" in collector.message
         assert "done: wrote a new grinder" in collector.message
 
         chat = await tool.run(target="chat")
