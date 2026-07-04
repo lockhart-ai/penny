@@ -39,6 +39,11 @@ class TestEmbeddingModelRequired:
         """Unset ``LLM_EMBEDDING_MODEL`` → ``Config.load`` raises an actionable error."""
         monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")  # satisfy channel validation
         monkeypatch.delenv("LLM_EMBEDDING_MODEL", raising=False)
+        # Config.load() calls _load_dotenv(), which re-reads the on-disk .env and would
+        # repopulate LLM_EMBEDDING_MODEL (defeating the delenv above) in any checkout whose
+        # .env sets it — so this test passed in CI/worktrees (no .env) but failed in the
+        # primary checkout. Neutralize the on-disk read so the assertion holds everywhere.
+        monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
 
         with pytest.raises(ValueError, match="LLM_EMBEDDING_MODEL is required"):
             Config.load()

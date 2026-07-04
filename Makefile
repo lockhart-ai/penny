@@ -4,7 +4,7 @@ RUFF_TARGETS = penny/
 # needs a running Ollama, so it never runs in make check / CI (see make eval).
 PYTEST_ARGS = penny/tests/ -v -m "not eval"
 # -s streams the PERF lines (wall time + tok/s, printed per case) live.
-EVAL_PYTEST_ARGS = penny/tests/eval/ -v -m eval -s
+EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
