@@ -283,6 +283,7 @@ Schedules run a `ScheduledTask` (`scheduler/base.py`) — a structural Protocol 
 - Listens to a single configured channel
 - Handles 2000-character message limit by chunking
 - Typing indicators auto-expire (no stop needed)
+- **Privileged-intents startup guard**: the bot needs the **Message Content Intent** enabled in the Discord developer portal (Bot → Privileged Gateway Intents). Without it `client.start()` raises `discord.errors.PrivilegedIntentsRequired`. `listen()` catches exactly that, logs the actionable `DISCORD_PRIVILEGED_INTENTS_ERROR` one-liner (which intent + the portal link), and re-raises as `ConnectionError` so `main()`'s existing startup-connectivity handler surfaces it in `penny.log` and exits cleanly instead of dumping a raw traceback
 
 ### Channel Factory (`channels/__init__.py`)
 - `create_channel()` creates appropriate channel based on config
