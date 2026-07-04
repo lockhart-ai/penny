@@ -48,17 +48,34 @@ def _detect_channel_type() -> str:
 
     if has_discord and not has_signal:
         return "discord"
-    if ios_enabled:
-        return "ios"
     if has_signal:
         return "signal"
+    if ios_enabled:
+        return "ios"
     raise ValueError(
         "No channel configured. Set either SIGNAL_NUMBER or "
-        "DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID in .env"
+        "DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID, or IOS_ENABLED=true in .env"
     )
 
 
-def _validate_channel_config(channel_type: str) -> None:
+def _validate_ios_config() -> None:
+    """Validate iOS sidecar/APNs configuration."""
+    # APNs credentials are optional so websocket-only local development works.
+    # If any APNs field is provided, require the complete token-auth set.
+    apns_fields = (
+        os.getenv("IOS_APNS_TEAM_ID"),
+        os.getenv("IOS_APNS_KEY_ID"),
+        os.getenv("IOS_APNS_KEY_PATH"),
+        os.getenv("IOS_BUNDLE_ID"),
+    )
+    if any(apns_fields) and not all(apns_fields):
+        raise ValueError(
+            "IOS_APNS_TEAM_ID, IOS_APNS_KEY_ID, IOS_APNS_KEY_PATH, and "
+            "IOS_BUNDLE_ID are all required when APNs is configured"
+        )
+
+
+def _validate_channel_config(channel_type: str, ios_enabled: bool) -> None:
     """Validate required fields for the selected channel type."""
     if channel_type == "signal" and not os.getenv("SIGNAL_NUMBER"):
         raise ValueError("SIGNAL_NUMBER is required for Signal channel")
@@ -71,20 +88,8 @@ def _validate_channel_config(channel_type: str) -> None:
             )
         if not os.getenv("DISCORD_CHANNEL_ID"):
             raise ValueError("DISCORD_CHANNEL_ID is required for Discord channel")
-    if channel_type == "ios":
-        # APNs credentials are optional so websocket-only local development works.
-        # If any APNs field is provided, require the complete token-auth set.
-        apns_fields = (
-            os.getenv("IOS_APNS_TEAM_ID"),
-            os.getenv("IOS_APNS_KEY_ID"),
-            os.getenv("IOS_APNS_KEY_PATH"),
-            os.getenv("IOS_BUNDLE_ID"),
-        )
-        if any(apns_fields) and not all(apns_fields):
-            raise ValueError(
-                "IOS_APNS_TEAM_ID, IOS_APNS_KEY_ID, IOS_APNS_KEY_PATH, and "
-                "IOS_BUNDLE_ID are all required when APNs is configured"
-            )
+    if channel_type == "ios" or ios_enabled:
+        _validate_ios_config()
 
 
 def _validate_embedding_config() -> None:
@@ -106,6 +111,7 @@ def _validate_embedding_config() -> None:
 
 def _collect_env_vars(channel_type: str) -> dict:
     """Read all config environment variables and return as constructor kwargs."""
+    ios_enabled = os.getenv("IOS_ENABLED", "").lower() in ("1", "true", "yes")
     return {
         "channel_type": channel_type,
         "signal_number": os.getenv("SIGNAL_NUMBER"),
@@ -142,6 +148,7 @@ def _collect_env_vars(channel_type: str) -> dict:
         "browser_enabled": os.getenv("BROWSER_ENABLED", "").lower() in ("1", "true", "yes"),
         "browser_host": os.getenv("BROWSER_HOST", "localhost"),
         "browser_port": int(os.getenv("BROWSER_PORT", "9090")),
+        "ios_enabled": ios_enabled,
         "ios_host": os.getenv("IOS_HOST", "0.0.0.0"),
         "ios_port": int(os.getenv("IOS_PORT", "9091")),
         "ios_pairing_token": os.getenv("IOS_PAIRING_TOKEN"),
@@ -236,7 +243,8 @@ class Config:
     browser_host: str = "localhost"
     browser_port: int = 9090
 
-    # iOS primary channel
+    # iOS channel (primary when channel_type is "ios", sidecar when ios_enabled)
+    ios_enabled: bool = False
     ios_host: str = "0.0.0.0"
     ios_port: int = 9091
     ios_pairing_token: str | None = None
@@ -254,7 +262,8 @@ class Config:
         """Load configuration from .env file."""
         _load_dotenv()
         channel_type = _detect_channel_type()
-        _validate_channel_config(channel_type)
+        ios_enabled = os.getenv("IOS_ENABLED", "").lower() in ("1", "true", "yes")
+        _validate_channel_config(channel_type, ios_enabled)
         _validate_embedding_config()
         return cls(**_collect_env_vars(channel_type), runtime=_build_runtime_params(db))
 

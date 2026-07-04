@@ -172,7 +172,7 @@ The iOS channel is a foreground WebSocket plus APNs preview-notification path:
 - **Background/offline app** — Penny still writes every outgoing message to the durable iOS outbox. If the device is not connected, Penny sends an APNs alert containing a short summary and source hint, such as `Notifier`, `Chat`, or `Collector: flight-deals`.
 - **Reconnect** — the app sends `pull_messages`, displays/persists the returned rows, then sends `ack_messages` so Penny can mark them delivered.
 
-Device registration is gated by `IOS_PAIRING_TOKEN` when configured. The client sends a `register` WebSocket message with `device_id`, `label`, `pairing_token`, optional `device_secret`, `apns_token`, `apns_environment`, and `app_version`. The registered iOS device becomes the default channel target.
+Device registration is gated by `IOS_PAIRING_TOKEN` when configured. The client sends a `register` WebSocket message with `device_id`, `label`, `pairing_token`, optional `device_secret`, `apns_token`, `apns_environment`, and `app_version`. When Penny is running with `CHANNEL_TYPE=ios`, the registered iOS device becomes the default channel target. When `IOS_ENABLED=true` is used alongside Signal, iOS runs in parallel while Signal remains the default target until the default device is changed.
 
 For APNs setup, create an Apple Push Notifications authentication key in the Apple Developer portal. `IOS_APNS_KEY_ID` is the Key ID shown for that key, and `IOS_APNS_KEY_PATH` should point at the downloaded `.p8` file inside the container. The repo mounts `./data` at `/penny/data`, so a common setup is to put the key under `data/private/AuthKey_XXXX.p8` and set `IOS_APNS_KEY_PATH="/penny/data/private/AuthKey_XXXX.p8"`. `.p8` files are ignored by git.
 
@@ -295,8 +295,10 @@ LOG_LEVEL="INFO"
 Penny auto-detects which channel to use based on configured credentials:
 - If `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are set (and Signal is not), uses Discord
 - If `SIGNAL_NUMBER` is set, uses Signal
-- Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` for the iOS channel.
-- Signal and iOS are intended to be mutually exclusive primary channels. Use `make prod-ios` to run Penny with `CHANNEL_TYPE=ios` without starting the Signal container.
+- If `IOS_ENABLED=true` is set with Signal, the iOS WebSocket/APNs channel starts in parallel and Signal remains the primary/default channel
+- If only `IOS_ENABLED=true` is set, uses iOS
+- Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` to make iOS the primary/default channel. If `SIGNAL_NUMBER` is also configured, Signal still starts alongside it.
+- Use `make prod-ios` to run Penny with `CHANNEL_TYPE=ios` without starting the Signal container.
 
 ### Configuration Reference
 
@@ -324,7 +326,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `BROWSER_PORT`: WebSocket port (default: `9090`)
 
 **iOS Channel** (optional):
-- `IOS_ENABLED`: `true` to enable the iOS channel when building a multi-channel manager
+- `IOS_ENABLED`: `true` to enable the iOS channel alongside the auto-detected primary channel; with Signal configured, both Signal and iOS listen in parallel
 - `IOS_HOST`: WebSocket bind address (default: `localhost`; use `0.0.0.0` in Docker)
 - `IOS_PORT`: WebSocket port (default: `9091`)
 - `IOS_PAIRING_TOKEN`: optional shared token required during device registration when set

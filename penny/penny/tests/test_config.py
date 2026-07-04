@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from penny.config import Config
-from penny.constants import PennyConstants
+from penny.constants import ChannelType, PennyConstants
 from penny.llm import LlmClient
 
 
@@ -91,3 +91,35 @@ class TestEmbeddingModelRequired:
         # the read deadline is 600s, not our caller-supplied number.
         timeout_obj = client.client.timeout
         assert timeout_obj.read == 600.0
+
+
+class TestIosChannelDetection:
+    """iOS can run as a sidecar instead of replacing Signal."""
+
+    def test_signal_remains_primary_when_ios_enabled(self, monkeypatch):
+        monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
+        monkeypatch.delenv("CHANNEL_TYPE", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("DISCORD_CHANNEL_ID", raising=False)
+        monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
+        monkeypatch.setenv("IOS_ENABLED", "true")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+
+        config = Config.load()
+
+        assert config.channel_type == ChannelType.SIGNAL
+        assert config.ios_enabled is True
+
+    def test_ios_only_still_detects_ios_primary(self, monkeypatch):
+        monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
+        monkeypatch.delenv("CHANNEL_TYPE", raising=False)
+        monkeypatch.delenv("SIGNAL_NUMBER", raising=False)
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("DISCORD_CHANNEL_ID", raising=False)
+        monkeypatch.setenv("IOS_ENABLED", "true")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+
+        config = Config.load()
+
+        assert config.channel_type == ChannelType.IOS
+        assert config.ios_enabled is True
