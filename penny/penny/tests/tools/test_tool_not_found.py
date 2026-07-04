@@ -31,7 +31,13 @@ class TestToolNotFound:
 
     @pytest.mark.asyncio
     async def test_agent_returns_helpful_error_for_nonexistent_tool(self, test_db, mock_llm):
-        """Agent returns helpful error listing available tools for non-existent tool."""
+        """Agent returns helpful error listing available tools for non-existent tool.
+
+        Also pins the degeneracy-guard boundary: a PLAUSIBLE unknown name
+        (`example_function_name` — no collapse characters) must reach the
+        executor's tool-not-found path and have its error fed back to the model,
+        never be discarded-and-rerolled as degenerate output (that path is
+        reserved for collapse-shaped names like `Functions?????`)."""
         db = Database(test_db)
         db.create_tables()
 

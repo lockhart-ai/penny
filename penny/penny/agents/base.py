@@ -19,7 +19,7 @@ from penny.llm import LlmClient
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
-from penny.text_validity import is_degenerate_run
+from penny.text_validity import is_degenerate_run, is_degenerate_tool_name
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
@@ -710,16 +710,33 @@ class Agent:
         logger.error("Model output still degenerate after %d re-rolls — aborting run", attempts)
         return None
 
-    @staticmethod
-    def _response_is_degenerate(response: LlmResponse) -> bool:
-        """True if the raw output — text content OR any tool-call argument — carries
-        a degeneration-collapse run.  Serialising the tool-call arguments is what
-        lets the guard catch the common case, where the collapse lands in a
-        ``collection_write`` / ``done`` argument rather than in visible prose."""
+    def _response_is_degenerate(self, response: LlmResponse) -> bool:
+        """True if the raw output — text content, any tool-call argument, OR a
+        tool-call NAME — carries a degeneration collapse.  Serialising the
+        tool-call arguments is what lets the guard catch the common case, where
+        the collapse lands in a ``collection_write`` / ``done`` argument rather
+        than in visible prose; the name check catches the collapse landing in the
+        call's NAME field (``Functions?????``), which would otherwise flow to a
+        tool-not-found error that keeps the poison in context."""
         parts = [response.message.content or ""]
         for call in response.message.tool_calls or []:
+            if self._is_degenerate_tool_call_name(call.function.name):
+                return True
             parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
         return any(is_degenerate_run(part) for part in parts)
+
+    def _is_degenerate_tool_call_name(self, name: str) -> bool:
+        """A tool-call name that is UNREGISTERED and collapse-shaped is poison.
+
+        Ordering mirrors the dispatch layering: a registered name is a real call
+        (dispatch as normal — never rerolled); an unregistered one that carries
+        collapse characters (``funcs.done?``, ``read_simpar?``) is the same
+        degeneration as content poison, so the response is discarded and
+        re-rolled.  An unregistered but plausible identifier (a near-miss like
+        ``collection_metadata``, or a Harmony-token-wrapped valid name — the
+        future Harmony strip's repair case, not ours) falls through to the
+        executor's tool-not-found error with its "Did you mean X?" hint."""
+        return self._tool_registry.get(name) is None and is_degenerate_tool_name(name)
 
     def _build_final_response(
         self,
