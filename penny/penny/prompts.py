@@ -175,7 +175,7 @@ Examples:
     # tool), so a text-only response is a bail — nudge it to re-emit as a tool call.
     COLLECTOR_TOOL_CALL_NUDGE = (
         "You replied with plain text, but you act only through tool calls — never prose. "
-        "Respond now with a single tool call: call done() if the cycle is complete, "
+        "Respond now with a single tool call: call `done()` if the cycle is complete, "
         "otherwise call the appropriate tool to continue the cycle."
     )
 
@@ -186,13 +186,14 @@ Examples:
     # result.  A first-move done() is the ⚠ NO WORK DONE bail (deciding "no new
     # matches" without even checking), so it must read its inputs first.
     COLLECTOR_PREMATURE_DONE_REJECTION = (
-        "Error: you called done() before doing anything this cycle.  You cannot "
-        "conclude the cycle without first reading your inputs — a done() with no "
+        "Error: you called `done()` before doing anything this cycle.  You cannot "
+        "conclude the cycle without first reading your inputs — a `done()` with no "
         "prior tool call is a no-op bail, not a real quiet cycle.  Make at least "
         "one real tool call first (read the log / collection the prompt names, e.g. "
-        "log_read or collection_read_latest), THEN decide: write what you found, or "
-        "call done(success=true) only after a read confirms there is genuinely "
-        "nothing new."
+        "`log_read(<log>)` or `collection_read_latest(<collection>)`), THEN decide: "
+        "write what you found, or call "
+        '`done(success=true, summary="no new matches this cycle")` only after a read '
+        "confirms there is genuinely nothing new."
     )
 
     # Nudge prompts (injected when model returns empty content)
@@ -211,6 +212,6 @@ Examples:
     # way COLLECTOR_TOOL_CALL_NUDGE does.
     COLLECTOR_CONTINUE_NUDGE = (
         "You returned nothing, but you act only through tool calls — never prose. "
-        "Make a tool call now: call done() if the cycle is complete, otherwise call "
+        "Make a tool call now: call `done()` if the cycle is complete, otherwise call "
         "the appropriate tool to continue the cycle."
     )
