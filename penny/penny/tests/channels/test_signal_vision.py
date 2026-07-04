@@ -127,7 +127,7 @@ async def test_image_without_text_captions_then_forwards(
         assert foreground_request["model"] == "test-model"
         user_msgs = [m for m in foreground_request["messages"] if m["role"] == "user"]
         assert not any("images" in m for m in user_msgs)
-        expected = PennyResponse.VISION_IMAGE_ONLY_CONTEXT.format(caption="a sunset over the ocean")
+        expected = Prompt.VISION_IMAGE_ONLY_CONTEXT.format(caption="a sunset over the ocean")
         assert any(expected in m.get("content", "") for m in user_msgs)
         # Verify no tools were provided (None = tools disabled)
         assert foreground_request.get("tools") is None

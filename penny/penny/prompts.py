@@ -149,6 +149,8 @@ Examples:
 
     VISION_IMAGE_CONTEXT = "User said '{user_text}' and included an image of: {caption}"
 
+    VISION_IMAGE_ONLY_CONTEXT = "User sent an image of: {caption}"
+
     # Injected after a tool-parse 500 — model returned plain text instead of a JSON tool call
     TOOL_FORMAT_NUDGE = (
         "Your previous response could not be parsed as a tool call — you sent plain text "

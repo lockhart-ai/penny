@@ -22,7 +22,6 @@ from penny.database.models import MemoryEntry
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
-from penny.responses import PennyResponse
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import TestExtractionPromptTool
@@ -505,6 +504,6 @@ class ChatAgent(Agent):
         if content:
             content = Prompt.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)
         else:
-            content = PennyResponse.VISION_IMAGE_ONLY_CONTEXT.format(caption=caption)
+            content = Prompt.VISION_IMAGE_ONLY_CONTEXT.format(caption=caption)
         logger.info("Built vision prompt: %s", content[:200])
         return content, True
