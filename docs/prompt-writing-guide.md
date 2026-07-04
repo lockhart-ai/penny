@@ -167,6 +167,8 @@ with `(args)`, identical to how a prompt writes one — so what the model reads 
 matches how it's told to act. (The renderer conformance pass itself is tracked separately in
 the prompt-audit backlog; this is the standard it conforms to.)
 
+**Reviewer enforcement.** This notation is checked at review time — see `pr-review-guide.md` → "Canonical Call Notation (Model-Facing Prompts)" (§7) for the reviewer checklist and the notation smells to pattern-match.
+
 ## The anti-pattern: accretion
 
 Do **not** fix a prompt by iteratively bolting caveats onto the existing text — "and you MUST
