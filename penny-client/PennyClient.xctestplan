@@ -1,0 +1,25 @@
+{
+  "configurations" : [
+    {
+      "id" : "9FBE0B85-A630-44BB-B23A-3071B1B2B9D9",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "testInteropMode" : "complete",
+    "testTimeoutsEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:PennyClient.xcodeproj",
+        "identifier" : "D18FD9B32FF98AC900225D47",
+        "name" : "PennyClientTests"
+      }
+    }
+  ],
+  "version" : 1
+}

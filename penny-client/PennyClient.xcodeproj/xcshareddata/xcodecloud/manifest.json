@@ -1,0 +1,9 @@
+{
+  "id" : "76ba1a4a-7f08-444f-89b0-ce2302bc0b5b",
+  "targets" : [
+    {
+      "id" : "3c71f4a6-c216-4c7e-8189-32d0ad5785b9",
+      "name" : "PennyClient"
+    }
+  ]
+}
