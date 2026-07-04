@@ -405,6 +405,39 @@ WATCHLIST_MESSAGES = (
 # shape observed in production.  Privacy-safe / generic.
 COLLECTOR_PROSE_BAIL = "**Done. Summary: I've handled the recent messages.**"
 
+# ── Duplicate-write recovery (matched-key handoff) ───────────────────────────
+# A collector whose write duplicates a recipe the box ALREADY holds.  The rejection
+# now names the matched existing key + the next move, so the live model must recover
+# (update_entry with that key, or an honest done()) instead of guessing keys /
+# re-reading / retrying variations until it burns the step budget.  The only source
+# of recipes is the collection itself (no browse step), so a recovered cycle has
+# genuinely nothing new to add.  Generic/privacy-safe topic.
+RECIPE_BOX = SynthCollection(
+    "recipe-box",
+    "Saved quick weeknight dinner recipes: short ingredient lists and fast cook times.",
+    inclusion="never",
+    entries=(
+        "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F.",
+        "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min.",
+    ),
+)
+RECIPE_BOX_INTENT = "Keep a box of quick weeknight dinner recipes I can pull from."
+RECIPE_BOX_EXTRACTION_PROMPT = (
+    "Save quick weeknight dinner recipes worth keeping.\n"
+    '1. collection_read_latest("recipe-box", k=20) — see what is already saved so you '
+    "do not repeat one.\n"
+    "2. For each genuinely new recipe not already saved, "
+    'collection_write("recipe-box", entries=[{key: recipe name, content: name + key '
+    "ingredients + time}]).\n"
+    "3. done()."
+)
+# The forced duplicate write: byte-identical to the first seeded entry, so dedup
+# catches it on content and hands back its key ("Sheet-pan chicken fajitas").
+RECIPE_BOX_DUP_KEY = "sheet pan chicken fajitas"
+RECIPE_BOX_DUP_CONTENT = "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
+# The keys the box holds after seeding (SynthCollection keys = text before ' — ').
+RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
+
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
     CannedPage(

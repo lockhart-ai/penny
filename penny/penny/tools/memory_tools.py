@@ -638,17 +638,34 @@ class CollectionKeysTool(MemoryTool):
 
 _SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{memory}'."
 
+# Remedy phrasing for a duplicate rejection, framed as the model's next move so it
+# hands the matched key straight to ``update_entry`` instead of guessing keys or
+# re-reading the collection (the step-budget burn this rejection used to cause).
+_DUPLICATE_REMEDY_SOME = (
+    "Call ``update_entry`` with the existing key to refresh that entry with richer "
+    "info, or skip it."
+)
+# All proposed entries were duplicates — nothing new landed.  The collector variant
+# names ``done()`` (its close tool); the chat variant must NOT (chat has no ``done``).
+_DUPLICATE_REMEDY_ALL_COLLECTOR = (
+    "Nothing new to add — call ``update_entry`` with the existing key if you have "
+    "richer info, otherwise call ``done()`` to close the cycle."
+)
+_DUPLICATE_REMEDY_ALL_CHAT = (
+    "Nothing new to add this time — call ``update_entry`` with the existing key if "
+    "you have richer info."
+)
+
 
 def _format_duplicate(result: WriteResult) -> str:
-    """Format one duplicate result for the rejection message.
+    """Name the existing key a candidate collided with, so the model can hand it
+    straight to ``update_entry`` instead of guessing keys or re-reading.
 
-    Names the matching existing key when present so the model can pivot
-    to ``update_entry`` instead of silently dropping fresher info.
     Falls back to just the candidate key when ``matched_key`` is missing
     (e.g. the matched existing entry had no key set)."""
     if result.matched_key and result.matched_key != result.key:
-        return f"{result.key} (matches existing '{result.matched_key}')"
-    return result.key
+        return f"'{result.key}' duplicates existing '{result.matched_key}'"
+    return f"'{result.key}' duplicates an existing entry"
 
 
 class CollectionWriteTool(MemoryTool):
@@ -736,10 +753,8 @@ class CollectionWriteTool(MemoryTool):
             parts.append(f"Wrote {len(written)} {noun} to '{memory}': {', '.join(written)}.")
         if duplicates:
             labelled = [_format_duplicate(r) for r in duplicates]
-            parts.append(
-                f"Rejected as duplicates: {', '.join(labelled)}.  "
-                f"Use ``update_entry`` to refresh an existing row if you have richer info."
-            )
+            remedy = self._duplicate_remedy(all_duplicates=not written and not rejected)
+            parts.append(f"Rejected as duplicates: {', '.join(labelled)}.  {remedy}")
         if rejected:
             labelled = [f"{r.key} ({r.reason})" for r in rejected]
             parts.append(
@@ -751,6 +766,17 @@ class CollectionWriteTool(MemoryTool):
         # Work only if a row actually landed — a fully duplicate/rejected batch
         # changed nothing, so it must read as no-work for the throttle.
         return ToolResult(message=message, mutated=bool(written))
+
+    def _duplicate_remedy(self, *, all_duplicates: bool) -> str:
+        """The next-move hint appended to a duplicate rejection.  When the whole
+        batch was duplicates, a collector (``scope`` set) may close with ``done()``;
+        the chat agent (``scope`` is ``None``) has no ``done`` tool, so it gets a
+        neutral variant that never names one."""
+        if not all_duplicates:
+            return _DUPLICATE_REMEDY_SOME
+        if self._scope is not None:
+            return _DUPLICATE_REMEDY_ALL_COLLECTOR
+        return _DUPLICATE_REMEDY_ALL_CHAT
 
 
 class UpdateEntryTool(MemoryTool):

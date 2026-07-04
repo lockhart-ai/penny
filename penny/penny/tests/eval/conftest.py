@@ -667,6 +667,46 @@ class _InjectSendBail(_InjectingClient):
         return response
 
 
+class _InjectDuplicateWrite(_InjectingClient):
+    """Forces ONE ``collection_write`` of an entry that duplicates one the target
+    collection already holds, as the model's FIRST response.
+
+    Reproduces — deterministically against the live model — a collector that writes
+    something already saved.  The real dedup rejects it, and the rejection now hands
+    back the matched existing key + the next move; the live model must recover
+    (``update_entry`` with that key, or an honest ``done()``) instead of guessing
+    keys / re-reading / retrying variations until it burns the step budget.
+    ``bail_injected`` records the scenario actually fired."""
+
+    def __init__(self, real, memory: str, key: str, content: str) -> None:
+        super().__init__(real)
+        self._memory = memory
+        self._key = key
+        self._content = content
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        if not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-dup-write",
+                            function=LlmToolCallFunction(
+                                name="collection_write",
+                                arguments={
+                                    "memory": self._memory,
+                                    "entries": [{"key": self._key, "content": self._content}],
+                                },
+                            ),
+                        )
+                    ],
+                )
+            )
+        return await self._real.chat(messages, *args, tools=tools, **kwargs)
+
+
 # A guard-recovery runner: (collection, seed, wrap_client, score) -> asserts recovery.
 GuardRecoveryEval = Callable[..., Awaitable[None]]
 
