@@ -112,6 +112,34 @@ def is_degenerate_run(content: str) -> bool:
     return bool(_DEGENERATE_RUN_RE.search(content))
 
 
+# The collapse fingerprint scoped to a tool-call NAME — any `?` / `!` / `…`
+# anywhere, or a run of 2+ dots.  A name is a short identifier, so the prose
+# heuristics in `_DEGENERATE_RUN_RE` (which need two clusters or a 5-char run to
+# avoid flagging legitimate punctuation) are too lax here: `funcs.done?` or
+# `read_simpar?` carries a single collapse character and is already poison.
+# Deliberately CONSERVATIVE about everything else — a single interior dot
+# (`functions.done`, a namespacing near-miss) and non-collapse junk such as a
+# Harmony-wrapped valid name (`done<|channel|>commentary`, a repair case for the
+# Harmony-token strip, not poison) must NOT match, so those calls keep the
+# executor's helpful tool-not-found path ("Did you mean X?").
+_DEGENERATE_TOOL_NAME_RE = re.compile(r"[?!…]|\.{2,}")
+
+
+def is_degenerate_tool_name(name: str) -> bool:
+    """True if a tool-call NAME carries the degeneration-collapse fingerprint.
+
+    The punctuation collapse (:func:`is_degenerate_run`) also lands in the tool
+    NAME field (``Functions?????``, ``funcs.done?``, ``read_simpar?``); the
+    content-level detector misses those, and feeding back a tool-not-found error
+    keeps the poison in context.  The agent loop treats an *unregistered* name
+    that matches this as degenerate output — discard-and-reroll, same as content
+    poison.  Only collapse characters match (``?``/``!``/``…``/dot runs): a
+    plausible near-miss identifier or a Harmony-token-wrapped valid name stays on
+    the tool-not-found path, where the "Did you mean X?" hint can repair it.
+    """
+    return bool(_DEGENERATE_TOOL_NAME_RE.search(name))
+
+
 # A message cut off mid-thought on an ellipsis TAIL — one-or-more "…" or 3+ ASCII
 # dots, optionally a single trailing ?/!/. — the model self-truncating.  Real
 # failures: "...the original …", "all-time-best ‑ …?", "Hello world...".  A

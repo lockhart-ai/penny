@@ -501,7 +501,7 @@ class ChatAgent(Agent):
         captions = [await self.caption_image(img) for img in images]
         caption = ", ".join(captions)
         if content:
-            content = PennyResponse.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)
+            content = Prompt.VISION_IMAGE_CONTEXT.format(user_text=content, caption=caption)
         else:
             content = PennyResponse.VISION_IMAGE_ONLY_CONTEXT.format(caption=caption)
         logger.info("Built vision prompt: %s", content[:200])

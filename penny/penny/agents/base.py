@@ -8,8 +8,9 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any, assert_never
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from penny.agents.models import ChatMessage, ControllerResponse, MessageRole, ToolCallRecord
 from penny.config import Config
@@ -19,7 +20,7 @@ from penny.llm import LlmClient
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
-from penny.text_validity import is_degenerate_run
+from penny.text_validity import is_degenerate_run, is_degenerate_tool_name
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
@@ -710,16 +711,33 @@ class Agent:
         logger.error("Model output still degenerate after %d re-rolls — aborting run", attempts)
         return None
 
-    @staticmethod
-    def _response_is_degenerate(response: LlmResponse) -> bool:
-        """True if the raw output — text content OR any tool-call argument — carries
-        a degeneration-collapse run.  Serialising the tool-call arguments is what
-        lets the guard catch the common case, where the collapse lands in a
-        ``collection_write`` / ``done`` argument rather than in visible prose."""
+    def _response_is_degenerate(self, response: LlmResponse) -> bool:
+        """True if the raw output — text content, any tool-call argument, OR a
+        tool-call NAME — carries a degeneration collapse.  Serialising the
+        tool-call arguments is what lets the guard catch the common case, where
+        the collapse lands in a ``collection_write`` / ``done`` argument rather
+        than in visible prose; the name check catches the collapse landing in the
+        call's NAME field (``Functions?????``), which would otherwise flow to a
+        tool-not-found error that keeps the poison in context."""
         parts = [response.message.content or ""]
         for call in response.message.tool_calls or []:
+            if self._is_degenerate_tool_call_name(call.function.name):
+                return True
             parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
         return any(is_degenerate_run(part) for part in parts)
+
+    def _is_degenerate_tool_call_name(self, name: str) -> bool:
+        """A tool-call name that is UNREGISTERED and collapse-shaped is poison.
+
+        Ordering mirrors the dispatch layering: a registered name is a real call
+        (dispatch as normal — never rerolled); an unregistered one that carries
+        collapse characters (``funcs.done?``, ``read_simpar?``) is the same
+        degeneration as content poison, so the response is discarded and
+        re-rolled.  An unregistered but plausible identifier (a near-miss like
+        ``collection_metadata``, or a Harmony-token-wrapped valid name — the
+        future Harmony strip's repair case, not ours) falls through to the
+        executor's tool-not-found error with its "Did you mean X?" hint."""
+        return self._tool_registry.get(name) is None and is_degenerate_tool_name(name)
 
     def _build_final_response(
         self,
@@ -1021,8 +1039,9 @@ class Agent:
         This method only prepends the timestamp.
         """
         effective = system_prompt or self.system_prompt
-        now = datetime.now(UTC).strftime("%A, %B %d, %Y at %I:%M %p UTC")
-        system_content = f"Current date and time: {now}\n\n{effective}"
+        now = datetime.now(self._user_timezone())
+        stamp = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
+        system_content = f"Current date and time: {stamp}\n\n{effective}"
 
         messages = [ChatMessage(role=MessageRole.SYSTEM, content=system_content).to_dict()]
 
@@ -1032,6 +1051,34 @@ class Agent:
 
         messages.append(ChatMessage(role=MessageRole.USER, content=prompt).to_dict())
         return messages
+
+    def _user_timezone(self) -> tzinfo:
+        """The primary user's IANA timezone for the current-date/time anchor.
+
+        The profile advertises the user's timezone, so the clock the model
+        reasons from must match it — otherwise Penny is told the wrong
+        time-of-day always, and (for the hours around local midnight) the
+        wrong calendar day.  Falls back to UTC when there's no profile /
+        timezone (fresh install) or the stored zone is unknown.  Entry/log
+        timestamps stay UTC via ``format_log_timestamp`` — those are absolute
+        historical markers, not the current-now anchor.
+        """
+        iana = self._user_timezone_name()
+        if iana is None:
+            return UTC
+        try:
+            return ZoneInfo(iana)
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown profile timezone %r — anchoring in UTC", iana)
+            return UTC
+
+    def _user_timezone_name(self) -> str | None:
+        """The primary user's stored IANA timezone, or None with no profile."""
+        sender = self.db.users.get_primary_sender()
+        if sender is None:
+            return None
+        user_info = self.db.users.get_info(sender)
+        return user_info.timezone if user_info is not None else None
 
     # ── System prompt building (template method pattern) ─────────────────
 
