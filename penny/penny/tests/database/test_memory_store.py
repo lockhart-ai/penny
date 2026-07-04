@@ -8,6 +8,7 @@ enforcement, log append, cursor monotonicity, and the similarity-based
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,6 +25,7 @@ from penny.database.memory import (
     RecallMode,
 )
 from penny.database.memory._similarity import hybrid_rank_ids
+from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tools.memory_tools import MemoryMetadataTool
 
@@ -128,8 +130,18 @@ class TestMemoryMetadata:
         assert "300s" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
-        assert "created:" in result.message
-        assert "updated:" in result.message
+        # Timestamps render through the shared log-timestamp format (compact UTC),
+        # unified with entry lists / run history — not a raw seconds strftime.
+        row = db.memories.memory("board-games").row
+        assert f"created: {format_log_timestamp(row.created_at)}" in result.message
+        assert f"updated: {format_log_timestamp(row.updated_at)}" in result.message
+        assert re.search(r"created: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\n", result.message)
+        # A collected memory renders its stamp through the same shared format.
+        db.memories.mark_collected("board-games")
+        collected = asyncio.run(tool.execute(memory="board-games")).message
+        stamped = db.memories.memory("board-games").row.last_collected_at
+        assert stamped is not None
+        assert f"last collected: {format_log_timestamp(stamped)}" in collected
 
     def test_collection_metadata_tool_no_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)

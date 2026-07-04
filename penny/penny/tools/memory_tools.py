@@ -991,12 +991,12 @@ class MemoryMetadataTool(MemoryTool):
             else "not set"
         )
         last_collected = (
-            memory.last_collected_at.strftime("%Y-%m-%d %H:%M:%S")
+            format_log_timestamp(memory.last_collected_at)
             if memory.last_collected_at is not None
             else "never"
         )
-        created = memory.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        updated = memory.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+        created = format_log_timestamp(memory.created_at)
+        updated = format_log_timestamp(memory.updated_at)
         lines = [
             f"name: {memory.name}",
             f"type: {memory.type}",
