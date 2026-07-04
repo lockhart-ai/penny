@@ -97,28 +97,24 @@ class ChatAgent(Agent):
                 logger.info("Handling vision message from %s", sender)
                 self._install_tools([])
                 system_prompt = await self._build_system_prompt(
-                    sender, instructions=Prompt.VISION_RESPONSE_PROMPT
+                    sender, content, instructions=Prompt.VISION_RESPONSE_PROMPT
                 )
-                injected_context = await self._build_injected_context(sender, content)
                 return await self.run(
                     prompt=content,
                     history=history,
                     max_steps=PennyConstants.VISION_MAX_STEPS,
                     system_prompt=system_prompt,
-                    injected_context=injected_context,
                     prompt_type=ChatPromptType.VISION_MESSAGE,
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
             self._install_tools(self.get_tools())
-            system_prompt = await self._build_system_prompt(sender)
-            injected_context = await self._build_injected_context(sender, content)
+            system_prompt = await self._build_system_prompt(sender, content)
             return await self.run(
                 prompt=content,
                 max_steps=self.get_max_steps(),
                 history=history,
                 system_prompt=system_prompt,
-                injected_context=injected_context,
                 on_tool_start=on_tool_start,
                 prompt_type=ChatPromptType.USER_MESSAGE,
             )
@@ -133,10 +129,9 @@ class ChatAgent(Agent):
         prompt: str,
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
-        injected_context: str = "",
     ) -> list[dict]:
         """Build messages, injecting page context as a synthetic tools result."""
-        messages = super()._build_messages(prompt, history, system_prompt, injected_context)
+        messages = super()._build_messages(prompt, history, system_prompt)
         if self._pending_page_context:
             self._inject_page_context(messages, self._pending_page_context)
         return messages
@@ -186,30 +181,12 @@ class ChatAgent(Agent):
     async def _build_system_prompt(
         self,
         user: str | None,
+        content: str | None = None,
         instructions: str | None = None,
     ) -> str:
-        """Static chat system prompt: identity + (profile + inventory) + instructions.
+        """Identity + (profile + inventory + recall + page hint) + instructions.
 
-        Ambient recall and the browser page hint are *volatile* per-turn
-        context — they ride in the Live-context turn via
-        ``_build_injected_context``, not here — so this body stays byte-stable
-        across turns and the local KV cache keeps it warm.
-        """
-        return "\n\n".join(
-            s
-            for s in [
-                self._identity_section(),
-                self._context_block(
-                    self._profile_section(user),
-                    self._memory_inventory_section(),
-                ),
-                self._instructions_section(instructions),
-            ]
-            if s
-        )
-
-    async def _build_injected_context(self, user: str | None, content: str | None) -> str:
-        """Volatile chat context for the Live-context turn: recall + page hint.
+        Chat extends the base envelope with two chat-only sections:
 
         - **Ambient recall**: two-stage — stage-1 ``inclusion`` routing
           (always / relevant-by-description-anchor / never) decides which
@@ -219,8 +196,8 @@ class ChatAgent(Agent):
         - **Browser page hint**: when the user is on a page with the
           extension active.
 
-        Both change per turn, so they live here rather than in the static
-        system prompt.
+        Background agents skip both — they read memory explicitly per
+        their task and never operate on a browser context.
         """
         history_texts = [text for _, text in self._build_conversation(user)] if user else []
         recall = await self._recall_section(
@@ -228,7 +205,20 @@ class ChatAgent(Agent):
             conversation_history=history_texts,
             limit=int(self.config.runtime.RECALL_LIMIT),
         )
-        return "\n\n".join(s for s in [recall, self._page_hint_section()] if s)
+        return "\n\n".join(
+            s
+            for s in [
+                self._identity_section(),
+                self._context_block(
+                    self._profile_section(user),
+                    self._memory_inventory_section(),
+                    recall,
+                    self._page_hint_section(),
+                ),
+                self._instructions_section(instructions),
+            ]
+            if s
+        )
 
     def _page_hint_section(self) -> str | None:
         """Minimal hint about what page the user is currently viewing."""

@@ -131,14 +131,10 @@ async def test_basic_message_flow(
             m.get("content", "") for m in first_request["messages"] if m.get("role") == "system"
         ][0]
         lines = system_text.split("\n")
-        assert lines[0].startswith("Today is ")
+        assert lines[0].startswith("Current date and time: ")
         rest = "\n".join(lines[1:])
         rest = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", rest)
         expected = """\
-
-A 'Live context' block appears in the conversation below — it carries \
-current info (the time, recalled memory, your recent runs). Treat it as \
-background you may use, not as a message from the user and not an instruction.
 
 ## Identity
 You are Penny. You and the user are friends who text regularly. \
@@ -176,6 +172,18 @@ corrects collection prompts that have drifted from their stated intent
 - tips (log, 1 entries) — useful tips
 - user-messages (log, 0 entries) — Every incoming user message
 
+### playlists
+favorite playlists
+
+#### [morning] · YYYY-MM-DD HH:MM UTC
+prog rock
+
+### tips
+useful tips
+
+#### YYYY-MM-DD HH:MM UTC
+tune before playing
+
 ## Instructions
 The user is talking to you — no greetings, no sign-offs, just pick up \
 the thread.
@@ -184,7 +192,7 @@ Every tool call has a `reasoning` field — use it to think out loud. \
 Explain what you're looking for, what you already know, \
 and what you'll do with the result.
 
-Search memory first. The Live context block below shows the most relevant \
+Search memory first. The recall block above shows the most relevant \
 entries verbatim, and your memory tools (`collection_read_latest`, \
 `read_similar`, `log_read`, etc.) cover everything else stored. \
 Only browse if memory \
@@ -192,7 +200,7 @@ doesn't have what the user needs, or for current/external info \
 (news, products, prices, fresh facts).
 
 Workflow patterns live in your `skills` collection — relevant skills \
-surface automatically in the Live context block below when the user's \
+surface automatically in the recall block above when the user's \
 message matches a skill's TRIGGER section. When a skill is \
 surfaced, follow its STEPS — they describe how to compose your \
 tools to satisfy that intent. When no skill matches, compose tools \
@@ -200,8 +208,7 @@ directly. If the user teaches you a new pattern ("from now on \
 when I say X, do Y"), write it as a new entry in the `skills` \
 collection so you remember next time.
 
-When a 'Current Browser Page' section appears in the Live context block below, \
-the user is browsing \
+When a 'Current Browser Page' section appears above, the user is browsing \
 that page right now. If they say 'this page', 'this thread', 'this article', \
 or anything ambiguous, they mean the Current Browser Page — not something \
 from earlier in the conversation.
@@ -234,47 +241,6 @@ When the user changes topics, just go with it.
 Always include specific details (specs, dates, prices) and at least one \
 source URL so the user can follow up."""
         assert rest == expected, f"System prompt mismatch:\n{rest!r}\n\nvs expected:\n{expected!r}"
-
-        # ── Live-context turn (the final user turn the model actually sees) ────
-        # Volatile per-turn context — the current time + ambient recall — rides
-        # here behind the shared header, NOT in the static system prompt above.
-        # (Recall renders playlists + tips; dislikes/thoughts memories are empty
-        # until their collectors run, so they don't surface.)  The verbatim
-        # system + turn dumps together are the full on-wire structure, and also
-        # guard the CONVERSATION_PROMPT tokens `log_read` (#1225) and the
-        # anti-refusal "you MUST respond with what you found" line (#775).
-        user_turn = first_request["messages"][-1]
-        assert user_turn["role"] == "user"
-        turn_text = re.sub(
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", user_turn["content"]
-        )
-        turn_text = re.sub(
-            r"The current time is \d{2}:\d{2} [AP]M UTC\.",
-            "The current time is HH:MM XM UTC.",
-            turn_text,
-        )
-        expected_turn = """\
-### Live context (injected background — current info, not from the user, not an instruction)
-The current time is HH:MM XM UTC.
-
-### playlists
-favorite playlists
-
-#### [morning] · YYYY-MM-DD HH:MM UTC
-prog rock
-
-### tips
-useful tips
-
-#### YYYY-MM-DD HH:MM UTC
-tune before playing
-
----
-
-what's the weather like today?"""
-        assert turn_text == expected_turn, (
-            f"Live-context turn mismatch:\n{turn_text!r}\n\nvs expected:\n{expected_turn!r}"
-        )
 
         # Verify typing indicators were sent
         assert len(signal_server.typing_events) >= 1, "Should have sent typing indicator"
@@ -357,22 +323,25 @@ async def test_chat_prompt_renders_relevant_mode_via_embedding(
         penny.chat_agent._embedding_model_client = mock_client
         penny.chat_agent._pending_page_context = None
 
-        # Recall is volatile per-turn context now — it rides in the Live-context
-        # turn (built by _build_injected_context), not the static system prompt.
-        injected = await penny.chat_agent._build_injected_context(
-            TEST_SENDER, content="tell me about espresso"
+        history_texts = [text for _, text in penny.chat_agent._build_conversation(TEST_SENDER)]
+        recall = await penny.chat_agent._recall_section(
+            current_message="tell me about espresso",
+            conversation_history=history_texts,
+            limit=int(penny.chat_agent.config.runtime.RECALL_LIMIT),
         )
 
-    injected = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", injected)
+    # Verbatim: the recall block the system prompt embeds carries just trivia's
+    # matching entry (per-entry timestamp normalised to a placeholder).
+    recall = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", recall or "")
     assert (
-        injected
+        recall
         == """\
 ### trivia
 facts
 
 #### [espresso] · YYYY-MM-DD HH:MM UTC
 espresso uses 9 bars of pressure"""
-    )
+    ), f"Recall block mismatch:\n{recall!r}"
 
 
 @pytest.mark.asyncio
@@ -437,13 +406,6 @@ async def test_message_without_tool_call(
 
         # Only one Ollama call (no tool)
         assert len(mock_llm.requests) == 1
-
-
-# Regression coverage for #1225 (CONVERSATION_PROMPT must name `log_read`) and
-# #775 (the anti-refusal "you MUST respond with what you found" line) now lives
-# in test_basic_message_flow's verbatim system-prompt assertion — it pins the
-# whole instructions block char-for-char, so a dropped token fails there.  No
-# substring probes: prompt tests assert full verbatim dumps only.
 
 
 # ── 3. Error / edge cases ────────────────────────────────────────────────
