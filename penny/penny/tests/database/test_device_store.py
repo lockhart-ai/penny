@@ -32,6 +32,19 @@ class TestDeviceStore:
         assert default is not None
         assert default.id == device.id
 
+    def test_register_default_clears_prior_default(self, tmp_path):
+        db = self._make_db(tmp_path)
+        signal = db.devices.register(ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True)
+        ios = db.devices.register(ChannelType.IOS, "ios-keychain-id", "iPhone", is_default=True)
+        assert signal.id is not None
+        # Only one default row remains — the newest registration wins.
+        default = db.devices.get_default()
+        assert default is not None
+        assert default.id == ios.id
+        refreshed_signal = db.devices.get_by_id(signal.id)
+        assert refreshed_signal is not None
+        assert refreshed_signal.is_default is False
+
     def test_register_upsert_returns_existing(self, tmp_path):
         db = self._make_db(tmp_path)
         first = db.devices.register(ChannelType.SIGNAL, "+15551234567", "Original Label")

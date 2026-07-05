@@ -23,7 +23,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from penny.constants import PennyConstants
+from penny.constants import ChannelType, PennyConstants
 
 if TYPE_CHECKING:
     from penny.channels.base import MessageChannel
@@ -61,7 +61,7 @@ class SendQueueDrainer:
             return False
         if not self._cooldown_elapsed():
             return False
-        recipient = self._db.devices.get_default_identifier()
+        recipient = self._resolve_recipient()
         if recipient is None:
             return False
         await self._channel.send_response(
@@ -75,6 +75,20 @@ class SendQueueDrainer:
             self._db.send_queue.mark_sent(item.id)
         logger.info("send_queue drained: %s → %s", item.collection, recipient)
         return True
+
+    def _resolve_recipient(self) -> str | None:
+        """Where a drained message is delivered.
+
+        For an iOS default device the device identifier *is* the recipient
+        (that's the routing #1373 needed).  For every other channel the default
+        device row is Penny's own seeded endpoint (e.g. ``config.signal_number``
+        on a fresh Signal install), so routing there would land in Note-to-Self
+        — the user is the single primary sender.
+        """
+        default = self._db.devices.get_default()
+        if default is not None and default.channel_type == ChannelType.IOS:
+            return default.identifier
+        return self._db.users.get_primary_sender()
 
     # ── Cooldown (moved verbatim from SendMessageTool) ────────────────────
 
