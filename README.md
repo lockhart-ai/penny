@@ -178,6 +178,14 @@ For APNs setup, create an Apple Push Notifications authentication key in the App
 
 Diagnostic phrase: send `send me a test push` from the iOS app to force a test APNs notification to that registered device, even while the WebSocket is connected. Similar phrases such as `test push` and `send a test notification` work too.
 
+### iOS Service Diagram
+
+<p align="center">
+  <img src="penny_ios_service_diagram.png" alt="Penny iOS Service Diagram" >
+</p>
+
+Example service diagram for an iOS setup, using Openrouter as a model host and a Digital Ocean droplet running Nginx as a proxy. 
+
 ## Setup & Running
 
 ### Prerequisites
