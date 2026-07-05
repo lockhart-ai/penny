@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from penny.text_validity import half_formed_send_reason, is_blank
 
@@ -68,11 +68,33 @@ def _require_recipients(value: list[str]) -> list[str]:
 RecipientList = Annotated[list[str], AfterValidator(_require_recipients)]
 
 
-class NoArgs(BaseModel):
+class ToolArgs(BaseModel):
+    """Base for every tool's Pydantic arg model.
+
+    ``extra="forbid"`` routes an unknown parameter — a misspelled optional
+    argument (``count=`` where the tool takes ``k=``), a stale field name —
+    through the arg-validation envelope (``Tool._validation_error_message``) as an
+    actionable rejection ("unknown parameter 'count' …") instead of Pydantic's
+    default of silently dropping it and running the tool with default behaviour: a
+    silent no-op parameter the model has no signal to correct.
+
+    The framework-injected ``reasoning`` param (``Tool.to_ollama_tool``) is popped
+    from the call arguments *before* validation (``Agent._dedup_tool_calls``), so
+    ``forbid`` never sees it — real tool calls are unaffected.  (``browse``
+    additionally declares ``reasoning`` as a genuine field, since it advertises the
+    param in its own schema.)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class NoArgs(ToolArgs):
     """Args model for a tool that takes no parameters.
 
-    The default ``Tool.args_model`` — validation is a no-op (extra keys the model
-    may pass are ignored), so an argless tool needs no per-tool model."""
+    The default ``Tool.args_model``.  It declares no fields, so — inheriting
+    ``extra="forbid"`` from ``ToolArgs`` — any argument the model passes to an
+    argless tool is an unknown parameter and is rejected through the envelope,
+    rather than silently ignored."""
 
 
 class ToolResult(BaseModel):
@@ -120,7 +142,7 @@ class BrowsePage(BaseModel):
     url: str | None = None
 
 
-class BrowseArgs(BaseModel):
+class BrowseArgs(ToolArgs):
     """Validated arguments for the browse tool.
 
     ``queries`` must carry at least one entry: an empty browse call did nothing
@@ -132,7 +154,7 @@ class BrowseArgs(BaseModel):
     reasoning: str | None = None
 
 
-class SendMessageArgs(BaseModel):
+class SendMessageArgs(ToolArgs):
     """Validated arguments for the send_message tool.
 
     The ``content`` validator is the tool's *message-validity* gate: it rejects a
@@ -160,7 +182,7 @@ class SendMessageArgs(BaseModel):
         return value
 
 
-class SearchEmailsArgs(BaseModel):
+class SearchEmailsArgs(ToolArgs):
     """Validated arguments for the search_emails tool.
 
     Every field is optional, but an all-empty search is meaningless (it would
@@ -183,7 +205,7 @@ class SearchEmailsArgs(BaseModel):
         return self
 
 
-class ReadEmailsArgs(BaseModel):
+class ReadEmailsArgs(ToolArgs):
     """Validated arguments for the read_emails tool.
 
     ``email_ids`` must be non-empty: reading no emails is a no-op, so the empty
@@ -194,13 +216,13 @@ class ReadEmailsArgs(BaseModel):
     email_ids: EmailIdList
 
 
-class ListEmailsArgs(BaseModel):
+class ListEmailsArgs(ToolArgs):
     """Validated arguments for the list_emails tool."""
 
     folder: str | None = None
 
 
-class DraftEmailArgs(BaseModel):
+class DraftEmailArgs(ToolArgs):
     """Validated arguments for the draft_email tool.
 
     Structural validation only — a recipient list with at least one address and a

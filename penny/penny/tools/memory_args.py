@@ -21,6 +21,7 @@ from penny.text_validity import (
     require_non_blank_log_content,
     require_non_degenerate_content,
 )
+from penny.tools.models import ToolArgs
 
 # Models occasionally substitute Unicode dashes (U+2010–U+2015) for ASCII
 # hyphen-minus (U+002D) when emitting memory names — gpt-oss has been
@@ -174,7 +175,7 @@ OptionalRecall = Annotated[
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
-class CollectionCreateArgs(BaseModel):
+class CollectionCreateArgs(ToolArgs):
     """Args for ``collection_create``.
 
     A collection without an ``extraction_prompt`` is passive (nothing
@@ -204,7 +205,7 @@ class CollectionCreateArgs(BaseModel):
     published: bool = False
 
 
-class LogCreateArgs(BaseModel):
+class LogCreateArgs(ToolArgs):
     """Args for ``log_create``.
 
     Logs are append-only streams of events (messages, browse results,
@@ -218,17 +219,17 @@ class LogCreateArgs(BaseModel):
     recall: RecallValue  # "all" | "relevant" | "recent"
 
 
-class MemoryNameArgs(BaseModel):
+class MemoryNameArgs(ToolArgs):
     """One-field args for ``archive`` / ``unarchive`` / read-all / keys."""
 
     memory: MemoryName
 
 
-class CatalogArgs(BaseModel):
+class CatalogArgs(ToolArgs):
     """No-field args for ``collection_catalog`` — it spans every collection."""
 
 
-class CollectionUpdateArgs(BaseModel):
+class CollectionUpdateArgs(ToolArgs):
     """Update a collection's metadata.
 
     All fields after ``name`` are optional — only the ones explicitly set
@@ -250,28 +251,28 @@ class CollectionUpdateArgs(BaseModel):
 # ── Collection reads ────────────────────────────────────────────────────────
 
 
-class CollectionGetArgs(BaseModel):
+class CollectionGetArgs(ToolArgs):
     """Exact key lookup in a collection."""
 
     memory: MemoryName
     key: str
 
 
-class ReadLatestArgs(BaseModel):
+class ReadLatestArgs(ToolArgs):
     """Newest-first; ``k=None`` returns all."""
 
     memory: MemoryName
     k: ReadCount = None
 
 
-class ReadRandomArgs(BaseModel):
+class ReadRandomArgs(ToolArgs):
     """Random sample; ``k=None`` returns all."""
 
     memory: MemoryName
     k: ReadCount = None
 
 
-class ReadSimilarArgs(BaseModel):
+class ReadSimilarArgs(ToolArgs):
     """Top-k by content cosine similarity to ``anchor`` (embedded by the tool).
 
     The similarity floor is fixed (``MEMORY_RELEVANT_ABSOLUTE_FLOOR`` plus
@@ -287,7 +288,7 @@ class ReadSimilarArgs(BaseModel):
 # ── Log-specific reads ──────────────────────────────────────────────────────
 
 
-class ReadPublishedLatestArgs(BaseModel):
+class ReadPublishedLatestArgs(ToolArgs):
     """A consumer's fan-in read across every ``published`` collection.
 
     Returns the ``n`` oldest entries not yet seen by this consumer (across all
@@ -300,7 +301,7 @@ class ReadPublishedLatestArgs(BaseModel):
     n: Annotated[int, AfterValidator(_reject_nonpositive_count)] = 1
 
 
-class ReadLogArgs(BaseModel):
+class ReadLogArgs(ToolArgs):
     """A single ``log_read`` over a log.  The caller names only the log — the
     semantics (cursor batch for collectors, recent window for chat/schedule) and
     all sizes are decided in Python from the caller, never by the model."""
@@ -308,7 +309,7 @@ class ReadLogArgs(BaseModel):
     memory: MemoryName
 
 
-class CollectorRunHistoryArgs(BaseModel):
+class CollectorRunHistoryArgs(ToolArgs):
     """Read one collector's recent runs.  The caller names only the collector
     (collection) — the count is fixed in Python (``RUN_HISTORY_RECORDS``), never
     by the model, like every other read tool."""
@@ -316,7 +317,7 @@ class CollectorRunHistoryArgs(BaseModel):
     collector: MemoryName
 
 
-class ReadRunCallsArgs(BaseModel):
+class ReadRunCallsArgs(ToolArgs):
     """One ``read_run_calls`` over a run source — ``"chat"`` for conversational runs,
     or a collector's name for that collector's runs.  Batch size is fixed in Python."""
 
@@ -327,7 +328,15 @@ class ReadRunCallsArgs(BaseModel):
 
 
 class CollectionEntrySpec(BaseModel):
-    """One entry in a ``collection_write`` batch."""
+    """One entry in a ``collection_write`` batch.
+
+    Deliberately a plain ``BaseModel``, not ``ToolArgs`` — this is a *nested*
+    element of ``CollectionWriteArgs.entries``, so an ``extra="forbid"`` violation
+    here would carry a nested ``loc`` (``("entries", 0, "badkey")``) that the
+    envelope's field-naming (which reads ``loc[0]``) would mis-render as the
+    whole ``entries`` field.  Both of its fields are required, so a *misspelled*
+    field still surfaces as the missing required field; only a purely extraneous
+    key slips through, which is an acceptable gap outside this ticket's scope."""
 
     key: str
     content: str
@@ -352,14 +361,14 @@ class CollectionEntrySpec(BaseModel):
         return value
 
 
-class CollectionWriteArgs(BaseModel):
+class CollectionWriteArgs(ToolArgs):
     """Batched write to a collection with dedup applied per entry."""
 
     memory: MemoryName
     entries: list[CollectionEntrySpec] = Field(min_length=1)
 
 
-class UpdateEntryArgs(BaseModel):
+class UpdateEntryArgs(ToolArgs):
     """Replace content for an existing key in a collection."""
 
     memory: MemoryName
@@ -367,14 +376,14 @@ class UpdateEntryArgs(BaseModel):
     content: CollectionContent
 
 
-class CollectionMergeArgs(BaseModel):
+class CollectionMergeArgs(ToolArgs):
     """Merge all entries from one collection into another, then archive the source."""
 
     from_memory: MemoryName
     to_memory: MemoryName
 
 
-class CollectionDeleteEntryArgs(BaseModel):
+class CollectionDeleteEntryArgs(ToolArgs):
     """Delete an entry from a collection by key."""
 
     memory: MemoryName
@@ -384,7 +393,7 @@ class CollectionDeleteEntryArgs(BaseModel):
 # ── Log writes ──────────────────────────────────────────────────────────────
 
 
-class LogAppendArgs(BaseModel):
+class LogAppendArgs(ToolArgs):
     """Append one keyless entry to a log."""
 
     memory: AppendableLogName
@@ -394,7 +403,7 @@ class LogAppendArgs(BaseModel):
 # ── Introspection ───────────────────────────────────────────────────────────
 
 
-class ExistsArgs(BaseModel):
+class ExistsArgs(ToolArgs):
     """Cross-memory dedup probe used by thinking-class agents before writes."""
 
     memories: MemoryNameList = Field(min_length=1)
@@ -402,7 +411,7 @@ class ExistsArgs(BaseModel):
     key: str | None = None
 
 
-class DoneArgs(BaseModel):
+class DoneArgs(ToolArgs):
     """Cycle terminator — pair the exit with a success flag and a summary.
 
     ``success`` is true if the cycle accomplished what the prompt asked,
