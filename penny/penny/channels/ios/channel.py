@@ -92,12 +92,14 @@ class IosChannel(MessageChannel):
         command_registry: CommandRegistry | None = None,
         pairing_token: str | None = None,
         apns_client: ApnsClient | None = None,
+        is_primary_channel: bool = False,
     ) -> None:
         super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
         self._host = host
         self._port = port
         self._pairing_token = pairing_token
         self._apns_client = apns_client
+        self._is_primary_channel = is_primary_channel
         self._server: Server | None = None
         self._connections: dict[str, IosConnectionInfo] = {}
         self._closed = asyncio.Event()
@@ -176,37 +178,45 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="invalid_pairing_token"))
             return None
 
-        device = self._db.devices.register(
-            channel_type=ChannelType.IOS,
-            identifier=msg.device_id,
-            label=msg.label,
-            is_default=True,
-        )
-        if device.id is not None:
-            self._db.devices.set_default(device.id)
-            self._db.ios.upsert_registration(
-                device=device,
-                apns_token=msg.apns_token,
-                apns_environment=msg.apns_environment,
-                app_version=msg.app_version,
-                device_secret=msg.device_secret,
-            )
-            self._connections[msg.device_id] = IosConnectionInfo(
-                ws=ws, device_id=device.id, identifier=msg.device_id
-            )
-            pending_count = self._db.ios.pending_count(device.id)
-        else:
-            pending_count = 0
-
+        is_default, pending_count = self._persist_registration(ws, msg)
         await self._send_ws(
             ws,
             IosRegistered(
                 device_id=msg.device_id,
-                is_default=True,
+                is_default=is_default,
                 pending_count=pending_count,
             ),
         )
         return msg.device_id
+
+    def _persist_registration(self, ws: ServerConnection, msg: IosRegister) -> tuple[bool, int]:
+        """Upsert the device + iOS registration; claim default only as the primary channel.
+
+        In sidecar mode (``CHANNEL_TYPE`` != ios) the device is registered without touching
+        the default flag, so the primary channel (e.g. Signal) keeps proactive-send routing.
+        """
+        device = self._db.devices.register(
+            channel_type=ChannelType.IOS,
+            identifier=msg.device_id,
+            label=msg.label,
+            is_default=self._is_primary_channel,
+        )
+        if device.id is None:
+            return False, 0
+        if self._is_primary_channel:
+            self._db.devices.set_default(device.id)
+        self._db.ios.upsert_registration(
+            device=device,
+            apns_token=msg.apns_token,
+            apns_environment=msg.apns_environment,
+            app_version=msg.app_version,
+            device_secret=msg.device_secret,
+        )
+        self._connections[msg.device_id] = IosConnectionInfo(
+            ws=ws, device_id=device.id, identifier=msg.device_id
+        )
+        is_default = self._db.devices.get_default_identifier() == msg.device_id
+        return is_default, self._db.ios.pending_count(device.id)
 
     async def _handle_chat_message(self, data: dict, device_identifier: str) -> None:
         """Forward an iOS user message through the shared channel pipeline."""
