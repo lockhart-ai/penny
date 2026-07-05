@@ -161,48 +161,93 @@ class BrowseTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension."""
         args = BrowseArgs(**kwargs)
-
         cap = self._max_calls
+        to_run, dropped = args.queries[:cap], args.queries[cap:]
+
+        tasks = self._build_tasks(to_run)
+        results = await asyncio.gather(*[coro for _, _, coro in tasks], return_exceptions=True)
+        sections, page_sections, captures = self._assemble_sections(tasks, results)
+
+        await self._append_pages_to_browse_results(page_sections)
+        await self._store_media(captures)
+
+        if dropped:
+            sections.append(self._dropped_section(cap, dropped))
+        # Browse is a *read* for work-accounting (its browse-results log write is
+        # incidental), so ``mutated`` stays False.  But when EVERY dispatched query
+        # errored the call did nothing, so it reports ``success=False`` — making the
+        # failure visible to structural accounting (``record.failed`` → the run's
+        # ``tool_failures`` count → run-health), not just to the error text.  A
+        # partial failure keeps ``success=True``: the model works from what succeeded.
+        all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
+        return ToolResult(
+            message=PennyConstants.SECTION_SEPARATOR.join(sections),
+            success=not all_failed,
+        )
+
+    def _build_tasks(self, queries: list[str]) -> list[tuple[str, str, Any]]:
+        """One ``(header, value, coroutine)`` per query — URLs read directly, plain
+        text routed through the configured search URL."""
         tasks: list[tuple[str, str, Any]] = []
-        for q in args.queries[:cap]:
+        for q in queries:
             if _URL_PATTERN.match(q):
                 tasks.append((PennyConstants.BROWSE_PAGE_HEADER, q, self._read_page(q)))
             else:
-                search_url = self._search_url + urllib.parse.quote(q)
+                search_url = f"{self._search_url}{urllib.parse.quote(q)}"
                 tasks.append((PennyConstants.BROWSE_SEARCH_HEADER, q, self._read_page(search_url)))
+        return tasks
 
-        results = await asyncio.gather(*[coro for _, _, coro in tasks], return_exceptions=True)
-
+    def _assemble_sections(
+        self, tasks: list[tuple[str, str, Any]], results: list[Any]
+    ) -> tuple[list[str], list[str], list[BrowsePage]]:
+        """Fold gathered results into rendered sections, the page-only subset (for
+        the browse-results log), and the captured page images."""
         sections: list[str] = []
         page_sections: list[str] = []
         captures: list[BrowsePage] = []
         for (header, value, _), result in zip(tasks, results, strict=True):
             if isinstance(result, BaseException):
-                logger.warning("Browse sub-call failed (%s%s): %s", header, value, result)
-                error_label = f"{PennyConstants.BROWSE_ERROR_HEADER}{value}"
-                sections.append(
-                    f"{error_label}\nCould not read this page: {result}. "
-                    f"Try a different source or a reworded query; if other queries in this "
-                    f"batch succeeded, work from those instead of retrying this one."
-                )
+                sections.append(self._error_section(header, value, result))
                 continue
-            label = f"{header}{value}"
-            text = result.text
-            if header == PennyConstants.BROWSE_SEARCH_HEADER:
-                text = _trim_search_result(text)
-            section = f"{label}\n{text}"
+            section = self._page_section(header, value, result)
             sections.append(section)
             if header == PennyConstants.BROWSE_PAGE_HEADER:
                 page_sections.append(section)
                 if result.image:
                     captures.append(result)
+        return sections, page_sections, captures
 
-        await self._append_pages_to_browse_results(page_sections)
-        await self._store_media(captures)
-        # Browse is a *read* for work-accounting (its browse-results log write is
-        # incidental), so ``mutated`` stays False — a collector cycle that only
-        # browsed found nothing to record.
-        return ToolResult(message=PennyConstants.SECTION_SEPARATOR.join(sections))
+    @staticmethod
+    def _error_section(header: str, value: str, error: BaseException) -> str:
+        """Render one failed sub-call under the dedicated error header."""
+        logger.warning("Browse sub-call failed (%s%s): %s", header, value, error)
+        error_label = f"{PennyConstants.BROWSE_ERROR_HEADER}{value}"
+        return (
+            f"{error_label}\nCould not read this page: {error}. "
+            f"Try a different source or a reworded query; if other queries in this "
+            f"batch succeeded, work from those instead of retrying this one."
+        )
+
+    @staticmethod
+    def _page_section(header: str, value: str, result: BrowsePage) -> str:
+        """Render one successful sub-call; search pages are trimmed to their links."""
+        text = result.text
+        if header == PennyConstants.BROWSE_SEARCH_HEADER:
+            text = _trim_search_result(text)
+        return f"{header}{value}\n{text}"
+
+    @staticmethod
+    def _dropped_section(cap: int, dropped: list[str]) -> str:
+        """Name the queries dropped past the per-call cap so the omission is visible
+        to the model, with the exact recovery: rerun the rest in a follow-up call."""
+        ran = "query was" if cap == 1 else f"{cap} queries were"
+        count = len(dropped)
+        dropped_list = ", ".join(repr(q) for q in dropped)
+        return (
+            f"{PennyConstants.BROWSE_DROPPED_HEADER}only the first {ran} run; "
+            f"{count} beyond the {cap}-per-call limit were not run: {dropped_list}. "
+            f"Call browse(queries=[{dropped_list}]) again if you still need the results."
+        )
 
     async def _append_pages_to_browse_results(self, page_sections: list[str]) -> None:
         """Side-effect-write each successful page as its own log entry.
