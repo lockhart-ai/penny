@@ -11,12 +11,16 @@ struct MessageView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            ForEach(viewModel.client.messages) { message in
-                                ChatMessageRow(message: message)
-                                    .id(message.id)
+                            if viewModel.filteredMessages.isEmpty {
+                                EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
+                            } else {
+                                ForEach(viewModel.filteredMessages) { message in
+                                    ChatMessageRow(message: message)
+                                        .id(message.id)
+                                }
                             }
 
-                            if viewModel.client.isTyping {
+                            if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator {
                                 TypingRow()
                             }
 
@@ -34,8 +38,18 @@ struct MessageView: View {
                             scrollToBottom(with: proxy, animated: false)
                         }
                     }
-                    .onChange(of: viewModel.client.messages.count) { _, _ in
-                        scrollToBottom(with: proxy)
+                    .onChange(of: viewModel.client.messages.count) { oldCount, _ in
+                        Task {
+                            if await viewModel.handleMessagesChanged(previousMessageCount: oldCount) {
+                                scrollToBottom(with: proxy)
+                            }
+                        }
+                    }
+                    .onChange(of: viewModel.selectedMessageFilter) { _, _ in
+                        Task {
+                            await viewModel.waitForFiltering()
+                            scrollToBottom(with: proxy, animated: false)
+                        }
                     }
                     .onChange(of: viewModel.client.isTyping) { _, _ in
                         scrollToBottom(with: proxy)
@@ -56,6 +70,16 @@ struct MessageView: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 8) {
+                        messageFilterMenu
+
+                        if viewModel.hasHiddenNewMessages {
+                            hiddenNewMessagesButton
+                        }
+                    }
+                }
+
                 ToolbarItem(placement: .principal) {
                     titleBar
                 }
@@ -116,6 +140,40 @@ struct MessageView: View {
         .onDisappear {
             viewModel.disconnect()
         }
+    }
+
+    private var messageFilterMenu: some View {
+        Menu {
+            Picker("Filter Messages", selection: $viewModel.selectedMessageFilter) {
+                ForEach(MessageFilter.allCases) { filter in
+                    Label(filter.title, systemImage: filter.systemImage)
+                        .tag(filter)
+                }
+            }
+        } label: {
+            Image(systemName: viewModel.selectedMessageFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("Filter messages")
+        .accessibilityValue(viewModel.selectedMessageFilter.title)
+    }
+
+    private var hiddenNewMessagesButton: some View {
+        Button {
+            Task {
+                await viewModel.clearFiltersAndShowNewMessages()
+            }
+        } label: {
+            Image(systemName: "message.badge")
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("Show new messages")
     }
 
     private var titleBar: some View {
@@ -197,6 +255,42 @@ private extension View {
             }
         }
         .onPreferenceChange(HeightPreferenceKey.self, perform: onChange)
+    }
+}
+
+private struct EmptyMessageFilterView: View {
+    let filter: MessageView.MessageFilter
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: filter.systemImage)
+                .font(.title2)
+                .foregroundStyle(.secondary)
+
+            Text(emptyText)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 48)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var emptyText: String {
+        switch filter {
+        case .all:
+            return "No messages yet"
+        case .penny:
+            return "No Penny messages"
+        case .schedule:
+            return "No scheduled messages"
+        case .chat:
+            return "No chat messages"
+        case .notifier:
+            return "No notifier messages"
+        case .collector:
+            return "No collector messages"
+        }
     }
 }
 

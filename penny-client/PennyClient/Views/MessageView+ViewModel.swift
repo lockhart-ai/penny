@@ -3,6 +3,93 @@ import SwiftUI
 import UIKit
 
 extension MessageView {
+    fileprivate struct MessageFilterInput: Sendable {
+        let sourceHint: String?
+        let isOutgoing: Bool
+
+        init(message: ChatMessage) {
+            sourceHint = message.sourceHint
+            isOutgoing = message.isOutgoing
+        }
+    }
+
+    enum MessageFilter: String, CaseIterable, Identifiable, Sendable {
+        case all
+        case penny
+        case schedule
+        case chat
+        case notifier
+        case collector
+
+        var id: Self { self }
+
+        nonisolated private static let collectorPrefix = "Collector: "
+
+        var title: String {
+            switch self {
+            case .all:
+                return "All Messages"
+            case .penny:
+                return "Penny"
+            case .schedule:
+                return "Schedule"
+            case .chat:
+                return "Chat"
+            case .notifier:
+                return "Notifier"
+            case .collector:
+                return "Collector"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .all:
+                return "tray.full"
+            case .penny:
+                return "sparkles"
+            case .schedule:
+                return "calendar"
+            case .chat:
+                return "bubble.left.and.bubble.right"
+            case .notifier:
+                return "bell"
+            case .collector:
+                return "tray.and.arrow.down"
+            }
+        }
+
+        nonisolated private var sourceHint: String? {
+            switch self {
+            case .all, .collector:
+                return nil
+            case .penny:
+                return "Penny"
+            case .schedule:
+                return "Schedule"
+            case .chat:
+                return "Chat"
+            case .notifier:
+                return "Notifier"
+            }
+        }
+
+        nonisolated fileprivate func includes(_ input: MessageFilterInput) -> Bool {
+            switch self {
+            case .all:
+                return true
+            case .penny:
+                return ["Penny", "Startup", "Test Push"].contains(input.sourceHint)
+            case .chat:
+                return input.isOutgoing || input.sourceHint == sourceHint
+            case .collector:
+                return input.sourceHint?.hasPrefix(Self.collectorPrefix) == true
+            default:
+                return input.sourceHint == sourceHint
+            }
+        }
+    }
+
     @MainActor
     @Observable
     final class ViewModel {
@@ -10,17 +97,92 @@ extension MessageView {
         var draftMessage = ""
         var isShowingConnectionError = false
         var isShowingSettings = false
+        var hasHiddenNewMessages = false
+        var selectedMessageFilter: MessageFilter = .all {
+            didSet {
+                if selectedMessageFilter == .all {
+                    hasHiddenNewMessages = false
+                }
+                refreshFilteredMessages()
+            }
+        }
+        var filteredMessages: [ChatMessage]
         var composerHeight: CGFloat = 64
         var keyboardHeight: CGFloat = 0
 
+        @ObservationIgnored private var filterTask: Task<Void, Never>?
+
         init(client: PennyWebSocketClient? = nil) {
-            self.client = client ?? PennyWebSocketClient()
+            let resolvedClient = client ?? PennyWebSocketClient()
+            self.client = resolvedClient
+            filteredMessages = resolvedClient.messages
         }
 
         private let keyboardComposerSpacing: CGFloat = -24
 
         var keyboardOffset: CGFloat {
             keyboardHeight > 0 ? keyboardHeight + keyboardComposerSpacing : 0
+        }
+
+        var shouldShowTypingIndicator: Bool {
+            selectedMessageFilter == .all || selectedMessageFilter == .chat
+        }
+
+        func refreshFilteredMessages() {
+            let filter = selectedMessageFilter
+            let messages = client.messages
+            let inputs = messages.map(MessageFilterInput.init)
+
+            filterTask?.cancel()
+            filterTask = Task { [weak self] in
+                let matchingIndexes = await Task.detached(priority: .userInitiated) {
+                    inputs.indices.filter { index in
+                        filter.includes(inputs[index])
+                    }
+                }.value
+
+                guard !Task.isCancelled else { return }
+                let filteredMessages = matchingIndexes.map { messages[$0] }
+                self?.filteredMessages = filteredMessages
+            }
+        }
+
+        func waitForFiltering() async {
+            await filterTask?.value
+        }
+
+        func handleMessagesChanged(previousMessageCount: Int) async -> Bool {
+            let messages = client.messages
+            let newMessages = messages.dropFirst(min(previousMessageCount, messages.count))
+            guard !newMessages.isEmpty else {
+                refreshFilteredMessages()
+                await waitForFiltering()
+                return true
+            }
+
+            let filter = selectedMessageFilter
+            let inputs = newMessages.map(MessageFilterInput.init)
+            let hasVisibleNewMessages = inputs.contains(where: filter.includes)
+            let hasFilteredNewMessages = inputs.contains { !filter.includes($0) }
+
+            if hasFilteredNewMessages && filter != .all {
+                hasHiddenNewMessages = true
+            }
+
+            guard hasVisibleNewMessages else { return false }
+            refreshFilteredMessages()
+            await waitForFiltering()
+            return true
+        }
+
+        func clearFiltersAndShowNewMessages() async {
+            hasHiddenNewMessages = false
+            if selectedMessageFilter == .all {
+                refreshFilteredMessages()
+            } else {
+                selectedMessageFilter = .all
+            }
+            await waitForFiltering()
         }
 
         func connect() async {
@@ -41,6 +203,12 @@ extension MessageView {
 
             draftMessage = ""
             client.sendMessage(trimmedMessage)
+
+            if selectedMessageFilter == .chat {
+                refreshFilteredMessages()
+            } else {
+                selectedMessageFilter = .chat
+            }
         }
 
         func handleScenePhaseChange(_ phase: ScenePhase) {
