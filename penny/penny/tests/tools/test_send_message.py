@@ -105,10 +105,11 @@ async def test_send_message_refuses_when_content_is_a_refusal(tmp_path):
 async def test_run_refuses_half_formed_with_actionable_error(tmp_path):
     """Going through ``Tool.run`` (the executor's entry point), a half-formed body
     is refused by the ``args_model`` validator with a ``success=False`` actionable
-    error tool response — names the field + the reason + how to fix — and
-    ``execute`` never runs, so nothing is queued.  ``"Hi there! ......???"`` is a
-    degeneration-collapse run (a superset of the unfinished-fragment shape), caught
-    by the shared corpus/send content gate."""
+    error tool response — names the field + the SPECIFIC defect + the next move —
+    and ``execute`` never runs, so nothing is queued.  ``"Hi there! ......???"``
+    trails off into a degenerate tail; the message names that and how to fix it
+    (finish the sentence), NOT the old misdirecting generic "send the COMPLETE
+    message" (which read as wrong when the send was already substantive)."""
     db = _make_db(tmp_path)
     tool = _make_tool(db)
 
@@ -116,8 +117,8 @@ async def test_run_refuses_half_formed_with_actionable_error(tmp_path):
 
     assert result.success is False
     assert result.mutated is False
-    assert "degenerate" in result.message.lower()  # the specific reason
-    assert "complete message" in result.message.lower()  # how to fix
+    assert "degenerate" in result.message.lower()  # the specific defect
+    assert "finish the sentence" in result.message.lower()  # the next move
     assert "send_message" in result.message  # which tool to retry
     assert db.send_queue.next_pending() is None
 
@@ -151,11 +152,12 @@ async def test_send_message_refuses_when_no_primary_user(tmp_path):
 
 def test_send_message_args_rejects_half_formed_bodies():
     """The ``SendMessageArgs`` validator is the single message-validity gate the
-    ToolExecutor enforces before ``execute`` ever runs.  It rejects every
-    half-formed shape — blank / punctuation-only, bare URL, bail-out phrase,
-    unfinished fragment, and the ellipsis-truncated tails captured from production
-    — and accepts complete messages (including a conversational mid-text ellipsis
-    and a link with surrounding prose)."""
+    ToolExecutor enforces before ``execute`` ever runs.  It judges the message AS A
+    WHOLE: it rejects every whole-message half-formed shape — blank /
+    punctuation-only, bare URL, bail-out phrase, an unfinished ellipsis+?/! TAIL,
+    and the ellipsis-truncated tails captured from production — and accepts complete
+    messages, INCLUDING a substantive message that merely EMBEDS a degenerate
+    fragment mid-text (a `quality` suggestion quoting the bad send it observed)."""
     half_formed = [
         "lets you play 2-player co-op in style-themed ……",
         "still uses the original …",
@@ -165,11 +167,6 @@ def test_send_message_args_rejects_half_formed_bodies():
         "???!!! ...",
         "https://example.com/page",
         "I don't know",
-        # Degeneration-collapse runs embedded in otherwise-wordful text — poison
-        # that carries word tokens (so it clears the blank check) but is corrupt.
-        "New restaurant … … … … openings this week",
-        "Big AI update ……? for you today",
-        "Delivered a find about Boss ..??.. gear",
     ]
     for body in half_formed:
         with pytest.raises(ValidationError):
@@ -180,6 +177,19 @@ def test_send_message_args_rejects_half_formed_bodies():
         "What a great find!",
         "Source: https://example.com/page 🚀",
         "Heads up — a new title dropped, details inside.",
+        # Degenerate runs EMBEDDED mid-message (real words follow) are no longer
+        # refused by the send gate: a substantive, deliberate message that quotes a
+        # fragment is complete.  Catching an in-flight collapse in the model's OWN
+        # output is the agent-loop reroll guard's job (is_degenerate_run), not the
+        # send gate's.  The canonical case is a `quality` suggestion that reports —
+        # and quotes — the half-formed send it observed.
+        "New restaurant … … … … openings this week",
+        "Big AI update ……? for you today",
+        "Delivered a find about Boss ..??.. gear",
+        "HALF-FORMED SEND on board-game-news. Observed: the collector sent "
+        '"Hi there! ......???" before the real note. Proposed fix: compose the '
+        "complete message first, then send once. New prompt: 1. browse for the "
+        "game. 2. write the entry. 3. compose the full sentence. 4. send it. 5. done.",
     ]
     for body in complete:
         SendMessageArgs(content=body)  # must not raise

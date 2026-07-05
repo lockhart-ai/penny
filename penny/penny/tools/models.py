@@ -136,13 +136,18 @@ class SendMessageArgs(BaseModel):
     """Validated arguments for the send_message tool.
 
     The ``content`` validator is the tool's *message-validity* gate: it rejects a
-    half-formed body (blank / punctuation-only, bare URL, bail-out phrase,
-    unfinished fragment, ellipsis-truncated) via the shared
+    WHOLE-message half-formed body (blank / punctuation-only, bare URL, bail-out
+    phrase, or an unfinished/ellipsis-truncated TAIL) via the shared
     ``half_formed_send_reason`` — the same rule the run-health classifier flags
     ``⚠ HALF-FORMED SEND`` on.  Running here (not inside ``execute``) means the
     ``ToolExecutor`` refuses the call with an actionable error tool response
     before the tool runs; ``execute`` then handles only delivery decisions
     (refusal/mute/recipient).
+
+    ``half_formed_send_reason`` is already an actionable message (the specific
+    defect + the next move), so the validator raises it verbatim — it must NOT be
+    wrapped in a generic "send the COMPLETE message" tail, which misdirects when
+    the defect is specific (e.g. a truncated tail on an otherwise complete note).
     """
 
     content: str
@@ -151,11 +156,7 @@ class SendMessageArgs(BaseModel):
     @classmethod
     def _reject_half_formed(cls, value: str) -> str:
         if reason := half_formed_send_reason(value):
-            raise ValueError(
-                f"{reason} — that is not a complete message the user should receive. "
-                "Send the COMPLETE message body: a finished, substantive sentence (or "
-                "more), no placeholder punctuation, no bare link, no trailing ellipsis."
-            )
+            raise ValueError(reason)
         return value
 
 

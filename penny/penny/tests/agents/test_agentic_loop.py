@@ -26,6 +26,7 @@ from penny.llm.models import (
 )
 from penny.responses import PennyResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.text_validity import half_formed_send_reason, is_degenerate_run
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
@@ -541,6 +542,48 @@ class TestDegenerateOutputGuard:
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_reroll_guard_shadows_the_send_gate_on_quoted_collapse(self, test_db, mock_llm):
+        """PINS the current shadowing behaviour (follow-up #1397).
+
+        After #1386 the send gate (``half_formed_send_reason``) judges a message as a
+        whole, so a substantive `quality` suggestion that QUOTES a degeneration-collapse
+        ("......???") it observed would be DELIVERED — the send gate does not refuse it.
+        But that suggestion never reaches the send gate: the agent-loop reroll guard runs
+        ``is_degenerate_run`` on the SERIALIZED tool-call arguments of every call, so it
+        discards + re-rolls the whole response upstream.  The two gates DISAGREE and the
+        reroll guard wins — which is why fixing only the send gate cannot deliver a
+        suggestion quoting a genuine collapse.  #1397 tracks closing that gap (paraphrase
+        in the quality prompt, or a send-scoped whole-message check in the reroll guard —
+        the corpus/entry-content substring check must stay strict either way)."""
+        suggestion = (
+            'The board-game-news collector sent "Hi there! ......???" before the real '
+            "note. Fix: compose the complete message first, then send once."
+        )
+        # The send gate would ALLOW this substantive, quoting message post-#1386 ...
+        assert half_formed_send_reason(suggestion) is None
+        # ... but the reroll guard's predicate fires on the embedded collapse run.
+        assert is_degenerate_run(suggestion) is True
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                # A send-shaped tool call whose content quotes the collapse.
+                return mock_llm._make_tool_call_response(request, "search", {"query": suggestion})
+            return mock_llm._make_text_response(request, "recovered cleanly")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("review the collector run", max_steps=max_steps)
+        # The quoting response was DISCARDED and re-rolled (one reroll, poison never
+        # appended) — it never reached the send gate that would have allowed it.
+        assert response.answer == "recovered cleanly"
+        assert len(mock_llm.requests) == 2
+        assert "......???" not in str(mock_llm.requests[-1]["messages"])
 
         await agent.close()
 
