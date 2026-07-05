@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     private func applyBadge(from notification: UNNotification, using center: UNUserNotificationCenter) {
         guard let badge = notification.request.content.badge else {
-            print("Notification did not include an aps.badge value: \(notification.request.content.userInfo)")
+            print("Notification did not include an aps.badge value")
             return
         }
 

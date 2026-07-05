@@ -295,6 +295,28 @@ class TestCollectionWrites:
         entries = db.memories.memory("likes").get("k")
         assert entries[0].content == "new body"
 
+        # Lookups are strictly exact — a bracket-wrapped key (the `[key]` display
+        # form copied from an entry list) is NOT silently normalized at the data
+        # layer; the tool boundary rejects it with a teaching error instead.
+        assert db.memories.memory("likes").get("[k]") == []
+        assert db.memories.memory("likes").update("[k]", "newer body", "chat") == "not_found"
+        assert db.memories.memory("likes").get("k")[0].content == "new body"
+
+    def test_literal_bracket_key_matches_exactly_not_stripped(self, tmp_path):
+        db = _make_db(tmp_path)
+        db.memories.create_collection(
+            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
+        )
+        # A key that genuinely contains enclosing brackets resolves by exact
+        # match — lookups are literal, so the brackets are part of the key.
+        db.memories.memory("likes").write(
+            [EntryInput(key="[lit]", content="bracketed body")], author="chat"
+        )
+        assert db.memories.memory("likes").get("[lit]")[0].content == "bracketed body"
+        # The unwrapped form genuinely has no entry — the exact hit above wasn't
+        # a match against a stray 'lit' entry.
+        assert db.memories.memory("likes").get("lit") == []
+
     def test_update_not_found(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_collection(
@@ -311,6 +333,13 @@ class TestCollectionWrites:
         assert db.memories.memory("likes").delete("k") == 1
         assert db.memories.memory("likes").get("k") == []
 
+        # Deletion is strictly exact too — a bracket-wrapped key deletes nothing
+        # (the tool boundary rejects it with a teaching error; the data layer
+        # never absorbs the display form).
+        db.memories.memory("likes").write([EntryInput(key="k", content="b")], author="chat")
+        assert db.memories.memory("likes").delete("[k]") == 0
+        assert db.memories.memory("likes").get("k")[0].content == "b"
+
     def test_move_transfers_entry(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_collection("unnotified", "pending", Inclusion.NEVER, RecallMode.RECENT)
@@ -323,6 +352,17 @@ class TestCollectionWrites:
         assert outcome == "ok"
         assert db.memories.memory("unnotified").get("thought-1") == []
         assert len(db.memories.memory("notified").get("thought-1")) == 1
+
+        # Move is strictly exact too — a bracket-wrapped key is a not_found, never
+        # silently normalized to the bare key.
+        db.memories.memory("unnotified").write(
+            [EntryInput(key="thought-2", content="y")], author="thinking-agent"
+        )
+        assert (
+            db.memories.memory("unnotified").move("[thought-2]", "notified", author="notifier")
+            == "not_found"
+        )
+        assert len(db.memories.memory("unnotified").get("thought-2")) == 1
 
     def test_move_collision(self, tmp_path):
         db = _make_db(tmp_path)

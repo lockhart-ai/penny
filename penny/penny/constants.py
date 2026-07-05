@@ -119,6 +119,13 @@ class PennyConstants:
     # TCP-handshake / TLS deadline — the per-request read/write deadline is the
     # separately configurable ``LLM_TIMEOUT``.
     LLM_CONNECT_TIMEOUT_SECONDS = 5.0
+    # Total deadline for the lightweight model-list preflight probes, so the
+    # timeout budget is explicit and consistent with the SDK path rather than
+    # riding on httpx's implicit default.
+    LLM_MODEL_LIST_TIMEOUT_SECONDS = 10.0
+    # Provider-specific endpoint some OpenAI-compatible backends (e.g. openrouter)
+    # use to list embedding-capable models that ``/v1/models`` omits.
+    LLM_EMBEDDING_MODELS_ENDPOINT = "/v1/embeddings/models"
     MAX_SEARCH_LINKS = 10
     BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "

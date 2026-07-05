@@ -256,7 +256,7 @@ IOS_APNS_TEAM_ID=""                       # Apple Developer Team ID
 IOS_APNS_KEY_ID=""                        # APNs auth key ID
 IOS_APNS_KEY_PATH=""                      # Container path to .p8, e.g. /penny/data/private/AuthKey_XXXX.p8
 IOS_BUNDLE_ID=""                          # iOS app bundle id, e.g. com.example.Penny
-IOS_APNS_SANDBOX=true                     # true for development builds, false for production/TestFlight
+IOS_APNS_SANDBOX=true                     # Fallback only: devices report sandbox/production at registration
 
 # LLM Configuration — any OpenAI-compatible endpoint (Ollama, omlx, vLLM,
 # OpenAI cloud, ...). The example URL points at a local Ollama instance.
@@ -335,7 +335,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `IOS_APNS_KEY_ID`: APNs auth key ID from the Apple Developer portal
 - `IOS_APNS_KEY_PATH`: container path to the APNs `.p8` auth key
 - `IOS_BUNDLE_ID`: iOS app bundle identifier used as the APNs topic
-- `IOS_APNS_SANDBOX`: `true` for development builds, `false` for production/TestFlight
+- `IOS_APNS_SANDBOX`: fallback APNs environment (`true` = sandbox) for devices that did not report a recognized `apns_environment` at registration; the per-device value wins otherwise
 
 **Behavior:**
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 120)

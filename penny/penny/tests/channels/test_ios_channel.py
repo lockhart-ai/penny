@@ -210,6 +210,87 @@ async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(t
     assert apns.sent[0]["title"] == PUSH_GREETING_TITLE
     assert apns.sent[0]["body"] == "Found a fare drop."
     assert apns.sent[0]["badge"] == 1
+    assert apns.sent[0]["environment"] == "sandbox"
+
+
+@pytest.mark.asyncio
+async def test_send_raw_forwards_production_environment_to_apns(tmp_path):
+    db = _make_db(tmp_path)
+    apns = FakeApns()
+    channel = _make_channel(db, apns=apns)
+    ws = FakeWs()
+    server_ws = cast(Any, ws)
+    await channel._handle_register(
+        server_ws,
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+            "apns_token": "apns-token",
+            "apns_environment": "production",
+        },
+    )
+    channel._connections.clear()
+
+    await channel._send_raw("ios-keychain-id", "hello from Penny", source_name="notifier")
+
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    registration = db.ios.get_registration(device.id)
+    assert registration is not None and registration.apns_environment == "production"
+    assert apns.sent[0]["environment"] == "production"
+
+
+@pytest.mark.asyncio
+async def test_send_preview_selects_host_from_device_environment(monkeypatch, caplog):
+    requests: list[dict] = []
+
+    class FakeHttp:
+        async def post(self, url, *, headers, json):
+            requests.append({"url": url})
+            return httpx.Response(200)
+
+    client = object.__new__(ApnsClient)
+    client._config = ApnsConfig(
+        team_id="TEAMID",
+        key_id="KEYID",
+        key_path="/unused/AuthKey_KEYID.p8",
+        bundle_id="com.example.Penny",
+        sandbox=True,  # global default host is sandbox
+    )
+    client._http = FakeHttp()
+    monkeypatch.setattr(client, "_provider_token", lambda: "provider-token")
+
+    async def send(environment):
+        await client.send_preview(
+            device_token="device-token",
+            title=PUSH_GREETING_TITLE,
+            body="hi",
+            badge=1,
+            outbox_id=1,
+            source_type=None,
+            source_name=None,
+            environment=environment,
+        )
+
+    await send("production")
+    await send("sandbox")
+    await send(None)  # unset -> global default (sandbox)
+    with caplog.at_level("WARNING", logger="penny.channels.ios.apns"):
+        await send("unexpected")  # unrecognized -> warn + global default (sandbox)
+
+    hosts = [request["url"].split("/3/device/")[0] for request in requests]
+    assert hosts == [
+        "https://api.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+    ]
+    assert any(
+        "Unrecognized APNs environment 'unexpected'" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

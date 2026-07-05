@@ -382,6 +382,7 @@ class IosChannel(MessageChannel):
                 source_type=item.source_type,
                 source_name=item.source_name,
                 thread_id=_thread_id(item.source_name),
+                environment=registration.apns_environment,
             )
             self._db.ios.mark_push_sent(item.id)
         except ApnsError as error:

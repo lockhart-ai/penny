@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import Security
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -111,6 +110,10 @@ final class PennyWebSocketClient {
 
     func disconnect() {
         receiveTask?.cancel()
+        clearConnection()
+    }
+
+    private func clearConnection() {
         heartbeatTask?.cancel()
         notificationTokenTask?.cancel()
         receiveTask = nil
@@ -164,16 +167,19 @@ final class PennyWebSocketClient {
         while !Task.isCancelled, let webSocketTask {
             do {
                 let incomingMessage = try await webSocketTask.receive()
-                try handle(incomingMessage)
+                handle(incomingMessage)
             } catch {
                 guard !Task.isCancelled else { return }
-                lastError = "WebSocket receive failed: \(error.localizedDescription)"
-                print(lastError ?? error.localizedDescription)
-                isConnected = false
-                isRegistered = false
+                handleReceiveFailure(error)
                 return
             }
         }
+    }
+
+    private func handleReceiveFailure(_ error: Error) {
+        lastError = "WebSocket receive failed: \(error.localizedDescription)"
+        print(lastError ?? error.localizedDescription)
+        clearConnection()
     }
 
     private func heartbeatLoop() async {
@@ -187,19 +193,31 @@ final class PennyWebSocketClient {
         }
     }
 
-    private func handle(_ incomingMessage: URLSessionWebSocketTask.Message) throws {
+    private func handle(_ incomingMessage: URLSessionWebSocketTask.Message) {
         let data: Data
         switch incomingMessage {
         case .data(let messageData):
             data = messageData
         case .string(let messageString):
-            print("received \(messageString.utf8)")
             data = Data(messageString.utf8)
+            debugLogFrame("received string frame (\(data.count) bytes)")
         @unknown default:
             return
         }
 
-        let envelope = try decoder.decode(ServerEnvelope.self, from: data)
+        do {
+            apply(try decoder.decode(ServerEnvelope.self, from: data))
+        } catch {
+            skipUndecodableMessage(data)
+        }
+    }
+
+    private func skipUndecodableMessage(_ data: Data) {
+        let type = (try? decoder.decode(ServerMessageType.self, from: data))?.type ?? "unknown"
+        print("Skipping unrecognized server message (type: \(type))")
+    }
+
+    private func apply(_ envelope: ServerEnvelope) {
         switch envelope {
         case .status(let payload):
             isConnected = payload.connected
@@ -265,7 +283,7 @@ final class PennyWebSocketClient {
             do {
                 let data = try encoder.encode(outgoingMessage)
                 guard let json = String(data: data, encoding: .utf8) else { return }
-                print("sent \(json)")
+                debugLogFrame("sent frame (\(data.count) bytes)")
                 try await webSocketTask.send(.string(json))
             } catch {
                 await MainActor.run {
@@ -273,6 +291,15 @@ final class PennyWebSocketClient {
                 }
             }
         }
+    }
+
+    /// Logs a short, non-sensitive frame summary in debug builds only. Never logs frame
+    /// contents: outbound frames carry the device secret and APNs token, inbound frames
+    /// carry chat content, and on device these would land in the unified system log.
+    private func debugLogFrame(_ summary: @autoclosure () -> String) {
+        #if DEBUG
+        print("[PennyWebSocket] \(summary())")
+        #endif
     }
 
     private func nextLocalMessageID() -> Int {
@@ -346,10 +373,67 @@ private struct RegisterPayload {
             pairingToken: "pairing-token",
             deviceSecret: DeviceIdentity.deviceSecret(),
             apnsToken: apnsToken,
-            apnsEnvironment: "sandbox",
+            apnsEnvironment: ApnsEnvironment.current.rawValue,
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         )
     }
+}
+
+/// APNs environment this build's push token was minted for.
+///
+/// A token is only valid against the matching APNs host, so the server must be
+/// told which one to use. Historically hardcoded to `sandbox`, which silently
+/// broke push on TestFlight/App Store builds (those carry a production token).
+///
+/// Derivation: DEBUG builds always use the development (sandbox) environment.
+/// Release builds read the `aps-environment` entitlement from the embedded
+/// provisioning profile — `development` (a dev or ad-hoc signed build, or a
+/// direct device install) maps to sandbox; `production` — as in a TestFlight or
+/// App Store build, or the absence of an embedded profile — maps to production.
+///
+/// NOTE: unverified by build on the authoring machine (no Xcode). Verify on a
+/// real device / TestFlight build before relying on it.
+private enum ApnsEnvironment: String {
+    case sandbox
+    case production
+
+    static var current: ApnsEnvironment {
+        #if DEBUG
+        return .sandbox
+        #else
+        return embeddedProfileEnvironment() ?? .production
+        #endif
+    }
+
+    private static func embeddedProfileEnvironment() -> ApnsEnvironment? {
+        guard
+            let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+            let data = try? Data(contentsOf: url),
+            let entitlements = provisioningEntitlements(from: data),
+            let apsEnvironment = entitlements["aps-environment"] as? String
+        else {
+            return nil
+        }
+        return apsEnvironment == "development" ? .sandbox : .production
+    }
+
+    private static func provisioningEntitlements(from data: Data) -> [String: Any]? {
+        // A .mobileprovision is a CMS (PKCS#7) blob wrapping an XML plist; slice
+        // out the plist between the <plist ...> and </plist> markers and parse it.
+        guard
+            let start = data.range(of: Data("<plist".utf8))?.lowerBound,
+            let end = data.range(of: Data("</plist>".utf8))?.upperBound
+        else {
+            return nil
+        }
+        let plistData = data.subdata(in: start..<end)
+        let profile = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
+        return (profile as? [String: Any])?["Entitlements"] as? [String: Any]
+    }
+}
+
+private struct ServerMessageType: Decodable {
+    let type: String
 }
 
 private enum ServerEnvelope: Decodable {
@@ -627,7 +711,7 @@ private enum DateParser {
 }
 
 private enum DeviceIdentity {
-    private static let service = "PennyClient"
+    private static let keychain = SystemKeychain()
     private static let deviceIDAccount = "device_id"
     private static let deviceSecretAccount = "device_secret"
 
@@ -640,45 +724,12 @@ private enum DeviceIdentity {
     }
 
     private static func stableUUID(account: String) -> String {
-        if let existingValue = readValue(account: account) {
+        if let existingValue = keychain.string(account: account) {
             return existingValue
         }
 
         let newValue = UUID().uuidString
-        saveValue(newValue, account: account)
+        keychain.set(newValue, account: account)
         return newValue
-    }
-
-    private static func readValue(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func saveValue(_ value: String, account: String) {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let attributes: [String: Any] = [kSecValueData as String: data]
-
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var addQuery = query
-            addQuery[kSecValueData as String] = data
-            SecItemAdd(addQuery as CFDictionary, nil)
-        }
     }
 }
