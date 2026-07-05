@@ -695,17 +695,26 @@ def render_tool_call(name: str, args: object) -> str:
     """Compact, grokkable render of one tool call (the salient args only).
 
     The single shared format for the ``collector-runs`` run trace, so the model
-    reads what a cycle did the same way everywhere.  Reads render under their real
-    tool name (``collection_read_latest('x')`` / ``log_read('y')``) so a
-    wrong-shape or unknown-tool call is identifiable.  Content is never truncated.
+    reads what a cycle did the same way everywhere.  Every call renders under its
+    **real** tool name in the canonical ``tool(args)`` shape — the same dialect a
+    prompt writes a call in (``docs/prompt-writing-guide.md`` → "The canonical call
+    notation", point 6), so what the model reads of its past matches how it's told
+    to act, and a wrong-shape or hallucinated sibling name is identifiable against
+    the real one.  kwargs form (``memory=…, key=…``) when a call carries more than
+    one argument; a single obvious argument stays positional.  Kept compact (the
+    salient args only, content never truncated) — the aliases these replaced saved
+    a few tokens per line; the real names cost them back, and nothing else is added.
     """
     fields = cast("dict[str, Any]", args if isinstance(args, dict) else {})
     if name == "collection_write":
-        return f"write({fields.get('memory', '?')}, {_write_contents(fields)!r})"
+        return (
+            f"collection_write(memory={fields.get('memory', '?')!r}, "
+            f"entries={_write_contents(fields)!r})"
+        )
     if name == "update_entry":
-        return f"update({fields.get('memory', '?')}, {fields.get('key', '?')!r})"
+        return f"update_entry(memory={fields.get('memory', '?')!r}, key={fields.get('key', '?')!r})"
     if name == "send_message":
-        return f"send({fields.get('content', '')!r})"
+        return f"send_message({fields.get('content', '')!r})"
     if name == "browse":
         return f"browse({fields.get('queries', list(fields.values()))!r})"
     rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())
