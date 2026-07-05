@@ -6,12 +6,16 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from penny.constants import ProgressEmoji
-from penny.tools.models import NoArgs, ToolCall, ToolDefinition, ToolResult
+from penny.tools.models import NoArgs, ToolArgs, ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
+
+# Pydantic's error ``type`` discriminator for an ``extra="forbid"`` violation —
+# an argument the model passed that the arg model doesn't declare.
+EXTRA_FORBIDDEN_ERROR_TYPE = "extra_forbidden"
 
 
 class Tool(ABC):
@@ -25,8 +29,10 @@ class Tool(ABC):
     # so every validity criterion (required fields, types, custom field/model
     # validators like send_message's half-formed-content check) lives here, on the
     # model, and is enforced uniformly BEFORE the tool runs — never ad-hoc inside
-    # ``execute``.  Defaults to ``NoArgs`` (a no-op) for argless tools.
-    args_model: type[BaseModel] = NoArgs
+    # ``execute``.  Defaults to ``NoArgs`` for argless tools.  Every arg model
+    # subclasses ``ToolArgs`` (``extra="forbid"``), so an unknown parameter is
+    # rejected through the envelope instead of being silently dropped.
+    args_model: type[ToolArgs] = NoArgs
     timeout: float | None = None  # None = use ToolExecutor's global timeout
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
@@ -69,6 +75,8 @@ class Tool(ABC):
     @staticmethod
     def _format_field_error(error: Any, properties: dict[str, Any]) -> str:
         """One ``field (type: description): reason`` line for a Pydantic error."""
+        if error.get("type") == EXTRA_FORBIDDEN_ERROR_TYPE:
+            return Tool._format_unknown_param(error, properties)
         field = str(error["loc"][0]) if error.get("loc") else "(arguments)"
         prop = properties.get(field, {})
         param_type = prop.get("type", "")
@@ -81,6 +89,21 @@ class Tool(ABC):
             descriptor = field
         reason = str(error.get("msg", "invalid value")).removeprefix("Value error, ")
         return f"{descriptor}: {reason}"
+
+    @staticmethod
+    def _format_unknown_param(error: Any, properties: dict[str, Any]) -> str:
+        """One actionable line for an unknown (``extra="forbid"``) parameter.
+
+        A misspelled optional argument used to be silently dropped and the tool
+        ran with default behaviour.  Now it reaches the envelope: name the bad
+        param, suggest the closest valid one, and list the accepted parameters so
+        the model can fix the call rather than lose the argument."""
+        field = str(error["loc"][0]) if error.get("loc") else "(argument)"
+        valid = list(properties.keys())
+        close = difflib.get_close_matches(field, valid, n=1, cutoff=0.6)
+        suggestion = f" — did you mean '{close[0]}'?" if close else ""
+        accepted = ", ".join(valid) if valid else "none (this tool takes no parameters)"
+        return f"unknown parameter '{field}'{suggestion} (valid parameters: {accepted})"
 
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
@@ -150,19 +173,25 @@ class Tool(ABC):
     def to_ollama_tool(self) -> dict[str, Any]:
         """Convert to Ollama tool calling format.
 
-        Injects a ``reasoning`` property so the model can explain why
-        it is making this tool call.  The field is stripped before the
-        tool is actually executed (see ``Agent._execute_single_tool``).
+        Injects a ``reasoning`` property so the model can explain why it is
+        making this tool call — a structured per-call rationale the run
+        record captures for display and safe re-exposure in logs the model
+        later reads (raw thinking is never fed back).  The field is stripped
+        before the tool executes (see ``Agent._dedup_tool_calls``).  One
+        carve-out: a tool that declares ``reasoning`` in its own
+        ``parameters`` keeps its hand-written description (browse) —
+        injection never overwrites a tool's own declaration.
         """
         params = dict(self.parameters)
         props = dict(params.get("properties", {}))
-        props["reasoning"] = {
-            "type": "string",
-            "description": (
-                "Explain what you're looking for and what you'll do with the result. "
-                "This is your inner monologue — think out loud."
-            ),
-        }
+        if "reasoning" not in props:
+            props["reasoning"] = {
+                "type": "string",
+                "description": (
+                    "Explain what you're looking for and what you'll do with the result. "
+                    "This is your inner monologue — think out loud."
+                ),
+            }
         params["properties"] = props
         return {
             "type": "function",

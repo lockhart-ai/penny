@@ -1629,7 +1629,16 @@ class LogAppendTool(MemoryTool):
 # ── Introspection / lifecycle ───────────────────────────────────────────────
 
 
-class ExistsTool(Tool):
+_EXISTS_EMBED_DEGRADED = (
+    "inconclusive — the embedding service was unavailable this cycle, so only "
+    "exact-key matching ran and the similarity dedup was skipped; no exact-key "
+    "match was found, but a near-duplicate can't be ruled out. Re-probe next "
+    "cycle with exists(memories={memories}, content=<content>, key=<key>), or "
+    "write only if you're sure the entry is new."
+)
+
+
+class ExistsTool(MemoryTool):
     """Probe whether an equivalent entry already exists across a set of memories."""
 
     name = "exists"
@@ -1665,7 +1674,7 @@ class ExistsTool(Tool):
         self._llm = llm_client
         self._thresholds = thresholds
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _run(self, **kwargs: Any) -> ToolResult:
         args = ExistsArgs(**kwargs)
         # When the model probes with content but no key, treat the content
         # as a name-like probe — using it as both ``key`` and ``content``
@@ -1677,6 +1686,10 @@ class ExistsTool(Tool):
         key = args.key if args.key else args.content
         key_vec = await embed_text(self._llm, key)
         content_vec = await embed_text(self._llm, args.content)
+        # ``exists`` validates every name and raises ``MemoryNotFoundError`` on
+        # an unknown one — the base ``execute`` renders that as the actionable
+        # not-found refusal, so a typo'd probe never misreports "no" and
+        # green-lights the write it was checking for.
         found = self._db.memories.exists(
             args.memories,
             key,
@@ -1684,7 +1697,15 @@ class ExistsTool(Tool):
             content_vec,
             thresholds=self._thresholds,
         )
-        return ToolResult(message="yes" if found else "no")
+        if found:
+            return ToolResult(message="yes")
+        # A "no" that rode a failed embed only ran the exact-key signal — the
+        # similarity dedup was skipped, so the answer is inconclusive.  Surface
+        # that instead of a confident "no" (visible degradation over a silent
+        # miss that could green-light a near-duplicate write).
+        if key_vec is None or content_vec is None:
+            return ToolResult(message=_EXISTS_EMBED_DEGRADED.format(memories=args.memories))
+        return ToolResult(message="no")
 
 
 class DoneTool(Tool):
@@ -1692,11 +1713,12 @@ class DoneTool(Tool):
 
     name = "done"
     description = (
-        "Call this when the cycle is finished.  Pass `success` (true if "
+        "Call this when the cycle is finished.  REQUIRED: `success` (true if "
         "you did what the prompt asked, false on no-op or failure) and "
         "`summary` (one-sentence prose describing what the cycle actually "
         "did — entries written, messages sent, why no-op).  Both are logged "
-        "to `collector-runs` for auditing."
+        "to `collector-runs` for auditing; `reasoning` alone is never a "
+        "valid done call."
     )
     parameters = {
         "type": "object",

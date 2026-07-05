@@ -9,6 +9,13 @@ from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.memory_args import DoneArgs
 from penny.tools.memory_tools import UpdateEntryTool
+from penny.tools.models import ToolArgs
+
+
+class _StubSearchArgs(ToolArgs):
+    """Args for the search stub — one required query, extras forbidden like a real tool."""
+
+    query: str
 
 
 class StubSearchTool(Tool):
@@ -21,6 +28,7 @@ class StubSearchTool(Tool):
         "properties": {"query": {"type": "string", "description": "Search query"}},
         "required": ["query"],
     }
+    args_model = _StubSearchArgs
 
     async def execute(self, **kwargs):
         return "Mock search results for testing"
@@ -284,6 +292,27 @@ class TestMissingRequiredParameters:
         assert result == "done"  # the stub's execute output — no validation failure
 
     @pytest.mark.asyncio
+    async def test_unknown_param_rejected_not_silently_ignored(self):
+        """An unknown argument no longer runs the tool with default behaviour — it
+        flows through the envelope naming the bad param and the accepted ones."""
+        result = await StubDoneTool().run(success=True, summary="done", verbose=True)
+
+        assert result.success is False
+        assert "unknown parameter 'verbose'" in result.message
+        # The accepted parameters are named so the model can correct the call.
+        assert "success" in result.message
+        assert "summary" in result.message
+
+    @pytest.mark.asyncio
+    async def test_unknown_param_suggests_closest_valid_param(self):
+        """A near-miss misspelling gets a 'did you mean' pointer at the real field."""
+        result = await StubDoneTool().run(success=True, sumary="done")
+
+        assert result.success is False
+        assert "unknown parameter 'sumary'" in result.message
+        assert "did you mean 'summary'" in result.message
+
+    @pytest.mark.asyncio
     async def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
         """update_entry validation error names 'Collection name' and 'Entry key' so the
         LLM understands which identifier each parameter represents."""
@@ -354,5 +383,69 @@ class TestMissingRequiredParameters:
         error_content = tool_messages[0]["content"]
         assert "boolean" in error_content
         assert "string" in error_content
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_injected_reasoning_arg_survives_forbid_extra(self, test_db, mock_llm):
+        """The framework injects a ``reasoning`` param into every tool schema; it is
+        popped before arg validation, so ``extra="forbid"`` never rejects it — a real
+        tool call carrying reasoning still executes instead of erroring."""
+        db = Database(test_db)
+        db.create_tables()
+
+        config = Config(
+            channel_type="signal",
+            signal_number="+15551234567",
+            signal_api_url="http://localhost:8080",
+            discord_bot_token=None,
+            discord_channel_id=None,
+            llm_api_url="http://localhost:11434",
+            llm_model="test-model",
+            llm_embedding_model="test-embedding-model",
+            log_level="DEBUG",
+            db_path=test_db,
+        )
+        tool = StubDoneTool()
+        client = LlmClient(
+            api_url="http://localhost:11434",
+            model="test-model",
+            db=db,
+            max_retries=1,
+            retry_delay=0.1,
+        )
+        agent = Agent(
+            system_prompt="test",
+            model_client=client,
+            embedding_model_client=client,
+            tools=[tool],
+            db=db,
+            config=config,
+        )
+
+        messages_sent = []
+
+        def handler(request: dict, count: int) -> dict:
+            messages_sent.append(request["messages"])
+            if count == 1:
+                # A well-formed call that also carries the injected reasoning arg.
+                return mock_llm._make_tool_call_response(
+                    request,
+                    "stub_done",
+                    {"success": True, "summary": "did it", "reasoning": "thinking out loud"},
+                )
+            return mock_llm._make_text_response(request, "Done.")
+
+        mock_llm.set_response_handler(handler)
+
+        await agent.run("test", max_steps=3)
+
+        # The tool result fed back is the stub's success — not a forbid-extra rejection.
+        tool_messages = [m for m in messages_sent[1] if m.get("role") == "tool"]
+        assert len(tool_messages) > 0
+        result_content = tool_messages[0]["content"]
+        assert "done" in result_content
+        assert "unknown parameter" not in result_content
+        assert "invalid arguments" not in result_content
 
         await agent.close()

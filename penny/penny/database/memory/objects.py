@@ -788,10 +788,12 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
 
     - **browses** — external web reads, counted at sub-result granularity from the
       ``## browse`` / ``## browse search`` / ``## browse error`` section headers in
-      the tool-result messages.  Browse always returns ``success=True`` even when
-      every page errors (a partial failure is normal — the model works from
-      whatever succeeded), so a browse failure is visible *only* in the result
-      text, never in ``tool_failures``.
+      the tool-result messages.  A *partial* browse failure returns ``success=True``
+      (the model works from whatever succeeded), so those failures are visible *only*
+      in the result text, never in ``tool_failures`` — which is why they're counted
+      from the rendered headers here.  Only an *all-queries-failed* browse returns
+      ``success=False`` (and so does add to ``tool_failures``); the header count still
+      captures it, so ``no_writes`` is unaffected either way.
     - **reads** — internal collection/log reads (``log_read``,
       ``collection_read_*``, ``read_published_latest``, ``read_similar``,
       ``collection_catalog``, …): every tool call that isn't a browse, write, send,
@@ -869,8 +871,9 @@ class RunHealth(BaseModel):
     reason about), ``incomplete`` (hit the step ceiling without a closing ``done()``
     — including a run that recorded no tool call at all, having spun on rejected
     premature-``done()``s until the ceiling), ``tool_failures`` (count of failed
-    tool calls in the run — note browse never sets this, see ``_run_io_tally``),
-    ``degenerate_send`` (a message went out with no real content)."""
+    tool calls in the run — browse adds to this only when *every* query failed, not
+    on a partial failure, see ``_run_io_tally``), ``degenerate_send`` (a message
+    went out with no real content)."""
 
     bailed: bool = False
     no_writes: bool = False

@@ -326,9 +326,53 @@ class TestBrowseTool:
         result = await tool.execute(queries=["https://example.com"])
 
         assert isinstance(result, ToolResult)
+        # The only query errored, so the call did nothing: success=False makes that
+        # visible to structural accounting (record.failed / tool_failures), not just
+        # the rendered error text.
+        assert result.success is False
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
         assert "extraction failed" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://example.com" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_stays_success(self, monkeypatch):
+        """When some queries succeed and others error, the result stays success=True
+        — the model works from whatever came back; only an all-queries-failed call
+        is a structural failure."""
+        monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
+        monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
+
+        async def request_fn(method: str, params: dict):
+            if params["url"] == "https://bad.com":
+                raise RuntimeError("extraction failed")
+            return ("Title: Good\nURL: https://good.com\n\nUseful content.", None)
+
+        tool = self._make_tool(request_fn)
+        result = await tool.execute(queries=["https://good.com", "https://bad.com"])
+
+        assert result.success is True
+        assert PennyConstants.BROWSE_PAGE_HEADER + "https://good.com" in result.message
+        assert PennyConstants.BROWSE_ERROR_HEADER + "https://bad.com" in result.message
+
+    @pytest.mark.asyncio
+    async def test_queries_past_cap_are_named_not_dropped(self):
+        """Queries beyond max_calls are run for the first N and the rest are named in
+        a dropped-queries section (not silently truncated), so the model can rerun
+        them — the run queries still succeed, so success stays True."""
+        request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
+        tool = self._make_tool(request_fn)  # max_calls=3
+
+        result = await tool.execute(
+            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"]
+        )
+
+        assert result.success is True
+        assert request_fn.call_count == 3
+        assert PennyConstants.BROWSE_DROPPED_HEADER in result.message
+        assert "https://d.com" in result.message
+        # The recovery is spelled as the exact next call with bound args (canonical
+        # call notation), not a bare "browse" mention.
+        assert "browse(queries=['https://d.com'])" in result.message
 
     @pytest.mark.asyncio
     async def test_checks_permission_before_browsing(self):

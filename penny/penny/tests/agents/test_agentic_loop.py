@@ -31,7 +31,7 @@ from penny.text_validity import half_formed_send_reason, is_degenerate_run
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import ToolResult
+from penny.tools.models import ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -56,6 +56,12 @@ from penny.validation.response_validators import (
 )
 
 
+class _StubSearchArgs(ToolArgs):
+    """Args for the search stub — one required query, extras forbidden like a real tool."""
+
+    query: str
+
+
 class StubSearchTool(Tool):
     """Minimal stub tool for agentic loop testing."""
 
@@ -66,6 +72,7 @@ class StubSearchTool(Tool):
         "properties": {"query": {"type": "string", "description": "Search query"}},
         "required": ["query"],
     }
+    args_model = _StubSearchArgs
 
     async def execute(self, **kwargs):
         return ToolResult(message="Mock search results for testing")
@@ -997,16 +1004,48 @@ class TestParallelToolCalls:
 
     @pytest.mark.asyncio
     async def test_text_queries_fail_without_browser(self, test_db, mock_llm, monkeypatch):
-        """Without a browser, queries surface a structured browse error section."""
+        """Without a browser, queries surface a structured browse error section — and
+        because EVERY query errored, the result reports ``success=False`` so the
+        failure is visible to structural accounting, not just the error text."""
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
 
         result = await tool.execute(queries=["best pizza toronto"])
 
+        assert result.success is False
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
         assert "no browser is connected" in result.message
         assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
+
+    @pytest.mark.asyncio
+    async def test_repeated_all_failed_browse_aborts_loop(self, test_db, mock_llm):
+        """Two browse calls that each fully fail (``success=False`` — the way
+        BrowseTool now reports an all-queries-failed call) reach the all-tools-failed
+        abort, so the loop stops with the canned unavailable answer instead of
+        looping on a dead browser.  This path was unreachable while browse reported
+        every outcome as ``success=True``."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
+        agent._tool_executor.execute = AsyncMock(
+            return_value=ToolResult(
+                message=f"{PennyConstants.BROWSE_ERROR_HEADER}q\nCould not read this page.",
+                success=False,
+            )
+        )
+
+        def handler(request, count):
+            return mock_llm._make_tool_call_response(request, "browse", {"queries": [f"q{count}"]})
+
+        mock_llm.set_response_handler(handler)
+        agent.allow_repeat_tools = True
+
+        response = await agent.run("look this up", max_steps=max_steps)
+
+        assert response.answer == PennyResponse.AGENT_TOOLS_UNAVAILABLE.format(tools="browse")
+        assert len(response.tool_calls) == PennyConstants.TOOL_FAILURE_ABORT_THRESHOLD
+        assert all(record.failed for record in response.tool_calls)
+
+        await agent.close()
 
     @pytest.mark.asyncio
     async def test_empty_queries_rejected_at_arg_gate(self, test_db, mock_llm):
@@ -1066,6 +1105,7 @@ class TestParallelToolCalls:
         result = await tool.execute(queries=["https://slow.example.com"])
 
         assert isinstance(result, ToolResult)
+        assert result.success is False
         assert PennyConstants.BROWSE_ERROR_HEADER in result.message
         assert "slow.example.com" in result.message
 
