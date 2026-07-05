@@ -22,6 +22,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode
 from penny.database.models import MemoryEntry
 from penny.llm.client import LlmClient
+from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
@@ -874,6 +875,13 @@ class TestLogTools:
         assert "browse(['espresso grinder'])" in chat.message
         assert "penny: Here's a good grinder." in chat.message
 
+        # An unknown/typo'd target resolves to a failed, actionable refusal that
+        # names the offending value — not a silent empty batch that reads as "this
+        # collector has no runs" (mirrors collector_run_history's resolve-first).
+        unknown = await tool.run(target="esspreso-gear")
+        assert unknown.success is False
+        assert "esspreso-gear" in unknown.message
+
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
         """Persist one completed collector run for ``target`` (a write + its
@@ -1224,6 +1232,55 @@ class TestExistsAndDone:
             memories=["likes"], key="not there", content="nothing"
         )
         assert result.message == "no"
+
+    @pytest.mark.asyncio
+    async def test_exists_unknown_memory_name_is_not_found(self, tmp_path, mock_llm):
+        """A misspelled memory name must not read as an empty (always-"no")
+        memory — that green-lights the write the model was probing for.  The
+        probe fails with the actionable not-found refusal naming the bad value."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
+            memories=["lieks"], content="dark roast"
+        )
+        assert result.success is False
+        assert "lieks" in result.message
+        assert "not found" in result.message
+
+    @pytest.mark.asyncio
+    async def test_exists_embed_failure_is_inconclusive_not_no(self, tmp_path, mock_llm):
+        """When the embed service is down the similarity dedup is skipped, so a
+        "no" would be a silent degradation that could green-light a near-duplicate
+        write.  The probe surfaces the inconclusive state instead (visible
+        degradation)."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        client = _make_llm_client(mock_llm)
+
+        def _fail_embed(model: str, text: str | list[str]) -> list[list[float]]:
+            raise LlmConnectionError("embedding service unavailable")
+
+        mock_llm.set_embed_handler(_fail_embed)
+        result = await ExistsTool(db, client).execute(memories=["likes"], content="nothing")
+
+        assert result.message != "no"
+        assert "inconclusive" in result.message
 
     @pytest.mark.asyncio
     async def test_unicode_hyphen_in_memory_name_normalized(self, tmp_path, mock_llm):
