@@ -54,6 +54,10 @@ class TestChannelManagerRouting:
         await manager.send_message("+15551234567", "hello")
         signal_ch._send_raw.assert_called_once()
         browser_ch._send_raw.assert_not_called()
+        # The Signal-strict case (#1298): the phone-number recipient is passed
+        # through unchanged to _send_raw so Signal's REST send has a real number,
+        # not a browser label.
+        assert signal_ch._send_raw.call_args.args[0] == "+15551234567"
 
         # The manager logs the outgoing message exactly once (not double-logged
         # by the concrete channel) and it surfaces in the penny-messages facade.
@@ -62,7 +66,11 @@ class TestChannelManagerRouting:
         assert outgoing[0].content == "hello"
 
     @pytest.mark.asyncio
-    async def test_routes_to_browser_device(self, tmp_path):
+    async def test_browser_device_never_captures_proactive_send(self, tmp_path):
+        """#1298: even addressed to the browser device's own identifier, a
+        proactive send resolves to the default channel — the addon never captures
+        proactive traffic (only the primary channel's receive→reply loop, which
+        bypasses the manager, ever reaches the browser)."""
         db = _make_db(tmp_path)
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
@@ -75,9 +83,31 @@ class TestChannelManagerRouting:
         db.devices.register(ChannelType.SIGNAL, "+15551234567", "Signal", is_default=True)
         db.devices.register(ChannelType.BROWSER, "firefox-laptop", "Firefox")
 
-        await manager.send_message("firefox-laptop", "hello from browser")
-        browser_ch._send_raw.assert_called_once()
-        signal_ch._send_raw.assert_not_called()
+        await manager.send_message("firefox-laptop", "proactive ping")
+        signal_ch._send_raw.assert_called_once()
+        browser_ch._send_raw.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_proactive_prefers_default_over_browser_identifier(self, tmp_path):
+        """Regression for #1298: when the onboarding-derived primary sender is a
+        browser device label and Discord is the configured primary (its default
+        device), a proactive send lands on Discord, not the addon that owns that
+        identifier."""
+        db = _make_db(tmp_path)
+        manager = ChannelManager(message_agent=MagicMock(), db=db)
+
+        discord_ch = _make_mock_channel("discord")
+        browser_ch = _make_mock_channel("browser")
+        manager.register_channel(ChannelType.DISCORD, discord_ch)
+        manager.register_channel(ChannelType.BROWSER, browser_ch)
+
+        db.devices.register(ChannelType.DISCORD, "1234567890", "Discord", is_default=True)
+        db.devices.register(ChannelType.BROWSER, "firefox-laptop", "Firefox")
+
+        # userinfo.sender was pinned to the browser label during addon onboarding.
+        await manager.send_message("firefox-laptop", "proactive ping")
+        discord_ch._send_raw.assert_called_once()
+        browser_ch._send_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unknown_recipient_falls_back_to_default(self, tmp_path):
@@ -94,7 +124,10 @@ class TestChannelManagerRouting:
         signal_ch._send_raw.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_typing_routes_to_correct_channel(self, tmp_path):
+    async def test_typing_routes_to_default_channel(self, tmp_path):
+        """Typing shares the proactive ``_resolve_channel`` path, so it too
+        resolves to the default device's channel rather than the addon whose
+        identifier the recipient matches (#1298)."""
         db = _make_db(tmp_path)
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
@@ -108,8 +141,8 @@ class TestChannelManagerRouting:
         db.devices.register(ChannelType.BROWSER, "firefox-laptop", "Firefox")
 
         await manager.send_typing("firefox-laptop", True)
-        browser_ch.send_typing.assert_called_once_with("firefox-laptop", True)
-        signal_ch.send_typing.assert_not_called()
+        signal_ch.send_typing.assert_called_once_with("firefox-laptop", True)
+        browser_ch.send_typing.assert_not_called()
 
 
 class TestChannelManagerDelegation:

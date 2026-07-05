@@ -405,6 +405,13 @@ WATCHLIST_MESSAGES = (
 # shape observed in production.  Privacy-safe / generic.
 COLLECTOR_PROSE_BAIL = "**Done. Summary: I've handled the recent messages.**"
 
+# The dominant call-shaped text bail in production: gpt-oss emits the ``done()``
+# terminator's *arguments* as a bare JSON object with no function name — the native
+# fallback on Harmony backends (the name rides a header that gets lost).  The
+# done-JSON teaching nudge names the slip and the exact done() call to make; the
+# model must re-emit it as a real tool call.  Synthetic summary; privacy-safe.
+COLLECTOR_DONE_JSON_BAIL = '{"success": true, "summary": "handled the recent messages this cycle"}'
+
 # ── Duplicate-write recovery (matched-key handoff) ───────────────────────────
 # A collector whose write duplicates a recipe the box ALREADY holds.  The rejection
 # now names the matched existing key + the next move, so the live model must recover
