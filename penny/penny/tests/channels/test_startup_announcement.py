@@ -284,8 +284,11 @@ async def test_startup_announcement_skipped_with_profile_but_no_messages(
 
 
 @pytest.mark.asyncio
-async def test_ios_default_gets_operational_startup_announcement(test_config, test_user_info):
-    """iOS default channel gets a startup operational notification without history gates."""
+async def test_ios_operational_startup_announcement_respects_history_gate(
+    test_config, test_user_info
+):
+    """The iOS operational push honours the same message-history gate as the text
+    channels: silent for a fresh profile, fires once the user has chatted."""
     channel = MagicMock()
     channel.send_message = AsyncMock()
     penny = Penny(test_config, channel=channel)
@@ -293,8 +296,17 @@ async def test_ios_default_gets_operational_startup_announcement(test_config, te
     assert device.id is not None
     penny.db.devices.set_default(device.id)
 
+    # No message history yet — the push is suppressed, not spammed per deploy.
     await penny._send_startup_announcement()
+    penny.channel.send_message.assert_not_awaited()
 
+    # Once the user has chatted, the operational push fires.
+    penny.db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content="hey penny",
+    )
+    await penny._send_startup_announcement()
     penny.channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
 
 
