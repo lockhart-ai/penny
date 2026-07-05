@@ -27,7 +27,7 @@ final class WebSocketClient: WebSocketTransport {
 
     init(
         urlSession: URLSession = URLSession(configuration: .default),
-        maximumMessageSize: Int = 8 * 1024 * 1024
+        maximumMessageSize: Int = 20 * 1024 * 1024
     ) {
         self.urlSession = urlSession
         self.maximumMessageSize = maximumMessageSize
