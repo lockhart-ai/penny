@@ -61,6 +61,16 @@ def _register_primary_channel(
             command_registry=command_registry,
         )
         manager.register_channel(ChannelType.DISCORD, channel)
+        # Seed a default device for the primary channel (mirrors Signal), so
+        # proactive sends resolve to Discord structurally via ``is_default``
+        # instead of relying on registration order — and never get captured by a
+        # browser addon whose device identifier the profile's sender points at.
+        db.devices.register(
+            ChannelType.DISCORD,
+            config.discord_channel_id,
+            "Discord",
+            is_default=True,
+        )
     elif config.channel_type == ChannelType.SIGNAL:
         if not config.signal_number:
             raise ValueError("Signal requires SIGNAL_NUMBER")
