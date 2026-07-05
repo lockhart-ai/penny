@@ -102,7 +102,7 @@ def test_incomplete_run_is_flagged_and_shows_trace():
 writes: 1
 ⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
 the cycle never finished cleanly
-write(games, 'x')"""
+collection_write(memory='games', entries='x')"""
     )
 
 
@@ -139,7 +139,7 @@ def test_tool_failure_count_is_flagged():
 [games] wrote one
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
-write(games, 'x')"""
+collection_write(memory='games', entries='x')"""
     )
 
 
@@ -169,8 +169,8 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
 writes: 0 · sends: 2
 ⚠ HALF-FORMED SEND — a message went out with no real content (empty, \
 punctuation-only, or an unfinished fragment)
-send('Hi there! ......???')
-send('Heads up — a new title dropped, details inside.')"""
+send_message('Hi there! ......???')
+send_message('Heads up — a new title dropped, details inside.')"""
     )
 
 
@@ -187,7 +187,7 @@ def test_healthy_worked_run_has_no_flags():
         == """\
 [games] wrote one
 writes: 1
-write(games, 'x')"""
+collection_write(memory='games', entries='x')"""
     )
 
 
@@ -281,7 +281,7 @@ def test_browse_failures_but_wrote_is_not_no_writes():
 [games] wrote one despite a dead source
 browses: 1 ok, 1 failed · writes: 1
 browse(['a', 'b'])
-write(games, 'x')"""
+collection_write(memory='games', entries='x')"""
     )
 
 
