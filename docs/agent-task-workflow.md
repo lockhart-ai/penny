@@ -9,6 +9,7 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 ## 0. Inputs (what you're given)
 - **One issue** — its number, scope, and any explicit "out of scope" boundary. Do not expand past it; if you discover adjacent work, note it for a follow-up issue, don't do it here.
 - If the issue is `blocked` or `investigation`, **stop** — it needs a design pass, not implementation. Report back instead of coding.
+- **Tickets rot — verify against the current code before implementing.** A ticket's file/line references and described structure were true when it was written; `main` may have moved since (a cited function refactored away, a mechanism reverted). Read the referenced code first and target *what exists now*, noting the discrepancy in your PR. If the drift is so large the ticket's premise no longer holds — or you hit a design decision the maintainer hasn't made — stop and report rather than guessing.
 
 ## 1. Branch in your own worktree (off clean main)
 - Sync the baseline first: `git fetch origin main`. Branch from **`origin/main`**, never a stale local ref or another agent's branch.
