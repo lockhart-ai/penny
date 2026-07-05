@@ -4,12 +4,14 @@ final class Prefs {
     static let shared = Prefs()
 
     private let userDefaults: UserDefaults
+    private let keychain: KeychainStore
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let bundledSecrets: SecretsPlist?
 
-    init(userDefaults: UserDefaults = .standard, bundle: Bundle = .main) {
+    init(userDefaults: UserDefaults = .standard, keychain: KeychainStore = SystemKeychain(), bundle: Bundle = .main) {
         self.userDefaults = userDefaults
+        self.keychain = keychain
         self.bundledSecrets = SecretsPlist.load(from: bundle)
     }
 
@@ -71,6 +73,23 @@ final class Prefs {
     func removeValue(forKey key: Key) {
         userDefaults.removeObject(forKey: key.rawValue)
     }
+
+    /// Reads a sensitive value from the keychain, migrating any legacy plaintext
+    /// value left in `UserDefaults` by an earlier app version on first read.
+    func secureString(forKey key: Key) -> String? {
+        if let legacy = userDefaults.string(forKey: key.rawValue) {
+            keychain.set(legacy, account: key.rawValue)
+            userDefaults.removeObject(forKey: key.rawValue)
+            return legacy
+        }
+        return keychain.string(account: key.rawValue)
+    }
+
+    func setSecureString(_ value: String?, forKey key: Key) {
+        keychain.set(value, account: key.rawValue)
+        // Drop any legacy plaintext copy so it can't shadow the keychain value.
+        userDefaults.removeObject(forKey: key.rawValue)
+    }
 }
 
 extension Prefs {
@@ -80,13 +99,13 @@ extension Prefs {
     }
 
     var username: String? {
-        get { string(forKey: .username) ?? bundledSecrets?.username }
-        set { set(newValue, forKey: .username) }
+        get { secureString(forKey: .username) ?? bundledSecrets?.username }
+        set { setSecureString(newValue, forKey: .username) }
     }
 
     var password: String? {
-        get { string(forKey: .password) ?? bundledSecrets?.password }
-        set { set(newValue, forKey: .password) }
+        get { secureString(forKey: .password) ?? bundledSecrets?.password }
+        set { setSecureString(newValue, forKey: .password) }
     }
 
     struct Key: RawRepresentable, Hashable, ExpressibleByStringLiteral {
