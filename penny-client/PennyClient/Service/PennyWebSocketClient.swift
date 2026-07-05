@@ -193,8 +193,8 @@ final class PennyWebSocketClient {
         case .data(let messageData):
             data = messageData
         case .string(let messageString):
-            print("received \(messageString.utf8)")
             data = Data(messageString.utf8)
+            debugLogFrame("received string frame (\(data.count) bytes)")
         @unknown default:
             return
         }
@@ -265,7 +265,7 @@ final class PennyWebSocketClient {
             do {
                 let data = try encoder.encode(outgoingMessage)
                 guard let json = String(data: data, encoding: .utf8) else { return }
-                print("sent \(json)")
+                debugLogFrame("sent frame (\(data.count) bytes)")
                 try await webSocketTask.send(.string(json))
             } catch {
                 await MainActor.run {
@@ -273,6 +273,15 @@ final class PennyWebSocketClient {
                 }
             }
         }
+    }
+
+    /// Logs a short, non-sensitive frame summary in debug builds only. Never logs frame
+    /// contents: outbound frames carry the device secret and APNs token, inbound frames
+    /// carry chat content, and on device these would land in the unified system log.
+    private func debugLogFrame(_ summary: @autoclosure () -> String) {
+        #if DEBUG
+        print("[PennyWebSocket] \(summary())")
+        #endif
     }
 
     private func nextLocalMessageID() -> Int {
