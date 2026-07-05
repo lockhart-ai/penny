@@ -38,6 +38,7 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
+    DoneJsonBailValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
@@ -1214,14 +1215,18 @@ class BackgroundAgent(Agent):
         HallucinatedUrlValidator(),
     ]
 
-    # A collector acts only through tool calls, so two run-shape guards apply
-    # that don't on chat: a prose answer where a tool call was due
-    # (``TextInsteadOfToolValidator`` → ``NudgeContinue``) and a first-move
-    # ``done()`` before any real work (``PrematureDoneValidator`` →
-    # ``RejectToolCall``).  Applied at the loop's text / tool-call branch points;
-    # both honour ``max_steps`` (no retry room on the final step).
+    # A collector acts only through tool calls, so three run-shape guards apply
+    # that don't on chat: ``done()``'s arguments emitted as bare JSON text
+    # (``DoneJsonBailValidator`` → shape-specific teaching ``NudgeContinue``,
+    # ordered BEFORE the generic guard so the specific teaching outranks it), a
+    # prose answer where a tool call was due (``TextInsteadOfToolValidator`` →
+    # ``NudgeContinue``), and a first-move ``done()`` before any real work
+    # (``PrematureDoneValidator`` → ``RejectToolCall``).  Applied at the loop's
+    # text / tool-call branch points; all honour ``max_steps`` (no retry room on
+    # the final step).
     run_shape_validators: list[ResponseValidator] = [
         PrematureDoneValidator(),
+        DoneJsonBailValidator(),
         TextInsteadOfToolValidator(),
     ]
 
