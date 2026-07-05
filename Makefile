@@ -15,12 +15,14 @@ TEAM_PYTEST_ARGS = tests/ -v
 # --- Docker Compose ---
 
 up: browser-build
+	docker compose --profile team down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
 	docker compose --profile team up --build
 
 prod: browser-build
+	docker compose -f docker-compose.yml down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
