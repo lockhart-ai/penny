@@ -26,7 +26,7 @@ Branch protection is enabled on `main`. All changes must go through pull request
 
 ## Agent Supervision (task-agent fleets)
 
-When work is fanned out to task agents (each owning one issue per `docs/agent-task-workflow.md`), a **supervisor** — the parent Claude session or the user — owns the fleet. The SOP is the child's contract; these are the supervisor's duties:
+When work is fanned out to task agents (each owning one issue per `docs/agent-task-workflow.md`), a **supervisor** — the parent Claude session or the user — owns the fleet. **The operating procedure — bootstrapping a fresh session onto a fleet (from the meta ticket + live queries, never a prior session's summary), meta-ticket conventions, dispatch mechanics (worktree isolation, Opus for implementation subagents), wave planning, fleet-end — is [`docs/agent-supervisor-runbook.md`](docs/agent-supervisor-runbook.md); start there.** The SOP is the child's contract; these are the supervisor's standing duties:
 
 - **Assignment**: one issue per agent, an explicit scope boundary, the SOP as its operating contract.
 - **Heartbeat (the load-bearing duty)**: while any child is blocked on a serialized resource (the eval GPU queue) or a long external wait, check the fleet on a timer — every 30–60 minutes. Verify each waiting child's watched process still exists and its result artifact is progressing. A dead waiter never resurrects itself, and a resting agent wakes only when something wakes it: an unheartbeated fleet can sleep all night on top of finished results (this happened — four green-gated branches sat unpushed for ~7 hours).
@@ -94,6 +94,8 @@ scripts/
   CODEOWNERS                    — Trusted maintainers (used by penny-team filtering)
 docs/                           — Design documents and review guides
   pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
+  agent-task-workflow.md        — Task-agent SOP: one ticket → worktree → gate → PR → shepherd → cleanup
+  agent-supervisor-runbook.md   — Supervisor runbook: meta ticket, dispatch, waves, heartbeat, fleet-end
   browser-extension-architecture.md — Browser extension architecture & design
   channel-manager-plan.md       — Multi-channel implementation plan
   browser-tools-plan.md         — Browser tools implementation plan
