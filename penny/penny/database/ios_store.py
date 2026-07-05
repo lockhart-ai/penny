@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from penny.database.models import Device, IosDeviceRegistration, IosOutboxItem
@@ -111,7 +112,15 @@ class IosStore:
 
     def pending_count(self, device_id: int) -> int:
         """Count unacknowledged outbox rows for a device."""
-        return len(self.pending_for_device(device_id, limit=10_000))
+        with self._session() as session:
+            return session.exec(
+                select(func.count())
+                .select_from(IosOutboxItem)
+                .where(
+                    IosOutboxItem.device_id == device_id,
+                    IosOutboxItem.acked_at.is_(None),  # ty: ignore[unresolved-attribute]
+                )
+            ).one()
 
     def mark_acked(self, device_id: int, item_ids: list[int]) -> int:
         """Acknowledge messages for a device. Returns the number updated."""

@@ -1,0 +1,21 @@
+# Required-check twin of client-check.yml (GitHub's documented pattern for
+# "skipped but required checks"): a path-filtered workflow that doesn't run
+# leaves a required check stuck in "Expected", blocking the merge. This twin
+# runs on the inverse filter with the SAME job name and succeeds instantly,
+# so every PR reports a `client-check` check — real on penny-client changes,
+# no-op otherwise. On PRs touching both, both run; both must be green.
+name: client-check-noop
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["penny-client/**"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["penny-client/**"]
+
+jobs:
+  client-check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No penny-client changes — client-check not required for this diff."

@@ -83,9 +83,11 @@ docker-compose.yml              — signal-api + penny + team services
 docker-compose.override.yml     — Dev source volume overrides
 scripts/
   watcher/                      — Auto-deploy service
+  client-check.sh               — iOS client build + simulator test run (make client-check)
 .github/
   workflows/
     check.yml                   — CI: runs make check on push/PR to main
+    client-check.yml            — CI: runs make client-check on PRs touching penny-client/
   CODEOWNERS                    — Trusted maintainers (used by penny-team filtering)
 docs/                           — Design documents and review guides
   pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
@@ -126,6 +128,7 @@ make typecheck        # Type check with ty (penny + penny-team)
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
 make signal-avatar    # Set Penny's Signal profile picture from penny.png
+make client-check     # Build the iOS client + run PennyClientTests on a simulator (requires Xcode)
 ```
 
 ### Browser Extension Development
@@ -149,6 +152,8 @@ Prerequisites: signal-cli-rest-api on :8080 (for Signal), Ollama on :11434, brow
 ## CI
 
 GitHub Actions runs `make check` (format, lint, typecheck, tests) on every push to `main` and on pull requests. The workflow builds the Docker images and runs all checks inside containers, same as local dev. Config is in `.github/workflows/check.yml`. Both penny and penny-team code are checked in CI.
+
+Changes touching `penny-client/` additionally run `make client-check` on a macOS runner (`.github/workflows/client-check.yml`): it builds the iOS app and runs `PennyClientTests` on a freshly booted simulator via `scripts/client-check.sh` — the same script used locally. The fresh erase + boot per run is load-bearing (a reused simulator flakes with "failed preflight checks").
 
 ## Configuration (.env)
 
@@ -206,6 +211,7 @@ GitHub Actions runs `make check` (format, lint, typecheck, tests) on every push 
 ## Testing Philosophy
 
 - **Always use `make fix check`**: The only way to run tests is `make fix check 2>&1 | tee /tmp/check-output.txt; echo "EXIT_CODE=$pipestatus[1]" >> /tmp/check-output.txt`. Never use `make pytest`, `make check` alone, `docker compose run`, or any other ad-hoc invocation. Read `/tmp/check-output.txt` to inspect results afterward — check EXIT_CODE first, then grep for FAILED or `error\[` as needed.
+- **penny-client (Swift) changes additionally require `make client-check`**: builds the iOS app and runs `PennyClientTests` on a simulator. Requires Xcode (`xcodebuild -version` to confirm); if Xcode is unavailable, push and rely on the `client-check` CI job — and say so in the PR instead of claiming the change verified.
 - **Strongly prefer integration tests**: Test through public entry points (e.g., `agent.run()`, `has_work()`, full message flow) rather than testing internal functions in isolation
 - **Fold assertions into existing tests**: Prefer adding assertions to an existing test that covers the relevant code path over creating a new test function
 - **Unit tests only for pure utility functions**: CODEOWNERS parsing, config loading, and similar pure functions with many edge cases are acceptable as unit tests

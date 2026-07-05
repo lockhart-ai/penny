@@ -26,7 +26,13 @@ from penny.scheduler.send_queue_drainer import SendQueueDrainer
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
 _USER_LOG = PennyConstants.MEMORY_USER_MESSAGES_LOG
 
-_RECIPIENT = "+15551234567"
+_RECIPIENT = "+15551234567"  # the user's primary sender identity
+# Penny's OWN registered Signal number — what production seeds as the default
+# device on a fresh install (config.signal_number).  Deliberately different from
+# the user's number so a drainer that routes to the default device identifier
+# would misroute to Note-to-Self rather than the user.
+_PENNY_NUMBER = "+15559998888"
+_IOS_IDENTIFIER = "ios-keychain-id"
 _COLLECTION = "notified-thoughts"
 
 
@@ -44,7 +50,9 @@ def _make_db(tmp_path) -> Database:
         timezone="America/Toronto",
         date_of_birth="1990-01-01",
     )
-    db.devices.register(ChannelType.SIGNAL, _RECIPIENT, "Signal", is_default=True)
+    # Production seeding: the seeded Signal default device is Penny's own number,
+    # NOT the user's — the drainer must still route to the primary sender.
+    db.devices.register(ChannelType.SIGNAL, _PENNY_NUMBER, "Signal", is_default=True)
     return db
 
 
@@ -86,7 +94,10 @@ async def test_drain_delivers_when_no_prior_send(tmp_path):
     assert did_work is True
     channel.send_response.assert_awaited_once()
     kwargs = channel.send_response.await_args.kwargs
+    # Routes to the user's primary sender, NOT the seeded Signal default device
+    # (Penny's own number) — otherwise the send would land in Note-to-Self.
     assert kwargs["recipient"] == _RECIPIENT
+    assert kwargs["recipient"] != _PENNY_NUMBER
     assert kwargs["content"] == "hey there!"
     assert kwargs["author"] == _COLLECTION
     # Row is stamped delivered — never re-sent.
@@ -157,6 +168,28 @@ async def test_drain_delivers_one_per_tick_in_fifo_order(tmp_path):
     # Only the oldest is delivered this tick; the next stays pending.
     pending = db.send_queue.next_pending()
     assert pending is not None and pending.content == "second"
+
+
+@pytest.mark.asyncio
+async def test_drain_routes_to_ios_default_device_identifier(tmp_path):
+    """iOS default device → the device identifier *is* the recipient.
+
+    On iOS the registered device identifier is the delivery target (not the
+    single primary sender), so the drainer must route drained messages there.
+    """
+    db = _make_db(tmp_path)
+    # An iOS device registers as default — registration keeps a single default,
+    # so it supersedes the seeded Signal device.
+    db.devices.register(ChannelType.IOS, _IOS_IDENTIFIER, "iPhone", is_default=True)
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel)
+    db.send_queue.enqueue(content="ping", collection=_COLLECTION)
+
+    did_work = await drainer.execute()
+
+    assert did_work is True
+    kwargs = channel.send_response.await_args.kwargs
+    assert kwargs["recipient"] == _IOS_IDENTIFIER
 
 
 @pytest.mark.asyncio

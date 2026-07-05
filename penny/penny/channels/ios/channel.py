@@ -7,10 +7,10 @@ import contextlib
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import httpx
 import websockets
 from pydantic import BaseModel, ValidationError
 from websockets.asyncio.server import Server, ServerConnection
@@ -48,6 +48,23 @@ logger = logging.getLogger(__name__)
 TEST_PUSH_MESSAGE = "This is a Penny test push."
 PUSH_GREETING_TITLE = "Hi from Penny"
 
+# Recognized ``source_name`` values (the ``author`` an outbound message carries)
+# for iOS push attribution.  ``chat``/``notifier`` reuse their canonical homes on
+# ``PennyConstants``; these are the ones with no home elsewhere.
+SOURCE_NAME_STARTUP = "startup"
+SOURCE_NAME_SCHEDULE = "schedule"
+SOURCE_NAME_TEST_PUSH = "test_push"
+
+# ``source_type`` values stamped on an outbox row and the APNs payload.
+SOURCE_TYPE_TEST_PUSH = "test_push"
+SOURCE_TYPE_COLLECTOR = "collector"
+
+# ``source_hint`` display labels surfaced to the app.
+SOURCE_HINT_DEFAULT = "Penny"
+SOURCE_HINT_TEST_PUSH = "Test Push"
+SOURCE_HINT_NOTIFIER = "Notifier"
+SOURCE_HINT_COLLECTOR_PREFIX = "Collector: "
+
 
 @dataclass
 class IosConnectionInfo:
@@ -56,7 +73,6 @@ class IosConnectionInfo:
     ws: ServerConnection
     device_id: int
     identifier: str
-    last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class IosChannel(MessageChannel):
@@ -76,12 +92,14 @@ class IosChannel(MessageChannel):
         command_registry: CommandRegistry | None = None,
         pairing_token: str | None = None,
         apns_client: ApnsClient | None = None,
+        is_primary_channel: bool = False,
     ) -> None:
         super().__init__(message_agent=message_agent, db=db, command_registry=command_registry)
         self._host = host
         self._port = port
         self._pairing_token = pairing_token
         self._apns_client = apns_client
+        self._is_primary_channel = is_primary_channel
         self._server: Server | None = None
         self._connections: dict[str, IosConnectionInfo] = {}
         self._closed = asyncio.Event()
@@ -146,7 +164,7 @@ class IosChannel(MessageChannel):
         elif msg_type == IOS_MSG_TYPE_ACK:
             await self._handle_ack(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_HEARTBEAT:
-            self._handle_heartbeat(device_identifier)
+            pass  # Keepalive frame — acknowledged by staying connected; no server-side state.
         return device_identifier
 
     async def _handle_register(self, ws: ServerConnection, data: dict) -> str | None:
@@ -160,37 +178,45 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="invalid_pairing_token"))
             return None
 
-        device = self._db.devices.register(
-            channel_type=ChannelType.IOS,
-            identifier=msg.device_id,
-            label=msg.label,
-            is_default=True,
-        )
-        if device.id is not None:
-            self._db.devices.set_default(device.id)
-            self._db.ios.upsert_registration(
-                device=device,
-                apns_token=msg.apns_token,
-                apns_environment=msg.apns_environment,
-                app_version=msg.app_version,
-                device_secret=msg.device_secret,
-            )
-            self._connections[msg.device_id] = IosConnectionInfo(
-                ws=ws, device_id=device.id, identifier=msg.device_id
-            )
-            pending_count = self._db.ios.pending_count(device.id)
-        else:
-            pending_count = 0
-
+        is_default, pending_count = self._persist_registration(ws, msg)
         await self._send_ws(
             ws,
             IosRegistered(
                 device_id=msg.device_id,
-                is_default=True,
+                is_default=is_default,
                 pending_count=pending_count,
             ),
         )
         return msg.device_id
+
+    def _persist_registration(self, ws: ServerConnection, msg: IosRegister) -> tuple[bool, int]:
+        """Upsert the device + iOS registration; claim default only as the primary channel.
+
+        In sidecar mode (``CHANNEL_TYPE`` != ios) the device is registered without touching
+        the default flag, so the primary channel (e.g. Signal) keeps proactive-send routing.
+        """
+        device = self._db.devices.register(
+            channel_type=ChannelType.IOS,
+            identifier=msg.device_id,
+            label=msg.label,
+            is_default=self._is_primary_channel,
+        )
+        if device.id is None:
+            return False, 0
+        if self._is_primary_channel:
+            self._db.devices.set_default(device.id)
+        self._db.ios.upsert_registration(
+            device=device,
+            apns_token=msg.apns_token,
+            apns_environment=msg.apns_environment,
+            app_version=msg.app_version,
+            device_secret=msg.device_secret,
+        )
+        self._connections[msg.device_id] = IosConnectionInfo(
+            ws=ws, device_id=device.id, identifier=msg.device_id
+        )
+        is_default = self._db.devices.get_default_identifier() == msg.device_id
+        return is_default, self._db.ios.pending_count(device.id)
 
     async def _handle_chat_message(self, data: dict, device_identifier: str) -> None:
         """Forward an iOS user message through the shared channel pipeline."""
@@ -235,11 +261,6 @@ class IosChannel(MessageChannel):
             return
         count = self._db.ios.mark_acked(conn.device_id, msg.ids)
         await self._send_ws(ws, IosMessagesAcked(count=count))
-
-    def _handle_heartbeat(self, device_identifier: str) -> None:
-        conn = self._connections.get(device_identifier)
-        if conn:
-            conn.last_heartbeat = datetime.now(UTC)
 
     def _cleanup_connection(self, ws: ServerConnection, device_identifier: str | None) -> None:
         if not device_identifier:
@@ -302,7 +323,7 @@ class IosChannel(MessageChannel):
             device_id=device.id,
             message=TEST_PUSH_MESSAGE,
             attachments=None,
-            source_name="test_push",
+            source_name=SOURCE_NAME_TEST_PUSH,
         )
         if item.id is None:
             return None
@@ -361,6 +382,7 @@ class IosChannel(MessageChannel):
                 source_type=item.source_type,
                 source_name=item.source_name,
                 thread_id=_thread_id(item.source_name),
+                environment=registration.apns_environment,
             )
             self._db.ios.mark_push_sent(item.id)
         except ApnsError as error:
@@ -383,7 +405,7 @@ class IosChannel(MessageChannel):
                     error.status_code,
                     error.reason,
                 )
-        except Exception as error:
+        except httpx.HTTPError as error:
             self._db.ios.mark_push_error(item.id, str(error))
 
     async def send_typing(self, recipient: str, typing: bool) -> bool:
@@ -426,16 +448,21 @@ def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
     )
 
 
+_PASSTHROUGH_SOURCE_NAMES = frozenset(
+    {SOURCE_NAME_STARTUP, SOURCE_NAME_SCHEDULE, PennyConstants.CHAT_AGENT_NAME}
+)
+
+
 def _source_metadata(source_name: str | None) -> tuple[str | None, str | None]:
     if not source_name:
-        return None, "Penny"
-    if source_name in {"startup", "schedule", "chat"}:
+        return None, SOURCE_HINT_DEFAULT
+    if source_name in _PASSTHROUGH_SOURCE_NAMES:
         return source_name, source_name.title()
-    if source_name == "test_push":
-        return "test_push", "Test Push"
-    if source_name == "notifier":
-        return "collector", "Notifier"
-    return "collector", f"Collector: {source_name}"
+    if source_name == SOURCE_NAME_TEST_PUSH:
+        return SOURCE_TYPE_TEST_PUSH, SOURCE_HINT_TEST_PUSH
+    if source_name == PennyConstants.MEMORY_NOTIFIER_COLLECTION:
+        return SOURCE_TYPE_COLLECTOR, SOURCE_HINT_NOTIFIER
+    return SOURCE_TYPE_COLLECTOR, f"{SOURCE_HINT_COLLECTOR_PREFIX}{source_name}"
 
 
 def _push_preview(message: str) -> tuple[str, str]:
