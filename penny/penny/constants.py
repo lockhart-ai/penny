@@ -130,6 +130,10 @@ class PennyConstants:
     BROWSE_SEARCH_HEADER = "## browse search: "
     BROWSE_PAGE_HEADER = "## browse: "
     BROWSE_ERROR_HEADER = "## browse error: "
+    # Disclosure header for queries dropped past the per-call cap.  Deliberately
+    # distinct from the ok/error headers so the run-health I/O tally never counts
+    # a dropped-queries note as a browse ok/failure.
+    BROWSE_DROPPED_HEADER = "## browse dropped: "
     BROWSE_TITLE_PREFIX = "Title: "
     BROWSE_URL_PREFIX = "URL: "
     SECTION_SEPARATOR = "\n\n---\n\n"

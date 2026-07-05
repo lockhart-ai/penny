@@ -4,6 +4,7 @@ import UIKit
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = ViewModel()
+    @State private var scrollToBottomRequest = 0
 
     var body: some View {
         NavigationStack {
@@ -52,6 +53,9 @@ struct MessageView: View {
                         }
                     }
                     .onChange(of: viewModel.client.isTyping) { _, _ in
+                        scrollToBottom(with: proxy)
+                    }
+                    .onChange(of: scrollToBottomRequest) { _, _ in
                         scrollToBottom(with: proxy)
                     }
                     .onChange(of: viewModel.keyboardHeight) { _, _ in
@@ -165,6 +169,7 @@ struct MessageView: View {
         Button {
             Task {
                 await viewModel.clearFiltersAndShowNewMessages()
+                scrollToBottomRequest += 1
             }
         } label: {
             Image(systemName: "message.badge")
@@ -172,7 +177,7 @@ struct MessageView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.borderless)
-        .foregroundStyle(.primary)
+        .foregroundStyle(Color.accentColor)
         .accessibilityLabel("Show new messages")
     }
 
