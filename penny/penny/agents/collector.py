@@ -80,21 +80,22 @@ class Collector(BackgroundAgent):
     _RUNTIME_RULES = (
         "## Runtime rules (always apply)\n"
         "\n"
-        "- Single batched ``collection_write`` per cycle — not one call per entry.\n"
-        "- Always end the cycle with ``done(success=<true|false>, summary=<one sentence on "
-        "what actually happened>)``.  ``success`` is true only if the cycle did what the "
-        "prompt asked, false on no-op or failure.  ``summary`` must state what *actually* "
-        "happened this cycle — never claim entries were written unless a ``collection_write`` "
-        "succeeded.  On a cycle that wrote entries, compose the summary fresh from the real "
-        'work: ``done(success=true, summary="<one sentence on what you wrote this cycle>")``.  '
+        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
+        "- Always end the cycle with `done(success=<true|false>, summary=<one sentence on "
+        "what actually happened>)`.  `success` is true only if the cycle did what the "
+        "prompt asked, false on no-op or failure.  `summary` must state what *actually* "
+        "happened this cycle — never claim entries were written unless a "
+        "`collection_write(entries=[...])` succeeded.  On a cycle that wrote entries, "
+        "compose the summary fresh from the real "
+        'work: `done(success=true, summary="<one sentence on what you wrote this cycle>")`.  '
         "If your sources could not be read (every browse failed), say so and set "
-        '``success=false`` (e.g. ``done(success=false, summary="could not read any source '
-        'this cycle; 0 entries written")``).  If the sources read fine but nothing new '
-        'matched, call ``done(success=true, summary="no new matches this cycle")`` — quiet '
+        '`success=false` (e.g. `done(success=false, summary="could not read any source '
+        'this cycle; 0 entries written")`).  If the sources read fine but nothing new '
+        'matched, call `done(success=true, summary="no new matches this cycle")` — quiet '
         "cycles are normal.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
-        "closed, or otherwise no longer accurate, ``update_entry`` or ``collection_delete_entry`` "
-        "rather than appending alongside.\n"
+        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
+        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
         "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
         '"Source:" field — if no real source was fetched, omit the field.\n'
         "- Don't dedup manually — the store rejects duplicates on write automatically."
