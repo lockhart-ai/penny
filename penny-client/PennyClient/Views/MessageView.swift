@@ -4,11 +4,10 @@ import UIKit
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = ViewModel()
-    @State private var scrollToBottomRequest = 0
-    @State private var scrollPosition = ScrollPosition()
-    @State private var scrollMetrics = ScrollMetrics()
-    @State private var pendingLayoutScrollProgress: CGFloat?
     @State private var isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
+    @State private var presentedCardMessage: ChatMessage?
+    @State private var scrollToBottomRequest = 0
+    @FocusState private var isComposerFocused: Bool
 
     private var effectiveMessageLayout: MessageLayout {
         isMessageLayoutSwitcherEnabled ? viewModel.selectedMessageLayout : .message
@@ -17,85 +16,19 @@ struct MessageView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            if viewModel.filteredMessages.isEmpty {
-                                EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
-                            } else {
-                                LazyVGrid(columns: effectiveMessageLayout.gridColumns, spacing: effectiveMessageLayout.itemSpacing) {
-                                    ForEach(viewModel.filteredMessages) { message in
-                                        ChatMessageView(message: message, layout: effectiveMessageLayout, isSelected: viewModel.selectedMessageID == message.id)
-                                            .contentShape(Rectangle())
-                                            .onTapGesture {
-                                                focusMessage(message.id, with: proxy)
-                                            }
-                                            .id(message.id)
-                                    }
-                                }
-                                .scrollTargetLayout()
-                            }
-
-                            if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator && effectiveMessageLayout == .message {
-                                TypingRow()
-                            }
-
-                            Color.clear
-                                .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
-                                .id(bottomAnchorID)
-                        }
-                        .padding(.horizontal, effectiveMessageLayout.horizontalPadding)
-                        .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
-                    }
-                    .background(Color(.systemGroupedBackground))
-                    .scrollPosition($scrollPosition)
-                    .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-                        ScrollMetrics(geometry: geometry)
-                    } action: { oldMetrics, newMetrics in
-                        scrollMetrics = newMetrics
-                        restorePendingLayoutScrollIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
-                    }
-                    .overlay(alignment: .top) {
-                        if isMessageLayoutSwitcherEnabled {
-                            messageLayoutSelector
-                                .padding(.top, 10)
-                        }
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            scrollToBottom(with: proxy, animated: false)
-                        }
-                    }
-                    .onChange(of: viewModel.client.messages.count) { oldCount, _ in
-                        Task {
-                            guard await viewModel.handleMessagesChanged(previousMessageCount: oldCount) else { return }
-
-                            if effectiveMessageLayout == .message {
-                                scrollToBottom(with: proxy)
-                            } else {
-                                viewModel.hasHiddenNewMessages = true
-                            }
-                        }
-                    }
-                    .onChange(of: viewModel.selectedMessageFilter) { _, _ in
-                        Task {
-                            await viewModel.waitForFiltering()
-                            scrollToBottom(with: proxy, animated: false)
-                        }
-                    }
-                    .onChange(of: viewModel.client.isTyping) { _, _ in
-                        scrollToBottom(with: proxy)
-                    }
-                    .onChange(of: scrollToBottomRequest) { _, _ in
-                        scrollToBottom(with: proxy)
-                    }
-                    .onChange(of: viewModel.keyboardHeight) { _, _ in
-                        scrollToBottom(with: proxy)
-                    }
+                if effectiveMessageLayout == .message {
+                    chatScrollView
+                } else {
+                    cardScrollView(layout: effectiveMessageLayout)
                 }
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .overlay(alignment: .top) {
+                if isMessageLayoutSwitcherEnabled {
+                    messageLayoutSelector
+                        .padding(.top, 10)
+                }
+            }
             .overlay(alignment: .bottom) {
                 composer
                     .offset(y: -viewModel.keyboardOffset)
@@ -160,6 +93,9 @@ struct MessageView: View {
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 SettingsView(client: viewModel.client)
             }
+            .sheet(item: $presentedCardMessage) { message in
+                MessageCardDetailSheet(message: message)
+            }
             .onChange(of: viewModel.isShowingSettings) { _, isShowingSettings in
                 guard !isShowingSettings else { return }
                 refreshFeaturePreferences()
@@ -169,6 +105,9 @@ struct MessageView: View {
             await viewModel.connect()
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                isComposerFocused = false
+            }
             viewModel.handleScenePhaseChange(newPhase)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
@@ -179,6 +118,86 @@ struct MessageView: View {
         }
         .onDisappear {
             viewModel.disconnect()
+        }
+    }
+
+    private var chatScrollView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 12) {
+                    if viewModel.filteredMessages.isEmpty {
+                        EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
+                    } else {
+                        LazyVGrid(columns: MessageLayout.message.gridColumns, spacing: MessageLayout.message.itemSpacing) {
+                            ForEach(viewModel.filteredMessages) { message in
+                                ChatMessageView(message: message, layout: .message)
+                                    .id(message.id)
+                            }
+                        }
+                    }
+
+                    if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator {
+                        TypingRow()
+                    }
+
+                    Color.clear
+                        .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
+                        .id(bottomAnchorID)
+                }
+                .padding(.horizontal, MessageLayout.message.horizontalPadding)
+                .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
+            }
+            .background(Color(.systemGroupedBackground))
+            .scrollDismissesKeyboard(.interactively)
+            .onAppear {
+                DispatchQueue.main.async {
+                    scrollToBottom(with: proxy, animated: false)
+                }
+            }
+            .onChange(of: viewModel.client.messages.count) { oldCount, _ in
+                Task {
+                    guard await viewModel.handleMessagesChanged(previousMessageCount: oldCount) else { return }
+                    scrollToBottom(with: proxy)
+                }
+            }
+            .onChange(of: viewModel.client.isTyping) { _, _ in
+                scrollToBottom(with: proxy)
+            }
+            .onChange(of: scrollToBottomRequest) { _, _ in
+                scrollToBottom(with: proxy)
+            }
+        }
+    }
+
+    private func cardScrollView(layout: MessageLayout) -> some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                if viewModel.filteredMessages.isEmpty {
+                    EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
+                } else {
+                    LazyVGrid(columns: layout.gridColumns, spacing: layout.itemSpacing) {
+                        ForEach(viewModel.filteredMessages) { message in
+                            ChatMessageView(message: message, layout: layout)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    presentedCardMessage = message
+                                }
+                        }
+                    }
+                }
+
+                Color.clear
+                    .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
+            }
+            .padding(.horizontal, layout.horizontalPadding)
+            .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
+        }
+        .background(Color(.systemGroupedBackground))
+        .scrollDismissesKeyboard(.interactively)
+        .onChange(of: viewModel.client.messages.count) { oldCount, _ in
+            Task {
+                _ = await viewModel.handleMessagesChanged(previousMessageCount: oldCount)
+            }
         }
     }
 
@@ -205,6 +224,7 @@ struct MessageView: View {
         Button {
             Task {
                 await viewModel.clearFiltersAndShowNewMessages()
+                viewModel.selectedMessageLayout = .message
                 scrollToBottomRequest += 1
             }
         } label: {
@@ -266,6 +286,7 @@ struct MessageView: View {
                 .font(.body)
                 .lineLimit(1...5)
                 .submitLabel(.send)
+                .focused($isComposerFocused)
                 .onSubmit(viewModel.sendDraft)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
@@ -296,42 +317,11 @@ struct MessageView: View {
 
     private func changeMessageLayout(to layout: MessageLayout) {
         guard viewModel.selectedMessageLayout != layout else { return }
-        pendingLayoutScrollProgress = scrollMetrics.progress
 
         var transaction = Transaction(animation: .spring(response: 0.34, dampingFraction: 0.86))
         transaction.disablesAnimations = false
         withTransaction(transaction) {
             viewModel.selectedMessageLayout = layout
-        }
-    }
-
-    private func restorePendingLayoutScrollIfNeeded(oldMetrics: ScrollMetrics, newMetrics: ScrollMetrics) {
-        guard let progress = pendingLayoutScrollProgress else { return }
-        guard oldMetrics.contentHeight != newMetrics.contentHeight else { return }
-
-        pendingLayoutScrollProgress = nil
-        let restoredOffset = newMetrics.maxOffsetY * progress
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            scrollPosition.scrollTo(point: CGPoint(x: 0, y: restoredOffset))
-        }
-    }
-
-    private func focusMessage(_ messageID: Int, with proxy: ScrollViewProxy) {
-        viewModel.selectedMessageID = messageID
-        guard isMessageLayoutSwitcherEnabled && viewModel.selectedMessageLayout != .message else { return }
-
-        var transaction = Transaction(animation: .spring(response: 0.34, dampingFraction: 0.86))
-        transaction.disablesAnimations = false
-        withTransaction(transaction) {
-            viewModel.selectedMessageLayout = .message
-        }
-
-        DispatchQueue.main.async {
-            DispatchQueue.main.async {
-                proxy.scrollTo(messageID, anchor: .center)
-            }
         }
     }
 
@@ -343,25 +333,6 @@ struct MessageView: View {
         } else {
             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
-    }
-}
-
-private struct ScrollMetrics: Equatable {
-    var offsetY: CGFloat = 0
-    var maxOffsetY: CGFloat = 0
-    var contentHeight: CGFloat = 0
-
-    var progress: CGFloat {
-        guard maxOffsetY > 0 else { return 0 }
-        return min(max(offsetY / maxOffsetY, 0), 1)
-    }
-
-    init() {}
-
-    init(geometry: ScrollGeometry) {
-        offsetY = max(geometry.visibleRect.minY, 0)
-        maxOffsetY = max(geometry.contentSize.height - geometry.containerSize.height, 0)
-        contentHeight = geometry.contentSize.height
     }
 }
 
@@ -382,6 +353,30 @@ private extension View {
             }
         }
         .onPreferenceChange(HeightPreferenceKey.self, perform: onChange)
+    }
+}
+
+private struct MessageCardDetailSheet: View {
+    let message: ChatMessage
+
+    private var title: String {
+        guard let sourceHint = message.sourceHint, !sourceHint.isEmpty else {
+            return message.isOutgoing ? "You" : "Message"
+        }
+        return sourceHint
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                ChatMessageView(message: message, layout: .message, showsSourceHintInline: false, fillsMessageRowWidth: true)
+                    .padding(.horizontal, MessageView.MessageLayout.message.horizontalPadding)
+                    .padding(.vertical, 16)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 

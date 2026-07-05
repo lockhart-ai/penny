@@ -121,7 +121,6 @@ extension MessageView {
         var isShowingConnectionError = false
         var isShowingSettings = false
         var hasHiddenNewMessages = false
-        var selectedMessageID: Int?
         var selectedMessageLayout: MessageLayout = .message
         var selectedMessageFilter: MessageFilter = .all {
             didSet {

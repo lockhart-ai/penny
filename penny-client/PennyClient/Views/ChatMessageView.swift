@@ -3,7 +3,15 @@ import SwiftUI
 struct ChatMessageView: View {
     let message: ChatMessage
     let layout: MessageView.MessageLayout
-    let isSelected: Bool
+    let showsSourceHintInline: Bool
+    let fillsMessageRowWidth: Bool
+
+    init(message: ChatMessage, layout: MessageView.MessageLayout, showsSourceHintInline: Bool = true, fillsMessageRowWidth: Bool = false) {
+        self.message = message
+        self.layout = layout
+        self.showsSourceHintInline = showsSourceHintInline
+        self.fillsMessageRowWidth = fillsMessageRowWidth
+    }
 
     private var markdownTextBlocks: [AttributedString] {
         message.content
@@ -50,19 +58,12 @@ struct ChatMessageView: View {
     }
 
     @ViewBuilder
-    private func selectionBorder(cornerRadius: CGFloat) -> some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(Color(.systemGray3), lineWidth: 2)
-        }
-    }
-
-    @ViewBuilder
     private var messageBubble: some View {
         if message.isOutgoing {
             Text(message.content)
                 .font(.body)
                 .foregroundStyle(.white)
+                .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -83,17 +84,11 @@ struct ChatMessageView: View {
                 }
             }
             .foregroundStyle(.primary)
+            .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-    }
-
-    private var selectedMessageBubble: some View {
-        messageBubble
-            .overlay {
-                selectionBorder(cornerRadius: 16)
-            }
     }
 
     var body: some View {
@@ -109,25 +104,25 @@ struct ChatMessageView: View {
 
     private var messageRow: some View {
         HStack {
-            if message.isOutgoing {
+            if message.isOutgoing && !fillsMessageRowWidth {
                 Spacer(minLength: 48)
             }
 
-            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 5) {
-                if let sourceHint = message.sourceHint, !sourceHint.isEmpty {
+            VStack(alignment: message.isOutgoing && !fillsMessageRowWidth ? .trailing : .leading, spacing: 5) {
+                if showsSourceHintInline, let sourceHint = message.sourceHint, !sourceHint.isEmpty {
                     Text(sourceHint)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
 
-                selectedMessageBubble
+                messageBubble
 
                 Text(message.displayTime)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            if !message.isOutgoing {
+            if !message.isOutgoing && !fillsMessageRowWidth {
                 Spacer(minLength: 48)
             }
         }
@@ -159,9 +154,6 @@ struct ChatMessageView: View {
         .padding(8)
         .frame(maxWidth: .infinity, minHeight: 192, alignment: .topLeading)
         .background(compactCardBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            selectionBorder(cornerRadius: 8)
-        }
     }
 
     private var mediaCard: some View {
@@ -192,9 +184,6 @@ struct ChatMessageView: View {
         }
         .padding(message.isOutgoing ? 3 : 0)
         .background(message.isOutgoing ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            selectionBorder(cornerRadius: message.isOutgoing ? 10 : 8)
-        }
     }
 }
 
