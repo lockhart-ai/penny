@@ -10,7 +10,7 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
-.PHONY: up prod prod-ios kill build team-build browser-build fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill build team-build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -45,6 +45,11 @@ team-build:
 
 browser-build:
 	cd browser && npm install && npm run build
+
+# Build the iOS client and run PennyClientTests on a simulator (requires Xcode).
+# CI runs the same script on any PR touching penny-client/ (client-check.yml).
+client-check:
+	./scripts/client-check.sh
 
 # Print a GitHub App installation token for use with gh CLI
 # Usage: GH_TOKEN=$(make token) gh pr create ...
