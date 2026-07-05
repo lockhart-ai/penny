@@ -9,16 +9,48 @@ struct PrefsTests {
         let prefs = Prefs(userDefaults: userDefaults)
 
         prefs.set("wss://example.test/penny/", forKey: .webSocketURL)
-        prefs.set("robert", forKey: .username)
         prefs.set(true, forKey: "feature.enabled")
         prefs.set(42, forKey: "answer")
         prefs.set(3.14, forKey: "pi")
 
         #expect(prefs.webSocketURL == "wss://example.test/penny/")
-        #expect(prefs.username == "robert")
         #expect(prefs.bool(forKey: "feature.enabled"))
         #expect(prefs.integer(forKey: "answer") == 42)
         #expect(prefs.double(forKey: "pi") == 3.14)
+    }
+
+    @Test func storesCredentialsInKeychainNotUserDefaults() {
+        let userDefaults = makeUserDefaults()
+        let keychain = InMemoryKeychain()
+        let prefs = Prefs(userDefaults: userDefaults, keychain: keychain, bundle: Bundle(for: EmptyBundleMarker.self))
+
+        prefs.username = "robert"
+        prefs.password = "hunter2"
+
+        #expect(prefs.username == "robert")
+        #expect(prefs.password == "hunter2")
+        // Credentials live in the keychain, never in UserDefaults.
+        #expect(keychain.string(account: Prefs.Key.username.rawValue) == "robert")
+        #expect(keychain.string(account: Prefs.Key.password.rawValue) == "hunter2")
+        #expect(userDefaults.string(forKey: Prefs.Key.username.rawValue) == nil)
+        #expect(userDefaults.string(forKey: Prefs.Key.password.rawValue) == nil)
+    }
+
+    @Test func migratesLegacyCredentialsFromUserDefaultsToKeychain() {
+        let userDefaults = makeUserDefaults()
+        // Simulate an install that saved credentials in plaintext UserDefaults.
+        userDefaults.set("robert", forKey: Prefs.Key.username.rawValue)
+        userDefaults.set("hunter2", forKey: Prefs.Key.password.rawValue)
+        let keychain = InMemoryKeychain()
+        let prefs = Prefs(userDefaults: userDefaults, keychain: keychain, bundle: Bundle(for: EmptyBundleMarker.self))
+
+        #expect(prefs.username == "robert")
+        #expect(prefs.password == "hunter2")
+        // The legacy plaintext values have been moved into the keychain and cleared.
+        #expect(keychain.string(account: Prefs.Key.username.rawValue) == "robert")
+        #expect(keychain.string(account: Prefs.Key.password.rawValue) == "hunter2")
+        #expect(userDefaults.string(forKey: Prefs.Key.username.rawValue) == nil)
+        #expect(userDefaults.string(forKey: Prefs.Key.password.rawValue) == nil)
     }
 
     @Test func storesCodableValuesInUserDefaults() {
@@ -33,7 +65,7 @@ struct PrefsTests {
 
     @Test func returnsNilConnectionValuesWhenNoDefaultsOrSecretsExist() {
         let userDefaults = makeUserDefaults()
-        let prefs = Prefs(userDefaults: userDefaults, bundle: Bundle(for: EmptyBundleMarker.self))
+        let prefs = Prefs(userDefaults: userDefaults, keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
 
         #expect(prefs.webSocketURL == nil)
         #expect(prefs.username == nil)
@@ -107,7 +139,7 @@ struct PennyWebSocketClientTests {
 
     @Test func reportsMissingCredentials() {
         let userDefaults = makeUserDefaults()
-        let prefs = Prefs(userDefaults: userDefaults, bundle: Bundle(for: EmptyBundleMarker.self))
+        let prefs = Prefs(userDefaults: userDefaults, keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
         prefs.webSocketURL = "wss://example.test/penny/"
         let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: prefs)
 
@@ -191,6 +223,19 @@ private struct SamplePreference: Codable, Equatable {
 
 private final class EmptyBundleMarker {}
 
+/// In-memory `KeychainStore` so unit tests never touch the real system keychain.
+private final class InMemoryKeychain: KeychainStore {
+    private var storage: [String: String] = [:]
+
+    func string(account: String) -> String? {
+        storage[account]
+    }
+
+    func set(_ value: String?, account: String) {
+        storage[account] = value
+    }
+}
+
 private func makeUserDefaults() -> UserDefaults {
     let suiteName = "PennyClientTests.\(UUID().uuidString)"
     let userDefaults = UserDefaults(suiteName: suiteName)!
@@ -204,7 +249,7 @@ private func configuredPrefs(
     username: String = "alice",
     password: String = "secret"
 ) -> Prefs {
-    let prefs = Prefs(userDefaults: makeUserDefaults(), bundle: Bundle(for: EmptyBundleMarker.self))
+    let prefs = Prefs(userDefaults: makeUserDefaults(), keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
     prefs.webSocketURL = url
     prefs.username = username
     prefs.password = password
