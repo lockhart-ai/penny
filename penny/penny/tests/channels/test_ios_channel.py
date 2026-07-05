@@ -65,7 +65,7 @@ def _make_db(tmp_path) -> Database:
     return db
 
 
-def _make_channel(db: Database, apns=None) -> IosChannel:
+def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChannel:
     return IosChannel(
         host="localhost",
         port=9999,
@@ -73,6 +73,7 @@ def _make_channel(db: Database, apns=None) -> IosChannel:
         db=db,
         pairing_token="pair-me",
         apns_client=apns,
+        is_primary_channel=is_primary,
     )
 
 
@@ -127,7 +128,40 @@ async def test_register_creates_default_ios_device_and_registration(tmp_path):
     assert registration is not None
     assert registration.apns_token == "apns-token"
     assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
+    assert ws.sent[-1]["is_default"] is True
     assert ws.sent[-1]["pending_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sidecar_registration_does_not_steal_default_device(tmp_path):
+    """In sidecar mode (Signal primary), an iOS register must not claim the default."""
+    db = _make_db(tmp_path)
+    db.devices.register(ChannelType.SIGNAL, "+15550000000", "Signal", is_default=True)
+    channel = _make_channel(db, is_primary=False)
+    ws = FakeWs()
+    server_ws = cast(Any, ws)
+
+    device_id = await channel._handle_register(
+        server_ws,
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+            "apns_token": "apns-token",
+        },
+    )
+
+    assert device_id == "ios-keychain-id"
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    assert device.is_default is False
+    assert db.devices.get_default_identifier() == "+15550000000"
+    registration = db.ios.get_registration(device.id)
+    assert registration is not None
+    assert registration.apns_token == "apns-token"
+    assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
+    assert ws.sent[-1]["is_default"] is False
 
 
 @pytest.mark.asyncio
@@ -176,6 +210,87 @@ async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(t
     assert apns.sent[0]["title"] == PUSH_GREETING_TITLE
     assert apns.sent[0]["body"] == "Found a fare drop."
     assert apns.sent[0]["badge"] == 1
+    assert apns.sent[0]["environment"] == "sandbox"
+
+
+@pytest.mark.asyncio
+async def test_send_raw_forwards_production_environment_to_apns(tmp_path):
+    db = _make_db(tmp_path)
+    apns = FakeApns()
+    channel = _make_channel(db, apns=apns)
+    ws = FakeWs()
+    server_ws = cast(Any, ws)
+    await channel._handle_register(
+        server_ws,
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+            "apns_token": "apns-token",
+            "apns_environment": "production",
+        },
+    )
+    channel._connections.clear()
+
+    await channel._send_raw("ios-keychain-id", "hello from Penny", source_name="notifier")
+
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    registration = db.ios.get_registration(device.id)
+    assert registration is not None and registration.apns_environment == "production"
+    assert apns.sent[0]["environment"] == "production"
+
+
+@pytest.mark.asyncio
+async def test_send_preview_selects_host_from_device_environment(monkeypatch, caplog):
+    requests: list[dict] = []
+
+    class FakeHttp:
+        async def post(self, url, *, headers, json):
+            requests.append({"url": url})
+            return httpx.Response(200)
+
+    client = object.__new__(ApnsClient)
+    client._config = ApnsConfig(
+        team_id="TEAMID",
+        key_id="KEYID",
+        key_path="/unused/AuthKey_KEYID.p8",
+        bundle_id="com.example.Penny",
+        sandbox=True,  # global default host is sandbox
+    )
+    client._http = FakeHttp()
+    monkeypatch.setattr(client, "_provider_token", lambda: "provider-token")
+
+    async def send(environment):
+        await client.send_preview(
+            device_token="device-token",
+            title=PUSH_GREETING_TITLE,
+            body="hi",
+            badge=1,
+            outbox_id=1,
+            source_type=None,
+            source_name=None,
+            environment=environment,
+        )
+
+    await send("production")
+    await send("sandbox")
+    await send(None)  # unset -> global default (sandbox)
+    with caplog.at_level("WARNING", logger="penny.channels.ios.apns"):
+        await send("unexpected")  # unrecognized -> warn + global default (sandbox)
+
+    hosts = [request["url"].split("/3/device/")[0] for request in requests]
+    assert hosts == [
+        "https://api.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+        "https://api.sandbox.push.apple.com",
+    ]
+    assert any(
+        "Unrecognized APNs environment 'unexpected'" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -334,6 +449,10 @@ async def test_pull_and_ack_messages(tmp_path):
     await channel._send_raw("ios-keychain-id", "first", source_name="notifier")
     await channel._send_raw("ios-keychain-id", "second", source_name="notifier")
 
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    assert db.ios.pending_count(device.id) == 2
+
     await channel._handle_pull(server_ws, {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
 
     messages_payload = ws.sent[-1]
@@ -344,6 +463,5 @@ async def test_pull_and_ack_messages(tmp_path):
     await channel._handle_ack(server_ws, {"type": IOS_MSG_TYPE_ACK, "ids": ids}, "ios-keychain-id")
 
     assert ws.sent[-1]["count"] == 2
-    device = db.devices.get_by_identifier("ios-keychain-id")
-    assert device is not None and device.id is not None
     assert db.ios.pending_for_device(device.id) == []
+    assert db.ios.pending_count(device.id) == 0

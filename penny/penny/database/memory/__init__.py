@@ -39,6 +39,7 @@ from penny.database.memory.types import (
     WriteResult,
     WrongShapeError,
     slug,
+    strip_display_brackets,
 )
 from penny.text_validity import (
     degenerate_reason,
@@ -79,4 +80,5 @@ __all__ = [
     "WriteResult",
     "WrongShapeError",
     "slug",
+    "strip_display_brackets",
 ]

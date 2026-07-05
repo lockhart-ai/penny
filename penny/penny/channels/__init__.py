@@ -125,6 +125,7 @@ def _register_ios_channel(
         command_registry=command_registry,
         pairing_token=config.ios_pairing_token,
         apns_client=apns_client,
+        is_primary_channel=config.channel_type == ChannelType.IOS,
     )
     manager.register_channel(ChannelType.IOS, channel)
 

@@ -208,9 +208,32 @@ args — the more gpt-oss malforms it (placeholder `?`, a missing required field
 A malformed call fails to parse, the loop nudges it, and it spirals (see the tool-call-only note).
 Measured: a bare `collection_write` (create) hit 5/5; the same task via `update_entry` with a
 full-content replacement spiralled repeatedly. Two implications: keep the model's calls small, and
-when a footgun is mechanical (e.g. the model copies the `[key]` display-brackets into an
-`update_entry` key → "not found"), fix it in the **tool** (accept/normalise the input, or make the
-error actionable) rather than adding a prompt caveat the model will argue with.
+when a footgun is mechanical, fix it at the **tool boundary** rather than adding a prompt caveat
+the model will argue with — but fix it the right way:
+
+## Reject and teach — never absorb a hallucinated shape
+
+When the model sends a wrong-shaped input (a bracket-wrapped key copied from a listing, an
+invented parameter, a wrong arg signature), the tool must **reject it with a teaching error**,
+never quietly accept or normalise it. The contract is: clear descriptions out to the model,
+strict validation in the tool, and a failure response that names the specific mistake AND the
+exact corrected input ready to reuse ("no entry with key `[Fish oil]` — listings render keys
+inside brackets, but the key is passed bare; did you mean `Fish oil`?"). The dup-rejection
+message (matched key handed back → recovery in ~1 call) is the measured template.
+
+Why never absorb: every accepted hallucinated shape becomes de-facto API surface, and the set of
+shapes the model can hallucinate is unbounded — normalisation compounds while teaching converges.
+Silent acceptance also hides the miss from run records and evals (visible-degradation principle).
+Two corollaries:
+
+- **If OUR rendering taught the mistake** (the `[key]` display format is what the model copies),
+  the root fix is changing the rendering — an eval-gated change to a consumed surface — with the
+  teaching rejection as the guard in the meantime.
+- **The narrow exception is the model's own output channel**: protocol-layer repairs of an
+  unambiguous *emission* artifact (the done-args JSON bail repair, the Harmony token strip) are
+  legitimate because they reroute what the model already unambiguously said — they accept no new
+  input semantics, and they must stay visible via the condition catalog. Anything beyond that
+  needs explicit maintainer sign-off.
 
 ## Isolate one case when tuning
 

@@ -208,11 +208,39 @@ class Preflight:
             )
         if model_available(model, available):
             return self._ok(name, f"embedding model {model!r} available at {url}")
+        return await self._verify_embedding_via_fallback(name, model, url)
+
+    async def _verify_embedding_via_fallback(
+        self, name: PreflightCheck, model: str, url: str
+    ) -> CheckResult:
+        """Second-source the embedding model via provider-specific /v1/embeddings/models.
+
+        Some OpenAI-compatible providers (e.g. openrouter) list embedding models
+        only on this narrower endpoint, so a model absent from /v1/models can
+        still be present and valid. Either endpoint verifying it is enough; an
+        endpoint error or an absence from both is a hard fail with the actionable
+        remedy.
+        """
+        try:
+            embedding_available = await self.embedding_client.list_embedding_models()
+        except LlmError as error:
+            return self._fail(
+                name,
+                f"embedding model {model!r} not listed by /v1/models at {url}, and "
+                f"/v1/embeddings/models could not verify it: {error}. Memory "
+                f"(dedup + recall) depends on it. Pull it (`ollama pull {model}`) "
+                f"or fix LLM_EMBEDDING_MODEL.",
+            )
+        if model_available(model, embedding_available):
+            return self._ok(
+                name,
+                f"embedding model {model!r} available via /v1/embeddings/models at {url}",
+            )
         return self._fail(
             name,
-            f"embedding model {model!r} not available at {url} — pull it "
-            f"(`ollama pull {model}`) or fix LLM_EMBEDDING_MODEL. Memory (dedup + recall) "
-            f"depends on it.",
+            f"embedding model {model!r} not available at {url} via /v1/models or "
+            f"/v1/embeddings/models — pull it (`ollama pull {model}`) or fix "
+            f"LLM_EMBEDDING_MODEL. Memory (dedup + recall) depends on it.",
         )
 
     # ── Soft-warn checks ─────────────────────────────────────────────────

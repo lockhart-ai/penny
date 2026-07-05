@@ -218,6 +218,7 @@ make token            # Generate GitHub App installation token for gh CLI
 make signal-avatar    # Set Penny's Signal profile picture
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
+make client-check     # Build the iOS client + run its tests on a simulator (requires Xcode)
 ```
 
 All dev tool commands run in temporary Docker containers via `docker compose run --rm`, with source volume-mounted so changes write back to the host filesystem.
@@ -255,7 +256,7 @@ IOS_APNS_TEAM_ID=""                       # Apple Developer Team ID
 IOS_APNS_KEY_ID=""                        # APNs auth key ID
 IOS_APNS_KEY_PATH=""                      # Container path to .p8, e.g. /penny/data/private/AuthKey_XXXX.p8
 IOS_BUNDLE_ID=""                          # iOS app bundle id, e.g. com.example.Penny
-IOS_APNS_SANDBOX=true                     # true for development builds, false for production/TestFlight
+IOS_APNS_SANDBOX=true                     # Fallback only: devices report sandbox/production at registration
 
 # LLM Configuration — any OpenAI-compatible endpoint (Ollama, omlx, vLLM,
 # OpenAI cloud, ...). The example URL points at a local Ollama instance.
@@ -327,14 +328,14 @@ Penny auto-detects which channel to use based on configured credentials:
 
 **iOS Channel** (optional):
 - `IOS_ENABLED`: `true` to enable the iOS channel alongside the auto-detected primary channel; with Signal configured, both Signal and iOS listen in parallel
-- `IOS_HOST`: WebSocket bind address (default: `localhost`; use `0.0.0.0` in Docker)
+- `IOS_HOST`: WebSocket bind address (default: `0.0.0.0`, the Docker default; use `localhost` for host-only binding)
 - `IOS_PORT`: WebSocket port (default: `9091`)
 - `IOS_PAIRING_TOKEN`: optional shared token required during device registration when set
 - `IOS_APNS_TEAM_ID`: Apple Developer Team ID
 - `IOS_APNS_KEY_ID`: APNs auth key ID from the Apple Developer portal
 - `IOS_APNS_KEY_PATH`: container path to the APNs `.p8` auth key
 - `IOS_BUNDLE_ID`: iOS app bundle identifier used as the APNs topic
-- `IOS_APNS_SANDBOX`: `true` for development builds, `false` for production/TestFlight
+- `IOS_APNS_SANDBOX`: fallback APNs environment (`true` = sandbox) for devices that did not report a recognized `apns_environment` at registration; the per-device value wins otherwise
 
 **Behavior:**
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 120)
@@ -381,7 +382,7 @@ make pytest      # Run all tests
 make check       # Run format, lint, typecheck, and tests
 ```
 
-CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions.
+CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions. Pull requests touching `penny-client/` also run `make client-check` on a macOS runner, building the iOS app and running its test suite on a simulator.
 
 Tests cover the full message flow (search, response, threading, typing indicators), all background agents (history, thinking, notify, scheduler coordination), every slash command, vision processing, and tool edge cases. External services are replaced with mock servers and SDK patches — a mock Signal WebSocket server and a mock LLM client (`MockLlmClient`, patches `openai.AsyncOpenAI`) with configurable responses.
 
