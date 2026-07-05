@@ -213,6 +213,47 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     return None
 
 
+# Tools whose arguments carry an entry key the model copies from a render.
+_KEY_BEARING_TOOLS = (
+    "update_entry",
+    "collection_delete_entry",
+    "collection_get",
+    "collection_write",
+)
+
+
+def _is_bracket_wrapped(key: str) -> bool:
+    """True when ``key`` is wrapped in display brackets (``[foo]``) — the copied
+    ``[key]`` render form, never a real key."""
+    return len(key) > 2 and key.startswith("[") and key.endswith("]")
+
+
+def bracket_wrapped_key_calls(db: Database) -> list[str]:
+    """Every key argument the model passed this run that is wrapped in display
+    brackets (``key="[foo]"``) — the copy-through mistake the old ``[key]`` render
+    taught (225 observed leaks).  Scans the persisted promptlog across the whole
+    run for key-bearing tool calls: single ``key=`` args and ``entries=[{key}]``
+    write batches whose value is bracket-wrapped.  Empty means the render never
+    tempted the model into pasting display brackets into an argument — the whole
+    point of rendering keys in invocation form."""
+    offenders: list[str] = []
+    for row in db.messages.recent_prompts(limit=200):
+        for call in _response_tool_calls(row):
+            function = call.get("function", {})
+            if function.get("name") not in _KEY_BEARING_TOOLS:
+                continue
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except json.JSONDecodeError, TypeError:
+                continue
+            candidates = [args["key"]] if isinstance(args.get("key"), str) else []
+            for entry in args.get("entries") or []:
+                if isinstance(entry, dict) and isinstance(entry.get("key"), str):
+                    candidates.append(entry["key"])
+            offenders += [key for key in candidates if _is_bracket_wrapped(key)]
+    return offenders
+
+
 _NUMBERED_LINE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
 
 
@@ -376,6 +417,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         score: Scorer,
         seed: Seeder | None = None,
         browse: list[CannedPage] | None = None,
+        wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
@@ -398,6 +440,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                     await _embed_seeds(penny)
                     if browse is not None:
                         install_browse(penny, browse)
+                    # A recovery case wraps the chat agent's model client to force
+                    # one bad response (e.g. a bracket-wrapped key) deterministically.
+                    if wrap_client is not None:
+                        penny.chat_agent._model_client = wrap_client(penny.chat_agent._model_client)
                     before = collection_names(penny.db)
                     try:
                         await server.push_message(sender=TEST_SENDER, content=message)
@@ -760,6 +806,35 @@ class _InjectDuplicateWrite(_InjectingClient):
                 )
             )
         return await self._real.chat(messages, *args, tools=tools, **kwargs)
+
+
+class _InjectBracketKey(_InjectingClient):
+    """Rewrites the model's FIRST key-bearing tool call to wrap its key in display
+    brackets (``key='Ark Nova'`` → ``key='[Ark Nova]'``), reproducing the
+    copy-through mistake deterministically against the live model.
+
+    The old ``[key]`` render taught the model to paste the display brackets into a
+    ``key=`` argument; this forces exactly that on the model's own first attempt so
+    the memory-tool teaching rejection fires on every sample, and the live model
+    must recover to the bare key.  Every other call passes through untouched.
+    ``bail_injected`` records the sabotage actually fired (else the contract would
+    be vacuous)."""
+
+    _KEY_TOOLS = ("update_entry", "collection_delete_entry", "collection_get")
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
+        if self.bail_injected or not response.has_tool_calls:
+            return response
+        for call in response.message.tool_calls or []:
+            if call.function.name not in self._KEY_TOOLS:
+                continue
+            key = call.function.arguments.get("key")
+            if isinstance(key, str) and key and not _is_bracket_wrapped(key):
+                call.function.arguments["key"] = f"[{key}]"
+                self.bail_injected = True
+                break
+        return response
 
 
 # A guard-recovery runner: (collection, seed, wrap_client, score) -> asserts recovery.

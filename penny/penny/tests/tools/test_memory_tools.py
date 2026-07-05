@@ -558,7 +558,7 @@ class TestCollectionWritesAndReads:
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
         rendered = await CollectionReadRandomTool(db).execute(memory="likes", k=5)
-        assert "[a] 1" in rendered.message
+        assert "key='a' 1" in rendered.message
 
     @pytest.mark.asyncio
     async def test_read_similar_uses_embedding(self, tmp_path, mock_llm):

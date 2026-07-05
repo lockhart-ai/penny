@@ -462,14 +462,18 @@ class ChatAgent(Agent):
         verbatim content on the next line.  This isolates entries
         visually in the prompt — without per-entry headers, multi-line
         contents (especially long Penny replies) blob together as one
-        unbroken paragraph.  The timestamp also lets the model reason
-        about temporal context ("we talked about this last week" vs
-        "earlier today") without needing an extra tool call.
+        unbroken paragraph.  The key renders in **invocation form**
+        (``key='<key>'``) — the same copyable form the read tools use — so a
+        key the model reads here goes straight into a ``key=`` argument, not
+        the old ``[key]`` display whose brackets it pasted verbatim.  The
+        timestamp also lets the model reason about temporal context ("we
+        talked about this last week" vs "earlier today") without needing an
+        extra tool call.
         """
         lines = [f"### {memory.name}", memory.description]
         for entry in entries:
             timestamp = format_log_timestamp(entry.created_at)
-            header = f"#### [{entry.key}] · {timestamp}" if entry.key else f"#### {timestamp}"
+            header = f"#### key='{entry.key}' · {timestamp}" if entry.key else f"#### {timestamp}"
             lines.append("")
             lines.append(header)
             lines.append(entry.content)

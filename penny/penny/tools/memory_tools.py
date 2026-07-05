@@ -97,17 +97,24 @@ def _format_entries(
     ``source`` is the memory name; ``ordering`` is a human hint ("oldest
     first", "most relevant first") since the order differs per read tool and
     matters when the model concatenates entries.  Keyed entries (collection)
-    include the key as ``[key]`` — the brackets are display framing, not part of
-    the key, and the key-taking tools reject a copied ``[key]`` argument with a
-    teaching error naming the bare key (``_bracket_key_rejection``).  Keyless
-    entries (log) show just content.  Empty lists produce a clear "no entries"
-    sentinel so the model doesn't confuse absence with error.
+    render the key in **invocation form** — ``key='<key>'`` — so the displayed
+    form IS the form a key-taking tool accepts: the model copies what it reads
+    straight into a ``key=`` argument instead of the old ``[key]`` display,
+    whose brackets it pasted verbatim into key args (``key="[key]"`` → "not
+    found").  The key-taking tools still reject a bracket-wrapped key with a
+    teaching error naming the bare key (``_bracket_key_rejection``) — the
+    standing guard for that ingrained habit.  The timestamp keeps its ``[...]``
+    brackets: it is never passed as an argument, so bracket framing there
+    carries no copy-through hazard and now reads unambiguously as display
+    metadata, distinct from the copyable key.  Keyless entries (log) show just
+    content.  Empty lists produce a clear "no entries" sentinel so the model
+    doesn't confuse absence with error.
     """
     if not entries:
         return "(no entries)"
     lines = []
     for index, entry in enumerate(entries, start=1):
-        prefix = f"[{entry.key}] " if entry.key else ""
+        prefix = f"key='{entry.key}' " if entry.key else ""
         stamp = f"[{format_log_timestamp(entry.created_at)}] "
         lines.append(f"{index}. {stamp}{prefix}{entry.content}")
     body = "\n".join(lines)
@@ -1574,7 +1581,7 @@ class ReadPublishedLatestTool(CursorReadTool):
         lines = []
         for index, item in enumerate(items, start=1):
             intent = f" (intent: {item.intent})" if item.intent else ""
-            key = f"[{item.entry.key}] " if item.entry.key else ""
+            key = f"key='{item.entry.key}' " if item.entry.key else ""
             stamp = f"[{format_log_timestamp(item.entry.created_at)}] "
             lines.append(
                 f"{index}. {stamp}from `{item.memory_name}`{intent}: {key}{item.entry.content}"
