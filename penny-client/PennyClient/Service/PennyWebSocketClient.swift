@@ -346,9 +346,62 @@ private struct RegisterPayload {
             pairingToken: "pairing-token",
             deviceSecret: DeviceIdentity.deviceSecret(),
             apnsToken: apnsToken,
-            apnsEnvironment: "sandbox",
+            apnsEnvironment: ApnsEnvironment.current.rawValue,
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
         )
+    }
+}
+
+/// APNs environment this build's push token was minted for.
+///
+/// A token is only valid against the matching APNs host, so the server must be
+/// told which one to use. Historically hardcoded to `sandbox`, which silently
+/// broke push on TestFlight/App Store builds (those carry a production token).
+///
+/// Derivation: DEBUG builds always use the development (sandbox) environment.
+/// Release builds read the `aps-environment` entitlement from the embedded
+/// provisioning profile — `development` (a dev or ad-hoc signed build, or a
+/// direct device install) maps to sandbox; `production` — as in a TestFlight or
+/// App Store build, or the absence of an embedded profile — maps to production.
+///
+/// NOTE: unverified by build on the authoring machine (no Xcode). Verify on a
+/// real device / TestFlight build before relying on it.
+private enum ApnsEnvironment: String {
+    case sandbox
+    case production
+
+    static var current: ApnsEnvironment {
+        #if DEBUG
+        return .sandbox
+        #else
+        return embeddedProfileEnvironment() ?? .production
+        #endif
+    }
+
+    private static func embeddedProfileEnvironment() -> ApnsEnvironment? {
+        guard
+            let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+            let data = try? Data(contentsOf: url),
+            let entitlements = provisioningEntitlements(from: data),
+            let apsEnvironment = entitlements["aps-environment"] as? String
+        else {
+            return nil
+        }
+        return apsEnvironment == "development" ? .sandbox : .production
+    }
+
+    private static func provisioningEntitlements(from data: Data) -> [String: Any]? {
+        // A .mobileprovision is a CMS (PKCS#7) blob wrapping an XML plist; slice
+        // out the plist between the <plist ...> and </plist> markers and parse it.
+        guard
+            let start = data.range(of: Data("<plist".utf8))?.lowerBound,
+            let end = data.range(of: Data("</plist>".utf8))?.upperBound
+        else {
+            return nil
+        }
+        let plistData = data.subdata(in: start..<end)
+        let profile = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
+        return (profile as? [String: Any])?["Entitlements"] as? [String: Any]
     }
 }
 

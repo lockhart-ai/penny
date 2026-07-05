@@ -161,7 +161,7 @@ Set these environment variables for background notifications:
 - `IOS_APNS_KEY_ID`
 - `IOS_APNS_KEY_PATH`
 - `IOS_BUNDLE_ID`
-- `IOS_APNS_SANDBOX`
+- `IOS_APNS_SANDBOX` (fallback only — each device reports its own `apns_environment` at registration, which selects the APNs host per device)
 
 `IOS_APNS_KEY_PATH` must point to an Apple `.p8` APNs auth key inside the
 container. The project mounts `./data` at `/penny/data`, so
