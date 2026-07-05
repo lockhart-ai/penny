@@ -5,23 +5,38 @@ struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = ViewModel()
     @State private var scrollToBottomRequest = 0
+    @State private var scrollPosition = ScrollPosition()
+    @State private var scrollMetrics = ScrollMetrics()
+    @State private var pendingLayoutScrollProgress: CGFloat?
+    @State private var isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
+
+    private var effectiveMessageLayout: MessageLayout {
+        isMessageLayoutSwitcherEnabled ? viewModel.selectedMessageLayout : .message
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 12) {
+                        VStack(spacing: 12) {
                             if viewModel.filteredMessages.isEmpty {
                                 EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
                             } else {
-                                ForEach(viewModel.filteredMessages) { message in
-                                    ChatMessageRow(message: message)
-                                        .id(message.id)
+                                LazyVGrid(columns: effectiveMessageLayout.gridColumns, spacing: effectiveMessageLayout.itemSpacing) {
+                                    ForEach(viewModel.filteredMessages) { message in
+                                        ChatMessageView(message: message, layout: effectiveMessageLayout, isSelected: viewModel.selectedMessageID == message.id)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                focusMessage(message.id, with: proxy)
+                                            }
+                                            .id(message.id)
+                                    }
                                 }
+                                .scrollTargetLayout()
                             }
 
-                            if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator {
+                            if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator && effectiveMessageLayout == .message {
                                 TypingRow()
                             }
 
@@ -29,10 +44,23 @@ struct MessageView: View {
                                 .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
                                 .id(bottomAnchorID)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
+                        .padding(.horizontal, effectiveMessageLayout.horizontalPadding)
+                        .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
                     }
                     .background(Color(.systemGroupedBackground))
+                    .scrollPosition($scrollPosition)
+                    .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                        ScrollMetrics(geometry: geometry)
+                    } action: { oldMetrics, newMetrics in
+                        scrollMetrics = newMetrics
+                        restorePendingLayoutScrollIfNeeded(oldMetrics: oldMetrics, newMetrics: newMetrics)
+                    }
+                    .overlay(alignment: .top) {
+                        if isMessageLayoutSwitcherEnabled {
+                            messageLayoutSelector
+                                .padding(.top, 10)
+                        }
+                    }
                     .scrollDismissesKeyboard(.interactively)
                     .onAppear {
                         DispatchQueue.main.async {
@@ -41,8 +69,12 @@ struct MessageView: View {
                     }
                     .onChange(of: viewModel.client.messages.count) { oldCount, _ in
                         Task {
-                            if await viewModel.handleMessagesChanged(previousMessageCount: oldCount) {
+                            guard await viewModel.handleMessagesChanged(previousMessageCount: oldCount) else { return }
+
+                            if effectiveMessageLayout == .message {
                                 scrollToBottom(with: proxy)
+                            } else {
+                                viewModel.hasHiddenNewMessages = true
                             }
                         }
                     }
@@ -128,6 +160,10 @@ struct MessageView: View {
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 SettingsView(client: viewModel.client)
             }
+            .onChange(of: viewModel.isShowingSettings) { _, isShowingSettings in
+                guard !isShowingSettings else { return }
+                refreshFeaturePreferences()
+            }
         }
         .task {
             await viewModel.connect()
@@ -181,6 +217,28 @@ struct MessageView: View {
         .accessibilityLabel("Show new messages")
     }
 
+    private var messageLayoutSelector: some View {
+        HStack(spacing: 4) {
+            ForEach(MessageLayout.allCases) { layout in
+                Button {
+                    changeMessageLayout(to: layout)
+                } label: {
+                    Image(systemName: viewModel.selectedMessageLayout == layout ? "\(layout.rawValue).circle.fill" : layout.systemImage)
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 36, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(viewModel.selectedMessageLayout == layout ? Color.accentColor : .secondary)
+                .accessibilityLabel("\(layout.title) layout")
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .capsule)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Message layout")
+    }
+
     private var titleBar: some View {
         HStack(spacing: 8) {
             Image("penny")
@@ -232,6 +290,51 @@ struct MessageView: View {
         "message-list-bottom"
     }
 
+    private func refreshFeaturePreferences() {
+        isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
+    }
+
+    private func changeMessageLayout(to layout: MessageLayout) {
+        guard viewModel.selectedMessageLayout != layout else { return }
+        pendingLayoutScrollProgress = scrollMetrics.progress
+
+        var transaction = Transaction(animation: .spring(response: 0.34, dampingFraction: 0.86))
+        transaction.disablesAnimations = false
+        withTransaction(transaction) {
+            viewModel.selectedMessageLayout = layout
+        }
+    }
+
+    private func restorePendingLayoutScrollIfNeeded(oldMetrics: ScrollMetrics, newMetrics: ScrollMetrics) {
+        guard let progress = pendingLayoutScrollProgress else { return }
+        guard oldMetrics.contentHeight != newMetrics.contentHeight else { return }
+
+        pendingLayoutScrollProgress = nil
+        let restoredOffset = newMetrics.maxOffsetY * progress
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            scrollPosition.scrollTo(point: CGPoint(x: 0, y: restoredOffset))
+        }
+    }
+
+    private func focusMessage(_ messageID: Int, with proxy: ScrollViewProxy) {
+        viewModel.selectedMessageID = messageID
+        guard isMessageLayoutSwitcherEnabled && viewModel.selectedMessageLayout != .message else { return }
+
+        var transaction = Transaction(animation: .spring(response: 0.34, dampingFraction: 0.86))
+        transaction.disablesAnimations = false
+        withTransaction(transaction) {
+            viewModel.selectedMessageLayout = .message
+        }
+
+        DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                proxy.scrollTo(messageID, anchor: .center)
+            }
+        }
+    }
+
     private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {
         if animated {
             withAnimation(.easeOut(duration: 0.2)) {
@@ -240,6 +343,25 @@ struct MessageView: View {
         } else {
             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
+    }
+}
+
+private struct ScrollMetrics: Equatable {
+    var offsetY: CGFloat = 0
+    var maxOffsetY: CGFloat = 0
+    var contentHeight: CGFloat = 0
+
+    var progress: CGFloat {
+        guard maxOffsetY > 0 else { return 0 }
+        return min(max(offsetY / maxOffsetY, 0), 1)
+    }
+
+    init() {}
+
+    init(geometry: ScrollGeometry) {
+        offsetY = max(geometry.visibleRect.minY, 0)
+        maxOffsetY = max(geometry.contentSize.height - geometry.containerSize.height, 0)
+        contentHeight = geometry.contentSize.height
     }
 }
 
@@ -295,77 +417,6 @@ private struct EmptyMessageFilterView: View {
             return "No notifier messages"
         case .collector:
             return "No collector messages"
-        }
-    }
-}
-
-private struct ChatMessageRow: View {
-    let message: ChatMessage
-
-    private var markdownTextBlocks: [AttributedString] {
-        message.content
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line in
-                let text = line.isEmpty ? " " : String(line)
-                return (try? AttributedString(markdown: text)) ?? AttributedString(text)
-            }
-    }
-
-    @ViewBuilder
-    private var messageBubble: some View {
-        if message.isOutgoing {
-            Text(message.content)
-                .font(.body)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(markdownTextBlocks.indices, id: \.self) { index in
-                    Text(markdownTextBlocks[index])
-                        .lineLimit(nil)
-                        .font(.body)
-                }
-
-                ForEach(message.imageAttachments) { attachment in
-                    Image(uiImage: attachment.image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-    }
-
-    var body: some View {
-        HStack {
-            if message.isOutgoing {
-                Spacer(minLength: 48)
-            }
-
-            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 5) {
-                if let sourceHint = message.sourceHint, !sourceHint.isEmpty {
-                    Text(sourceHint)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
-                messageBubble
-
-                Text(message.displayTime)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !message.isOutgoing {
-                Spacer(minLength: 48)
-            }
         }
     }
 }

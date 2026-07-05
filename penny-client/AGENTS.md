@@ -35,7 +35,7 @@ For final verification, prefer:
 - `BuildProject`
 
 ## Testing Guidelines
-Use the Swift Testing framework for unit tests and XCUIAutomation for UI tests.
+Use the Swift Testing framework for unit and component tests. UI tests are not recommended by default; avoid XCUIAutomation unless the behavior cannot be validated with focused unit, component, or service-level tests.
 Keep tests organized by component in separate files under `PennyClient/PennyClientTests`, with shared helpers in test support files instead of large monolithic test sources.
 
 All view models require test coverage. When adding or changing a view model, add or update focused tests for:

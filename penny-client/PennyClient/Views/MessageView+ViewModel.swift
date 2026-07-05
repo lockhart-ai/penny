@@ -13,6 +13,29 @@ extension MessageView {
         }
     }
 
+    enum MessageLayout: Int, CaseIterable, Identifiable, Sendable {
+        case message = 1
+        case compact = 2
+        case media = 3
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .message:
+                return "Message"
+            case .compact:
+                return "Compact"
+            case .media:
+                return "Media"
+            }
+        }
+
+        var systemImage: String {
+            "\(rawValue).circle"
+        }
+    }
+
     enum MessageFilter: String, CaseIterable, Identifiable, Sendable {
         case all
         case penny
@@ -98,6 +121,8 @@ extension MessageView {
         var isShowingConnectionError = false
         var isShowingSettings = false
         var hasHiddenNewMessages = false
+        var selectedMessageID: Int?
+        var selectedMessageLayout: MessageLayout = .message
         var selectedMessageFilter: MessageFilter = .all {
             didSet {
                 if selectedMessageFilter == .all {
