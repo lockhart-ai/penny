@@ -289,6 +289,7 @@ Schedules run a `ScheduledTask` (`scheduler/base.py`) — a structural Protocol 
 ### Channel Factory (`channels/__init__.py`)
 - `create_channel()` creates appropriate channel based on config
 - Auto-detects channel type from credentials if not explicit
+- **Primary channel seeds a default device at startup** (Signal with `signal_number`, Discord with `discord_channel_id`; iOS registers its own on pairing). The browser addon stays `is_default=0`. This makes proactive routing structural — `ChannelManager._resolve_channel` prefers the default device's channel over a device-identifier match on the recipient, so proactive/autonomous sends land on the configured primary channel and can never be captured by a browser addon whose label the profile's sender was pinned to during onboarding (#1298). Conversational replies are unaffected — each concrete channel handles its own receive→reply loop and never goes through the manager.
 
 ## Command System
 

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from penny.agents import ChatAgent
     from penny.commands import CommandRegistry
     from penny.database import Database
-    from penny.database.models import MessageLog
+    from penny.database.models import Device, MessageLog
     from penny.llm import LlmClient
     from penny.llm.image_client import OllamaImageClient
     from penny.scheduler import BackgroundScheduler
@@ -61,14 +61,31 @@ class ChannelManager(MessageChannel):
             raise RuntimeError("No channels registered")
         return self._channels[resolved]
 
+    def _channel_for_device(self, device: Device | None) -> MessageChannel | None:
+        """The registered channel backing a device, or None if absent/unregistered."""
+        if device is None:
+            return None
+        return self._channels.get(device.channel_type)
+
     def _resolve_channel(self, recipient: str) -> MessageChannel:
-        """Look up the channel for a recipient via the device table."""
-        device = self._db.devices.get_by_identifier(recipient)
-        if device:
-            channel = self._channels.get(device.channel_type)
-            if channel:
-                return channel
-        return self._get_default_channel()
+        """Resolve the channel for a proactive send — the default device wins.
+
+        Only proactive/autonomous sends flow through the manager (each concrete
+        channel handles its own receive→reply loop, which never consults this),
+        and they must land on the configured primary channel. So a registered
+        default device — seeded at startup for the primary channel (Signal,
+        Discord) and set on pairing for iOS — takes precedence over a
+        device-identifier match on ``recipient``. Without this, a ``recipient``
+        equal to a non-primary device's identifier (e.g. the browser-addon label
+        the profile's sender was pinned to during onboarding) captures the send
+        and misroutes it to the addon (#1298). The identifier lookup remains only
+        as a fallback for a deployment with no default device registered.
+        """
+        return (
+            self._channel_for_device(self._db.devices.get_default())
+            or self._channel_for_device(self._db.devices.get_by_identifier(recipient))
+            or self._get_default_channel()
+        )
 
     def get_channel(self, channel_type: str) -> MessageChannel | None:
         """Get a specific channel by type."""
