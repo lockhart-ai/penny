@@ -3,6 +3,7 @@ import Testing
 @testable import PennyClient
 
 @Suite(.serialized)
+@MainActor
 struct DatabaseServiceTests {
     @Test func savesAndLoadsMessagesIncludingAttachments() {
         let database = DatabaseService()
@@ -41,4 +42,85 @@ struct DatabaseServiceTests {
 
         #expect(loaded.map(\.content) == ["First", "Second"])
     }
+
+    @Test func latestMessagePageReturnsNewestMessagesInDisplayOrder() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        saveNumberedMessages(in: database, ids: 1...5)
+
+        let page = database.loadMessagePage(MessagePageRequest(limit: 2, filter: .all))
+
+        #expect(page.messages.map(\.id) == [4, 5])
+        #expect(page.nextCursor == MessagePageCursor(createdAt: Date(timeIntervalSince1970: 4), id: 4))
+        #expect(page.hasMore)
+    }
+
+    @Test func olderMessagePageUsesCursorWithoutOverlap() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        saveNumberedMessages(in: database, ids: 1...5)
+        let latestPage = database.loadMessagePage(MessagePageRequest(limit: 2, filter: .all))
+
+        let olderPage = database.loadMessagePage(MessagePageRequest(limit: 2, before: latestPage.nextCursor, filter: .all))
+        let oldestPage = database.loadMessagePage(MessagePageRequest(limit: 2, before: olderPage.nextCursor, filter: .all))
+
+        #expect(olderPage.messages.map(\.id) == [2, 3])
+        #expect(olderPage.hasMore)
+        #expect(oldestPage.messages.map(\.id) == [1])
+        #expect(oldestPage.hasMore == false)
+    }
+
+    @Test func messagePagesApplySourceFilters() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 1, content: "Penny", sourceHint: "Penny"))
+        database.save(message: makeMessage(id: 2, content: "Startup", sourceHint: "Startup"))
+        database.save(message: makeMessage(id: 3, content: "Schedule", sourceHint: "Schedule"))
+        database.save(message: makeMessage(id: 4, content: "Chat", sourceHint: "Chat"))
+        database.save(message: makeMessage(id: 5, content: "Test Push", sourceHint: "Test Push"))
+        database.save(message: makeMessage(id: 6, content: "Notifier", sourceHint: "Notifier"))
+        database.save(message: makeMessage(id: 7, content: "Collector", sourceHint: "Collector: flight-deals"))
+        database.save(message: makeMessage(id: 8, serverID: nil, content: "Outgoing", isOutgoing: true))
+
+        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .penny)).messages.map(\.id) == [1, 2, 5])
+        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .schedule)).messages.map(\.id) == [3])
+        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .chat)).messages.map(\.id) == [4, 8])
+        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .notifier)).messages.map(\.id) == [6])
+        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .collector)).messages.map(\.id) == [7])
+    }
+
+    @Test func messageIdentityHelpersUsePersistedRows() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: -3, serverID: nil, content: "Local", isOutgoing: true))
+        database.save(message: makeMessage(id: 10, serverID: 10, content: "Remote"))
+
+        #expect(database.minimumMessageID() == -3)
+        #expect(database.containsMessage(serverID: 10))
+        #expect(database.containsMessage(serverID: 11) == false)
+    }
+}
+
+private func saveNumberedMessages(in database: DatabaseService, ids: ClosedRange<Int>) {
+    for id in ids {
+        database.save(message: makeMessage(id: id, content: "Message \(id)"))
+    }
+}
+
+private func makeMessage(
+    id: Int,
+    serverID: Int? = nil,
+    content: String,
+    sourceHint: String? = nil,
+    isOutgoing: Bool = false
+) -> MessageModel {
+    MessageModel(
+        id: id,
+        serverID: serverID ?? (isOutgoing ? nil : id),
+        createdAt: Date(timeIntervalSince1970: TimeInterval(id)),
+        content: content,
+        sourceHint: sourceHint,
+        imageAttachmentDataURLs: [],
+        isOutgoing: isOutgoing
+    )
 }

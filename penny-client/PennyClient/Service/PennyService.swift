@@ -4,6 +4,80 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+struct MessagePageCursor: Equatable, Sendable {
+    let createdAt: Date
+    let id: Int
+}
+
+extension MessagePageCursor: CustomStringConvertible {
+    var description: String {
+        "createdAt=\(createdAt.ISO8601Format()), id=\(id)"
+    }
+}
+
+struct MessagePageRequest: Sendable {
+    let limit: Int
+    let before: MessagePageCursor?
+    let filter: MessagePageFilter
+
+    init(limit: Int = 30, before: MessagePageCursor? = nil, filter: MessagePageFilter = .all) {
+        self.limit = limit
+        self.before = before
+        self.filter = filter
+    }
+}
+
+struct MessagePage {
+    let messages: [ChatMessage]
+    let nextCursor: MessagePageCursor?
+    let hasMore: Bool
+}
+
+enum MessagePageFilter: Equatable, Sendable {
+    case all
+    case penny
+    case schedule
+    case chat
+    case notifier
+    case collector
+
+    private static let collectorPrefix = "Collector: "
+
+    var debugDescription: String {
+        switch self {
+        case .all:
+            return "all"
+        case .penny:
+            return "penny"
+        case .schedule:
+            return "schedule"
+        case .chat:
+            return "chat"
+        case .notifier:
+            return "notifier"
+        case .collector:
+            return "collector"
+        }
+    }
+
+    func includes(_ message: ChatMessage) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .penny:
+            return ["Penny", "Startup", "Test Push"].contains(message.sourceHint)
+        case .schedule:
+            return message.sourceHint == "Schedule"
+        case .chat:
+            return message.isOutgoing || message.sourceHint == "Chat"
+        case .notifier:
+            return message.sourceHint == "Notifier"
+        case .collector:
+            return message.sourceHint?.hasPrefix(Self.collectorPrefix) == true
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class PennyService {
@@ -15,6 +89,10 @@ final class PennyService {
     private let prefs: Prefs
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+
+    @ObservationIgnored private var liveMessages: Binding<[ChatMessage]>?
+    @ObservationIgnored private var liveHasNewMessages: Binding<Bool>?
+    @ObservationIgnored private var liveMessageFilter: MessagePageFilter = .all
 
     var messages: [ChatMessage] = []
     var pendingCount = 0
@@ -35,40 +113,39 @@ final class PennyService {
     var domainPermissions: [DomainPermissionEntry] = []
     var permissionPrompt: PermissionPrompt?
 
-    private let messageLimit = 3
+    private let pendingMessagePullLimit = 3
 
     init() {
         self.databaseService = .shared
         self.prefs = .shared
         self.webSocketClient = WebSocketClient()
-        loadSavedMessages()
+        prepareMessageStore()
     }
 
     init(databaseService: DatabaseService) {
         self.databaseService = databaseService
         self.prefs = .shared
         self.webSocketClient = WebSocketClient()
-        loadSavedMessages()
+        prepareMessageStore()
     }
 
     init(databaseService: DatabaseService, prefs: Prefs) {
         self.databaseService = databaseService
         self.prefs = prefs
         self.webSocketClient = WebSocketClient()
-        loadSavedMessages()
+        prepareMessageStore()
     }
 
     init(databaseService: DatabaseService, prefs: Prefs, webSocketClient: any WebSocketTransport) {
         self.databaseService = databaseService
         self.prefs = prefs
         self.webSocketClient = webSocketClient
-        loadSavedMessages()
+        prepareMessageStore()
     }
 
-    private func loadSavedMessages() {
+    private func prepareMessageStore() {
         databaseService.setup()
-        messages = databaseService.loadMessages().map(ChatMessage.init(model:))
-        localMessageID = min(-1, (messages.map(\.id).min() ?? 0) - 1)
+        localMessageID = min(-1, (databaseService.minimumMessageID() ?? 0) - 1)
     }
 
     var canSend: Bool {
@@ -115,26 +192,66 @@ final class PennyService {
 
         startBackgroundTasks()
         sendRegistration()
-        send(.pullMessages(limit: messageLimit))
+        send(.pullMessages(limit: pendingMessagePullLimit))
     }
 
     func reconnect() {
-        disconnect()
+        disconnect(clearLiveBindings: false)
         Task { await connect() }
     }
 
     func disconnect() {
+        disconnect(clearLiveBindings: true)
+    }
+
+    private func disconnect(clearLiveBindings: Bool) {
         stopBackgroundTasks()
+        if clearLiveBindings {
+            unbindLiveMessages()
+        }
         webSocketClient.disconnect()
         isConnected = false
         isRegistered = false
         isTyping = false
     }
 
+    func requestMessagePage(_ request: MessagePageRequest) async -> MessagePage {
+        debugLogFrame(
+            "message page requested " +
+            "(limit=\(request.limit), before=\(request.before?.description ?? "nil"), filter=\(request.filter.debugDescription))"
+        )
+        let page = databaseService.loadMessagePage(request)
+        debugLogFrame(
+            "message page returned " +
+            "(count=\(page.messages.count), hasMore=\(page.hasMore), nextCursor=\(page.nextCursor?.description ?? "nil"))"
+        )
+        return page
+    }
+
+    func bindLiveMessages(
+        _ messages: Binding<[ChatMessage]>,
+        hasNewMessages: Binding<Bool>,
+        filter: MessagePageFilter
+    ) {
+        liveMessages = messages
+        liveHasNewMessages = hasNewMessages
+        liveMessageFilter = filter
+    }
+
+    func updateLiveMessageFilter(_ filter: MessagePageFilter) {
+        liveMessageFilter = filter
+    }
+
+    func unbindLiveMessages() {
+        liveMessages = nil
+        liveHasNewMessages = nil
+    }
+
     func sendMessage(_ content: String) {
         let message = ChatMessage.local(id: nextLocalMessageID(), content: content)
         messages.append(message)
         databaseService.save(message: MessageModel(message: message))
+        publishLiveMessages([message])
         send(.message(content: content))
     }
 
@@ -366,11 +483,11 @@ final class PennyService {
             isConnected = true
             isRegistered = true
             pendingCount = payload.pendingCount
-            send(.pullMessages(limit: messageLimit))
+            send(.pullMessages(limit: pendingMessagePullLimit))
         case .outboxChanged(let payload):
             pendingCount = payload.pendingCount
             if payload.pendingCount > 0 {
-                send(.pullMessages(limit: messageLimit))
+                send(.pullMessages(limit: pendingMessagePullLimit))
             }
         case .messages(let payload):
             receive(payload.messages)
@@ -451,15 +568,15 @@ final class PennyService {
             return
         }
 
-        let existingIDs = Set(messages.compactMap(\.serverID))
         let newMessages = incomingMessages
-            .filter { !existingIDs.contains($0.id) }
+            .filter { !databaseService.containsMessage(serverID: $0.id) }
             .map(ChatMessage.remote)
 
         if !newMessages.isEmpty {
+            newMessages.forEach { databaseService.save(message: MessageModel(message: $0)) }
             messages.append(contentsOf: newMessages)
             messages.sort { $0.createdAt < $1.createdAt }
-            newMessages.forEach { databaseService.save(message: MessageModel(message: $0)) }
+            publishLiveMessages(newMessages)
         }
 
         send(.ackMessages(ids: incomingIDs))
@@ -467,7 +584,20 @@ final class PennyService {
         clearAppBadge()
 
         if pendingCount > 0 {
-            send(.pullMessages(limit: messageLimit))
+            send(.pullMessages(limit: pendingMessagePullLimit))
+        }
+    }
+
+    private func publishLiveMessages(_ newMessages: [ChatMessage]) {
+        guard !newMessages.isEmpty else { return }
+
+        let visibleMessages = newMessages.filter { liveMessageFilter.includes($0) }
+        if !visibleMessages.isEmpty {
+            liveMessages?.wrappedValue.append(contentsOf: visibleMessages)
+        }
+
+        if visibleMessages.count != newMessages.count {
+            liveHasNewMessages?.wrappedValue = true
         }
     }
 

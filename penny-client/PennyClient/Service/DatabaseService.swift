@@ -78,6 +78,45 @@ extension DatabaseService {
         }
     }
 
+    @MainActor
+    func loadMessagePage(_ request: MessagePageRequest) -> MessagePage {
+        setup()
+
+        do {
+            let page = try MessageModel.loadPage(db: db, request: request)
+            return MessagePage(
+                messages: page.models.map(ChatMessage.init(model:)),
+                nextCursor: page.nextCursor,
+                hasMore: page.hasMore
+            )
+        } catch {
+            print(error)
+            return MessagePage(messages: [], nextCursor: nil, hasMore: false)
+        }
+    }
+
+    func minimumMessageID() -> Int? {
+        setup()
+
+        do {
+            return try MessageModel.minimumID(db: db)
+        } catch {
+            print(error)
+            return nil
+        }
+    }
+
+    func containsMessage(serverID: Int) -> Bool {
+        setup()
+
+        do {
+            return try MessageModel.contains(db: db, serverID: serverID)
+        } catch {
+            print(error)
+            return false
+        }
+    }
+
     func save(message: MessageModel) {
         setup()
 
@@ -162,19 +201,69 @@ struct MessageModel: Codable, Identifiable, Hashable {
     fileprivate static func load(db: Connection) throws -> [MessageModel] {
         var result = [MessageModel]()
         for entry in try db.prepare(table().order(createdAtExp.asc)) {
-            result.append(
-                MessageModel(
-                    id: entry[idExp],
-                    serverID: entry[serverIDExp],
-                    createdAt: entry[createdAtExp],
-                    content: entry[contentExp],
-                    sourceHint: entry[sourceHintExp],
-                    imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
-                    isOutgoing: entry[isOutgoingExp]
-                )
-            )
+            result.append(message(from: entry))
         }
         return result
+    }
+
+    @MainActor
+    fileprivate static func loadPage(db: Connection, request: MessagePageRequest) throws -> (models: [MessageModel], nextCursor: MessagePageCursor?, hasMore: Bool) {
+        let limit = max(1, request.limit)
+        var query = filteredTable(for: request.filter)
+
+        if let before = request.before {
+            query = query.filter(createdAtExp < before.createdAt || (createdAtExp == before.createdAt && idExp < before.id))
+        }
+
+        query = query
+            .order(createdAtExp.desc, idExp.desc)
+            .limit(limit + 1)
+
+        let fetched = try db.prepare(query).map(message(from:))
+        let hasMore = fetched.count > limit
+        let models = fetched.prefix(limit).reversed()
+        let nextCursor = models.first.map { MessagePageCursor(createdAt: $0.createdAt, id: $0.id) }
+        return (Array(models), nextCursor, hasMore)
+    }
+
+    fileprivate static func minimumID(db: Connection) throws -> Int? {
+        for entry in try db.prepare(table().select(idExp).order(idExp.asc).limit(1)) {
+            return entry[idExp]
+        }
+        return nil
+    }
+
+    fileprivate static func contains(db: Connection, serverID: Int) throws -> Bool {
+        try db.scalar(table().filter(serverIDExp == serverID).count) > 0
+    }
+
+    private static func filteredTable(for filter: MessagePageFilter) -> Table {
+        switch filter {
+        case .all:
+            return table()
+        case .penny:
+            return table().filter(sourceHintExp == "Penny" || sourceHintExp == "Startup" || sourceHintExp == "Test Push")
+        case .schedule:
+            return table().filter(sourceHintExp == "Schedule")
+        case .chat:
+            return table().filter(isOutgoingExp || sourceHintExp == "Chat")
+        case .notifier:
+            return table().filter(sourceHintExp == "Notifier")
+        case .collector:
+            return table().filter(sourceHintExp.like("Collector: %"))
+        }
+    }
+
+    private static func message(from entry: Row) -> MessageModel {
+        MessageModel(
+            id: entry[idExp],
+            serverID: entry[serverIDExp],
+            createdAt: entry[createdAtExp],
+            content: entry[contentExp],
+            sourceHint: entry[sourceHintExp],
+            imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
+            isOutgoing: entry[isOutgoingExp]
+        )
     }
 
     fileprivate static func encodedImageAttachmentDataURLs(_ dataURLs: [String]) -> String {

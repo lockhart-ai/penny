@@ -3,16 +3,6 @@ import SwiftUI
 import UIKit
 
 extension MessageView {
-    fileprivate struct MessageFilterInput: Sendable {
-        let sourceHint: String?
-        let isOutgoing: Bool
-
-        init(message: ChatMessage) {
-            sourceHint = message.sourceHint
-            isOutgoing = message.isOutgoing
-        }
-    }
-
     enum MessageLayout: Int, CaseIterable, Identifiable, Sendable {
         case message = 1
         case compact = 2
@@ -45,8 +35,6 @@ extension MessageView {
         case collector
 
         var id: Self { self }
-
-        nonisolated private static let collectorPrefix = "Collector: "
 
         var title: String {
             switch self {
@@ -82,33 +70,20 @@ extension MessageView {
             }
         }
 
-        nonisolated private var sourceHint: String? {
-            switch self {
-            case .all, .collector:
-                return nil
-            case .penny:
-                return "Penny"
-            case .schedule:
-                return "Schedule"
-            case .chat:
-                return "Chat"
-            case .notifier:
-                return "Notifier"
-            }
-        }
-
-        nonisolated fileprivate func includes(_ input: MessageFilterInput) -> Bool {
+        var pageFilter: MessagePageFilter {
             switch self {
             case .all:
-                return true
+                return .all
             case .penny:
-                return ["Penny", "Startup", "Test Push"].contains(input.sourceHint)
+                return .penny
+            case .schedule:
+                return .schedule
             case .chat:
-                return input.isOutgoing || input.sourceHint == sourceHint
+                return .chat
+            case .notifier:
+                return .notifier
             case .collector:
-                return input.sourceHint?.hasPrefix(Self.collectorPrefix) == true
-            default:
-                return input.sourceHint == sourceHint
+                return .collector
             }
         }
     }
@@ -124,22 +99,40 @@ extension MessageView {
         var selectedMessageLayout: MessageLayout = .message
         var selectedMessageFilter: MessageFilter = .all {
             didSet {
+                guard selectedMessageFilter != oldValue else { return }
                 if selectedMessageFilter == .all {
                     hasHiddenNewMessages = false
                 }
-                refreshFilteredMessages()
+                client.updateLiveMessageFilter(selectedMessageFilter.pageFilter)
+                reloadMessagesForSelectedFilter()
             }
         }
-        var filteredMessages: [ChatMessage]
+        var displayedMessages: [ChatMessage] = [] {
+            didSet {
+                handleDisplayedMessagesChanged(previousMessages: oldValue)
+            }
+        }
+        var isAtBottom = true
+        var isLoadingOlderMessages = false
+        var hasMoreOlderMessages = false
+        var scrollToBottomRequest = 0
         var composerHeight: CGFloat = 64
         var keyboardHeight: CGFloat = 0
 
-        @ObservationIgnored private var filterTask: Task<Void, Never>?
+        @ObservationIgnored private let messagePageSize: Int
+        @ObservationIgnored private var nextOlderCursor: MessagePageCursor?
+        @ObservationIgnored private var pagingTask: Task<Void, Never>?
+        @ObservationIgnored private var suppressDisplayedMessageChanges = false
+        @ObservationIgnored private var hasBoundLiveMessages = false
+        @ObservationIgnored private var olderPagingEnabled = false
+        @ObservationIgnored private var messagePagingGeneration = 0
+        @ObservationIgnored private var reservedOlderMessageLoad: OlderMessageLoad?
+        @ObservationIgnored private var isRestoringOlderMessageScroll = false
 
-        init(client: PennyWebSocketClient? = nil) {
+        init(client: PennyWebSocketClient? = nil, messagePageSize: Int = 30) {
             let resolvedClient = client ?? PennyWebSocketClient()
             self.client = resolvedClient
-            filteredMessages = resolvedClient.messages
+            self.messagePageSize = max(1, messagePageSize)
         }
 
         private let keyboardComposerSpacing: CGFloat = -24
@@ -152,73 +145,129 @@ extension MessageView {
             selectedMessageFilter == .all || selectedMessageFilter == .chat
         }
 
-        func refreshFilteredMessages() {
-            let filter = selectedMessageFilter
-            let messages = client.messages
-            let inputs = messages.map(MessageFilterInput.init)
+        var canLoadOlderMessages: Bool {
+            olderPagingEnabled && hasMoreOlderMessages && !isLoadingOlderMessages && !isRestoringOlderMessageScroll
+        }
 
-            filterTask?.cancel()
-            filterTask = Task { [weak self] in
-                let matchingIndexes = await Task.detached(priority: .userInitiated) {
-                    inputs.indices.filter { index in
-                        filter.includes(inputs[index])
-                    }
-                }.value
+        func connect() async {
+            bindLiveMessagesIfNeeded()
+            await loadLatestMessages()
+            await client.connect()
+        }
 
-                guard !Task.isCancelled else { return }
-                let filteredMessages = matchingIndexes.map { messages[$0] }
-                self?.filteredMessages = filteredMessages
+        func disconnect() {
+            client.unbindLiveMessages()
+            hasBoundLiveMessages = false
+            client.disconnect()
+        }
+
+        func reconnect() {
+            bindLiveMessagesIfNeeded()
+            client.reconnect()
+        }
+
+        func loadLatestMessages() async {
+            messagePagingGeneration += 1
+            reservedOlderMessageLoad = nil
+            isRestoringOlderMessageScroll = false
+            isLoadingOlderMessages = false
+            olderPagingEnabled = false
+            let page = await client.requestMessagePage(MessagePageRequest(limit: messagePageSize, filter: selectedMessageFilter.pageFilter))
+            replaceDisplayedMessages(with: page.messages)
+            nextOlderCursor = page.nextCursor
+            hasMoreOlderMessages = page.hasMore
+            scrollToBottomRequest += 1
+        }
+
+        func reserveOlderMessageLoad() -> Int? {
+            guard canLoadOlderMessages else { return nil }
+            guard let nextOlderCursor, let anchorID = displayedMessages.first?.id else { return nil }
+            isLoadingOlderMessages = true
+            reservedOlderMessageLoad = OlderMessageLoad(
+                cursor: nextOlderCursor,
+                filter: selectedMessageFilter.pageFilter,
+                generation: messagePagingGeneration
+            )
+            return anchorID
+        }
+
+        func loadReservedOlderMessages() async -> Bool {
+            guard let reservation = reservedOlderMessageLoad else {
+                isLoadingOlderMessages = false
+                return false
             }
+            defer {
+                isLoadingOlderMessages = false
+                reservedOlderMessageLoad = nil
+            }
+
+            try? await Task.sleep(for: .milliseconds(250))
+            guard messagePagingGeneration == reservation.generation,
+                  nextOlderCursor == reservation.cursor,
+                  selectedMessageFilter.pageFilter == reservation.filter else {
+                return false
+            }
+
+            let page = await client.requestMessagePage(
+                MessagePageRequest(
+                    limit: messagePageSize,
+                    before: reservation.cursor,
+                    filter: reservation.filter
+                )
+            )
+            self.nextOlderCursor = page.nextCursor
+            hasMoreOlderMessages = page.hasMore
+
+            let existingIDs = Set(displayedMessages.map(\.id))
+            let olderMessages = page.messages.filter { !existingIDs.contains($0.id) }
+            guard !olderMessages.isEmpty else { return false }
+
+            suppressDisplayedMessageChanges = true
+            displayedMessages.insert(contentsOf: olderMessages, at: 0)
+            suppressDisplayedMessageChanges = false
+            isRestoringOlderMessageScroll = true
+            return true
+        }
+
+        func finishOlderMessageScrollRestoration() {
+            isRestoringOlderMessageScroll = false
+        }
+
+        func enableOlderPaging() {
+            olderPagingEnabled = true
+        }
+
+        func requestScrollToBottom() {
+            olderPagingEnabled = false
+            reservedOlderMessageLoad = nil
+            isRestoringOlderMessageScroll = false
+            isAtBottom = true
+            scrollToBottomRequest += 1
+        }
+
+        func updateBottomVisibility(_ isVisible: Bool) {
+            isAtBottom = isVisible
+            if isVisible && selectedMessageFilter == .all {
+                hasHiddenNewMessages = false
+            }
+        }
+
+        func waitForPaging() async {
+            await pagingTask?.value
         }
 
         func waitForFiltering() async {
-            await filterTask?.value
-        }
-
-        func handleMessagesChanged(previousMessageCount: Int) async -> Bool {
-            let messages = client.messages
-            let newMessages = messages.dropFirst(min(previousMessageCount, messages.count))
-            guard !newMessages.isEmpty else {
-                refreshFilteredMessages()
-                await waitForFiltering()
-                return true
-            }
-
-            let filter = selectedMessageFilter
-            let inputs = newMessages.map(MessageFilterInput.init)
-            let hasVisibleNewMessages = inputs.contains(where: filter.includes)
-            let hasFilteredNewMessages = inputs.contains { !filter.includes($0) }
-
-            if hasFilteredNewMessages && filter != .all {
-                hasHiddenNewMessages = true
-            }
-
-            guard hasVisibleNewMessages else { return false }
-            refreshFilteredMessages()
-            await waitForFiltering()
-            return true
+            await waitForPaging()
         }
 
         func clearFiltersAndShowNewMessages() async {
             hasHiddenNewMessages = false
             if selectedMessageFilter == .all {
-                refreshFilteredMessages()
+                await loadLatestMessages()
             } else {
                 selectedMessageFilter = .all
+                await waitForPaging()
             }
-            await waitForFiltering()
-        }
-
-        func connect() async {
-            await client.connect()
-        }
-
-        func disconnect() {
-            client.disconnect()
-        }
-
-        func reconnect() {
-            client.reconnect()
         }
 
         func sendDraft() {
@@ -226,21 +275,18 @@ extension MessageView {
             guard !trimmedMessage.isEmpty else { return }
 
             draftMessage = ""
-            client.sendMessage(trimmedMessage)
-
-            if selectedMessageFilter == .all {
-                refreshFilteredMessages()
-            } else {
+            if selectedMessageFilter != .all {
                 selectedMessageFilter = .all
             }
+            client.sendMessage(trimmedMessage)
         }
 
         func handleScenePhaseChange(_ phase: ScenePhase) {
             switch phase {
             case .active:
-                Task { await client.connect() }
+                Task { await connect() }
             case .background:
-                client.disconnect()
+                disconnect()
             case .inactive:
                 break
             @unknown default:
@@ -261,5 +307,55 @@ extension MessageView {
                 keyboardHeight = overlap
             }
         }
+
+        private func reloadMessagesForSelectedFilter() {
+            pagingTask?.cancel()
+            pagingTask = Task { [weak self] in
+                await self?.loadLatestMessages()
+            }
+        }
+
+        private func bindLiveMessagesIfNeeded() {
+            if hasBoundLiveMessages {
+                client.updateLiveMessageFilter(selectedMessageFilter.pageFilter)
+                return
+            }
+
+            client.bindLiveMessages(
+                Binding(
+                    get: { [weak self] in self?.displayedMessages ?? [] },
+                    set: { [weak self] messages in self?.displayedMessages = messages }
+                ),
+                hasNewMessages: Binding(
+                    get: { [weak self] in self?.hasHiddenNewMessages ?? false },
+                    set: { [weak self] hasNewMessages in self?.hasHiddenNewMessages = hasNewMessages }
+                ),
+                filter: selectedMessageFilter.pageFilter
+            )
+            hasBoundLiveMessages = true
+        }
+
+        private func replaceDisplayedMessages(with messages: [ChatMessage]) {
+            suppressDisplayedMessageChanges = true
+            displayedMessages = messages
+            suppressDisplayedMessageChanges = false
+        }
+
+        private func handleDisplayedMessagesChanged(previousMessages: [ChatMessage]) {
+            guard !suppressDisplayedMessageChanges else { return }
+            guard displayedMessages.count > previousMessages.count else { return }
+
+            if isAtBottom {
+                scrollToBottomRequest += 1
+            } else {
+                hasHiddenNewMessages = true
+            }
+        }
+    }
+
+    private struct OlderMessageLoad {
+        let cursor: MessagePageCursor
+        let filter: MessagePageFilter
+        let generation: Int
     }
 }

@@ -6,7 +6,6 @@ struct MessageView: View {
     @State private var viewModel = ViewModel()
     @State private var isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     @State private var presentedCardMessage: ChatMessage?
-    @State private var scrollToBottomRequest = 0
     @FocusState private var isComposerFocused: Bool
 
     private var effectiveMessageLayout: MessageLayout {
@@ -125,13 +124,18 @@ struct MessageView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 12) {
-                    if viewModel.filteredMessages.isEmpty {
+                    olderMessagesLoader(proxy: proxy)
+
+                    if viewModel.displayedMessages.isEmpty {
                         EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
                     } else {
                         LazyVGrid(columns: MessageLayout.message.gridColumns, spacing: MessageLayout.message.itemSpacing) {
-                            ForEach(viewModel.filteredMessages) { message in
+                            ForEach(viewModel.displayedMessages) { message in
                                 ChatMessageView(message: message, layout: .message)
                                     .id(message.id)
+                                    .onAppear {
+                                        handleMessageAppeared(message, proxy: proxy)
+                                    }
                             }
                         }
                     }
@@ -140,9 +144,7 @@ struct MessageView: View {
                         TypingRow()
                     }
 
-                    Color.clear
-                        .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
-                        .id(bottomAnchorID)
+                    bottomSpacer
                 }
                 .padding(.horizontal, MessageLayout.message.horizontalPadding)
                 .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
@@ -150,53 +152,55 @@ struct MessageView: View {
             .background(Color(.systemGroupedBackground))
             .scrollDismissesKeyboard(.interactively)
             .onAppear {
-                DispatchQueue.main.async {
-                    scrollToBottom(with: proxy, animated: false)
-                }
-            }
-            .onChange(of: viewModel.client.messages.count) { oldCount, _ in
-                Task {
-                    guard await viewModel.handleMessagesChanged(previousMessageCount: oldCount) else { return }
-                    scrollToBottom(with: proxy)
-                }
+                scheduleScrollToBottom(with: proxy, animated: false)
             }
             .onChange(of: viewModel.client.isTyping) { _, _ in
-                scrollToBottom(with: proxy)
+                if viewModel.isAtBottom {
+                    scheduleScrollToBottom(with: proxy, shouldSettleLayout: false)
+                }
             }
-            .onChange(of: scrollToBottomRequest) { _, _ in
-                scrollToBottom(with: proxy)
+            .onChange(of: viewModel.scrollToBottomRequest) { _, _ in
+                scheduleScrollToBottom(with: proxy, animated: false)
             }
         }
     }
 
     private func cardScrollView(layout: MessageLayout) -> some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                if viewModel.filteredMessages.isEmpty {
-                    EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
-                } else {
-                    LazyVGrid(columns: layout.gridColumns, spacing: layout.itemSpacing) {
-                        ForEach(viewModel.filteredMessages) { message in
-                            ChatMessageView(message: message, layout: layout)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    presentedCardMessage = message
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 12) {
+                    olderMessagesLoader(proxy: proxy)
+
+                    if viewModel.displayedMessages.isEmpty {
+                        EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
+                    } else {
+                        LazyVGrid(columns: layout.gridColumns, spacing: layout.itemSpacing) {
+                            ForEach(viewModel.displayedMessages) { message in
+                                ChatMessageView(message: message, layout: layout)
+                                    .id(message.id)
+                                    .contentShape(Rectangle())
+                                    .onAppear {
+                                        handleMessageAppeared(message, proxy: proxy)
+                                    }
+                                    .onTapGesture {
+                                        presentedCardMessage = message
+                                    }
                                 }
                         }
                     }
-                }
 
-                Color.clear
-                    .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
+                    bottomSpacer
+                }
+                .padding(.horizontal, layout.horizontalPadding)
+                .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
             }
-            .padding(.horizontal, layout.horizontalPadding)
-            .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
-        }
-        .background(Color(.systemGroupedBackground))
-        .scrollDismissesKeyboard(.interactively)
-        .onChange(of: viewModel.client.messages.count) { oldCount, _ in
-            Task {
-                _ = await viewModel.handleMessagesChanged(previousMessageCount: oldCount)
+            .background(Color(.systemGroupedBackground))
+            .scrollDismissesKeyboard(.interactively)
+            .onAppear {
+                scheduleScrollToBottom(with: proxy, animated: false)
+            }
+            .onChange(of: viewModel.scrollToBottomRequest) { _, _ in
+                scheduleScrollToBottom(with: proxy, animated: false)
             }
         }
     }
@@ -225,7 +229,6 @@ struct MessageView: View {
             Task {
                 await viewModel.clearFiltersAndShowNewMessages()
                 viewModel.selectedMessageLayout = .message
-                scrollToBottomRequest += 1
             }
         } label: {
             Image(systemName: "message.badge")
@@ -311,6 +314,28 @@ struct MessageView: View {
         "message-list-bottom"
     }
 
+    private var bottomSpacer: some View {
+        Color.clear
+            .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
+            .id(bottomAnchorID)
+            .onAppear {
+                viewModel.updateBottomVisibility(true)
+            }
+            .onDisappear {
+                viewModel.updateBottomVisibility(false)
+            }
+    }
+
+    @ViewBuilder
+    private func olderMessagesLoader(proxy: ScrollViewProxy) -> some View {
+        if viewModel.isLoadingOlderMessages {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+    }
+
     private func refreshFeaturePreferences() {
         isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     }
@@ -323,9 +348,32 @@ struct MessageView: View {
         withTransaction(transaction) {
             viewModel.selectedMessageLayout = layout
         }
+        viewModel.requestScrollToBottom()
     }
 
-    private func scrollToBottom(with proxy: ScrollViewProxy, animated: Bool = true) {
+    private func scheduleScrollToBottom(
+        with proxy: ScrollViewProxy,
+        animated: Bool = true,
+        shouldSettleLayout: Bool = true
+    ) {
+        let delays: [TimeInterval] = shouldSettleLayout ? [0.05, 0.16, 0.35] : [0.05]
+
+        for (index, delay) in delays.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                scrollToBottom(
+                    with: proxy,
+                    animated: animated && index == 0,
+                    enableOlderPaging: index == delays.count - 1
+                )
+            }
+        }
+    }
+
+    private func scrollToBottom(
+        with proxy: ScrollViewProxy,
+        animated: Bool = true,
+        enableOlderPaging: Bool = true
+    ) {
         if animated {
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
@@ -333,6 +381,29 @@ struct MessageView: View {
         } else {
             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
+
+        if enableOlderPaging && !viewModel.displayedMessages.isEmpty {
+            viewModel.enableOlderPaging()
+        }
+    }
+
+    private func loadOlderMessages(with proxy: ScrollViewProxy) {
+        guard let anchorID = viewModel.reserveOlderMessageLoad() else { return }
+        Task {
+            guard await viewModel.loadReservedOlderMessages() else { return }
+            try? await Task.sleep(for: .milliseconds(16))
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+            viewModel.finishOlderMessageScrollRestoration()
+        }
+    }
+
+    private func handleMessageAppeared(_ message: ChatMessage, proxy: ScrollViewProxy) {
+        guard message.id == viewModel.displayedMessages.first?.id else { return }
+        loadOlderMessages(with: proxy)
     }
 }
 
