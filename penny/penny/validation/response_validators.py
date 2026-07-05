@@ -26,15 +26,18 @@ Mapping from the old inline ``_check_response`` branches:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import urllib.parse
+from typing import Any
 
 from penny.agents.models import MessageRole
 from penny.constants import PennyConstants
 from penny.llm.models import LlmResponse
 from penny.llm.refusal import is_refusal
 from penny.prompts import Prompt
+from penny.tools.memory_args import DoneArgs
 from penny.tools.memory_tools import DoneTool
 from penny.validation.conditions import ConditionKey
 from penny.validation.outcomes import (
@@ -266,6 +269,98 @@ class HallucinatedToolCallRepair:
 
 
 # ── Collector-only run-shape validators ──────────────────────────────────────
+
+# The ``done()`` argument schema — the exact key set a bare-JSON text bail must
+# carry to be an unambiguous ``done`` call.  Derived from the model so it tracks
+# the schema (``{success, summary}``); ``reasoning`` is the one extra key gpt-oss's
+# native bail shape adds (it is NOT a ``DoneArgs`` field, but it never disambiguates
+# away from ``done``, so it is tolerated for the match).
+_DONE_REQUIRED_KEYS = frozenset(DoneArgs.model_fields)
+_DONE_TOLERATED_KEYS = _DONE_REQUIRED_KEYS | {"reasoning"}
+# The full-envelope variant the model also emits: ``{"name": "done", "arguments": {…}}``.
+_ENVELOPE_KEYS = frozenset({"name", "arguments"})
+
+
+def _done_args_from(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``{success, summary}`` payload from a candidate args dict, or ``None``
+    unless it carries exactly the ``done`` schema — ``success`` (bool) + ``summary``
+    (str), plus at most a tolerated ``reasoning``.  Any other key makes it
+    ambiguous, so it is left for the generic text-bail nudge."""
+    keys = set(candidate)
+    if not _DONE_REQUIRED_KEYS <= keys <= _DONE_TOLERATED_KEYS:
+        return None
+    if not (isinstance(candidate["success"], bool) and isinstance(candidate["summary"], str)):
+        return None
+    return {"success": candidate["success"], "summary": candidate["summary"]}
+
+
+def parse_done_json_bail(content: str) -> dict[str, Any] | None:
+    """Parse a plain-text response that is really a ``done()`` call the model failed
+    to route through the tool channel, returning the ``done`` arguments it carried
+    (``{success, summary}``) — or ``None`` when it is not an unambiguous done bail.
+
+    Two shapes, both convergent in production on Harmony backends (the function
+    name rides a header that gets lost):
+
+      - bare args     ``{"success": true, "summary": "…", "reasoning": "…"}``
+      - full envelope ``{"name": "done", "arguments": {<bare args>}}``
+
+    ``reasoning`` (not a ``DoneArgs`` field) is tolerated; ANY other extra key, a
+    non-``done`` envelope name, or non-JSON text yields ``None``."""
+    text = content.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if set(parsed) == _ENVELOPE_KEYS:
+        if parsed.get("name") != DoneTool.name or not isinstance(parsed.get("arguments"), dict):
+            return None
+        parsed = parsed["arguments"]
+    return _done_args_from(parsed)
+
+
+class DoneJsonBailValidator:
+    """A collector emitted the ``done()`` terminator's *arguments* as a plain JSON
+    text object instead of a tool call — gpt-oss's native fallback shape on Harmony
+    backends (the dominant call-shaped text bail in production).  Reject and TEACH:
+    append the stray text plus the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` —
+    naming exactly what the model did (wrote ``done``'s arguments as text) and the
+    exact next move (make the real ``done(success=…, summary=…)`` tool call) — and
+    continue the loop so the model itself re-emits the call.
+
+    Deliberately NOT a ``Repair``: fabricating a tool call the model never made
+    would coerce a malformed emission into a healthy one.  Repair is reserved for
+    well-formed calls that transport/parsing mangled (e.g. the Harmony token
+    strip); anything the *model* got wrong gets a teaching response it can learn
+    from within the run.  The value over the generic text-bail nudge is
+    specificity — the model is told precisely which tool to call and why its
+    output didn't count, rather than "make a tool call".
+
+    Collector-only by composition (``BackgroundAgent.run_shape_validators`` — chat
+    has no ``done`` tool), ordered BEFORE ``TextInsteadOfToolValidator`` so the
+    specific teaching outranks the generic nudge.  Unambiguous by construction:
+    only the ``{success, summary}`` key set (optionally a tolerated ``reasoning``)
+    — unique to ``done`` among the collector tools — or the
+    ``{"name": "done", "arguments": {…}}`` envelope; any other shape falls through
+    to the generic nudge.  Surfaced via a WARNING naming ``DONE_JSON_BAIL``.
+    Bounded by ``max_steps`` exactly like the generic text bail: on the final step
+    there's no retry room, so the cycle ends without a ``done()`` and re-runs next
+    tick."""
+
+    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
+        if ctx.is_final_step or response.has_tool_calls:
+            return Proceed(response=response)
+        if parse_done_json_bail(response.content) is None:
+            return Proceed(response=response)
+        logger.warning(
+            "done() arguments emitted as JSON text (%s) — teaching the real tool call",
+            ConditionKey.DONE_JSON_BAIL,
+        )
+        return NudgeContinue(message=Prompt.COLLECTOR_DONE_JSON_NUDGE)
 
 
 class TextInsteadOfToolValidator:
