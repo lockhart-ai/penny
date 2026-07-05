@@ -6,6 +6,36 @@ import UIKit
 @Suite(.serialized)
 @MainActor
 struct MessageViewModelTests {
+    @Test func messageLayoutDefaultsToCurrentMessageStyle() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+
+        #expect(viewModel.selectedMessageLayout == .message)
+    }
+
+    @Test func messageSelectionDefaultsToNil() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+
+        #expect(viewModel.selectedMessageID == nil)
+    }
+
+    @Test func messageSelectionCanBeUpdated() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+
+        viewModel.selectedMessageID = 42
+
+        #expect(viewModel.selectedMessageID == 42)
+    }
+
+    @Test func messageLayoutCanSwitchBetweenAvailableLayouts() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+
+        viewModel.selectedMessageLayout = .compact
+        #expect(viewModel.selectedMessageLayout == .compact)
+
+        viewModel.selectedMessageLayout = .media
+        #expect(viewModel.selectedMessageLayout == .media)
+    }
+
     @Test func sendDraftTrimsMessageAndClearsDraft() {
         let database = configuredDatabase()
         let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())

@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var webSocketURL: String
     @State private var username: String
     @State private var password: String
+    @State private var isMessageLayoutSwitcherEnabled: Bool
 
     init(client: PennyWebSocketClient) {
         self.client = client
@@ -14,6 +15,7 @@ struct SettingsView: View {
         _webSocketURL = State(initialValue: prefs.webSocketURL ?? "")
         _username = State(initialValue: prefs.username ?? "")
         _password = State(initialValue: prefs.password ?? "")
+        _isMessageLayoutSwitcherEnabled = State(initialValue: prefs.isMessageLayoutSwitcherEnabled)
     }
 
     var body: some View {
@@ -37,6 +39,10 @@ struct SettingsView: View {
                     SecureField("Password", text: $password)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                }
+
+                Section("Features") {
+                    Toggle("1-2-3 layout", isOn: $isMessageLayoutSwitcherEnabled)
                 }
             }
             .navigationTitle("Settings")
@@ -67,6 +73,7 @@ struct SettingsView: View {
         prefs.webSocketURL = webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines)
         prefs.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         prefs.password = password
+        prefs.isMessageLayoutSwitcherEnabled = isMessageLayoutSwitcherEnabled
         client.reconnect()
         dismiss()
     }
