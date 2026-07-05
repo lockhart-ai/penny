@@ -38,6 +38,7 @@ from penny.database.memory.types import (
     WriteOutcome,
     WriteResult,
     WrongShapeError,
+    render_key,
     slug,
     strip_display_brackets,
 )
@@ -80,5 +81,6 @@ __all__ = [
     "WriteResult",
     "WrongShapeError",
     "slug",
+    "render_key",
     "strip_display_brackets",
 ]
