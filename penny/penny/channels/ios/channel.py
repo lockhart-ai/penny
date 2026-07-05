@@ -519,22 +519,19 @@ class IosChannel(MessageChannel):
         schedules: list[ScheduleRecord] = []
         if primary:
             with Session(self._db.engine) as session:
-                rows = list(
-                    session.exec(
-                        select(Schedule)
-                        .where(Schedule.user_id == primary)
-                        .order_by(Schedule.created_at)  # type: ignore[arg-type]
+                rows = list(session.exec(select(Schedule).where(Schedule.user_id == primary)))
+                schedules = []
+                for s in sorted(rows, key=lambda schedule: schedule.created_at):
+                    if s.id is None:
+                        continue
+                    schedules.append(
+                        ScheduleRecord(
+                            id=s.id,
+                            timing_description=s.timing_description,
+                            prompt_text=s.prompt_text,
+                            cron_expression=s.cron_expression,
+                        )
                     )
-                )
-                schedules = [
-                    ScheduleRecord(
-                        id=s.id,  # type: ignore[arg-type]
-                        timing_description=s.timing_description,
-                        prompt_text=s.prompt_text,
-                        cron_expression=s.cron_expression,
-                    )
-                    for s in rows
-                ]
         await self._send_json(
             ws,
             {
@@ -672,7 +669,7 @@ class IosChannel(MessageChannel):
         try:
             req = BrowserCursorSet(**data)
             last_read_at = datetime.fromisoformat(req.last_read_at)
-        except (ValidationError, ValueError):
+        except ValidationError, ValueError:
             logger.warning("Invalid cursor_set: %s", str(data)[:200])
             return
         self._db.cursors.set_position(req.name, req.log_name, last_read_at)
