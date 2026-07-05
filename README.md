@@ -328,7 +328,7 @@ Penny auto-detects which channel to use based on configured credentials:
 
 **iOS Channel** (optional):
 - `IOS_ENABLED`: `true` to enable the iOS channel alongside the auto-detected primary channel; with Signal configured, both Signal and iOS listen in parallel
-- `IOS_HOST`: WebSocket bind address (default: `localhost`; use `0.0.0.0` in Docker)
+- `IOS_HOST`: WebSocket bind address (default: `0.0.0.0`, the Docker default; use `localhost` for host-only binding)
 - `IOS_PORT`: WebSocket port (default: `9091`)
 - `IOS_PAIRING_TOKEN`: optional shared token required during device registration when set
 - `IOS_APNS_TEAM_ID`: Apple Developer Team ID

@@ -532,18 +532,21 @@ class Penny:
     async def _send_startup_announcement(self) -> None:
         """Send a startup announcement to the user's default device."""
         try:
-            if await self._send_ios_operational_announcement():
-                return
-
             sender = self.db.users.get_primary_sender()
             if not sender:
                 logger.info("No user profile found for startup announcement")
                 return
 
-            # Only announce if the user has chatted before (not a fresh profile)
+            # Only announce if the user has chatted before (not a fresh profile).
+            # This same gate covers the iOS push path so a fresh install (or the
+            # watcher's per-deploy restarts before any conversation) can't spam a
+            # notification.
             user_messages = self.db.memory(PennyConstants.MEMORY_USER_MESSAGES_LOG)
             if user_messages is None or not user_messages.newest_entries(k=1):
                 logger.info("No message history yet, skipping startup announcement")
+                return
+
+            if await self._send_ios_operational_announcement():
                 return
 
             restart_msg = await get_restart_message(self.db, self.model_client)
