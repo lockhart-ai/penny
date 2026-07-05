@@ -30,7 +30,7 @@ from penny.text_validity import half_formed_send_reason, is_degenerate_run
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import ToolResult
+from penny.tools.models import ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -53,6 +53,12 @@ from penny.validation.response_validators import (
 )
 
 
+class _StubSearchArgs(ToolArgs):
+    """Args for the search stub — one required query, extras forbidden like a real tool."""
+
+    query: str
+
+
 class StubSearchTool(Tool):
     """Minimal stub tool for agentic loop testing."""
 
@@ -63,6 +69,7 @@ class StubSearchTool(Tool):
         "properties": {"query": {"type": "string", "description": "Search query"}},
         "required": ["query"],
     }
+    args_model = _StubSearchArgs
 
     async def execute(self, **kwargs):
         return ToolResult(message="Mock search results for testing")
