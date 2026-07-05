@@ -111,6 +111,10 @@ final class PennyWebSocketClient {
 
     func disconnect() {
         receiveTask?.cancel()
+        clearConnection()
+    }
+
+    private func clearConnection() {
         heartbeatTask?.cancel()
         notificationTokenTask?.cancel()
         receiveTask = nil
@@ -164,16 +168,19 @@ final class PennyWebSocketClient {
         while !Task.isCancelled, let webSocketTask {
             do {
                 let incomingMessage = try await webSocketTask.receive()
-                try handle(incomingMessage)
+                handle(incomingMessage)
             } catch {
                 guard !Task.isCancelled else { return }
-                lastError = "WebSocket receive failed: \(error.localizedDescription)"
-                print(lastError ?? error.localizedDescription)
-                isConnected = false
-                isRegistered = false
+                handleReceiveFailure(error)
                 return
             }
         }
+    }
+
+    private func handleReceiveFailure(_ error: Error) {
+        lastError = "WebSocket receive failed: \(error.localizedDescription)"
+        print(lastError ?? error.localizedDescription)
+        clearConnection()
     }
 
     private func heartbeatLoop() async {
@@ -187,7 +194,7 @@ final class PennyWebSocketClient {
         }
     }
 
-    private func handle(_ incomingMessage: URLSessionWebSocketTask.Message) throws {
+    private func handle(_ incomingMessage: URLSessionWebSocketTask.Message) {
         let data: Data
         switch incomingMessage {
         case .data(let messageData):
@@ -199,7 +206,19 @@ final class PennyWebSocketClient {
             return
         }
 
-        let envelope = try decoder.decode(ServerEnvelope.self, from: data)
+        do {
+            apply(try decoder.decode(ServerEnvelope.self, from: data))
+        } catch {
+            skipUndecodableMessage(data)
+        }
+    }
+
+    private func skipUndecodableMessage(_ data: Data) {
+        let type = (try? decoder.decode(ServerMessageType.self, from: data))?.type ?? "unknown"
+        print("Skipping unrecognized server message (type: \(type))")
+    }
+
+    private func apply(_ envelope: ServerEnvelope) {
         switch envelope {
         case .status(let payload):
             isConnected = payload.connected
@@ -412,6 +431,10 @@ private enum ApnsEnvironment: String {
         let profile = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
         return (profile as? [String: Any])?["Entitlements"] as? [String: Any]
     }
+}
+
+private struct ServerMessageType: Decodable {
+    let type: String
 }
 
 private enum ServerEnvelope: Decodable {

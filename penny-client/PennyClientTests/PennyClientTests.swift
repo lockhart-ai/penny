@@ -145,6 +145,20 @@ struct PennyWebSocketClientTests {
         client.lastError = "boom"
         #expect(client.statusText == "boom")
     }
+
+    @Test func disconnectClearsConnectionState() {
+        let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
+        client.isConnected = true
+        client.isRegistered = true
+        client.isTyping = true
+
+        client.disconnect()
+
+        #expect(client.isConnected == false)
+        #expect(client.isRegistered == false)
+        #expect(client.isTyping == false)
+        #expect(client.canSend == false)
+    }
 }
 
 @Suite(.serialized)
