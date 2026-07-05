@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-import UIKit
 @testable import PennyClient
 
 @Suite(.serialized)
@@ -20,6 +19,27 @@ struct MessageViewModelTests {
 
         viewModel.selectedMessageLayout = .media
         #expect(viewModel.selectedMessageLayout == .media)
+    }
+
+    @Test func composerFocusReturnsToMessageLayoutWithoutRequestingScroll() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        viewModel.selectedMessageLayout = .media
+        let previousScrollRequest = viewModel.scrollToBottomRequest
+
+        viewModel.prepareComposerFocus()
+
+        #expect(viewModel.selectedMessageLayout == .message)
+        #expect(viewModel.scrollToBottomRequest == previousScrollRequest)
+    }
+
+    @Test func composerFocusDoesNotRequestScrollWhenAlreadyUsingMessageLayout() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        let previousScrollRequest = viewModel.scrollToBottomRequest
+
+        viewModel.prepareComposerFocus()
+
+        #expect(viewModel.selectedMessageLayout == .message)
+        #expect(viewModel.scrollToBottomRequest == previousScrollRequest)
     }
 
     @Test func startupLoadsLatestPageOnly() async {
@@ -144,6 +164,8 @@ struct MessageViewModelTests {
         await viewModel.connect()
         viewModel.selectedMessageFilter = .penny
         await viewModel.waitForPaging()
+        viewModel.updateBottomVisibility(false)
+        let previousScrollRequest = viewModel.scrollToBottomRequest
         viewModel.draftMessage = "  hello Penny  "
 
         viewModel.sendDraft()
@@ -153,6 +175,8 @@ struct MessageViewModelTests {
         #expect(viewModel.draftMessage.isEmpty)
         #expect(viewModel.displayedMessages.map(\.content) == ["hello Penny"])
         #expect(database.loadMessages().first?.content == "hello Penny")
+        #expect(viewModel.scrollToBottomRequest > previousScrollRequest)
+        #expect(viewModel.isAtBottom)
     }
 
     @Test func sendDraftIgnoresWhitespaceOnlyDraft() {
@@ -242,14 +266,6 @@ struct MessageViewModelTests {
         #expect(viewModel.shouldShowTypingIndicator == false)
     }
 
-    @Test func keyboardOffsetOnlyAppliesWhenKeyboardVisible() {
-        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
-
-        #expect(viewModel.keyboardOffset == 0)
-
-        viewModel.keyboardHeight = 300
-        #expect(viewModel.keyboardOffset == 276)
-    }
 }
 
 @MainActor

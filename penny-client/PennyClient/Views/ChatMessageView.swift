@@ -188,14 +188,14 @@ struct ChatMessageView: View {
 }
 
 extension MessageView.MessageLayout {
-    var gridColumns: [GridItem] {
+    var columnCount: Int {
         switch self {
         case .message:
-            return [GridItem(.flexible(), spacing: 12)]
+            return 1
         case .compact:
-            return Array(repeating: GridItem(.flexible(), spacing: 8), count: 2)
+            return 2
         case .media:
-            return Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
+            return 3
         }
     }
 

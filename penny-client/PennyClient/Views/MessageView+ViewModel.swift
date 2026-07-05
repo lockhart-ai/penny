@@ -1,6 +1,5 @@
 import Observation
 import SwiftUI
-import UIKit
 
 extension MessageView {
     enum MessageLayout: Int, CaseIterable, Identifiable, Sendable {
@@ -116,8 +115,6 @@ extension MessageView {
         var isLoadingOlderMessages = false
         var hasMoreOlderMessages = false
         var scrollToBottomRequest = 0
-        var composerHeight: CGFloat = 64
-        var keyboardHeight: CGFloat = 0
 
         @ObservationIgnored private let messagePageSize: Int
         @ObservationIgnored private var nextOlderCursor: MessagePageCursor?
@@ -133,12 +130,6 @@ extension MessageView {
             let resolvedClient = client ?? PennyWebSocketClient()
             self.client = resolvedClient
             self.messagePageSize = max(1, messagePageSize)
-        }
-
-        private let keyboardComposerSpacing: CGFloat = -24
-
-        var keyboardOffset: CGFloat {
-            keyboardHeight > 0 ? keyboardHeight + keyboardComposerSpacing : 0
         }
 
         var shouldShowTypingIndicator: Bool {
@@ -245,6 +236,12 @@ extension MessageView {
             scrollToBottomRequest += 1
         }
 
+        func prepareComposerFocus() {
+            if selectedMessageLayout != .message {
+                selectedMessageLayout = .message
+            }
+        }
+
         func updateBottomVisibility(_ isVisible: Bool) {
             isAtBottom = isVisible
             if isVisible && selectedMessageFilter == .all {
@@ -279,6 +276,7 @@ extension MessageView {
                 selectedMessageFilter = .all
             }
             client.sendMessage(trimmedMessage)
+            requestScrollToBottom()
         }
 
         func handleScenePhaseChange(_ phase: ScenePhase) {
@@ -291,20 +289,6 @@ extension MessageView {
                 break
             @unknown default:
                 break
-            }
-        }
-
-        func updateKeyboardHeight(from notification: Notification) {
-            guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-
-            let screenHeight = UIApplication.shared.connectedScenes
-                .compactMap { ($0 as? UIWindowScene)?.screen.bounds.height }
-                .first ?? keyboardFrame.maxY
-            let overlap = max(0, screenHeight - keyboardFrame.minY)
-            let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-
-            withAnimation(.easeOut(duration: duration)) {
-                keyboardHeight = overlap
             }
         }
 

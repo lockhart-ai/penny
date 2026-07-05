@@ -6,6 +6,7 @@ struct MessageView: View {
     @State private var viewModel = ViewModel()
     @State private var isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     @State private var presentedCardMessage: ChatMessage?
+    @State private var keyboardSettledScrollTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
 
     private var effectiveMessageLayout: MessageLayout {
@@ -28,13 +29,8 @@ struct MessageView: View {
                         .padding(.top, 10)
                 }
             }
-            .overlay(alignment: .bottom) {
+            .safeAreaInset(edge: .bottom) {
                 composer
-                    .offset(y: -viewModel.keyboardOffset)
-                    .readHeight { height in
-                        guard height > 0 else { return }
-                        viewModel.composerHeight = height
-                    }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -80,7 +76,6 @@ struct MessageView: View {
                     }
                 }
             }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
             .alert("Connection Error", isPresented: $viewModel.isShowingConnectionError, presenting: viewModel.client.lastError) { _ in
                 Button("Reconnect") {
                     viewModel.reconnect()
@@ -109,13 +104,11 @@ struct MessageView: View {
             }
             viewModel.handleScenePhaseChange(newPhase)
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
-            viewModel.updateKeyboardHeight(from: notification)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            viewModel.keyboardHeight = 0
+        .onChange(of: isComposerFocused) { _, isFocused in
+            handleComposerFocusChanged(isFocused)
         }
         .onDisappear {
+            keyboardSettledScrollTask?.cancel()
             viewModel.disconnect()
         }
     }
@@ -126,18 +119,12 @@ struct MessageView: View {
                 VStack(spacing: 12) {
                     olderMessagesLoader(proxy: proxy)
 
+                    topMessageLoader(proxy: proxy)
+
                     if viewModel.displayedMessages.isEmpty {
                         EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
                     } else {
-                        LazyVGrid(columns: MessageLayout.message.gridColumns, spacing: MessageLayout.message.itemSpacing) {
-                            ForEach(viewModel.displayedMessages) { message in
-                                ChatMessageView(message: message, layout: .message)
-                                    .id(message.id)
-                                    .onAppear {
-                                        handleMessageAppeared(message, proxy: proxy)
-                                    }
-                            }
-                        }
+                        messageGrid(layout: .message)
                     }
 
                     if viewModel.client.isTyping && viewModel.shouldShowTypingIndicator {
@@ -150,6 +137,7 @@ struct MessageView: View {
                 .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
             }
             .background(Color(.systemGroupedBackground))
+            .coordinateSpace(name: messageScrollCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
             .onAppear {
                 scheduleScrollToBottom(with: proxy, animated: false)
@@ -171,22 +159,12 @@ struct MessageView: View {
                 VStack(spacing: 12) {
                     olderMessagesLoader(proxy: proxy)
 
+                    topMessageLoader(proxy: proxy)
+
                     if viewModel.displayedMessages.isEmpty {
                         EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
                     } else {
-                        LazyVGrid(columns: layout.gridColumns, spacing: layout.itemSpacing) {
-                            ForEach(viewModel.displayedMessages) { message in
-                                ChatMessageView(message: message, layout: layout)
-                                    .id(message.id)
-                                    .contentShape(Rectangle())
-                                    .onAppear {
-                                        handleMessageAppeared(message, proxy: proxy)
-                                    }
-                                    .onTapGesture {
-                                        presentedCardMessage = message
-                                    }
-                                }
-                        }
+                        messageGrid(layout: layout)
                     }
 
                     bottomSpacer
@@ -195,6 +173,7 @@ struct MessageView: View {
                 .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
             }
             .background(Color(.systemGroupedBackground))
+            .coordinateSpace(name: messageScrollCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
             .onAppear {
                 scheduleScrollToBottom(with: proxy, animated: false)
@@ -314,9 +293,13 @@ struct MessageView: View {
         "message-list-bottom"
     }
 
+    private var messageScrollCoordinateSpace: String {
+        "message-scroll-coordinate-space"
+    }
+
     private var bottomSpacer: some View {
         Color.clear
-            .frame(height: viewModel.composerHeight + viewModel.keyboardOffset + 12)
+            .frame(height: 1)
             .id(bottomAnchorID)
             .onAppear {
                 viewModel.updateBottomVisibility(true)
@@ -324,6 +307,45 @@ struct MessageView: View {
             .onDisappear {
                 viewModel.updateBottomVisibility(false)
             }
+    }
+
+    @ViewBuilder
+    private func messageGrid(layout: MessageLayout) -> some View {
+        Grid(horizontalSpacing: layout.itemSpacing, verticalSpacing: layout.itemSpacing) {
+            ForEach(messageGridRows(for: layout)) { row in
+                GridRow {
+                    ForEach(row.messages) { message in
+                        messageGridCell(message, layout: layout)
+                    }
+
+                    ForEach(row.messages.count..<layout.columnCount, id: \.self) { _ in
+                        Color.clear
+                            .frame(maxWidth: .infinity)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func messageGridCell(_ message: ChatMessage, layout: MessageLayout) -> some View {
+        ChatMessageView(message: message, layout: layout)
+            .id(message.id)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard layout != .message else { return }
+                presentedCardMessage = message
+            }
+    }
+
+    private func messageGridRows(for layout: MessageLayout) -> [MessageGridRow] {
+        let columnCount = layout.columnCount
+        return stride(from: 0, to: viewModel.displayedMessages.count, by: columnCount).map { startIndex in
+            let endIndex = min(startIndex + columnCount, viewModel.displayedMessages.count)
+            return MessageGridRow(messages: Array(viewModel.displayedMessages[startIndex..<endIndex]))
+        }
     }
 
     @ViewBuilder
@@ -336,12 +358,54 @@ struct MessageView: View {
         }
     }
 
+    private func topMessageLoader(proxy: ScrollViewProxy) -> some View {
+        Color.clear
+            .frame(height: 0)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .preference(
+                            key: TopMessageLoaderPreferenceKey.self,
+                            value: geometry.frame(in: .named(messageScrollCoordinateSpace)).minY
+                        )
+                }
+            }
+            .onPreferenceChange(TopMessageLoaderPreferenceKey.self) { minY in
+                guard minY >= 0 else { return }
+                loadOlderMessages(with: proxy)
+            }
+    }
+
     private func refreshFeaturePreferences() {
         isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     }
 
+    private func handleComposerFocusChanged(_ isFocused: Bool) {
+        guard isFocused else {
+            keyboardSettledScrollTask?.cancel()
+            return
+        }
+        if isMessageLayoutSwitcherEnabled {
+            viewModel.prepareComposerFocus()
+        }
+        scheduleScrollAfterKeyboardSettles()
+    }
+
+    private func scheduleScrollAfterKeyboardSettles() {
+        keyboardSettledScrollTask?.cancel()
+        keyboardSettledScrollTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled && isComposerFocused else { return }
+            viewModel.requestScrollToBottom()
+        }
+    }
+
     private func changeMessageLayout(to layout: MessageLayout) {
         guard viewModel.selectedMessageLayout != layout else { return }
+        if layout != .message {
+            isComposerFocused = false
+            keyboardSettledScrollTask?.cancel()
+        }
 
         var transaction = Transaction(animation: .spring(response: 0.34, dampingFraction: 0.86))
         transaction.disablesAnimations = false
@@ -401,31 +465,24 @@ struct MessageView: View {
         }
     }
 
-    private func handleMessageAppeared(_ message: ChatMessage, proxy: ScrollViewProxy) {
-        guard message.id == viewModel.displayedMessages.first?.id else { return }
-        loadOlderMessages(with: proxy)
+}
+
+private struct MessageGridRow: Identifiable {
+    let messages: [ChatMessage]
+
+    var id: Int {
+        messages.first?.id ?? 0
     }
 }
 
-private struct HeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+private struct TopMessageLoaderPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = -.infinity
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+        value = nextValue()
     }
 }
 
-private extension View {
-    func readHeight(_ onChange: @escaping (CGFloat) -> Void) -> some View {
-        overlay {
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: HeightPreferenceKey.self, value: proxy.size.height)
-            }
-        }
-        .onPreferenceChange(HeightPreferenceKey.self, perform: onChange)
-    }
-}
 
 private struct MessageCardDetailSheet: View {
     let message: ChatMessage
