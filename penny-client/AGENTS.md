@@ -31,7 +31,21 @@ Use `BuildProject` for full validation. Use `XcodeRefreshCodeIssuesInFile` for f
 For final verification, prefer:
 - diagnostics on touched Swift files
 - `XcodeListNavigatorIssues` for workspace errors
+- focused tests for touched behavior, or `RunAllTests` when the change affects shared behavior
 - `BuildProject`
+
+## Testing Guidelines
+Use the Swift Testing framework for unit tests and XCUIAutomation for UI tests.
+Keep tests organized by component in separate files under `PennyClient/PennyClientTests`, with shared helpers in test support files instead of large monolithic test sources.
+
+All view models require test coverage. When adding or changing a view model, add or update focused tests for:
+- state derived from model/client data
+- user actions and side effects
+- validation and empty-input behavior
+- filtering, sorting, or presentation-specific computed values
+- async lifecycle behavior when relevant
+
+Prefer injecting test doubles or configured in-memory services over relying on live network, real user defaults, or persistent app data. For persistence tests, use `DatabaseService.setupForTesting()` or another isolated in-memory setup.
 
 ## UI Patterns
 Use SwiftUI and the Observation framework. Avoid Combine unless there is a concrete need.
