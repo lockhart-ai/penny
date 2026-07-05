@@ -1675,11 +1675,12 @@ class DoneTool(Tool):
 
     name = "done"
     description = (
-        "Call this when the cycle is finished.  Pass `success` (true if "
+        "Call this when the cycle is finished.  REQUIRED: `success` (true if "
         "you did what the prompt asked, false on no-op or failure) and "
         "`summary` (one-sentence prose describing what the cycle actually "
         "did — entries written, messages sent, why no-op).  Both are logged "
-        "to `collector-runs` for auditing."
+        "to `collector-runs` for auditing; `reasoning` alone is never a "
+        "valid done call."
     )
     parameters = {
         "type": "object",
