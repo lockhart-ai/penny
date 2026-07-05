@@ -368,6 +368,10 @@ async def test_pull_and_ack_messages(tmp_path):
     await channel._send_raw("ios-keychain-id", "first", source_name="notifier")
     await channel._send_raw("ios-keychain-id", "second", source_name="notifier")
 
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    assert db.ios.pending_count(device.id) == 2
+
     await channel._handle_pull(server_ws, {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
 
     messages_payload = ws.sent[-1]
@@ -378,6 +382,5 @@ async def test_pull_and_ack_messages(tmp_path):
     await channel._handle_ack(server_ws, {"type": IOS_MSG_TYPE_ACK, "ids": ids}, "ios-keychain-id")
 
     assert ws.sent[-1]["count"] == 2
-    device = db.devices.get_by_identifier("ios-keychain-id")
-    assert device is not None and device.id is not None
     assert db.ios.pending_for_device(device.id) == []
+    assert db.ios.pending_count(device.id) == 0

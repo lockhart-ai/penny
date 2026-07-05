@@ -29,10 +29,17 @@ class DeviceStore:
             return session.get(Device, device_id)
 
     def get_default(self) -> Device | None:
-        """Get the default device for proactive notifications."""
+        """Get the default device for proactive notifications.
+
+        Ordered so the resolution is deterministic even if several rows carry
+        ``is_default`` (registration keeps a single default, but ordering makes
+        the read total-order safe regardless): the earliest-registered wins.
+        """
         with self._session() as session:
             return session.exec(
-                select(Device).where(Device.is_default == True)  # noqa: E712
+                select(Device)
+                .where(Device.is_default == True)  # noqa: E712
+                .order_by(Device.created_at.asc(), Device.id.asc())
             ).first()
 
     def get_default_identifier(self) -> str | None:
@@ -58,6 +65,8 @@ class DeviceStore:
             return existing
 
         with self._session() as session:
+            if is_default:
+                self._clear_defaults(session)
             device = Device(
                 channel_type=channel_type,
                 identifier=identifier,
@@ -69,6 +78,14 @@ class DeviceStore:
             session.refresh(device)
             logger.info("Registered device: %s (%s, %s)", label, channel_type, identifier)
             return device
+
+    def _clear_defaults(self, session: Session) -> None:
+        """Clear ``is_default`` on every device — keeps a single default row."""
+        for device in session.exec(
+            select(Device).where(Device.is_default == True)  # noqa: E712
+        ).all():
+            device.is_default = False
+            session.add(device)
 
     def set_default(self, device_id: int) -> None:
         """Set a device as the default, clearing the flag on all others."""
