@@ -306,6 +306,11 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 - A `[square-bracket]` placeholder standing in for "fill this in"
 - A new model-facing prompt string added outside its established home (`prompts.py`, a tool description, a migration's `extraction_prompt`, `constants.py`) with no justification
 
+### Reject and Teach — Never Absorb Hallucinated Shapes
+- [ ] A change that makes a tool **accept/normalise/coerce a wrong-shaped model input** (a bracket-wrapped key, an invented parameter, an alias for a real value) is a smell — the tool boundary stays strict; the fix is a **teaching rejection** naming the specific mistake and the exact corrected input ready to reuse (see `prompt-writing-guide.md` → "Reject and teach"). Every accepted hallucinated shape becomes de-facto API surface and the set is unbounded
+- [ ] If the wrong shape was taught by **our own rendering** (display formats the model copies verbatim), there should be a root-cause issue on the rendering, not just the guard
+- [ ] The narrow exception — a protocol-layer repair of the model's own unambiguous *emission* artifact (e.g. the done-args JSON bail repair) — must be visible via the condition catalog and needs explicit maintainer sign-off
+
 ### No Conflicting Instructions
 - [ ] Read each instruction and verify it doesn't contradict another
 - [ ] Thinking models are especially sensitive — contradictory signals cause extensive deliberation and empty output
