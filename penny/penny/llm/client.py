@@ -62,6 +62,11 @@ def _llm_error_detail(error: Exception) -> str:
     message = _json_error_message(getattr(error, "body", None))
     if message is not None:
         return message
+    return _non_json_error_detail(response)
+
+
+def _non_json_error_detail(response: httpx.Response) -> str:
+    """Describe a non-JSON error body by type + length only, never its content."""
     content_type = response.headers.get("content-type", _UNKNOWN_CONTENT_TYPE)
     return f"non-JSON error body (content-type={content_type}, {len(response.text)} chars)"
 
@@ -85,11 +90,7 @@ def _summarize_httpx_error(response: httpx.Response) -> str:
         message = None
     if message:
         return f"HTTP {response.status_code}: {message}"
-    content_type = response.headers.get("content-type", _UNKNOWN_CONTENT_TYPE)
-    return (
-        f"HTTP {response.status_code}: non-JSON error body "
-        f"(content-type={content_type}, {len(response.text)} chars)"
-    )
+    return f"HTTP {response.status_code}: {_non_json_error_detail(response)}"
 
 
 def _extract_model_ids(payload: Any) -> list[str]:
@@ -337,9 +338,13 @@ class LlmClient:
         a narrower endpoint even when ``/v1/models`` omits them. This is only
         used as an embedding preflight fallback.
         """
-        url = f"{self.api_url}/v1/embeddings/models"
+        url = f"{self.api_url}{PennyConstants.LLM_EMBEDDING_MODELS_ENDPOINT}"
+        timeout = httpx.Timeout(
+            PennyConstants.LLM_MODEL_LIST_TIMEOUT_SECONDS,
+            connect=PennyConstants.LLM_CONNECT_TIMEOUT_SECONDS,
+        )
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {self.api_key}"},

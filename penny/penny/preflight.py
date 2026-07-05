@@ -208,6 +208,19 @@ class Preflight:
             )
         if model_available(model, available):
             return self._ok(name, f"embedding model {model!r} available at {url}")
+        return await self._verify_embedding_via_fallback(name, model, url)
+
+    async def _verify_embedding_via_fallback(
+        self, name: PreflightCheck, model: str, url: str
+    ) -> CheckResult:
+        """Second-source the embedding model via provider-specific /v1/embeddings/models.
+
+        Some OpenAI-compatible providers (e.g. openrouter) list embedding models
+        only on this narrower endpoint, so a model absent from /v1/models can
+        still be present and valid. Either endpoint verifying it is enough; an
+        endpoint error or an absence from both is a hard fail with the actionable
+        remedy.
+        """
         try:
             embedding_available = await self.embedding_client.list_embedding_models()
         except LlmError as error:

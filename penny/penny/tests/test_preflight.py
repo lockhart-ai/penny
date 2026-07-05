@@ -218,6 +218,24 @@ async def test_embedding_model_found_via_embedding_models_fallback(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_embedding_model_fallback_endpoint_error_hard_fails(monkeypatch, test_config):
+    """If /models omits the model and the fallback endpoint errors, it's a hard fail."""
+    preflight = _build_preflight(
+        monkeypatch,
+        test_config,
+        embed_available=["some-other-model"],
+        embed_specific_error=LlmResponseError("HTTP 404: not found"),
+    )
+    report = await preflight.run()
+
+    assert report.has_failures
+    assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.FAIL
+    result = next(r for r in report.results if r.name is PreflightCheck.EMBEDDING_MODEL)
+    assert "/v1/embeddings/models could not verify it" in result.detail
+    assert "LLM_EMBEDDING_MODEL" in report.failure_summary()
+
+
+@pytest.mark.asyncio
 async def test_embedding_endpoint_unreachable_hard_fails(monkeypatch, test_config):
     """An unreachable embedding endpoint is a hard failure."""
     preflight = _build_preflight(
