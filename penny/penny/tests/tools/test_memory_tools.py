@@ -874,6 +874,13 @@ class TestLogTools:
         assert "browse(['espresso grinder'])" in chat.message
         assert "penny: Here's a good grinder." in chat.message
 
+        # An unknown/typo'd target resolves to a failed, actionable refusal that
+        # names the offending value — not a silent empty batch that reads as "this
+        # collector has no runs" (mirrors collector_run_history's resolve-first).
+        unknown = await tool.run(target="esspreso-gear")
+        assert unknown.success is False
+        assert "esspreso-gear" in unknown.message
+
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
         """Persist one completed collector run for ``target`` (a write + its
