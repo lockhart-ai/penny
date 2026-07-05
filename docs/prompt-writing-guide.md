@@ -129,10 +129,11 @@ highest-leverage rule, and it's counter-intuitive:
   a real tool argument **zero times across ~59k payloads**: the model reliably treats them
   as "fill this in," never as literal text. They are the safe default for every argument
   that isn't a sentinel.
-- **Square brackets as placeholders are BANNED.** Entry listings render a key as `[key]`
-  for display, and the model copies those display brackets straight into arguments
-  (`key="[key]"` → "not found", 225 observed cases). Brackets are reserved for display;
-  never use `[like this]` to mean "fill in."
+- **Square brackets as placeholders are BANNED.** Entry listings used to render a key as
+  `[key]` for display, and the model copied those display brackets straight into arguments
+  (`key="[key]"` → "not found", 225 observed cases) — which is why listings now render keys
+  in invocation form (`key='<key>'`, `render_key`) and why brackets stay reserved for
+  non-copyable display metadata (timestamps); never use `[like this]` to mean "fill in."
 
 **3. Argument style — kwargs when it's non-obvious, positional only for one obvious arg.**
 Use `tool(name=<x>, k=5)` keyword form whenever a call has more than one argument or any
@@ -183,9 +184,10 @@ accretion, not emphasis itself.
 
 - **Skips a terminal/secondary step** (the send after the write; the `done()`) — make each its
   own explicit numbered step; a step it can fold into another, it will.
-- **Copies display formatting into arguments** — the entry listing renders keys as `[key]`, and
-  the model passes `key="[key]"` verbatim → "not found". Tell it: the key is the text *inside*
-  the brackets, pass it without them. (Or make the tool's error actionable.)
+- **Copies display formatting into arguments** — the entry listing used to render keys as
+  `[key]`, and the model passed `key="[key]"` verbatim → "not found". The root fix was making
+  the display form the passable form (listings now render `key='<key>'`); the teaching
+  rejection at the tool boundary stays as the guard for the ingrained habit.
 - **Protocol spirals** — on ambiguity it can loop about "can I make multiple calls in one
   reply?" and burn the cycle. A tight numbered sequence reduces this.
 - **Punctuation-collapse** on large contexts — a separate degeneracy guard handles this; keep
@@ -226,9 +228,10 @@ shapes the model can hallucinate is unbounded — normalisation compounds while 
 Silent acceptance also hides the miss from run records and evals (visible-degradation principle).
 Two corollaries:
 
-- **If OUR rendering taught the mistake** (the `[key]` display format is what the model copies),
-  the root fix is changing the rendering — an eval-gated change to a consumed surface — with the
-  teaching rejection as the guard in the meantime.
+- **If OUR rendering taught the mistake** (the old `[key]` display format was what the model
+  copied), the root fix is changing the rendering — an eval-gated change to a consumed surface,
+  shipped as the invocation-form render (`key='<key>'`) — with the teaching rejection staying
+  as the guard for the ingrained habit.
 - **The narrow exception is the model's own output channel**: protocol-layer repairs of an
   unambiguous *emission* artifact (the done-args JSON bail repair, the Harmony token strip) are
   legitimate because they reroute what the model already unambiguously said — they accept no new
