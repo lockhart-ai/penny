@@ -57,6 +57,7 @@ from penny.database.memory.types import (
     WriteResult,
     WrongShapeError,
     slug,
+    strip_display_brackets,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
@@ -473,6 +474,35 @@ class Collection(Memory):
 
     @staticmethod
     def _rows_by_key(session: Session, name: str, key: str) -> list[MemoryEntry]:
+        """Resolve entries by key — the single key-lookup boundary for get /
+        update / move / delete, so display-bracket normalization lives here once.
+
+        Exact match wins.  Only when the literal key misses AND it is
+        bracket-wrapped does it retry against the unwrapped key: the model copies
+        the ``[key]`` display form out of a rendered entry list into a key
+        argument (see ``strip_display_brackets``), and that footgun is fixed at the
+        tool boundary, not with a prompt caveat.  A key that genuinely contains
+        brackets still resolves by exact match, so it is never stripped when it
+        exists.
+        """
+        rows = Collection._query_by_key(session, name, key)
+        if rows:
+            return rows
+        unwrapped = strip_display_brackets(key)
+        if unwrapped == key:
+            return rows
+        rescued = Collection._query_by_key(session, name, unwrapped)
+        if rescued:
+            logger.info(
+                "memory %s: key %r missed; resolved via display-bracket strip to %r",
+                name,
+                key,
+                unwrapped,
+            )
+        return rescued
+
+    @staticmethod
+    def _query_by_key(session: Session, name: str, key: str) -> list[MemoryEntry]:
         return list(
             session.exec(
                 select(MemoryEntry).where(MemoryEntry.memory_name == name, MemoryEntry.key == key)

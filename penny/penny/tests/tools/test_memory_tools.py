@@ -502,6 +502,14 @@ class TestCollectionWritesAndReads:
         assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
         assert "not found" in missing.message
+        # A bracket-wrapped key (the model copying the `[key]` display form)
+        # resolves the same entry, and a double-miss names the normalized
+        # (unwrapped) key so the model can reuse the corrected form.
+        bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
+        assert "hello" in bracketed.message
+        double_miss = await CollectionGetTool(db).execute(memory="likes", key="[absent]")
+        assert "'absent'" in double_miss.message
+        assert "[absent]" not in double_miss.message
 
     @pytest.mark.asyncio
     async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
@@ -583,6 +591,13 @@ class TestCollectionMutations:
         assert "Updated 'k' in 'likes'" in result.message
         fetched = await CollectionGetTool(db).execute(memory="likes", key="k")
         assert "new" in fetched.message
+        # A bracket-wrapped key (display form copied from an entry list) resolves
+        # the same entry through the tool boundary — the update lands on key 'k'.
+        bracketed = await UpdateEntryTool(db, author="test").execute(
+            memory="likes", key="[k]", content="newer"
+        )
+        assert bracketed.mutated is True
+        assert "newer" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         # A blank replacement is refused (same content bar as collection_write),
         # leaving the existing content untouched rather than blanking the entry.
         # The degenerate-content rule now lives on UpdateEntryArgs.content, so the
@@ -609,6 +624,13 @@ class TestCollectionMutations:
             memory="likes", key="k", content="new"
         )
         assert "not found" in result.message
+        # A bracket-wrapped double-miss names the normalized key ('k', not '[k]')
+        # so the model reuses the corrected form instead of the display form.
+        bracketed = await UpdateEntryTool(db, author="test").execute(
+            memory="likes", key="[k]", content="new"
+        )
+        assert "'k'" in bracketed.message
+        assert "[k]" not in bracketed.message
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, tmp_path):

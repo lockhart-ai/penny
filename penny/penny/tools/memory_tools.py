@@ -38,6 +38,7 @@ from penny.database.memory import (
     RecallMode,
     WriteResult,
     render_run_calls,
+    strip_display_brackets,
 )
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
@@ -96,9 +97,11 @@ def _format_entries(
     ``source`` is the memory name; ``ordering`` is a human hint ("oldest
     first", "most relevant first") since the order differs per read tool and
     matters when the model concatenates entries.  Keyed entries (collection)
-    include the key; keyless entries (log) show just content.  Empty lists
-    produce a clear "no entries" sentinel so the model doesn't confuse
-    absence with error.
+    include the key as ``[key]`` — the brackets are display framing, not part of
+    the key, so the lookup boundary strips them back off (``strip_display_brackets``)
+    if the model copies the rendered form into a key argument.  Keyless entries
+    (log) show just content.  Empty lists produce a clear "no entries" sentinel
+    so the model doesn't confuse absence with error.
     """
     if not entries:
         return "(no entries)"
@@ -502,8 +505,11 @@ class CollectionGetTool(MemoryTool):
         args = CollectionGetArgs(**kwargs)
         rows = _resolve(self._db, args.memory).get(args.key)
         if not rows:
+            # Name the normalized key the lookup settled on (display brackets
+            # stripped), so a bracket-copied key comes back in reusable form.
+            tried = strip_display_brackets(args.key)
             return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
+                message=f"Key '{tried}' not found in '{args.memory}'. List the available "
                 f"keys with collection_keys('{args.memory}'), or search by content with "
                 f"read_similar(memory='{args.memory}', anchor=<what you're looking for>)."
             )
@@ -821,8 +827,9 @@ class UpdateEntryTool(MemoryTool):
             )
         outcome = _resolve(self._db, args.memory).update(args.key, args.content, self._author)
         if outcome == "not_found":
+            tried = strip_display_brackets(args.key)
             return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
+                message=f"Key '{tried}' not found in '{args.memory}' — update only replaces "
                 f"existing entries. Write it as a new entry with "
                 f"collection_write(memory='{args.memory}', entries=<the new key and content>), "
                 f"or list the current keys with collection_keys('{args.memory}') if you "
@@ -1174,8 +1181,9 @@ class CollectionDeleteEntryTool(MemoryTool):
             )
         removed = _resolve(self._db, args.memory).delete(args.key)
         if removed == 0:
+            tried = strip_display_brackets(args.key)
             return ToolResult(
-                message=f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete. "
+                message=f"No entry with key '{tried}' in '{args.memory}' — nothing to delete. "
                 f"List the current keys with collection_keys('{args.memory}') to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)
