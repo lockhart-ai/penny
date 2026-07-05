@@ -218,6 +218,7 @@ make token            # Generate GitHub App installation token for gh CLI
 make signal-avatar    # Set Penny's Signal profile picture
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
+make client-check     # Build the iOS client + run its tests on a simulator (requires Xcode)
 ```
 
 All dev tool commands run in temporary Docker containers via `docker compose run --rm`, with source volume-mounted so changes write back to the host filesystem.
@@ -381,7 +382,7 @@ make pytest      # Run all tests
 make check       # Run format, lint, typecheck, and tests
 ```
 
-CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions.
+CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions. Pull requests touching `penny-client/` also run `make client-check` on a macOS runner, building the iOS app and running its test suite on a simulator.
 
 Tests cover the full message flow (search, response, threading, typing indicators), all background agents (history, thinking, notify, scheduler coordination), every slash command, vision processing, and tool edge cases. External services are replaced with mock servers and SDK patches — a mock Signal WebSocket server and a mock LLM client (`MockLlmClient`, patches `openai.AsyncOpenAI`) with configurable responses.
 
