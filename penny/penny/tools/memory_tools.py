@@ -1385,6 +1385,13 @@ class ReadRunCallsTool(CursorReadTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadRunCallsArgs(**kwargs)
+        # Resolve the target against the valid set FIRST — 'chat' plus every live
+        # collector, exactly what the description enumerates — so a typo'd/unknown
+        # target gets the actionable memory-not-found refusal instead of a silent
+        # empty batch that reads as "this collector has no runs" (the sibling
+        # collector_run_history resolves first for the same reason).
+        if args.target not in self._available_targets():
+            raise MemoryNotFoundError(args.target)
         key = self._cursor_key(args.target)
         cursor = self._db.cursors.get(self._agent_name, key)
         groups = self._db.messages.run_call_groups(
@@ -1696,11 +1703,12 @@ class DoneTool(Tool):
 
     name = "done"
     description = (
-        "Call this when the cycle is finished.  Pass `success` (true if "
+        "Call this when the cycle is finished.  REQUIRED: `success` (true if "
         "you did what the prompt asked, false on no-op or failure) and "
         "`summary` (one-sentence prose describing what the cycle actually "
         "did — entries written, messages sent, why no-op).  Both are logged "
-        "to `collector-runs` for auditing."
+        "to `collector-runs` for auditing; `reasoning` alone is never a "
+        "valid done call."
     )
     parameters = {
         "type": "object",
