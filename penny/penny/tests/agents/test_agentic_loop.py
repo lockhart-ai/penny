@@ -24,6 +24,7 @@ from penny.llm.models import (
     LlmToolCallFunction,
     LlmToolParseError,
 )
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import half_formed_send_reason, is_degenerate_run
@@ -42,6 +43,7 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
+    DoneJsonBailValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
@@ -50,6 +52,7 @@ from penny.validation.response_validators import (
     TextInsteadOfToolValidator,
     XmlTagValidator,
     build_strong_nudge,
+    parse_done_json_bail,
 )
 
 
@@ -2140,6 +2143,179 @@ class TestCollectorPrematureDone:
         await agent.close()
 
 
+class TestCollectorDoneJsonBailNudge:
+    """A collector that emits the ``done()`` terminator's *arguments* as a bare JSON
+    text object (gpt-oss's native Harmony-backend fallback) is REJECTED AND TAUGHT:
+    the loop appends the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` — naming what
+    the model did and the exact ``done(...)`` tool call to make — and the model
+    itself re-emits the real call.  Never repaired: fabricating a tool call the
+    model didn't make would coerce a malformed emission into a healthy one."""
+
+    @pytest.mark.asyncio
+    async def test_bare_args_json_bail_gets_teaching_nudge_and_recovers(self, test_db, mock_llm):
+        """Work (search), then ``{"success": true, "summary": "…"}`` as plain text →
+        the shape-specific teaching nudge (not the generic one) → the MODEL makes
+        the real done() call and the cycle closes."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(
+                    request, '{"success": true, "summary": "wrote the entry"}'
+                )
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # One teaching round-trip: the model was re-called after the JSON bail.
+        assert len(mock_llm.requests) == 3
+        # The nudge is the SHAPE-SPECIFIC teaching, not the generic text-bail nudge:
+        # it names what happened and shows the exact call to make.
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
+        assert "done's arguments as plain text" in last_user["content"]
+        assert "done(success=" in last_user["content"]
+        # The cycle closed via the MODEL's own real done() call.
+        done_records = [r for r in response.tool_calls if r.tool == "done"]
+        assert len(done_records) == 1
+        assert done_records[0].arguments == {"success": True, "summary": "wrote the entry"}
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_full_envelope_json_bail_gets_teaching_nudge(self, test_db, mock_llm):
+        """The ``{"name": "done", "arguments": {…}}`` envelope variant (with a
+        tolerated ``reasoning`` inside) gets the same shape-specific teaching and
+        the model recovers with the real call."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(
+                    request,
+                    '{"name": "done", "arguments": {"reasoning": "all handled", '
+                    '"success": true, "summary": "closed up"}}',
+                )
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "closed up"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        assert len(mock_llm.requests) == 3
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
+        assert any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_non_done_json_falls_through_to_generic_nudge(self, test_db, mock_llm):
+        """A JSON object that ISN'T the done schema gets the GENERIC text-bail
+        nudge, never the done-specific teaching (which would mis-teach)."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(request, '{"note": "not a done call"}')
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        assert len(mock_llm.requests) == 3
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.COLLECTOR_TOOL_CALL_NUDGE
+        assert any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_extra_keys_fall_through_to_generic_nudge(self, test_db, mock_llm):
+        """The done schema plus an EXTRA key (beyond the tolerated ``reasoning``) is
+        ambiguous — generic nudge, not the done-specific teaching."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(
+                    request,
+                    '{"success": true, "summary": "wrote it", "extra": "nope"}',
+                )
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        await agent.run("", max_steps=max_steps)
+
+        assert len(mock_llm.requests) == 3
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.COLLECTOR_TOOL_CALL_NUDGE
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_first_move_json_done_recovery_is_still_premature_guarded(
+        self, test_db, mock_llm
+    ):
+        """A first-move JSON bail is taught like any other; if the model's recovery
+        move is a bare done() with no prior work, the premature-done guard still
+        refuses it — the teaching nudge opens no bypass around the work requirement."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_text_response(
+                    request, '{"success": true, "summary": "no new matches this cycle"}'
+                )
+            if count == 2:
+                # The taught recovery — but as a first-move done(), still premature.
+                return mock_llm._make_tool_call_response(
+                    request, "done", {"success": True, "summary": "no new matches this cycle"}
+                )
+            if count == 3:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            return mock_llm._make_tool_call_response(
+                request, "done", {"success": True, "summary": "wrote the entry"}
+            )
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        # Bail taught (call 2), recovery done() premature-refused (call 3 sees the
+        # error tool result), real work + legitimate close follow.
+        assert len(mock_llm.requests) == 4
+        last_user = [m for m in mock_llm.requests[1]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
+        tool_results = [
+            m for m in mock_llm.requests[2]["messages"] if m.get("role") == MessageRole.TOOL
+        ]
+        assert tool_results, "the first-move done() should be refused via a tool result"
+        assert any(record.tool == "search" for record in response.tool_calls)
+
+        await agent.close()
+
+
 def _text_response(content: str) -> LlmResponse:
     return LlmResponse(message=LlmMessage(role="assistant", content=content))
 
@@ -2253,6 +2429,57 @@ class TestResponseValidators:
             TextInsteadOfToolValidator().check(_tool_response("search", {}), _ctx()), Proceed
         )
 
+    def test_done_json_bail_validator(self):
+        # Bare args JSON → the shape-specific teaching nudge (a NudgeContinue, so
+        # the model itself must re-emit the real call — never a fabricated repair).
+        bare = _text_response('{"success": true, "summary": "wrote it"}')
+        taught = DoneJsonBailValidator().check(bare, _ctx())
+        assert isinstance(taught, NudgeContinue)
+        assert taught.message == Prompt.COLLECTOR_DONE_JSON_NUDGE
+        assert "done's arguments as plain text" in taught.message
+        assert "done(success=" in taught.message
+        # Full envelope → the same teaching.
+        envelope = _text_response(
+            '{"name": "done", "arguments": {"success": false, "summary": "no-op"}}'
+        )
+        assert isinstance(DoneJsonBailValidator().check(envelope, _ctx()), NudgeContinue)
+        # A tolerated reasoning key still matches; extras / non-done JSON / prose /
+        # non-bool success fall through (Proceed → the generic text-bail guard next
+        # in the chain owns them).
+        assert isinstance(
+            DoneJsonBailValidator().check(
+                _text_response('{"reasoning": "x", "success": true, "summary": "s"}'), _ctx()
+            ),
+            NudgeContinue,
+        )
+        for untouched in (
+            '{"success": true, "summary": "s", "extra": "y"}',  # extra key
+            '{"name": "search", "arguments": {"success": true, "summary": "s"}}',  # wrong name
+            '{"note": "not a done"}',  # not the done schema
+            '{"success": "yes", "summary": "s"}',  # success not a bool
+            "Done. I wrote the entry.",  # plain prose
+        ):
+            assert isinstance(
+                DoneJsonBailValidator().check(_text_response(untouched), _ctx()), Proceed
+            )
+        # A response that already has a tool call is left alone; final step → no
+        # retry room, honoured as-is (like the generic text-bail guard).
+        assert isinstance(
+            DoneJsonBailValidator().check(_tool_response("search", {}), _ctx()), Proceed
+        )
+        assert isinstance(DoneJsonBailValidator().check(bare, _ctx(is_final_step=True)), Proceed)
+
+    def test_parse_done_json_bail_returns_only_success_and_summary(self):
+        # The parse helper strips a tolerated reasoning key down to the done args.
+        assert parse_done_json_bail('{"reasoning": "why", "success": true, "summary": "s"}') == {
+            "success": True,
+            "summary": "s",
+        }
+        # Non-JSON, missing required keys, and malformed envelopes yield None.
+        assert parse_done_json_bail("not json") is None
+        assert parse_done_json_bail('{"summary": "s"}') is None
+        assert parse_done_json_bail('{"name": "done", "arguments": "oops"}') is None
+
     def test_premature_done_validator(self):
         done = _tool_response("done", {"success": True, "summary": "no matches"})
         # First-move done() with no prior records → reject.
@@ -2269,7 +2496,8 @@ class TestResponseValidators:
 
     def test_chain_composition_is_one_list_entry_per_guard(self):
         """The base chain runs the response-shape guards; the collector chain adds
-        the two run-shape guards.  A new guard = one more list entry."""
+        the three collector-only run-shape guards.  A new guard = one more list
+        entry."""
         assert Agent.response_validators[0].__class__ is HallucinatedToolCallRepair
         chat_conditions = {
             XmlTagValidator,
@@ -2291,11 +2519,18 @@ class TestResponseValidators:
         ).nudge
         assert collector_nudge != "Please provide your response."
         assert "tool call" in collector_nudge.lower() and "done()" in collector_nudge
-        # Collector run-shape chain = the two collector-only guards.
+        # Collector run-shape chain = the three collector-only guards, with the
+        # done-JSON teaching guard ordered BEFORE the generic text-bail guard so
+        # the shape-specific teaching outranks the generic nudge.
         assert {v.__class__ for v in BackgroundAgent.run_shape_validators} == {
             PrematureDoneValidator,
+            DoneJsonBailValidator,
             TextInsteadOfToolValidator,
         }
+        run_shape_classes = [v.__class__ for v in BackgroundAgent.run_shape_validators]
+        assert run_shape_classes.index(DoneJsonBailValidator) < run_shape_classes.index(
+            TextInsteadOfToolValidator
+        )
         # Base agent has no run-shape guards (no shape forbids an early terminator).
         assert Agent.run_shape_validators == []
 

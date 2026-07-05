@@ -179,6 +179,20 @@ Examples:
         "otherwise call the appropriate tool to continue the cycle."
     )
 
+    # The shape-specific sibling of COLLECTOR_TOOL_CALL_NUDGE, injected when the
+    # stray text is recognisably done()'s ARGUMENTS emitted as a JSON object (the
+    # model composed a valid terminator but failed to route it through the
+    # tool-call channel — gpt-oss's dominant call-shaped text bail).  Reject and
+    # teach: name exactly what it did and the exact next move — the real done()
+    # tool call in canonical notation (never a JSON payload snippet, which would
+    # model the very shape being corrected).
+    COLLECTOR_DONE_JSON_NUDGE = (
+        "You wrote done's arguments as plain text instead of calling the `done` tool — "
+        "text output is not a tool call, so nothing was recorded. Make the real tool "
+        'call now: `done(success=<true|false>, summary="<one sentence on what this '
+        'cycle actually did>")`.'
+    )
+
     # Returned (in the tool-result field, success=False) when a collector calls
     # done() as its very first move — before reading any input or doing any work.
     # Unlike COLLECTOR_TOOL_CALL_NUDGE this is NOT a user-turn nudge: the model

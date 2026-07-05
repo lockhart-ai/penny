@@ -38,6 +38,7 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 from penny.tests.eval.fixtures import (
+    COLLECTOR_DONE_JSON_BAIL,
     COLLECTOR_PROSE_BAIL,
     KNOWLEDGE_PAGE_CONTENT,
     RESEARCH_PAGES,
@@ -316,6 +317,43 @@ async def test_collector_recovers_from_text_bail(nudge_eval) -> None:
         collection=WATCHLIST.name,
         seed=_seed_watchlist,
         bail_text=COLLECTOR_PROSE_BAIL,
+    )
+
+
+def _score_taught_real_done(db: Database, before: object, sent: list[str]) -> list[str]:
+    """The teaching worked: the live model MADE the real done() tool call after the
+    nudge (the promptlog records the model's own emission — the injected bail was
+    text, so any logged done() call is the model's recovery move).  ``nudge_eval``
+    separately asserts the cycle closed successfully; this pins that the close came
+    from the model's own tool call, i.e. the taught behaviour, not any absorption
+    by the system."""
+    if tool_was_called(db, "done"):
+        return []
+    return ["no real done() call was logged — the model never re-emitted the taught call"]
+
+
+async def test_collector_taught_out_of_args_only_json_bail(nudge_eval) -> None:
+    """Contract: a collector that emits the done() terminator's ARGUMENTS as a bare
+    JSON text object (``{"success": true, "summary": "…"}``) — gpt-oss's native
+    Harmony-backend fallback and the dominant call-shaped text bail in production —
+    receives the shape-specific TEACHING nudge (``COLLECTOR_DONE_JSON_NUDGE``: what
+    it did, and the exact ``done(...)`` call to make) and recovers by MAKING the
+    real done() tool call; the cycle completes.  One extra round-trip versus a
+    repair is accepted and expected — the model, not the system, must emit the call
+    (reject-and-teach: repairs are reserved for transport-mangled calls, not
+    model-authored malformations).
+
+    The harness forces one JSON bail right after the model's first tool call; the
+    live model then drives the recovery through the production teaching nudge.
+    ``_score_taught_real_done`` asserts the real done() call was logged (the
+    mechanism itself is covered deterministically by
+    ``test_agentic_loop.TestCollectorDoneJsonBailNudge``)."""
+    await nudge_eval(
+        case_id="collector-done-json-bail-teaching",
+        collection=WATCHLIST.name,
+        seed=_seed_watchlist,
+        bail_text=COLLECTOR_DONE_JSON_BAIL,
+        score=_score_taught_real_done,
     )
 
 
