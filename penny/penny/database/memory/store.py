@@ -459,8 +459,16 @@ class MemoryStore:
 
         Runs the same similarity-based dedup as ``Collection.write``, plus an
         exact key-match shortcut when a key is supplied.  True on the first hit.
+
+        Every name must resolve to a real memory: an unknown name raises
+        ``MemoryNotFoundError`` naming the offending value, rather than reading
+        as an empty (and therefore always-``False``) memory — a misspelled probe
+        must not misreport ``no`` and green-light the write it was checking for.
         """
         names = [slug(n) for n in names]
+        for name in names:
+            if self.get(name) is None:
+                raise MemoryNotFoundError(name)
         thresholds = thresholds or self._default_thresholds()
         candidate = EntrySide(key, key_embedding, content_embedding)
         for name in names:
