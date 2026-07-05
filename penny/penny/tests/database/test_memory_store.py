@@ -817,6 +817,11 @@ class TestExists:
         assert db.memories.exists(["likes"], "dark roast", None, None) is True
         assert db.memories.exists(["likes"], "not seen", None, None) is False
 
+        # An unknown name is a misspelled probe, not an empty (always-False)
+        # memory: it raises so the caller can't misread "no" as "safe to write".
+        with pytest.raises(MemoryNotFoundError, match="lieks"):
+            db.memories.exists(["lieks"], "dark roast", None, None)
+
     def test_exists_by_similarity_across_stores(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_collection("unnotified", "pending", Inclusion.NEVER, RecallMode.RECENT)
