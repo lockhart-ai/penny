@@ -193,13 +193,13 @@ def strip_display_brackets(key: str) -> str:
     """Strip one layer of enclosing display brackets from an entry key.
 
     Entry lists render an entry as ``[key] content`` — the brackets are *display
-    framing*, not part of the key.  The model copies that rendered form back into
-    a later key argument (``key="[foo]"``), so a key lookup that misses on the
-    literal bracketed form retries against the unwrapped key.  Strips exactly ONE
+    framing*, not part of the key — and the model copies that rendered form back
+    into a later key argument (``key="[foo]"``).  Lookups stay strictly exact:
+    this helper never rewrites what a lookup searches for.  It exists so the
+    key-taking tools can *detect* the copied display form on a miss and reject
+    with a teaching error that names the bare key to reuse.  Strips exactly ONE
     enclosing ``[...]`` layer (``[[k]]`` → ``[k]``); a key with no enclosing
-    brackets is returned unchanged, so a lookup only ever falls back when the
-    literal key genuinely misses — exact match always wins, and a key that really
-    contains brackets is never stripped while it exists.
+    brackets is returned unchanged.
     """
     if len(key) > 2 and key.startswith("[") and key.endswith("]"):
         return key[1:-1]

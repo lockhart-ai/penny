@@ -98,10 +98,10 @@ def _format_entries(
     first", "most relevant first") since the order differs per read tool and
     matters when the model concatenates entries.  Keyed entries (collection)
     include the key as ``[key]`` — the brackets are display framing, not part of
-    the key, so the lookup boundary strips them back off (``strip_display_brackets``)
-    if the model copies the rendered form into a key argument.  Keyless entries
-    (log) show just content.  Empty lists produce a clear "no entries" sentinel
-    so the model doesn't confuse absence with error.
+    the key, and the key-taking tools reject a copied ``[key]`` argument with a
+    teaching error naming the bare key (``_bracket_key_rejection``).  Keyless
+    entries (log) show just content.  Empty lists produce a clear "no entries"
+    sentinel so the model doesn't confuse absence with error.
     """
     if not entries:
         return "(no entries)"
@@ -131,6 +131,37 @@ def _resolve(db: Database, name: str) -> Memory:
     if memory is None:
         raise MemoryNotFoundError(name)
     return memory
+
+
+_BRACKET_KEY_REJECTION = (
+    "Key '{key}' not found in '{memory}'. Entry listings show keys inside "
+    "[brackets], but the brackets are display framing, not part of the key — "
+    "this entry's key is '{bare}'. Retry with key='{bare}'."
+)
+
+
+def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolResult | None:
+    """A teaching rejection when a missed key is the bracket-wrapped display
+    form of an entry that exists.
+
+    Entry lists render entries as ``[key] content`` and the model copies that
+    display form — brackets included — into later key arguments.  Lookups stay
+    strictly exact; the mistaken input is never absorbed by a silent retry
+    (normalizing a hallucinated shape conforms the system to the model's error,
+    and that compounds).  Instead the miss is diagnosed and rejected with the
+    bare key named ready to reuse — the duplicate-write precedent: name the
+    mistake and the model's next move.  Returns ``None`` when the key isn't
+    bracket-wrapped, or when the bare form doesn't exist either — the ordinary
+    not-found error stands.  A key that genuinely contains brackets exact-matches
+    before any tool reaches this check, so it is never second-guessed.
+    """
+    bare = strip_display_brackets(key)
+    if bare == key or not memory.get(bare):
+        return None
+    return ToolResult(
+        message=_BRACKET_KEY_REJECTION.format(key=key, memory=memory_name, bare=bare),
+        success=False,
+    )
 
 
 class MemoryTool(Tool):
@@ -503,13 +534,14 @@ class CollectionGetTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionGetArgs(**kwargs)
-        rows = _resolve(self._db, args.memory).get(args.key)
+        memory = _resolve(self._db, args.memory)
+        rows = memory.get(args.key)
         if not rows:
-            # Name the normalized key the lookup settled on (display brackets
-            # stripped), so a bracket-copied key comes back in reusable form.
-            tried = strip_display_brackets(args.key)
+            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            if rejection is not None:
+                return rejection
             return ToolResult(
-                message=f"Key '{tried}' not found in '{args.memory}'. List the available "
+                message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
                 f"keys with collection_keys('{args.memory}'), or search by content with "
                 f"read_similar(memory='{args.memory}', anchor=<what you're looking for>)."
             )
@@ -825,11 +857,14 @@ class UpdateEntryTool(MemoryTool):
                 message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
-        outcome = _resolve(self._db, args.memory).update(args.key, args.content, self._author)
+        memory = _resolve(self._db, args.memory)
+        outcome = memory.update(args.key, args.content, self._author)
         if outcome == "not_found":
-            tried = strip_display_brackets(args.key)
+            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            if rejection is not None:
+                return rejection
             return ToolResult(
-                message=f"Key '{tried}' not found in '{args.memory}' — update only replaces "
+                message=f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
                 f"existing entries. Write it as a new entry with "
                 f"collection_write(memory='{args.memory}', entries=<the new key and content>), "
                 f"or list the current keys with collection_keys('{args.memory}') if you "
@@ -1179,11 +1214,14 @@ class CollectionDeleteEntryTool(MemoryTool):
                 message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
-        removed = _resolve(self._db, args.memory).delete(args.key)
+        memory = _resolve(self._db, args.memory)
+        removed = memory.delete(args.key)
         if removed == 0:
-            tried = strip_display_brackets(args.key)
+            rejection = _bracket_key_rejection(memory, args.memory, args.key)
+            if rejection is not None:
+                return rejection
             return ToolResult(
-                message=f"No entry with key '{tried}' in '{args.memory}' — nothing to delete. "
+                message=f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete. "
                 f"List the current keys with collection_keys('{args.memory}') to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)

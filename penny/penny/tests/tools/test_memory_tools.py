@@ -502,14 +502,28 @@ class TestCollectionWritesAndReads:
         assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
         assert "not found" in missing.message
-        # A bracket-wrapped key (the model copying the `[key]` display form)
-        # resolves the same entry, and a double-miss names the normalized
-        # (unwrapped) key so the model can reuse the corrected form.
+        # A bracket-wrapped key (the model copying the `[key]` display form) is
+        # never silently resolved — it's rejected with a teaching error that
+        # names the mistake and the bare key ready to reuse.
         bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
-        assert "hello" in bracketed.message
+        assert bracketed.success is False
+        assert bracketed.message == (
+            "Key '[k]' not found in 'likes'. Entry listings show keys inside "
+            "[brackets], but the brackets are display framing, not part of the key — "
+            "this entry's key is 'k'. Retry with key='k'."
+        )
+        # A bracket-wrapped key whose bare form doesn't exist either gets the
+        # ordinary not-found error, not the bracket teaching rejection.
         double_miss = await CollectionGetTool(db).execute(memory="likes", key="[absent]")
-        assert "'absent'" in double_miss.message
-        assert "[absent]" not in double_miss.message
+        assert "Key '[absent]' not found" in double_miss.message
+        assert "Retry with" not in double_miss.message
+        # A key that genuinely contains brackets exact-matches with no rejection.
+        await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
+            memory="likes", entries=[{"key": "[lit]", "content": "bracket literal body"}]
+        )
+        literal = await CollectionGetTool(db).execute(memory="likes", key="[lit]")
+        assert literal.success is True
+        assert "bracket literal body" in literal.message
 
     @pytest.mark.asyncio
     async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
@@ -591,13 +605,20 @@ class TestCollectionMutations:
         assert "Updated 'k' in 'likes'" in result.message
         fetched = await CollectionGetTool(db).execute(memory="likes", key="k")
         assert "new" in fetched.message
-        # A bracket-wrapped key (display form copied from an entry list) resolves
-        # the same entry through the tool boundary — the update lands on key 'k'.
+        # A bracket-wrapped key (display form copied from an entry list) is
+        # rejected with a teaching error naming the bare key — never absorbed;
+        # the entry is untouched.
         bracketed = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="[k]", content="newer"
         )
-        assert bracketed.mutated is True
-        assert "newer" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
+        assert bracketed.success is False
+        assert "Retry with key='k'" in bracketed.message
+        assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
+        # Same teaching rejection on delete: nothing removed, bare key named.
+        rejected_delete = await CollectionDeleteEntryTool(db).execute(memory="likes", key="[k]")
+        assert rejected_delete.success is False
+        assert "Retry with key='k'" in rejected_delete.message
+        assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         # A blank replacement is refused (same content bar as collection_write),
         # leaving the existing content untouched rather than blanking the entry.
         # The degenerate-content rule now lives on UpdateEntryArgs.content, so the
@@ -624,13 +645,13 @@ class TestCollectionMutations:
             memory="likes", key="k", content="new"
         )
         assert "not found" in result.message
-        # A bracket-wrapped double-miss names the normalized key ('k', not '[k]')
-        # so the model reuses the corrected form instead of the display form.
+        # A bracket-wrapped key whose bare form doesn't exist either gets the
+        # ordinary not-found error, not the bracket teaching rejection.
         bracketed = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="[k]", content="new"
         )
-        assert "'k'" in bracketed.message
-        assert "[k]" not in bracketed.message
+        assert "Key '[k]' not found" in bracketed.message
+        assert "Retry with" not in bracketed.message
 
     @pytest.mark.asyncio
     async def test_archive_and_unarchive(self, tmp_path):
