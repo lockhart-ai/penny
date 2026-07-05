@@ -182,7 +182,7 @@ corrects collection prompts that have drifted from their stated intent
 ### playlists
 favorite playlists
 
-#### [morning] · YYYY-MM-DD HH:MM UTC
+#### key='morning' · YYYY-MM-DD HH:MM UTC
 prog rock
 
 ### tips
@@ -351,7 +351,7 @@ async def test_chat_prompt_renders_relevant_mode_via_embedding(
 ### trivia
 facts
 
-#### [espresso] · YYYY-MM-DD HH:MM UTC
+#### key='espresso' · YYYY-MM-DD HH:MM UTC
 espresso uses 9 bars of pressure"""
     ), f"Recall block mismatch:\n{recall!r}"
 
@@ -745,8 +745,8 @@ async def test_recall_all_mode_renders_all_entries(
         result = await penny.chat_agent._recall_section(current_message=None)
 
         assert result is not None
-        assert "[morning]" in result and "prog rock" in result
-        assert "[evening]" in result and "lo-fi" in result
+        assert "key='morning'" in result and "prog rock" in result
+        assert "key='evening'" in result and "lo-fi" in result
 
 
 @pytest.mark.asyncio
