@@ -17,7 +17,7 @@ from penny.agents.base import Agent
 from penny.agents.models import ControllerResponse
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants
-from penny.database.memory import Inclusion, Memory, RecallMode
+from penny.database.memory import Inclusion, Memory, RecallMode, render_key
 from penny.database.models import MemoryEntry
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.models import LlmError
@@ -473,7 +473,9 @@ class ChatAgent(Agent):
         lines = [f"### {memory.name}", memory.description]
         for entry in entries:
             timestamp = format_log_timestamp(entry.created_at)
-            header = f"#### key='{entry.key}' · {timestamp}" if entry.key else f"#### {timestamp}"
+            header = (
+                f"#### {render_key(entry.key)} · {timestamp}" if entry.key else f"#### {timestamp}"
+            )
             lines.append("")
             lines.append(header)
             lines.append(entry.content)

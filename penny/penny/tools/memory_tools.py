@@ -37,6 +37,7 @@ from penny.database.memory import (
     MemoryType,
     RecallMode,
     WriteResult,
+    render_key,
     render_run_calls,
     strip_display_brackets,
 )
@@ -114,7 +115,7 @@ def _format_entries(
         return "(no entries)"
     lines = []
     for index, entry in enumerate(entries, start=1):
-        prefix = f"key='{entry.key}' " if entry.key else ""
+        prefix = f"{render_key(entry.key)} " if entry.key else ""
         stamp = f"[{format_log_timestamp(entry.created_at)}] "
         lines.append(f"{index}. {stamp}{prefix}{entry.content}")
     body = "\n".join(lines)
@@ -141,9 +142,9 @@ def _resolve(db: Database, name: str) -> Memory:
 
 
 _BRACKET_KEY_REJECTION = (
-    "Key '{key}' not found in '{memory}'. Entry listings show keys inside "
-    "[brackets], but the brackets are display framing, not part of the key — "
-    "this entry's key is '{bare}'. Retry with key='{bare}'."
+    "Key '{key}' not found in '{memory}'. The enclosing [brackets] are not part "
+    "of the key — entry listings show keys as key='...' and the key is passed "
+    "bare, without brackets. This entry's key is '{bare}'. Retry with key='{bare}'."
 )
 
 
@@ -151,8 +152,10 @@ def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolRe
     """A teaching rejection when a missed key is the bracket-wrapped display
     form of an entry that exists.
 
-    Entry lists render entries as ``[key] content`` and the model copies that
-    display form — brackets included — into later key arguments.  Lookups stay
+    Entry lists used to render entries as ``[key] content`` and the model copied
+    that display form — brackets included — into later key arguments; the render
+    now shows keys in invocation form (``key='<key>'``), but this guard stays for
+    the model's ingrained bracket habit.  Lookups stay
     strictly exact; the mistaken input is never absorbed by a silent retry
     (normalizing a hallucinated shape conforms the system to the model's error,
     and that compounds).  Instead the miss is diagnosed and rejected with the
@@ -1581,7 +1584,7 @@ class ReadPublishedLatestTool(CursorReadTool):
         lines = []
         for index, item in enumerate(items, start=1):
             intent = f" (intent: {item.intent})" if item.intent else ""
-            key = f"key='{item.entry.key}' " if item.entry.key else ""
+            key = f"{render_key(item.entry.key)} " if item.entry.key else ""
             stamp = f"[{format_log_timestamp(item.entry.created_at)}] "
             lines.append(
                 f"{index}. {stamp}from `{item.memory_name}`{intent}: {key}{item.entry.content}"

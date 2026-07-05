@@ -189,12 +189,29 @@ def slug(name: str) -> str:
     return normalize_unicode(name).lower()
 
 
+def render_key(key: str) -> str:
+    """Render an entry key in **invocation form** — ``key='<key>'`` — for every
+    model-facing entry render.
+
+    The displayed form IS the form a key-taking tool accepts, so the model
+    copies what it reads straight into a valid ``key=`` argument.  The single
+    source of the convention: the entry-list renders, the published-stream
+    render, and the chat recall headers all call this, so the form can't
+    partially revert to the old copy-hostile ``[key]`` display (whose brackets
+    the model pasted verbatim into key args — the eval contract in
+    ``tests/eval/test_key_render.py`` guards the behaviour).
+    """
+    return f"key='{key}'"
+
+
 def strip_display_brackets(key: str) -> str:
     """Strip one layer of enclosing display brackets from an entry key.
 
-    Entry lists render an entry as ``[key] content`` — the brackets are *display
-    framing*, not part of the key — and the model copies that rendered form back
-    into a later key argument (``key="[foo]"``).  Lookups stay strictly exact:
+    Entry lists used to render an entry as ``[key] content`` — the brackets were
+    *display framing*, not part of the key — and the model copied that rendered
+    form back into a later key argument (``key="[foo]"``).  The render now shows
+    keys in invocation form (:func:`render_key`), but the model's ingrained
+    bracket habit persists, so the guard stays.  Lookups stay strictly exact:
     this helper never rewrites what a lookup searches for.  It exists so the
     key-taking tools can *detect* the copied display form on a miss and reject
     with a teaching error that names the bare key to reuse.  Strips exactly ONE

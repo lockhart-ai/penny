@@ -442,14 +442,22 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                         install_browse(penny, browse)
                     # A recovery case wraps the chat agent's model client to force
                     # one bad response (e.g. a bracket-wrapped key) deterministically.
+                    # Keep the wrapper: its ``bail_injected`` flag is the only proof
+                    # the sabotage fired — the raw response is persisted inside the
+                    # REAL client before the wrapper mutates it, so the promptlog
+                    # never shows the injected form and can't be probed for it.
+                    wrapper: _InjectingClient | None = None
                     if wrap_client is not None:
-                        penny.chat_agent._model_client = wrap_client(penny.chat_agent._model_client)
+                        wrapper = wrap_client(penny.chat_agent._model_client)
+                        penny.chat_agent._model_client = wrapper
                     before = collection_names(penny.db)
                     try:
                         await server.push_message(sender=TEST_SENDER, content=message)
                         response = await server.wait_for_message(timeout=timeout)
                         reply = str(response.get("message", ""))
-                        fails = score(penny.db, before, reply)
+                        fails = list(score(penny.db, before, reply))
+                        if wrapper is not None and not wrapper.bail_injected:
+                            fails.append("forced bail never fired — contract not exercised")
                         results.append(SampleResult(not fails, fails))
                     except TimeoutError:
                         results.append(SampleResult(False, ["no reply within timeout"]))

@@ -19,8 +19,6 @@ model pasted verbatim into ``key="[key]"`` args — 225 observed leaks, #1404).
     bracket-wrapped key, so the memory-tool teaching rejection fires on every
     sample; the live model must recover to the bare key and land the mutation.
     This validates the "did you mean" teaching rejection is actually load-bearing.
-    It exercises the rejection that lands in #1396, so its live run is gated behind
-    that merge (see the skip marker — un-skip on the rebase once #1396 lands).
 """
 
 from __future__ import annotations
@@ -82,14 +80,14 @@ def _score_copythrough(db: Database, before: set[str], reply: str) -> list[str]:
 
 
 def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[str]:
-    """Case B: the forced bracket call fired (contract exercised) AND the model
-    recovered — the intended entry landed under its bare key despite the rejection."""
-    fails = []
-    if not bracket_wrapped_key_calls(db):
-        fails.append("forced bracket-key call never fired — contract not exercised")
+    """Case B: the model recovered — the intended entry landed under its bare key
+    despite the teaching rejection.  The "did the sabotage fire?" check lives in
+    the harness (``chat_eval`` asserts the wrapper's ``bail_injected``): the raw
+    response is persisted inside the real client BEFORE the injector mutates it,
+    so the promptlog never shows the injected bracket form and can't be probed."""
     if not _target_mutated(db):
-        fails.append(f"did not recover — {_TARGET_KEY!r} never updated after the rejection")
-    return fails
+        return [f"did not recover — {_TARGET_KEY!r} never updated after the rejection"]
+    return []
 
 
 async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:
@@ -105,10 +103,6 @@ async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:
     )
 
 
-@pytest.mark.skip(
-    reason="live run pending the teaching rejection from #1396 — un-skip on the "
-    "rebase once #1396 (bracket-key teaching error) lands on main"
-)
 async def test_forced_bracket_key_recovery(chat_eval: ChatEval) -> None:
     """Sabotage the model's first key-bearing call to carry a bracket-wrapped key,
     so the teaching rejection fires; the live model must recover to the bare key

@@ -502,15 +502,16 @@ class TestCollectionWritesAndReads:
         assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
         assert "not found" in missing.message
-        # A bracket-wrapped key (the model copying the `[key]` display form) is
-        # never silently resolved — it's rejected with a teaching error that
-        # names the mistake and the bare key ready to reuse.
+        # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
+        # display form) is never silently resolved — it's rejected with a teaching
+        # error that names the mistake, the current key='...' render, and the bare
+        # key ready to reuse.
         bracketed = await CollectionGetTool(db).execute(memory="likes", key="[k]")
         assert bracketed.success is False
         assert bracketed.message == (
-            "Key '[k]' not found in 'likes'. Entry listings show keys inside "
-            "[brackets], but the brackets are display framing, not part of the key — "
-            "this entry's key is 'k'. Retry with key='k'."
+            "Key '[k]' not found in 'likes'. The enclosing [brackets] are not part "
+            "of the key — entry listings show keys as key='...' and the key is passed "
+            "bare, without brackets. This entry's key is 'k'. Retry with key='k'."
         )
         # A bracket-wrapped key whose bare form doesn't exist either gets the
         # ordinary not-found error, not the bracket teaching rejection.
@@ -1667,6 +1668,9 @@ class TestReadPublishedLatest:
         # and the candidate pool is exactly the eligible published collections.
         assert "New engineering role" in result.message
         assert "from `jobs`" in result.message
+        # The key renders in invocation form — the copyable key='...' shape,
+        # matching every other model-facing entry render (never `[key]`).
+        assert "key='role'" in result.message
         assert pools == [{"games", "jobs"}]
         assert "unpublished" not in result.message
         assert "Stardrift Saga" not in result.message
