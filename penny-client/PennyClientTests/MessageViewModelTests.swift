@@ -19,7 +19,7 @@ struct MessageViewModelTests {
         #expect(database.loadMessages().first?.content == "hello Penny")
     }
 
-    @Test func sendDraftSwitchesToChatFilter() async {
+    @Test func sendDraftClearsFilters() async {
         let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
         let viewModel = MessageView.ViewModel(client: client)
         viewModel.selectedMessageFilter = .penny
@@ -28,7 +28,7 @@ struct MessageViewModelTests {
         viewModel.sendDraft()
         await viewModel.waitForFiltering()
 
-        #expect(viewModel.selectedMessageFilter == .chat)
+        #expect(viewModel.selectedMessageFilter == .all)
         #expect(viewModel.filteredMessages.map(\.content) == ["hello Penny"])
     }
 

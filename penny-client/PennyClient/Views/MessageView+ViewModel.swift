@@ -204,10 +204,10 @@ extension MessageView {
             draftMessage = ""
             client.sendMessage(trimmedMessage)
 
-            if selectedMessageFilter == .chat {
+            if selectedMessageFilter == .all {
                 refreshFilteredMessages()
             } else {
-                selectedMessageFilter = .chat
+                selectedMessageFilter = .all
             }
         }
 
