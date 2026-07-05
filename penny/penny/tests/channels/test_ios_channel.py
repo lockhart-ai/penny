@@ -65,7 +65,7 @@ def _make_db(tmp_path) -> Database:
     return db
 
 
-def _make_channel(db: Database, apns=None) -> IosChannel:
+def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChannel:
     return IosChannel(
         host="localhost",
         port=9999,
@@ -73,6 +73,7 @@ def _make_channel(db: Database, apns=None) -> IosChannel:
         db=db,
         pairing_token="pair-me",
         apns_client=apns,
+        is_primary_channel=is_primary,
     )
 
 
@@ -127,7 +128,40 @@ async def test_register_creates_default_ios_device_and_registration(tmp_path):
     assert registration is not None
     assert registration.apns_token == "apns-token"
     assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
+    assert ws.sent[-1]["is_default"] is True
     assert ws.sent[-1]["pending_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sidecar_registration_does_not_steal_default_device(tmp_path):
+    """In sidecar mode (Signal primary), an iOS register must not claim the default."""
+    db = _make_db(tmp_path)
+    db.devices.register(ChannelType.SIGNAL, "+15550000000", "Signal", is_default=True)
+    channel = _make_channel(db, is_primary=False)
+    ws = FakeWs()
+    server_ws = cast(Any, ws)
+
+    device_id = await channel._handle_register(
+        server_ws,
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+            "apns_token": "apns-token",
+        },
+    )
+
+    assert device_id == "ios-keychain-id"
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    assert device.is_default is False
+    assert db.devices.get_default_identifier() == "+15550000000"
+    registration = db.ios.get_registration(device.id)
+    assert registration is not None
+    assert registration.apns_token == "apns-token"
+    assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
+    assert ws.sent[-1]["is_default"] is False
 
 
 @pytest.mark.asyncio
