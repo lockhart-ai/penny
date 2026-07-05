@@ -47,6 +47,23 @@ def _stub_list_models(
     monkeypatch.setattr(client, "list_models", _list_models)
 
 
+def _stub_list_embedding_models(
+    monkeypatch: pytest.MonkeyPatch,
+    client: object,
+    *,
+    available: list[str] | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Replace ``client.list_embedding_models`` with a canned result or error."""
+
+    async def _list_embedding_models() -> list[str]:
+        if error is not None:
+            raise error
+        return available or []
+
+    monkeypatch.setattr(client, "list_embedding_models", _list_embedding_models)
+
+
 def _build_preflight(
     monkeypatch: pytest.MonkeyPatch,
     config: Config,
@@ -55,6 +72,8 @@ def _build_preflight(
     chat_error: Exception | None = None,
     embed_available: list[str] | None = None,
     embed_error: Exception | None = None,
+    embed_specific_available: list[str] | None = None,
+    embed_specific_error: Exception | None = None,
     vision_available: list[str] | None = None,
     image_available: list[str] | None = None,
     browser_enabled: bool = False,
@@ -75,6 +94,12 @@ def _build_preflight(
         embedding_client,
         available=embed_available if embed_available is not None else [config.llm_embedding_model],
         error=embed_error,
+    )
+    _stub_list_embedding_models(
+        monkeypatch,
+        embedding_client,
+        available=embed_specific_available,
+        error=embed_specific_error,
     )
 
     vision_client: LlmClient | None = None
@@ -172,6 +197,41 @@ async def test_embedding_model_missing_hard_fails(monkeypatch, test_config):
 
     assert report.has_failures
     assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.FAIL
+    assert "LLM_EMBEDDING_MODEL" in report.failure_summary()
+
+
+@pytest.mark.asyncio
+async def test_embedding_model_found_via_embedding_models_fallback(monkeypatch, test_config):
+    """If /models omits an embedding model, /v1/embeddings/models can verify it."""
+    preflight = _build_preflight(
+        monkeypatch,
+        test_config,
+        embed_available=["some-other-model"],
+        embed_specific_available=[test_config.llm_embedding_model],
+    )
+    report = await preflight.run()
+
+    assert not report.has_failures
+    assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.OK
+    result = next(r for r in report.results if r.name is PreflightCheck.EMBEDDING_MODEL)
+    assert "/v1/embeddings/models" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_embedding_model_fallback_endpoint_error_hard_fails(monkeypatch, test_config):
+    """If /models omits the model and the fallback endpoint errors, it's a hard fail."""
+    preflight = _build_preflight(
+        monkeypatch,
+        test_config,
+        embed_available=["some-other-model"],
+        embed_specific_error=LlmResponseError("HTTP 404: not found"),
+    )
+    report = await preflight.run()
+
+    assert report.has_failures
+    assert _status(report, PreflightCheck.EMBEDDING_MODEL) is CheckStatus.FAIL
+    result = next(r for r in report.results if r.name is PreflightCheck.EMBEDDING_MODEL)
+    assert "/v1/embeddings/models could not verify it" in result.detail
     assert "LLM_EMBEDDING_MODEL" in report.failure_summary()
 
 

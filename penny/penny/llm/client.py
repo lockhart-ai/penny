@@ -62,6 +62,11 @@ def _llm_error_detail(error: Exception) -> str:
     message = _json_error_message(getattr(error, "body", None))
     if message is not None:
         return message
+    return _non_json_error_detail(response)
+
+
+def _non_json_error_detail(response: httpx.Response) -> str:
+    """Describe a non-JSON error body by type + length only, never its content."""
     content_type = response.headers.get("content-type", _UNKNOWN_CONTENT_TYPE)
     return f"non-JSON error body (content-type={content_type}, {len(response.text)} chars)"
 
@@ -75,6 +80,37 @@ def _json_error_message(body: Any) -> str | None:
         return error_field["message"]
     message = body.get("message")
     return message if isinstance(message, str) else None
+
+
+def _summarize_httpx_error(response: httpx.Response) -> str:
+    """Summarize an httpx response error without dumping provider HTML."""
+    try:
+        message = _json_error_message(response.json())
+    except ValueError:
+        message = None
+    if message:
+        return f"HTTP {response.status_code}: {message}"
+    return f"HTTP {response.status_code}: {_non_json_error_detail(response)}"
+
+
+def _extract_model_ids(payload: Any) -> list[str]:
+    """Extract model ids from common model-list JSON shapes."""
+    items: Any = (
+        payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else payload
+    )
+
+    if not isinstance(items, list):
+        raise LlmResponseError("embedding model list response did not contain a list")
+
+    ids: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            ids.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("id"), str):
+            ids.append(item["id"])
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            ids.append(item["name"])
+    return ids
 
 
 class LlmClient:
@@ -99,6 +135,7 @@ class LlmClient:
         self.db = db
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.api_key = api_key
 
         client_kwargs: dict[str, Any] = {
             "base_url": f"{self.api_url}/v1",
@@ -293,6 +330,40 @@ class LlmClient:
         except openai.OpenAIError as error:
             raise LlmResponseError(_summarize_llm_error(error)) from error
         return [model.id for model in response.data]
+
+    async def list_embedding_models(self) -> list[str]:
+        """List embedding model ids from provider-specific /v1/embeddings/models.
+
+        Some OpenAI-compatible providers expose embedding-capable models through
+        a narrower endpoint even when ``/v1/models`` omits them. This is only
+        used as an embedding preflight fallback.
+        """
+        url = f"{self.api_url}{PennyConstants.LLM_EMBEDDING_MODELS_ENDPOINT}"
+        timeout = httpx.Timeout(
+            PennyConstants.LLM_MODEL_LIST_TIMEOUT_SECONDS,
+            connect=PennyConstants.LLM_CONNECT_TIMEOUT_SECONDS,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as error:
+            raise LlmTimeoutError(str(error)) from error
+        except httpx.ConnectError as error:
+            raise LlmConnectionError(str(error)) from error
+        except httpx.RequestError as error:
+            raise LlmResponseError(str(error)) from error
+        except httpx.HTTPStatusError as error:
+            raise LlmResponseError(_summarize_httpx_error(error.response)) from error
+
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise LlmResponseError("embedding model list returned non-JSON response") from error
+        return _extract_model_ids(payload)
 
     # ── Cleanup ──────────────────────────────────────────────────────────
 

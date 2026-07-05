@@ -15,8 +15,13 @@ import httpx
 import openai
 import pytest
 
-from penny.llm.client import LlmClient, _summarize_llm_error
-from penny.llm.models import LlmNotFoundError
+from penny.llm.client import (
+    LlmClient,
+    _extract_model_ids,
+    _summarize_httpx_error,
+    _summarize_llm_error,
+)
+from penny.llm.models import LlmNotFoundError, LlmResponseError
 
 _HTML_ERROR_BODY = (
     f"<!DOCTYPE html><html><head><title>404</title></head><body>{'x' * 5000}</body></html>"
@@ -86,6 +91,110 @@ class TestChatPropagatesSummarizedError:
 
         with pytest.raises(LlmNotFoundError) as exc_info:
             await client.chat([{"role": "user", "content": "hi"}])
+
+        message = str(exc_info.value)
+        assert "HTTP 404" in message
+        assert "<!DOCTYPE" not in message  # summarized, not the raw HTML body
+
+        await client.close()
+
+
+class TestSummarizeHttpxError:
+    """``list_embedding_models`` hits a raw ``/v1/embeddings/models`` endpoint
+    (not the SDK), so its error summarization takes an ``httpx.Response`` rather
+    than an ``openai`` error — same body-free contract as ``_summarize_llm_error``."""
+
+    def test_json_message_field_is_surfaced(self) -> None:
+        response = httpx.Response(404, json={"error": {"message": "model `bar` not found"}})
+
+        assert _summarize_httpx_error(response) == "HTTP 404: model `bar` not found"
+
+    def test_html_body_is_summarized_not_dumped(self) -> None:
+        response = httpx.Response(
+            404, headers={"content-type": "text/html"}, content=_HTML_ERROR_BODY.encode()
+        )
+
+        summary = _summarize_httpx_error(response)
+
+        assert "HTTP 404" in summary
+        assert "non-JSON error body" in summary
+        assert "text/html" in summary
+        assert "<!DOCTYPE" not in summary  # the raw body never leaks
+
+
+class TestExtractModelIds:
+    """The fallback endpoint's payload shape varies by provider — a ``data`` or
+    ``models`` envelope, dict items keyed by ``id`` or ``name``, or bare strings."""
+
+    def test_openai_data_id_shape(self) -> None:
+        payload = {"data": [{"id": "embeddinggemma"}, {"id": "other"}]}
+
+        assert _extract_model_ids(payload) == ["embeddinggemma", "other"]
+
+    def test_models_envelope_with_name_shape(self) -> None:
+        payload = {"models": [{"name": "embeddinggemma"}]}
+
+        assert _extract_model_ids(payload) == ["embeddinggemma"]
+
+    def test_bare_list_of_strings(self) -> None:
+        assert _extract_model_ids(["a", "b"]) == ["a", "b"]
+
+    def test_unrecognized_items_are_skipped(self) -> None:
+        payload = {"data": ["a", {"id": "b"}, {"name": "c"}, {"foo": "bar"}, 123]}
+
+        assert _extract_model_ids(payload) == ["a", "b", "c"]
+
+    def test_non_list_payload_raises(self) -> None:
+        with pytest.raises(LlmResponseError):
+            _extract_model_ids({"data": {"not": "a list"}})
+
+
+def _mock_embeddings_endpoint(monkeypatch, handler) -> None:
+    """Route the raw httpx client used by ``list_embedding_models`` through an
+    httpx ``MockTransport`` — mock at the HTTP boundary, no live network."""
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("penny.llm.client.httpx.AsyncClient", factory)
+
+
+class TestListEmbeddingModels:
+    @pytest.mark.asyncio
+    async def test_parses_ids_from_embeddings_endpoint(self, monkeypatch) -> None:
+        """A 200 from /v1/embeddings/models is parsed into model ids."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/v1/embeddings/models"
+            return httpx.Response(200, json={"data": [{"id": "embeddinggemma"}]})
+
+        _mock_embeddings_endpoint(monkeypatch, handler)
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+
+        assert await client.list_embedding_models() == ["embeddinggemma"]
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_http_error_raises_summarized_response_error(self, monkeypatch) -> None:
+        """An HTML 404 from the endpoint raises a summarized LlmResponseError, not the body."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                404, headers={"content-type": "text/html"}, content=_HTML_ERROR_BODY.encode()
+            )
+
+        _mock_embeddings_endpoint(monkeypatch, handler)
+        client = LlmClient(
+            api_url="http://localhost:11434", model="m", max_retries=1, retry_delay=0.0
+        )
+
+        with pytest.raises(LlmResponseError) as exc_info:
+            await client.list_embedding_models()
 
         message = str(exc_info.value)
         assert "HTTP 404" in message
