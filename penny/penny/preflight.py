@@ -215,7 +215,8 @@ class Preflight:
                 name,
                 f"embedding model {model!r} not listed by /v1/models at {url}, and "
                 f"/v1/embeddings/models could not verify it: {error}. Memory "
-                f"(dedup + recall) depends on it.",
+                f"(dedup + recall) depends on it. Pull it (`ollama pull {model}`) "
+                f"or fix LLM_EMBEDDING_MODEL.",
             )
         if model_available(model, embedding_available):
             return self._ok(
