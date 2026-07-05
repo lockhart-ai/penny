@@ -5,11 +5,16 @@ The one home for "is this text usable?" rules, kept dependency-light (only ``re`
 database or agent packages.  Two callers that must agree share these:
 
   * the memory write path (``Collection.write`` / the ``exists`` probe) rejects
-    degenerate corpus content via :func:`degenerate_reason`;
+    degenerate corpus content via :func:`degenerate_reason` — a SUBSTRING poison
+    check (a '…'/'.'/'?' collapse run anywhere corrupts a stored entry);
   * the ``send_message`` tool's ``args_model`` validator AND the run-health
     classifier's ``⚠ HALF-FORMED SEND`` flag both gate on
     :func:`half_formed_send_reason` — one definition for what Penny refuses to
-    send and what she flags as a regression.
+    send and what she flags as a regression.  This judges the message AS A WHOLE
+    (blank / bare-URL / bail-out / unfinished-or-truncated TAIL), NOT on a substring
+    hit, so a substantive message that merely quotes a degenerate fragment mid-text
+    is delivered.  Catching an in-flight collapse in the model's own output stays
+    the agent-loop reroll guard's job (``is_degenerate_run`` in ``agents/base.py``).
 
 Living here (rather than inside ``database/memory/_similarity``) is what lets
 ``tools/models.py`` import :func:`half_formed_send_reason` without triggering the
@@ -61,12 +66,21 @@ _WRITE_BAILOUT_PHRASES: frozenset[str] = frozenset(
     }
 )
 
-# A message that trails off into a run of dots followed by question/exclamation
-# spam with no closing clause — the fingerprint of a half-formed generation.  The
-# real case this targets: a notifier cycle that sent "Hi there! ......???" before
-# the actual notification.  Deliberately narrow (≥3 dots immediately followed by
-# ≥2 ?/!) so legitimate punctuation ("Wait... what?!", "Hmm...?") is never caught.
-_UNFINISHED_FRAGMENT_RE = re.compile(r"\.{3,}\s*[?!]{2,}")
+# A message that TRAILS OFF at its end into a run of dots followed by
+# question/exclamation spam with no closing clause — the fingerprint of a
+# half-formed generation.  The real case this targets: a notifier cycle that sent
+# "Hi there! ......???" before the actual notification.  Deliberately narrow (≥3
+# dots immediately followed by ≥2 ?/!) so legitimate punctuation ("Wait... what?!",
+# "Hmm...?") is never caught — and TAIL-ANCHORED (the run must END the message,
+# modulo a closing quote/paren and trailing whitespace), because "unfinished" is a
+# whole-message property.  An identical run EMBEDDED mid-message (`she sent "Hi
+# there! ......???" then the real one`) is NOT an unfinished send — it's a
+# substantive message that quotes the fragment (a `quality`-collector suggestion
+# reporting a bad send is the canonical case).  Catching an embedded collapse run
+# in the model's OWN output is the agent-loop reroll guard's job (`is_degenerate_run`
+# on raw output, in `agents/base.py`); this predicate only judges whether the
+# OUTGOING message is itself a complete one.
+_UNFINISHED_FRAGMENT_RE = re.compile(r"""\.{3,}\s*[?!]{2,}\s*["'”’)\]]*\s*$""")
 
 # Separator characters gpt-oss threads through a degeneration collapse — the run
 # is rarely pure punctuation; it's laced with the "smart typography" the model
@@ -148,11 +162,15 @@ _TRUNCATION_TAIL_RE = re.compile(r"(?:…+|\.{3,})\s*[?!.]?\s*$")
 
 
 def is_unfinished_fragment(content: str) -> bool:
-    """True if ``content`` ends in ellipsis + ?/! spam — a half-formed message.
+    """True if ``content`` ENDS in an ellipsis + ?/! spam tail — a half-formed message.
 
     Complements :func:`degenerate_reason` (which only catches blank / bare-URL /
-    bail-out content): a message can carry word tokens yet still be an unfinished
-    fragment a user should never have received.
+    bail-out content): a message can carry word tokens yet still trail off into a
+    half-formed tail a user should never have received.  Tail-anchored — the run
+    must end the message — so an identical fragment EMBEDDED mid-message (a
+    deliberate quote of observed evidence) is not flagged; an in-flight collapse
+    landing mid-output is the agent-loop reroll guard's concern, not this send
+    gate's.  See :data:`_UNFINISHED_FRAGMENT_RE`.
     """
     return bool(_UNFINISHED_FRAGMENT_RE.search(content))
 
@@ -198,25 +216,70 @@ def degenerate_reason(content: str) -> str | None:
     return None
 
 
+def _empty_send_reason(stripped: str) -> str | None:
+    """Actionable reason a send has no real content — blank, bare URL, or a
+    bail-out phrase — or ``None``.  Each names what's wrong AND the next move.
+
+    This is the send gate's content-shape check.  It deliberately does NOT include
+    the SUBSTRING degenerate-run check that :func:`degenerate_reason` (the corpus
+    write gate) carries: an embedded '…'/'.'/'?' collapse run inside an otherwise
+    substantive, deliberate message (a `quality` suggestion quoting the bad send it
+    observed) is a real message the user should receive — catching a genuine
+    in-flight collapse in the model's OWN output is the agent-loop reroll guard's
+    job (`is_degenerate_run`).  Only a WHOLE-message half-formed shape (blank /
+    bare-URL / bail-out here, plus the tail checks in the caller) is refused.
+    """
+    if is_blank(stripped):
+        return (
+            "your message has no real content — it is empty or only "
+            "punctuation/ellipsis.  Compose a complete, substantive message and "
+            "send it again."
+        )
+    if _BARE_URL_RE.match(stripped):
+        return (
+            "your message is a bare URL with no surrounding text.  Add a sentence "
+            "describing the link, then send it again."
+        )
+    if stripped.lower() in _WRITE_BAILOUT_PHRASES:
+        return (
+            f"your message is a bail-out phrase ({stripped!r}), not a real reply.  "
+            "Compose the actual message you meant to send."
+        )
+    return None
+
+
 def half_formed_send_reason(content: str) -> str | None:
-    """Return why ``content`` is not a real message a user should receive, or None.
+    """Return why ``content`` is not a complete message a user should receive, or None.
 
     The single definition of a "half-formed send", shared by the ``send_message``
     tool's pre-send gate (which refuses it before delivery) and the run-health
     classifier's after-the-fact ``⚠ HALF-FORMED SEND`` flag — so what Penny
-    refuses to send and what she flags as a regression are one rule.  Combines the
-    corpus content filter (blank / bare-URL / bail-out phrase, via
-    :func:`degenerate_reason`), the unfinished-fragment fingerprint
-    (``"Hi there! ......???"``, via :func:`is_unfinished_fragment`), and the
-    ellipsis-tail truncation (``"...the original …"``, via :func:`is_truncated`).
+    refuses to send and what she flags as a regression are one rule.  Judged on the
+    message AS A WHOLE, not on a substring hit: a blank / bare-URL / bail-out body
+    (via :func:`_empty_send_reason`), an unfinished ellipsis+?/! TAIL
+    (``"Hi there! ......???"``, via :func:`is_unfinished_fragment`), or an
+    ellipsis-truncated TAIL (``"...the original …"``, via :func:`is_truncated`).  A
+    substantive message that merely EMBEDS such a fragment mid-text (a `quality`
+    suggestion quoting the degenerate send it observed) is a complete message and
+    passes — the substring poison check stays the corpus write gate's
+    (:func:`degenerate_reason`) and the agent-loop reroll guard's concern.  Each
+    reason is actionable: it names the specific defect and the next move.
     """
-    reason = degenerate_reason(content)
-    if reason is not None:
+    stripped = content.strip()
+    if reason := _empty_send_reason(stripped):
         return reason
-    if is_unfinished_fragment(content):
-        return "content is an unfinished fragment (ellipsis run + ?/! with no closing clause)"
-    if is_truncated(content):
-        return "content ends on an ellipsis ('…' or '...'), cut off mid-thought"
+    if is_unfinished_fragment(stripped):
+        return (
+            "your message trails off at the end into a '.'/'…' run and '?'/'!' spam "
+            "with no closing clause — a half-formed, degenerate tail.  Finish the "
+            "sentence on a complete clause (no placeholder punctuation) and send it "
+            "again."
+        )
+    if is_truncated(stripped):
+        return (
+            "your message ends on an ellipsis ('…' or '...'), cut off mid-thought.  "
+            "Finish the sentence and send the complete message."
+        )
     return None
 
 

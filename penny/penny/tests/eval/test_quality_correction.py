@@ -470,9 +470,20 @@ async def test_healthy(collector_eval) -> None:
 
 async def test_repairs_half_formed_send(collector_eval) -> None:
     """A worked run that ALSO sent a half-formed message (``⚠ HALF-FORMED SEND``)
-    is a tier-1 regression — the user received junk.  Quality must fix the prompt
-    (compose the complete message before the one send) and announce it.  Mirrors
-    the real notifier cycle that sent "Hi there! ......???" before the real one."""
+    is a tier-1 regression — the user received junk.  Quality must SUGGEST a fix
+    (compose the complete message before the one send) and announce it.
+
+    The observed bad send is an ELLIPSIS-TRUNCATED tail ("Hey there, I wanted to
+    tell you..."), which ``classify_run`` still flags ``⚠ HALF-FORMED SEND`` (via
+    ``is_truncated``) but which — unlike a degeneration-collapse run ("......???")
+    — is NOT an ``is_degenerate_run``.  That matters for what this case MEASURES:
+    the quality suggestion may quote the evidence, and a truncation quote survives
+    both the send gate AND the agent-loop reroll guard (``is_degenerate_run`` on
+    tool-call args), so the case scores JUDGMENT + DELIVERY rather than the accident
+    of whether the model happened to paraphrase (see #1386).  A suggestion quoting a
+    genuine ``......???`` collapse is still discarded by the reroll guard upstream —
+    that remaining gap is pinned in ``tests/agents/test_agentic_loop.py`` and tracked
+    as a follow-up; here we hold the case to the shape it can measure cleanly."""
     suspect = "board-game-news"
     await collector_eval(
         case_id="quality-half-formed-send",
@@ -497,7 +508,7 @@ async def test_repairs_half_formed_send(collector_eval) -> None:
                                 ],
                             },
                         ),
-                        ("send_message", {"content": "Hi there! ......???"}),
+                        ("send_message", {"content": "Hey there, I wanted to tell you..."}),
                         ("send_message", {"content": "A new board game dropped: Ark Nova 2."}),
                         (
                             "done",
