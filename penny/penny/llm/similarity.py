@@ -27,8 +27,12 @@ async def embed_text(
 
     The embedding model is a required prerequisite, so the client is always
     present — there is no "no model configured" degraded path here.  A ``None``
-    return means the embed call itself failed transiently; the caller keeps its
-    non-embedded write and the startup backfill vectorizes it later.
+    return means the embed call itself failed transiently across the client's
+    retries; how the caller handles that differs.  Memory-entry writes
+    (``collection_write`` / ``log_append``) REFUSE the write rather than store a
+    vectorless, recall-invisible entry (#1412), while store-and-backfill paths (a
+    collection's description anchor, logged messages) keep the row and let the
+    startup backfill vectorize it later.
     """
     try:
         vecs = await client.embed(text)

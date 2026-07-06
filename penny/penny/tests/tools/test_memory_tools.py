@@ -105,6 +105,41 @@ def _single_hash_vec(text: str, dim: int = 4096) -> list[float]:
     return vec
 
 
+class _FailingEmbedClient:
+    """An embedding client whose every embed call fails transiently.
+
+    ``embed_text`` catches ``LlmError`` and returns ``None``, so the write path
+    hits the fail-hard branch and refuses to persist a vectorless entry (#1412).
+    """
+
+    model = "test-model"
+
+    async def embed(self, text: str | list[str]) -> list[list[float]]:
+        raise LlmConnectionError("embedding backend unavailable")
+
+
+class _KeyOnlyFailingEmbedClient:
+    """Fails only the embed of a specific string (the key), returning a real
+    vector for everything else (the content).
+
+    ``CollectionWriteTool._build_entry`` embeds key then content in two calls, so
+    this reproduces a transient miss that lands on the key alone — the entry would
+    be stored missing its key vector, which the write path refuses (an entry must
+    carry all its vectors, and the backfill selects only on ``content_embedding IS
+    NULL`` so it could never repair such a row).
+    """
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+        self.model = "test-model"
+
+    async def embed(self, text: str | list[str]) -> list[list[float]]:
+        inputs = text if isinstance(text, list) else [text]
+        if self._key in inputs:
+            raise LlmConnectionError("key embed failed")
+        return [_single_hash_vec(t) for t in inputs]
+
+
 class TestCreateAndList:
     @pytest.mark.asyncio
     async def test_create_collection_persists(self, tmp_path):
@@ -611,6 +646,86 @@ class TestCollectionWritesAndReads:
         # adaptive cutoff in ``read_similar``.
         rendered = await ReadSimilarTool(db, client).execute(memory="likes", anchor="coffee please")
         assert "coffee" in rendered.message
+
+
+class TestEmbedFailureRefusesWrite:
+    """A transient embed failure at write time REFUSES the write — no vectorless
+    (recall-invisible, dedup-weakening) entry is ever persisted (#1412).  The
+    prior behaviour stored the entry without a vector and returned an optimistic
+    success; now the tool fails with an actionable retry and nothing lands."""
+
+    @staticmethod
+    async def _make_relevant_collection(db) -> None:
+        # A fully recall-eligible collection: proves the refusal is about the
+        # missing vector, not the memory being excluded from recall.
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="relevant",
+            recall="relevant",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+
+    @pytest.mark.asyncio
+    async def test_collection_write_refuses_when_embedding_fails(self, tmp_path):
+        db = _make_db(tmp_path)
+        await self._make_relevant_collection(db)
+        write = CollectionWriteTool(db, cast(Any, _FailingEmbedClient()), author="test")
+        result = await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+        )
+        # Fail-hard: actionable failure naming the transient cause and binding the
+        # retry, and no work reported (so the collector throttle sees no-op).
+        assert result.success is False
+        assert result.mutated is False
+        assert "transient embedding error" in result.message
+        assert "'dark roast'" in result.message
+        assert "collection_write(memory='likes'" in result.message
+        # Nothing persisted — the invariant "every stored entry has a vector" holds.
+        with Session(db.engine) as session:
+            rows = session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == "likes")).all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_collection_write_refuses_on_key_only_embed_failure(self, tmp_path):
+        # Even when only the key embed fails (content vector fine), storing the
+        # entry would leave it missing a vector — so the write is still refused
+        # atomically and nothing lands.  (The backfill selects on
+        # content_embedding IS NULL, so it could never fix such a row.)
+        db = _make_db(tmp_path)
+        await self._make_relevant_collection(db)
+        write = CollectionWriteTool(
+            db, cast(Any, _KeyOnlyFailingEmbedClient("dark roast")), author="test"
+        )
+        result = await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "loves dark roast"}]
+        )
+        assert result.success is False
+        assert result.mutated is False
+        assert "'dark roast'" in result.message
+        with Session(db.engine) as session:
+            rows = session.exec(select(MemoryEntry).where(MemoryEntry.memory_name == "likes")).all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_log_append_refuses_when_embedding_fails(self, tmp_path):
+        db = _make_db(tmp_path)
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="events", description="x", inclusion="always", recall="recent"
+        )
+        append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
+        result = await append.execute(memory="events", content="something happened")
+        assert result.success is False
+        assert result.mutated is False
+        assert "transient embedding error" in result.message
+        assert "log_append(memory='events'" in result.message
+        with Session(db.engine) as session:
+            rows = session.exec(
+                select(MemoryEntry).where(MemoryEntry.memory_name == "events")
+            ).all()
+        assert rows == []
 
 
 class TestCollectionMutations:
