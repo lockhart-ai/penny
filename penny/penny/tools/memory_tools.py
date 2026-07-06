@@ -239,6 +239,34 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     )
 
 
+# ── Description-anchor embed degradation (visible, self-healing) ─────────────
+#
+# A description doubles as the stage-1 routing anchor.  Unlike an entry write
+# (which fails hard, #1412, because a vectorless entry is recall-invisible and
+# corrupts dedup), a collection/log is still fully created or updated when its
+# description embed fails transiently — only its ``relevant``-routing anchor is
+# missing, and the startup description backfill re-embeds any ``NULL`` anchor.
+# So the create/update succeeds, but the degradation is NAMED in the result
+# rather than left silent (visible-degradation): the anchor is unset until it
+# self-heals.  No retry is demanded — the row already exists and retrying the
+# create would only collide.
+_DESCRIPTION_EMBED_DEGRADED = (
+    " (Heads up: couldn't embed its description just now — a transient embedding "
+    "error — so its relevance-routing anchor is unset and it won't surface via "
+    "'relevant' recall until it self-heals on the next restart.)"
+)
+
+
+def _description_degraded_suffix(description: str | None, embedding: list[float] | None) -> str:
+    """A visible-degradation note when a description was supplied but its embed failed.
+
+    Empty (no note) unless a description was given *and* its embedding came back
+    ``None`` — i.e. the anchor was left ``NULL`` for the backfill to re-heal."""
+    if description is not None and embedding is None:
+        return _DESCRIPTION_EMBED_DEGRADED
+    return ""
+
+
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
@@ -419,7 +447,9 @@ class CollectionCreateTool(MemoryTool):
             intent=args.intent,
             published=args.published,
         )
-        return ToolResult(message=_format_collection_echo(memory, "Created"), mutated=True)
+        suffix = _description_degraded_suffix(args.description, description_embedding)
+        message = f"{_format_collection_echo(memory, 'Created')}{suffix}"
+        return ToolResult(message=message, mutated=True)
 
 
 class LogCreateTool(MemoryTool):
@@ -472,7 +502,9 @@ class LogCreateTool(MemoryTool):
             RecallMode(args.recall),
             description_embedding=description_embedding,
         )
-        return ToolResult(message=f"Created log '{args.name}'.", mutated=True)
+        suffix = _description_degraded_suffix(args.description, description_embedding)
+        message = f"Created log '{args.name}'.{suffix}"
+        return ToolResult(message=message, mutated=True)
 
 
 class CollectionArchiveTool(MemoryTool):
@@ -1083,7 +1115,9 @@ class CollectionUpdateTool(MemoryTool):
             description_embedding=description_embedding,
             published=args.published,
         )
-        return ToolResult(message=_format_collection_echo(memory, "Updated"), mutated=True)
+        suffix = _description_degraded_suffix(args.description, description_embedding)
+        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
+        return ToolResult(message=message, mutated=True)
 
 
 class MemoryMetadataTool(MemoryTool):

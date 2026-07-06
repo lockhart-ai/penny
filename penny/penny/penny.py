@@ -26,6 +26,7 @@ from penny.config import Config, setup_logging
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
+from penny.database.models import MemoryEntry
 from penny.email.protocol import EmailClient
 from penny.jmap import JmapClient
 from penny.llm.client import LlmClient
@@ -423,8 +424,10 @@ class Penny:
         migration-seeded collection content) that the preference backfill
         doesn't reach.  Scoped by the store to non-archived, non-``off``
         memories so recall-relevant entries get vectors while bulk ``off``
-        logs (``collector-runs``) are skipped.  Embeds both key and content
-        so keyed entries are matchable by ``read_similar``.
+        logs (``collector-runs``) are skipped.  Fills whichever vector each
+        entry is missing — content, key, or both — so a keyed entry whose key
+        never embedded is matchable by ``read_similar``, not just one whose
+        content is null.
         """
         total = 0
         while True:
@@ -432,26 +435,50 @@ class Penny:
             if not entries:
                 break
             try:
-                content_vecs = await self.embedding_model_client.embed([e.content for e in entries])
-                keyed = [(e.id, e.key) for e in entries if e.key is not None and e.id is not None]
-                key_vec_by_id: dict[int, list[float]] = {}
-                if keyed:
-                    key_vecs = await self.embedding_model_client.embed([key for _, key in keyed])
-                    key_vec_by_id = {
-                        entry_id: vec for (entry_id, _), vec in zip(keyed, key_vecs, strict=True)
-                    }
-                for entry, content_vec in zip(entries, content_vecs, strict=True):
-                    assert entry.id is not None
-                    self.db.memories.set_entry_embeddings(
-                        entry.id,
-                        key_embedding=key_vec_by_id.get(entry.id),
-                        content_embedding=content_vec,
-                    )
+                await self._embed_memory_entry_batch(entries)
                 total += len(entries)
             except LlmError as e:
                 logger.warning("Startup embedding backfill failed for memory entries: %s", e)
                 break
         return total
+
+    async def _embed_memory_entry_batch(self, entries: list[MemoryEntry]) -> None:
+        """Embed only the vector(s) each selected entry is missing, then persist.
+
+        Content is (re-)embedded only for entries lacking a content vector; the
+        key is embedded only for keyed entries lacking a key vector — so a keyed
+        entry that already carries its content but not its key gets the key
+        filled without needlessly re-embedding the content it has.
+        """
+        content_items: list[tuple[int, str]] = []
+        key_items: list[tuple[int, str]] = []
+        for entry in entries:
+            entry_id = entry.id
+            if entry_id is None:
+                continue
+            if entry.content_embedding is None:
+                content_items.append((entry_id, entry.content))
+            key = entry.key
+            if key is not None and entry.key_embedding is None:
+                key_items.append((entry_id, key))
+        content_by_id = await self._embed_by_id(content_items)
+        key_by_id = await self._embed_by_id(key_items)
+        for entry in entries:
+            entry_id = entry.id
+            if entry_id is None:
+                continue
+            self.db.memories.set_entry_embeddings(
+                entry_id,
+                key_embedding=key_by_id.get(entry_id),
+                content_embedding=content_by_id.get(entry_id),
+            )
+
+    async def _embed_by_id(self, items: list[tuple[int, str]]) -> dict[int, list[float]]:
+        """Embed each ``(id, text)`` pair in one batched call; ``{}`` when empty."""
+        if not items:
+            return {}
+        vectors = await self.embedding_model_client.embed([text for _, text in items])
+        return {item_id: vec for (item_id, _), vec in zip(items, vectors, strict=True)}
 
     async def _backfill_message_embeddings(self, batch_limit: int) -> int:
         """Backfill ``messagelog`` rows missing a content embedding.

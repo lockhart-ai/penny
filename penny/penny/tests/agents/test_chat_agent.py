@@ -1271,3 +1271,41 @@ async def test_quote_reply_sets_parent_id_and_uses_thread_context(
         assert any("sunny" in c.lower() or "New York" in c for _, c in roles_contents), (
             "LLM history for quote-reply must include Penny's original reply"
         )
+
+
+@pytest.mark.asyncio
+async def test_startup_backfill_fills_missing_key_vector(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """The real startup backfill (penny._backfill_memory_embeddings) fills a keyed
+    entry that carries its content vector but is missing its key vector (#1468).
+
+    Startup ran the backfill on the seeded DB; we then insert the gap row and
+    re-run the backfill to confirm the re-embed path writes the KEY vector (not
+    just content) — the migration-seeded / transient-key-miss state a
+    content_embedding-only predicate would skip forever.
+    """
+    config = make_config()
+    match_vec = deterministic_embed("dark roast")
+    async with running_penny(config) as penny:
+        # A non-seeded collection so the gap row is the only pending entry.
+        penny.db.memories.create_collection(
+            "backfill-gap", "gap fixture", Inclusion.RELEVANT, RecallMode.RELEVANT
+        )
+        # Content vector present, key vector NULL (the gap state).
+        penny.db.memory("backfill-gap").write(
+            [EntryInput(key="dark roast", content="loves dark roast", content_embedding=match_vec)],
+            author="system",
+        )
+        entry = penny.db.memory("backfill-gap").read_latest()[0]
+        assert entry.content_embedding is not None
+        assert entry.key_embedding is None
+
+        embedded = await penny._backfill_memory_embeddings(batch_limit=100)
+        assert embedded >= 1
+
+        healed = penny.db.memory("backfill-gap").read_latest()[0]
+        assert healed.key_embedding is not None  # the re-embed path wrote the key vector
+        assert healed.content_embedding is not None
+        # No entry is left with an unfilled vector after the backfill.
+        assert penny.db.memories.get_entries_without_embeddings(limit=100) == []

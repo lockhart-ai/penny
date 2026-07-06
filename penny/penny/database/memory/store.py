@@ -17,7 +17,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
@@ -309,9 +309,15 @@ class MemoryStore:
 
         When ``description`` changes the caller passes the freshly computed
         ``description_embedding`` alongside it so the stage-1 anchor stays in
-        sync.  ``intent`` is editable here (the user-authored update path) even
-        though it is NOT a field on the ``collection_update`` tool: the user owns
-        the spec, the agent cannot rewrite it.
+        sync — the anchor moves *with* the text: a changed description always
+        replaces the embedding with the passed value, and if that value is
+        ``None`` (a transient embed failure at the caller) the anchor is cleared
+        to ``NULL`` rather than left pointing at the old, now-mismatched text.  A
+        ``NULL`` anchor is what the startup description backfill re-heals; a stale
+        non-``NULL`` one it could never detect.  ``intent`` is editable here (the
+        user-authored update path) even though it is NOT a field on the
+        ``collection_update`` tool: the user owns the spec, the agent cannot
+        rewrite it.
         """
         name = slug(name)
         self._require_collection(name)
@@ -321,7 +327,6 @@ class MemoryStore:
                 raise MemoryNotFoundError(name)
             if description is not None:
                 memory.description = description
-            if description_embedding is not None:
                 memory.description_embedding = sim.maybe_serialize(description_embedding)
             if inclusion is not None:
                 memory.inclusion = inclusion.value
@@ -374,20 +379,35 @@ class MemoryStore:
     # ── Embedding backfill ──────────────────────────────────────────────────
 
     def get_entries_without_embeddings(self, limit: int) -> list[MemoryEntry]:
-        """Entries missing a content embedding that are worth embedding.
+        """Entries missing either similarity vector that are worth embedding.
+
+        An entry qualifies when its content vector is unset OR — being keyed — its
+        key vector is unset: a keyed entry whose content embedded but whose key
+        did not (a transient key-embed miss, or migration-seeded content that
+        carried a content vector but no key vector) would otherwise slip the
+        backfill forever, since selecting on ``content_embedding IS NULL`` alone
+        never reaches it.  A keyless log entry has a legitimately-null key vector,
+        so it only qualifies on a missing content vector.
 
         Scoped to non-archived memories whose ``inclusion`` is not ``never`` —
         an ``inclusion=never`` memory never surfaces via recall or
         ``read_similar``, so embedding its entries is pure waste.  Newest first,
         so the most recall-relevant rows embed first when the backfill batches.
         """
+        missing_vector = or_(
+            MemoryEntry.content_embedding.is_(None),  # ty: ignore[unresolved-attribute]
+            and_(
+                MemoryEntry.key.is_not(None),  # ty: ignore[unresolved-attribute]
+                MemoryEntry.key_embedding.is_(None),  # ty: ignore[unresolved-attribute]
+            ),
+        )
         with self._session() as session:
             return list(
                 session.exec(
                     select(MemoryEntry)
                     .join(MemoryRow)  # FK memory_entry.memory_name → memory.name
                     .where(
-                        MemoryEntry.content_embedding == None,  # noqa: E711
+                        missing_vector,
                         MemoryRow.archived == False,  # noqa: E712
                         MemoryRow.inclusion != Inclusion.NEVER.value,
                     )

@@ -1170,3 +1170,54 @@ class TestEmbeddingBackfill:
         rows = db.memories.memory("skills").read_latest()
         assert rows[0].content_embedding is not None
         assert rows[0].key_embedding is not None
+
+    def test_reembeds_keyed_entry_missing_only_key_vector(self, tmp_path):
+        """A keyed entry with a content vector but a NULL key vector is picked up.
+
+        This is the migration-seeded / transient-key-miss state (#1468): selecting
+        only on ``content_embedding IS NULL`` would skip it forever.  It qualifies
+        while its key vector is unset, and drops out once the key vector lands —
+        without the content vector ever being disturbed.
+        """
+        db = _make_db(tmp_path)
+        db.memories.create_collection(
+            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
+        )
+        # Content vector present, key vector NULL (key present) — no dedup neighbour.
+        db.memories.memory("likes").write(
+            [
+                EntryInput(
+                    key="dark roast", content="loves dark roast", content_embedding=_unit_vec(1)
+                )
+            ],
+            author="system",
+        )
+        pending = db.memories.get_entries_without_embeddings(limit=100)
+        assert [e.key for e in pending] == ["dark roast"]
+        entry = pending[0]
+        assert entry.content_embedding is not None
+        assert entry.key_embedding is None
+
+        # Fill only the key vector; the row drops out and both vectors are set.
+        entry_id = entry.id
+        assert entry_id is not None
+        db.memories.set_entry_embeddings(
+            entry_id, key_embedding=_unit_vec(0), content_embedding=None
+        )
+        assert db.memories.get_entries_without_embeddings(limit=100) == []
+        row = db.memories.memory("likes").read_latest()[0]
+        assert row.key_embedding is not None
+        assert row.content_embedding is not None
+
+    def test_keyless_log_entry_not_selected_for_missing_key_vector(self, tmp_path):
+        """A keyless log entry has a legitimately-null key vector — it must NOT
+        qualify on that alone (only on a missing content vector), or the backfill
+        would loop forever trying to embed a key that will always be NULL."""
+        db = _make_db(tmp_path)
+        db.memories.create_log("events", "event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        # Content vector present, no key (log entries are keyless).
+        db.memories.memory("events").append(
+            [LogEntryInput(content="something happened", content_embedding=_unit_vec(2))],
+            author="system",
+        )
+        assert db.memories.get_entries_without_embeddings(limit=100) == []

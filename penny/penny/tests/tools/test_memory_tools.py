@@ -125,8 +125,10 @@ class _KeyOnlyFailingEmbedClient:
     ``CollectionWriteTool._build_entry`` embeds key then content in two calls, so
     this reproduces a transient miss that lands on the key alone — the entry would
     be stored missing its key vector, which the write path refuses (an entry must
-    carry all its vectors, and the backfill selects only on ``content_embedding IS
-    NULL`` so it could never repair such a row).
+    carry all its vectors).  The startup backfill is the safety net for a
+    key-null row that reaches the corpus by another path (migration-seeded content,
+    #1468), but the write path still refuses at write time rather than persist a
+    vectorless, recall-invisible row that only a later restart would repair.
     """
 
     def __init__(self, key: str) -> None:
@@ -404,6 +406,67 @@ class TestCreateAndList:
         assert updated.description == "real description"  # blank skipped, not blanked
         # published flips on the update path (created silent by default → notify-on-new).
         assert updated.published is True
+
+    @pytest.mark.asyncio
+    async def test_create_surfaces_description_embed_degradation(self, tmp_path):
+        """A transient description-embed failure still creates the collection, but the
+        result NAMES the degraded routing anchor and leaves it NULL for the startup
+        backfill to re-heal (#1468) — a visible degradation, not a silent success."""
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
+            name="notes",
+            description="a running list of notes",
+            inclusion="relevant",
+            recall="relevant",
+            extraction_prompt="Extract notes from user-messages and write to collection.",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        assert "Created" in result.message
+        assert result.mutated is True
+        assert "transient embedding error" in result.message
+        assert "self-heal" in result.message
+        # Row exists; anchor left NULL for the backfill to re-heal.
+        row = db.memories.get("notes")
+        assert row is not None
+        assert row.description_embedding is None
+
+    @pytest.mark.asyncio
+    async def test_log_create_surfaces_description_embed_degradation(self, tmp_path):
+        db = _make_db(tmp_path)
+        result = await LogCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
+            name="events", description="event stream", inclusion="relevant", recall="recent"
+        )
+        assert "Created log" in result.message
+        assert "transient embedding error" in result.message
+        assert db.memories.get("events").description_embedding is None
+
+    @pytest.mark.asyncio
+    async def test_update_failed_description_embed_clears_stale_anchor(self, tmp_path):
+        """Changing a description whose embed fails clears the anchor to NULL — it does
+        NOT leave the old, now-mismatched vector in place (a stale anchor the NULL-only
+        description backfill could never detect, #1468).  The new text lands, the anchor
+        is left for the backfill to re-heal, and the degradation surfaces."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="notes",
+            description="old subject",
+            inclusion="relevant",
+            recall="relevant",
+            extraction_prompt="test fixture extraction prompt that is long enough",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        assert db.memories.get("notes").description_embedding is not None  # a good anchor first
+
+        result = await CollectionUpdateTool(db, cast(Any, _FailingEmbedClient())).execute(
+            name="notes", description="a completely different subject"
+        )
+        assert "Updated" in result.message
+        assert "transient embedding error" in result.message
+        row = db.memories.get("notes")
+        assert row.description == "a completely different subject"  # new text landed
+        assert row.description_embedding is None  # stale anchor cleared, not kept
 
 
 class TestCollectionWritesAndReads:
@@ -692,8 +755,8 @@ class TestEmbedFailureRefusesWrite:
     async def test_collection_write_refuses_on_key_only_embed_failure(self, tmp_path):
         # Even when only the key embed fails (content vector fine), storing the
         # entry would leave it missing a vector — so the write is still refused
-        # atomically and nothing lands.  (The backfill selects on
-        # content_embedding IS NULL, so it could never fix such a row.)
+        # atomically and nothing lands.  (The backfill now also repairs a
+        # key-null row, #1468, but the write path won't persist one to begin with.)
         db = _make_db(tmp_path)
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(
