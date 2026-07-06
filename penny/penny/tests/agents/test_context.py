@@ -150,11 +150,16 @@ def test_page_context_injected_as_synthetic_tool_call():
     # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the
     # same tagged first-person framing every real tool result gets (a successful
     # synthetic browse), so the web content can't read as a fresh instruction.
+    # The synthetic call reads the page URL directly, so BrowseTool's per-tool
+    # narration (#1480) frames it as "You opened <url>" — the same args the
+    # injection passes reproduce the leading header.
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
     assert "tool_name" not in messages[3]
     assert messages[3]["content"].startswith(
-        Tool.format_result("browse", {}, ToolResult(message=""))
+        Tool.format_result(
+            "browse", {"queries": ["https://example.com/product"]}, ToolResult(message="")
+        )
     )
     # The retained machine tag keeps the model parsing this as a tool result.
     assert "(browse result)" in messages[3]["content"]

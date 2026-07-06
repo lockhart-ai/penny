@@ -201,6 +201,20 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     )
 
 
+def tool_result_texts(db: Database) -> list[str]:
+    """Every tool-result the model READ this run — the ``role="tool"`` message
+    contents across the persisted promptlog inputs, where ``Tool.format_result``
+    puts the first-person narration + ``(<tool> result)`` tag ahead of the body.
+    Lets a scorer assert what a tool call narrated back to the model (e.g. the
+    browse result header reflecting search-vs-read and success-vs-failure)."""
+    texts: list[str] = []
+    for row in db.messages.recent_prompts(limit=200):
+        for message in row.get_messages():
+            if message.get("role") == "tool" and isinstance(message.get("content"), str):
+                texts.append(message["content"])
+    return texts
+
+
 def count_tool_calls(db: Database, tool_name: str) -> int:
     """How many times the model invoked ``tool_name`` this run.
 

@@ -52,6 +52,19 @@ _URL_PATTERN = re.compile(r"^https?://")
 
 _LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\(https?://(?:[^)\\]|\\.)*\)\s*$")
 
+# First-person narration of a browse call — the #1480 per-tool override of the
+# seam's generic RESULT_NARRATION_*.  The seam prepends ONE line for the WHOLE call
+# and appends the `(browse result)` tag itself; the per-page `## browse ...:` /
+# `## browse search:` / `## browse error:` section headers stay in the body and
+# disambiguate each page.  So these summarise the batch as a single natural clause
+# reflecting search-vs-read (a URL query is a direct read; plain text is a search)
+# and the outcome (`result.success` is False only when EVERY query errored).
+_NARRATION_SEARCHED = "You searched for {queries}"
+_NARRATION_OPENED = "You opened {urls}"
+_NARRATION_ALSO_OPENED = "and opened {urls}"
+_NARRATION_LOOKED_UP = "You looked things up"
+_NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
+
 # Type alias for the browser request function
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None]]]
 
@@ -178,6 +191,40 @@ class BrowseTool(Tool):
             if _URL_PATTERN.match(q):
                 return ProgressEmoji.READING
         return ProgressEmoji.SEARCHING
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """One first-person line summarising the WHOLE browse call.
+
+        The seam (``format_result``) prepends this single line to the joined
+        ``result.message`` and appends the ``(browse result)`` tag; the per-page
+        ``## browse ...:`` section headers already disambiguate each page in the
+        body, so this narrates the *batch* — what was searched and/or opened, and
+        whether anything was readable — as one natural clause, not per section.
+        Branches on ``result.success``, which the tool reports False only when
+        every dispatched query errored (a total failure), so a partial success
+        still narrates the action it took.
+        """
+        queries = arguments.get("queries", [])
+        searches = [q for q in queries if not _URL_PATTERN.match(q)]
+        reads = [q for q in queries if _URL_PATTERN.match(q)]
+        action = cls._browse_action_clause(searches, reads)
+        if result.success:
+            return action
+        return f"{action} {_NARRATION_FAILURE_SUFFIX}"
+
+    @staticmethod
+    def _browse_action_clause(searches: list[str], reads: list[str]) -> str:
+        """Compose the "You searched for … and opened …" action clause from the
+        split queries — searches quoted, direct-read URLs bare."""
+        parts: list[str] = []
+        if searches:
+            quoted = ", ".join(f'"{q}"' for q in searches)
+            parts.append(_NARRATION_SEARCHED.format(queries=quoted))
+        if reads:
+            template = _NARRATION_ALSO_OPENED if searches else _NARRATION_OPENED
+            parts.append(template.format(urls=", ".join(reads)))
+        return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Dispatch all lookups in parallel via the browser extension."""

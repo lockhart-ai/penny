@@ -345,26 +345,32 @@ class TestRepeatCallGuard:
 class TestResultNarration:
     """`Tool.format_result` frames a tool result as tagged, first-person narration.
 
-    The generic default (this ticket; per-tool overrides land in #1480–#1482):
-    a first-person line + a retained ``(<tool> result)`` machine tag + the body.
-    The tag is load-bearing — a live-model probe showed pure-prose narration with
-    no tag raised the call-as-text bail rate, so it stays even as the header reads
-    naturally.  Success and failure narrate differently, both keeping the tag.
+    The generic default: a first-person line + a retained ``(<tool> result)``
+    machine tag + the body.  The tag is load-bearing — a live-model probe showed
+    pure-prose narration with no tag raised the call-as-text bail rate, so it stays
+    even as the header reads naturally.  Success and failure narrate differently,
+    both keeping the tag.  Exercised via an *unregistered* tool name so it hits the
+    generic default; per-tool overrides (browse #1480, memory #1481, …) are covered
+    by each tool's own tests.
     """
 
     def test_success_result_carries_narration_tag_and_body(self):
         framed = Tool.format_result(
-            "browse", {"queries": ["quillpad release"]}, ToolResult(message="v4.2 is out")
+            "example_tool", {"queries": ["quillpad release"]}, ToolResult(message="v4.2 is out")
         )
-        assert framed == "You used `browse` and here's the result: (browse result)\nv4.2 is out"
+        assert framed == (
+            "You used `example_tool` and here's the result: (example_tool result)\nv4.2 is out"
+        )
 
     def test_failure_result_narrates_honestly_and_keeps_the_tag(self):
         framed = Tool.format_result(
-            "browse",
+            "example_tool",
             {"queries": ["quillpad release"]},
             ToolResult(message="Error: no", success=False),
         )
-        assert framed == "You tried to use `browse` but it didn't work: (browse result)\nError: no"
+        assert framed == (
+            "You tried to use `example_tool` but it didn't work: (example_tool result)\nError: no"
+        )
 
 
 class TestModelErrorHandling:

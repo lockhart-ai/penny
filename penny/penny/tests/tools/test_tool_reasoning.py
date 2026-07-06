@@ -106,3 +106,65 @@ class TestDoneOnlyReasoningEnvelope:
         assert "success" in message and "boolean" in message
         assert "summary" in message and "string" in message
         assert "Call done(<valid arguments>) again." in message
+
+
+class TestBrowseResultNarration:
+    """`BrowseTool.to_result_narration` (the #1480 per-tool override) summarises
+    the WHOLE browse call in one first-person line — reflecting search-vs-read and
+    the outcome — while the seam (`format_result`) adds the `(browse result)` tag
+    and the per-page `## browse ...:` section headers stay in the body.  The
+    override returns ONLY the sentence: the tag is the seam's job, not the tool's.
+    """
+
+    def test_search_success_narrates_searched(self):
+        narration = BrowseTool.to_result_narration(
+            {"queries": ["quillpad version"]}, ToolResult(message="v4.2")
+        )
+        assert narration == 'You searched for "quillpad version"'
+        assert "(browse result)" not in narration  # the tag is the seam's job
+
+    def test_url_read_success_narrates_opened(self):
+        narration = BrowseTool.to_result_narration(
+            {"queries": ["https://example.com/a"]}, ToolResult(message="page text")
+        )
+        assert narration == "You opened https://example.com/a"
+
+    def test_mixed_search_and_read(self):
+        narration = BrowseTool.to_result_narration(
+            {"queries": ["quillpad version", "https://example.com/a"]},
+            ToolResult(message="ok"),
+        )
+        assert narration == 'You searched for "quillpad version" and opened https://example.com/a'
+
+    def test_total_failure_narrates_honestly(self):
+        narration = BrowseTool.to_result_narration(
+            {"queries": ["quillpad version"]},
+            ToolResult(message="## browse error: ...", success=False),
+        )
+        assert narration == 'You searched for "quillpad version" but couldn\'t read anything'
+
+    def test_url_read_failure_narrates_honestly(self):
+        narration = BrowseTool.to_result_narration(
+            {"queries": ["https://example.com/a"]},
+            ToolResult(message="## browse error: ...", success=False),
+        )
+        assert narration == "You opened https://example.com/a but couldn't read anything"
+
+    def test_missing_queries_falls_back(self):
+        # No queries in the args (an arg-validation failure still flows the raw dict
+        # through format_result) — narrate the action generically, honestly.
+        assert (
+            BrowseTool.to_result_narration({}, ToolResult(message="ok")) == "You looked things up"
+        )
+        assert (
+            BrowseTool.to_result_narration({}, ToolResult(message="e", success=False))
+            == "You looked things up but couldn't read anything"
+        )
+
+    def test_format_result_wraps_narration_with_tag_and_body(self):
+        """End-to-end through the seam: registry dispatch → browse override →
+        `(browse result)` tag → body, in one framed string the model reads."""
+        framed = Tool.format_result(
+            "browse", {"queries": ["quillpad version"]}, ToolResult(message="v4.2 is out")
+        )
+        assert framed == 'You searched for "quillpad version" (browse result)\nv4.2 is out'
