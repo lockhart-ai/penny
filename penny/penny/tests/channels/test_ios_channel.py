@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from sqlmodel import Session
 
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsError
 from penny.channels.ios.channel import PUSH_GREETING_TITLE, TEST_PUSH_MESSAGE, IosChannel
@@ -22,7 +23,9 @@ from penny.channels.ios.models import (
 )
 from penny.constants import ChannelType
 from penny.database import Database
+from penny.database.memory import Inclusion, RecallMode
 from penny.database.migrate import migrate
+from penny.database.models import Schedule
 
 
 class FakeWs:
@@ -75,6 +78,16 @@ def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChanne
         apns_client=apns,
         is_primary_channel=is_primary,
     )
+
+
+async def _ios_admin_request(channel: IosChannel, payload: dict) -> dict:
+    ws = FakeWs()
+    await channel._process_raw_message(
+        cast(Any, ws),
+        json.dumps(payload),
+        "ios-keychain-id",
+    )
+    return ws.sent[0]
 
 
 @pytest.mark.asyncio
@@ -162,6 +175,94 @@ async def test_sidecar_registration_does_not_steal_default_device(tmp_path):
     assert registration.apns_token == "apns-token"
     assert ws.sent[-1]["type"] == IOS_RESP_TYPE_REGISTERED
     assert ws.sent[-1]["is_default"] is False
+
+
+@pytest.mark.asyncio
+async def test_admin_prompt_logs_request_returns_unfiltered_runs(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[{"role": "user", "content": "chat"}],
+        response={"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        agent_name="chat",
+        run_id="run-chat",
+        duration_ms=100,
+    )
+    db.messages.log_prompt(
+        model="test-model",
+        messages=[{"role": "user", "content": "collector"}],
+        response={"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 7}},
+        agent_name="collector",
+        run_id="run-collector",
+        run_target="recipes",
+        duration_ms=200,
+    )
+
+    response = await _ios_admin_request(channel, {"type": "prompt_logs_request"})
+
+    assert response["type"] == "prompt_logs_response"
+    assert [run["run_id"] for run in response["runs"]] == ["run-collector", "run-chat"]
+    assert {run["agent_name"] for run in response["runs"]} == {"chat", "collector"}
+    assert response["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_admin_schedules_request_returns_existing_schedules(tmp_path, monkeypatch):
+    db = _make_db(tmp_path)
+    monkeypatch.setattr(db.users, "get_primary_sender", lambda: "testuser")
+    channel = _make_channel(db)
+    with Session(db.engine) as session:
+        session.add(
+            Schedule(
+                user_id="testuser",
+                user_timezone="America/Vancouver",
+                cron_expression="0 9 * * *",
+                prompt_text="check the news",
+                timing_description="daily at 9",
+            )
+        )
+        session.commit()
+
+    response = await _ios_admin_request(channel, {"type": "schedules_request"})
+
+    assert response["type"] == "schedules_response"
+    assert response["error"] is None
+    assert response["schedules"][0]["prompt_text"] == "check the news"
+    assert response["schedules"][0]["cron_expression"] == "0 9 * * *"
+
+
+@pytest.mark.asyncio
+async def test_admin_memories_request_returns_memory_records(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    db.memories.create_collection(
+        "recipes",
+        "Meal notes",
+        Inclusion.RELEVANT,
+        RecallMode.RECENT,
+        intent="Remember food preferences",
+    )
+
+    response = await _ios_admin_request(channel, {"type": "memories_request"})
+
+    assert response["type"] == "memories_response"
+    names = {memory["name"] for memory in response["memories"]}
+    assert "recipes" in names
+
+
+@pytest.mark.asyncio
+async def test_admin_config_request_returns_runtime_params(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+
+    response = await _ios_admin_request(channel, {"type": "config_request"})
+
+    assert response["type"] == "config_response"
+    assert response["params"]
+    assert {"key", "value", "default", "description", "type", "group"}.issubset(
+        response["params"][0]
+    )
 
 
 @pytest.mark.asyncio

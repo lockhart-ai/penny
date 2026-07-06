@@ -16,6 +16,7 @@ from penny.agents import (
 )
 from penny.channels import MessageChannel, create_channel_manager
 from penny.channels.browser import BrowserChannel
+from penny.channels.ios.channel import IosChannel
 from penny.channels.manager import ChannelManager
 from penny.channels.permission_manager import PermissionManager
 from penny.channels.signal.channel import SignalChannel
@@ -230,17 +231,24 @@ class Penny:
         if not isinstance(self.channel, ChannelManager):
             return
         browser_ch = self.channel.get_channel(ChannelType.BROWSER)
-        if not isinstance(browser_ch, BrowserChannel):
+        ios_ch = self.channel.get_channel(ChannelType.IOS)
+        if not isinstance(browser_ch, BrowserChannel) and not isinstance(ios_ch, IosChannel):
             return
 
-        # Wire up permission manager
         perm_mgr = PermissionManager(db=self.db, channel_manager=self.channel, config=config)
-        browser_ch.set_permission_manager(perm_mgr)
-        # Let the addon run a collection's extractor on demand.
-        browser_ch.set_collector(self.collector)
+        if isinstance(browser_ch, BrowserChannel):
+            browser_ch.set_permission_manager(perm_mgr)
+            # Let the addon run a collection's extractor on demand.
+            browser_ch.set_collector(self.collector)
+        if isinstance(ios_ch, IosChannel):
+            ios_ch.set_permission_manager(perm_mgr)
+            ios_ch.set_collector(self.collector)
         signal_ch = self.channel.get_channel(ChannelType.SIGNAL)
         if isinstance(signal_ch, SignalChannel):
             signal_ch.set_permission_manager(perm_mgr)
+
+        if not isinstance(browser_ch, BrowserChannel):
+            return
 
         # Browse provider — agents build fresh BrowseTools each cycle.
         def browse_provider():
