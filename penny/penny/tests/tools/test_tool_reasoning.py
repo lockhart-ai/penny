@@ -103,4 +103,4 @@ class TestDoneOnlyReasoningEnvelope:
         assert "invalid arguments for done" in message
         assert "success" in message and "boolean" in message
         assert "summary" in message and "string" in message
-        assert "Call done again with valid arguments" in message
+        assert "Call done(<valid arguments>) again." in message
