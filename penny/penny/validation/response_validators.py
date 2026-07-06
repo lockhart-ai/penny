@@ -363,6 +363,72 @@ class DoneJsonBailValidator:
         return NudgeContinue(message=Prompt.COLLECTOR_DONE_JSON_NUDGE)
 
 
+# ── Chat-only run-shape validator ────────────────────────────────────────────
+
+# The tool-call envelope shape the model also emits as text: {"name": …, "arguments": {…}}.
+_CALL_ENVELOPE_KEYS = frozenset({"name", "arguments"})
+
+
+def is_call_as_text_bail(content: str) -> bool:
+    """True when a plain-text chat response is really a tool call the model failed
+    to route through the tool channel — gpt-oss's Harmony call-as-text fallback.
+
+    Chat has many tools and no ``done()``, so unlike ``parse_done_json_bail`` this
+    keys on the *call shape*, not one tool's argument set.  Two convergent forms:
+
+      - full envelope: ``{"name": "browse", "arguments": {…}}``
+      - bare args:     ``{"queries": [...], "reasoning": "…"}`` — identified by the
+        framework-injected ``reasoning`` field (``Tool.to_ollama_tool`` adds it to
+        every tool's schema, so a real call's serialized args carry it)
+
+    The whole content must be a lone JSON object — a normal prose reply never is, so
+    a genuine answer can't trip this (the discriminator chat's text branch needs,
+    since there a text response is normally the final answer)."""
+    text = content.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    if set(parsed) == _CALL_ENVELOPE_KEYS:
+        return isinstance(parsed.get("name"), str) and isinstance(parsed.get("arguments"), dict)
+    return "reasoning" in parsed
+
+
+class CallAsTextValidator:
+    """A chat agent emitted a tool call as a plain JSON text object instead of a real
+    tool call — gpt-oss's Harmony call-as-text fallback (the sibling of the
+    collector's ``DoneJsonBailValidator``, but chat has many tools and no
+    ``done()``).  Without this guard the JSON blob is taken as the final reply and
+    sent to the user verbatim — the loop-stressed give-up case (a fruitless search
+    the model keeps rewording) hits it hardest.
+
+    On chat a text response is NORMALLY the final answer, so this fires ONLY when the
+    whole content parses as a serialized call (``is_call_as_text_bail``).  It then
+    TEACHES via a ``NudgeContinue`` that forks — re-emit the real call, or if the
+    search is already exhausted reply to the user in plain words — and continues the
+    loop so the model recovers itself (mid-loop, tools are still live).
+
+    Never a ``Repair`` (fabricating the call the model didn't route through the
+    channel is exactly what repair is not for).  Bounded by ``max_steps`` like the
+    collector bail guards: on the final step there's no retry room, so it Proceeds and
+    the loop's final-step / max-steps handling owns the fallback."""
+
+    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
+        if ctx.is_final_step or response.has_tool_calls:
+            return Proceed(response=response)
+        if not is_call_as_text_bail(response.content):
+            return Proceed(response=response)
+        logger.warning(
+            "chat emitted a tool call as JSON text (%s) — teaching the real call",
+            ConditionKey.CALL_AS_TEXT,
+        )
+        return NudgeContinue(message=Prompt.CHAT_CALL_AS_TEXT_NUDGE)
+
+
 class TextInsteadOfToolValidator:
     """A collector narrated prose where a tool call was required.
 

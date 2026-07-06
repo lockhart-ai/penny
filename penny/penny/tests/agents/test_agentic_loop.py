@@ -8,6 +8,7 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.agents.base import Agent, BackgroundAgent
+from penny.agents.chat import ChatAgent
 from penny.agents.models import MessageRole, ToolCallRecord
 from penny.config import Config
 from penny.config_params import RuntimeParams
@@ -43,6 +44,7 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
+    CallAsTextValidator,
     DoneJsonBailValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
@@ -52,6 +54,7 @@ from penny.validation.response_validators import (
     TextInsteadOfToolValidator,
     XmlTagValidator,
     build_strong_nudge,
+    is_call_as_text_bail,
     parse_done_json_bail,
 )
 
@@ -2365,6 +2368,62 @@ class TestCollectorDoneJsonBailNudge:
         await agent.close()
 
 
+class TestChatCallAsTextNudge:
+    """The chat sibling of the collector done-JSON bail: a chat reply that is really
+    a tool call emitted as a JSON text object (gpt-oss's Harmony call-as-text
+    fallback) must NOT be finalized as the user's reply.  ``CallAsTextValidator``
+    (on the chat run-shape chain) catches it on the text branch and nudges the model
+    to re-emit a real call or reply in plain words."""
+
+    @pytest.mark.asyncio
+    async def test_call_as_text_gets_nudged_and_recovers(self, test_db, mock_llm):
+        """Real search, then a browse call emitted as JSON *text* → the teaching nudge
+        (not finalized as the reply) → the model replies in prose."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.run_shape_validators = [CallAsTextValidator()]
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "quillpad"})
+            if count == 2:
+                return mock_llm._make_text_response(
+                    request, '{"queries": ["quillpad releases"], "reasoning": "read the page"}'
+                )
+            return mock_llm._make_text_response(request, "I couldn't find that app anywhere.")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("latest quillpad version?", max_steps=max_steps)
+
+        # The JSON blob never became the reply — the model was re-called and answered.
+        assert response.answer == "I couldn't find that app anywhere."
+        assert len(mock_llm.requests) == 3
+        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
+        assert last_user["content"] == Prompt.CHAT_CALL_AS_TEXT_NUDGE
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_normal_prose_reply_is_not_nudged(self, test_db, mock_llm):
+        """A genuine prose reply (not a serialized call) is finalized as-is — the
+        guard must not fire on real answers."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.run_shape_validators = [CallAsTextValidator()]
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "quillpad"})
+            return mock_llm._make_text_response(request, "QuillPad's latest version is 4.2!")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("latest quillpad version?", max_steps=max_steps)
+        assert response.answer == "QuillPad's latest version is 4.2!"
+        assert len(mock_llm.requests) == 2  # no extra nudge round-trip
+
+        await agent.close()
+
+
 def _text_response(content: str) -> LlmResponse:
     return LlmResponse(message=LlmMessage(role="assistant", content=content))
 
@@ -2529,6 +2588,43 @@ class TestResponseValidators:
         assert parse_done_json_bail('{"summary": "s"}') is None
         assert parse_done_json_bail('{"name": "done", "arguments": "oops"}') is None
 
+    def test_call_as_text_validator(self):
+        # A bare-args call (identified by the injected reasoning field) → teaching
+        # nudge (NudgeContinue, so the model re-emits the real call — never a repair).
+        bare = _text_response('{"queries": ["x"], "reasoning": "look it up"}')
+        taught = CallAsTextValidator().check(bare, _ctx())
+        assert isinstance(taught, NudgeContinue)
+        assert taught.message == Prompt.CHAT_CALL_AS_TEXT_NUDGE
+        # Full envelope → same teaching.
+        envelope = _text_response('{"name": "browse", "arguments": {"queries": ["x"]}}')
+        assert isinstance(CallAsTextValidator().check(envelope, _ctx()), NudgeContinue)
+        # A real prose reply, a tool-call response, and the final step all Proceed —
+        # the guard must never fire on a genuine answer or steal the last step.
+        assert isinstance(
+            CallAsTextValidator().check(_text_response("QuillPad is on 4.2!"), _ctx()), Proceed
+        )
+        assert isinstance(
+            CallAsTextValidator().check(_tool_response("search", {}), _ctx()), Proceed
+        )
+        assert isinstance(CallAsTextValidator().check(bare, _ctx(is_final_step=True)), Proceed)
+
+    def test_is_call_as_text_bail(self):
+        # Both Harmony fallback shapes are bails.
+        assert is_call_as_text_bail('{"queries": ["x"], "reasoning": "y"}')
+        assert is_call_as_text_bail('{"name": "browse", "arguments": {"queries": ["x"]}}')
+        # A lone JSON object with no call markers, an envelope with a non-string name
+        # or non-dict arguments, non-JSON prose, and prose that merely mentions JSON
+        # are all NOT bails (a genuine reply must pass through).
+        for prose in (
+            '{"note": "just data"}',  # no reasoning / not an envelope
+            '{"name": 5, "arguments": {}}',  # non-string name
+            '{"name": "browse", "arguments": "oops"}',  # non-dict arguments
+            'The config looks like {"queries": [...]} roughly.',  # not a lone object
+            "QuillPad's latest version is 4.2!",  # normal prose
+            "",  # empty
+        ):
+            assert not is_call_as_text_bail(prose), prose
+
     def test_premature_done_validator(self):
         done = _tool_response("done", {"success": True, "summary": "no matches"})
         # First-move done() with no prior records → reject.
@@ -2582,6 +2678,9 @@ class TestResponseValidators:
         )
         # Base agent has no run-shape guards (no shape forbids an early terminator).
         assert Agent.run_shape_validators == []
+        # Chat composes its own single run-shape guard: the call-as-text bail catch
+        # (chat replies inline, so a call-shaped text turn would reach the user raw).
+        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [CallAsTextValidator]
 
     def test_run_validators_threads_repair_then_short_circuits(self):
         """A Repair threads its transformed response into the rest of the chain;

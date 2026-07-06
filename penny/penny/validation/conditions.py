@@ -48,6 +48,7 @@ class ConditionKey(StrEnum):
     TOOL_PARSE_ERROR = "tool_parse_error"
     TEXT_INSTEAD_OF_TOOL = "text_instead_of_tool"
     DONE_JSON_BAIL = "done_json_bail"
+    CALL_AS_TEXT = "call_as_text"
     DEGENERATE_OUTPUT = "degenerate_output"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
@@ -147,6 +148,11 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
         "Collector emitted done()'s arguments as JSON text instead of calling the tool",
         live=True,
         collector_only=True,
+    ),
+    _condition(
+        ConditionKey.CALL_AS_TEXT,
+        "Chat emitted a tool call as JSON text instead of calling the tool or replying",
+        live=True,
     ),
     _condition(
         ConditionKey.DEGENERATE_OUTPUT,

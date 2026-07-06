@@ -28,6 +28,7 @@ from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.tools.schedule_tools import ScheduleCreateTool, ScheduleDeleteTool, ScheduleListTool
+from penny.validation.response_validators import CallAsTextValidator
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
@@ -54,6 +55,13 @@ class ChatAgent(Agent):
 
     name: str = "chat"
     system_prompt = Prompt.CONVERSATION_PROMPT
+    # Chat's run-shape chain (base Agent's is empty).  Chat replies inline via a
+    # text turn, so a text response that is really a serialized tool call (gpt-oss's
+    # Harmony call-as-text bail) would be sent to the user as a raw JSON blob;
+    # CallAsTextValidator catches it on the text branch and nudges the model to
+    # re-emit the real call or reply in plain words.  A new chat shape guard is one
+    # more entry here — never a branch in the loop.
+    run_shape_validators = [CallAsTextValidator()]
     # Stable id linking the synthetic page-context tool-call to its tool-result
     # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not
     # an ad-hoc ``tool_name`` field.
