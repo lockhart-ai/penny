@@ -116,11 +116,13 @@ def wrong_shape_message(name: str, actual_type: str) -> str:
     if actual_type == MemoryType.LOG:
         return (
             f"Refused: '{name}' is a log, not a collection.  Read a log with "
-            f"log_read (recent batch / cursored, oldest-first)."
+            f"log_read('{name}') (recent batch / cursored, oldest-first)."
         )
     return (
         f"Refused: '{name}' is a collection, not a log.  Read a collection with "
-        f"collection_read_latest / collection_get / collection_read_random / read_similar."
+        f"collection_read_latest('{name}') / collection_get(memory='{name}', key=<key>) / "
+        f"collection_read_random('{name}') / "
+        f"read_similar(memory='{name}', anchor=<what you're looking for>)."
     )
 
 

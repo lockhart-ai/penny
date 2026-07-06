@@ -336,10 +336,10 @@ class ToolExecutor:
             )
 
     def _finish_clause(self) -> str:
-        """`` or call done to finish`` only when a ``done`` tool is registered.
+        """`` or call done() to finish`` only when a ``done`` tool is registered.
 
         The collector shapes carry ``done``; the chat agent does not, so the crash
         envelope must not point a chat run at a tool it can't call."""
         if self.registry.get(PennyConstants.DONE_TOOL_NAME) is not None:
-            return " or call done to finish"
+            return " or call done() to finish"
         return ""

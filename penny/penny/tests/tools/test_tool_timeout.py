@@ -202,4 +202,4 @@ class TestCrashEnvelope:
         result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
 
         assert result.success is False
-        assert "call done to finish" in result.message
+        assert "call done() to finish" in result.message
