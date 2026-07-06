@@ -870,6 +870,45 @@ class _InjectDuplicateWrite(_InjectingClient):
         return await self._real.chat(messages, *args, tools=tools, **kwargs)
 
 
+class _InjectKeyMiss(_InjectingClient):
+    """Forces ONE ``collection_get`` on a near-miss key — a key close to, but not
+    equal to, one the target collection actually holds — as the model's FIRST
+    response.
+
+    Reproduces — deterministically against the live model — the key-not-found
+    residue (July 2026 tool-failure audit, item #11): the model probes an entry
+    that exists under a slightly different key, gets the not-found rejection, lists
+    the keys, finds the real one, and then must pick the RIGHT write path.  The
+    rejection now names the write-vs-update decision, so the model updates the
+    EXISTING entry with ``update_entry`` instead of ``collection_write``-ing it (a
+    duplicate the dedup rejects — the ping-pong the extended guidance removes).
+    ``bail_injected`` records the forced probe actually fired."""
+
+    def __init__(self, real, memory: str, near_miss_key: str) -> None:
+        super().__init__(real)
+        self._memory = memory
+        self._near_miss_key = near_miss_key
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        if not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-key-miss",
+                            function=LlmToolCallFunction(
+                                name="collection_get",
+                                arguments={"memory": self._memory, "key": self._near_miss_key},
+                            ),
+                        )
+                    ],
+                )
+            )
+        return await self._real.chat(messages, *args, tools=tools, **kwargs)
+
+
 class _InjectDuplicateCall(_InjectingClient):
     """Replays the model's FIRST tool call byte-identically, exactly once, so the
     agent-loop dedup guard rejects it — then delegates every later call to the live

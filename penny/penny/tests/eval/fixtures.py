@@ -464,6 +464,34 @@ RECIPE_BOX_DUP_CONTENT_2 = "One-pot lemon orzo — orzo, lemon, spinach, parmesa
 # The keys the box holds after seeding (SynthCollection keys = text before ' — ').
 RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
 
+# key-not-found write-vs-update residue (July 2026 tool-failure audit, item #11):
+# after a key-not-found rejection the model runs collection_keys / read_similar,
+# finds the entry under a slightly different key, then mis-picks collection_write
+# (→ duplicate-rejected) instead of update_entry.  The rejection now names the
+# write-vs-update decision.  This enrichment task hands the collector the SAME
+# recipe already saved, plus a richer detail (a marinade step) — so keeping the box
+# current means UPDATING the existing entry, not writing a fresh one.  Step 2 stays
+# tool-neutral ("record it so the box reflects it") so the write-vs-update choice
+# falls to the model + the rejection guidance, not to the prompt.
+RECIPE_BOX_ENRICH_PROMPT = (
+    "Keep the recipe box current with this weeknight recipe: sheet-pan chicken "
+    "fajitas — peppers, onion, chicken, 25 min at 425F, after a 10-minute lime "
+    "marinade.\n"
+    '1. collection_read_latest("recipe-box", k=20) — see what is already saved so '
+    "you do not duplicate one.\n"
+    "2. Record the recipe so the box reflects it, including the marinade step.\n"
+    "3. done()."
+)
+# The near-miss probe the injector forces first: the fajitas recipe is stored under
+# "Sheet-pan chicken fajitas", not this bare guess — so collection_get misses and
+# returns the key-not-found rejection the model must recover from.
+RECIPE_BOX_NEAR_MISS_KEY = "chicken fajitas"
+RECIPE_BOX_FAJITAS_KEY = "Sheet-pan chicken fajitas"
+# The seeded fajitas content (the enrichment must change this on the existing key).
+RECIPE_BOX_FAJITAS_SEED_CONTENT = (
+    "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
+)
+
 # thinking-generate: a timely fact + URL for the seeded 'likes' topic to ground a thought.
 THINKING_PAGES = (
     CannedPage(

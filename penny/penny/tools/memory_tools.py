@@ -553,7 +553,11 @@ class CollectionGetTool(MemoryTool):
             return ToolResult(
                 message=f"Key '{args.key}' not found in '{args.memory}'. List the available "
                 f"keys with collection_keys('{args.memory}'), or search by content with "
-                f"read_similar(memory='{args.memory}', anchor=<what you're looking for>)."
+                f"read_similar(memory='{args.memory}', anchor=<what you're looking for>). "
+                f"If it exists under a different key, refresh that entry with "
+                f"update_entry(key=<the key you found>, content=<the new content>) — "
+                f"collection_write(memory='{args.memory}', entries=<the new key and content>) "
+                f"creates NEW keys only and rejects an existing key as a duplicate."
             )
         return ToolResult(message=_format_entries(rows, source=args.memory))
 

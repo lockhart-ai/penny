@@ -522,6 +522,15 @@ class TestCollectionWritesAndReads:
         assert "hello" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
         missing = await CollectionGetTool(db).execute(memory="likes", key="absent")
         assert "not found" in missing.message
+        # The proven-win read guidance (collection_keys / read_similar; 47%→88%
+        # recovery) is intact, AND the rejection now closes the residual write-vs-
+        # update decision: once the model finds the entry under a different key it
+        # must UPDATE that entry, not collection_write it (which the dedup rejects
+        # as a duplicate — the ~1-call ping-pong this guidance removes).
+        assert "collection_keys('likes')" in missing.message
+        assert "read_similar(memory='likes', anchor=<what you're looking for>)" in missing.message
+        assert "update_entry(key=<the key you found>, content=<the new content>)" in missing.message
+        assert "creates NEW keys only" in missing.message
         # A bracket-wrapped key (the model's ingrained habit from the old `[key]`
         # display form) is never silently resolved — it's rejected with a teaching
         # error that names the mistake, the current key='...' render, and the bare
