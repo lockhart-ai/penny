@@ -49,7 +49,7 @@ penny/
   config.py           — Config dataclass loaded from .env, channel auto-detection
   config_params.py    — ConfigParam + RuntimeParams: runtime-configurable settings with 3-tier lookup
   constants.py        — Enums (SearchTrigger, PreferenceValence), reaction emojis, browse constants
-  prompts.py          — LLM prompt templates (chat conversation, vision, email/zoho).  Collector prompts live on memory rows (extraction_prompt) instead
+  prompts.py          — LLM prompt templates (chat conversation, vision, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
   startup.py          — Startup announcement message generation (git commit info)
   preflight.py        — Setup-health / preflight checks: one legible startup summary (Preflight → PreflightReport). Hard-fails (PreflightError, caught in main → exit 1) on an unreachable LLM endpoint or an unresolvable chat/embedding model; soft-warns on a missing vision/image model, a disconnected browser addon, or a mis-routed primary channel (routing-bug guard). Runs in Penny.run() after channel connectivity, before backfills
@@ -77,19 +77,17 @@ penny/
     unlike.py         — /unlike: remove positive preferences
     dislike.py        — /dislike: show or add negative preferences
     undislike.py      — /undislike: remove negative preferences
-    email.py          — /email: search Fastmail email via JMAP (optional)
-    zoho.py           — /zoho: search Zoho Mail via Zoho Mail API (optional)
   tools/
     base.py           — Tool ABC (declares `args_model` + `run()`: validate args via the Pydantic model, then `execute`), ToolRegistry, ToolExecutor (drives `tool.run`)
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via browser extension
     generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered side-channel (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
-    search_emails.py  — SearchEmailsTool (JMAP + Zoho)
-    read_emails.py    — ReadEmailTool (JMAP + Zoho)
-    list_emails.py    — ListEmailsTool (folder listings)
-    list_folders.py   — ListFoldersTool (available mailboxes)
-    draft_email.py    — DraftEmailTool (compose + stage draft)
+    search_emails.py  — SearchEmailsTool (JMAP + Zoho) — chat surface, config-gated on a mailbox
+    read_emails.py    — ReadEmailsTool (JMAP + Zoho) — summarizes fetched bodies against the current message
+    list_emails.py    — ListEmailsTool (folder listings; Zoho only)
+    list_folders.py   — ListFoldersTool (available mailboxes; Zoho only)
+    draft_email.py    — DraftEmailTool (compose + stage draft; Zoho only). All five retired the /email + /zoho commands (epic #1445) — built per turn by ChatAgent's email_tools_builder; NL-dispatch contract: tests/eval/test_email_dispatch.py
     notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
     schedule_tools.py — ScheduleCreateTool / ScheduleDeleteTool / ScheduleListTool: the chat agent's NL surface for recurring cron tasks (reuses the SCHEDULE_PARSE_PROMPT NL→cron parse; delete matches by embedding, never index). Registered on the chat surface in ChatAgent.get_tools
     memory_args.py    — Pydantic arg models for the memory tool surface
@@ -150,7 +148,7 @@ penny/
       test_signal_channel.py, test_signal_reactions.py, test_signal_vision.py,
       test_signal_formatting.py, test_startup_announcement.py
     commands/         — Per-command tests
-      test_commands.py, test_config.py, test_debug.py, test_email.py,
+      test_commands.py, test_config.py, test_debug.py,
       test_preferences.py,
       test_schedule.py, test_system.py, test_test_mode.py
     database/         — Migration validation tests
@@ -159,7 +157,7 @@ penny/
       test_client.py
     tools/            — Tool tests
       test_tool_timeout.py, test_tool_not_found.py, test_tool_reasoning.py,
-      test_send_message.py, test_notifications.py
+      test_send_message.py, test_notifications.py, test_email_tools.py
 Dockerfile            — Python 3.14-slim
 pyproject.toml        — Dependencies and project metadata
 ```
@@ -200,6 +198,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 - Handles incoming user messages with the full tool surface (memory + browse)
 - Chat-surface tools include `notifications_mute` / `notifications_unmute` (`tools/notifications.py`) — thin toggles over the `MuteState` row (`db.users`) that the model dispatches from natural language ("stop messaging me for a while" / "you can message me again"), replacing the retired `/mute` + `/unmute` commands. NL-dispatch contract: `tests/eval/test_notifications.py`
 - Chat-surface tools also include `schedule_create` / `schedule_delete` / `schedule_list` (`tools/schedule_tools.py`), appended in `get_tools` — recurring cron tasks the model dispatches from natural language, replacing the retired `/schedule` + `/unschedule` commands. NL-dispatch contract: `tests/eval/test_schedule_dispatch.py`
+- Email tools (`search_emails` / `read_emails`, plus `list_emails` / `list_folders` / `draft_email` on Zoho) are config-gated — present only when a mailbox is configured (Fastmail via `FASTMAIL_API_TOKEN`, Zoho via its OAuth triple; both behind the `EmailClient` protocol), retiring the `/email` + `/zoho` commands (epic #1445). Both configured → Fastmail wins (single user, one mailbox). The mailbox client is long-lived (built in `Penny._init_email`, closed in `shutdown`); `ChatAgent._email_tools_builder(user_query, today)` wraps it fresh each turn so `read_emails` summarises against the current question. A seeded skill (migration 0078) is the NL trigger. NL-dispatch contract: `tests/eval/test_email_dispatch.py`
 - Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
@@ -308,9 +307,7 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 - **/dislike** (`dislike.py`): Show negative preferences or add one
 - **/undislike** (`undislike.py`): Remove a negative preference by number
 
-### Conditional Commands (registered based on config)
-- **/email** (`email.py`): Search Fastmail email via JMAP (requires `FASTMAIL_API_TOKEN`)
-- **/zoho** (`zoho.py`): Search Zoho Mail via the Zoho Mail API (requires `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`)
+There are no conditional (config-gated) commands — email retired onto the chat tool surface (see the ChatAgent email-tools bullet above); `/bug`, `/feature`, `/draw`, `/mute`, `/unmute`, `/schedule`, `/unschedule` all retired earlier in epic #1445.
 
 ### Runtime Configuration
 - `/config` reads and writes to a `RuntimeConfig` table in SQLite
@@ -470,6 +467,7 @@ Notable migrations:
 - 0074: Delete `memory_entry` rows corrupted by a gpt-oss **degeneration collapse** — a run of `.`/`…`/`?` ("...??…?..") the model emits mid-generation on a large context, which before the loop guard could land in a stored entry.  A one-time *generic content-shape* cleanup (frozen copy of `is_degenerate_run`, applied in Python over each row); fresh installs match nothing.  Going forward the agent-loop reroll guard + the corpus write gate keep new poison out
 - 0076: Seed the "Mute or unmute notifications" skill — a TRIGGER + numbered STEPS recipe teaching the chat agent to dispatch a pause/resume request onto the `notifications_mute` / `notifications_unmute` tools (the retired `/mute` + `/unmute` commands).  Operate-the-system skill (`author='system'`, no source collection), so the skills reconcile loop leaves it alone.  Lifts the NL-dispatch reliability the `tests/eval/test_notifications.py` contract gates
 - 0077: Seed the schedule-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "every morning send me X" → `schedule_create`, "you can stop the morning summaries" → `schedule_delete` (by meaning), and "what's scheduled?" → `schedule_list`. Retires the `/schedule` + `/unschedule` commands onto the chat tool surface (epic #1445). Operate-the-system skills (no source collection), `author='system'`, idempotent
+- 0078: Seed the "Look up email" skill — TRIGGER + numbered STEPS teaching the chat agent to route email questions ("did I get an email from X?", "check my email for Y") onto `search_emails` → `read_emails` → answer (with `list_emails`/`list_folders`/`draft_email` when available), and to stay quiet on a casual grumble about email volume. Retires the `/email` + `/zoho` commands onto the chat tool surface (epic #1445). Operate-the-system skill, `author='system'`, idempotent. NL-dispatch contract: `tests/eval/test_email_dispatch.py`
 
 ## Extending
 
@@ -526,7 +524,8 @@ agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py
 `test_quality_correction.py`, `test_collector_honesty.py`, `test_retrieval.py`,
 `test_peripheral.py`, `test_notifications.py` (NL-dispatch of the mute/unmute
 tools that retired `/mute` + `/unmute`), `test_command_tools.py` (NL-dispatch
-contracts for the command-retirement tools). Browse is stubbed; a case injects realistic pages via the
+contracts for the command-retirement tools), `test_email_dispatch.py`
+(NL-dispatch of the email tools that retired `/email` + `/zoho`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

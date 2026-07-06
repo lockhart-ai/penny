@@ -93,16 +93,6 @@ class PennyResponse:
         "looking for interesting stuff for you!"
     )
 
-    # ── Email ────────────────────────────────────────────────────────────────
-
-    EMAIL_NO_QUERY_TEXT = "Please ask a question about your email. Usage: /email <question>"
-    EMAIL_ERROR = "Failed to search email: {error}"
-
-    # ── Zoho ─────────────────────────────────────────────────────────────────
-
-    ZOHO_NO_QUERY_TEXT = "Please ask a question about your Zoho email. Usage: /zoho <question>"
-    ZOHO_ERROR = "Failed to search Zoho email: {error}"
-
     # ── Commands Index ───────────────────────────────────────────────────────
 
     COMMANDS_HEADER = "**Available Commands**"

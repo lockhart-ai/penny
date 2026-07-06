@@ -19,7 +19,7 @@ from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants
 from penny.database.memory import Inclusion, Memory, RecallMode, render_key
 from penny.database.models import MemoryEntry
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import current_datetime_line, format_log_timestamp
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.tools import Tool
@@ -59,9 +59,18 @@ class ChatAgent(Agent):
     # an ad-hoc ``tool_name`` field.
     PAGE_CONTEXT_TOOL_CALL_ID = "page-context"
 
-    def __init__(self, image_client: OllamaImageClient | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        image_client: OllamaImageClient | None = None,
+        email_tools_builder: Callable[[str, str], list[Tool]] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._pending_page_context: PageContext | None = None
+        # The current user message, held for the span of one turn so the
+        # per-turn tool builders (email read summarisation) can see what the
+        # user just asked.  Set in ``handle`` and cleared in its ``finally``.
+        self._current_message: str | None = None
         # Chat replies via final text — tools are stripped on the final
         # agentic step to force the model to produce its reply.  Background
         # agents inherit the True default to keep tools available so they
@@ -71,6 +80,11 @@ class ChatAgent(Agent):
         # Present only when an image model is configured — mirrors the retired
         # /draw command's conditionality; enables the generate_image tool.
         self._image_client = image_client
+        # Present only when a mailbox is configured (Fastmail or Zoho) — mirrors
+        # the retired /email + /zoho commands' conditionality.  Builds the email
+        # tools fresh per turn (read_emails summarises against the current
+        # message + date), so it takes ``(user_query, today)``.
+        self._email_tools_builder = email_tools_builder
 
     def set_collector(self, collector: Collector) -> None:
         """Bind the Collector so test_extraction_prompt is available in chat."""
@@ -94,7 +108,28 @@ class ChatAgent(Agent):
             tools.append(
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
             )
+        tools.extend(self._email_tools())
         return tools
+
+    def _email_tools(self) -> list[Tool]:
+        """Config-gated email tools, built fresh for this turn.
+
+        Empty unless a mailbox (Fastmail or Zoho) is configured.  The builder
+        wraps the long-lived email client with the current message + date so
+        ``read_emails`` can summarise against what the user just asked — the
+        retired /email + /zoho commands' search → read → answer surface, now
+        driven from natural language.
+        """
+        if self._email_tools_builder is None:
+            return []
+        # During a live turn ``_current_message`` is always set (``handle`` sets it
+        # before installing tools).  It is None only when ``get_tools`` is
+        # enumerated outside a turn (surface inspection), where the tools are never
+        # executed — so an empty query is the correct "no active question" value,
+        # not a masked missing input.
+        return self._email_tools_builder(
+            self._current_message or "", current_datetime_line(self.db)
+        )
 
     # ── Message handling ───────────────────────────────────────────────
 
@@ -115,6 +150,7 @@ class ChatAgent(Agent):
         self._pending_page_context = page_context
         try:
             content, has_images = await self._process_images(content, images)
+            self._current_message = content
             history = self.get_history(sender, quoted_text=quoted_text)
 
             if has_images:
@@ -145,6 +181,7 @@ class ChatAgent(Agent):
         finally:
             self._current_user = None
             self._pending_page_context = None
+            self._current_message = None
 
     # ── Message building ────────────────────────────────────────────────
 

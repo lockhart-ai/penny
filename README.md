@@ -70,8 +70,7 @@ Beyond regular conversation, Penny supports slash commands:
 - **/unlike**, **/undislike** — remove preferences
 - **/config** — view or tune runtime parameters (30+ values: scheduling intervals, notification backoff, dedup thresholds, email pagination limits, etc.)
 - **/mute**, **/unmute** — silence or resume autonomous notifications
-- **/email** — search your Fastmail inbox via JMAP (requires `FASTMAIL_API_TOKEN`)
-- **/zoho** — search your Zoho Mail inbox (requires `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`)
+Email is no longer a slash command — ask about your inbox in plain language ("did I get an email from …?", "check my email for …") and Penny drives the email tools (`search_emails`, `read_emails`, plus `list_emails`/`list_folders`/`draft_email` on Zoho). The tools are present only when a mailbox is configured — Fastmail via `FASTMAIL_API_TOKEN`, or Zoho via `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`.
 
 ## Penny's Mind
 
@@ -276,10 +275,10 @@ DB_PATH="/penny/data/penny/penny.db"
 LOG_LEVEL="INFO"
 # LOG_FILE="/penny/data/penny/logs/penny.log"
 
-# Fastmail JMAP (optional, enables /email)
+# Fastmail JMAP (optional, enables the email tools on the chat surface)
 # FASTMAIL_API_TOKEN="your-api-token"
 
-# Zoho Mail (optional, enables /zoho)
+# Zoho Mail (optional, enables the email tools on the chat surface, Zoho backend)
 # ZOHO_API_ID="..."
 # ZOHO_API_SECRET="..."
 # ZOHO_REFRESH_TOKEN="..."
@@ -318,8 +317,8 @@ Penny auto-detects which channel to use based on configured credentials:
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: `http://host.docker.internal:11434`)
 
 **API Keys:**
-- `FASTMAIL_API_TOKEN`: enables `/email`
-- `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`: enables `/zoho` (obtain via Zoho's OAuth flow)
+- `FASTMAIL_API_TOKEN`: enables the email tools on the chat surface (Fastmail)
+- `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`: enables the email tools on the chat surface (Zoho backend; obtain via Zoho's OAuth flow)
 
 **GitHub App** (required for agent containers):
 - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_INSTALLATION_ID`

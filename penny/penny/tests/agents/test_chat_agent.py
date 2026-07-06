@@ -20,6 +20,8 @@ from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMo
 from penny.database.models import Media, MemoryEntry, MessageLog
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tools.read_emails import ReadEmailsTool
+from penny.tools.search_emails import SearchEmailsTool
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -174,7 +176,7 @@ target + success marker + done() summary
 - quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
 corrects collection prompts that have drifted from their stated intent
 - secrets (collection, 1 entries) — hidden
-- skills (collection, 12 entries) — Workflow patterns — how to compose tools to satisfy user intents
+- skills (collection, 13 entries) — Workflow patterns — how to compose tools to satisfy user intents
 - thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the user's interests.
 - tips (log, 1 entries) — useful tips
 - user-messages (log, 0 entries) — Every incoming user message
@@ -1119,6 +1121,31 @@ async def test_generate_image_registered_only_when_image_client_configured(
 
         penny.chat_agent._image_client = AsyncMock()
         assert "generate_image" in {tool.name for tool in penny.chat_agent.get_tools()}
+
+
+@pytest.mark.asyncio
+async def test_email_tools_registered_only_when_mailbox_configured(
+    signal_server, mock_llm, test_config, running_penny
+):
+    """The email tools mirror the retired /email + /zoho commands' conditionality.
+
+    They are on the chat surface only when a mailbox is configured — absent by
+    default (no email_tools_builder), present once one is wired. The builder
+    takes (user_query, today) and is invoked fresh per turn, so read_emails can
+    summarise against the current question.
+    """
+    async with running_penny(test_config) as penny:
+        assert penny.chat_agent._email_tools_builder is None
+        assert "search_emails" not in {tool.name for tool in penny.chat_agent.get_tools()}
+
+        email_client = AsyncMock()
+        penny.chat_agent._email_tools_builder = lambda user_query, today: [
+            SearchEmailsTool(email_client),
+            ReadEmailsTool(email_client, penny.chat_agent._model_client, user_query, today),
+        ]
+        names = {tool.name for tool in penny.chat_agent.get_tools()}
+        assert "search_emails" in names
+        assert "read_emails" in names
 
 
 @pytest.mark.asyncio

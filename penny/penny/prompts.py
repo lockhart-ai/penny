@@ -87,46 +87,10 @@ class Prompt:
         'done(success=false, summary="browsing unavailable this cycle — browser disconnected").'
     )
 
-    # Email prompts
-    EMAIL_SYSTEM_PROMPT = (
-        "You are searching the user's email to answer their question. Work in order:\n\n"
-        "1. search_emails(text=<keywords>) — find candidate emails; you can also narrow "
-        "with from_addr=<sender>, subject=<subject text>, after=<ISO date>, or "
-        "before=<ISO date>. Each result carries an id you pass to the next step.\n"
-        "2. read_emails(email_ids=[<id>, <id>]) — read the full bodies of the promising "
-        "results. Pass ALL relevant ids in ONE call, not one at a time.\n"
-        "3. If the answer is still incomplete, search_emails(text=<other keywords>) again "
-        "and read_emails(email_ids=[<id>]) the new hits.\n"
-        "4. Answer the user in plain text with the concrete details you found — specific "
-        "dates, names, and amounts — and name the email (sender + subject) each fact "
-        "came from.\n\n"
-        "ALWAYS ground every claim in an email you actually read — NEVER guess at a date, "
-        "sender, or amount you did not see. Use **bold** for the load-bearing terms "
-        "(dates, names, amounts) and bullet points when summarizing more than one email."
-    )
-
-    ZOHO_SYSTEM_PROMPT = (
-        "You are searching the user's Zoho email to answer their question. Work in order:\n\n"
-        "1. search_emails(text=<keywords>) — find candidate emails across the mailbox; "
-        "narrow with from_addr=<sender>, subject=<subject text>, after=<ISO date>, or "
-        "before=<ISO date>. To browse a whole folder instead, "
-        "list_emails(folder=<folder name>); call list_folders() first if you are unsure "
-        "which folders exist. Each result carries an id.\n"
-        "2. read_emails(email_ids=[<id>, <id>]) — read the full bodies of the promising "
-        "results, passing ALL relevant ids in ONE call.\n"
-        "3. If the answer is still incomplete, search or list again and "
-        "read_emails(email_ids=[<id>]) the new hits.\n"
-        "4. If the user asked you to reply, draft_email(to=[<address>], subject=<subject>, "
-        "body=<text>) — this saves a draft to their Drafts folder for review; it NEVER "
-        "sends.\n"
-        "5. Answer the user in plain text with the concrete details you found — specific "
-        "dates, names, and amounts — and name the email (sender + subject) each fact "
-        "came from.\n\n"
-        "ALWAYS ground every claim in an email you actually read — NEVER guess at a date, "
-        "sender, or amount you did not see. Use **bold** for the load-bearing terms "
-        "(dates, names, amounts) and bullet points when summarizing more than one email."
-    )
-
+    # Email prompts — the search → read → answer surface now lives on the chat
+    # agent's tool set (retired /email + /zoho, epic #1445); the chat prompt and
+    # the seeded email-dispatch skill carry the house style.  read_emails still
+    # summarises each fetched body against the user's question with this prompt.
     EMAIL_SUMMARIZE_PROMPT = (
         "{today}\n\n"
         'The user asked: "{query}"\n\n'

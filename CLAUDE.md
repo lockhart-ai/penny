@@ -192,10 +192,10 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 
 **API Keys**:
 - `CLAUDE_CODE_OAUTH_TOKEN`: OAuth token for Claude CLI Max plan (agent containers, via `claude setup-token`)
-- `FASTMAIL_API_TOKEN`: API token for Fastmail JMAP email search (optional, enables `/email` command)
-- `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables `/zoho` command)
-- `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, enables `/zoho` command)
-- `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, enables `/zoho` command) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
+- `FASTMAIL_API_TOKEN`: API token for Fastmail JMAP email (optional, enables the email tools on the chat surface — `search_emails`, `read_emails`)
+- `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables the email tools on the chat surface with the Zoho backend — adds `list_emails`, `list_folders`, `draft_email`)
+- `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, part of the Zoho email-tools credential triple)
+- `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, part of the Zoho email-tools credential triple) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
 **GitHub App** (required for agent containers):
 - `GITHUB_APP_ID`: GitHub App ID for authenticated API access
 - `GITHUB_APP_PRIVATE_KEY_PATH`: Path to GitHub App private key file

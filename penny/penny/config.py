@@ -221,14 +221,13 @@ class Config:
     # Scheduler tick interval (seconds)
     scheduler_tick_interval: float = 1.0
 
-    # Zoho API configuration (optional, enables /zoho command)
+    # Zoho Mail (optional) — enables the email tools on the chat surface
     zoho_api_id: str | None = None
     zoho_api_secret: str | None = None
     zoho_refresh_token: str | None = None
 
-    # Fastmail JMAP configuration (optional, enables /email command)
+    # Fastmail JMAP (optional) — enables the email tools on the chat surface
     fastmail_api_token: str | None = None
-    email_max_steps: int = 5
 
     # Browser extension server (runs alongside primary channel)
     browser_enabled: bool = False

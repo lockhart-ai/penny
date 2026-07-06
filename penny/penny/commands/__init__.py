@@ -1,7 +1,5 @@
 """Command system for Penny."""
 
-from typing import TYPE_CHECKING
-
 from penny.commands.base import Command, CommandRegistry
 from penny.commands.config import ConfigCommand
 from penny.commands.dislike import DislikeCommand
@@ -11,9 +9,6 @@ from penny.commands.models import CommandContext, CommandError, CommandResult
 from penny.commands.profile import ProfileCommand
 from penny.commands.undislike import UndislikeCommand
 from penny.commands.unlike import UnlikeCommand
-
-if TYPE_CHECKING:
-    from penny.zoho.models import ZohoCredentials
 
 __all__ = [
     "Command",
@@ -25,19 +20,11 @@ __all__ = [
 ]
 
 
-def create_command_registry(
-    fastmail_api_token: str | None = None,
-    zoho_credentials: ZohoCredentials | None = None,
-) -> CommandRegistry:
-    """
-    Factory to create registry with builtin commands.
+def create_command_registry() -> CommandRegistry:
+    """Factory to create the registry with the built-in commands.
 
-    Args:
-        fastmail_api_token: Optional Fastmail API token (required for email command)
-        zoho_credentials: Optional ZohoCredentials for Zoho Mail API (required for zoho command)
-
-    Returns:
-        CommandRegistry with all builtin commands registered
+    Email retired onto the chat tool surface (epic #1445) — there are no
+    config-gated commands left, so this takes no arguments.
     """
     registry = CommandRegistry()
 
@@ -52,23 +39,5 @@ def create_command_registry(
     registry.register(UnlikeCommand())
     registry.register(DislikeCommand())
     registry.register(UndislikeCommand())
-
-    # Register email command if Fastmail API token is configured
-    if fastmail_api_token:
-        from penny.commands.email import EmailCommand
-
-        registry.register(EmailCommand(fastmail_api_token))
-
-    # Register zoho command if Zoho credentials are configured
-    if zoho_credentials:
-        from penny.commands.zoho import ZohoCommand
-
-        registry.register(
-            ZohoCommand(
-                zoho_credentials.client_id,
-                zoho_credentials.client_secret,
-                zoho_credentials.refresh_token,
-            )
-        )
 
     return registry

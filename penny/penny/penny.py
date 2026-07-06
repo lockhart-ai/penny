@@ -6,6 +6,7 @@ import asyncio
 import logging
 import signal
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,8 @@ from penny.config import Config, setup_logging
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
+from penny.email.protocol import EmailClient
+from penny.jmap import JmapClient
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
@@ -40,9 +43,20 @@ from penny.scheduler import (
 from penny.scheduler.schedule_runner import ScheduleExecutor
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
 from penny.startup import get_restart_message
+from penny.tools import Tool
+from penny.tools.draft_email import DraftEmailTool
+from penny.tools.list_emails import ListEmailsTool
+from penny.tools.list_folders import ListFoldersTool
+from penny.tools.read_emails import ReadEmailsTool
+from penny.tools.search_emails import SearchEmailsTool
+from penny.zoho import ZohoClient
 from penny.zoho.models import ZohoCredentials
 
 logger = logging.getLogger(__name__)
+
+# Builds the chat agent's email tool surface for one turn, given the current
+# user message and the dated datetime line ``read_emails`` summarises against.
+EmailToolsBuilder = Callable[[str, str], list[Tool]]
 
 
 class Penny:
@@ -54,6 +68,7 @@ class Penny:
         self.start_time = datetime.now()
         self._init_database(config)
         self._init_llm_clients(config)
+        self._init_email(config)
         self._init_agents(config)
         self._init_commands(config)
         self._init_channel(config, channel)
@@ -123,6 +138,68 @@ class Penny:
             else None
         )
 
+    def _init_email(self, config: Config) -> None:
+        """Build the config-gated email client + the chat-surface tool builder.
+
+        Fastmail (``JmapClient``) and Zoho (``ZohoClient``) both satisfy the
+        ``EmailClient`` protocol.  Fastmail exposes search + read; Zoho adds
+        folder listing and draft composition, so its chat surface carries all
+        five tools.  When both are configured Fastmail wins — a single user has
+        one mailbox in practice.  The client is long-lived (created here, closed
+        in ``shutdown``); the builder wraps it fresh each turn with the current
+        message + date so ``read_emails`` can summarise against the question.
+        """
+        self.email_client: EmailClient | None = None
+        self.email_tools_builder: EmailToolsBuilder | None = None
+        if config.fastmail_api_token:
+            jmap_client = JmapClient(
+                config.fastmail_api_token,
+                timeout=config.runtime.JMAP_REQUEST_TIMEOUT,
+                max_body_length=int(config.runtime.EMAIL_BODY_MAX_LENGTH),
+                search_limit=int(config.runtime.EMAIL_SEARCH_LIMIT),
+            )
+            self.email_client = jmap_client
+            self.email_tools_builder = self._fastmail_tools_builder(jmap_client)
+            return
+        credentials = self._get_zoho_credentials(config)
+        if credentials:
+            zoho_client = ZohoClient(
+                credentials.client_id,
+                credentials.client_secret,
+                credentials.refresh_token,
+                timeout=config.runtime.JMAP_REQUEST_TIMEOUT,
+                max_body_length=int(config.runtime.EMAIL_BODY_MAX_LENGTH),
+                search_limit=int(config.runtime.EMAIL_SEARCH_LIMIT),
+                list_limit=int(config.runtime.EMAIL_LIST_LIMIT),
+            )
+            self.email_client = zoho_client
+            self.email_tools_builder = self._zoho_tools_builder(zoho_client)
+
+    def _fastmail_tools_builder(self, client: EmailClient) -> EmailToolsBuilder:
+        """Fastmail's chat surface: search + read (JMAP has no folders/drafts)."""
+
+        def build(user_query: str, today: str) -> list[Tool]:
+            return [
+                SearchEmailsTool(client),
+                ReadEmailsTool(client, self.model_client, user_query, today),
+            ]
+
+        return build
+
+    def _zoho_tools_builder(self, client: ZohoClient) -> EmailToolsBuilder:
+        """Zoho's chat surface: search + read + folder listing + draft."""
+
+        def build(user_query: str, today: str) -> list[Tool]:
+            return [
+                SearchEmailsTool(client),
+                ReadEmailsTool(client, self.model_client, user_query, today),
+                ListEmailsTool(client),
+                ListFoldersTool(client),
+                DraftEmailTool(client),
+            ]
+
+        return build
+
     def _init_agents(self, config: Config) -> None:
         """Create chat agent + collector dispatcher + schedule executor.
 
@@ -139,6 +216,7 @@ class Penny:
             vision_model_client=self.vision_model_client,
             embedding_model_client=self.embedding_model_client,
             image_client=self.image_client,
+            email_tools_builder=self.email_tools_builder,
         )
         self.collector = Collector(
             model_client=self.model_client,
@@ -158,12 +236,13 @@ class Penny:
         self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
 
     def _init_commands(self, config: Config) -> None:
-        """Create command registry with optional integrations."""
-        zoho_credentials = self._get_zoho_credentials(config)
-        self.command_registry = create_command_registry(
-            fastmail_api_token=config.fastmail_api_token,
-            zoho_credentials=zoho_credentials,
-        )
+        """Create command registry.
+
+        Email is no longer a command — the ``/email`` + ``/zoho`` slash commands
+        retired onto the chat tool surface (epic #1445); the mailbox client is
+        built in ``_init_email`` and driven from natural language instead.
+        """
+        self.command_registry = create_command_registry()
 
     def _get_zoho_credentials(self, config: Config) -> ZohoCredentials | None:
         """Get Zoho credentials if all required values are configured."""
@@ -566,6 +645,8 @@ class Penny:
             await self.vision_model_client.close()
         if self.embedding_model_client:
             await self.embedding_model_client.close()
+        if self.email_client:
+            await self.email_client.close()
         logger.info("Agent shutdown complete")
 
 
