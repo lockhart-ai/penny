@@ -170,6 +170,26 @@ Examples:
         'cycle actually did>")`.'
     )
 
+    # The chat-surface sibling of COLLECTOR_DONE_JSON_NUDGE, injected when a chat
+    # reply is recognisably a tool call emitted as a JSON text object (the model
+    # composed a valid call but failed to route it through the tool-call channel —
+    # gpt-oss's Harmony fallback).  On chat a text reply is normally the final
+    # answer, so an unguarded bail is sent to the user as a raw JSON blob; it bites
+    # hardest on the give-up case (a fruitless search the model keeps rewording).
+    # A user-turn nudge (via NudgeContinue) that names what happened and FORKS —
+    # make the real call if still needed, else reply to the user in plain words —
+    # so a stuck search resolves into either real work or an honest "couldn't find
+    # it" instead of leaked machinery.  Numbered (gpt-oss follows numbered steps),
+    # no JSON snippet (never model the shape being corrected).
+    CHAT_CALL_AS_TEXT_NUDGE = (
+        "You wrote a tool call as plain text, so it never ran — nothing was searched, "
+        "read, or saved. Do ONE of these now:\n"
+        "1. If you still need a tool, make the actual tool call (not text).\n"
+        "2. If you've already gathered what you can — or a search came back empty — do "
+        "NOT call anything: reply to the user in plain words, telling them what you "
+        "found or that you couldn't find it."
+    )
+
     # Returned (in the tool-result field, success=False) when a collector calls
     # done() as its very first move — before reading any input or doing any work.
     # Unlike COLLECTOR_TOOL_CALL_NUDGE this is NOT a user-turn nudge: the model
