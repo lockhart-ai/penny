@@ -21,7 +21,7 @@ from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolPars
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import is_degenerate_run, is_degenerate_tool_name
-from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry
+from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.tools.send_message import SendMessageTool
@@ -447,7 +447,11 @@ class Agent:
             messages.append(
                 {
                     "role": MessageRole.TOOL,
-                    "content": Tool.format_result(call.function.name, message),
+                    "content": Tool.format_result(
+                        call.function.name,
+                        call.function.arguments,
+                        ToolResult(message=message, success=False),
+                    ),
                     "tool_call_id": call.id,
                 }
             )
@@ -932,7 +936,11 @@ class Agent:
                 messages.append(
                     {
                         "role": MessageRole.TOOL,
-                        "content": Tool.format_result(tool_name, repeat_msg),
+                        "content": Tool.format_result(
+                            tool_name,
+                            arguments,
+                            ToolResult(message=repeat_msg, success=False),
+                        ),
                         "tool_call_id": tool_call_id,
                     }
                 )
@@ -958,19 +966,20 @@ class Agent:
     def _collect_tool_results(
         self,
         pending: list[tuple[str, str, dict, str | None]],
-        results: list[tuple[str, ToolCallRecord, list[str]]],
+        results: list[tuple[ToolResult, ToolCallRecord, list[str]]],
         messages: list[dict],
         records: list[ToolCallRecord],
         source_urls: list[str],
     ) -> None:
         """Append each tool result to messages and accumulate records/urls.
 
-        Frames the model-facing content via ``Tool.format_result`` so every
-        result is unmistakably the response to the model's own call.  Framing
-        happens here, not in ``_execute_single_tool``, so ``record.failed``
-        (computed on the raw string by ``startswith`` checks) is unaffected.
+        Frames the model-facing content via ``Tool.format_result`` — a tagged,
+        first-person narration of the call plus its body — so every result reads
+        as the reply to the model's own call.  The call ``arguments`` and the whole
+        ``ToolResult`` (not just its string body) are threaded through so the
+        narration can name the action and branch on success/failure.
         """
-        for (tool_call_id, tool_name, _, _), (result_str, record, urls) in zip(
+        for (tool_call_id, tool_name, arguments, _), (result, record, urls) in zip(
             pending, results, strict=True
         ):
             records.append(record)
@@ -978,7 +987,7 @@ class Agent:
             messages.append(
                 {
                     "role": MessageRole.TOOL,
-                    "content": Tool.format_result(tool_name, result_str),
+                    "content": Tool.format_result(tool_name, arguments, result),
                     "tool_call_id": tool_call_id,
                 }
             )
@@ -988,8 +997,14 @@ class Agent:
         tool_name: str,
         arguments: dict,
         reasoning: str | None,
-    ) -> tuple[str, ToolCallRecord, list[str]]:
-        """Execute one tool call. Returns (result_str, record, source_urls)."""
+    ) -> tuple[ToolResult, ToolCallRecord, list[str]]:
+        """Execute one tool call. Returns (result, record, source_urls).
+
+        Returns the whole ``ToolResult`` (not just its message string) so the
+        framing site (``_collect_tool_results``) can narrate the outcome and branch
+        on ``result.success``.  ``record.failed`` is still computed here on the raw
+        result, before any framing, so failure detection is unaffected.
+        """
         logger.info("Executing tool: %s", tool_name)
         if reasoning:
             logger.debug("Tool reasoning: %s", reasoning[:200])
@@ -1011,7 +1026,7 @@ class Agent:
             result.mutated,
             result.message[:200],
         )
-        return result.message, record, result.source_urls
+        return result, record, result.source_urls
 
     @staticmethod
     def _make_call_key(tool_name: str, arguments: dict) -> tuple[str, ...]:

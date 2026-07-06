@@ -22,7 +22,7 @@ from penny.database.models import MemoryEntry
 from penny.datetime_utils import current_datetime_line, format_log_timestamp
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
-from penny.tools import Tool
+from penny.tools import Tool, ToolResult
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
@@ -244,10 +244,15 @@ class ChatAgent(Agent):
             }
         )
         # Tool "returned" the page content — framed like every real tool result
+        # (a successful synthetic browse), via the same tagged first-person framing.
         messages.append(
             {
                 "role": "tool",
-                "content": Tool.format_result(BrowseTool.name, page_content),
+                "content": Tool.format_result(
+                    BrowseTool.name,
+                    {"queries": [page_context.url]},
+                    ToolResult(message=page_content, success=True),
+                ),
                 "tool_call_id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
             }
         )

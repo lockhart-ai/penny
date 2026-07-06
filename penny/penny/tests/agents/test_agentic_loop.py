@@ -331,11 +331,40 @@ class TestRepeatCallGuard:
             and "You already made this exact tool call" in message["content"]
         ]
         assert repeat_tool_messages
+        # A duplicate call "didn't work" — the rejection is framed with the generic
+        # failure narration + the retained machine tag (bespoke narration for this
+        # site lands in #1485; the generic default flows through until then).
         assert repeat_tool_messages[0]["content"] == Tool.format_result(
-            "search", Prompt.DUPLICATE_CALL_REJECTION
+            "search", {}, ToolResult(message=Prompt.DUPLICATE_CALL_REJECTION, success=False)
         )
+        assert "(search result)" in repeat_tool_messages[0]["content"]
 
         await agent.close()
+
+
+class TestResultNarration:
+    """`Tool.format_result` frames a tool result as tagged, first-person narration.
+
+    The generic default (this ticket; per-tool overrides land in #1480–#1482):
+    a first-person line + a retained ``(<tool> result)`` machine tag + the body.
+    The tag is load-bearing — a live-model probe showed pure-prose narration with
+    no tag raised the call-as-text bail rate, so it stays even as the header reads
+    naturally.  Success and failure narrate differently, both keeping the tag.
+    """
+
+    def test_success_result_carries_narration_tag_and_body(self):
+        framed = Tool.format_result(
+            "browse", {"queries": ["quillpad release"]}, ToolResult(message="v4.2 is out")
+        )
+        assert framed == "You used `browse` and here's the result: (browse result)\nv4.2 is out"
+
+    def test_failure_result_narrates_honestly_and_keeps_the_tag(self):
+        framed = Tool.format_result(
+            "browse",
+            {"queries": ["quillpad release"]},
+            ToolResult(message="Error: no", success=False),
+        )
+        assert framed == "You tried to use `browse` but it didn't work: (browse result)\nError: no"
 
 
 class TestModelErrorHandling:
@@ -753,13 +782,13 @@ class TestAfterStepHook:
         await agent.run("test", max_steps=max_steps)
 
         # 3 tool calls → exactly 3 entries, no duplicates from re-scanning history.
-        # Each is wrapped by Tool.format_result so the model reads it as the
-        # response to its own call (the body is unchanged).
+        # Each is wrapped by Tool.format_result — a tagged first-person narration
+        # of the (successful) call plus its unchanged body.
         assert len(agent._tool_result_text) == 3
         assert agent._tool_result_text == [
-            "Result of your `search` call:\nresult_A",
-            "Result of your `search` call:\nresult_B",
-            "Result of your `search` call:\nresult_C",
+            "You used `search` and here's the result: (search result)\nresult_A",
+            "You used `search` and here's the result: (search result)\nresult_B",
+            "You used `search` and here's the result: (search result)\nresult_C",
         ]
 
         await agent.close()
