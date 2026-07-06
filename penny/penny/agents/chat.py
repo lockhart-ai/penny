@@ -25,6 +25,7 @@ from penny.prompts import Prompt
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import TestExtractionPromptTool
+from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
@@ -71,6 +72,11 @@ class ChatAgent(Agent):
 
     def get_tools(self) -> list[Tool]:
         tools = super().get_tools()
+        # Notification mute/unmute is a chat-driven action over the MuteState row
+        # (the retired /mute + /unmute commands), so both tools live on the chat
+        # surface — the model dispatches to them from natural language.
+        tools.append(NotificationsMuteTool(self.db))
+        tools.append(NotificationsUnmuteTool(self.db))
         if self._collector is not None:
             tools.append(TestExtractionPromptTool(self._collector))
         return tools

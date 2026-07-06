@@ -135,13 +135,6 @@ class PennyResponse:
     COMMANDS_UNKNOWN = "Unknown command: /{name}. Use /commands to see available commands."
     COMMANDS_HELP_HEADER = "**Command: /{name}**"
 
-    # ── Mute ──────────────────────────────────────────────────────────────────
-
-    MUTE_ENABLED = "Notifications muted. Use /unmute when you want them back."
-    MUTE_ALREADY = "Notifications are already muted."
-    UNMUTE_ENABLED = "Notifications unmuted."
-    UNMUTE_ALREADY = "Notifications aren't muted."
-
     # ── Preferences ───────────────────────────────────────────────────────
 
     PREF_NO_LIKES = "You don't have any likes yet."

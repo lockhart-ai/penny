@@ -8,12 +8,10 @@ from penny.commands.dislike import DislikeCommand
 from penny.commands.index import IndexCommand
 from penny.commands.like import LikeCommand
 from penny.commands.models import CommandContext, CommandError, CommandResult
-from penny.commands.mute import MuteCommand
 from penny.commands.profile import ProfileCommand
 from penny.commands.schedule import ScheduleCommand
 from penny.commands.undislike import UndislikeCommand
 from penny.commands.unlike import UnlikeCommand
-from penny.commands.unmute import UnmuteCommand
 from penny.commands.unschedule import UnscheduleCommand
 
 if TYPE_CHECKING:
@@ -56,8 +54,6 @@ def create_command_registry(
     registry.register(ConfigCommand())
     registry.register(ProfileCommand())
     registry.register(ScheduleCommand())
-    registry.register(MuteCommand())
-    registry.register(UnmuteCommand())
     registry.register(UnscheduleCommand())
     registry.register(LikeCommand())
     registry.register(UnlikeCommand())

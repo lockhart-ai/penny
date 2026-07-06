@@ -75,8 +75,6 @@ penny/
     profile.py        — /profile: user info collection (name, location, DOB, timezone)
     schedule.py       — /schedule: create and list recurring background tasks
     unschedule.py     — /unschedule: delete a scheduled task
-    mute.py           — /mute: silence Penny's notifications
-    unmute.py         — /unmute: resume Penny's notifications
     like.py           — /like: show or add positive preferences
     unlike.py         — /unlike: remove positive preferences
     dislike.py        — /dislike: show or add negative preferences
@@ -94,6 +92,7 @@ penny/
     list_emails.py    — ListEmailsTool (folder listings)
     list_folders.py   — ListFoldersTool (available mailboxes)
     draft_email.py    — DraftEmailTool (compose + stage draft)
+    notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Tool subclasses: each funnels through `db.memory(name)` (the single dispatch) and calls a method on the returned `Memory` object, which refuses wrong-shape ops (collection ops on a log, log_read on a collection) via a base no-op (`WrongShapeError`) and read-only facades via `ReadOnlyMemoryError` — no tool branches on a name or shape. read_similar + memory_metadata are shape-agnostic. build_memory_tools(db, embedding_client, author) factory
   channels/
@@ -153,14 +152,15 @@ penny/
       test_signal_formatting.py, test_startup_announcement.py
     commands/         — Per-command tests
       test_commands.py, test_config.py, test_debug.py, test_draw.py, test_email.py,
-      test_mute.py, test_preferences.py,
+      test_preferences.py,
       test_schedule.py, test_system.py, test_test_mode.py
     database/         — Migration validation tests
       test_migrations.py
     jmap/             — JMAP client tests
       test_client.py
     tools/            — Tool tests
-      test_tool_timeout.py, test_tool_not_found.py, test_tool_reasoning.py
+      test_tool_timeout.py, test_tool_not_found.py, test_tool_reasoning.py,
+      test_send_message.py, test_notifications.py
 Dockerfile            — Python 3.14-slim
 pyproject.toml        — Dependencies and project metadata
 ```
@@ -199,6 +199,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 
 **ChatAgent** (`agents/chat.py`)
 - Handles incoming user messages with the full tool surface
+- Chat-surface tools include `notifications_mute` / `notifications_unmute` (`tools/notifications.py`) — thin toggles over the `MuteState` row (`db.users`) that the model dispatches from natural language ("stop messaging me for a while" / "you can message me again"), replacing the retired `/mute` + `/unmute` commands. NL-dispatch contract: `tests/eval/test_notifications.py`
 - Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
@@ -303,8 +304,6 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 - **/profile** (`profile.py`): View or update user profile (name, location, DOB). Derives IANA timezone from location. Required before Penny will chat
 - **/schedule** (`schedule.py`): Create and list recurring cron-based background tasks (uses LLM to parse natural language timing)
 - **/unschedule** (`unschedule.py`): Delete a scheduled task. `/unschedule` shows numbered list; `/unschedule <N>` deletes
-- **/mute** (`mute.py`): Silence Penny's autonomous notifications
-- **/unmute** (`unmute.py`): Resume Penny's notifications
 - **/like** (`like.py`): Show positive preferences or add one (e.g., `/like dark roast coffee`)
 - **/unlike** (`unlike.py`): Remove a positive preference by number
 - **/dislike** (`dislike.py`): Show negative preferences or add one
@@ -471,6 +470,7 @@ Notable migrations:
 - 0072: Teach the `quality` collector the new run-health flags, conservatively — the shared run record now also carries `⚠ INCOMPLETE` / `⚠ TOOL FAILURES` / `⚠ HALF-FORMED SEND`, so the quality prompt is rewritten to act on `⚠ HALF-FORMED SEND` (tier 1: the collector sent the user junk; the fix composes the complete message before the one send) while explicitly IGNORING `⚠ INCOMPLETE` and `⚠ TOOL FAILURES` as capacity/transience (never a rewrite — avoids over-correcting healthy collectors).  Validated by eval contracts in `tests/eval/test_quality_correction.py` (a half-formed-send repair + two over-correction guards)
 - 0073: Switch the `quality` collector from applying `collection_update` to **suggesting** a fix via `send_message` for user approval (it had made destructive edits to a healthy collection); detection stays structural, the edit moves to the chat agent after the user OKs it
 - 0074: Delete `memory_entry` rows corrupted by a gpt-oss **degeneration collapse** — a run of `.`/`…`/`?` ("...??…?..") the model emits mid-generation on a large context, which before the loop guard could land in a stored entry.  A one-time *generic content-shape* cleanup (frozen copy of `is_degenerate_run`, applied in Python over each row); fresh installs match nothing.  Going forward the agent-loop reroll guard + the corpus write gate keep new poison out
+- 0076: Seed the "Mute or unmute notifications" skill — a TRIGGER + numbered STEPS recipe teaching the chat agent to dispatch a pause/resume request onto the `notifications_mute` / `notifications_unmute` tools (the retired `/mute` + `/unmute` commands).  Operate-the-system skill (`author='system'`, no source collection), so the skills reconcile loop leaves it alone.  Lifts the NL-dispatch reliability the `tests/eval/test_notifications.py` contract gates
 
 ## Extending
 
@@ -525,7 +525,8 @@ threshold (`min_pass_rate=None` = report-only). The coverage matrix is the two
 agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py`,
 `test_collection_lifecycle.py`, `test_extractors.py`, `test_skills_extractor.py`,
 `test_quality_correction.py`, `test_collector_honesty.py`, `test_retrieval.py`,
-`test_peripheral.py`. Browse is stubbed; a case injects realistic pages via the
+`test_peripheral.py`, `test_notifications.py` (NL-dispatch of the mute/unmute
+tools that retired `/mute` + `/unmute`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

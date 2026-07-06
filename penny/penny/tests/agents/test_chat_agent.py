@@ -174,7 +174,7 @@ target + success marker + done() summary
 - quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
 corrects collection prompts that have drifted from their stated intent
 - secrets (collection, 1 entries) — hidden
-- skills (collection, 8 entries) — Workflow patterns — how to compose tools to satisfy user intents
+- skills (collection, 9 entries) — Workflow patterns — how to compose tools to satisfy user intents
 - thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the user's interests.
 - tips (log, 1 entries) — useful tips
 - user-messages (log, 0 entries) — Every incoming user message
@@ -1093,6 +1093,11 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_catalog" in names
         assert "collector_run_history" in names
         assert "read_published_latest" in names
+
+        # Notification mute/unmute — chat-surface tools over the MuteState row
+        # (the retired /mute + /unmute commands), dispatched from natural language.
+        assert "notifications_mute" in names
+        assert "notifications_unmute" in names
 
         # Loop-control stays background-only — never on the chat surface.
         assert "done" not in names
