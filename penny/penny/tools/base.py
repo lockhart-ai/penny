@@ -32,6 +32,18 @@ RESULT_NARRATION_FAILURE = "You tried to use `{tool_name}` but it didn't work:"
 # ``Result of your `<tool>` call:`` header carried — even as the header reads naturally.
 RESULT_TAG = "({tool_name} result)"
 
+# First-person frames for the framework-synthesised failures a tool can't narrate
+# itself (#1482) — the ``ToolExecutor`` builds these where there's often no tool
+# instance (tool-not-found) or the arguments never validated.  Each is set on the
+# ``ToolResult.narration`` field so ``format_result`` leads with it instead of the
+# generic per-tool narration; the actionable remedy (the #1414 house template's
+# diagnosis + how-to-fix tail) stays in ``ToolResult.message`` verbatim — the narration
+# is only the frame around it, never a replacement for the remedy.
+FRAMEWORK_NARRATION_NOT_FOUND = "You tried to use `{tool_name}` but there's no such tool."
+FRAMEWORK_NARRATION_TIMEOUT = "You tried to use `{tool_name}` but it timed out."
+FRAMEWORK_NARRATION_EXCEPTION = "You tried to use `{tool_name}` but it errored: {error}."
+FRAMEWORK_NARRATION_INVALID_ARGS = "You tried to use `{tool_name}` but the arguments were wrong:"
+
 
 class Tool(ABC):
     """Abstract base class for tools."""
@@ -70,22 +82,26 @@ class Tool(ABC):
         try:
             self.args_model(**kwargs)
         except ValidationError as exc:
-            return ToolResult(message=self._validation_error_message(exc), success=False)
+            return ToolResult(
+                narration=FRAMEWORK_NARRATION_INVALID_ARGS.format(tool_name=self.name),
+                message=self._validation_error_message(exc),
+                success=False,
+            )
         return await self.execute(**kwargs)
 
     def _validation_error_message(self, exc: ValidationError) -> str:
-        """Actionable rejection: each bad field, why, and how to fix it.
+        """Actionable rejection body: each bad field, why, and how to fix it.
 
         Pairs Pydantic's per-error reason (required / wrong type / custom-validator
         message) with the field's type + description from ``parameters`` (the
         model-facing schema), so the model gets the same rich hint the hand-rolled
-        check used to give plus any custom-validator guidance."""
+        check used to give plus any custom-validator guidance.  The first-person frame
+        (``FRAMEWORK_NARRATION_INVALID_ARGS``) is carried on the ``ToolResult.narration``
+        field, so this stays the pure remedy — the per-field reasons + the retry
+        instruction the model recovers from."""
         properties = self.parameters.get("properties", {})
         parts = [self._format_field_error(error, properties) for error in exc.errors()]
-        return (
-            f"Error: invalid arguments for {self.name} — {'; '.join(parts)}. "
-            f"Call {self.name}(<valid arguments>) again."
-        )
+        return f"{'; '.join(parts)}. Call {self.name}(<valid arguments>) again."
 
     @staticmethod
     def _format_field_error(error: Any, properties: dict[str, Any]) -> str:
@@ -229,14 +245,29 @@ class Tool(ABC):
         header now reads naturally.  Read tools additionally lead their body with a
         count + source line (see ``_format_entries``).
         """
-        tool_cls = cls._registry.get(tool_name)
-        narration = (
-            tool_cls.to_result_narration(arguments, result)
-            if tool_cls
-            else cls._default_result_narration(tool_name, result)
-        )
+        narration = cls._resolve_narration(tool_name, arguments, result)
         tag = RESULT_TAG.format(tool_name=tool_name)
         return f"{narration} {tag}\n{result.message}"
+
+    @classmethod
+    def _resolve_narration(cls, tool_name: str, arguments: dict, result: ToolResult) -> str:
+        """Pick the first-person frame for a result, in priority order.
+
+        An explicit ``result.narration`` wins — that's how a framework-synthesised
+        failure the tool can't narrate itself (tool-not-found, timeout, uncaught
+        exception, bad arguments; #1482) injects its specific frame, since a
+        tool-not-found has no registered class to dispatch from and the others know
+        *why* they failed in a way the generic per-tool line can't.  Otherwise dispatch
+        to the tool's ``to_result_narration`` (the #1480–#1481 per-tool overrides), or
+        the generic default for an unregistered tool.  This keeps the framework failures
+        from being double-framed — the frame lives on the result, not baked into the
+        remedy body that ``format_result`` would then narrate a second time."""
+        if result.narration is not None:
+            return result.narration
+        tool_cls = cls._registry.get(tool_name)
+        if tool_cls is not None:
+            return tool_cls.to_result_narration(arguments, result)
+        return cls._default_result_narration(tool_name, result)
 
     @classmethod
     def format_progress_emoji(cls, tool_name: str, arguments: dict) -> ProgressEmoji:
@@ -337,15 +368,21 @@ class ToolExecutor:
         return await self._execute_with_timeout(tool, tool_call)
 
     def _tool_not_found_result(self, tool_call: ToolCall) -> ToolResult:
-        """Build a failed result when the requested tool doesn't exist."""
+        """Build a failed result when the requested tool doesn't exist.
+
+        Framed by ``FRAMEWORK_NARRATION_NOT_FOUND`` (the frame — set on ``narration``
+        so ``format_result`` leads with it and doesn't double-frame this
+        no-registered-class result via its generic fallback); the did-you-mean +
+        available-tools remedy stays the actionable body."""
         logger.error("Tool not found: %s", tool_call.tool)
         available_tools = [t.name for t in self.registry.get_all()]
         available_list = ", ".join(available_tools) if available_tools else "none"
         close = difflib.get_close_matches(tool_call.tool, available_tools, n=1, cutoff=0.6)
-        suggestion = f" Did you mean '{close[0]}'?" if close else ""
+        did_you_mean = f"Did you mean '{close[0]}'? " if close else ""
         return ToolResult(
+            narration=FRAMEWORK_NARRATION_NOT_FOUND.format(tool_name=tool_call.tool),
             message=(
-                f"Error: Tool '{tool_call.tool}' not found.{suggestion} "
+                f"{did_you_mean}"
                 f"Available tools: {available_list}. "
                 f"You must ONLY use the tools listed above."
             ),
@@ -373,7 +410,8 @@ class ToolExecutor:
         except TimeoutError:
             logger.error("Tool execution timeout: %s", tool_call.tool)
             return ToolResult(
-                message=f"Error: '{tool_call.tool}' timed out after {effective_timeout}s. "
+                narration=FRAMEWORK_NARRATION_TIMEOUT.format(tool_name=tool_call.tool),
+                message=f"It timed out after {effective_timeout}s. "
                 f"It may be slow or unavailable — try a simpler request (e.g. one URL or a "
                 f"narrower query), or proceed without it rather than retrying the same call.",
                 success=False,
@@ -381,9 +419,10 @@ class ToolExecutor:
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_call.tool)
             return ToolResult(
-                message=f"Error: '{tool_call.tool}' failed — {e}. Check the arguments you "
-                f"passed against the tool's parameters; if they look right, try a different "
-                f"approach{self._finish_clause()} rather than repeating the same call.",
+                narration=FRAMEWORK_NARRATION_EXCEPTION.format(tool_name=tool_call.tool, error=e),
+                message=f"Check the arguments you passed against the tool's parameters; if they "
+                f"look right, try a different approach{self._finish_clause()} rather than "
+                f"repeating the same call.",
                 success=False,
             )
 

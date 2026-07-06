@@ -99,8 +99,10 @@ class TestDoneOnlyReasoningEnvelope:
         call done again."""
         result = await DoneTool().run(reasoning="all sources failed, wrapping up")
         assert result.success is False
+        # The first-person frame is carried on ``narration`` (#1482); the per-field
+        # remedy stays the body verbatim.
+        assert result.narration == "You tried to use `done` but the arguments were wrong:"
         message = result.message
-        assert "invalid arguments for done" in message
         assert "success" in message and "boolean" in message
         assert "summary" in message and "string" in message
         assert "Call done(<valid arguments>) again." in message

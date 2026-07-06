@@ -107,9 +107,10 @@ class TestToolNotFound:
         tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
         assert len(tool_messages) > 0
 
-        # The error should list available tools
+        # The framed result leads with the first-person framework-failure frame
+        # (#1482) and retains the actionable remedy (the available-tools list).
         error_content = tool_messages[0]["content"]
-        assert "not found" in error_content.lower()
+        assert "there's no such tool" in error_content
         assert "available" in error_content.lower()
         assert "search" in error_content.lower()  # The actual tool name
 
@@ -213,6 +214,10 @@ class TestToolNotFoundSuggestion:
         result = await executor.execute(tool_call)
 
         assert result.success is False
+        # The first-person frame is carried on ``narration`` (#1482) so ``format_result``
+        # doesn't double-frame this no-registered-class result; the did-you-mean remedy
+        # stays the body.
+        assert result.narration == "You tried to use `read_last` but there's no such tool."
         assert "Did you mean 'read_latest'?" in result.message
 
     @pytest.mark.asyncio
@@ -267,6 +272,9 @@ class TestMissingRequiredParameters:
         result = await StubDoneTool().run()
 
         assert result.success is False
+        # The first-person frame is carried on ``narration`` (#1482); the per-field
+        # reasons stay the actionable remedy body.
+        assert result.narration == "You tried to use `stub_done` but the arguments were wrong:"
         error = result.message
         assert "success" in error
         assert "boolean" in error

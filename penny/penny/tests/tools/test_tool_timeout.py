@@ -58,7 +58,11 @@ class TestToolTimeout:
         result = await executor.execute(tool_call)
 
         assert result.success is False
+        # The first-person frame is carried on ``narration`` (#1482); the remedy body
+        # (the "slow or unavailable — try a simpler request" guidance) survives verbatim.
+        assert result.narration == "You tried to use `slow_tool` but it timed out."
         assert "timed out" in result.message.lower()
+        assert "try a simpler request" in result.message
 
     @pytest.mark.asyncio
     async def test_tool_completes_within_timeout(self):
@@ -187,8 +191,11 @@ class TestCrashEnvelope:
         result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
 
         assert result.success is False
-        assert "failed — boom" in result.message
+        # The uncaught-exception error detail moves into the first-person frame (#1482);
+        # the remedy body must not name done() when the agent can't call it.
+        assert result.narration == "You tried to use `crashing_tool` but it errored: boom."
         assert "done" not in result.message
+        assert "try a different approach" in result.message
 
     @pytest.mark.asyncio
     async def test_crash_envelope_names_done_when_registered(self):
@@ -202,4 +209,7 @@ class TestCrashEnvelope:
         result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
 
         assert result.success is False
+        # The frame carries the error detail; the remedy body binds done() as the finish
+        # move when the collector shape registers it.
+        assert result.narration == "You tried to use `crashing_tool` but it errored: boom."
         assert "call done() to finish" in result.message

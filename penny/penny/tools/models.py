@@ -116,6 +116,15 @@ class ToolResult(BaseModel):
       auto-throttle ride on.
     - ``source_urls``: URLs the final reply should cite (browse) — threaded into the
       response's source-appending.
+    - ``narration``: an explicit first-person frame for ``Tool.format_result`` to lead
+      with, overriding the registry-dispatched ``to_result_narration``.  Set only for
+      framework-synthesised failures the tool itself can't narrate — a tool-not-found
+      result has NO registered class to dispatch a narration from, and a timeout /
+      uncaught-exception / bad-arguments result knows *why* it failed in a way the
+      generic per-tool narration can't.  ``None`` (the default) means "narrate via the
+      normal dispatch", so every tool-returned result is unchanged.  The ``message``
+      stays the actionable remedy (the #1414 house template's diagnosis + how-to-fix
+      tail); this field is only the frame around it.
 
     Images are not carried here: the browse tool stores them in the media table at
     capture time and they are matched back side-channel at egress.
@@ -125,6 +134,7 @@ class ToolResult(BaseModel):
     success: bool = True
     mutated: bool = False
     source_urls: list[str] = Field(default_factory=list)
+    narration: str | None = None
 
     def __str__(self) -> str:
         return self.message
