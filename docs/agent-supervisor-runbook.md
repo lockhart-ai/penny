@@ -34,7 +34,7 @@ The design: **GitHub is the durable state, not your context.** A fresh session m
 
 - Group waves by **disjoint code areas**. Hold shared-file tickets (`CLAUDE.md`, `prompts.py`, migrations, shared test fixtures) for a later wave or do them inline — parallel edits there just manufacture rebases.
 - **One migration-creating ticket per wave** (migration numbers collide; rebase-only renumber policy).
-- Default to **waiting for the user to merge a wave before launching the next** (limits PR pileup; later waves branch from the truth). The shepherd loop makes modest overlap survivable, not free.
+- Default to **waiting for a wave to clear the merge queue before launching the next** (limits PR pileup; later waves branch from the truth). Children flag merge-when-ready (§8), so the user's approvals are the only manual step — a batch of approvals cascades through the queue unattended. The shepherd loop makes modest overlap survivable, not free.
 - Watch cross-fleet overlap: if another session's fleet is active, compare target files before dispatching.
 
 ## 5. While children run
