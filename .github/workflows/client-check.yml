@@ -1,5 +1,10 @@
 name: client-check
 
+# merge_group does not support paths filters, so the merge-queue path detects
+# penny-client changes itself: a detect step diffs the merge group against its
+# base, and the build steps no-op when penny-client is untouched. The job still
+# runs and reports `client-check` green, so the required check never stalls in
+# "Expected". The client-check-noop twin stays PR/push-only.
 on:
   push:
     branches: [main]
@@ -7,6 +12,7 @@ on:
   pull_request:
     branches: [main]
     paths: ["penny-client/**"]
+  merge_group:
 
 jobs:
   client-check:
@@ -15,7 +21,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect penny-client changes (merge queue only)
+        id: detect
+        if: github.event_name == 'merge_group'
+        run: |
+          git fetch --depth=1 origin "${{ github.event.merge_group.base_sha }}"
+          if git diff --name-only "${{ github.event.merge_group.base_sha }}" HEAD -- penny-client/ | grep -q .; then
+            echo "client-changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "client-changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Select newest Xcode 26
+        if: github.event_name != 'merge_group' || steps.detect.outputs.client-changed == 'true'
         run: |
           if ls -d /Applications/Xcode_26*.app >/dev/null 2>&1; then
             sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
@@ -23,3 +41,4 @@ jobs:
           xcodebuild -version
 
       - run: make client-check
+        if: github.event_name != 'merge_group' || steps.detect.outputs.client-changed == 'true'
