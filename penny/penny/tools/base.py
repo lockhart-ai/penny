@@ -69,7 +69,7 @@ class Tool(ABC):
         parts = [self._format_field_error(error, properties) for error in exc.errors()]
         return (
             f"Error: invalid arguments for {self.name} — {'; '.join(parts)}. "
-            f"Call {self.name} again with valid arguments."
+            f"Call {self.name}(<valid arguments>) again."
         )
 
     @staticmethod
