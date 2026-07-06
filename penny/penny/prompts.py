@@ -247,6 +247,30 @@ Examples:
         "result already above, or make that different call."
     )
 
+    # First-person narration for the three tool-SHAPED injection sites that carry the
+    # same tagged framing as real tool results (Tool.format_result) but aren't real
+    # registered tool calls, so the narration is supplied at the call site rather than
+    # dispatched through ``to_result_narration`` (epic #1478 / #1485).  Each is composed
+    # by ``Agent._frame_injected_result`` with the retained ``(<tool> result)`` machine
+    # tag + the preserved body, so the whole tool-result surface reads as one voice.
+    #
+    # The synthetic page-context browse pair — the page the user is currently viewing,
+    # injected as a successful browse of that page (``ChatAgent._inject_page_context``).
+    PAGE_CONTEXT_NARRATION = (
+        "You looked at the page the user is currently viewing, so here's what's on it:"
+    )
+    # A duplicate tool call the loop refused to re-run (``Agent._dedup_tool_calls``);
+    # the body is DUPLICATE_CALL_REJECTION.
+    DUPLICATE_CALL_NARRATION = (
+        "You made the `{tool_name}` call again, but it already ran earlier this run so "
+        "it wasn't repeated:"
+    )
+    # A tool call the run-shape chain rejected before it ran (``Agent._append_rejected_tool_calls``,
+    # e.g. a premature first-move ``done()``); the body is the rejection message.
+    REJECTED_CALL_NARRATION = (
+        "You tried to call `{tool_name}`, but it was rejected before it could run:"
+    )
+
     # Nudge prompts (injected when model returns empty content)
     FINAL_STEP_NUDGE = (
         "STOP. You cannot search anymore. Tools are no longer available. "

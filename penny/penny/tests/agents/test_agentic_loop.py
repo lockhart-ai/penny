@@ -320,9 +320,9 @@ class TestRepeatCallGuard:
         # Only first call should have executed
         assert len(response.tool_calls) == 1
 
-        # The repeat rejection is framed like every real tool result — routed
-        # through Tool.format_result — so the model reads it as the response to
-        # its own call, not a fresh instruction.
+        # The repeat rejection carries the same tagged first-person envelope every real
+        # tool result gets (via Agent._frame_injected_result), so the model reads it as
+        # the response to its own call, not a fresh instruction.
         repeat_tool_messages = [
             message
             for request in mock_llm.requests
@@ -331,12 +331,14 @@ class TestRepeatCallGuard:
             and "You already made this exact tool call" in message["content"]
         ]
         assert repeat_tool_messages
-        # A duplicate call "didn't work" — the rejection is framed with the generic
-        # failure narration + the retained machine tag (bespoke narration for this
-        # site lands in #1485; the generic default flows through until then).
-        assert repeat_tool_messages[0]["content"] == Tool.format_result(
-            "search", {}, ToolResult(message=Prompt.DUPLICATE_CALL_REJECTION, success=False)
+        # Bespoke narration for the dedup site (#1485): the framing names the repeat,
+        # the retained (<tool> result) tag stays, and the actionable DUPLICATE_CALL_
+        # REJECTION body is preserved verbatim — narration + tag + preserved body.
+        assert repeat_tool_messages[0]["content"] == (
+            f"{Prompt.DUPLICATE_CALL_NARRATION.format(tool_name='search')} (search result)\n"
+            f"{Prompt.DUPLICATE_CALL_REJECTION}"
         )
+        assert "already ran earlier this run" in repeat_tool_messages[0]["content"]
         assert "(search result)" in repeat_tool_messages[0]["content"]
 
         await agent.close()
@@ -2144,6 +2146,10 @@ class TestCollectorPrematureDone:
         retry_messages = mock_llm.requests[1]["messages"]
         tool_results = [m for m in retry_messages if m["role"] == "tool"]
         assert tool_results, "premature done() should be refused via a tool result"
+        # Bespoke rejected-call narration (#1485) frames the refusal, and the actionable
+        # rejection body ("...before doing anything...") is preserved after the framing.
+        assert "rejected before it could run" in tool_results[-1]["content"]
+        assert "(done result)" in tool_results[-1]["content"]
         assert "before doing anything" in tool_results[-1]["content"].lower()
         assert not any(
             m["role"] == "user" and "before doing" in m["content"] for m in retry_messages

@@ -22,7 +22,7 @@ from penny.database.models import MemoryEntry
 from penny.datetime_utils import current_datetime_line, format_log_timestamp
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
-from penny.tools import Tool, ToolResult
+from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
@@ -212,10 +212,11 @@ class ChatAgent(Agent):
         Uses the BrowseTool format so the synthetic history matches the tool
         the model actually sees in its tool definitions, the standard
         ``tool_call_id`` envelope (linked to the synthetic call by
-        ``PAGE_CONTEXT_TOOL_CALL_ID``), and the same ``Tool.format_result``
-        framing every real tool result gets — so this arbitrary web content
-        is unmistakably a browse result, never a fresh instruction to the
-        model.
+        ``PAGE_CONTEXT_TOOL_CALL_ID``), and the same tagged first-person envelope
+        every real tool result gets (via ``Agent._frame_injected_result``) — with
+        bespoke narration (``Prompt.PAGE_CONTEXT_NARRATION``) naming this as the page
+        the user is currently viewing, so the content is unmistakably a browse result,
+        never a fresh instruction to the model.
         """
         if not page_context.text:
             return
@@ -243,15 +244,16 @@ class ChatAgent(Agent):
                 ],
             }
         )
-        # Tool "returned" the page content — framed like every real tool result
-        # (a successful synthetic browse), via the same tagged first-person framing.
+        # Tool "returned" the page content — framed like every real tool result via
+        # the same tagged first-person envelope, but with bespoke narration naming this
+        # for what it is: the page the user is currently viewing, not a search Penny ran.
         messages.append(
             {
                 "role": "tool",
-                "content": Tool.format_result(
+                "content": Agent._frame_injected_result(
                     BrowseTool.name,
-                    {"queries": [page_context.url]},
-                    ToolResult(message=page_content, success=True),
+                    Prompt.PAGE_CONTEXT_NARRATION,
+                    page_content,
                 ),
                 "tool_call_id": ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID,
             }

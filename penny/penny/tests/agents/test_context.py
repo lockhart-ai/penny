@@ -124,7 +124,7 @@ def test_page_context_injected_as_synthetic_tool_call():
     """Page context is injected as a search tool call + result in messages."""
     from penny.agents.chat import ChatAgent
     from penny.channels.base import PageContext
-    from penny.tools import Tool, ToolResult
+    from penny.prompts import Prompt
 
     page_context = PageContext(
         title="Example Product Page",
@@ -147,22 +147,21 @@ def test_page_context_injected_as_synthetic_tool_call():
     assert messages[2]["tool_calls"][0]["function"]["arguments"]["queries"] == [
         "https://example.com/product"
     ]
-    # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the
-    # same tagged first-person framing every real tool result gets (a successful
-    # synthetic browse), so the web content can't read as a fresh instruction.
-    # The synthetic call reads the page URL directly, so BrowseTool's per-tool
-    # narration (#1480) frames it as "You opened <url>" — the same args the
-    # injection passes reproduce the leading header.
+    # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the same
+    # tagged first-person envelope every real tool result gets, but with BESPOKE
+    # narration (#1485) naming this as the page the user is viewing — NOT BrowseTool's
+    # per-tool "You opened <url>" narration (#1480): a page-context injection is the
+    # page the user is looking at, not a browse Penny ran — so the web content can't
+    # read as a fresh instruction.
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
     assert "tool_name" not in messages[3]
-    assert messages[3]["content"].startswith(
-        Tool.format_result(
-            "browse", {"queries": ["https://example.com/product"]}, ToolResult(message="")
-        )
-    )
+    assert messages[3]["content"].startswith(f"{Prompt.PAGE_CONTEXT_NARRATION} (browse result)\n")
+    # The narration names the page-context provenance (not the generic "You used ...").
+    assert "the page the user is currently viewing" in messages[3]["content"]
     # The retained machine tag keeps the model parsing this as a tool result.
     assert "(browse result)" in messages[3]["content"]
+    # The page body (title + content) is preserved after the framing.
     assert "$49.99" in messages[3]["content"]
     assert "Example Product Page" in messages[3]["content"]
 

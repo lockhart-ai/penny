@@ -22,6 +22,7 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import is_degenerate_run, is_degenerate_tool_name
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
+from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.tools.send_message import SendMessageTool
@@ -437,6 +438,22 @@ class Agent:
                 assert_never(unreachable)
 
     @staticmethod
+    def _frame_injected_result(tool_name: str, narration: str, body: str) -> str:
+        """Frame a tool-SHAPED injection (page context, a deduped/rejected call) in the
+        same tagged first-person envelope real tool results get from
+        ``Tool.format_result`` — a bespoke call-site narration + the retained
+        ``(<tool> result)`` machine tag + the body — so the whole tool-result surface
+        reads as one voice.
+
+        These sites aren't real registered tool calls, so the narration is supplied
+        here (epic #1478 / #1485) rather than dispatched through ``to_result_narration``.
+        The tag is single-sourced from ``RESULT_TAG`` so the machine-tag invariant that
+        keeps gpt-oss parsing a prose body as a tool result (not a fresh instruction)
+        holds uniformly across the real and the injected sites.
+        """
+        return f"{narration} {RESULT_TAG.format(tool_name=tool_name)}\n{body}"
+
+    @staticmethod
     def _append_rejected_tool_calls(
         response: LlmResponse, messages: list[dict], message: str
     ) -> None:
@@ -447,10 +464,10 @@ class Agent:
             messages.append(
                 {
                     "role": MessageRole.TOOL,
-                    "content": Tool.format_result(
+                    "content": Agent._frame_injected_result(
                         call.function.name,
-                        call.function.arguments,
-                        ToolResult(message=message, success=False),
+                        Prompt.REJECTED_CALL_NARRATION.format(tool_name=call.function.name),
+                        message,
                     ),
                     "tool_call_id": call.id,
                 }
@@ -932,14 +949,14 @@ class Agent:
 
             if not self.allow_repeat_tools and call_key in called_tools:
                 logger.info("Skipping repeat: %s(%s)", tool_name, arguments)
-                repeat_msg = Prompt.DUPLICATE_CALL_REJECTION
+                repeat_message = Prompt.DUPLICATE_CALL_REJECTION
                 messages.append(
                     {
                         "role": MessageRole.TOOL,
-                        "content": Tool.format_result(
+                        "content": self._frame_injected_result(
                             tool_name,
-                            arguments,
-                            ToolResult(message=repeat_msg, success=False),
+                            Prompt.DUPLICATE_CALL_NARRATION.format(tool_name=tool_name),
+                            repeat_message,
                         ),
                         "tool_call_id": tool_call_id,
                     }
