@@ -23,6 +23,11 @@ pytest_plugins = ("pytest_asyncio",)
 # Standard test sender phone number
 TEST_SENDER = "+15559876543"
 
+# A minimal valid 1x1 PNG, base64-encoded — the shape the image model returns.
+ONE_PX_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
+)
+
 # Default config values for tests (background tasks disabled)
 DEFAULT_TEST_CONFIG = {
     "channel_type": "signal",

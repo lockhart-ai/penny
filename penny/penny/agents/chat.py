@@ -24,11 +24,13 @@ from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
+from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
+    from penny.llm.image_client import OllamaImageClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ class ChatAgent(Agent):
     # an ad-hoc ``tool_name`` field.
     PAGE_CONTEXT_TOOL_CALL_ID = "page-context"
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, image_client: OllamaImageClient | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._pending_page_context: PageContext | None = None
         # Chat replies via final text — tools are stripped on the final
@@ -65,6 +67,9 @@ class ChatAgent(Agent):
         # can call ``done`` / ``send_message`` on the final step.
         self._keep_tools_on_final_step = False
         self._collector: Collector | None = None
+        # Present only when an image model is configured — mirrors the retired
+        # /draw command's conditionality; enables the generate_image tool.
+        self._image_client = image_client
 
     def set_collector(self, collector: Collector) -> None:
         """Bind the Collector so test_extraction_prompt is available in chat."""
@@ -79,6 +84,10 @@ class ChatAgent(Agent):
         tools.append(NotificationsUnmuteTool(self.db))
         if self._collector is not None:
             tools.append(TestExtractionPromptTool(self._collector))
+        if self._image_client is not None:
+            tools.append(
+                GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
+            )
         return tools
 
     # ── Message handling ───────────────────────────────────────────────

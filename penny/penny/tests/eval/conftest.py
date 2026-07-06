@@ -47,6 +47,9 @@ _EMBED_BATCH = 100
 # final reply text) and returns failure strings — empty means the sample passed.
 Scorer = Callable[[Database, set[str], str], list[str]]
 Seeder = Callable[[Database], None]
+# A preparer mutates the constructed Penny before the message is pushed — e.g.
+# to mock an external boundary (the image client) the case exercises.
+Preparer = Callable[[Penny], None]
 # A collector scorer also sees the pre-cycle snapshot and the messages the cycle
 # sent the user.  ``snapshot`` is whatever the case's ``snapshot`` callback returned.
 Snapshotter = Callable[[Database], object]
@@ -440,6 +443,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         score: Scorer,
         seed: Seeder | None = None,
         browse: list[CannedPage] | None = None,
+        prepare: Preparer | None = None,
         wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
@@ -463,6 +467,8 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                     await _embed_seeds(penny)
                     if browse is not None:
                         install_browse(penny, browse)
+                    if prepare is not None:
+                        prepare(penny)
                     # A recovery case wraps the chat agent's model client to force
                     # one bad response (e.g. a bracket-wrapped key) deterministically.
                     # Keep the wrapper: its ``bail_injected`` flag is the only proof

@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from penny.database import Database
     from penny.database.models import Device, MessageLog
     from penny.llm import LlmClient
-    from penny.llm.image_client import OllamaImageClient
     from penny.scheduler import BackgroundScheduler
 
 logger = logging.getLogger(__name__)
@@ -195,7 +194,6 @@ class ChannelManager(MessageChannel):
         start_time: datetime,
         model_client: LlmClient,
         embedding_model_client: LlmClient,
-        image_model_client: OllamaImageClient | None = None,
     ) -> None:
         """Forward command context to all registered channels."""
         super().set_command_context(
@@ -204,7 +202,6 @@ class ChannelManager(MessageChannel):
             start_time,
             model_client,
             embedding_model_client,
-            image_model_client,
         )
         for ch_type, channel in self._channels.items():
             channel.set_command_context(
@@ -213,7 +210,6 @@ class ChannelManager(MessageChannel):
                 start_time,
                 model_client,
                 embedding_model_client,
-                image_model_client,
             )
 
     async def validate_connectivity(self) -> None:

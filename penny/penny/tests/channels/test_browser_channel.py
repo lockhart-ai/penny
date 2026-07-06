@@ -178,7 +178,7 @@ class TestBrowserImageHandling:
         assert result.endswith("hello")
 
     def test_prepends_raw_base64_as_data_uri(self):
-        """Raw base64 from /draw gets wrapped in a data:image/png URI."""
+        """Raw base64 image data gets wrapped in a data:image/png URI."""
         raw_b64 = "iVBORw0KGgoAAAANSUhEUg" + "A" * 200
         result = BrowserChannel._prepend_images("hello", [raw_b64])
         assert '<img src="data:image/png;base64,' in result

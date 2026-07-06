@@ -124,11 +124,6 @@ class PennyResponse:
     ZOHO_NO_QUERY_TEXT = "Please ask a question about your Zoho email. Usage: /zoho <question>"
     ZOHO_ERROR = "Failed to search Zoho email: {error}"
 
-    # ── Draw ─────────────────────────────────────────────────────────────────
-
-    DRAW_USAGE = "Please describe what you want to draw. Usage: /draw <prompt>"
-    DRAW_ERROR = "Failed to generate image: {error}"
-
     # ── Commands Index ───────────────────────────────────────────────────────
 
     COMMANDS_HEADER = "**Available Commands**"

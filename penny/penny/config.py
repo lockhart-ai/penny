@@ -205,7 +205,7 @@ class Config:
     llm_image_model: str | None = None  # Image generation model (e.g., x/z-image-turbo)
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
-    image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for /draw
+    image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for image generation
 
     # LLM retry configuration
     llm_max_retries: int = 3

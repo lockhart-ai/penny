@@ -138,6 +138,7 @@ class Penny:
             config=config,
             vision_model_client=self.vision_model_client,
             embedding_model_client=self.embedding_model_client,
+            image_client=self.image_client,
         )
         self.collector = Collector(
             model_client=self.model_client,
@@ -160,7 +161,6 @@ class Penny:
         """Create command registry with optional integrations."""
         zoho_credentials = self._get_zoho_credentials(config)
         self.command_registry = create_command_registry(
-            image_model_client=self.image_client,
             fastmail_api_token=config.fastmail_api_token,
             zoho_credentials=zoho_credentials,
         )
@@ -268,7 +268,6 @@ class Penny:
             start_time=self.start_time,
             model_client=self.model_client,
             embedding_model_client=self.embedding_model_client,
-            image_model_client=self.image_client,
         )
 
     def _signal_handler(self, signum: int, frame: Any) -> None:

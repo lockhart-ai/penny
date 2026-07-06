@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
-from penny.llm.image_client import OllamaImageClient
 
 if TYPE_CHECKING:
     from penny.channels.base import IncomingMessage
@@ -29,7 +28,6 @@ class CommandContext:
     channel_type: str  # "signal" or "discord"
     start_time: datetime  # Penny startup time for uptime calculation
     embedding_model_client: LlmClient  # Shared embedding client (required prerequisite)
-    image_model_client: OllamaImageClient | None = None
     scheduler: BackgroundScheduler | None = None  # Background task scheduler
     message: IncomingMessage | None = None  # The incoming message (for quote-reply metadata)
 

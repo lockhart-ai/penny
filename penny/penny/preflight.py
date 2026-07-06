@@ -281,7 +281,7 @@ class Preflight:
         return self._warn(
             name,
             f"image model {model!r} not available at {url} (or the endpoint is unreachable) "
-            f"— pull it (`ollama pull {model}`). /draw disabled until then.",
+            f"— pull it (`ollama pull {model}`). Image generation disabled until then.",
         )
 
     def _check_browser_addon(self) -> CheckResult | None:

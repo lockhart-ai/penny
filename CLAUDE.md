@@ -186,7 +186,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override endpoint for vision model
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., embeddinggemma) — backs Penny's memory (preference dedup and similarity recall). Penny fails fast at startup if it is unset; there is no degraded, embedding-less mode
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
-- `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables `/draw`. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
+- `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: http://host.docker.internal:11434)
 - `OLLAMA_BACKGROUND_MODEL`: Used only by penny-team's Quality agent — if set, the Quality agent is registered. Not used by penny
 

@@ -36,7 +36,7 @@ flowchart TD
 - **Channels**: Signal (WebSocket + REST) or Discord (discord.py bot)
 - **Ollama**: Local LLM inference (default model: gpt-oss:20b)
 - **Vision**: Optional vision model (e.g., qwen3-vl) for processing image attachments from Signal
-- **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via `/draw` command
+- **Image Generation**: Optional image model (e.g., x/z-image-turbo) for generating images via the `generate_image` chat tool (config-gated on `LLM_IMAGE_MODEL`)
 - **Embedding Model**: Required dedicated embedding model (e.g., embeddinggemma) for preference deduplication and history embeddings — a hard prerequisite (startup fails fast if `LLM_EMBEDDING_MODEL` is unset), so memory never runs in a degraded, embedding-less mode
 - **Browser Extension**: Web search and page reading — all web access goes through the connected browser
 - **SQLite**: Logs all prompts and messages; stores preferences, thoughts, and conversation history
@@ -79,13 +79,13 @@ penny/
     unlike.py         — /unlike: remove positive preferences
     dislike.py        — /dislike: show or add negative preferences
     undislike.py      — /undislike: remove negative preferences
-    draw.py           — /draw: generate images via Ollama image model (optional)
     email.py          — /email: search Fastmail email via JMAP (optional)
     zoho.py           — /zoho: search Zoho Mail via Zoho Mail API (optional)
   tools/
     base.py           — Tool ABC (declares `args_model` + `run()`: validate args via the Pydantic model, then `execute`), ToolRegistry, ToolExecutor (drives `tool.run`)
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls), ToolDefinition, and per-tool arg models
     browse.py         — BrowseTool: web search and page reading via browser extension
+    generate_image.py — GenerateImageTool: image generation via OllamaImageClient; stored to media, delivered side-channel (chat-only, gated on LLM_IMAGE_MODEL)
     content_cleaning.py — Post-processing for browse results (strips navigation, proxy images, boilerplate)
     search_emails.py  — SearchEmailsTool (JMAP + Zoho)
     read_emails.py    — ReadEmailTool (JMAP + Zoho)
@@ -151,7 +151,7 @@ penny/
       test_signal_channel.py, test_signal_reactions.py, test_signal_vision.py,
       test_signal_formatting.py, test_startup_announcement.py
     commands/         — Per-command tests
-      test_commands.py, test_config.py, test_debug.py, test_draw.py, test_email.py,
+      test_commands.py, test_config.py, test_debug.py, test_email.py,
       test_preferences.py,
       test_schedule.py, test_system.py, test_test_mode.py
     database/         — Migration validation tests
@@ -193,7 +193,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 - `model_client`: Text model for all agents and commands
 - `vision_model_client`: Optional vision model for image understanding
 - `embedding_model_client`: Required embedding model for preference deduplication and similarity recall (always present — the model is a hard prerequisite)
-- `image_model_client`: `OllamaImageClient` for `/draw` (image generation uses Ollama's native REST API, not OpenAI-compatible)
+- `image_client`: `OllamaImageClient` for the `generate_image` chat tool (image generation uses Ollama's native REST API, not OpenAI-compatible); wired into the ChatAgent, which registers `generate_image` only when it is present
 
 ### Specialized Agents
 
@@ -203,6 +203,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 - Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
+- Image generation: when an image model is configured, the `generate_image` tool is registered (mirroring the retired `/draw` command's conditionality). It generates the image via `OllamaImageClient`, stores it in the `media` table with an embedding of the description, and returns a text result naming what was drawn; the image is attached to the model's mirror-back reply at egress via `MediaStore.select_image` (the same side-channel browsed images use — nothing travels through the model)
 
 **Collector** (`agents/collector.py`)
 - One dispatcher agent for every kind of background extraction.  Each tick it picks the most-overdue ready collection from the `memory` table (where `extraction_prompt IS NOT NULL` and `now - last_collected_at >= collector_interval_seconds`), binds itself to that target via `self._current_target`, runs the agent loop with the target's extraction prompt as instructions and a tool surface scoped to writes against that single collection, then stamps `last_collected_at = now`.
@@ -310,7 +311,6 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 - **/undislike** (`undislike.py`): Remove a negative preference by number
 
 ### Conditional Commands (registered based on config)
-- **/draw** (`draw.py`): Generate images via Ollama image model (requires `LLM_IMAGE_MODEL`)
 - **/email** (`email.py`): Search Fastmail email via JMAP (requires `FASTMAIL_API_TOKEN`)
 - **/zoho** (`zoho.py`): Search Zoho Mail via the Zoho Mail API (requires `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`)
 
@@ -384,7 +384,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Background cancellation**: Foreground message processing cancels active background tasks (`task.cancel()`) to free the LLM immediately; cancelled work is idempotent and retried next cycle
 - **Commands don't interrupt background**: Slash commands run cooperatively without cancelling the active background task
 - **Vision captioning**: When images are present and `LLM_VISION_MODEL` is configured, the vision model captions the image first with a vision-specific system prompt, then a combined prompt is forwarded to the text LLM. Search tools are disabled for image messages
-- **Image side-channel**: Browsed images never travel through the model. The browse tool decodes each page's image (base64 data URI from the extension), stores the bytes in the `media` table with an embedding of the page title+URL, and the agent loop carries no attachments. At egress (`send_response`), the outgoing text is embedded once (reused for the `penny-messages` log) and `MediaStore.select_image` attaches the most relevant image: the cited page's own capture when the message links a source (exact URL → same domain, both deterministic), else a jittered pick among the top-K embedding-nearest (jitter only on this embedding fallback, so a magnet image can't repeat). No floor, so a reply carries an image whenever one matches (a tangential or funny mismatch beats no image). `/draw` and other command images use `send_message` directly and are untouched. This replaced a model-carried `<media:ID>`/inline-URL token scheme that couldn't reliably thread image references through multi-page replies
+- **Image side-channel**: Browsed images never travel through the model. The browse tool decodes each page's image (base64 data URI from the extension), stores the bytes in the `media` table with an embedding of the page title+URL, and the agent loop carries no attachments. At egress (`send_response`), the outgoing text is embedded once (reused for the `penny-messages` log) and `MediaStore.select_image` attaches the most relevant image: the cited page's own capture when the message links a source (exact URL → same domain, both deterministic), else a jittered pick among the top-K embedding-nearest (jitter only on this embedding fallback, so a magnet image can't repeat). No floor, so a reply carries an image whenever one matches (a tangential or funny mismatch beats no image). The `generate_image` chat tool rides this same path — it stores the drawn image in the `media` table with an embedding of the description, and the mirror-back reply (which describes the same subject) matches it at egress. This replaced a model-carried `<media:ID>`/inline-URL token scheme that couldn't reliably thread image references through multi-page replies
 - **Channel abstraction**: Signal and Discord share the same interface; easy to add more platforms
 - **Async throughout**: asyncio, httpx.AsyncClient, openai.AsyncOpenAI, discord.py
 - **Host networking**: Docker container uses --network host for simplicity (all services on localhost)
@@ -526,7 +526,8 @@ agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py
 `test_collection_lifecycle.py`, `test_extractors.py`, `test_skills_extractor.py`,
 `test_quality_correction.py`, `test_collector_honesty.py`, `test_retrieval.py`,
 `test_peripheral.py`, `test_notifications.py` (NL-dispatch of the mute/unmute
-tools that retired `/mute` + `/unmute`). Browse is stubbed; a case injects realistic pages via the
+tools that retired `/mute` + `/unmute`), `test_command_tools.py` (NL-dispatch
+contracts for the command-retirement tools). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

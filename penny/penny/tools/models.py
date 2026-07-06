@@ -13,13 +13,14 @@ def _require_non_blank(value: str) -> str:
     """Reject a string that carries no word tokens (blank / punctuation only).
 
     The pure-arg "this field can't be empty" rule, shared by every text field a
-    tool genuinely needs filled (an email subject, an email body).  ``is_blank``
-    (from ``text_validity``) is the same predicate the corpus write path uses, so
-    "what counts as empty" is one definition across the codebase.
+    tool genuinely needs filled (an email subject, an email body, an image
+    description).  ``is_blank`` (from ``text_validity``) is the same predicate the
+    corpus write path uses, so "what counts as empty" is one definition across the
+    codebase.
     """
     if is_blank(value):
         raise ValueError(
-            "must not be blank — provide non-empty text (a real subject/body), not "
+            "must not be blank — provide non-empty text (real content), not "
             "whitespace or punctuation"
         )
     return value
@@ -180,6 +181,18 @@ class SendMessageArgs(ToolArgs):
         if reason := half_formed_send_reason(value):
             raise ValueError(reason)
         return value
+
+
+class GenerateImageArgs(ToolArgs):
+    """Validated arguments for the generate_image tool.
+
+    ``description`` must carry at least one word token — an empty description
+    can't be drawn, so the blank case is rejected at the arg gate with an
+    actionable message (via the shared ``NonBlankText`` rule) rather than
+    reaching ``execute`` and calling the image model with nothing.
+    """
+
+    description: NonBlankText
 
 
 class SearchEmailsArgs(ToolArgs):

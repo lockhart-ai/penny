@@ -18,7 +18,6 @@ from penny.constants import PennyConstants
 from penny.database.models import MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
-from penny.llm.image_client import OllamaImageClient
 from penny.llm.similarity import embed_text
 from penny.responses import PennyResponse
 
@@ -116,7 +115,6 @@ class MessageChannel(ABC):
         start_time: datetime,
         model_client: LlmClient,
         embedding_model_client: LlmClient,
-        image_model_client: OllamaImageClient | None = None,
     ) -> None:
         """
         Set command context for command execution.
@@ -127,7 +125,6 @@ class MessageChannel(ABC):
             start_time: Penny startup time
             model_client: Shared LlmClient for commands
             embedding_model_client: Shared embedding LlmClient for similarity
-            image_model_client: Shared image generation LlmClient for /draw
         """
         self._config = config
         self._model_client = model_client
@@ -143,7 +140,6 @@ class MessageChannel(ABC):
             channel_type=channel_type,
             start_time=start_time,
             embedding_model_client=embedding_model_client,
-            image_model_client=image_model_client,
             scheduler=self._scheduler,
         )
 
@@ -413,7 +409,7 @@ class MessageChannel(ABC):
     ) -> list[str] | None:
         """Attach the most relevant browsed image to this message.
 
-        Skipped when the caller already supplied an attachment (e.g. ``/draw``).
+        Skipped when the caller already supplied an attachment.
         Otherwise ``select_image`` prefers the image captured from a page the
         message links (exact URL, then domain) and falls back to a jittered
         embedding-nearest pick — so replies carry an image whenever one matches.

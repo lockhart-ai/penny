@@ -72,7 +72,6 @@ Beyond regular conversation, Penny supports slash commands:
 - **/unschedule** — list and delete scheduled tasks
 - **/config** — view or tune runtime parameters (30+ values: scheduling intervals, notification backoff, dedup thresholds, email pagination limits, etc.)
 - **/mute**, **/unmute** — silence or resume autonomous notifications
-- **/draw** — generate images via a local model (requires `LLM_IMAGE_MODEL`)
 - **/email** — search your Fastmail inbox via JMAP (requires `FASTMAIL_API_TOKEN`)
 - **/zoho** — search your Zoho Mail inbox (requires `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`)
 
@@ -126,7 +125,7 @@ Penny uses up to four LLM model roles, all running locally by default:
 | **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat, background work, scheduled tasks | Yes |
 | **Embedding** | `LLM_EMBEDDING_MODEL` | Embeddings for knowledge retrieval, message similarity, and preference dedup | Yes |
 | **Vision** | `LLM_VISION_MODEL` | Image captioning when users send photos | Optional |
-| **Image** | `LLM_IMAGE_MODEL` | Image generation via `/draw` | Optional |
+| **Image** | `LLM_IMAGE_MODEL` | Image generation (ask Penny to draw — the `generate_image` tool) | Optional |
 
 Text, vision, and embedding all go through the OpenAI SDK and can each point at a different OpenAI-compatible endpoint via the corresponding `LLM_*_API_URL` / `LLM_*_API_KEY` overrides — useful when running text on one machine and embeddings on another. Image generation is the one exception: it talks to Ollama's `/api/generate` endpoint directly (set `LLM_IMAGE_API_URL`), because there's no OpenAI-compatible image generation protocol that works with local models.
 
@@ -271,8 +270,8 @@ LLM_MODEL="gpt-oss:20b"                   # Single model for all agents
 # LLM_API_KEY="not-needed"                # Default fine for unauthenticated local backends
 # LLM_VISION_MODEL="qwen3-vl"             # Optional, enables vision/image messages
 LLM_EMBEDDING_MODEL="embeddinggemma"      # Required — backs memory (preference dedup + similarity recall)
-# LLM_IMAGE_MODEL="x/z-image-turbo"       # Optional, enables /draw (uses LLM_IMAGE_API_URL)
-# LLM_IMAGE_API_URL="http://host.docker.internal:11434"  # Ollama REST for /draw
+# LLM_IMAGE_MODEL="x/z-image-turbo"       # Optional, enables the generate_image tool (uses LLM_IMAGE_API_URL)
+# LLM_IMAGE_API_URL="http://host.docker.internal:11434"  # Ollama REST for image generation
 
 # Database & Logging
 DB_PATH="/penny/data/penny/penny.db"
@@ -317,7 +316,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override API URL/key for the vision model (e.g., to run vision on a different host)
 - `LLM_EMBEDDING_MODEL`: **Required.** Dedicated embedding model (e.g., `embeddinggemma`) that backs preference/knowledge/message embeddings — Penny fails fast at startup if it is unset
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override API URL/key for the embedding model
-- `LLM_IMAGE_MODEL`: Image generation model (e.g., `x/z-image-turbo`). Optional; enables `/draw`. Image generation is the one non-OpenAI endpoint — it talks to Ollama's `/api/generate` directly
+- `LLM_IMAGE_MODEL`: Image generation model (e.g., `x/z-image-turbo`). Optional; enables the `generate_image` chat tool (ask Penny to draw). Image generation is the one non-OpenAI endpoint — it talks to Ollama's `/api/generate` directly
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: `http://host.docker.internal:11434`)
 
 **API Keys:**

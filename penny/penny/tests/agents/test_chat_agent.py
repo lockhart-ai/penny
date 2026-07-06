@@ -17,8 +17,8 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
-from penny.database.models import MemoryEntry, MessageLog
-from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.database.models import Media, MemoryEntry, MessageLog
+from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
@@ -1102,6 +1102,71 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         # Loop-control stays background-only — never on the chat surface.
         assert "done" not in names
         assert "send_message" not in names
+
+
+@pytest.mark.asyncio
+async def test_generate_image_registered_only_when_image_client_configured(
+    signal_server, mock_llm, test_config, running_penny
+):
+    """generate_image mirrors the retired /draw command's conditionality.
+
+    The tool is on the chat surface only when an image model is configured —
+    absent by default (no image client), present once one is wired.
+    """
+    async with running_penny(test_config) as penny:
+        assert penny.chat_agent._image_client is None
+        assert "generate_image" not in {tool.name for tool in penny.chat_agent.get_tools()}
+
+        penny.chat_agent._image_client = AsyncMock()
+        assert "generate_image" in {tool.name for tool in penny.chat_agent.get_tools()}
+
+
+@pytest.mark.asyncio
+async def test_generate_image_stores_image_and_delivers_via_egress(
+    signal_server, mock_llm, make_config, test_user_info, running_penny
+):
+    """A drawn image rides the media side-channel to the mirror-back reply.
+
+    The model calls generate_image with a faithful description, then replies in
+    text; the tool stores the image in the media table and the egress path
+    (MediaStore.select_image) attaches it to the outgoing reply — the same path
+    browsed images use, so no attachment travels through the model.
+    """
+    config = make_config()
+
+    def handler(request: dict, count: int):
+        if count == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "generate_image",
+                {"description": "a teal origami dragon perched on a coffee mug"},
+            )
+        return mock_llm._make_text_response(request, "here's your teal origami dragon! 🐉")
+
+    mock_llm.set_response_handler(handler)
+
+    image_client = AsyncMock()
+    image_client.generate_image.return_value = ONE_PX_PNG_B64
+
+    async with running_penny(config) as penny:
+        penny.chat_agent._image_client = image_client
+        await signal_server.push_message(
+            sender=TEST_SENDER, content="draw me a teal origami dragon on a coffee mug"
+        )
+        reply = await signal_server.wait_for_message_containing("dragon", timeout=10.0)
+
+        # The tool ran with the model's faithful description.
+        image_client.generate_image.assert_awaited_once()
+        assert "dragon" in image_client.generate_image.await_args.kwargs["prompt"]
+
+        # The image was stored in the media table (side-channel), not carried by the model.
+        with penny.db.get_session() as session:
+            media_rows = session.exec(select(Media)).all()
+        assert len(media_rows) == 1
+        assert media_rows[0].mime_type == "image/png"
+
+        # ...and attached to the mirror-back reply at egress.
+        assert reply.get("base64_attachments")
 
 
 # ── 7. Quote-reply handling ───────────────────────────────────────────────
