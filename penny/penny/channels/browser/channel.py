@@ -770,7 +770,7 @@ class BrowserChannel(MessageChannel):
     # Author tag for entries the user adds manually via the addon —
     # distinguishes addon-authored from collector-authored when reading
     # the entries list.  Matches the convention used elsewhere in the
-    # codebase (chat-side ``/like`` writes too land as ``"user"``).
+    # codebase (user-directed writes land as ``"user"``).
     _ADDON_ENTRY_AUTHOR = "user"
 
     @staticmethod

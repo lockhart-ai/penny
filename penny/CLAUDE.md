@@ -69,14 +69,9 @@ penny/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry
     models.py         — CommandContext, CommandResult, CommandError
-    preference_base.py — PreferenceBaseCommand, PreferenceAddCommand, PreferenceRemoveCommand
     config.py         — /config: view and modify runtime settings
     index.py          — /commands: list available commands
     profile.py        — /profile: user info collection (name, location, DOB, timezone)
-    like.py           — /like: show or add positive preferences
-    unlike.py         — /unlike: remove positive preferences
-    dislike.py        — /dislike: show or add negative preferences
-    undislike.py      — /undislike: remove negative preferences
   tools/
     base.py           — Tool ABC (declares `args_model` + `run()`: validate args via the Pydantic model, then `execute`), ToolRegistry, ToolExecutor (drives `tool.run`)
     models.py         — ToolCall, ToolResult (uniform structured tool return: message/success/mutated/source_urls), ToolDefinition, and per-tool arg models
@@ -149,7 +144,6 @@ penny/
       test_signal_formatting.py, test_startup_announcement.py
     commands/         — Per-command tests
       test_commands.py, test_config.py, test_debug.py,
-      test_preferences.py,
       test_schedule.py, test_system.py, test_test_mode.py
     database/         — Migration validation tests
       test_migrations.py
@@ -199,6 +193,7 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 - Chat-surface tools include `notifications_mute` / `notifications_unmute` (`tools/notifications.py`) — thin toggles over the `MuteState` row (`db.users`) that the model dispatches from natural language ("stop messaging me for a while" / "you can message me again"), replacing the retired `/mute` + `/unmute` commands. NL-dispatch contract: `tests/eval/test_notifications.py`
 - Chat-surface tools also include `schedule_create` / `schedule_delete` / `schedule_list` (`tools/schedule_tools.py`), appended in `get_tools` — recurring cron tasks the model dispatches from natural language, replacing the retired `/schedule` + `/unschedule` commands. NL-dispatch contract: `tests/eval/test_schedule_dispatch.py`
 - Email tools (`search_emails` / `read_emails`, plus `list_emails` / `list_folders` / `draft_email` on Zoho) are config-gated — present only when a mailbox is configured (Fastmail via `FASTMAIL_API_TOKEN`, Zoho via its OAuth triple; both behind the `EmailClient` protocol), retiring the `/email` + `/zoho` commands (epic #1445). Both configured → Fastmail wins (single user, one mailbox). The mailbox client is long-lived (built in `Penny._init_email`, closed in `shutdown`); `ChatAgent._email_tools_builder(user_query, today)` wraps it fresh each turn so `read_emails` summarises against the current question. A seeded skill (migration 0078) is the NL trigger. NL-dispatch contract: `tests/eval/test_email_dispatch.py`
+- Likes/dislikes are dispatched from natural language onto the `likes` / `dislikes` memory collections via the always-present memory tools (`collection_write` / `collection_delete_entry` / `collection_read_latest`), replacing the retired `/like` + `/unlike` + `/dislike` + `/undislike` commands (epic #1445). Add ("I'm really into X"), remove-by-meaning ("forget about X" — matched by meaning, never exact text), and list ("what am I into?") are taught by seeded skills (migration 0079). These collections are what the ambient extractor fills and recall reads; the legacy `preference` table is untouched (its fate is #1301). NL-dispatch contract: `tests/eval/test_likes_dislikes.py`
 - Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
@@ -302,10 +297,8 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 - **/commands** (`index.py`): Lists all available commands with descriptions
 - **/config** (`config.py`): View and modify runtime settings (e.g., `/config idle_seconds 600`). Reads/writes RuntimeConfig table in SQLite; changes take effect immediately
 - **/profile** (`profile.py`): View or update user profile (name, location, DOB). Derives IANA timezone from location. Required before Penny will chat
-- **/like** (`like.py`): Show positive preferences or add one (e.g., `/like dark roast coffee`)
-- **/unlike** (`unlike.py`): Remove a positive preference by number
-- **/dislike** (`dislike.py`): Show negative preferences or add one
-- **/undislike** (`undislike.py`): Remove a negative preference by number
+
+Preferences are no longer slash commands — like/dislike add, remove-by-meaning, and list are dispatched from natural language onto the `likes` / `dislikes` memory collections (see the ChatAgent section). The retired `/like` + `/unlike` + `/dislike` + `/undislike` commands wrote the legacy `preference` table; the collections are what recall + the ambient extractor share.
 
 There are no conditional (config-gated) commands — email retired onto the chat tool surface (see the ChatAgent email-tools bullet above); `/bug`, `/feature`, `/draw`, `/mute`, `/unmute`, `/schedule`, `/unschedule` all retired earlier in epic #1445.
 
@@ -331,7 +324,7 @@ All tables defined in `database/models.py` as SQLModel classes:
 - **Device**: Registered devices (Signal, Discord, browser addons) — used for multi-device routing and domain permission prompts
 - **DomainPermission**: Per-domain allow/deny state for browser extension web access, synced across addons
 - **Thought**: Inner monologue entries — `content` (full monologue), `title`, `image`, `valence`, `preference_id` FK (seed preference), `run_id`, `notified_at`
-- **Preference**: User sentiment signals — `content`, `valence` (positive/negative), `source` (manual/extracted), `mention_count`, `embedding` (serialized float32 vector), `last_thought_at`. Extracted preferences must reach `PREFERENCE_MENTION_THRESHOLD` mentions before becoming thinking candidates; manual (`/like`) preferences bypass this gate
+- **Preference**: Legacy user sentiment signals — `content`, `valence` (positive/negative), `source` (manual/extracted), `mention_count`, `embedding` (serialized float32 vector), `last_thought_at`. Extracted preferences must reach `PREFERENCE_MENTION_THRESHOLD` mentions before becoming thinking candidates. The `/like`-family commands that wrote `manual`-source rows are retired (like/dislike is now NL dispatch onto the `likes` / `dislikes` collections); this table still backs the thoughts pipeline's seed-preference pick and the onboarding profile check, so it stays until #1301 decides its fate
 - **Knowledge**: Summarized web page content — `url` (unique), `title`, `summary` (prose paragraph), `embedding`, `source_prompt_id` FK (extraction watermark). One entry per URL, upserted on revisit
 - **Memory**: Unified container for the task/memory framework — `name` (PK), `type` (`collection` or `log`), `description` (content-reflective; doubles as the stage-1 routing anchor), `description_embedding` (the anchor vector, backfilled at startup), `inclusion` (stage-1 routing: `always` / `relevant` / `never`), `recall` (stage-2 entry rendering: `all` / `relevant` / `recent`), `published` (pub/sub: when true, a consumer like the `notifier` drains this collection's new entries via `read_published_latest` — orthogonal to recall; opt-in, default false), `archived`. Collections are keyed sets with dedup on write; logs are append-only keyless streams
 - **MemoryEntry**: One entry in a memory — `memory_name` FK, `key` (nullable for logs), `content`, `author`, `key_embedding`, `content_embedding`. Entries are immutable once written — `update` replaces content for a given key
@@ -468,6 +461,7 @@ Notable migrations:
 - 0076: Seed the "Mute or unmute notifications" skill — a TRIGGER + numbered STEPS recipe teaching the chat agent to dispatch a pause/resume request onto the `notifications_mute` / `notifications_unmute` tools (the retired `/mute` + `/unmute` commands).  Operate-the-system skill (`author='system'`, no source collection), so the skills reconcile loop leaves it alone.  Lifts the NL-dispatch reliability the `tests/eval/test_notifications.py` contract gates
 - 0077: Seed the schedule-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "every morning send me X" → `schedule_create`, "you can stop the morning summaries" → `schedule_delete` (by meaning), and "what's scheduled?" → `schedule_list`. Retires the `/schedule` + `/unschedule` commands onto the chat tool surface (epic #1445). Operate-the-system skills (no source collection), `author='system'`, idempotent
 - 0078: Seed the "Look up email" skill — TRIGGER + numbered STEPS teaching the chat agent to route email questions ("did I get an email from X?", "check my email for Y") onto `search_emails` → `read_emails` → answer (with `list_emails`/`list_folders`/`draft_email` when available), and to stay quiet on a casual grumble about email volume. Retires the `/email` + `/zoho` commands onto the chat tool surface (epic #1445). Operate-the-system skill, `author='system'`, idempotent. NL-dispatch contract: `tests/eval/test_email_dispatch.py`
+- 0079: Seed the likes/dislikes-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "I'm really into X" → `collection_write("likes"|"dislikes")`, "forget about X" → `collection_delete_entry` (matched by meaning, never index/exact text), and "what am I into?" → `collection_read_latest`. Retires the `/like` + `/unlike` + `/dislike` + `/undislike` commands onto the `likes` / `dislikes` memory collections (epic #1445, issue #1451). The legacy `preference` table is untouched (its fate is #1301). Operate-the-system skills (no source collection), `author='system'`, idempotent. NL-dispatch contract: `tests/eval/test_likes_dislikes.py`
 
 ## Extending
 
@@ -525,7 +519,10 @@ agent shapes × answer-from-memory vs. browse-and-reason: `test_chat_response.py
 `test_peripheral.py`, `test_notifications.py` (NL-dispatch of the mute/unmute
 tools that retired `/mute` + `/unmute`), `test_command_tools.py` (NL-dispatch
 contracts for the command-retirement tools), `test_email_dispatch.py`
-(NL-dispatch of the email tools that retired `/email` + `/zoho`). Browse is stubbed; a case injects realistic pages via the
+(NL-dispatch of the email tools that retired `/email` + `/zoho`),
+`test_likes_dislikes.py` (NL-dispatch of like/dislike add/remove-by-meaning/list
+onto the `likes` / `dislikes` collections, retiring `/like` + `/unlike` +
+`/dislike` + `/undislike`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

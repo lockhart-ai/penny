@@ -176,7 +176,7 @@ target + success marker + done() summary
 - quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
 corrects collection prompts that have drifted from their stated intent
 - secrets (collection, 1 entries) — hidden
-- skills (collection, 13 entries) — Workflow patterns — how to compose tools to satisfy user intents
+- skills (collection, 16 entries) — Workflow patterns — how to compose tools to satisfy user intents
 - thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the user's interests.
 - tips (log, 1 entries) — useful tips
 - user-messages (log, 0 entries) — Every incoming user message

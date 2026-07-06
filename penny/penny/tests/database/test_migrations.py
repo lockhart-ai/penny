@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 78
+        assert count == 79
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 78
+        assert count1 == 79
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0078 run = 77 migrations
-        assert count == 77
+        # 0001 is skipped; 0002 through 0079 run = 78 migrations
+        assert count == 78
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 78  # all migrations applied
+        assert count == 79  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")

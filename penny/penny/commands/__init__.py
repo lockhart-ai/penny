@@ -2,13 +2,9 @@
 
 from penny.commands.base import Command, CommandRegistry
 from penny.commands.config import ConfigCommand
-from penny.commands.dislike import DislikeCommand
 from penny.commands.index import IndexCommand
-from penny.commands.like import LikeCommand
 from penny.commands.models import CommandContext, CommandError, CommandResult
 from penny.commands.profile import ProfileCommand
-from penny.commands.undislike import UndislikeCommand
-from penny.commands.unlike import UnlikeCommand
 
 __all__ = [
     "Command",
@@ -35,9 +31,5 @@ def create_command_registry() -> CommandRegistry:
     # Register other builtin commands
     registry.register(ConfigCommand())
     registry.register(ProfileCommand())
-    registry.register(LikeCommand())
-    registry.register(UnlikeCommand())
-    registry.register(DislikeCommand())
-    registry.register(UndislikeCommand())
 
     return registry

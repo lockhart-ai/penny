@@ -45,7 +45,7 @@ Penny talks to you over [Signal](https://signal.org), [Discord](https://discord.
 
 Penny builds a picture of what you care about. As you chat, she notices the things you bring up with interest or frustration — coffee preferences, weather complaints, hobbies you keep returning to — and files them away as likes and dislikes. A topic has to come up more than once before she takes it seriously, so an offhand comment doesn't send her down a rabbit hole.
 
-You can also tell her directly: `/like dark roast coffee`, `/dislike cold weather`, `/unlike`, `/undislike`. These shape what she thinks about and what she shares with you.
+You can also just tell her in plain language — "I'm really into dark roast coffee", "I can't stand cold weather", "forget about that one", or "what do you think I'm into?". She files these onto her likes and dislikes memory the same way, no commands to remember. These shape what she thinks about and what she shares with you.
 
 ### Thinking
 
@@ -66,8 +66,6 @@ Beyond regular conversation, Penny supports slash commands:
 
 - **/commands** — list every command available in this deployment
 - **/profile** — set your name, location, and timezone (required before chat)
-- **/like**, **/dislike** — view or add preferences
-- **/unlike**, **/undislike** — remove preferences
 - **/config** — view or tune runtime parameters (30+ values: scheduling intervals, notification backoff, dedup thresholds, email pagination limits, etc.)
 - **/mute**, **/unmute** — silence or resume autonomous notifications
 Email is no longer a slash command — ask about your inbox in plain language ("did I get an email from …?", "check my email for …") and Penny drives the email tools (`search_emails`, `read_emails`, plus `list_emails`/`list_folders`/`draft_email` on Zoho). The tools are present only when a mailbox is configured — Fastmail via `FASTMAIL_API_TOKEN`, or Zoho via `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`.
