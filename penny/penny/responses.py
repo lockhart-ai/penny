@@ -93,27 +93,6 @@ class PennyResponse:
         "looking for interesting stuff for you!"
     )
 
-    # ── Schedule ─────────────────────────────────────────────────────────────
-
-    SCHEDULE_NO_TASKS = "You don't have any scheduled tasks yet \U0001f4c5"
-    SCHEDULE_NEED_TIMEZONE = (
-        "I need to know your timezone first. Send me your location or tell me your city \U0001f4cd"
-    )
-    SCHEDULE_PARSE_ERROR = (
-        "Sorry, I couldn't understand that schedule format. "
-        "Try something like: /schedule daily 9am what's the news?"
-    )
-    SCHEDULE_INVALID_CRON = (
-        "Sorry, I couldn't figure out the timing. "
-        "Try something like: /schedule daily 9am what's the news?"
-    )
-    SCHEDULE_DELETED_NO_REMAINING = "No more scheduled tasks."
-    SCHEDULE_STILL_SCHEDULED = "**Still scheduled:**"
-    SCHEDULE_INVALID_NUMBER = "Invalid schedule number: {number}"
-    SCHEDULE_NO_SCHEDULE_WITH_NUMBER = "No schedule with number {number}"
-    SCHEDULE_DELETED_PREFIX = "Deleted '{timing} {prompt}' \u2705"
-    SCHEDULE_ADDED = "Added {timing}: {prompt} \u2705"
-
     # ── Email ────────────────────────────────────────────────────────────────
 
     EMAIL_NO_QUERY_TEXT = "Please ask a question about your email. Usage: /email <question>"

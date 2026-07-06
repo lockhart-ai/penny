@@ -143,7 +143,7 @@ correct next call from what came back). The suite spans that matrix:
 | **collector** (`test_extractors.py`) | likes / dislikes / knowledge / notify send+move | research-watcher; inner-monologue |
 | **meta-collector** | skills (`test_skills_extractor.py`); quality (`test_quality_correction.py`) | — |
 | **routing** (`test_retrieval.py`) | two-stage recall | — |
-| **peripheral** (`test_peripheral.py`) | startup announcement | `/schedule` NL→cron parse |
+| **peripheral** (`test_peripheral.py`) | startup announcement | schedule NL→cron dispatch (`test_schedule_dispatch.py`) |
 
 The built-in collectors (`likes`, `dislikes`, `knowledge`, `unnotified-thoughts`,
 `notified-thoughts`, `skills`, `quality`) already exist with their **canonical
