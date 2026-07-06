@@ -46,25 +46,38 @@ class CannedPage:
     text it sees).  For search-shaped pages, put the fact lines adjacent to a
     solo markdown-link line so search trimming keeps them.  See ``install_browse``.
 
-    ``fails=True`` makes a matched read RAISE inside the browse tool, so the run
-    renders a ``## browse error:`` section for that query (the only place a read
-    failure is visible — see ``database/memory/objects.py`` run-health tally).
-    A ``match=""`` page matches every URL (``"" in url`` is always true), so a
-    single ``CannedPage(match="", fails=True)`` makes *every* source unreachable
-    — the "browsed a lot, read nothing usable" cycle.  ``text`` is ignored when
-    ``fails`` is set.
+    ``fails=True`` makes a matched read RAISE a *page-level* failure inside the
+    browse tool (one bad/blocked URL), so the run renders a ``## browse error:``
+    "try a different source" section for that query (the only place a read failure
+    is visible — see ``database/memory/objects.py`` run-health tally).  A
+    ``match=""`` page matches every URL (``"" in url`` is always true), so a single
+    ``CannedPage(match="", fails=True)`` makes *every* source unreachable — the
+    "browsed a lot, read nothing usable" cycle.
+
+    ``channel_outage=True`` instead raises ``BrowseChannelUnavailableError`` — the whole
+    browse *channel* is down (no browser connected), so the tool names the outage
+    ONCE and binds the terminal move rather than N per-URL failures inviting the
+    doomed URL-variant retries.  ``text`` is ignored when either flag is set.
     """
 
     match: str
     text: str
     image: str | None = None
     fails: bool = False
+    channel_outage: bool = False
 
 
-# Every browse read fails — the "browsed many sources, read nothing usable, wrote
-# nothing" cycle that produced a confabulated done() summary in production.  Place
-# it as the SOLE / LAST page so specific success pages (if any) still match first.
+# Every browse read fails at the *page* level — the "browsed many sources, read
+# nothing usable, wrote nothing" cycle that produced a confabulated done() summary in
+# production.  Place it as the SOLE / LAST page so specific success pages (if any)
+# still match first.
 ALL_BROWSES_FAIL = CannedPage(match="", text="", fails=True)
+
+# The browser extension is disconnected — a whole-*channel* outage, distinct from N
+# per-page failures.  Every read this cycle is doomed, so the tool must name the
+# outage once and bind the terminal move (no URL-variant flailing).  Catch-all so
+# every query the collector issues hits the outage.
+BROWSER_DISCONNECTED = CannedPage(match="", text="", channel_outage=True)
 
 
 BOARD_GAMES = SynthCollection(

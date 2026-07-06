@@ -106,6 +106,12 @@ class Agent:
     # delivering a message (notify).
     terminator_tool: str = DoneTool.name
 
+    # Recovery move bound into a browse channel-outage error (no browser
+    # connected).  Chat answers from memory or tells the user; ``BackgroundAgent``
+    # overrides this to bind ``done(success=false, ...)`` — the terminator it
+    # actually has (chat has none).
+    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
+
     # The composable response-validation chain — one validator per live
     # condition, run in order by ``run_validators`` each model call.  Reads
     # like a table of contents: a future guard is one more entry here, not a
@@ -850,6 +856,7 @@ class Agent:
             db=self.db,
             embedding_client=self._embedding_model_client,
             author=author,
+            channel_outage_recovery=self.channel_outage_recovery,
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -1229,6 +1236,10 @@ class BackgroundAgent(Agent):
         DoneJsonBailValidator(),
         TextInsteadOfToolValidator(),
     ]
+
+    # A collector closes with ``done()``, so its channel-outage recovery binds that
+    # terminator instead of the chat "answer the user" move.
+    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)

@@ -32,6 +32,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class BrowseChannelUnavailableError(Exception):
+    """The whole browse *channel* is down for this cycle — no browser is connected
+    (or it disconnected and stayed down through every retry) — so every read and
+    search in the batch is doomed and retrying URL variants can't help.
+
+    Distinct from a per-page read failure (a single bad/blocked/slow URL), which
+    stays a plain exception the model should recover from by trying another source.
+    Deliberately NOT a ``ConnectionError`` subclass: ``_read_page``'s per-request
+    retry loop catches ``ConnectionError`` to ride out a *transient* disconnect, so
+    the terminal, retries-exhausted outage must be a different type — both to skip
+    that loop and to let ``_assemble_sections`` tell a channel outage apart from a
+    page failure by ``isinstance``, not by string-matching the message.
+    """
+
+
 _URL_PATTERN = re.compile(r"^https?://")
 
 _LINK_RE = re.compile(r"^\s*\[([^\]]*)\]\(https?://(?:[^)\\]|\\.)*\)\s*$")
@@ -93,12 +109,17 @@ class BrowseTool(Tool):
         author: str = "unknown",
         *,
         embedding_client: LlmClient,
+        channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
     ):
         self._max_calls = max_calls
         self._search_url = search_url
         self._db = db
         self._embedding_client = embedding_client
         self._author = author
+        # The terminal move bound into a whole-channel outage error.  Defaults to
+        # the chat clause; a collector passes its done()-binding clause so the
+        # outage names the recovery its agent can actually perform.
+        self._channel_outage_recovery = channel_outage_recovery
         self._browse_provider: Callable[[], tuple[RequestFn, PermissionManager] | None] | None = (
             None
         )
@@ -205,7 +226,12 @@ class BrowseTool(Tool):
         sections: list[str] = []
         page_sections: list[str] = []
         captures: list[BrowsePage] = []
+        channel_outage = False
         for (header, value, _), result in zip(tasks, results, strict=True):
+            if isinstance(result, BrowseChannelUnavailableError):
+                logger.warning("Browse channel outage (%s%s): %s", header, value, result)
+                channel_outage = True
+                continue
             if isinstance(result, BaseException):
                 sections.append(self._error_section(header, value, result))
                 continue
@@ -215,17 +241,36 @@ class BrowseTool(Tool):
                 page_sections.append(section)
                 if result.image:
                     captures.append(result)
+        if channel_outage:
+            sections.append(self._channel_outage_section())
         return sections, page_sections, captures
 
     @staticmethod
     def _error_section(header: str, value: str, error: BaseException) -> str:
-        """Render one failed sub-call under the dedicated error header."""
+        """Render one failed sub-call — a page-level failure the model recovers from
+        by trying another source."""
         logger.warning("Browse sub-call failed (%s%s): %s", header, value, error)
         error_label = f"{PennyConstants.BROWSE_ERROR_HEADER}{value}"
         return (
             f"{error_label}\nCould not read this page: {error}. "
             f"Try a different source or a reworded query; if other queries in this "
             f"batch succeeded, work from those instead of retrying this one."
+        )
+
+    def _channel_outage_section(self) -> str:
+        """Render the whole-channel outage ONCE, binding the terminal move.
+
+        A disconnected browser dooms every read and search this cycle, so the
+        per-URL "try a different source" guidance — repeated once per query —
+        misreads a single outage as N independent page failures and invites the
+        URL-variant retries (http/https, trailing slash, mirror) that flood the
+        production traces.  Naming the outage once and binding the recovery its
+        agent can actually perform stops the flailing (visible-degradation)."""
+        return (
+            f"{PennyConstants.BROWSE_ERROR_HEADER}browser disconnected\n"
+            "Browsing is unavailable this cycle: no browser is connected, so every "
+            "search and page read fails and retrying other URLs or query variants "
+            f"won't help. {self._channel_outage_recovery}"
         )
 
     @staticmethod
@@ -270,10 +315,12 @@ class BrowseTool(Tool):
     async def _read_page(self, url: str) -> BrowsePage:
         """Read a single URL via the browser extension, retrying with backoff on disconnect.
 
-        Raises ConnectionError if no browser is reachable after all retries, and
-        propagates any RuntimeError raised by the browser extension itself (which
-        signals a structured failure: extraction failed, page never became ready,
-        host permission denied, etc.).
+        Raises ``BrowseChannelUnavailableError`` when no browser is reachable after all
+        retries (a whole-channel outage — every query this cycle is doomed), a plain
+        ``ConnectionError`` for a per-page timeout (that URL is slow/blocking; another
+        source may work), and propagates any RuntimeError raised by the browser
+        extension itself (a structured page failure: extraction failed, page never
+        became ready, host permission denied, etc.).
         """
         for attempt in range(1 + PennyConstants.BROWSE_RETRIES):
             delay = PennyConstants.BROWSE_RETRY_DELAY * (2**attempt)
@@ -287,10 +334,9 @@ class BrowseTool(Tool):
                     )
                     await asyncio.sleep(delay)
                     continue
-                raise ConnectionError(
-                    "no browser is connected — the browser extension isn't running, so web "
-                    "search and page reads are unavailable; answer from what you already know "
-                    "or tell the user the browser is offline"
+                raise BrowseChannelUnavailableError(
+                    "no browser is connected after retries — the browser extension isn't "
+                    "running, so every web search and page read this cycle is unavailable"
                 )
 
             request_fn, permission_manager = connection
@@ -314,7 +360,7 @@ class BrowseTool(Tool):
                     f"browser request timed out after {PennyConstants.BROWSE_REQUEST_TIMEOUT}s — "
                     f"the page may be slow or blocking automated reads; try a different source"
                 ) from None
-            except ConnectionError:
+            except ConnectionError as exc:
                 if attempt < PennyConstants.BROWSE_RETRIES:
                     logger.info(
                         "Browser disconnected, retrying in %.0fs (%s)",
@@ -323,13 +369,16 @@ class BrowseTool(Tool):
                     )
                     await asyncio.sleep(delay)
                     continue
-                raise
+                raise BrowseChannelUnavailableError(
+                    "browser disconnected and stayed down through every retry — the "
+                    "channel is offline, so every read this cycle is doomed"
+                ) from exc
 
             title = self._parse_title(text)
             text = clean_browser_content(text)
             return BrowsePage(text=text, image=image_url, title=title, url=url)
 
-        raise ConnectionError("no browser connected")
+        raise BrowseChannelUnavailableError("no browser connected")
 
     @staticmethod
     def _parse_title(raw_text: str) -> str | None:
