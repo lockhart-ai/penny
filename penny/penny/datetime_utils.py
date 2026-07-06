@@ -86,7 +86,7 @@ def current_datetime_line(db: Database) -> str:
 
     The single source of the dated clock.  The agent-loop envelope
     (``Agent._build_messages``) and every ad-hoc one-shot LLM flow — the
-    ``/schedule`` natural-language parse, the ``/profile`` parse, the startup
+    ``schedule_create`` natural-language parse, the ``/profile`` parse, the startup
     announcement, the email summarize — render through here so they all reason
     from the same wall clock, in the user's profile timezone (never a bare UTC
     ``now()``).  Falls back to UTC on a fresh install / unknown zone, exactly like

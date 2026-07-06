@@ -1,23 +1,24 @@
-"""Integration tests for /schedule command."""
+"""Integration tests for the schedule tools + the schedule executor mechanism.
+
+The user-facing surface is the ``schedule_create`` / ``schedule_delete`` /
+``schedule_list`` tools the chat agent drives from natural language (the
+``/schedule`` and ``/unschedule`` commands retired in epic #1445).  These tests
+pin the tools' mechanism deterministically (the NL→cron parse is mocked at the
+model boundary); the live-model NL-dispatch contracts live in
+``tests/eval/test_schedule_dispatch.py``.  The cron-firing + executor tests below
+guard the ScheduleExecutor and are unrelated to the surface change.
+"""
 
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlmodel import Session, select
 
-from penny.constants import PennyConstants
 from penny.database.models import Schedule, UserInfo
 from penny.tests.conftest import TEST_SENDER, wait_until
+from penny.tools import Tool
 from penny.tools.browse import BrowseTool
-
-
-def _find_request(mock_llm, needle: str) -> str:
-    """The content of the first captured LLM request containing needle."""
-    for request in mock_llm.requests:
-        for message in request["messages"]:
-            if needle in message["content"]:
-                return message["content"]
-    raise AssertionError(f"No LLM request containing {needle!r}")
 
 
 def _has_message(server, text: str) -> bool:
@@ -25,12 +26,31 @@ def _has_message(server, text: str) -> bool:
     return any(text in msg.get("message", "") for msg in server.outgoing_messages)
 
 
-def _find_message(server, text: str) -> dict:
-    """Find the first outgoing message containing text. Must exist."""
-    for msg in server.outgoing_messages:
-        if text in msg.get("message", ""):
-            return msg
-    raise AssertionError(f"No message containing {text!r}")
+def _schedule_tool(penny, name: str) -> Tool:
+    """The wired schedule tool from the chat surface — proves registration."""
+    tool = next((t for t in penny.chat_agent.get_tools() if t.name == name), None)
+    assert tool is not None, f"{name} is not registered on the chat surface"
+    return tool
+
+
+def _seed_user(penny, *, timezone: str = "America/Los_Angeles") -> None:
+    """Create the test user profile (get_primary_sender reads the first UserInfo)."""
+    with penny.db.get_session() as session:
+        session.add(
+            UserInfo(
+                sender=TEST_SENDER,
+                name="Test User",
+                location="Seattle",
+                timezone=timezone,
+                date_of_birth="1990-01-01",
+            )
+        )
+        session.commit()
+
+
+def _schedules(penny) -> list[Schedule]:
+    with Session(penny.db.engine) as session:
+        return list(session.exec(select(Schedule)))
 
 
 def _is_schedule_due(cron_expression: str, now: datetime) -> bool:
@@ -85,172 +105,177 @@ def test_schedule_does_not_fire_after_window():
 
 
 @pytest.mark.asyncio
-async def test_schedule_list_empty(signal_server, test_config, mock_llm, running_penny):
-    """Test /schedule with no schedules shows empty message."""
-    async with running_penny(test_config) as penny:
-        # Create user profile so we have timezone
-        with penny.db.get_session() as session:
-            user_info = UserInfo(
-                sender=TEST_SENDER,
-                name="Test User",
-                location="Seattle",
-                timezone="America/Los_Angeles",
-                date_of_birth="1990-01-01",
-            )
-            session.add(user_info)
-            session.commit()
-
-        # Send /schedule
-        await signal_server.push_message(sender=TEST_SENDER, content="/schedule")
-
-        # Wait for response
-        await wait_until(
-            lambda: _has_message(signal_server, "You don't have any scheduled tasks yet")
-        )
-
-
-@pytest.mark.asyncio
-async def test_schedule_create_requires_timezone(
-    signal_server, test_config, mock_llm, running_penny
-):
-    """Test /schedule creation requires user timezone to be set."""
-    async with running_penny(test_config) as _penny:
-        # Try to create schedule without user profile
-        await signal_server.push_message(
-            sender=TEST_SENDER, content="/schedule daily 9am what's the news?"
-        )
-
-        # Should prompt for timezone
-        await wait_until(lambda: _has_message(signal_server, "I need to know your timezone first"))
-        response = _find_message(signal_server, "I need to know your timezone first")
-        assert response is not None
-        assert "Send me your location" in response["message"]
-
-
-@pytest.mark.asyncio
-async def test_schedule_create_and_list(signal_server, test_config, mock_llm, running_penny):
-    """Test creating a schedule and listing it."""
+async def test_schedule_create_tool_writes_row(signal_server, test_config, mock_llm, running_penny):
+    """schedule_create parses the NL request (mocked) into a Schedule row and mirrors it back."""
     schedule_json = (
         '{"timing_description": "daily 9am", '
         '"prompt_text": "what\'s the news?", '
         '"cron_expression": "0 9 * * *"}'
     )
-
-    def handler(request, count):
-        return mock_llm._make_text_response(request, schedule_json)
-
-    mock_llm.set_response_handler(handler)
-
-    async with running_penny(test_config) as penny:
-        # Create user profile with timezone
-        with penny.db.get_session() as session:
-            user_info = UserInfo(
-                sender=TEST_SENDER,
-                name="Test User",
-                location="Seattle",
-                timezone="America/Los_Angeles",
-                date_of_birth="1990-01-01",
-            )
-            session.add(user_info)
-            session.commit()
-
-        # Create schedule
-        await signal_server.push_message(
-            sender=TEST_SENDER, content="/schedule daily 9am what's the news?"
-        )
-
-        # Should confirm creation
-        await wait_until(lambda: _has_message(signal_server, "Added daily 9am: what's the news?"))
-
-        # The parse prompt is grounded in the current date, rendered in the user's
-        # profile timezone (LA) — never a bare UTC now() — so relative cadences
-        # resolve against the right calendar day.  Bracket the render so a minute
-        # rollover between snapshots can't flake the exact-stamp assertion.
-        before = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
-            PennyConstants.CURRENT_DATETIME_FORMAT
-        )
-        parse_prompt = _find_request(mock_llm, "Parse this schedule command")
-        after = datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
-            PennyConstants.CURRENT_DATETIME_FORMAT
-        )
-        assert "Current date and time: " in parse_prompt
-        assert any(f"Current date and time: {stamp}" in parse_prompt for stamp in (before, after))
-
-        # List schedules
-        await signal_server.push_message(sender=TEST_SENDER, content="/schedule")
-
-        # Should list the schedule
-        await wait_until(lambda: _has_message(signal_server, "1. **daily 9am**: what's the news?"))
-
-
-@pytest.mark.asyncio
-async def test_schedule_delete(signal_server, test_config, mock_llm, running_penny):
-    """Test deleting a schedule."""
-    schedule_json = (
-        '{"timing_description": "hourly", '
-        '"prompt_text": "sports scores", '
-        '"cron_expression": "0 * * * *"}'
+    mock_llm.set_response_handler(
+        lambda request, count: mock_llm._make_text_response(request, schedule_json)
     )
 
-    def handler(request, count):
-        return mock_llm._make_text_response(request, schedule_json)
-
-    mock_llm.set_response_handler(handler)
-
     async with running_penny(test_config) as penny:
-        # Create user profile with timezone
-        with penny.db.get_session() as session:
-            user_info = UserInfo(
-                sender=TEST_SENDER,
-                name="Test User",
-                location="Seattle",
-                timezone="America/Los_Angeles",
-                date_of_birth="1990-01-01",
+        _seed_user(penny)
+        tool = _schedule_tool(penny, "schedule_create")
+
+        result = await tool.run(request="every day at 9am what's the news?")
+
+        assert result.success and result.mutated
+        assert "0 9 * * *" in result.message  # honest mirror-back of the parsed cadence
+        schedules = _schedules(penny)
+        assert len(schedules) == 1
+        assert schedules[0].cron_expression == "0 9 * * *"
+        assert schedules[0].user_timezone == "America/Los_Angeles"
+        assert schedules[0].prompt_text == "what's the news?"
+
+        # The parse is grounded in the user's timezone clock, never a bare UTC now().
+        parse_request = next(
+            r
+            for r in mock_llm.requests
+            if any(
+                "Parse this schedule command" in str(m.get("content", "")) for m in r["messages"]
             )
-            session.add(user_info)
-            session.commit()
-
-        # Create schedule
-        await signal_server.push_message(
-            sender=TEST_SENDER, content="/schedule hourly sports scores"
         )
-
-        await wait_until(lambda: _has_message(signal_server, "Added hourly: sports scores"))
-
-        # Delete schedule
-        await signal_server.push_message(sender=TEST_SENDER, content="/unschedule 1")
-
-        # Should confirm deletion
-        await wait_until(lambda: _has_message(signal_server, "Deleted"))
-        response = _find_message(signal_server, "Deleted")
-        assert response is not None
-        assert "Deleted 'hourly sports scores'" in response["message"]
-        assert "No more scheduled tasks" in response["message"]
+        assert any(
+            "America/Los_Angeles" in str(m.get("content", "")) for m in parse_request["messages"]
+        )
 
 
 @pytest.mark.asyncio
-async def test_schedule_delete_invalid_index(signal_server, test_config, mock_llm, running_penny):
-    """Test deleting with invalid index shows error."""
+async def test_schedule_create_tool_needs_timezone(
+    signal_server, test_config, mock_llm, running_penny
+):
+    """Without a profile timezone, schedule_create fails actionably and writes nothing."""
     async with running_penny(test_config) as penny:
-        # Create user profile
-        with penny.db.get_session() as session:
-            user_info = UserInfo(
-                sender=TEST_SENDER,
-                name="Test User",
-                location="Seattle",
-                timezone="America/Los_Angeles",
-                date_of_birth="1990-01-01",
+        _seed_user(penny, timezone="")
+        tool = _schedule_tool(penny, "schedule_create")
+
+        result = await tool.run(request="every day at 9am what's the news?")
+
+        assert not result.success
+        assert "timezone" in result.message.lower()
+        assert _schedules(penny) == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_delete_tool_removes_match(
+    signal_server, test_config, mock_llm, running_penny
+):
+    """schedule_delete removes the matching schedule and names what it removed."""
+    async with running_penny(test_config) as penny:
+        _seed_user(penny)
+        with Session(penny.db.engine) as session:
+            session.add(
+                Schedule(
+                    user_id=TEST_SENDER,
+                    user_timezone="America/Los_Angeles",
+                    cron_expression="0 * * * *",
+                    prompt_text="sports scores",
+                    timing_description="hourly",
+                    created_at=datetime.now(UTC),
+                )
             )
-            session.add(user_info)
+            session.commit()
+        tool = _schedule_tool(penny, "schedule_delete")
+
+        result = await tool.run(description="the hourly sports scores")
+
+        assert result.success and result.mutated
+        assert "sports scores" in result.message  # mirror-back of what was removed
+        assert _schedules(penny) == []
+
+
+@pytest.mark.asyncio
+async def test_schedule_delete_tool_matches_by_meaning(
+    signal_server, test_config, mock_llm, running_penny
+):
+    """With multiple schedules, schedule_delete removes the nearest by embedding — not
+    the oldest by index. Pins the argmax match mechanism with controlled embeddings
+    (the live-model semantic contract lives in tests/eval/test_schedule_dispatch.py)."""
+    async with running_penny(test_config) as penny:
+        _seed_user(penny)
+        with Session(penny.db.engine) as session:
+            session.add(
+                Schedule(
+                    user_id=TEST_SENDER,
+                    user_timezone="America/Los_Angeles",
+                    cron_expression="0 7 * * *",
+                    prompt_text="weather forecast",
+                    timing_description="every morning at 7am",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            session.add(
+                Schedule(
+                    user_id=TEST_SENDER,
+                    user_timezone="America/Los_Angeles",
+                    cron_expression="0 * * * *",
+                    prompt_text="sports scores",
+                    timing_description="hourly",
+                    created_at=datetime.now(UTC),
+                )
+            )
             session.commit()
 
-        # Try to delete non-existent schedule
-        await signal_server.push_message(sender=TEST_SENDER, content="/unschedule 99")
+        # Steer the match: the query and the weather schedule share a vector, the
+        # sports one is orthogonal — so cosine picks weather regardless of insert order.
+        def embed_handler(model, text):
+            texts = [text] if isinstance(text, str) else text
+            return [[1.0, 0.0] if "weather" in t.lower() else [0.0, 1.0] for t in texts]
 
-        # Should show empty message (no schedules to delete)
-        await wait_until(
-            lambda: _has_message(signal_server, "You don't have any scheduled tasks yet")
-        )
+        mock_llm.set_embed_handler(embed_handler)
+        tool = _schedule_tool(penny, "schedule_delete")
+
+        result = await tool.run(description="the weather forecast")
+
+        assert result.success and result.mutated
+        remaining = {s.prompt_text for s in _schedules(penny)}
+        assert remaining == {"sports scores"}  # the nearest match, not the oldest, was removed
+
+
+@pytest.mark.asyncio
+async def test_schedule_delete_tool_no_schedules(
+    signal_server, test_config, mock_llm, running_penny
+):
+    """schedule_delete with nothing scheduled declines actionably."""
+    async with running_penny(test_config) as penny:
+        _seed_user(penny)
+        tool = _schedule_tool(penny, "schedule_delete")
+
+        result = await tool.run(description="the morning digest")
+
+        assert not result.success
+        assert "no scheduled tasks" in result.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_schedule_list_tool(signal_server, test_config, mock_llm, running_penny):
+    """schedule_list reports the user's schedules, and an empty state when there are none."""
+    async with running_penny(test_config) as penny:
+        _seed_user(penny)
+        tool = _schedule_tool(penny, "schedule_list")
+
+        empty = await tool.run()
+        assert "empty" in empty.message.lower()
+
+        with Session(penny.db.engine) as session:
+            session.add(
+                Schedule(
+                    user_id=TEST_SENDER,
+                    user_timezone="America/Los_Angeles",
+                    cron_expression="0 9 * * *",
+                    prompt_text="what's the news?",
+                    timing_description="daily 9am",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+
+        listed = await tool.run()
+        assert "daily 9am" in listed.message
+        assert "what's the news?" in listed.message
 
 
 @pytest.mark.asyncio

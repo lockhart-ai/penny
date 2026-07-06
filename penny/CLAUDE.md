@@ -73,8 +73,6 @@ penny/
     config.py         — /config: view and modify runtime settings
     index.py          — /commands: list available commands
     profile.py        — /profile: user info collection (name, location, DOB, timezone)
-    schedule.py       — /schedule: create and list recurring background tasks
-    unschedule.py     — /unschedule: delete a scheduled task
     like.py           — /like: show or add positive preferences
     unlike.py         — /unlike: remove positive preferences
     dislike.py        — /dislike: show or add negative preferences
@@ -93,6 +91,7 @@ penny/
     list_folders.py   — ListFoldersTool (available mailboxes)
     draft_email.py    — DraftEmailTool (compose + stage draft)
     notifications.py  — NotificationsMuteTool / NotificationsUnmuteTool: chat-surface tools over the MuteState row (`db.users`); retired /mute + /unmute
+    schedule_tools.py — ScheduleCreateTool / ScheduleDeleteTool / ScheduleListTool: the chat agent's NL surface for recurring cron tasks (reuses the SCHEDULE_PARSE_PROMPT NL→cron parse; delete matches by embedding, never index). Registered on the chat surface in ChatAgent.get_tools
     memory_args.py    — Pydantic arg models for the memory tool surface
     memory_tools.py   — Tool subclasses: each funnels through `db.memory(name)` (the single dispatch) and calls a method on the returned `Memory` object, which refuses wrong-shape ops (collection ops on a log, log_read on a collection) via a base no-op (`WrongShapeError`) and read-only facades via `ReadOnlyMemoryError` — no tool branches on a name or shape. read_similar + memory_metadata are shape-agnostic. build_memory_tools(db, embedding_client, author) factory
   channels/
@@ -198,8 +197,9 @@ All `LlmClient` instances are created centrally in `Penny.__init__()` and shared
 ### Specialized Agents
 
 **ChatAgent** (`agents/chat.py`)
-- Handles incoming user messages with the full tool surface
+- Handles incoming user messages with the full tool surface (memory + browse)
 - Chat-surface tools include `notifications_mute` / `notifications_unmute` (`tools/notifications.py`) — thin toggles over the `MuteState` row (`db.users`) that the model dispatches from natural language ("stop messaging me for a while" / "you can message me again"), replacing the retired `/mute` + `/unmute` commands. NL-dispatch contract: `tests/eval/test_notifications.py`
+- Chat-surface tools also include `schedule_create` / `schedule_delete` / `schedule_list` (`tools/schedule_tools.py`), appended in `get_tools` — recurring cron tasks the model dispatches from natural language, replacing the retired `/schedule` + `/unschedule` commands. NL-dispatch contract: `tests/eval/test_schedule_dispatch.py`
 - Prompt: identity + (profile + recall block + page hint) + instructions; recall block routes memories by `inclusion` (stage 1) then renders entries by `recall` (stage 2)
 - Conversation history flows independently as alternating user/assistant turns passed via `history=`
 - Vision captioning: when images are present and vision model is configured, captions the image first, then forwards a combined prompt to the text LLM
@@ -302,8 +302,6 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 - **/commands** (`index.py`): Lists all available commands with descriptions
 - **/config** (`config.py`): View and modify runtime settings (e.g., `/config idle_seconds 600`). Reads/writes RuntimeConfig table in SQLite; changes take effect immediately
 - **/profile** (`profile.py`): View or update user profile (name, location, DOB). Derives IANA timezone from location. Required before Penny will chat
-- **/schedule** (`schedule.py`): Create and list recurring cron-based background tasks (uses LLM to parse natural language timing)
-- **/unschedule** (`unschedule.py`): Delete a scheduled task. `/unschedule` shows numbered list; `/unschedule <N>` deletes
 - **/like** (`like.py`): Show positive preferences or add one (e.g., `/like dark roast coffee`)
 - **/unlike** (`unlike.py`): Remove a positive preference by number
 - **/dislike** (`dislike.py`): Show negative preferences or add one
@@ -471,6 +469,7 @@ Notable migrations:
 - 0073: Switch the `quality` collector from applying `collection_update` to **suggesting** a fix via `send_message` for user approval (it had made destructive edits to a healthy collection); detection stays structural, the edit moves to the chat agent after the user OKs it
 - 0074: Delete `memory_entry` rows corrupted by a gpt-oss **degeneration collapse** — a run of `.`/`…`/`?` ("...??…?..") the model emits mid-generation on a large context, which before the loop guard could land in a stored entry.  A one-time *generic content-shape* cleanup (frozen copy of `is_degenerate_run`, applied in Python over each row); fresh installs match nothing.  Going forward the agent-loop reroll guard + the corpus write gate keep new poison out
 - 0076: Seed the "Mute or unmute notifications" skill — a TRIGGER + numbered STEPS recipe teaching the chat agent to dispatch a pause/resume request onto the `notifications_mute` / `notifications_unmute` tools (the retired `/mute` + `/unmute` commands).  Operate-the-system skill (`author='system'`, no source collection), so the skills reconcile loop leaves it alone.  Lifts the NL-dispatch reliability the `tests/eval/test_notifications.py` contract gates
+- 0077: Seed the schedule-dispatch skills — TRIGGER + numbered STEPS teaching the chat agent to route "every morning send me X" → `schedule_create`, "you can stop the morning summaries" → `schedule_delete` (by meaning), and "what's scheduled?" → `schedule_list`. Retires the `/schedule` + `/unschedule` commands onto the chat tool surface (epic #1445). Operate-the-system skills (no source collection), `author='system'`, idempotent
 
 ## Extending
 

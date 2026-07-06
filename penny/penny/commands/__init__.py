@@ -9,10 +9,8 @@ from penny.commands.index import IndexCommand
 from penny.commands.like import LikeCommand
 from penny.commands.models import CommandContext, CommandError, CommandResult
 from penny.commands.profile import ProfileCommand
-from penny.commands.schedule import ScheduleCommand
 from penny.commands.undislike import UndislikeCommand
 from penny.commands.unlike import UnlikeCommand
-from penny.commands.unschedule import UnscheduleCommand
 
 if TYPE_CHECKING:
     from penny.llm.image_client import OllamaImageClient
@@ -53,8 +51,6 @@ def create_command_registry(
     # Register other builtin commands
     registry.register(ConfigCommand())
     registry.register(ProfileCommand())
-    registry.register(ScheduleCommand())
-    registry.register(UnscheduleCommand())
     registry.register(LikeCommand())
     registry.register(UnlikeCommand())
     registry.register(DislikeCommand())

@@ -68,8 +68,6 @@ Beyond regular conversation, Penny supports slash commands:
 - **/profile** — set your name, location, and timezone (required before chat)
 - **/like**, **/dislike** — view or add preferences
 - **/unlike**, **/undislike** — remove preferences
-- **/schedule** — set up recurring tasks (e.g., `/schedule daily 9am weather forecast`); uses LLM to parse natural-language timing
-- **/unschedule** — list and delete scheduled tasks
 - **/config** — view or tune runtime parameters (30+ values: scheduling intervals, notification backoff, dedup thresholds, email pagination limits, etc.)
 - **/mute**, **/unmute** — silence or resume autonomous notifications
 - **/draw** — generate images via a local model (requires `LLM_IMAGE_MODEL`)
@@ -134,7 +132,7 @@ Text, vision, and embedding all go through the OpenAI SDK and can each point at 
 
 Two background tracks run when Penny is idle (default: 60s after the last message): scheduled tasks you've created and Penny's own background work — extracting preferences, summarizing pages, thinking, choosing what to share. Each piece of background work has its own cadence; Penny picks the most-overdue ready task per tick, and skips the tick entirely if nothing is due. A foreground message cancels any in-progress background task immediately so the LLM is free to respond.
 
-Scheduled tasks created via `/schedule` run on their own timer regardless of idle state, so a daily weather briefing won't be blocked by an active conversation.
+Recurring tasks — just ask in chat ("every morning send me a weather briefing") and Penny sets one up — run on their own timer regardless of idle state, so a daily weather briefing won't be blocked by an active conversation.
 
 ### Runtime Configuration
 
@@ -149,7 +147,7 @@ The Firefox extension adds a visual, interactive layer on top of Penny's existin
 - **Browser tools** — `browse_url` opens pages in hidden tabs with the full web engine and your session. Per-addon "tool use" toggle controls whether each browser participates in tool dispatch
 - **Domain permissions** — first-time access to a new domain triggers an approve/deny prompt. Approvals persist server-side and sync across all connected addons; prompts can also be answered from Signal so you don't need a browser open. `/config DOMAIN_PERMISSION_MODE allow_all` skips prompting entirely
 - **Memory Explorer** — every memory in one place: a list view with entry counts and last-updated timestamps, plus a drill-in view where you can edit how each memory works (description, what it should remember, how often) and add, edit, or delete individual entries. Each memory's detail page also shows a recent history of background work so you can see exactly what Penny has been doing
-- **Schedule manager** — UI for creating, editing, and deleting `/schedule` cron tasks without touching the chat
+- **Schedule manager** — UI for creating, editing, and deleting recurring cron tasks without touching the chat
 - **Settings panel** — domain allowlist, runtime config params (the same 30+ values `/config` exposes), and addon-level toggles
 - **Prompt log viewer** — every LLM call Penny makes, browseable from the extension: input prompt, response, internal reasoning, and (for background work) which memory the result was written to and why. Useful for understanding "why did Penny say that"
 - **Multi-device** — each browser registers as a device (e.g., "firefox macbook 16"). All devices share the same user identity and conversation history. In-flight progress reactions on Signal also surface on the user's message via emoji morphing (💭 → 🔍 → 📖 → cleared on completion)

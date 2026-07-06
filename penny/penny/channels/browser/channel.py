@@ -96,7 +96,6 @@ from penny.channels.browser.models import (
     ScheduleRecord,
 )
 from penny.channels.permission_manager import PermissionManager
-from penny.commands.schedule import ScheduleParseResult
 from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PennyConstants
 from penny.database.memory import (
@@ -111,6 +110,7 @@ from penny.database.models import RuntimeConfig, Schedule, UserInfo
 from penny.datetime_utils import current_datetime_line
 from penny.prompts import Prompt
 from penny.tools.base import Tool
+from penny.tools.schedule_tools import ScheduleParseResult
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
