@@ -26,6 +26,7 @@ from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
+    CollectionCatalogTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
     CollectionGetTool,
@@ -42,6 +43,7 @@ from penny.tools.memory_tools import (
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
+    MemoryMetadataTool,
     ReadPublishedLatestTool,
     ReadRunCallsTool,
     ReadSimilarTool,
@@ -50,6 +52,7 @@ from penny.tools.memory_tools import (
     _format_duplicate,
     build_memory_tools,
 )
+from penny.tools.models import ToolResult
 
 
 def _make_db(tmp_path) -> Database:
@@ -2107,3 +2110,93 @@ class TestReadPublishedLatest:
         # But a fresh entry (within the window) is surfaced.
         self._write(db, "games", "new", "fresh game")
         assert "fresh game" in (await tool.execute(n=1)).message
+
+
+class TestResultNarration:
+    """Pure per-tool ``to_result_narration`` — the #1481 overrides on the #1479
+    seam.  Each returns only the first-person sentence (``format_result`` adds the
+    ``(<tool> result)`` tag), branching on success / failure / successful-no-op.  A
+    no-op is ``success=True, mutated=False`` — a duplicate-rejected write or a
+    delete/update on a missing key — and must read honestly, never as a save.
+    """
+
+    _OK = ToolResult(message="ok")  # a read/no-op success
+    _WROTE = ToolResult(message="ok", mutated=True)  # a mutating success
+    _FAILED = ToolResult(message="Error", success=False)
+
+    def test_reads_narrate_success_and_failure(self):
+        assert (
+            CollectionReadLatestTool.to_result_narration({"memory": "likes"}, self._OK)
+            == "You looked up your `likes`:"
+        )
+        assert (
+            CollectionReadLatestTool.to_result_narration({"memory": "likes"}, self._FAILED)
+            == "You tried to look up your `likes` but it didn't work:"
+        )
+        assert (
+            ReadSimilarTool.to_result_narration({"anchor": "board games"}, self._OK)
+            == 'You searched your memory for "board games":'
+        )
+        assert (
+            LogReadTool.to_result_narration({"memory": "browse-results"}, self._OK)
+            == "You read `browse-results`:"
+        )
+        assert (
+            CollectionCatalogTool.to_result_narration({}, self._OK)
+            == "You reviewed your collection catalog:"
+        )
+        assert (
+            MemoryMetadataTool.to_result_narration({"memory": "likes"}, self._OK)
+            == "You checked the details of `likes`:"
+        )
+
+    def test_collection_write_distinguishes_save_from_duplicate_no_op(self):
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "loves chess"}]}
+        assert (
+            CollectionWriteTool.to_result_narration(args, self._WROTE)
+            == 'You saved "chess" to `likes`:'
+        )
+        # A fully duplicate-rejected batch succeeds but changes nothing — narrate the
+        # no-op, not a save.
+        assert (
+            CollectionWriteTool.to_result_narration(args, self._OK)
+            == "You didn't add anything new to `likes` — it was already there:"
+        )
+        assert (
+            CollectionWriteTool.to_result_narration(args, self._FAILED)
+            == "You tried to save to `likes` but it didn't work:"
+        )
+
+    def test_update_and_delete_narrate_missing_key_as_no_op(self):
+        update_args = {"memory": "likes", "key": "chess", "content": "new"}
+        assert (
+            UpdateEntryTool.to_result_narration(update_args, self._WROTE)
+            == 'You updated "chess" in `likes`:'
+        )
+        assert (
+            UpdateEntryTool.to_result_narration(update_args, self._OK)
+            == 'You couldn\'t find "chess" in `likes` to update:'
+        )
+        delete_args = {"memory": "likes", "key": "chess"}
+        assert (
+            CollectionDeleteEntryTool.to_result_narration(delete_args, self._WROTE)
+            == 'You removed "chess" from `likes`:'
+        )
+        assert (
+            CollectionDeleteEntryTool.to_result_narration(delete_args, self._OK)
+            == 'You couldn\'t find "chess" to remove from `likes`:'
+        )
+
+    def test_done_narrates_from_the_cycle_outcome_argument(self):
+        assert DoneTool.to_result_narration({"success": True, "summary": "x"}, self._OK) == (
+            "You wrapped up the cycle:"
+        )
+        assert DoneTool.to_result_narration({"success": False, "summary": "x"}, self._OK) == (
+            "You wrapped up the cycle with nothing to report:"
+        )
+        # A rejected first-move done() carries success=False (the premature-done
+        # guard) — the header must not claim the cycle wrapped up over a body that
+        # tells the model to keep working.
+        assert DoneTool.to_result_narration({"success": True, "summary": "x"}, self._FAILED) == (
+            "You tried to wrap up the cycle but it didn't work:"
+        )

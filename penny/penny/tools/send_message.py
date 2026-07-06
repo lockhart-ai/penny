@@ -99,6 +99,17 @@ class SendMessageTool(Tool):
         "to exit — do not retry.  This is normal cycle behaviour, not a failure."
     )
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        # ``mutated`` marks the send that was actually enqueued; a refusal / mute /
+        # no-recipient decline succeeds but sends nothing (a no-op), and a
+        # half-formed body fails at the arg gate.
+        if not result.success:
+            return "You tried to message the user but it didn't work:"
+        if not result.mutated:
+            return "You held off on messaging the user:"
+        return "You sent the user a message:"
+
     def __init__(self, agent_name: str, db: Database) -> None:
         self._agent_name = agent_name
         self._db = db

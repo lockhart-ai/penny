@@ -44,6 +44,14 @@ class ListEmailsTool(Tool):
     }
     args_model = ListEmailsArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        folder = arguments.get("folder")
+        location = f" in {folder}" if folder else ""
+        if not result.success:
+            return f"You tried to list the user's emails{location} but it didn't work:"
+        return f"You listed the user's emails{location}:"
+
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 

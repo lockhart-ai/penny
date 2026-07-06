@@ -28,6 +28,12 @@ class ListFoldersTool(Tool):
     }
     args_model = NoArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to list the user's mail folders but it didn't work:"
+        return "You listed the user's mail folders:"
+
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 

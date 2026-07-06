@@ -14,6 +14,9 @@ import pytest
 
 from penny.jmap.models import EmailAddress, EmailDetail, EmailSummary
 from penny.tools.draft_email import DraftEmailTool
+from penny.tools.list_emails import ListEmailsTool
+from penny.tools.list_folders import ListFoldersTool
+from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
@@ -191,3 +194,37 @@ async def test_draft_email_tool_saves_well_formed_draft():
     assert result.success is True
     assert result.mutated is True
     mock_client.draft_response.assert_called_once()
+
+
+class TestResultNarration:
+    """Pure ``to_result_narration`` for the email surface — each narrates its
+    action on success and honestly on failure (a no-results search is still a
+    success; the body says nothing matched)."""
+
+    _OK = ToolResult(message="ok")
+    _MUTATED = ToolResult(message="ok", mutated=True)
+    _FAILED = ToolResult(message="Error", success=False)
+
+    def test_narration(self):
+        assert SearchEmailsTool.to_result_narration({"text": "invoice"}, self._OK) == (
+            "You searched the user's email:"
+        )
+        assert SearchEmailsTool.to_result_narration({"text": "invoice"}, self._FAILED) == (
+            "You tried to search the user's email but it didn't work:"
+        )
+        assert ReadEmailsTool.to_result_narration({"email_ids": ["M1"]}, self._OK) == (
+            "You read the emails you found:"
+        )
+        assert ListEmailsTool.to_result_narration({"folder": "Sent"}, self._OK) == (
+            "You listed the user's emails in Sent:"
+        )
+        assert ListEmailsTool.to_result_narration({}, self._OK) == ("You listed the user's emails:")
+        assert ListFoldersTool.to_result_narration({}, self._OK) == (
+            "You listed the user's mail folders:"
+        )
+        assert DraftEmailTool.to_result_narration({"to": ["a@b.co"]}, self._MUTATED) == (
+            "You saved an email draft for the user:"
+        )
+        assert DraftEmailTool.to_result_narration({"to": ["a@b.co"]}, self._FAILED) == (
+            "You tried to save an email draft but it didn't work:"
+        )

@@ -47,6 +47,12 @@ class DraftEmailTool(Tool):
     }
     args_model = DraftEmailArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to save an email draft but it didn't work:"
+        return "You saved an email draft for the user:"
+
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 

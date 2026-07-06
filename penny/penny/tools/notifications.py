@@ -90,6 +90,14 @@ class NotificationsMuteTool(_NotificationsTool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Muting notifications"
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You couldn't pause notifications — no one is set up to receive them:"
+        if not result.mutated:
+            return "You found notifications were already paused:"
+        return "You paused notifications:"
+
 
 class NotificationsUnmuteTool(_NotificationsTool):
     """Resume Penny's proactive notifications for the user."""
@@ -114,3 +122,11 @@ class NotificationsUnmuteTool(_NotificationsTool):
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
         return "Resuming notifications"
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You couldn't turn notifications back on — no one is set up to receive them:"
+        if not result.mutated:
+            return "You found notifications were already on:"
+        return "You turned notifications back on:"

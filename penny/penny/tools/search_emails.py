@@ -62,6 +62,12 @@ class SearchEmailsTool(Tool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Searching emails"
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to search the user's email but it didn't work:"
+        return "You searched the user's email:"
+
     def __init__(self, email_client: EmailClient) -> None:
         self._client = email_client
 

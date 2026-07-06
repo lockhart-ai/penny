@@ -130,6 +130,42 @@ def _format_entries(
     return f"{len(entries)} {noun} from `{source}`{suffix}:\n{body}"
 
 
+# ── Result narration ─────────────────────────────────────────────────────────
+#
+# First-person narration of each memory tool's result — the #1481 overrides on
+# the #1479 seam.  Each returns a short clause the model reads as the reply to its
+# OWN call, branching on success / failure / successful-no-op.  A no-op is a call
+# that succeeded but changed nothing (``result.success and not result.mutated``) —
+# a duplicate-rejected write, or an update/delete on a missing key — narrated
+# honestly ("you couldn't find X to remove"), never as a save.  ``format_result``
+# adds the retained ``(<tool> result)`` machine tag and the body, so these return
+# only the sentence (ending with a colon, exactly like the generic default).
+
+
+def _memory_name(arguments: dict, fallback: str) -> str:
+    """Backtick-quoted memory name for narration, or a caller-chosen fallback noun
+    when the call omitted it (an arg-validation failure still narrates)."""
+    name = arguments.get("memory")
+    return f"`{name}`" if name else fallback
+
+
+def _entry_label(arguments: dict) -> str:
+    """Quoted entry key for narration, or a generic noun when the call omitted it."""
+    key = arguments.get("key")
+    return f'"{key}"' if key else "an entry"
+
+
+def _written_label(arguments: dict) -> str:
+    """Name the write's single entry by key, or a count of several, for narration."""
+    entries = arguments.get("entries", [])
+    keys = [entry.get("key") for entry in entries if isinstance(entry, dict) and entry.get("key")]
+    if len(keys) == 1:
+        return f'"{keys[0]}"'
+    if keys:
+        return f"{len(keys)} entries"
+    return "an entry"
+
+
 def _resolve(db: Database, name: str) -> Memory:
     """The ``Memory`` object for ``name``; raises ``MemoryNotFoundError`` when it
     doesn't exist.
@@ -621,6 +657,13 @@ class CollectionReadLatestTool(MemoryTool):
     }
     args_model = ReadLatestArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "collection")
+        if not result.success:
+            return f"You tried to look up your {memory} but it didn't work:"
+        return f"You looked up your {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -682,6 +725,14 @@ class ReadSimilarTool(MemoryTool):
         "required": ["memory", "anchor"],
     }
     args_model = ReadSimilarArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        anchor = arguments.get("anchor")
+        phrase = f' for "{anchor}"' if anchor else ""
+        if not result.success:
+            return f"You tried to search your memory{phrase} but it didn't work:"
+        return f"You searched your memory{phrase}:"
 
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
@@ -838,6 +889,15 @@ class CollectionWriteTool(MemoryTool):
     }
     args_model = CollectionWriteArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to save to {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You didn't add anything new to {memory} — it was already there:"
+        return f"You saved {_written_label(arguments)} to {memory}:"
+
     def __init__(
         self,
         db: Database,
@@ -963,6 +1023,16 @@ class UpdateEntryTool(MemoryTool):
         "required": ["memory", "key", "content"],
     }
     args_model = UpdateEntryArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to update {entry} in {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You couldn't find {entry} in {memory} to update:"
+        return f"You updated {entry} in {memory}:"
 
     def __init__(self, db: Database, author: str, scope: str | None = None) -> None:
         self._db = db
@@ -1152,6 +1222,13 @@ class MemoryMetadataTool(MemoryTool):
     }
     args_model = MemoryNameArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a memory")
+        if not result.success:
+            return f"You tried to check the details of {memory} but it didn't work:"
+        return f"You checked the details of {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -1211,6 +1288,12 @@ class CollectionCatalogTool(MemoryTool):
     )
     parameters = {"type": "object", "properties": {}}
     args_model = CatalogArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to review your collection catalog but it didn't work:"
+        return "You reviewed your collection catalog:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1324,6 +1407,16 @@ class CollectionDeleteEntryTool(MemoryTool):
     }
     args_model = CollectionDeleteEntryArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to remove {entry} from {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You couldn't find {entry} to remove from {memory}:"
+        return f"You removed {entry} from {memory}:"
+
     def __init__(self, db: Database, scope: str | None = None) -> None:
         self._db = db
         self._scope = scope
@@ -1420,6 +1513,13 @@ class LogReadTool(CursorReadTool):
         "required": ["memory"],
     }
     args_model = ReadLogArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        log = _memory_name(arguments, "a log")
+        if not result.success:
+            return f"You tried to read {log} but it didn't work:"
+        return f"You read {log}:"
 
     def __init__(self, db: Database, agent_name: str, scope: str | None) -> None:
         super().__init__(db, agent_name)
@@ -1852,6 +1952,18 @@ class DoneTool(Tool):
         "required": ["success", "summary"],
     }
     args_model = DoneArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        # A first-move ``done()`` is rejected with ``success=False`` (the
+        # premature-done guard, or a ``DoneArgs`` validation failure), so narrate
+        # that honestly.  Otherwise the meaningful signal is the cycle's own
+        # outcome, carried in the ``success`` argument the model reported.
+        if not result.success:
+            return "You tried to wrap up the cycle but it didn't work:"
+        if arguments.get("success"):
+            return "You wrapped up the cycle:"
+        return "You wrapped up the cycle with nothing to report:"
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = DoneArgs(**kwargs)

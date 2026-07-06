@@ -102,3 +102,11 @@ class GenerateImageTool(Tool):
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
         return "Generating an image"
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        description = arguments.get("description")
+        phrase = f' "{description}"' if description else ""
+        if not result.success:
+            return f"You tried to draw{phrase} but it didn't work:"
+        return f"You drew{phrase}:"

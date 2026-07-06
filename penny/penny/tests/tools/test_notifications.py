@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.tools.models import ToolResult
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
 _RECIPIENT = "+15551234567"
@@ -110,3 +111,31 @@ async def test_tools_fail_loudly_with_no_registered_user(tmp_path):
         assert result.success is False
         assert result.mutated is False
         assert "no user" in result.message.lower()
+
+
+class TestResultNarration:
+    """Pure ``to_result_narration`` — the toggle narrates its new state, an
+    already-in-that-state no-op honestly, and a no-recipient failure loudly."""
+
+    _MUTED = ToolResult(message="ok", mutated=True)
+    _ALREADY = ToolResult(message="ok")  # success, no mutation (idempotent no-op)
+    _NO_USER = ToolResult(message="err", success=False)
+
+    def test_mute_narration(self):
+        assert NotificationsMuteTool.to_result_narration({}, self._MUTED) == (
+            "You paused notifications:"
+        )
+        assert NotificationsMuteTool.to_result_narration({}, self._ALREADY) == (
+            "You found notifications were already paused:"
+        )
+        assert NotificationsMuteTool.to_result_narration({}, self._NO_USER) == (
+            "You couldn't pause notifications — no one is set up to receive them:"
+        )
+
+    def test_unmute_narration(self):
+        assert NotificationsUnmuteTool.to_result_narration({}, self._MUTED) == (
+            "You turned notifications back on:"
+        )
+        assert NotificationsUnmuteTool.to_result_narration({}, self._ALREADY) == (
+            "You found notifications were already on:"
+        )

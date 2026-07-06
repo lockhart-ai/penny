@@ -111,6 +111,12 @@ class ScheduleCreateTool(Tool):
         "plainly (e.g. 'daily at 9am', 'every Monday morning', 'hourly'), then retry."
     )
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to set up a scheduled task but it didn't work:"
+        return "You set up a recurring task for the user:"
+
     def __init__(self, db: Database, model_client: LlmClient) -> None:
         self._db = db
         self._model_client = model_client
@@ -204,6 +210,12 @@ class ScheduleDeleteTool(Tool):
         "There are no scheduled tasks to remove. Tell the user they have nothing scheduled."
     )
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to remove a scheduled task but it didn't work:"
+        return "You removed a scheduled task:"
+
     def __init__(self, db: Database, embedding_client: LlmClient) -> None:
         self._db = db
         self._embedding_client = embedding_client
@@ -277,6 +289,12 @@ class ScheduleListTool(Tool):
 
     _NO_RECIPIENT = "No user is registered yet, so there are no schedules."
     _NONE_SCHEDULED = "The user has no scheduled tasks. Tell them their schedule is empty."
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to check the scheduled tasks but it didn't work:"
+        return "You checked the user's scheduled tasks:"
 
     def __init__(self, db: Database) -> None:
         self._db = db

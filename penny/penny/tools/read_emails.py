@@ -48,6 +48,12 @@ class ReadEmailsTool(Tool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Reading emails"
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to read the emails but it didn't work:"
+        return "You read the emails you found:"
+
     def __init__(
         self,
         email_client: EmailClient,

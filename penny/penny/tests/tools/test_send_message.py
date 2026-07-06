@@ -23,7 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 from penny.database import Database
-from penny.tools.models import SendMessageArgs
+from penny.tools.models import SendMessageArgs, ToolResult
 from penny.tools.send_message import SendMessageTool
 
 _RECIPIENT = "+15551234567"
@@ -227,3 +227,27 @@ def test_send_queue_store_round_trip(tmp_path):
     nxt = db.send_queue.next_pending()
     assert nxt is not None and nxt.content == "two"
     assert [item.content for item in db.send_queue.pending_items()] == ["two"]
+
+
+class TestResultNarration:
+    """Pure ``to_result_narration`` — the enqueued send narrates as sent, a
+    refusal/mute/no-recipient decline as a held-off no-op (``mutated=False``), and
+    a half-formed-body arg failure as a failure."""
+
+    def test_narration(self):
+        assert (
+            SendMessageTool.to_result_narration(
+                {"content": "hi"}, ToolResult(message="Message sent.", mutated=True)
+            )
+            == "You sent the user a message:"
+        )
+        assert (
+            SendMessageTool.to_result_narration({"content": "hi"}, ToolResult(message="muted"))
+            == "You held off on messaging the user:"
+        )
+        assert (
+            SendMessageTool.to_result_narration(
+                {"content": "..."}, ToolResult(message="Error", success=False)
+            )
+            == "You tried to message the user but it didn't work:"
+        )
