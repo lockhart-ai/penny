@@ -8,7 +8,7 @@
 
 **Author:** Jared Lockhart
 
-[![CI](https://github.com/jaredlockhart/penny/actions/workflows/check.yml/badge.svg)](https://github.com/jaredlockhart/penny/actions/workflows/check.yml)
+[![CI](https://github.com/lockhart-ai/penny/actions/workflows/check.yml/badge.svg)](https://github.com/lockhart-ai/penny/actions/workflows/check.yml)
 ![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![OpenAI-compatible LLM](https://img.shields.io/badge/LLM-OpenAI--compatible-blueviolet)

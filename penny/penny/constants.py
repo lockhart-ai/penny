@@ -165,7 +165,7 @@ class PennyConstants:
     SIGNAL_VALIDATE_HTTP_TIMEOUT = 5.0
 
     # GitHub constants
-    GITHUB_REPO_OWNER = "jaredlockhart"
+    GITHUB_REPO_OWNER = "lockhart-ai"
     GITHUB_REPO_NAME = "penny"
 
     class PreferenceValence(StrEnum):

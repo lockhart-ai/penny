@@ -527,7 +527,7 @@ class GitHubAPI:
     """
 
     def __init__(
-        self, token_provider: Callable[[], str], owner: str = "jaredlockhart", repo: str = "penny"
+        self, token_provider: Callable[[], str], owner: str = "lockhart-ai", repo: str = "penny"
     ) -> None:
         self._get_token = token_provider
         self._owner = owner

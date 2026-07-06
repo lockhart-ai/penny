@@ -6,7 +6,7 @@
 
 ## Context
 
-We run [Penny](https://github.com/jaredlockhart/penny), a local-first AI agent that uses Ollama for all LLM inference. Penny's workload is heavily agentic — entity extraction, fact extraction, sentiment analysis, schedule parsing, and conversational chat — with most tasks requiring structured JSON output via Ollama's `format` parameter (JSON schema mode).
+We run [Penny](https://github.com/lockhart-ai/penny), a local-first AI agent that uses Ollama for all LLM inference. Penny's workload is heavily agentic — entity extraction, fact extraction, sentiment analysis, schedule parsing, and conversational chat — with most tasks requiring structured JSON output via Ollama's `format` parameter (JSON schema mode).
 
 We previously tested `qwen3:32b` and found it unusable due to excessive thinking tokens (15k+) and unreliable structured JSON output. When `qwen3.5:35b` dropped, we ran a systematic comparison against our production model (`gpt-oss:20b`) using 11 real prompts pulled from our production prompt log.
 

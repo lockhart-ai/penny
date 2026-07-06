@@ -109,7 +109,7 @@ class TeamConstants:
     # GitHub App (auth constants live in github_api/auth.py)
     # =========================================================================
 
-    GITHUB_REPO_OWNER = "jaredlockhart"
+    GITHUB_REPO_OWNER = "lockhart-ai"
     GITHUB_REPO_NAME = "penny"
     BOT_SUFFIX = "[bot]"
     APP_PREFIX = "app/"

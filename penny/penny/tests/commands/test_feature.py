@@ -28,7 +28,7 @@ def feature_db(tmp_path):
 def mock_github_api():
     """Create a mock GitHubAPI that returns a fake issue URL."""
     api = MagicMock()
-    api.create_issue.return_value = "https://github.com/jaredlockhart/penny/issues/999"
+    api.create_issue.return_value = "https://github.com/lockhart-ai/penny/issues/999"
     return api
 
 
