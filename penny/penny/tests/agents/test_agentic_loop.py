@@ -1004,18 +1004,27 @@ class TestParallelToolCalls:
 
     @pytest.mark.asyncio
     async def test_text_queries_fail_without_browser(self, test_db, mock_llm, monkeypatch):
-        """Without a browser, queries surface a structured browse error section — and
-        because EVERY query errored, the result reports ``success=False`` so the
-        failure is visible to structural accounting, not just the error text."""
+        """A whole-channel outage (no browser connected) is named ONCE and binds the
+        terminal move — NOT once per query as N page failures inviting variant retries.
+        Three doomed queries render a single ``## browse error:`` outage banner, and
+        because every query errored the result reports ``success=False`` so the failure
+        is visible to structural accounting, not just the error text."""
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
 
-        result = await tool.execute(queries=["best pizza toronto"])
+        result = await tool.execute(
+            queries=["best pizza toronto", "https://example.test/a", "https://example.test/b"]
+        )
 
         assert result.success is False
-        assert PennyConstants.BROWSE_ERROR_HEADER in result.message
+        # Named once, not per-URL: three doomed queries → a single outage banner.
+        assert result.message.count(PennyConstants.BROWSE_ERROR_HEADER) == 1
         assert "no browser is connected" in result.message
+        # Binds the recovery instead of the per-page "try a different source" that
+        # invites the doomed URL-variant retries.
+        assert "won't help" in result.message
+        assert "try a different source" not in result.message.lower()
         assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
 
     @pytest.mark.asyncio

@@ -74,6 +74,19 @@ class Prompt:
         "Pick a URL from below and pass it in your next queries array to read it."
     )
 
+    # Browse channel-outage recovery clauses — the terminal move bound into a
+    # whole-channel outage error (no browser connected), tailored per agent because
+    # a collector closes with done() while chat has no terminator tool.  The browse
+    # tool names the outage once and appends the owning agent's clause (default:
+    # chat), so the model recovers instead of retrying doomed URL variants.
+    BROWSE_OUTAGE_RECOVERY_CHAT = (
+        "Answer the user from what you already know, or tell them the browser is offline."
+    )
+    BROWSE_OUTAGE_RECOVERY_COLLECTOR = (
+        "Work from what you already have, or close the cycle with "
+        'done(success=false, summary="browsing unavailable this cycle — browser disconnected").'
+    )
+
     # Email prompts
     EMAIL_SYSTEM_PROMPT = (
         "You are searching the user's email to answer their question. Work in order:\n\n"

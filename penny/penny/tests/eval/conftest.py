@@ -35,6 +35,7 @@ from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
+from penny.tools.browse import BrowseChannelUnavailableError
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
@@ -197,6 +198,22 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     )
 
 
+def count_tool_calls(db: Database, tool_name: str) -> int:
+    """How many times the model invoked ``tool_name`` this run.
+
+    Sourced from the persisted promptlog (the real record of what the model did).
+    Used to detect retry-flailing: after a channel-outage banner, a healthy cycle
+    issues at most one ``browse`` call (the probe that revealed the outage) and
+    then stops — repeated browse calls are the doomed URL-variant retries the
+    outage banner is meant to end."""
+    return sum(
+        1
+        for row in db.messages.recent_prompts(limit=200)
+        for call in _response_tool_calls(row)
+        if call.get("function", {}).get("name") == tool_name
+    )
+
+
 def last_tool_args(db: Database, tool_name: str) -> dict | None:
     """Parsed ``arguments`` of the most recent ``tool_name`` call this run (``None``
     if never called).  Like ``tool_was_called`` but returns the call's args — e.g.
@@ -314,6 +331,12 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
         url = params.get("url", "").lower()
         for page in pages:
             if page.match.lower() in url:
+                if page.channel_outage:
+                    # A whole-channel outage (no browser connected).  Raised straight
+                    # here (bypassing _read_page's retry loop, which BrowseChannelUnavailableError
+                    # deliberately isn't a ConnectionError to trigger) so the tool renders
+                    # the consolidated outage banner without the real backoff wait.
+                    raise BrowseChannelUnavailableError("no browser is connected")
                 if page.fails:
                     raise _BrowseReadError(
                         f"failed to read {url} after 3 attempts: the source could not be read"
