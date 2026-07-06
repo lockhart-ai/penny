@@ -109,7 +109,7 @@ Worker agent automatically detects and fixes failing CI and merge conflicts on i
 
 ## GitHub API Module
 
-All orchestrator GitHub interactions use the shared `github_api/` package (at repo root) — direct HTTP calls via `urllib.request` with typed Pydantic return values. The `gh` CLI is **not** used by production orchestrator code (only by Claude CLI agents inside their sandboxed sessions). The same package is also used by penny's `/bug` command.
+All orchestrator GitHub interactions use the shared `github_api/` package (at repo root) — direct HTTP calls via `urllib.request` with typed Pydantic return values. The `gh` CLI is **not** used by production orchestrator code (only by Claude CLI agents inside their sandboxed sessions).
 
 - `GitHubAPI(token_provider, owner, repo)` — takes a callable that returns a fresh token (decoupled from `GitHubAuth`)
 - `GitHubAuth(app_id, private_key_path, installation_id)` — generates GitHub App JWT installation tokens

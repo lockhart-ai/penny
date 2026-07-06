@@ -129,9 +129,6 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_embedding_api_url": os.getenv("LLM_EMBEDDING_API_URL"),
         "llm_embedding_api_key": os.getenv("LLM_EMBEDDING_API_KEY"),
         "image_api_url": os.getenv("LLM_IMAGE_API_URL", "http://host.docker.internal:11434"),
-        "github_app_id": os.getenv("GITHUB_APP_ID"),
-        "github_app_private_key_path": os.getenv("GITHUB_APP_PRIVATE_KEY_PATH"),
-        "github_app_installation_id": os.getenv("GITHUB_APP_INSTALLATION_ID"),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "db_path": os.getenv("DB_PATH", "/penny/data/penny/penny.db"),
         "log_file": os.getenv("LOG_FILE"),
@@ -209,11 +206,6 @@ class Config:
     llm_embedding_api_url: str | None = None  # Override API URL for embedding model
     llm_embedding_api_key: str | None = None  # Override API key for embedding model
     image_api_url: str = "http://host.docker.internal:11434"  # Ollama REST API for /draw
-
-    # GitHub App Configuration (optional, needed for /bug command)
-    github_app_id: str | None = None
-    github_app_private_key_path: str | None = None
-    github_app_installation_id: str | None = None
 
     # LLM retry configuration
     llm_max_retries: int = 3

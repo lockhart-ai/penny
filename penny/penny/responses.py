@@ -129,18 +129,6 @@ class PennyResponse:
     DRAW_USAGE = "Please describe what you want to draw. Usage: /draw <prompt>"
     DRAW_ERROR = "Failed to generate image: {error}"
 
-    # ── Bug ──────────────────────────────────────────────────────────────────
-
-    BUG_USAGE = "Please provide a bug description. Usage: /bug <description>"
-    BUG_FILED = "Bug filed! {issue_url}"
-    BUG_ERROR = "Failed to create issue: {error}"
-
-    # ── Feature ──────────────────────────────────────────────────────────────
-
-    FEATURE_USAGE = "Please provide a feature description. Usage: /feature <description>"
-    FEATURE_FILED = "Feature request filed! {issue_url}"
-    FEATURE_ERROR = "Failed to create issue: {error}"
-
     # ── Commands Index ───────────────────────────────────────────────────────
 
     COMMANDS_HEADER = "**Available Commands**"

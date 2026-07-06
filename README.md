@@ -75,8 +75,6 @@ Beyond regular conversation, Penny supports slash commands:
 - **/draw** — generate images via a local model (requires `LLM_IMAGE_MODEL`)
 - **/email** — search your Fastmail inbox via JMAP (requires `FASTMAIL_API_TOKEN`)
 - **/zoho** — search your Zoho Mail inbox (requires `ZOHO_API_ID`/`ZOHO_API_SECRET`/`ZOHO_REFRESH_TOKEN`)
-- **/bug** — file a bug report on GitHub (requires GitHub App credentials)
-- **/feature** — file a feature request on GitHub (requires GitHub App credentials)
 
 ## Penny's Mind
 
@@ -289,7 +287,7 @@ LOG_LEVEL="INFO"
 # ZOHO_API_SECRET="..."
 # ZOHO_REFRESH_TOKEN="..."
 
-# GitHub App (optional, enables /bug, /feature, and agent containers)
+# GitHub App (optional, enables agent containers)
 # GITHUB_APP_ID="12345"
 # GITHUB_APP_PRIVATE_KEY_PATH="data/private/github-app.pem"
 # GITHUB_APP_INSTALLATION_ID="67890"
@@ -326,7 +324,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `FASTMAIL_API_TOKEN`: enables `/email`
 - `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`: enables `/zoho` (obtain via Zoho's OAuth flow)
 
-**GitHub App** (optional, enables `/bug` and `/feature`; required for agent containers):
+**GitHub App** (required for agent containers):
 - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_APP_INSTALLATION_ID`
 
 **Browser Extension** (optional):

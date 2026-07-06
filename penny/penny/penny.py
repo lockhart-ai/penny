@@ -156,45 +156,10 @@ class Penny:
         # once the autonomous-send cooldown clears.
         self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
 
-    def _init_github_client(self, config: Config) -> Any:
-        """Initialize GitHub API client if configured. Returns GitHubAPI or None."""
-        if not (
-            config.github_app_id
-            and config.github_app_private_key_path
-            and config.github_app_installation_id
-        ):
-            return None
-        try:
-            from pathlib import Path
-
-            from github_api.api import GitHubAPI
-            from github_api.auth import GitHubAuth
-
-            key_path = Path(config.github_app_private_key_path)
-            if not key_path.is_absolute():
-                key_path = Path.cwd() / key_path
-            github_auth = GitHubAuth(
-                app_id=int(config.github_app_id),
-                private_key_path=key_path,
-                installation_id=int(config.github_app_installation_id),
-            )
-            github_api = GitHubAPI(
-                github_auth.get_token,
-                PennyConstants.GITHUB_REPO_OWNER,
-                PennyConstants.GITHUB_REPO_NAME,
-            )
-            logger.info("GitHub API client initialized")
-            return github_api
-        except Exception:
-            logger.exception("Failed to initialize GitHub client")
-            return None
-
     def _init_commands(self, config: Config) -> None:
-        """Create command registry with GitHub client and optional integrations."""
-        github_api = self._init_github_client(config)
+        """Create command registry with optional integrations."""
         zoho_credentials = self._get_zoho_credentials(config)
         self.command_registry = create_command_registry(
-            github_api=github_api,
             image_model_client=self.image_client,
             fastmail_api_token=config.fastmail_api_token,
             zoho_credentials=zoho_credentials,

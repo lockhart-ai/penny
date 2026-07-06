@@ -69,7 +69,6 @@ penny/
     __init__.py       — create_command_registry() factory
     base.py           — Command ABC, CommandRegistry
     models.py         — CommandContext, CommandResult, CommandError
-    github_issue.py   — GitHubIssueCommand base class for /bug and /feature
     preference_base.py — PreferenceBaseCommand, PreferenceAddCommand, PreferenceRemoveCommand
     config.py         — /config: view and modify runtime settings
     index.py          — /commands: list available commands
@@ -83,8 +82,6 @@ penny/
     dislike.py        — /dislike: show or add negative preferences
     undislike.py      — /undislike: remove negative preferences
     draw.py           — /draw: generate images via Ollama image model (optional)
-    bug.py            — /bug: file GitHub issues (optional, requires GitHub App)
-    feature.py        — /feature: file GitHub feature requests (optional, requires GitHub App)
     email.py          — /email: search Fastmail email via JMAP (optional)
     zoho.py           — /zoho: search Zoho Mail via Zoho Mail API (optional)
   tools/
@@ -156,8 +153,8 @@ penny/
       test_signal_formatting.py, test_startup_announcement.py
     commands/         — Per-command tests
       test_commands.py, test_config.py, test_debug.py, test_draw.py, test_email.py,
-      test_feature.py, test_mute.py, test_preferences.py,
-      test_schedule.py, test_bug.py, test_system.py, test_test_mode.py
+      test_mute.py, test_preferences.py,
+      test_schedule.py, test_system.py, test_test_mode.py
     database/         — Migration validation tests
       test_migrations.py
     jmap/             — JMAP client tests
@@ -315,8 +312,6 @@ Penny supports slash commands sent as messages (e.g., `/config`, `/profile`). Co
 
 ### Conditional Commands (registered based on config)
 - **/draw** (`draw.py`): Generate images via Ollama image model (requires `LLM_IMAGE_MODEL`)
-- **/bug** (`bug.py`): File a bug report on GitHub (requires GitHub App config)
-- **/feature** (`feature.py`): File a feature request on GitHub (requires GitHub App config)
 - **/email** (`email.py`): Search Fastmail email via JMAP (requires `FASTMAIL_API_TOKEN`)
 - **/zoho** (`zoho.py`): Search Zoho Mail via the Zoho Mail API (requires `ZOHO_API_ID`, `ZOHO_API_SECRET`, `ZOHO_REFRESH_TOKEN`)
 

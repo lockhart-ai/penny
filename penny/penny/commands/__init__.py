@@ -17,8 +17,6 @@ from penny.commands.unmute import UnmuteCommand
 from penny.commands.unschedule import UnscheduleCommand
 
 if TYPE_CHECKING:
-    from github_api.api import GitHubAPI
-
     from penny.llm.image_client import OllamaImageClient
     from penny.zoho.models import ZohoCredentials
 
@@ -33,7 +31,6 @@ __all__ = [
 
 
 def create_command_registry(
-    github_api: GitHubAPI | None = None,
     image_model_client: OllamaImageClient | None = None,
     fastmail_api_token: str | None = None,
     zoho_credentials: ZohoCredentials | None = None,
@@ -42,7 +39,6 @@ def create_command_registry(
     Factory to create registry with builtin commands.
 
     Args:
-        github_api: Optional GitHub API client (required for bug command)
         image_model_client: Optional image generation OllamaImageClient (required for draw command)
         fastmail_api_token: Optional Fastmail API token (required for email command)
         zoho_credentials: Optional ZohoCredentials for Zoho Mail API (required for zoho command)
@@ -67,14 +63,6 @@ def create_command_registry(
     registry.register(UnlikeCommand())
     registry.register(DislikeCommand())
     registry.register(UndislikeCommand())
-
-    # Register bug and feature commands if GitHub API is configured
-    if github_api:
-        from penny.commands.bug import BugCommand
-        from penny.commands.feature import FeatureCommand
-
-        registry.register(BugCommand(github_api))
-        registry.register(FeatureCommand(github_api))
 
     # Register draw command if image model client is configured
     if image_model_client:

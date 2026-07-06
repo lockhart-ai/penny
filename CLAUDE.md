@@ -196,7 +196,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables `/zoho` command)
 - `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, enables `/zoho` command)
 - `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, enables `/zoho` command) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
-**GitHub App** (required for agent containers and `/bug` command):
+**GitHub App** (required for agent containers):
 - `GITHUB_APP_ID`: GitHub App ID for authenticated API access
 - `GITHUB_APP_PRIVATE_KEY_PATH`: Path to GitHub App private key file
 - `GITHUB_APP_INSTALLATION_ID`: GitHub App installation ID for the repository
