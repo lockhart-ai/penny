@@ -47,6 +47,7 @@ from penny.agents.models import ControllerResponse
 from penny.config import Config
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
+from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryRow
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
@@ -142,9 +143,13 @@ class Collector(BackgroundAgent):
         """
         collection = self.db.memories.get(collection_name)
         if collection is None:
-            return False, f"Collection '{collection_name}' not found."
+            return False, str(MemoryNotFoundError(collection_name))
         if collection.archived:
-            return False, f"Collection '{collection_name}' is archived."
+            return (
+                False,
+                f"Collection '{collection_name}' is archived — restore it first with "
+                f"collection_unarchive('{collection_name}'), or test a different collection.",
+            )
         if collection.extraction_prompt is None:
             return (
                 False,

@@ -666,6 +666,8 @@ async def test_run_for_collection_not_found(test_config, tmp_path):
     assert success is False
     assert "does-not-exist" in message
     assert "not found" in message
+    # matches the house memory-not-found wording (str(MemoryNotFoundError))
+    assert "collection_create" in message
 
 
 @pytest.mark.asyncio
@@ -678,6 +680,8 @@ async def test_run_for_archived_collection(test_config, tmp_path):
     success, message = await collector.run_for("archived-col")
     assert success is False
     assert "archived" in message
+    # names the exact recovery move — unarchive this collection
+    assert "collection_unarchive('archived-col')" in message
 
 
 @pytest.mark.asyncio

@@ -1507,6 +1507,7 @@ class TestTestExtractionPromptTool:
         assert collector.called_with == "board-games"
         assert result.message.startswith("✅")
         assert "wrote 3 entries" in result.message
+        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_failure_returns_x_and_summary(self):
@@ -1515,6 +1516,8 @@ class TestTestExtractionPromptTool:
         result = await tool.execute(memory="likes")
         assert result.message.startswith("❌")
         assert "max steps exceeded" in result.message
+        # the failure must reach structural accounting, not live only in the ❌ text
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_validation_error_returns_x_and_error_message(self):
@@ -1523,6 +1526,7 @@ class TestTestExtractionPromptTool:
         result = await tool.execute(memory="missing")
         assert result.message.startswith("❌")
         assert "not found" in result.message
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_unicode_dash_in_memory_name_normalized(self):

@@ -1775,7 +1775,11 @@ class TestExtractionPromptTool(Tool):
         args = MemoryNameArgs(**kwargs)
         success, summary = await self._collector.run_for(args.memory)
         marker = "✅" if success else "❌"
-        return ToolResult(message=f"{marker} {summary}")
+        # ``success`` must flow into the structured field, not live only in the ❌
+        # marker text — otherwise every failure path (not-found, archived, no/short
+        # prompt, cycle failure) reads as a passing call to ``record.failed`` /
+        # ``tool_failures`` / run-health accounting.
+        return ToolResult(message=f"{marker} {summary}", success=success)
 
 
 # ── Factory ─────────────────────────────────────────────────────────────────
