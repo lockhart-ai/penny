@@ -49,6 +49,7 @@ from penny.database.memory.types import (
     EntryInput,
     EntrySide,
     LogEntryInput,
+    MemoryNotFoundError,
     MemoryType,
     MemoryTypeError,
     MoveOutcome,
@@ -57,6 +58,7 @@ from penny.database.memory.types import (
     WriteResult,
     WrongShapeError,
     slug,
+    wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
@@ -128,20 +130,10 @@ class Memory:
     # ── Shape-op refusals (overridden by the shape that serves them) ──────────
 
     def _refuse_collection_op(self) -> None:
-        raise WrongShapeError(
-            self.name,
-            self.type,
-            f"Refused: '{self.name}' is a log, not a collection.  Read a log with "
-            f"log_read (recent batch / cursored, oldest-first).",
-        )
+        raise WrongShapeError(self.name, self.type, wrong_shape_message(self.name, self.type))
 
     def _refuse_log_op(self) -> None:
-        raise WrongShapeError(
-            self.name,
-            self.type,
-            f"Refused: '{self.name}' is a collection, not a log.  Read a collection with "
-            f"collection_read_latest / collection_get / collection_read_random / read_similar.",
-        )
+        raise WrongShapeError(self.name, self.type, wrong_shape_message(self.name, self.type))
 
     def get(self, key: str) -> list[MemoryEntry]:
         self._refuse_collection_op()
@@ -467,9 +459,9 @@ class Collection(Memory):
         with self._session() as session:
             row = session.get(MemoryRow, to_name)
         if row is None:
-            raise MemoryTypeError(f"memory '{to_name}' does not exist")
+            raise MemoryNotFoundError(to_name)
         if row.type != MemoryType.COLLECTION:
-            raise MemoryTypeError(f"memory '{to_name}' is a {row.type}, not a collection")
+            raise MemoryTypeError(wrong_shape_message(to_name, row.type))
 
     @staticmethod
     def _rows_by_key(session: Session, name: str, key: str) -> list[MemoryEntry]:

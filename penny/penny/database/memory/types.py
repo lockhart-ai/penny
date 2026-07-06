@@ -103,6 +103,27 @@ class MemoryNotFoundError(MemoryAccessError):
         self.name = name
 
 
+def wrong_shape_message(name: str, actual_type: str) -> str:
+    """The single wrong-shape refusal string — names the value, states its actual
+    shape, and binds the read tool that shape *does* support.
+
+    One source for every "collection op on a log" / "log op on a collection"
+    refusal, so the base ``Memory`` no-ops (``_refuse_collection_op`` /
+    ``_refuse_log_op``) and the collection guards (``_require_collection`` /
+    ``_require_destination_collection``) all speak the same house wording instead
+    of a bare ``memory '<x>' is a <t>, not a collection``.
+    """
+    if actual_type == MemoryType.LOG:
+        return (
+            f"Refused: '{name}' is a log, not a collection.  Read a log with "
+            f"log_read (recent batch / cursored, oldest-first)."
+        )
+    return (
+        f"Refused: '{name}' is a collection, not a log.  Read a collection with "
+        f"collection_read_latest / collection_get / collection_read_random / read_similar."
+    )
+
+
 class MemoryAlreadyExistsError(Exception):
     """Raised when a collection or log with the given name already exists.
 

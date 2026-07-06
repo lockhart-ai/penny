@@ -110,11 +110,13 @@ def _format_entries(
     brackets: it is never passed as an argument, so bracket framing there
     carries no copy-through hazard and now reads unambiguously as display
     metadata, distinct from the copyable key.  Keyless entries (log) show just
-    content.  Empty lists produce a clear "no entries" sentinel so the model
-    doesn't confuse absence with error.
+    content.  An empty read names the source and states it's empty (not an error),
+    so the model doesn't confuse absence with a failure or re-read the same way.
     """
     if not entries:
-        return "(no entries)"
+        if source is None:
+            return "(no entries)"
+        return f"No entries in `{source}` — it's empty or nothing matched (not an error)."
     lines = []
     for index, entry in enumerate(entries, start=1):
         prefix = f"{render_key(entry.key)} " if entry.key else ""
@@ -721,7 +723,9 @@ class CollectionKeysTool(MemoryTool):
         args = MemoryNameArgs(**kwargs)
         keys = _resolve(self._db, args.memory).keys()
         if not keys:
-            return ToolResult(message="(no keys)")
+            return ToolResult(
+                message=f"No keys in `{args.memory}` — the collection is empty (not an error)."
+            )
         return ToolResult(message="\n".join(f"- {key}" for key in keys))
 
 
@@ -755,8 +759,10 @@ def _format_duplicate(result: WriteResult) -> str:
     model refreshes the existing row instead of re-using its own rejected key and
     ping-ponging on key-not-found (the 47%-recovery embedding-match arm, #1405).
 
-    Falls back to naming the collision alone when the matched entry is keyless
-    (``matched_key`` missing) — there is no distinct key to bind."""
+    When the matched entry is keyless (``matched_key`` missing) there is no key
+    to bind an ``update_entry`` call to, so the honest next move is to skip it or
+    write distinct content — named as such rather than dangling an imperative the
+    model can't act on."""
     if result.matched_key:
         collision = (
             f"'{result.key}' already exists"
@@ -767,7 +773,10 @@ def _format_duplicate(result: WriteResult) -> str:
             f"{collision} — call update_entry(key='{result.matched_key}', "
             f"content=<richer info>) to refresh it"
         )
-    return f"'{result.key}' duplicates an existing entry"
+    return (
+        f"'{result.key}' duplicates an existing keyless entry — no key to update; "
+        f"skip it or write distinct content"
+    )
 
 
 # ── Embed-failure at write time (fail-hard, #1412) ──────────────────────────
@@ -1278,23 +1287,23 @@ class CollectionMergeTool(MemoryTool):
         self._db.memories.archive(from_name)
         return self._summary(from_name, to_name, moved, dropped)
 
-    def _move_entries(self, source: Memory, to_name: str, keys: list[str]) -> tuple[int, int]:
+    def _move_entries(self, source: Memory, to_name: str, keys: list[str]) -> tuple[int, list[str]]:
         moved = 0
-        dropped = 0
+        dropped: list[str] = []
         for key in keys:
             outcome = source.move(key, to_name, author=self._author)
             if outcome == "ok":
                 moved += 1
             else:
-                dropped += 1
+                dropped.append(key)
         return moved, dropped
 
-    def _summary(self, from_name: str, to_name: str, moved: int, dropped: int) -> str:
-        parts = [f"Merged '{from_name}' → '{to_name}': {moved} moved"]
+    def _summary(self, from_name: str, to_name: str, moved: int, dropped: list[str]) -> str:
+        head = f"Merged '{from_name}' → '{to_name}': {moved} moved"
         if dropped:
-            parts.append(f"{dropped} dropped (key already in destination)")
-        parts.append(f"'{from_name}' archived.")
-        return ", ".join(parts[:2]) + f". {parts[-1]}" if dropped else f"{parts[0]}. {parts[-1]}"
+            named = ", ".join(f"'{key}'" for key in dropped)
+            head += f", {len(dropped)} dropped (already in '{to_name}': {named})"
+        return f"{head}. '{from_name}' archived."
 
 
 class CollectionDeleteEntryTool(MemoryTool):
@@ -1819,7 +1828,7 @@ class ExistsTool(MemoryTool):
 class DoneTool(Tool):
     """Signal the cycle is finished, with a structured success + summary report."""
 
-    name = "done"
+    name = PennyConstants.DONE_TOOL_NAME
     description = (
         "Call this when the cycle is finished.  REQUIRED: `success` (true if "
         "you did what the prompt asked, false on no-op or failure) and "

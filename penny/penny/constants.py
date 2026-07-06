@@ -244,6 +244,10 @@ class PennyConstants:
     # marker the ``read_run_calls`` tool uses to find conversational runs (a turn's
     # user message → the tool calls it drove).  Mirrors ``ChatAgent.name``.
     CHAT_AGENT_NAME = "chat"
+    # The cycle-terminator tool's name.  Only the collector shapes carry it; the
+    # chat agent has no ``done`` tool, so failure envelopes that suggest calling
+    # it gate that suggestion on the tool actually being registered.
+    DONE_TOOL_NAME = "done"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

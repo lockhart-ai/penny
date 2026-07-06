@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, RecallMode
+from penny.database.memory import EntryInput, Inclusion, RecallMode, WriteResult
 from penny.database.models import MemoryEntry
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError
@@ -47,6 +47,7 @@ from penny.tools.memory_tools import (
     ReadSimilarTool,
     TestExtractionPromptTool,
     UpdateEntryTool,
+    _format_duplicate,
     build_memory_tools,
 )
 
@@ -500,6 +501,47 @@ class TestCollectionWritesAndReads:
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
 
     @pytest.mark.asyncio
+    async def test_write_empty_entries_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
+        """An empty ``entries`` batch gets a named, actionable rejection through the
+        arg-validation envelope — not Pydantic's bare "List should have at least 1
+        item" (the house wording-unification pass)."""
+        db = _make_db(tmp_path)
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        result = await write.run(memory="likes", entries=[])
+        assert result.success is False
+        assert "at least one entry" in result.message
+        assert "List should have at least 1 item" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_write_unknown_key_in_entry_names_nested_path(self, tmp_path, mock_llm):
+        """A misspelled/extraneous key INSIDE a batch entry surfaces the nested loc
+        path and suggests the valid sibling, rather than being silently dropped or
+        mis-rendered as the whole ``entries`` field (#1416)."""
+        db = _make_db(tmp_path)
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        result = await write.run(
+            memory="likes",
+            entries=[{"key": "k", "content": "v", "contnt": "typo"}],
+        )
+        assert result.success is False
+        assert "entries.0.contnt" in result.message
+        assert "did you mean 'content'" in result.message
+
+    def test_format_duplicate_binds_key_when_present_and_is_honest_when_keyless(self):
+        """The keyed arm binds an ``update_entry(key=...)`` call to the matched key;
+        the keyless arm (no key to update) is honest about it and points at the real
+        move (skip / write distinct content) — not a dangling refresh imperative."""
+        keyed = _format_duplicate(
+            WriteResult(key="cold brew", outcome="duplicate", matched_key="cold brew")
+        )
+        assert "update_entry(key='cold brew'" in keyed
+        keyless = _format_duplicate(
+            WriteResult(key="cold brew", outcome="duplicate", matched_key=None)
+        )
+        assert "no key to update" in keyless
+        assert "update_entry(" not in keyless
+
+    @pytest.mark.asyncio
     async def test_write_reports_duplicate_via_tcr(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -670,6 +712,23 @@ class TestCollectionWritesAndReads:
         await write.execute(memory="likes", entries=[{"key": "second", "content": "2"}])
         listing = await CollectionKeysTool(db).execute(memory="likes")
         assert listing.message == "- first\n- second"
+
+    @pytest.mark.asyncio
+    async def test_keys_empty_collection_names_source_not_bare_sentinel(self, tmp_path):
+        """An empty collection's keys read names the source and marks absence (not an
+        error), rather than the bare "(no keys)" sentinel (house wording pass)."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        listing = await CollectionKeysTool(db).execute(memory="likes")
+        assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
     async def test_read_random_returns_all_when_few(self, tmp_path, mock_llm):
@@ -1262,7 +1321,11 @@ class TestLogTools:
         # A new instance after commit should see no entries (cursor caught up).
         fresh = LogReadTool(db, agent_name="extractor", scope="extractor")
         rendered = await fresh.execute(memory="events")
-        assert rendered.message == "(no entries)"
+        # Empty read names the source and marks it as absence, not an error.
+        assert (
+            rendered.message
+            == "No entries in `events` — it's empty or nothing matched (not an error)."
+        )
 
     @pytest.mark.asyncio
     async def test_discard_pending_leaves_cursor_unchanged(self, tmp_path, mock_llm):
@@ -1463,6 +1526,17 @@ class TestExistsAndDone:
         assert "not found" in result.message
 
     @pytest.mark.asyncio
+    async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
+        """An empty ``memories`` list gets a named, actionable rejection through the
+        arg-validation envelope — not Pydantic's bare "List should have at least 1
+        item" (the house wording-unification pass)."""
+        db = _make_db(tmp_path)
+        result = await ExistsTool(db, _make_llm_client(mock_llm)).run(memories=[], content="x")
+        assert result.success is False
+        assert "at least one collection name" in result.message
+        assert "List should have at least 1 item" not in result.message
+
+    @pytest.mark.asyncio
     async def test_exists_embed_failure_is_inconclusive_not_no(self, tmp_path, mock_llm):
         """When the embed service is down the similarity dedup is skipped, so a
         "no" would be a silent degradation that could green-light a near-duplicate
@@ -1657,6 +1731,8 @@ class TestCollectionMerge:
 
         assert "1 moved" in result.message
         assert "1 dropped" in result.message
+        # The dropped collision keys are named, not just counted.
+        assert "'shared'" in result.message
         dst_entries = db.memory("dst").read_all()
         assert len(dst_entries) == 2
         contents = {e.key: e.content for e in dst_entries}

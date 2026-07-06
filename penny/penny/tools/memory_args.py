@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, model_validator
 
 from penny.constants import PennyConstants
 from penny.database.memory import Inclusion, RecallMode
@@ -50,8 +50,22 @@ def _normalize_dash_list(value: object) -> object:
     return [_normalize_dashes(item) for item in value]
 
 
+def _require_memory_names(value: list[str]) -> list[str]:
+    """Reject an empty ``memories`` list with an actionable message.
+
+    A bare ``Field(min_length=1)`` surfaces Pydantic's generic "List should have
+    at least 1 item" — true but not actionable, and inconsistent with the browse/
+    email empty-list gates.  Name what to supply."""
+    if not value:
+        raise ValueError("provide at least one collection name to check for a duplicate")
+    return value
+
+
 MemoryName = Annotated[str, BeforeValidator(_normalize_dashes)]
-MemoryNameList = Annotated[list[str], BeforeValidator(_normalize_dash_list)]
+# A ``memories`` list that must name at least one collection (the ``exists`` probe).
+NonEmptyMemoryNameList = Annotated[
+    list[str], BeforeValidator(_normalize_dash_list), AfterValidator(_require_memory_names)
+]
 
 
 def _reject_nonpositive_count(value: int | None) -> int | None:
@@ -330,13 +344,14 @@ class ReadRunCallsArgs(ToolArgs):
 class CollectionEntrySpec(BaseModel):
     """One entry in a ``collection_write`` batch.
 
-    Deliberately a plain ``BaseModel``, not ``ToolArgs`` — this is a *nested*
-    element of ``CollectionWriteArgs.entries``, so an ``extra="forbid"`` violation
-    here would carry a nested ``loc`` (``("entries", 0, "badkey")``) that the
-    envelope's field-naming (which reads ``loc[0]``) would mis-render as the
-    whole ``entries`` field.  Both of its fields are required, so a *misspelled*
-    field still surfaces as the missing required field; only a purely extraneous
-    key slips through, which is an acceptable gap outside this ticket's scope."""
+    ``extra="forbid"`` — a misspelled or extraneous key inside a batch entry
+    (``{"key": …, "content": …, "id": …}``) surfaces as an actionable rejection
+    naming the bad key rather than being silently dropped, exactly like a
+    top-level ``ToolArgs`` field.  The envelope resolves the *nested* ``loc``
+    (``("entries", 0, "badkey")``) down the parameters schema, so the message
+    names the full path and suggests the valid sibling keys (#1416)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     key: str
     content: str
@@ -361,11 +376,21 @@ class CollectionEntrySpec(BaseModel):
         return value
 
 
+def _require_write_entries(value: list[CollectionEntrySpec]) -> list[CollectionEntrySpec]:
+    """Reject an empty ``collection_write`` batch with an actionable message.
+
+    A bare ``Field(min_length=1)`` surfaces Pydantic's generic "List should have
+    at least 1 item"; name what an entry is so the model fixes the call."""
+    if not value:
+        raise ValueError("provide at least one entry (each a key plus its content) to write")
+    return value
+
+
 class CollectionWriteArgs(ToolArgs):
     """Batched write to a collection with dedup applied per entry."""
 
     memory: MemoryName
-    entries: list[CollectionEntrySpec] = Field(min_length=1)
+    entries: Annotated[list[CollectionEntrySpec], AfterValidator(_require_write_entries)]
 
 
 class UpdateEntryArgs(ToolArgs):
@@ -406,7 +431,7 @@ class LogAppendArgs(ToolArgs):
 class ExistsArgs(ToolArgs):
     """Cross-memory dedup probe used by thinking-class agents before writes."""
 
-    memories: MemoryNameList = Field(min_length=1)
+    memories: NonEmptyMemoryNameList
     content: str
     key: str | None = None
 

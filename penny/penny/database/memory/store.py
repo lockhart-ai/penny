@@ -34,6 +34,7 @@ from penny.database.memory.types import (
     MemoryTypeError,
     RecallMode,
     slug,
+    wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 
@@ -527,4 +528,4 @@ class MemoryStore:
         if memory is None:
             raise MemoryNotFoundError(name)
         if memory.type != MemoryType.COLLECTION:
-            raise MemoryTypeError(f"memory '{name}' is a {memory.type}, not a collection")
+            raise MemoryTypeError(wrong_shape_message(name, memory.type))

@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
-from penny.constants import ProgressEmoji
+from penny.constants import PennyConstants, ProgressEmoji
 from penny.tools.models import NoArgs, ToolArgs, ToolCall, ToolDefinition, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -74,36 +74,66 @@ class Tool(ABC):
 
     @staticmethod
     def _format_field_error(error: Any, properties: dict[str, Any]) -> str:
-        """One ``field (type: description): reason`` line for a Pydantic error."""
+        """One ``field (type: description): reason`` line for a Pydantic error.
+
+        Loc-path-aware: a nested error (a field inside a ``collection_write`` batch
+        entry) is named by its full path (``entries.0.content``) and described by
+        its own schema node, not the top-level field's (#1416)."""
+        loc = tuple(error.get("loc") or ())
         if error.get("type") == EXTRA_FORBIDDEN_ERROR_TYPE:
-            return Tool._format_unknown_param(error, properties)
-        field = str(error["loc"][0]) if error.get("loc") else "(arguments)"
-        prop = properties.get(field, {})
+            return Tool._format_unknown_param(loc, properties)
+        prop = Tool._schema_at_loc(properties, loc)
         param_type = prop.get("type", "")
         param_desc = prop.get("description", "")
+        name = Tool._loc_path(loc)
         if param_type and param_desc:
-            descriptor = f"{field} ({param_type}: {param_desc})"
+            descriptor = f"{name} ({param_type}: {param_desc})"
         elif param_type:
-            descriptor = f"{field} ({param_type})"
+            descriptor = f"{name} ({param_type})"
         else:
-            descriptor = field
+            descriptor = name
         reason = str(error.get("msg", "invalid value")).removeprefix("Value error, ")
         return f"{descriptor}: {reason}"
 
     @staticmethod
-    def _format_unknown_param(error: Any, properties: dict[str, Any]) -> str:
+    def _format_unknown_param(loc: tuple[Any, ...], properties: dict[str, Any]) -> str:
         """One actionable line for an unknown (``extra="forbid"``) parameter.
 
         A misspelled optional argument used to be silently dropped and the tool
         ran with default behaviour.  Now it reaches the envelope: name the bad
-        param, suggest the closest valid one, and list the accepted parameters so
-        the model can fix the call rather than lose the argument."""
-        field = str(error["loc"][0]) if error.get("loc") else "(argument)"
-        valid = list(properties.keys())
-        close = difflib.get_close_matches(field, valid, n=1, cutoff=0.6)
+        param (by its full loc path, so a nested batch-entry key reads
+        ``entries.0.badkey``), suggest the closest valid *sibling* (resolved from
+        the schema node one level up), and list the accepted parameters so the
+        model can fix the call rather than lose the argument."""
+        parent = Tool._schema_at_loc(properties, loc[:-1])
+        valid = list(parent.get("properties", {}).keys())
+        bad = str(loc[-1]) if loc else "(argument)"
+        path = Tool._loc_path(loc)
+        close = difflib.get_close_matches(bad, valid, n=1, cutoff=0.6)
         suggestion = f" — did you mean '{close[0]}'?" if close else ""
         accepted = ", ".join(valid) if valid else "none (this tool takes no parameters)"
-        return f"unknown parameter '{field}'{suggestion} (valid parameters: {accepted})"
+        return f"unknown parameter '{path}'{suggestion} (valid parameters: {accepted})"
+
+    @staticmethod
+    def _loc_path(loc: tuple[Any, ...]) -> str:
+        """Render a Pydantic error ``loc`` as a dotted path (``entries.0.badkey``);
+        a top-level error stays a bare field name, a locless error a placeholder."""
+        return ".".join(str(part) for part in loc) if loc else "(arguments)"
+
+    @staticmethod
+    def _schema_at_loc(properties: dict[str, Any], loc: tuple[Any, ...]) -> dict[str, Any]:
+        """Walk the parameters schema down a ``loc`` to the node it points at —
+        descending ``properties`` on a field name and ``items`` on a list index —
+        so a nested field is described by its OWN schema, not the top-level one's."""
+        node: dict[str, Any] = {"properties": properties}
+        for part in loc:
+            if isinstance(part, int):
+                node = node.get("items", {})
+            else:
+                node = node.get("properties", {}).get(str(part), {})
+            if not isinstance(node, dict):
+                return {}
+        return node
 
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
@@ -301,6 +331,15 @@ class ToolExecutor:
             return ToolResult(
                 message=f"Error: '{tool_call.tool}' failed — {e}. Check the arguments you "
                 f"passed against the tool's parameters; if they look right, try a different "
-                f"approach or call done to finish rather than repeating the same call.",
+                f"approach{self._finish_clause()} rather than repeating the same call.",
                 success=False,
             )
+
+    def _finish_clause(self) -> str:
+        """`` or call done to finish`` only when a ``done`` tool is registered.
+
+        The collector shapes carry ``done``; the chat agent does not, so the crash
+        envelope must not point a chat run at a tool it can't call."""
+        if self.registry.get(PennyConstants.DONE_TOOL_NAME) is not None:
+            return " or call done to finish"
+        return ""

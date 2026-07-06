@@ -984,7 +984,9 @@ class TestWriteTypeEnforcement:
     def test_write_requires_collection(self, tmp_path):
         db = _make_db(tmp_path)
         db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)
-        with pytest.raises(MemoryTypeError):
+        # The wrong-shape refusal speaks the single house wording — names the value,
+        # its actual shape, and binds the read tool that shape supports.
+        with pytest.raises(MemoryTypeError, match="'events' is a log, not a collection"):
             db.memories.memory("events").write([EntryInput(key="k", content="v")], author="chat")
 
     def test_write_on_missing_store_raises(self, tmp_path):

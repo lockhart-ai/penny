@@ -149,3 +149,57 @@ class TestToolTimeout:
         assert result.success is False
         assert "timed out" in result.message.lower()
         assert "0.05s" in result.message
+
+
+class CrashingTool(Tool):
+    """Test tool whose execute raises an uncaught exception."""
+
+    name = "crashing_tool"
+    description = "A tool that always raises"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        raise RuntimeError("boom")
+
+
+class StubDoneTool(Tool):
+    """Minimal stand-in for the collector's cycle-terminator, name only."""
+
+    name = "done"
+    description = "Finish the cycle."
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        return "done"
+
+
+class TestCrashEnvelope:
+    """The uncaught-exception envelope suggests ``done`` only when it's available."""
+
+    @pytest.mark.asyncio
+    async def test_crash_envelope_omits_done_when_agent_has_no_done_tool(self):
+        """The chat agent has no ``done`` tool, so its crash envelope must not name
+        one — it would point the model at a tool it can't call."""
+        registry = ToolRegistry()
+        registry.register(CrashingTool())
+        executor = ToolExecutor(registry, timeout=1.0)
+
+        result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
+
+        assert result.success is False
+        assert "failed — boom" in result.message
+        assert "done" not in result.message
+
+    @pytest.mark.asyncio
+    async def test_crash_envelope_names_done_when_registered(self):
+        """A collector shape carries ``done``, so its crash envelope binds it as the
+        finish move alongside "try a different approach"."""
+        registry = ToolRegistry()
+        registry.register(CrashingTool())
+        registry.register(StubDoneTool())
+        executor = ToolExecutor(registry, timeout=1.0)
+
+        result = await executor.execute(ToolCall(tool="crashing_tool", arguments={}))
+
+        assert result.success is False
+        assert "call done to finish" in result.message
