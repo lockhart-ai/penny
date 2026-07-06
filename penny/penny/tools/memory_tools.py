@@ -10,9 +10,11 @@ Author attribution is passed explicitly: write-capable tools take an
 agent calls with its own ``self.name`` so writes are attributed correctly.
 
 Tools that need embeddings (writes, similarity reads, ``exists``) take an
-``LlmClient`` in ``__init__``. If no embedding client is configured they
-degrade gracefully: writes proceed without key/content vectors, similarity
-reads return empty.
+``LlmClient`` in ``__init__``. On a transient embed failure at write time the
+write is REFUSED, not stored without a vector (#1412): every stored entry must
+carry its similarity vector, so ``collection_write`` / ``log_append`` return an
+actionable failure and persist nothing. Similarity reads return empty on the
+same transient failure.
 """
 
 from __future__ import annotations
@@ -736,6 +738,36 @@ def _format_duplicate(result: WriteResult) -> str:
     return f"'{result.key}' duplicates an existing entry"
 
 
+# ── Embed-failure at write time (fail-hard, #1412) ──────────────────────────
+#
+# Every stored entry MUST carry its similarity vector: an entry without one is
+# invisible to recall (``read_similar`` skips it) and silently weakens dedup.  So
+# a transient embed failure at write time REFUSES the write outright rather than
+# persisting a vectorless row and reporting an optimistic success (the
+# visible-degradation principle — a failed capability produces honest state, not
+# a hidden one).  ``embed_text`` already retries ``llm_max_retries`` times before
+# returning ``None``, so ``None`` means the embedding service was unavailable
+# across every attempt; the failure is actionable and binds a retry — the only
+# correct move for a transient outage.
+#
+# No data-loss on the append path: load-bearing capture (user/agent messages,
+# browse results, collector runs) is written by Python channel paths that
+# tolerate a missing vector via the startup backfill — never by these tools.  The
+# ``AppendableLogName`` / ``SYSTEM_LOGS`` gate keeps ``log_append`` off those
+# logs, so failing here can only affect a model-driven append to a user-created
+# log, where the model simply retries.
+_EMBED_WRITE_FAILURE_COLLECTION = (
+    "Couldn't embed {keys} (a transient embedding error) — nothing was written, "
+    "since an entry is only stored once it has a similarity vector. Retry "
+    "collection_write(memory='{memory}', entries=<the same entries>) in a moment."
+)
+_EMBED_WRITE_FAILURE_LOG = (
+    "Couldn't embed this entry (a transient embedding error) — nothing was "
+    "appended, since an entry is only stored once it has a similarity vector. "
+    "Retry log_append(memory='{memory}', content=<the same content>) in a moment."
+)
+
+
 class CollectionWriteTool(MemoryTool):
     """Write entries to a collection with similarity-based dedup."""
 
@@ -786,8 +818,30 @@ class CollectionWriteTool(MemoryTool):
             )
         memory = _resolve(self._db, args.memory)
         entries = [await self._build_entry(spec) for spec in args.entries]
+        embed_failure = self._embed_failure(args.memory, entries)
+        if embed_failure is not None:
+            return embed_failure
         results = memory.write(entries, author=self._author)
         return self._format_results(args.memory, results)
+
+    def _embed_failure(self, memory: str, entries: list[EntryInput]) -> ToolResult | None:
+        """Refuse the write, atomically, if any entry lost a vector to a transient
+        embed failure — a vectorless entry is recall-invisible and dedup-weakening,
+        so nothing is persisted and the model retries once embedding recovers
+        (fail-hard, #1412)."""
+        missing = [
+            entry.key
+            for entry in entries
+            if entry.content_embedding is None or entry.key_embedding is None
+        ]
+        if not missing:
+            return None
+        keys = ", ".join(f"'{key}'" for key in missing)
+        logger.warning("collection_write: embedding unavailable for %s in %s", keys, memory)
+        return ToolResult(
+            message=_EMBED_WRITE_FAILURE_COLLECTION.format(keys=keys, memory=memory),
+            success=False,
+        )
 
     async def _build_entry(self, spec: CollectionEntrySpec) -> EntryInput:
         return EntryInput(
@@ -1632,8 +1686,14 @@ class LogAppendTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = LogAppendArgs(**kwargs)
+        memory = _resolve(self._db, args.memory)
         vec = await embed_text(self._llm, args.content)
-        _resolve(self._db, args.memory).append(
+        if vec is None:
+            logger.warning("log_append: embedding unavailable for an entry in %s", memory.name)
+            return ToolResult(
+                message=_EMBED_WRITE_FAILURE_LOG.format(memory=args.memory), success=False
+            )
+        memory.append(
             [LogEntryInput(content=args.content, content_embedding=vec)],
             author=self._author,
         )
