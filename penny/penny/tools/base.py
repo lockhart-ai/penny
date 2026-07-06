@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 # an argument the model passed that the arg model doesn't declare.
 EXTRA_FORBIDDEN_ERROR_TYPE = "extra_forbidden"
 
+# Generic first-person narration attached to every tool result — the default the
+# framing composes with a retained machine tag + the body.  Per-tool overrides
+# (browse, memory, framework-failure) land in #1480–#1482; here every tool speaks
+# the same generic line, branching only on success/failure.
+RESULT_NARRATION_SUCCESS = "You used `{tool_name}` and here's the result:"
+RESULT_NARRATION_FAILURE = "You tried to use `{tool_name}` but it didn't work:"
+
+# The retained machine tag.  The narration now reads as natural first-person prose,
+# but a live-model probe measured that pure-prose narration with NO tag RAISED the
+# call-as-text bail rate (5/6 vs. 3/6 with a tag): gpt-oss:20b stops parsing the body
+# as a tool result and reads it as a fresh instruction (#1332's #1 failure class).  So
+# a ``(<tool> result)`` marker stays in the framing — the disambiguation the terse
+# ``Result of your `<tool>` call:`` header carried — even as the header reads naturally.
+RESULT_TAG = "({tool_name} result)"
+
 
 class Tool(ABC):
     """Abstract base class for tools."""
@@ -155,6 +170,27 @@ class Tool(ABC):
         return f"Using {cls.name}"
 
     @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person narration of THIS tool's result, read by the model as the
+        reply to its own call.
+
+        The *result* twin of ``to_action_str`` (the *pre-call* status string):
+        registry-dispatched via ``format_result`` exactly as ``to_action_str`` is
+        via ``format_status``.  It takes the ``ToolResult`` too, so it branches on
+        ``result.success`` and a failure narrates honestly.  Generic default;
+        per-tool overrides (browse, memory, framework-failure) land in #1480–#1482.
+        """
+        return cls._default_result_narration(cls.name, result)
+
+    @staticmethod
+    def _default_result_narration(tool_name: str, result: ToolResult) -> str:
+        """The generic success/failure narration line — shared by the default
+        ``to_result_narration`` and ``format_result``'s unregistered-tool fallback,
+        so both speak the one string."""
+        template = RESULT_NARRATION_SUCCESS if result.success else RESULT_NARRATION_FAILURE
+        return template.format(tool_name=tool_name)
+
+    @classmethod
     def to_progress_emoji(cls, arguments: dict) -> ProgressEmoji:
         """Return an emoji that represents this tool call as in-flight progress.
 
@@ -171,20 +207,36 @@ class Tool(ABC):
         return tool_cls.to_action_str(arguments) if tool_cls else f"Using {tool_name}"
 
     @classmethod
-    def format_result(cls, tool_name: str, body: str) -> str:
-        """Frame a result so the model reads it as the response to ITS own call.
+    def format_result(cls, tool_name: str, arguments: dict, result: ToolResult) -> str:
+        """Frame a result as a tagged, first-person reply to the model's OWN call.
 
-        The OpenAI ``role: "tool"`` + ``tool_call_id`` envelope already marks
-        this as a tool result structurally, but smaller local models don't
-        reliably honour that primitive when the body reads like prose — they
-        can mistake fetched data (e.g. a returned user message) for a fresh
-        instruction directed at them.  A one-line content header naming the
-        originating tool removes the ambiguity uniformly, for every tool —
-        current and future — in one place, so this never has to be solved
-        per-tool again.  Read tools additionally lead their body with a
+        Two parts, composed here so the invariant holds uniformly for every tool —
+        current and future — in one place:
+
+        1. A first-person **narration** (``to_result_narration``, registry-dispatched
+           just as ``format_status`` dispatches ``to_action_str``; generic default
+           here, per-tool overrides in #1480–#1482), branching on ``result.success``.
+        2. A retained machine **tag** ``(<tool> result)``.
+
+        The tag is load-bearing, not decorative.  The OpenAI ``role: "tool"`` +
+        ``tool_call_id`` envelope already marks this a tool result structurally, but
+        gpt-oss:20b doesn't reliably honour that when the body reads like prose — it
+        can mistake fetched data (a returned user message that itself reads like an
+        instruction) for a fresh directive (#1332's #1 failure class).  The terse
+        ``Result of your `<tool>` call:`` header used to carry that disambiguation; a
+        live-model probe showed pure-prose narration with no tag RAISED the
+        call-as-text bail rate (5/6 vs. 3/6 tagged), so the tag stays even though the
+        header now reads naturally.  Read tools additionally lead their body with a
         count + source line (see ``_format_entries``).
         """
-        return f"Result of your `{tool_name}` call:\n{body}"
+        tool_cls = cls._registry.get(tool_name)
+        narration = (
+            tool_cls.to_result_narration(arguments, result)
+            if tool_cls
+            else cls._default_result_narration(tool_name, result)
+        )
+        tag = RESULT_TAG.format(tool_name=tool_name)
+        return f"{narration} {tag}\n{result.message}"
 
     @classmethod
     def format_progress_emoji(cls, tool_name: str, arguments: dict) -> ProgressEmoji:

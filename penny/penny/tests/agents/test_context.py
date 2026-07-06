@@ -124,7 +124,7 @@ def test_page_context_injected_as_synthetic_tool_call():
     """Page context is injected as a search tool call + result in messages."""
     from penny.agents.chat import ChatAgent
     from penny.channels.base import PageContext
-    from penny.tools import Tool
+    from penny.tools import Tool, ToolResult
 
     page_context = PageContext(
         title="Example Product Page",
@@ -148,12 +148,16 @@ def test_page_context_injected_as_synthetic_tool_call():
         "https://example.com/product"
     ]
     # Tool result: standard tool_call_id envelope (no ad-hoc tool_name) and the
-    # same framing every real tool result gets, so the web content can't read as
-    # a fresh instruction.
+    # same tagged first-person framing every real tool result gets (a successful
+    # synthetic browse), so the web content can't read as a fresh instruction.
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == ChatAgent.PAGE_CONTEXT_TOOL_CALL_ID
     assert "tool_name" not in messages[3]
-    assert messages[3]["content"].startswith(Tool.format_result("browse", ""))
+    assert messages[3]["content"].startswith(
+        Tool.format_result("browse", {}, ToolResult(message=""))
+    )
+    # The retained machine tag keeps the model parsing this as a tool result.
+    assert "(browse result)" in messages[3]["content"]
     assert "$49.99" in messages[3]["content"]
     assert "Example Product Page" in messages[3]["content"]
 
