@@ -921,7 +921,7 @@ class Agent:
 
             if not self.allow_repeat_tools and call_key in called_tools:
                 logger.info("Skipping repeat: %s(%s)", tool_name, arguments)
-                repeat_msg = "You already made this exact tool call. Try a different query or tool."
+                repeat_msg = Prompt.DUPLICATE_CALL_REJECTION
                 messages.append(
                     {
                         "role": MessageRole.TOOL,

@@ -816,6 +816,50 @@ class _InjectDuplicateWrite(_InjectingClient):
         return await self._real.chat(messages, *args, tools=tools, **kwargs)
 
 
+class _InjectDuplicateCall(_InjectingClient):
+    """Replays the model's FIRST tool call byte-identically, exactly once, so the
+    agent-loop dedup guard rejects it — then delegates every later call to the live
+    model to drive the recovery.
+
+    Reproduces — deterministically against the live model — a run that re-issues an
+    exact call it already made (a natural cycle only rarely does this on its own).
+    The guard refuses the repeat with the reworked ``DUPLICATE_CALL_REJECTION``
+    (behaviour unchanged: the repeat is not executed); the live model must MOVE ON —
+    reuse the earlier result and finish its real work — instead of over-generalizing
+    "no repeated calls" and suppressing the writes it still owes.  ``bail_injected``
+    records the forced repeat actually fired (else the contract would be vacuous).
+
+    Note: the guard blocks a BYTE-IDENTICAL repeat for the whole run, so the contract
+    measures the real harm — owed follow-up work being suppressed — via the run still
+    completing its write, not by forcing a literal re-read (which the unchanged guard
+    would itself refuse)."""
+
+    def __init__(self, real) -> None:
+        super().__init__(real)
+        self._first_call: tuple[str, dict] | None = None
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        if self._first_call is not None and not self.bail_injected:
+            self.bail_injected = True
+            name, arguments = self._first_call
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-dup-call",
+                            function=LlmToolCallFunction(name=name, arguments=dict(arguments)),
+                        )
+                    ],
+                )
+            )
+        response = await self._real.chat(messages, *args, tools=tools, **kwargs)
+        if self._first_call is None and response.has_tool_calls:
+            call = (response.message.tool_calls or [])[0]
+            self._first_call = (call.function.name, dict(call.function.arguments))
+        return response
+
+
 class _InjectBracketKey(_InjectingClient):
     """Rewrites the model's FIRST key-bearing tool call to wrap its key in display
     brackets (``key='Ark Nova'`` → ``key='[Ark Nova]'``), reproducing the

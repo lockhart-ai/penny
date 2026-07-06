@@ -329,7 +329,7 @@ class TestRepeatCallGuard:
         ]
         assert repeat_tool_messages
         assert repeat_tool_messages[0]["content"] == Tool.format_result(
-            "search", "You already made this exact tool call. Try a different query or tool."
+            "search", Prompt.DUPLICATE_CALL_REJECTION
         )
 
         await agent.close()

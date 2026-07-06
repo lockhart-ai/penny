@@ -210,6 +210,37 @@ Examples:
         "confirms there is genuinely nothing new."
     )
 
+    # Returned (framed as this call's tool result, via Tool.format_result) when a
+    # tool call is byte-identical to one already made earlier in the SAME run — the
+    # agent-loop dedup guard in ``Agent._dedup_tool_calls`` (tool name + args match;
+    # the repeat is NOT executed).  The guard's BEHAVIOUR is unchanged; only this
+    # message is reworked.  The old bare "Try a different query or tool." moved the
+    # model on ~83% of the time, but the runs that hit it failed at ~8x the baseline
+    # rate: traces show the model over-generalizing the terse rejection into "the
+    # policy forbids repeated calls" and then SUPPRESSING legitimate follow-up work
+    # (a verify re-read after a write) for the rest of the run.  So the message now
+    # follows the actionable-failure template — state the why-now (this exact call
+    # already ran and its result is above) AND the legitimate path (reuse that
+    # result; this flags only a byte-for-byte repeat, and a call with NEW arguments
+    # — the verify-read after a write among them — still runs).  Deliberately does
+    # NOT claim the result "hasn't changed": the guard is purely syntactic (it
+    # blocks an identical call for the whole run regardless of intervening writes),
+    # so an "unchanged" claim would be false in exactly the post-write verify case,
+    # and the fix is to steer that case to a non-identical call, not to promise the
+    # identical one is safe to reuse blindly.
+    # Agent-neutral by design: no ``done()`` / "cycle" wording, because the chat
+    # agent shares this guard and has no ``done`` tool.  Shipped with the live-model
+    # recovery contract in ``tests/eval/test_dedup_call_recovery.py``.
+    DUPLICATE_CALL_REJECTION = (
+        "You already made this exact tool call earlier in this run (same tool, same "
+        "arguments), so it was not run again — its result is already in the messages "
+        "above. Use that result rather than repeating the identical call. This flags "
+        "only a byte-for-byte repeat, NOT reusing a tool: a call with new arguments "
+        "— a different query, a different key, or fetching the specific entry you "
+        "just wrote — is a different call and will run. To move forward: use the "
+        "result already above, or make that different call."
+    )
+
     # Nudge prompts (injected when model returns empty content)
     FINAL_STEP_NUDGE = (
         "STOP. You cannot search anymore. Tools are no longer available. "
