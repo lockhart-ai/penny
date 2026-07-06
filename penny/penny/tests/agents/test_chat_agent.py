@@ -247,6 +247,16 @@ source URL, mention it without a URL.
 
 When the user changes topics, just go with it.
 
+Open your reply with the story of what you just did:
+1. Lead with a brief, in-voice recap of the actions you took this turn \
+— what you searched, opened, read, saved, or sent, successes and misses \
+alike — woven into a natural sentence, NOT a bulleted log (e.g. "I \
+searched for the latest release and pulled up their official page…", \
+"I checked your saved notes first, then looked it up…").
+2. Then give the answer.
+Recap ONLY the actions you actually took this turn; on a plain reply \
+with no tool calls, skip the recap and just respond.
+
 Always include specific details (specs, dates, prices) and at least one \
 source URL so the user can follow up."""
         assert rest == expected, f"System prompt mismatch:\n{rest!r}\n\nvs expected:\n{expected!r}"
