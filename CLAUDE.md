@@ -22,7 +22,7 @@ Branch protection is enabled on `main`. All changes must go through pull request
 - **Use `make token` for GitHub operations** (host only): `GH_TOKEN=$(make token) gh pr create ...`
   - This generates a GitHub App installation token for authenticated `gh` CLI access
   - Agent containers already have `GH_TOKEN` set by the orchestrator — just use `gh` directly
-- The user reviews and approves the PR (code-owner review); the **merge queue** does the merging — flag the PR with `gh pr merge <n> --auto --squash` ("merge when ready") so it enqueues itself once approved and green, runs the `merge_group` checks against latest `main`, and merges with no manual step
+- The user reviews and approves the PR (code-owner review); the **merge queue** does the merging — flag the PR with `gh pr merge <n> --auto` ("merge when ready"; no strategy flag — the queue sets it and rejects `--squash`) so it enqueues itself once approved and green, runs the `merge_group` checks against latest `main`, and merges with no manual step. A force-push clears the flag — re-run it after every rebase push
 
 ## Agent Supervision (task-agent fleets)
 
