@@ -452,9 +452,15 @@ RECIPE_BOX_EXTRACTION_PROMPT = (
     "3. done()."
 )
 # The forced duplicate write: byte-identical to the first seeded entry, so dedup
-# catches it on content and hands back its key ("Sheet-pan chicken fajitas").
+# catches it on content and hands back its key ("Sheet-pan chicken fajitas").  The
+# candidate key differs from the matched key (the 47%-recovery embedding-match arm).
 RECIPE_BOX_DUP_KEY = "sheet pan chicken fajitas"
 RECIPE_BOX_DUP_CONTENT = "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F."
+# A second duplicate (of the OTHER seeded entry) for the multi-entry rejection case:
+# a batch of two duplicates, each matching a DIFFERENT existing key, proving every
+# rejected key gets its own match bound — not just the first.
+RECIPE_BOX_DUP_KEY_2 = "one pot lemon orzo"
+RECIPE_BOX_DUP_CONTENT_2 = "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min."
 # The keys the box holds after seeding (SynthCollection keys = text before ' — ').
 RECIPE_BOX_SEED_KEYS = ("Sheet-pan chicken fajitas", "One-pot lemon orzo")
 

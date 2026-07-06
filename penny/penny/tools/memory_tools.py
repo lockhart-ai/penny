@@ -692,33 +692,43 @@ class CollectionKeysTool(MemoryTool):
 
 _SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{memory}'."
 
-# Remedy phrasing for a duplicate rejection, framed as the model's next move so it
-# hands the matched key straight to ``update_entry`` instead of guessing keys or
-# re-reading the collection (the step-budget burn this rejection used to cause).
-_DUPLICATE_REMEDY_SOME = (
-    "Call update_entry(key=<existing key>, content=<richer info>) to refresh that "
-    "entry, or skip it."
-)
+# A duplicate rejection binds the matched existing key straight into an
+# ``update_entry`` call PER ENTRY (see ``_format_duplicate``), not as a placeholder —
+# so the model refreshes the row that already exists instead of re-using its OWN
+# rejected key and ping-ponging on key-not-found.  Merely naming the matched key in
+# parentheses left the embedding-match arm recovering at only 47% (#1405).  These
+# trailing closes only frame how the cycle may END; the actionable call lives per
+# entry.
+_DUPLICATE_CLOSE_SOME = "Refresh with richer info, or skip these."
 # All proposed entries were duplicates — nothing new landed.  The collector variant
 # names ``done()`` (its close tool); the chat variant must NOT (chat has no ``done``).
-_DUPLICATE_REMEDY_ALL_COLLECTOR = (
-    "Nothing new to add — call update_entry(key=<existing key>, content=<richer info>) "
-    "if you have richer info, otherwise call done() to close the cycle."
+_DUPLICATE_CLOSE_ALL_COLLECTOR = (
+    "Nothing new to add — refresh one of the above with richer info, "
+    "otherwise call done() to close the cycle."
 )
-_DUPLICATE_REMEDY_ALL_CHAT = (
-    "Nothing new to add this time — call update_entry(key=<existing key>, "
-    "content=<richer info>) if you have richer info."
+_DUPLICATE_CLOSE_ALL_CHAT = (
+    "Nothing new to add this time — refresh one of the above only if you have richer info."
 )
 
 
 def _format_duplicate(result: WriteResult) -> str:
-    """Name the existing key a candidate collided with, so the model can hand it
-    straight to ``update_entry`` instead of guessing keys or re-reading.
+    """Bind the matched existing key into an ``update_entry`` imperative for this
+    rejected candidate — name the collision AND the exact next call to make, so the
+    model refreshes the existing row instead of re-using its own rejected key and
+    ping-ponging on key-not-found (the 47%-recovery embedding-match arm, #1405).
 
-    Falls back to just the candidate key when ``matched_key`` is missing
-    (e.g. the matched existing entry had no key set)."""
-    if result.matched_key and result.matched_key != result.key:
-        return f"'{result.key}' duplicates existing '{result.matched_key}'"
+    Falls back to naming the collision alone when the matched entry is keyless
+    (``matched_key`` missing) — there is no distinct key to bind."""
+    if result.matched_key:
+        collision = (
+            f"'{result.key}' already exists"
+            if result.matched_key == result.key
+            else f"'{result.key}' duplicates existing '{result.matched_key}'"
+        )
+        return (
+            f"{collision} — call update_entry(key='{result.matched_key}', "
+            f"content=<richer info>) to refresh it"
+        )
     return f"'{result.key}' duplicates an existing entry"
 
 
@@ -807,8 +817,8 @@ class CollectionWriteTool(MemoryTool):
             parts.append(f"Wrote {len(written)} {noun} to '{memory}': {', '.join(written)}.")
         if duplicates:
             labelled = [_format_duplicate(r) for r in duplicates]
-            remedy = self._duplicate_remedy(all_duplicates=not written and not rejected)
-            parts.append(f"Rejected as duplicates: {', '.join(labelled)}.  {remedy}")
+            close = self._duplicate_close(all_duplicates=not written and not rejected)
+            parts.append(f"Rejected as duplicates: {'; '.join(labelled)}.  {close}")
         if rejected:
             labelled = [f"{r.key} ({r.reason})" for r in rejected]
             parts.append(
@@ -821,16 +831,16 @@ class CollectionWriteTool(MemoryTool):
         # changed nothing, so it must read as no-work for the throttle.
         return ToolResult(message=message, mutated=bool(written))
 
-    def _duplicate_remedy(self, *, all_duplicates: bool) -> str:
-        """The next-move hint appended to a duplicate rejection.  When the whole
-        batch was duplicates, a collector (``scope`` set) may close with ``done()``;
-        the chat agent (``scope`` is ``None``) has no ``done`` tool, so it gets a
-        neutral variant that never names one."""
+    def _duplicate_close(self, *, all_duplicates: bool) -> str:
+        """The trailing framing after the per-entry rejections (each already binds its
+        own ``update_entry`` call).  When the whole batch was duplicates, a collector
+        (``scope`` set) may close with ``done()``; the chat agent (``scope`` is
+        ``None``) has no ``done`` tool, so it gets a variant that never names one."""
         if not all_duplicates:
-            return _DUPLICATE_REMEDY_SOME
+            return _DUPLICATE_CLOSE_SOME
         if self._scope is not None:
-            return _DUPLICATE_REMEDY_ALL_COLLECTOR
-        return _DUPLICATE_REMEDY_ALL_CHAT
+            return _DUPLICATE_CLOSE_ALL_COLLECTOR
+        return _DUPLICATE_CLOSE_ALL_CHAT
 
 
 class UpdateEntryTool(MemoryTool):

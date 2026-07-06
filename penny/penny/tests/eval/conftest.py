@@ -230,6 +230,28 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     return None
 
 
+def tool_call_keys(db: Database, tool_name: str) -> list[str]:
+    """Every ``key`` argument the model passed to ``tool_name`` across this run.
+
+    Unlike ``last_tool_args`` (newest call only), this collects every call's key so a
+    scorer can assert EVERY ``update_entry`` targeted an existing (matched) key — the
+    key-not-found ping-pong shows up as a call whose key isn't in the collection.
+    Sourced from the persisted promptlog (the real record of what the model did)."""
+    keys: list[str] = []
+    for row in db.messages.recent_prompts(limit=200):
+        for call in _response_tool_calls(row):
+            if call.get("function", {}).get("name") != tool_name:
+                continue
+            try:
+                args = json.loads(call.get("function", {}).get("arguments") or "{}")
+            except json.JSONDecodeError, TypeError:
+                continue
+            key = args.get("key")
+            if isinstance(key, str):
+                keys.append(key)
+    return keys
+
+
 # Tools whose arguments carry an entry key the model copies from a render.
 _KEY_BEARING_TOOLS = (
     "update_entry",
@@ -800,21 +822,21 @@ class _InjectSendBail(_InjectAfterToolCall):
 
 
 class _InjectDuplicateWrite(_InjectingClient):
-    """Forces ONE ``collection_write`` of an entry that duplicates one the target
-    collection already holds, as the model's FIRST response.
+    """Forces ONE ``collection_write`` of one-or-more entries that each duplicate an
+    entry the target collection already holds, as the model's FIRST response.
 
     Reproduces — deterministically against the live model — a collector that writes
-    something already saved.  The real dedup rejects it, and the rejection now hands
-    back the matched existing key + the next move; the live model must recover
-    (``update_entry`` with that key, or an honest ``done()``) instead of guessing
-    keys / re-reading / retrying variations until it burns the step budget.
-    ``bail_injected`` records the scenario actually fired."""
+    something already saved.  The real dedup rejects it, and the rejection now BINDS
+    each matched existing key into an ``update_entry`` call; the live model must
+    recover (``update_entry`` on the bound key, or an honest ``done()``) instead of
+    re-using its own rejected key / re-reading / retrying variations until it burns
+    the step budget.  A multi-entry batch proves EVERY rejected key gets its match
+    bound, not just the first.  ``bail_injected`` records the scenario actually fired."""
 
-    def __init__(self, real, memory: str, key: str, content: str) -> None:
+    def __init__(self, real, memory: str, entries: list[tuple[str, str]]) -> None:
         super().__init__(real)
         self._memory = memory
-        self._key = key
-        self._content = content
+        self._entries = entries
 
     async def chat(self, messages, tools=None, *args, **kwargs):
         if not self.bail_injected:
@@ -829,7 +851,10 @@ class _InjectDuplicateWrite(_InjectingClient):
                                 name="collection_write",
                                 arguments={
                                     "memory": self._memory,
-                                    "entries": [{"key": self._key, "content": self._content}],
+                                    "entries": [
+                                        {"key": key, "content": content}
+                                        for key, content in self._entries
+                                    ],
                                 },
                             ),
                         )

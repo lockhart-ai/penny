@@ -426,12 +426,14 @@ class TestCollectionWritesAndReads:
         # no-op so the collector's work/no-work split (and auto-throttle) sees
         # the truth rather than counting the rejected write as "work".
         assert result.mutated is False
-        # The candidate's own key is named, *and* the existing key it
-        # collided with — gives the model enough context to pivot to
-        # update_entry with that key instead of guessing keys or re-reading.
+        # The candidate's own key is named, the existing key it collided with is
+        # named, *and* the matched key is BOUND straight into the update_entry call
+        # (not a <existing key> placeholder) — so the model refreshes 'dark roast'
+        # rather than re-using its own rejected 'dark roast coffee' key and
+        # ping-ponging on key-not-found (#1405).
         assert "dark roast coffee" in result.message
         assert "duplicates existing 'dark roast'" in result.message
-        assert "update_entry" in result.message
+        assert "update_entry(key='dark roast', content=<richer info>)" in result.message
         # Whole batch was duplicates → the "nothing new" hint fires.  This is a
         # chat-scope write (scope=None), which has no ``done`` tool, so the hint
         # must NOT name it — chat and collector share this tool surface.
@@ -459,19 +461,21 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        # Whole batch was duplicates and this is a collector, so the hint names
-        # ``done()`` — the model can close the cycle instead of key-hunting.
+        # Whole batch was duplicates and this is a collector, so the close names
+        # ``done()`` — the model can close the cycle instead of key-hunting — while
+        # the per-entry rejection still binds the matched key into update_entry.
         assert "Nothing new to add" in all_duplicates.message
         assert "done()" in all_duplicates.message
-        assert "update_entry" in all_duplicates.message
-        # A re-write under the SAME key can't name a distinct existing key — the
-        # fallback still labels the collision instead of echoing a bare key.
+        assert "update_entry(key='dark roast', content=<richer info>)" in all_duplicates.message
+        # A re-write under the SAME key binds that key straight into update_entry —
+        # 'already exists' names the collision, then the exact refresh call.
         same_key = await write.execute(
             memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
-        assert "'dark roast' duplicates an existing entry" in same_key.message
+        assert "'dark roast' already exists" in same_key.message
+        assert "update_entry(key='dark roast', content=<richer info>)" in same_key.message
         # A batch with a genuinely new entry alongside a duplicate gets the
-        # per-entry remedy (refresh-or-skip), never the "nothing new" close.
+        # per-entry bound refresh + the refresh-or-skip close, never "nothing new".
         partial = await write.execute(
             memory="likes",
             entries=[
@@ -481,9 +485,24 @@ class TestCollectionWritesAndReads:
         )
         assert "Wrote 1 entry" in partial.message
         assert "Rejected as duplicates" in partial.message
-        assert "or skip it" in partial.message
+        assert "update_entry(key='dark roast', content=<richer info>)" in partial.message
+        assert "or skip these" in partial.message
         assert "Nothing new to add" not in partial.message
         assert partial.mutated is True
+        # A batch whose entries each duplicate a DIFFERENT existing key must bind
+        # EVERY matched key into its own update_entry call — not just the first
+        # (#1405: resolve a match for every rejected key in the batch).  'cold brew'
+        # now exists (written above), so both entries collide on distinct keys.
+        multi = await write.execute(
+            memory="likes",
+            entries=[
+                {"key": "dark roast blend", "content": "first body"},
+                {"key": "cold brew coffee", "content": "a brand new distinct entry"},
+            ],
+        )
+        assert "update_entry(key='dark roast', content=<richer info>)" in multi.message
+        assert "update_entry(key='cold brew', content=<richer info>)" in multi.message
+        assert multi.mutated is False
 
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
