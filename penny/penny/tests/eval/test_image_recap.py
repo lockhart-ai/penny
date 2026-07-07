@@ -43,14 +43,15 @@ pytestmark = pytest.mark.eval
 _GENERATE_IMAGE = "generate_image"
 
 # Action-reflection that proves the image summary survived into the reply — the
-# model recaps as "Here's the red fox I drew" / "Made you a red fox" / "sketched
-# up a fox", so match the DRAWING ACTION or a delivery phrasing (no leading "I" —
-# the model often drops it), never exact wording.
+# model recaps as "here's the illustration I drew" / "made you a red fox" /
+# "your fox is ready", so match the DRAWING ACTION (draw/sketch/paint/illustrate/
+# make/render...) or a delivery phrasing (no leading "I" — the model often drops
+# it; the apostrophe in "here's" may be straight or curly), never exact wording.
 _DREW = re.compile(
-    r"\b(drew|draw(ing|n)?|sketch(ed|ing)?|paint(ed|ing)?|made|make|making|whipped up|"
-    r"cooked up|created?|creating|generated?|generating|rendered|rendering|conjured|"
-    r"put together|here'?s|here it is|here you go|(image|picture|drawing|fox) "
-    r"(is )?(ready|done|coming|for you|attached))\b",
+    r"\b(drew|draw(ing|n)?|sketch(ed|ing)?|paint(ed|ing)?|illustrat(ed|ion|ing|e)|"
+    r"made|make|making|whipped up|cooked up|created?|creating|generated?|generating|"
+    r"rendered|rendering|conjured|put together|here\s?[’']?s|here it is|here you go|"
+    r"(image|picture|drawing|illustration|fox) (is )?(ready|done|coming|for you|attached))\b",
     re.I,
 )
 

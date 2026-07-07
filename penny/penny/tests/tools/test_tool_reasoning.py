@@ -252,6 +252,8 @@ class TestScheduleResultNarration:
         assert framed == (
             "You set up a schedule to handle 'daily at 8am summarize chess news': "
             "(schedule_create result)\nScheduled 'chess' to run daily at 8am."
+        )
+
 
 class TestGenerateImageResultNarration:
     """`GenerateImageTool.to_result_narration` (the #1481 per-tool override) names
