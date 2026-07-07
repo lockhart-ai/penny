@@ -122,6 +122,41 @@ struct ChatMessageContentParserTests {
         }
     }
 
+    @Test func rendersRawLinksAsHostWithLinkSymbol() {
+        let text = ChatMessageContentParser.markdownText(from: "Open https://example.com/path?item=1 and www.apple.com/support.")
+
+        #expect(String(text.characters) == "Open example.com and www.apple.com.")
+        #expect(linkTargets(in: text) == [
+            URL(string: "https://example.com/path?item=1"),
+            URL(string: "https://www.apple.com/support")
+        ])
+    }
+
+    @Test func preservesExistingMarkdownLinkText() {
+        let text = ChatMessageContentParser.markdownText(from: "Read [the docs](https://example.com/docs).")
+
+        #expect(String(text.characters) == "Read the docs.")
+        #expect(linkTargets(in: text) == [URL(string: "https://example.com/docs")])
+    }
+
+    @Test func compactsMarkdownLinksWhoseLabelsAreURLs() {
+        let text = ChatMessageContentParser.markdownText(from: "[www.remote-rocketship.com](https://www.remote-rocketship.com/ca/company/sherpallc/)")
+
+        #expect(String(text.characters) == "www.remote-rocketship.com")
+        #expect(linkTargets(in: text) == [URL(string: "https://www.remote-rocketship.com/ca/company/sherpallc/")])
+    }
+
+    @Test func compactsAngleBracketAutolinks() {
+        let text = ChatMessageContentParser.markdownText(from: "<https://formula1.com>")
+
+        #expect(String(text.characters) == "formula1.com")
+        #expect(linkTargets(in: text) == [URL(string: "https://formula1.com")])
+    }
+
+    private func linkTargets(in text: AttributedString) -> [URL] {
+        text.runs.compactMap(\.link)
+    }
+
     private func isLeading(_ alignment: ChatMarkdownTable.ColumnAlignment) -> Bool {
         if case .leading = alignment {
             return true
