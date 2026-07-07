@@ -423,6 +423,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
 				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.blockoftext.pennyclient;
+				PRODUCT_MODULE_NAME = PennyClient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -481,6 +482,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
 				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.blockoftext.pennyclient;
+				PRODUCT_MODULE_NAME = PennyClient;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -501,7 +503,7 @@
 		D18FD9BB2FF98AC900225D47 /* Debug configuration for PBXNativeTarget "PennyClientTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
+				BUNDLE_LOADER = "$(BUILT_PRODUCTS_DIR)/PennyDev.app/PennyDev.debug.dylib";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = P87URHZFZ4;
@@ -517,7 +519,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PennyClient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PennyClient";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PennyDev.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PennyDev";
 			};
 			name = Debug;
 		};
@@ -540,7 +542,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PennyClient.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PennyClient";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PennyDev.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PennyDev";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
