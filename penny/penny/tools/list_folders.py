@@ -28,6 +28,13 @@ class ListFoldersTool(Tool):
     }
     args_model = NoArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person recap of the folder-list call (part of epic #1478)."""
+        if not result.success:
+            return "You tried to list your email folders but it didn't work:"
+        return "You looked at your email folders:"
+
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 

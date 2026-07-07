@@ -18,6 +18,26 @@ NO_EMAILS_FOUND = (
 )
 
 
+def _search_criteria(arguments: dict) -> str:
+    """A short human phrase for the search terms the call used, for narration.
+
+    Joins whichever filters the call supplied (text / sender / subject / date
+    window) into one readable clause; falls back to a generic noun when the call
+    carried no filters (an arg-validation failure still narrates)."""
+    parts: list[str] = []
+    if arguments.get("text"):
+        parts.append(str(arguments["text"]))
+    if arguments.get("from_addr"):
+        parts.append(f"from {arguments['from_addr']}")
+    if arguments.get("subject"):
+        parts.append(f"subject {arguments['subject']}")
+    if arguments.get("after"):
+        parts.append(f"after {arguments['after']}")
+    if arguments.get("before"):
+        parts.append(f"before {arguments['before']}")
+    return " · ".join(parts) if parts else "your recent mail"
+
+
 class SearchEmailsTool(Tool):
     """Search emails by text, sender, subject, or date range."""
 
@@ -61,6 +81,17 @@ class SearchEmailsTool(Tool):
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
         return "Searching emails"
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person recap of the search (part of epic #1478).  Branches on
+        success and on whether anything matched (``NO_EMAILS_FOUND`` is the tool's
+        own empty-result body), so a fruitless search narrates honestly."""
+        if not result.success:
+            return "You tried to search your email but it didn't work:"
+        if result.message == NO_EMAILS_FOUND:
+            return "You searched your email but found nothing matching:"
+        return f'You searched your email for "{_search_criteria(arguments)}":'
 
     def __init__(self, email_client: EmailClient) -> None:
         self._client = email_client

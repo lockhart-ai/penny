@@ -48,6 +48,19 @@ class ReadEmailsTool(Tool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Reading emails"
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person recap of the read (part of epic #1478).  Names how many
+        emails were opened from the call's ``email_ids``; ``NO_EMAILS_TO_READ`` is
+        the tool's own empty body (no matching ids)."""
+        if not result.success:
+            return "You tried to read your email but it didn't work:"
+        if result.message == NO_EMAILS_TO_READ:
+            return "You tried to open some email but there was nothing to read:"
+        count = len(arguments.get("email_ids") or [])
+        noun = "email" if count == 1 else "emails"
+        return f"You read {count} {noun}:"
+
     def __init__(
         self,
         email_client: EmailClient,

@@ -12,6 +12,18 @@ from penny.zoho import ZohoClient
 logger = logging.getLogger(__name__)
 
 
+def _recipient_label(arguments: dict) -> str:
+    """Name the draft's recipient(s) for narration — the single address, a count
+    when there are several, or a generic noun when the call omitted them (an
+    arg-validation failure still narrates)."""
+    recipients = [addr for addr in (arguments.get("to") or []) if isinstance(addr, str) and addr]
+    if len(recipients) == 1:
+        return recipients[0]
+    if recipients:
+        return f"{len(recipients)} recipients"
+    return "a recipient"
+
+
 class DraftEmailTool(Tool):
     """Compose and save an email draft for user review."""
 
@@ -46,6 +58,15 @@ class DraftEmailTool(Tool):
         "required": ["to", "subject", "body"],
     }
     args_model = DraftEmailArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person recap of the draft (part of epic #1478).  Names the
+        recipient; the body still spells out the draft was staged, not sent."""
+        recipient = _recipient_label(arguments)
+        if not result.success:
+            return f"You tried to draft an email to {recipient} but it didn't work:"
+        return f"You drafted an email to {recipient}:"
 
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client

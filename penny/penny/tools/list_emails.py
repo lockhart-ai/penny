@@ -11,6 +11,10 @@ from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
 
+# The folder listed when the caller doesn't name one — the single source of truth
+# for both the ``execute`` default and the result narration.
+DEFAULT_FOLDER = "Inbox"
+
 NO_EMAILS_FOUND = (
     "No emails found in that folder. Confirm the folder name with `list_folders()`, or try "
     "a different folder."
@@ -44,6 +48,17 @@ class ListEmailsTool(Tool):
     }
     args_model = ListEmailsArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person recap of the folder listing (part of epic #1478).  Names
+        the folder; ``NO_EMAILS_FOUND`` is the tool's own empty-folder body."""
+        folder = arguments.get("folder") or DEFAULT_FOLDER
+        if not result.success:
+            return f"You tried to list the emails in {folder} but it didn't work:"
+        if result.message == NO_EMAILS_FOUND:
+            return f"You looked in {folder} but found no emails:"
+        return f"You listed the emails in {folder}:"
+
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
@@ -56,6 +71,6 @@ class ListEmailsTool(Tool):
         if not results:
             return ToolResult(message=NO_EMAILS_FOUND)
 
-        folder_name = folder or "Inbox"
+        folder_name = folder or DEFAULT_FOLDER
         header = f"Found {len(results)} email(s) in {folder_name}:\n\n"
         return ToolResult(message=header + "\n\n".join(str(r) for r in results))

@@ -14,8 +14,12 @@ import pytest
 
 from penny.jmap.models import EmailAddress, EmailDetail, EmailSummary
 from penny.tools.draft_email import DraftEmailTool
-from penny.tools.read_emails import ReadEmailsTool
-from penny.tools.search_emails import SearchEmailsTool
+from penny.tools.list_emails import NO_EMAILS_FOUND as LIST_NO_EMAILS_FOUND
+from penny.tools.list_emails import ListEmailsTool
+from penny.tools.list_folders import ListFoldersTool
+from penny.tools.models import ToolResult
+from penny.tools.read_emails import NO_EMAILS_TO_READ, ReadEmailsTool
+from penny.tools.search_emails import NO_EMAILS_FOUND, SearchEmailsTool
 
 SAMPLE_SUMMARIES = [
     EmailSummary(
@@ -191,3 +195,93 @@ async def test_draft_email_tool_saves_well_formed_draft():
     assert result.success is True
     assert result.mutated is True
     mock_client.draft_response.assert_called_once()
+
+
+# ── Result narration (epic #1478) ─────────────────────────────────────────────
+# Each tool's ``to_result_narration`` leads its result with a first-person recap
+# of the action; the seam adds the ``(<tool> result)`` tag and the body, so these
+# assert only the narration STRING (registry-dispatched by ``Tool.format_result``).
+
+
+def test_search_emails_narration_branches():
+    ok = SearchEmailsTool.to_result_narration(
+        {"from_addr": "Priya", "text": "solar"}, ToolResult(message="Found 1 email(s):")
+    )
+    assert ok == 'You searched your email for "solar · from Priya":'
+
+    empty = SearchEmailsTool.to_result_narration(
+        {"text": "solar"}, ToolResult(message=NO_EMAILS_FOUND)
+    )
+    assert empty == "You searched your email but found nothing matching:"
+
+    failed = SearchEmailsTool.to_result_narration(
+        {"text": "solar"}, ToolResult(message="boom", success=False)
+    )
+    assert failed == "You tried to search your email but it didn't work:"
+
+
+def test_read_emails_narration_branches():
+    one = ReadEmailsTool.to_result_narration(
+        {"email_ids": ["M001"]}, ToolResult(message="A summary")
+    )
+    assert one == "You read 1 email:"
+
+    several = ReadEmailsTool.to_result_narration(
+        {"email_ids": ["M001", "M002"]}, ToolResult(message="A summary")
+    )
+    assert several == "You read 2 emails:"
+
+    nothing = ReadEmailsTool.to_result_narration(
+        {"email_ids": ["M404"]}, ToolResult(message=NO_EMAILS_TO_READ)
+    )
+    assert nothing == "You tried to open some email but there was nothing to read:"
+
+    failed = ReadEmailsTool.to_result_narration(
+        {"email_ids": ["M001"]}, ToolResult(message="boom", success=False)
+    )
+    assert failed == "You tried to read your email but it didn't work:"
+
+
+def test_list_emails_narration_branches():
+    ok = ListEmailsTool.to_result_narration(
+        {"folder": "Sent"}, ToolResult(message="Found 2 email(s) in Sent:")
+    )
+    assert ok == "You listed the emails in Sent:"
+
+    default_folder = ListEmailsTool.to_result_narration({}, ToolResult(message="Found 1 email(s):"))
+    assert default_folder == "You listed the emails in Inbox:"
+
+    empty = ListEmailsTool.to_result_narration(
+        {"folder": "Spam"}, ToolResult(message=LIST_NO_EMAILS_FOUND)
+    )
+    assert empty == "You looked in Spam but found no emails:"
+
+    failed = ListEmailsTool.to_result_narration(
+        {"folder": "Spam"}, ToolResult(message="boom", success=False)
+    )
+    assert failed == "You tried to list the emails in Spam but it didn't work:"
+
+
+def test_list_folders_narration_branches():
+    ok = ListFoldersTool.to_result_narration({}, ToolResult(message="Found 3 folder(s):"))
+    assert ok == "You looked at your email folders:"
+
+    failed = ListFoldersTool.to_result_narration({}, ToolResult(message="boom", success=False))
+    assert failed == "You tried to list your email folders but it didn't work:"
+
+
+def test_draft_email_narration_branches():
+    one = DraftEmailTool.to_result_narration(
+        {"to": ["sam@example.com"]}, ToolResult(message="Draft saved", mutated=True)
+    )
+    assert one == "You drafted an email to sam@example.com:"
+
+    several = DraftEmailTool.to_result_narration(
+        {"to": ["a@example.com", "b@example.com"]}, ToolResult(message="Draft saved", mutated=True)
+    )
+    assert several == "You drafted an email to 2 recipients:"
+
+    failed = DraftEmailTool.to_result_narration(
+        {"to": ["sam@example.com"]}, ToolResult(message="boom", success=False)
+    )
+    assert failed == "You tried to draft an email to sam@example.com but it didn't work:"
