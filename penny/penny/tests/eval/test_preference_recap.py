@@ -97,3 +97,60 @@ async def test_remove_summary_survives(chat_eval: ChatEval) -> None:
         score=_score(_DELETE, _REMOVED, "remove"),
         min_pass_rate=0.75,
     )
+
+
+# ── Failure / no-op branches — the honest-summary cases ───────────────────────
+# The narration has dedicated no-op branches ("you didn't add anything new — it
+# was already there", "you couldn't find X to remove").  These stress that the
+# HONEST summary survives — Penny must not claim a save/removal that didn't happen.
+
+_ALREADY = re.compile(
+    r"\balready\b|on record|from before|no (new|duplicate) (entry|one)|"
+    r"(marked|logged|recorded|noted|have) .{0,20}(likes|before|chess|it)|one is already|"
+    r"didn'?t add|is (in|on) (your|the) (likes|list|record)|nothing (new|to add)",
+    re.I,
+)
+_NOT_THERE = re.compile(
+    r"nothing (to remove|needs remov|recorded|there)|didn'?t (find|see)|couldn'?t find|"
+    r"no [\"'“”]?\w* ?(entry|record|chess)|wasn'?t|isn'?t|not (listed|there|tracking|found|"
+    r"recorded|currently)|don'?t (see|have)|already (gone|not)",
+    re.I,
+)
+
+
+def _score_reply_only(pattern: re.Pattern, label: str):
+    """Failure-branch scorer: the honest summary must survive into the reply.  The
+    tool may or may not be called (the model can recognise the no-op from recall),
+    so this scores ONLY that the reply honestly reflects the no-op."""
+
+    def score(db: Database, before: set[str], reply: str) -> list[str]:
+        fails: list[str] = []
+        if not pattern.search(reply):
+            fails.append(f"reply did not honestly recap the {label} — summary did not survive")
+        print(f"[SURVIVAL {label}] :: {reply[:200]!r}")
+        return fails
+
+    return score
+
+
+async def test_duplicate_save_is_honest(chat_eval: ChatEval) -> None:
+    """chess is already saved → the write is a no-op; the reply must say so, not
+    claim a fresh save."""
+    await chat_eval(
+        case_id="pref-recap-save-noop",
+        message="I'm really into chess lately",
+        seed=lambda db: _seed_like(db, "chess", "really into chess lately"),
+        score=_score_reply_only(_ALREADY, "duplicate-save"),
+        min_pass_rate=0.75,
+    )
+
+
+async def test_remove_missing_is_honest(chat_eval: ChatEval) -> None:
+    """chess is NOT saved → the delete finds nothing; the reply must say it wasn't
+    there, not claim a removal."""
+    await chat_eval(
+        case_id="pref-recap-remove-noop",
+        message="actually, forget about chess",
+        score=_score_reply_only(_NOT_THERE, "remove-missing"),
+        min_pass_rate=0.75,
+    )
