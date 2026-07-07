@@ -170,6 +170,8 @@ struct PennyAdminViewModelTests {
         await connectAndClearStartupFrames(client, transport)
         let viewModel = SettingsViewModel(client: client, prefs: prefs)
 
+        #expect(viewModel.apnsHost == "api.sandbox.push.apple.com")
+
         viewModel.refresh()
         transport.emit("""
         {

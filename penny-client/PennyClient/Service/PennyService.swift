@@ -152,6 +152,10 @@ final class PennyService {
         isConnected && isRegistered
     }
 
+    var apnsHost: String {
+        ApnsEnvironment.current.host
+    }
+
     var statusText: String {
         if let lastError {
             return lastError
@@ -902,12 +906,19 @@ private struct RegisterPayload {
 /// provisioning profile — `development` (a dev or ad-hoc signed build, or a
 /// direct device install) maps to sandbox; `production` — as in a TestFlight or
 /// App Store build, or the absence of an embedded profile — maps to production.
-///
-/// NOTE: unverified by build on the authoring machine (no Xcode). Verify on a
-/// real device / TestFlight build before relying on it.
+
 private enum ApnsEnvironment: String {
     case sandbox
     case production
+
+    var host: String {
+        switch self {
+        case .sandbox:
+            return "api.sandbox.push.apple.com"
+        case .production:
+            return "api.push.apple.com"
+        }
+    }
 
     static var current: ApnsEnvironment {
         #if DEBUG

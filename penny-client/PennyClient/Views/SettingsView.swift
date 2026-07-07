@@ -42,6 +42,8 @@ struct SettingsView: View {
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
 
+                    LabeledContent("APNs Host", value: viewModel.apnsHost)
+
                     TextField("Username", text: $viewModel.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

@@ -279,6 +279,10 @@ final class SettingsViewModel {
         !webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var apnsHost: String {
+        client.apnsHost
+    }
+
     var runtimeConfigParams: [RuntimeConfigParam] {
         client.runtimeConfigParams
     }

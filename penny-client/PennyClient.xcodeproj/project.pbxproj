@@ -10,6 +10,9 @@
 		D18FD9892FF8E53D00225D47 /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = D18FD9882FF8E53D00225D47 /* SQLite */; };
 		D18FD98E2FF8E5A400225D47 /* SQLPropertyMacros in Frameworks */ = {isa = PBXBuildFile; productRef = D18FD98D2FF8E5A400225D47 /* SQLPropertyMacros */; };
 		D1F83D7F2FF98F1D0010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
+		D1F83D802FF9A0000010DBDD /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = D18FD9882FF8E53D00225D47 /* SQLite */; };
+		D1F83D812FF9A0000010DBDD /* SQLPropertyMacros in Frameworks */ = {isa = PBXBuildFile; productRef = D18FD98D2FF8E5A400225D47 /* SQLPropertyMacros */; };
+		D1F83D822FF9A0000010DBDD /* PennyClient.xctestplan in Resources */ = {isa = PBXBuildFile; fileRef = D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -23,9 +26,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* PennyClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PennyClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* PennyDev.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PennyDev.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PennyClientTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1F83D7E2FF98F1D0010DBDD /* PennyClient.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = PennyClient.xctestplan; sourceTree = "<group>"; };
+		D1F83D832FF9A0000010DBDD /* PennyTestflight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PennyTestflight.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -54,6 +58,13 @@
 			files = (
 			);
 		};
+		D1F83D842FF9A0000010DBDD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				D1F83D802FF9A0000010DBDD /* SQLite in Frameworks */,
+				D1F83D812FF9A0000010DBDD /* SQLPropertyMacros in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -70,7 +81,8 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* PennyClient.app */,
+				000000000000000000000120 /* PennyDev.app */,
+				D1F83D832FF9A0000010DBDD /* PennyTestflight.app */,
 				D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */,
 			);
 			name = Products;
@@ -79,9 +91,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* PennyClient */ = {
+		000000000000000100000000 /* PennyDev */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "PennyClient" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "PennyDev" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -92,13 +104,13 @@
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* PennyClient */,
 			);
-			name = PennyClient;
+			name = PennyDev;
 			packageProductDependencies = (
 				D18FD9882FF8E53D00225D47 /* SQLite */,
 				D18FD98D2FF8E5A400225D47 /* SQLPropertyMacros */,
 			);
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* PennyClient.app */;
+			productReference = 000000000000000000000120 /* PennyDev.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D18FD9B32FF98AC900225D47 /* PennyClientTests */ = {
@@ -122,6 +134,28 @@
 			productReference = D18FD9B42FF98AC900225D47 /* PennyClientTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		D1F83D852FF9A0000010DBDD /* PennyTestflight */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1F83D882FF9A0000010DBDD /* Build configuration list for PBXNativeTarget "PennyTestflight" */;
+			buildPhases = (
+				D1F83D862FF9A0000010DBDD /* Sources */,
+				D1F83D842FF9A0000010DBDD /* Frameworks */,
+				D1F83D872FF9A0000010DBDD /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				000000000000000000000010 /* PennyClient */,
+			);
+			name = PennyTestflight;
+			packageProductDependencies = (
+				D18FD9882FF8E53D00225D47 /* SQLite */,
+				D18FD98D2FF8E5A400225D47 /* SQLPropertyMacros */,
+			);
+			productName = PennyTestflight;
+			productReference = D1F83D832FF9A0000010DBDD /* PennyTestflight.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -138,6 +172,9 @@
 					D18FD9B32FF98AC900225D47 = {
 						CreatedOnToolsVersion = 27.0;
 						TestTargetID = 000000000000000100000000;
+					};
+					D1F83D852FF9A0000010DBDD = {
+						CreatedOnToolsVersion = 26.3;
 					};
 				};
 			};
@@ -159,7 +196,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* PennyClient */,
+				000000000000000100000000 /* PennyDev */,
+				D1F83D852FF9A0000010DBDD /* PennyTestflight */,
 				D18FD9B32FF98AC900225D47 /* PennyClientTests */,
 			);
 		};
@@ -177,6 +215,12 @@
 			files = (
 			);
 		};
+		D1F83D872FF9A0000010DBDD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				D1F83D822FF9A0000010DBDD /* PennyClient.xctestplan in Resources */,
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -190,12 +234,17 @@
 			files = (
 			);
 		};
+		D1F83D862FF9A0000010DBDD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
 		D18FD9B92FF98AC900225D47 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* PennyClient */;
+			target = 000000000000000100000000 /* PennyDev */;
 			targetProxy = D18FD9B82FF98AC900225D47 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -333,10 +382,10 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "PennyClient" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "PennyDev" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon-dev";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = PennyClient/PennyClient.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -356,7 +405,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				INFOPLIST_KEY_CFBundleDisplayName = "Penny Dev";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -391,10 +440,10 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "PennyClient" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "PennyDev" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon-dev";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = PennyClient/PennyClient.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -414,7 +463,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				INFOPLIST_KEY_CFBundleDisplayName = "Penny Dev";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -496,6 +545,122 @@
 			};
 			name = Release;
 		};
+		D1F83D892FF9A0000010DBDD /* Debug configuration for PBXNativeTarget "PennyTestflight" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = PennyClient/PennyClient.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P87URHZFZ4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.6;
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.blockoftext.pennyclient.testflight;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				XROS_DEPLOYMENT_TARGET = 26.6;
+			};
+			name = Debug;
+		};
+		D1F83D8A2FF9A0000010DBDD /* Release configuration for PBXNativeTarget "PennyTestflight" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "penny-icon";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = PennyClient/PennyClient.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P87URHZFZ4;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 26.6;
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.blockoftext.pennyclient.testflight;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				XROS_DEPLOYMENT_TARGET = 26.6;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -507,11 +672,11 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "PennyClient" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "PennyDev" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "PennyClient" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "PennyClient" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "PennyDev" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "PennyDev" */,
 			);
 			defaultConfigurationName = Release;
 		};
@@ -520,6 +685,14 @@
 			buildConfigurations = (
 				D18FD9BB2FF98AC900225D47 /* Debug configuration for PBXNativeTarget "PennyClientTests" */,
 				D18FD9BC2FF98AC900225D47 /* Release configuration for PBXNativeTarget "PennyClientTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		D1F83D882FF9A0000010DBDD /* Build configuration list for PBXNativeTarget "PennyTestflight" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1F83D892FF9A0000010DBDD /* Debug configuration for PBXNativeTarget "PennyTestflight" */,
+				D1F83D8A2FF9A0000010DBDD /* Release configuration for PBXNativeTarget "PennyTestflight" */,
 			);
 			defaultConfigurationName = Release;
 		};

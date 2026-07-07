@@ -15,9 +15,8 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "000000000000000100000000"
-               BuildableName = "PennyDev.app"
-               BlueprintName = "PennyDev"
+               BlueprintIdentifier = "D1F83D852FF9A0000010DBDD"
+               BuildableName = "PennyTestflight.app"
                ReferencedContainer = "container:PennyClient.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -63,9 +62,8 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "000000000000000100000000"
-            BuildableName = "PennyDev.app"
-            BlueprintName = "PennyDev"
+            BlueprintIdentifier = "D1F83D852FF9A0000010DBDD"
+            BuildableName = "PennyTestflight.app"
             ReferencedContainer = "container:PennyClient.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -80,9 +78,8 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "000000000000000100000000"
-            BuildableName = "PennyDev.app"
-            BlueprintName = "PennyDev"
+            BlueprintIdentifier = "D1F83D852FF9A0000010DBDD"
+            BuildableName = "PennyTestflight.app"
             ReferencedContainer = "container:PennyClient.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
