@@ -714,6 +714,16 @@ class ReadSimilarTool(MemoryTool):
     }
     args_model = ReadSimilarArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "your memory")
+        anchor = arguments.get("anchor")
+        if not result.success:
+            return f"You tried to search {memory} but it didn't work:"
+        if anchor:
+            return f'You searched {memory} for "{anchor}":'
+        return f"You searched {memory}:"
+
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm = llm_client
@@ -1192,6 +1202,13 @@ class MemoryMetadataTool(MemoryTool):
     }
     args_model = MemoryNameArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a memory")
+        if not result.success:
+            return f"You tried to check the details of {memory} but it didn't work:"
+        return f"You checked the details of {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -1251,6 +1268,12 @@ class CollectionCatalogTool(MemoryTool):
     )
     parameters = {"type": "object", "properties": {}}
     args_model = CatalogArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to review your collections but it didn't work:"
+        return "You reviewed your collection catalog:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1470,6 +1493,13 @@ class LogReadTool(CursorReadTool):
         "required": ["memory"],
     }
     args_model = ReadLogArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        log = _memory_name(arguments, "a log")
+        if not result.success:
+            return f"You tried to read {log} but it didn't work:"
+        return f"You read {log}:"
 
     def __init__(self, db: Database, agent_name: str, scope: str | None) -> None:
         super().__init__(db, agent_name)

@@ -21,7 +21,13 @@ from unittest.mock import MagicMock
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
-from penny.tools.memory_tools import DoneTool
+from penny.tools.memory_tools import (
+    CollectionCatalogTool,
+    DoneTool,
+    LogReadTool,
+    MemoryMetadataTool,
+    ReadSimilarTool,
+)
 from penny.tools.models import ToolResult
 from penny.tools.schedule_tools import (
     ScheduleCreateTool,
@@ -296,4 +302,67 @@ class TestGenerateImageResultNarration:
         )
         assert framed == (
             'You drew "a red fox": (generate_image result)\nGenerated an image of: a red fox.'
+        )
+
+
+class TestMemoryReadNarration:
+    """The #1481 per-tool overrides for the memory-READ tools each summarise the
+    read in one first-person line branching on `result.success`; the seam adds the
+    `(<tool> result)` tag, so the override returns ONLY the sentence.  The eval
+    survival test (`test_memory_reads_recap.py`) proves the line reaches the reply;
+    these pin the exact strings.
+    """
+
+    def test_read_similar_narrates_search(self):
+        narration = ReadSimilarTool.to_result_narration(
+            {"memory": "user-messages", "anchor": "chess"}, ToolResult(message="entries")
+        )
+        assert narration == 'You searched `user-messages` for "chess":'
+        assert "result)" not in narration  # the tag is the seam's job
+
+    def test_read_similar_failure_narrates_honestly(self):
+        narration = ReadSimilarTool.to_result_narration(
+            {"memory": "user-messages", "anchor": "chess"},
+            ToolResult(message="transient error", success=False),
+        )
+        assert narration == "You tried to search `user-messages` but it didn't work:"
+
+    def test_read_similar_missing_anchor_falls_back(self):
+        assert (
+            ReadSimilarTool.to_result_narration({}, ToolResult(message="ok"))
+            == "You searched your memory:"
+        )
+
+    def test_log_read_narrates_read(self):
+        narration = LogReadTool.to_result_narration(
+            {"memory": "browse-results"}, ToolResult(message="entries")
+        )
+        assert narration == "You read `browse-results`:"
+
+    def test_log_read_failure_narrates_honestly(self):
+        narration = LogReadTool.to_result_narration(
+            {"memory": "browse-results"}, ToolResult(message="err", success=False)
+        )
+        assert narration == "You tried to read `browse-results` but it didn't work:"
+
+    def test_collection_catalog_narrates_review(self):
+        narration = CollectionCatalogTool.to_result_narration({}, ToolResult(message="catalog"))
+        assert narration == "You reviewed your collection catalog:"
+
+    def test_memory_metadata_narrates_check(self):
+        narration = MemoryMetadataTool.to_result_narration(
+            {"memory": "likes"}, ToolResult(message="metadata")
+        )
+        assert narration == "You checked the details of `likes`:"
+
+    def test_format_result_wraps_memory_read_narration(self):
+        """End-to-end through the seam: registry dispatch → read_similar override →
+        `(read_similar result)` tag → body."""
+        framed = Tool.format_result(
+            "read_similar",
+            {"memory": "user-messages", "anchor": "chess"},
+            ToolResult(message="1. really into chess"),
+        )
+        assert framed == (
+            'You searched `user-messages` for "chess": (read_similar result)\n1. really into chess'
         )
