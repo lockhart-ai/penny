@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
+from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import DoneTool
 from penny.tools.models import ToolResult
 from penny.tools.schedule_tools import (
@@ -251,4 +252,46 @@ class TestScheduleResultNarration:
         assert framed == (
             "You set up a schedule to handle 'daily at 8am summarize chess news': "
             "(schedule_create result)\nScheduled 'chess' to run daily at 8am."
+
+class TestGenerateImageResultNarration:
+    """`GenerateImageTool.to_result_narration` (the #1481 per-tool override) names
+    what Penny drew in one first-person line, branching on `result.success`, while
+    the seam (`format_result`) adds the `(generate_image result)` tag.  The override
+    returns ONLY the sentence — the tag is the seam's job, not the tool's."""
+
+    def test_success_narrates_drew(self):
+        narration = GenerateImageTool.to_result_narration(
+            {"description": "a red fox"}, ToolResult(message="Generated an image of: a red fox.")
+        )
+        assert narration == 'You drew "a red fox":'
+        assert "(generate_image result)" not in narration  # the tag is the seam's job
+
+    def test_failure_narrates_honestly(self):
+        narration = GenerateImageTool.to_result_narration(
+            {"description": "a red fox"}, ToolResult(message="couldn't draw", success=False)
+        )
+        assert narration == 'You tried to draw "a red fox" but it didn\'t work:'
+
+    def test_missing_description_falls_back(self):
+        # No description in the args (an arg-validation failure still flows the raw
+        # dict through format_result) — narrate the action generically, honestly.
+        assert (
+            GenerateImageTool.to_result_narration({}, ToolResult(message="ok"))
+            == "You drew your image:"
+        )
+        assert (
+            GenerateImageTool.to_result_narration({}, ToolResult(message="e", success=False))
+            == "You tried to draw your image but it didn't work:"
+        )
+
+    def test_format_result_wraps_narration_with_tag_and_body(self):
+        """End-to-end through the seam: registry dispatch → generate_image override
+        → `(generate_image result)` tag → body, in one framed string the model reads."""
+        framed = Tool.format_result(
+            "generate_image",
+            {"description": "a red fox"},
+            ToolResult(message="Generated an image of: a red fox."),
+        )
+        assert framed == (
+            'You drew "a red fox": (generate_image result)\nGenerated an image of: a red fox.'
         )

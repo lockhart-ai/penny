@@ -102,3 +102,23 @@ class GenerateImageTool(Tool):
     @classmethod
     def to_action_str(cls, arguments: dict) -> str:
         return "Generating an image"
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        """First-person narration of the image result (the #1481 per-tool override).
+
+        The *result* twin of ``to_action_str``: the seam (``format_result``) adds
+        the ``(generate_image result)`` tag; this returns only the sentence,
+        branching on ``result.success`` so a failure narrates honestly.
+        """
+        subject = cls._drawn_subject(arguments)
+        if not result.success:
+            return f"You tried to draw {subject} but it didn't work:"
+        return f"You drew {subject}:"
+
+    @staticmethod
+    def _drawn_subject(arguments: dict) -> str:
+        """Quoted image description for narration, or a generic noun when the call
+        omitted it (an arg-validation failure still narrates)."""
+        description = arguments.get("description")
+        return f'"{description}"' if description else "your image"
