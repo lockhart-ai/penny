@@ -50,6 +50,19 @@ logger = logging.getLogger(__name__)
 _CRON_FIELDS = 5
 
 
+def _request_label(arguments: dict[str, Any]) -> str:
+    """The user's scheduling request, quoted for narration, or a generic noun when
+    the call omitted it (an arg-validation failure still narrates)."""
+    request = arguments.get("request")
+    return f"'{request}'" if request else "what you asked"
+
+
+def _description_label(arguments: dict[str, Any]) -> str:
+    """The user's delete description, quoted for narration, or a generic noun."""
+    description = arguments.get("description")
+    return f"'{description}'" if description else "a scheduled task"
+
+
 class ScheduleParseResult(BaseModel):
     """Structured output of the NL→cron parse."""
 
@@ -96,6 +109,13 @@ class ScheduleCreateTool(Tool):
         "required": ["request"],
     }
     args_model = ScheduleCreateArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict[str, Any], result: ToolResult) -> str:
+        request = _request_label(arguments)
+        if not result.success:
+            return f"You tried to set up a schedule for {request} but it didn't work:"
+        return f"You set up a schedule to handle {request}:"
 
     _NO_RECIPIENT = (
         "Could not create the schedule: no user is registered yet. Ask the user to set up "
@@ -199,6 +219,13 @@ class ScheduleDeleteTool(Tool):
     }
     args_model = ScheduleDeleteArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict[str, Any], result: ToolResult) -> str:
+        what = _description_label(arguments)
+        if not result.success:
+            return f"You couldn't find a matching schedule to remove for {what}:"
+        return f"You removed the schedule for {what}:"
+
     _NO_RECIPIENT = "Could not remove a schedule: no user is registered yet."
     _NONE_SCHEDULED = (
         "There are no scheduled tasks to remove. Tell the user they have nothing scheduled."
@@ -274,6 +301,12 @@ class ScheduleListTool(Tool):
         "have scheduled. Returns each task and its cadence, or that there are none."
     )
     parameters = {"type": "object", "properties": {}}
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict[str, Any], result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to check your schedules but it didn't work:"
+        return "You checked what you have scheduled:"
 
     _NO_RECIPIENT = "No user is registered yet, so there are no schedules."
     _NONE_SCHEDULED = "The user has no scheduled tasks. Tell them their schedule is empty."
