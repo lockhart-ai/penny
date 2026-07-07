@@ -22,11 +22,29 @@ from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import (
+    CollectionArchiveTool,
     CollectionCatalogTool,
+    CollectionCreateTool,
+    CollectionDeleteEntryTool,
+    CollectionGetTool,
+    CollectionKeysTool,
+    CollectionMergeTool,
+    CollectionReadRandomTool,
+    CollectionUnarchiveTool,
+    CollectionUpdateTool,
+    CollectionWriteTool,
+    CollectorRunHistoryTool,
     DoneTool,
+    ExistsTool,
+    LogAppendTool,
+    LogCreateTool,
     LogReadTool,
     MemoryMetadataTool,
+    ReadPublishedLatestTool,
+    ReadRunCallsTool,
     ReadSimilarTool,
+    TestExtractionPromptTool,
+    UpdateEntryTool,
 )
 from penny.tools.models import ToolResult
 from penny.tools.schedule_tools import (
@@ -34,6 +52,7 @@ from penny.tools.schedule_tools import (
     ScheduleDeleteTool,
     ScheduleListTool,
 )
+from penny.tools.send_message import SendMessageTool
 
 
 class _DummyTool(Tool):
@@ -365,4 +384,227 @@ class TestMemoryReadNarration:
         )
         assert framed == (
             'You searched `user-messages` for "chess": (read_similar result)\n1. really into chess'
+        )
+
+
+class TestMemoryWriteNarration:
+    """The mutated-aware write tools narrate three outcomes: a real change, a
+    no-op (``mutated=False`` — the keystone honesty branch: a dedup/missing-key
+    call says so, never a false "saved"), and a failure."""
+
+    def test_collection_write_saved(self):
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        assert (
+            CollectionWriteTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
+            == 'You saved "chess" to `likes`:'
+        )
+
+    def test_collection_write_already_there(self):
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        assert (
+            CollectionWriteTool.to_result_narration(args, ToolResult(message="dup", mutated=False))
+            == "You didn't add anything new to `likes` — it was already there:"
+        )
+
+    def test_collection_write_failure(self):
+        args = {"memory": "likes", "entries": [{"key": "chess", "content": "x"}]}
+        assert (
+            CollectionWriteTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == "You tried to save to `likes` but it didn't work:"
+        )
+
+    def test_update_entry_three_outcomes(self):
+        args = {"memory": "likes", "key": "chess", "content": "x"}
+        assert (
+            UpdateEntryTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
+            == 'You updated "chess" in `likes`:'
+        )
+        assert (
+            UpdateEntryTool.to_result_narration(args, ToolResult(message="miss", mutated=False))
+            == 'You couldn\'t find "chess" to update in `likes`:'
+        )
+        assert (
+            UpdateEntryTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == 'You tried to update "chess" in `likes` but it didn\'t work:'
+        )
+
+    def test_delete_entry_three_outcomes(self):
+        args = {"memory": "likes", "key": "chess"}
+        assert (
+            CollectionDeleteEntryTool.to_result_narration(
+                args, ToolResult(message="", mutated=True)
+            )
+            == 'You removed "chess" from `likes`:'
+        )
+        assert (
+            CollectionDeleteEntryTool.to_result_narration(
+                args, ToolResult(message="", mutated=False)
+            )
+            == 'You couldn\'t find "chess" to remove from `likes`:'
+        )
+        assert (
+            CollectionDeleteEntryTool.to_result_narration(
+                args, ToolResult(message="", success=False)
+            )
+            == 'You tried to remove "chess" from `likes` but it didn\'t work:'
+        )
+
+    def test_log_append(self):
+        args = {"memory": "events", "content": "x"}
+        assert (
+            LogAppendTool.to_result_narration(args, ToolResult(message="ok", mutated=True))
+            == "You added an entry to `events`:"
+        )
+        assert (
+            LogAppendTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == "You tried to add an entry to `events` but it didn't work:"
+        )
+
+
+class TestSendMessageNarration:
+    """``send_message`` narrates a queued send (``mutated``), a correct no-op
+    decline (mute/refusal — ``success`` but not ``mutated``, so she "held off"),
+    and a failure."""
+
+    def test_messaged(self):
+        assert (
+            SendMessageTool.to_result_narration(
+                {}, ToolResult(message="Message sent.", mutated=True)
+            )
+            == "You messaged the user:"
+        )
+
+    def test_held_off(self):
+        assert (
+            SendMessageTool.to_result_narration({}, ToolResult(message="muted", mutated=False))
+            == "You started to message the user but held off:"
+        )
+
+    def test_failure(self):
+        assert (
+            SendMessageTool.to_result_narration({}, ToolResult(message="e", success=False))
+            == "You tried to message the user but it didn't work:"
+        )
+
+
+class TestMemoryLifecycleNarration:
+    """Success + failure narration for the collection/log-lifecycle and
+    introspection tools — every registered tool speaks (epic #1478)."""
+
+    def test_collection_create(self):
+        args = {"name": "games"}
+        assert (
+            CollectionCreateTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You set up the `games` collection:"
+        )
+        assert (
+            CollectionCreateTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == "You tried to set up the `games` collection but it didn't work:"
+        )
+
+    def test_log_create(self):
+        args = {"name": "events"}
+        assert (
+            LogCreateTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You set up the `events` log:"
+        )
+
+    def test_archive_unarchive(self):
+        args = {"memory": "games"}
+        assert (
+            CollectionArchiveTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You archived `games`:"
+        )
+        assert (
+            CollectionUnarchiveTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You restored `games` from the archive:"
+        )
+
+    def test_collection_update_settings(self):
+        args = {"name": "games"}
+        assert (
+            CollectionUpdateTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You updated `games`'s settings:"
+        )
+
+    def test_collection_merge(self):
+        args = {"from_memory": "a", "to_memory": "b"}
+        assert (
+            CollectionMergeTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You merged `a` into `b`:"
+        )
+        assert (
+            CollectionMergeTool.to_result_narration(args, ToolResult(message="e", success=False))
+            == "You tried to merge `a` into `b` but it didn't work:"
+        )
+
+    def test_collection_get(self):
+        args = {"memory": "likes", "key": "chess"}
+        assert (
+            CollectionGetTool.to_result_narration(args, ToolResult(message="ok"))
+            == 'You looked up "chess" in `likes`:'
+        )
+
+    def test_collection_read_random_and_keys(self):
+        args = {"memory": "likes"}
+        assert (
+            CollectionReadRandomTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You pulled a random sample from `likes`:"
+        )
+        assert (
+            CollectionKeysTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You listed the keys in `likes`:"
+        )
+
+    def test_exists(self):
+        assert (
+            ExistsTool.to_result_narration(
+                {"memories": ["likes"], "content": "c"}, ToolResult(message="no")
+            )
+            == "You checked whether that entry already exists:"
+        )
+
+    def test_read_run_calls_and_history(self):
+        assert (
+            ReadRunCallsTool.to_result_narration({"target": "chat"}, ToolResult(message="ok"))
+            == "You reviewed `chat`'s recent runs:"
+        )
+        assert (
+            CollectorRunHistoryTool.to_result_narration(
+                {"collector": "likes"}, ToolResult(message="ok")
+            )
+            == "You reviewed `likes`'s run history:"
+        )
+
+    def test_read_published_latest(self):
+        assert (
+            ReadPublishedLatestTool.to_result_narration({}, ToolResult(message="ok"))
+            == "You checked for new entries to share:"
+        )
+
+    def test_done_reflects_cycle_outcome(self):
+        assert (
+            DoneTool.to_result_narration(
+                {"success": True, "summary": "s"}, ToolResult(message="ok")
+            )
+            == "You wrapped up the cycle:"
+        )
+        assert (
+            DoneTool.to_result_narration(
+                {"success": False, "summary": "s"}, ToolResult(message="ok")
+            )
+            == "You wrapped up the cycle, marking it unfinished:"
+        )
+
+    def test_test_extraction_prompt(self):
+        args = {"memory": "games"}
+        assert (
+            TestExtractionPromptTool.to_result_narration(args, ToolResult(message="ok"))
+            == "You ran the `games` collector to test it:"
+        )
+        assert (
+            TestExtractionPromptTool.to_result_narration(
+                args, ToolResult(message="e", success=False)
+            )
+            == "You ran the `games` collector to test it, but the cycle didn't succeed:"
         )
