@@ -2,6 +2,11 @@ services:
   signal-api:
     image: bbernhard/signal-cli-rest-api:0.100
     restart: unless-stopped
+    # Gated behind the `signal` profile so non-Signal deployments (Discord, iOS)
+    # never start it. The Makefile enables the profile only when a real
+    # SIGNAL_NUMBER is configured; combined with penny's `required: false`
+    # dependency below, penny starts immediately when this service is absent.
+    profiles: [signal]
     ports:
       - "8080:8080"
     volumes:
@@ -23,9 +28,14 @@ services:
         GIT_COMMIT_MESSAGE: ${GIT_COMMIT_MESSAGE:-unknown}
     image: penny
     restart: unless-stopped
+    # `required: false` makes the signal-api gate optional: when the `signal`
+    # profile is off (Discord/iOS), signal-api isn't in the project and penny
+    # starts without waiting on it. When the profile is on, penny still waits for
+    # signal-api to become healthy, so the cold-boot race stays fixed for Signal.
     depends_on:
       signal-api:
         condition: service_healthy
+        required: false
     ports:
       - "9090:9090"
       - "9091:9091"

@@ -300,6 +300,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - If only `IOS_ENABLED=true` is set, uses iOS
 - Set `CHANNEL_TYPE` explicitly to override auto-detection. Use `CHANNEL_TYPE=ios` to make iOS the primary/default channel without starting Signal.
 - Use `make prod-ios` to run Penny with `CHANNEL_TYPE=ios` without starting the Signal container.
+- **The `signal-api` container only starts when `SIGNAL_NUMBER` is set.** `make up`/`make prod` enable the `signal` compose profile from that same value, so a Discord (or iOS) deployment runs Penny alone — it never launches signal-api and never blocks on it at startup. Signal deployments still wait for signal-api's healthcheck (the cold-boot race is unchanged).
 
 ### Configuration Reference
 

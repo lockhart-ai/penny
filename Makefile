@@ -14,19 +14,25 @@ TEAM_PYTEST_ARGS = tests/ -v
 
 # --- Docker Compose ---
 
+# Enable the `signal` compose profile (the signal-api container + penny's
+# startup gate on it) only when SIGNAL_NUMBER is set. Non-Signal deployments
+# (Discord, iOS) leave it empty — as .env.example now ships — so `up`/`prod`
+# start penny alone and never wait on a signal-api they don't use.
+SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$$2; gsub(/["'\'' ]/,"",v); if (v!="") print "--profile signal"}' .env 2>/dev/null)
+
 up: browser-build
-	docker compose --profile team down --remove-orphans
+	docker compose --profile team $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
-	docker compose --profile team up --build
+	docker compose --profile team $(SIGNAL_PROFILE) up --build
 
 prod: browser-build
-	docker compose -f docker-compose.yml down --remove-orphans
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
-	docker compose -f docker-compose.yml up --build penny signal-api
+	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) up --build
 
 prod-ios: browser-build
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \

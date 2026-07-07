@@ -161,7 +161,7 @@ npm run ext            # Launch Firefox with web-ext (no build/watch)
 
 On the host, dev tool commands run via `docker compose run --rm` in a temporary container (penny service for `penny/`, team service for `penny-team/`). Inside agent containers (where `LOCAL=1` is set), the same `make` targets run tools directly — no Docker-in-Docker needed.
 
-`make prod` starts the penny service only (skips `docker-compose.override.yml` and the `team` profile). The watcher container handles auto-deploy when running the full stack via `make up`.
+`make prod` starts the penny service only (skips `docker-compose.override.yml` and the `team` profile). The `signal-api` container sits behind the `signal` compose profile, which both `make up` and `make prod` enable (via the Makefile's `SIGNAL_PROFILE` variable) only when `SIGNAL_NUMBER` is set — so a Discord/iOS deployment starts penny alone and never waits on signal-api (penny's `depends_on` is `required: false`). The watcher container handles auto-deploy when running the full stack via `make up`.
 
 Prerequisites: signal-cli-rest-api on :8080 (for Signal), Ollama on :11434, browser extension for web search.
 
