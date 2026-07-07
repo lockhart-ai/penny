@@ -22,6 +22,11 @@ from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.memory_tools import DoneTool
 from penny.tools.models import ToolResult
+from penny.tools.schedule_tools import (
+    ScheduleCreateTool,
+    ScheduleDeleteTool,
+    ScheduleListTool,
+)
 
 
 class _DummyTool(Tool):
@@ -168,3 +173,82 @@ class TestBrowseResultNarration:
             "browse", {"queries": ["quillpad version"]}, ToolResult(message="v4.2 is out")
         )
         assert framed == 'You searched for "quillpad version" (browse result)\nv4.2 is out'
+
+
+class TestScheduleResultNarration:
+    """The schedule tools' `to_result_narration` overrides (#1481) each lead the
+    result with one first-person line branching on `result.success`; the seam
+    (`format_result`) adds the `(<tool> result)` tag and keeps the body.  The
+    override returns ONLY the sentence — the tag is the seam's job, not the tool's.
+    The live survival contract is `tests/eval/test_schedule_recap.py`; these pin the
+    exact strings deterministically so a reverted narration turns `make check` red.
+    """
+
+    def test_create_success_narrates_setup(self):
+        narration = ScheduleCreateTool.to_result_narration(
+            {"request": "every morning summarize chess news"},
+            ToolResult(message="Scheduled ...", mutated=True),
+        )
+        assert narration == "You set up a schedule to handle 'every morning summarize chess news':"
+        assert "(schedule_create result)" not in narration  # the tag is the seam's job
+
+    def test_create_failure_narrates_honestly(self):
+        narration = ScheduleCreateTool.to_result_narration(
+            {"request": "hourly"}, ToolResult(message="Could not parse ...", success=False)
+        )
+        assert narration == "You tried to set up a schedule for 'hourly' but it didn't work:"
+
+    def test_create_missing_request_falls_back(self):
+        # An arg-validation failure still flows the raw dict through format_result.
+        assert (
+            ScheduleCreateTool.to_result_narration({}, ToolResult(message="ok", mutated=True))
+            == "You set up a schedule to handle what you asked:"
+        )
+
+    def test_delete_success_narrates_removal(self):
+        narration = ScheduleDeleteTool.to_result_narration(
+            {"description": "the morning news"},
+            ToolResult(message="Removed ...", mutated=True),
+        )
+        assert narration == "You removed the schedule for 'the morning news':"
+
+    def test_delete_no_match_narrates_honestly(self):
+        # The none-scheduled / no-recipient no-op returns success=False, so the
+        # honest "couldn't find a matching schedule" frame leads — never a claim
+        # that something was removed.
+        narration = ScheduleDeleteTool.to_result_narration(
+            {"description": "the morning news"},
+            ToolResult(message="There are no scheduled tasks ...", success=False),
+        )
+        assert (
+            narration == "You couldn't find a matching schedule to remove for 'the morning news':"
+        )
+
+    def test_delete_missing_description_falls_back(self):
+        assert (
+            ScheduleDeleteTool.to_result_narration({}, ToolResult(message="e", success=False))
+            == "You couldn't find a matching schedule to remove for a scheduled task:"
+        )
+
+    def test_list_narrates_check(self):
+        assert (
+            ScheduleListTool.to_result_narration({}, ToolResult(message="The user's tasks: ..."))
+            == "You checked what you have scheduled:"
+        )
+        assert (
+            ScheduleListTool.to_result_narration({}, ToolResult(message="e", success=False))
+            == "You tried to check your schedules but it didn't work:"
+        )
+
+    def test_format_result_wraps_narration_with_tag_and_body(self):
+        """End-to-end through the seam: registry dispatch → schedule override →
+        `(schedule_create result)` tag → body, in one framed string the model reads."""
+        framed = Tool.format_result(
+            "schedule_create",
+            {"request": "daily at 8am summarize chess news"},
+            ToolResult(message="Scheduled 'chess' to run daily at 8am.", mutated=True),
+        )
+        assert framed == (
+            "You set up a schedule to handle 'daily at 8am summarize chess news': "
+            "(schedule_create result)\nScheduled 'chess' to run daily at 8am."
+        )

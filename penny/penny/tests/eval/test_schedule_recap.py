@@ -42,8 +42,9 @@ def _normalize(text: str) -> str:
 # scheduled", "I stopped the morning summaries"), never exact wording.
 _SCHEDULED = re.compile(
     r"\b(scheduled|schedule|set (it|that|you)? ?up|set up|all set|every morning|"
-    r"each morning|every day|daily|i'?ll send|i will send|send(ing)? you|you'?ll get|"
-    r"i'?ve got .*(morning|summary)|added a recurring|arranged|lined up|recurring)\b",
+    r"each morning|every day|each day|daily|i'?ll (send|ping|get)|i will send|ping you|"
+    r"send(ing)? you|you'?ll get|i'?ve got .*(morning|summary)|added a recurring|"
+    r"arranged|lined up|recurring)\b",
     re.I,
 )
 _STOPPED = re.compile(
@@ -52,11 +53,17 @@ _STOPPED = re.compile(
     r"cleared|done sending|not send)\b",
     re.I,
 )
+_LISTED = re.compile(
+    r"\b(scheduled|schedule|you have|here'?s|currently|morning|news|summary|"
+    r"8 ?a\.?m|one (task|schedule|thing)|got (one|a)|set up|running|list(ed)?)\b",
+    re.I,
+)
 _NOTHING = re.compile(
-    r"nothing (was|to|came|is|there|scheduled|set)|no (schedule|scheduled|matching|recurring|"
-    r"morning|active|such|summaries|tasks?)|not (scheduled|set up|currently|find)|"
-    r"don'?t (have|see)|couldn'?t (find|locate)|found none|none (came|found|matching)|"
-    r"isn'?t (any|anything)|wasn'?t|weren'?t|can'?t find|already (gone|off)|no matching",
+    r"nothing (was|to|came|is|there|scheduled|set|currently)|no (schedule|scheduled|matching|"
+    r"recurring|morning|active|such|summaries|running|tasks?)|not (scheduled|set up|currently|"
+    r"find)|don'?t (have|see)|couldn'?t (find|locate)|didn'?t (find|see|locate)|found none|"
+    r"none (came|found|matching)|isn'?t (any|anything|one|an)|wasn'?t|weren'?t|can'?t find|"
+    r"already (gone|off)|no matching",
     re.I,
 )
 
@@ -121,6 +128,24 @@ async def test_delete_summary_survives(chat_eval: ChatEval) -> None:
         message="you can stop the morning summaries",
         seed=seed,
         score=_score("schedule_delete", _STOPPED, "delete"),
+        min_pass_rate=0.75,
+    )
+
+
+async def test_list_summary_survives(chat_eval: ChatEval) -> None:
+    def seed(db: Database) -> None:
+        _seed_schedule(
+            db,
+            prompt_text="send me a summary of the morning news",
+            timing_description="every morning at 8am",
+            cron="0 8 * * *",
+        )
+
+    await chat_eval(
+        case_id="schedule-recap-list",
+        message="what do you have scheduled?",
+        seed=seed,
+        score=_score("schedule_list", _LISTED, "list"),
         min_pass_rate=0.75,
     )
 
