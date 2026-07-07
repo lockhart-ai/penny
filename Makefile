@@ -10,7 +10,7 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 TEAM_RUFF_TARGETS = penny_team/
 TEAM_PYTEST_ARGS = tests/ -v
 
-.PHONY: up prod prod-ios kill build team-build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build team-build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -34,8 +34,36 @@ prod-ios: browser-build
 	SNAPSHOT=1 \
 	docker compose -f docker-compose.yml run --rm --service-ports --no-deps --build -e CHANNEL_TYPE=ios penny
 
-kill:
-	docker compose --profile team down --rmi local --remove-orphans
+# Tear down this compose project's containers and remove its locally-built
+# images (alias of clean-project-images, kept for its familiar name).
+kill: clean-project-images
+
+# Remove THIS compose project's containers, locally-built images and anonymous
+# volumes without touching other projects or the shared build cache. Each task
+# agent runs in its own worktree under a unique compose project (agent-<hash>),
+# so its `make fix check` builds a fresh, project-scoped agent-<hash>-team image
+# that is never reused after the agent finishes — these are what pile up (56 once
+# filled the disk to 99%). `--rmi local` also drops the shared penny:latest tag,
+# which is rebuilt on the next `up` (and skipped here while a container holds it,
+# e.g. production). Run this at §9 teardown. Safe to run with no containers up —
+# `down` is a no-op and `--rmi local` still drops the images. `--volumes` only
+# clears this project's anonymous volumes; penny's persistent data lives in bind
+# mounts (./data), which it never touches.
+clean-project-images:
+	docker compose --profile team down --rmi local --volumes --remove-orphans
+
+# Best-effort global reclaim for when Docker has eaten the disk: drop stopped
+# containers, dangling (untagged) images, the build cache, and unused volumes.
+# Unlike clean-project-images this is NOT project-scoped, but it never removes a
+# tagged image or a volume still in use — safe to run anytime. Each step is
+# `|| true` so a busy resource can't fail the target. (A full disk once traced to
+# 56 leftover agent images + ~23GB of stale build cache — clean-project-images
+# clears the former per project, this clears the latter machine-wide.)
+docker-prune:
+	docker container prune -f || true
+	docker image prune -f || true
+	docker builder prune -f || true
+	docker volume prune -f || true
 
 build:
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \

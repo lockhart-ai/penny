@@ -20,7 +20,11 @@ from penny.llm import LlmClient
 from penny.llm.models import LlmError, LlmResponse, LlmTimeoutError, LlmToolParseError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
-from penny.text_validity import is_degenerate_run, is_degenerate_tool_name
+from penny.text_validity import (
+    has_leaked_harmony_envelope,
+    is_degenerate_run,
+    is_degenerate_tool_name,
+)
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
@@ -711,49 +715,65 @@ class Agent:
         run_id: str | None,
         prompt_type: str | None,
     ) -> LlmResponse | None:
-        """Call the model, discarding degenerate (punctuation-collapse) output and
-        re-rolling on the *unchanged* context.
+        """Call the model, discarding UNUSABLE raw output and re-rolling on the
+        *unchanged* context.
 
-        gpt-oss occasionally collapses into a run of ``…?.`` — most often inside a
-        tool-call argument, which the validation chain never sees (tool-call
-        responses short-circuit it).  So the check runs here, on the raw output of
-        every call, before the loop parses or acts on it.  The bad response is
-        DROPPED, never appended: re-appending it would feed the collapse back into
-        the conversation, and a poisoned step makes the next step ~4× more likely to
-        collapse too.  A fresh draw on the same messages usually clears it (the
-        collapse is a sampling artifact); after ``DEGENERATE_REROLL_ATTEMPTS`` it
+        Two kinds of unusable output share this one discard-and-reroll machinery,
+        because both are transport artifacts a fresh draw usually clears:
+          * a gpt-oss punctuation collapse (``…?.``) — most often inside a tool-call
+            argument, which the validation chain never sees (tool-call responses
+            short-circuit it); and
+          * a leaked Harmony tool-call envelope in the text content — a backend that
+            failed to parse the envelope, so the whole call arrives as literal prose
+            that would otherwise be delivered to the user verbatim.
+        So the check runs here, on the raw output of every call, before the loop
+        parses or acts on it.  The bad response is DROPPED, never appended:
+        re-appending a collapse feeds it back into the conversation (a poisoned step
+        makes the next ~4× more likely to collapse too), and re-appending a leaked
+        envelope would ship raw tokens.  After ``DEGENERATE_REROLL_ATTEMPTS`` it
         returns ``None`` so the caller throws out the whole run rather than act on,
-        or store, poison.  ``LlmToolParseError`` propagates unchanged — the
-        format-nudge retry in ``_call_model_validated`` still owns that path.
+        or store, the poison.  The warning names WHICH condition tripped (the reroll
+        mechanism is shared; the log label must stay honest).  ``LlmToolParseError``
+        propagates unchanged — the format-nudge retry in ``_call_model_validated``
+        still owns that path.
         """
         attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         for attempt in range(attempts):
             response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
-            if response is None or not self._response_is_degenerate(response):
+            if response is None:
+                return response
+            condition = self._unusable_output_condition(response)
+            if condition is None:
                 return response
             logger.warning(
-                "Degenerate model output (%s) — discarding and re-rolling %d/%d",
-                ConditionKey.DEGENERATE_OUTPUT,
+                "Unusable model output (%s) — discarding and re-rolling %d/%d",
+                condition,
                 attempt + 1,
                 attempts,
             )
-        logger.error("Model output still degenerate after %d re-rolls — aborting run", attempts)
+        logger.error("Model output still unusable after %d re-rolls — aborting run", attempts)
         return None
 
-    def _response_is_degenerate(self, response: LlmResponse) -> bool:
-        """True if the raw output — text content, any tool-call argument, OR a
-        tool-call NAME — carries a degeneration collapse.  Serialising the
-        tool-call arguments is what lets the guard catch the common case, where
-        the collapse lands in a ``collection_write`` / ``done`` argument rather
-        than in visible prose; the name check catches the collapse landing in the
-        call's NAME field (``Functions?????``), which would otherwise flow to a
-        tool-not-found error that keeps the poison in context."""
+    def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:
+        """The condition that makes this raw output unusable, or ``None`` if it's
+        clean.  ``TOOL_CALL_LEAK`` — a leaked Harmony tool-call envelope in the text
+        content (or a serialised argument) — or ``DEGENERATE_OUTPUT`` — a punctuation
+        collapse in the content, any tool-call argument, or an unregistered
+        collapse-shaped NAME field (``Functions?????``, which would otherwise flow to
+        a tool-not-found error that keeps the poison in context).  Serialising the
+        tool-call arguments is what lets the guard catch the common collapse case,
+        where it lands in a ``collection_write`` / ``done`` argument rather than in
+        visible prose."""
         parts = [response.message.content or ""]
         for call in response.message.tool_calls or []:
             if self._is_degenerate_tool_call_name(call.function.name):
-                return True
+                return ConditionKey.DEGENERATE_OUTPUT
             parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
-        return any(is_degenerate_run(part) for part in parts)
+        if any(has_leaked_harmony_envelope(part) for part in parts):
+            return ConditionKey.TOOL_CALL_LEAK
+        if any(is_degenerate_run(part) for part in parts):
+            return ConditionKey.DEGENERATE_OUTPUT
+        return None
 
     def _is_degenerate_tool_call_name(self, name: str) -> bool:
         """A tool-call name that is UNREGISTERED and collapse-shaped is poison.

@@ -50,6 +50,7 @@ class ConditionKey(StrEnum):
     DONE_JSON_BAIL = "done_json_bail"
     CALL_AS_TEXT = "call_as_text"
     DEGENERATE_OUTPUT = "degenerate_output"
+    TOOL_CALL_LEAK = "tool_call_leak"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
     NO_WORK_DONE = "no_work_done"
@@ -157,6 +158,11 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     _condition(
         ConditionKey.DEGENERATE_OUTPUT,
         "Model output collapsed into a punctuation run ('...??…?..')",
+        live=True,
+    ),
+    _condition(
+        ConditionKey.TOOL_CALL_LEAK,
+        "Tool call leaked as raw Harmony envelope text instead of a parsed call",
         live=True,
     ),
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
