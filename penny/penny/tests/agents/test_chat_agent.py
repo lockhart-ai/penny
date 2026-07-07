@@ -10,16 +10,22 @@ Test organization:
 """
 
 import re
+import sys
+import types
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlmodel import Session, select
 
+from penny.config import Config
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Media, MemoryEntry, MessageLog
+from penny.plugins import Plugin
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tools.base import Tool
+from penny.tools.models import NoArgs, ToolResult
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
@@ -1156,6 +1162,83 @@ async def test_email_tools_registered_only_when_mailbox_configured(
         names = {tool.name for tool in penny.chat_agent.get_tools()}
         assert "search_emails" in names
         assert "read_emails" in names
+
+
+class _FakePingTool(Tool):
+    """Minimal tool a fake plugin contributes, to assert it reaches the surface."""
+
+    name = "fake_ping"
+    description = "A test tool contributed by a fake plugin."
+    args_model = NoArgs
+
+    async def execute(self, **kwargs: object) -> ToolResult:
+        return ToolResult(message="pong")
+
+
+class _FakePlugin(Plugin):
+    """A configured plugin that contributes one tool."""
+
+    name = "faketest"
+
+    @classmethod
+    def is_configured(cls, config: Config) -> bool:
+        return True
+
+    def get_tools(self) -> list[Tool]:
+        return [_FakePingTool()]
+
+
+class _UnconfiguredPlugin(Plugin):
+    """A plugin whose credentials are absent — load_plugins must skip it."""
+
+    name = "fakeunconfigured"
+
+    @classmethod
+    def is_configured(cls, config: Config) -> bool:
+        return False
+
+    def get_tools(self) -> list[Tool]:  # pragma: no cover - never called when skipped
+        raise AssertionError("get_tools must not run for an unconfigured plugin")
+
+
+@pytest.mark.asyncio
+async def test_plugin_tools_registered_on_shared_surface(
+    signal_server, mock_llm, make_config, running_penny
+):
+    """A configured connector plugin's tools ride the shared tool surface.
+
+    The plugin framework (penny/plugins/) loads each name in PLUGINS, skipping an
+    unconfigured or unknown one with a visible warning rather than failing
+    startup, and merges every loaded plugin's get_tools() into the base Agent
+    surface — so the tools reach BOTH the chat agent and the background
+    collector, not chat alone. Injecting fake modules under penny.plugins
+    exercises the real import path (load_plugins → importlib) without shipping
+    example plugins.
+    """
+    faketest = types.ModuleType("penny.plugins.faketest")
+    faketest.PLUGIN_CLASS = _FakePlugin
+    unconfigured = types.ModuleType("penny.plugins.fakeunconfigured")
+    unconfigured.PLUGIN_CLASS = _UnconfiguredPlugin
+    sys.modules["penny.plugins.faketest"] = faketest
+    sys.modules["penny.plugins.fakeunconfigured"] = unconfigured
+    try:
+        # An unknown name and an unconfigured plugin must not stop the configured
+        # one from loading — one bad connector can't take the surface down.
+        config = make_config(plugins=["faketest", "fakeunconfigured", "nonexistent_plugin"])
+        async with running_penny(config) as penny:
+            assert [p.name for p in penny._plugins] == ["faketest"]
+            chat_names = {tool.name for tool in penny.chat_agent.get_tools()}
+            # The collector's surface is only built inside a bound cycle; bind a
+            # seeded collection to enumerate it (the test_collector.py pattern).
+            penny.collector._current_target = penny.db.memories.get("skills")
+            collector_names = {tool.name for tool in penny.collector.get_tools()}
+            penny.collector._current_target = None
+            assert "fake_ping" in chat_names
+            assert "fake_ping" in collector_names
+            assert "fake_unconfigured_tool" not in chat_names
+    finally:
+        del sys.modules["penny.plugins.faketest"]
+        del sys.modules["penny.plugins.fakeunconfigured"]
 
 
 @pytest.mark.asyncio

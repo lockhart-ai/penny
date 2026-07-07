@@ -146,6 +146,7 @@ class Agent:
         embedding_model_client: LlmClient,
         system_prompt: str | None = None,
         tools: list[Tool] | None = None,
+        plugin_tools: list[Tool] | None = None,
     ):
         """Configure the agent.
 
@@ -154,10 +155,16 @@ class Agent:
         their surface fresh per cycle, so they don't pass ``system_prompt``
         or ``tools`` here.  Ad-hoc command agents (email, zoho) pass both
         because their prompt and tool set vary per invocation.
+
+        ``plugin_tools`` are the tools contributed by loaded connector plugins
+        (``penny/plugins/``), gathered once at startup in ``Penny._init_plugins``.
+        They ride the shared ``get_tools`` surface, so every agent shape given
+        them — chat and the background collectors alike — can call them.
         """
         self.config = config
         self.db = db
         self.allow_repeat_tools = allow_repeat_tools
+        self._plugin_tools = plugin_tools or []
 
         self._model_client = model_client
         self._vision_model_client = vision_model_client
@@ -848,6 +855,10 @@ class Agent:
             scope=scope,
         )
         tools.append(self._build_browse_tool(author=self.name))
+        # Connector-plugin tools (penny/plugins/) ride the shared surface — the
+        # extension point for additional service integrations, available to
+        # every agent shape (chat + background collectors), not chat alone.
+        tools.extend(self._plugin_tools)
         return tools
 
     def _build_browse_tool(self, author: str) -> BrowseTool:

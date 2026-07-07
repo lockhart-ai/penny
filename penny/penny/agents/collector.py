@@ -53,6 +53,7 @@ from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
+from penny.tools import Tool
 from penny.tools.memory_tools import DoneTool
 
 if TYPE_CHECKING:
@@ -110,6 +111,7 @@ class Collector(BackgroundAgent):
         *,
         embedding_model_client: LlmClient,
         vision_model_client: LlmClient | None = None,
+        plugin_tools: list[Tool] | None = None,
     ) -> None:
         super().__init__(
             model_client=model_client,
@@ -117,6 +119,7 @@ class Collector(BackgroundAgent):
             config=config,
             embedding_model_client=embedding_model_client,
             vision_model_client=vision_model_client,
+            plugin_tools=plugin_tools,
         )
         # Set per-cycle inside ``_execute_cycle``.  The scheduler runs cycles
         # one at a time, but on-demand triggers (chat's extraction-prompt test

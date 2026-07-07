@@ -33,6 +33,7 @@ from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError
+from penny.plugins import Plugin, load_plugins
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
@@ -70,6 +71,7 @@ class Penny:
         self._init_database(config)
         self._init_llm_clients(config)
         self._init_email(config)
+        self._init_plugins(config)
         self._init_agents(config)
         self._init_commands(config)
         self._init_channel(config, channel)
@@ -201,6 +203,20 @@ class Penny:
 
         return build
 
+    def _init_plugins(self, config: Config) -> None:
+        """Load connector plugins and collect the tools they contribute.
+
+        Plugins named in ``PLUGINS`` are loaded here (unconfigured ones are
+        skipped with a visible warning), and each one's ``get_tools()`` is
+        gathered once at startup — not per turn — into ``self._plugin_tools``,
+        which ``_init_agents`` hands to every agent's shared tool surface (the
+        chat agent and the background collectors alike).
+        """
+        self._plugins: list[Plugin] = load_plugins(config)
+        self._plugin_tools: list[Tool] = [
+            tool for plugin in self._plugins for tool in plugin.get_tools()
+        ]
+
     def _init_agents(self, config: Config) -> None:
         """Create chat agent + collector dispatcher + schedule executor.
 
@@ -218,12 +234,14 @@ class Penny:
             embedding_model_client=self.embedding_model_client,
             image_client=self.image_client,
             email_tools_builder=self.email_tools_builder,
+            plugin_tools=self._plugin_tools,
         )
         self.collector = Collector(
             model_client=self.model_client,
             db=self.db,
             config=config,
             embedding_model_client=self.embedding_model_client,
+            plugin_tools=self._plugin_tools,
         )
         self.chat_agent.set_collector(self.collector)
         self.schedule_executor = ScheduleExecutor(
@@ -231,6 +249,7 @@ class Penny:
             db=self.db,
             config=config,
             embedding_model_client=self.embedding_model_client,
+            plugin_tools=self._plugin_tools,
         )
         # Deterministic task (no LLM) that delivers queued send_message output
         # once the autonomous-send cooldown clears.
@@ -674,6 +693,8 @@ class Penny:
             await self.embedding_model_client.close()
         if self.email_client:
             await self.email_client.close()
+        for plugin in self._plugins:
+            await plugin.close()
         logger.info("Agent shutdown complete")
 
 

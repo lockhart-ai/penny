@@ -124,6 +124,8 @@ penny/
   zoho/
     client.py         — ZohoClient: Zoho Mail API client (httpx + OAuth refresh)
     models.py         — Zoho Mail API Pydantic models
+  plugins/
+    __init__.py       — Connector plugin framework: `Plugin` ABC + `load_plugins(config)`. A plugin is a `penny/plugins/<name>/` package exposing `PLUGIN_CLASS`; it declares `is_configured(config)` + `get_tools()`. `load_plugins` reads the `PLUGINS` env var, skips unconfigured/unknown ones with a visible warning, and returns the loaded plugins. `Penny._init_plugins` gathers their tools once at startup onto the shared base-`Agent` tool surface — reaching chat + the background collectors alike
   validation/         — Model-I/O validation: the one behaviour taxonomy + the live disposition machinery
     conditions.py     — The behaviour taxonomy (keystone): ConditionKey + BehaviorCondition + CATALOG; one catalog of every condition we classify Penny's behaviour through (supersedes ValidationReason + RunHealthFlag). Dependency-light leaf
     outcomes.py       — ValidationOutcome disposition union (Proceed/Retry/Repair/RejectToolCall/NudgeContinue/Stop), ResponseValidator protocol, LoopContext, run_validators
@@ -164,6 +166,8 @@ The base `Agent` class implements the core agentic loop:
 - Executes tool calls via `ToolExecutor` with parameter validation
 - Handles duplicate tool call prevention
 - Appends source URLs to responses when model omits them
+
+**Connector-plugin tools (shared surface):** the base `Agent.get_tools()` appends `self._plugin_tools` after memory + browse, so tools contributed by loaded connector plugins (`penny/plugins/`) reach *every* agent shape that extends it — the chat agent and the background collectors alike, not chat alone. They're gathered once at startup in `Penny._init_plugins` (from the `PLUGINS` env var) and threaded into each agent via the `plugin_tools` constructor argument. Empty when no plugins are configured. The extension point for additional service integrations (email, calendar, project trackers, ...).
 
 **System prompt building (template method pattern):**
 Each agent overrides `_build_system_prompt(user)` to compose its prompt from reusable building blocks on the base class: `_identity_section()`, `_profile_section()`, `_instructions_section()`, `_context_block()`. No flags or conditionals — each agent explicitly declares what goes in its prompt. Tests assert on the exact full system prompt string to catch structural drift.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import logging.handlers
 import os
@@ -109,6 +110,23 @@ def _validate_embedding_config() -> None:
         )
 
 
+def _parse_plugins(raw: str) -> list[str]:
+    """Parse the ``PLUGINS`` env var into a list of plugin names.
+
+    Accepts either a JSON array (``["fastmail", "zoho"]``) or a plain
+    comma-separated string (``fastmail,zoho``); names are lowercased and
+    stripped. An empty/unset value yields no plugins.
+    """
+    raw = raw.strip()
+    if not raw or raw == "[]":
+        return []
+    with contextlib.suppress(json.JSONDecodeError):
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(name).strip().lower() for name in parsed if str(name).strip()]
+    return [name.strip().lower() for name in raw.split(",") if name.strip()]
+
+
 def _collect_env_vars(channel_type: str) -> dict:
     """Read all config environment variables and return as constructor kwargs."""
     ios_enabled = os.getenv("IOS_ENABLED", "").lower() in ("1", "true", "yes")
@@ -138,6 +156,7 @@ def _collect_env_vars(channel_type: str) -> dict:
         "llm_timeout": float(env_llm_timeout)
         if (env_llm_timeout := os.getenv("LLM_TIMEOUT"))
         else None,
+        "plugins": _parse_plugins(os.getenv("PLUGINS", "")),
         "fastmail_api_token": os.getenv("FASTMAIL_API_TOKEN"),
         "zoho_api_id": os.getenv("ZOHO_API_ID"),
         "zoho_api_secret": os.getenv("ZOHO_API_SECRET"),
@@ -228,6 +247,10 @@ class Config:
 
     # Fastmail JMAP (optional) — enables the email tools on the chat surface
     fastmail_api_token: str | None = None
+
+    # Connector plugins to load (read from PLUGINS env var, e.g. ["fastmail"]).
+    # Each names a package under penny/plugins/ that registers chat-surface tools.
+    plugins: list[str] = field(default_factory=list)
 
     # Browser extension server (runs alongside primary channel)
     browser_enabled: bool = False

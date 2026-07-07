@@ -196,6 +196,10 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables the email tools on the chat surface with the Zoho backend — adds `list_emails`, `list_folders`, `draft_email`)
 - `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, part of the Zoho email-tools credential triple)
 - `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, part of the Zoho email-tools credential triple) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
+
+**Plugins** (optional):
+- `PLUGINS`: Connector plugins to load — packages under `penny/plugins/` that register tools onto Penny's shared tool surface (chat + background collectors). JSON array (`["fastmail","zoho"]`) or comma-separated (`fastmail,zoho`). Each plugin reads its own credentials and is skipped with a visible warning if they're absent
+
 **GitHub App** (required for agent containers):
 - `GITHUB_APP_ID`: GitHub App ID for authenticated API access
 - `GITHUB_APP_PRIVATE_KEY_PATH`: Path to GitHub App private key file
