@@ -28,7 +28,11 @@ from penny.llm.models import (
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.text_validity import half_formed_send_reason, is_degenerate_run
+from penny.text_validity import (
+    half_formed_send_reason,
+    has_leaked_harmony_envelope,
+    is_degenerate_run,
+)
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
@@ -634,6 +638,73 @@ class TestDegenerateOutputGuard:
         assert response.answer == "recovered cleanly"
         assert len(mock_llm.requests) == 2
         assert "......???" not in str(mock_llm.requests[-1]["messages"])
+
+        await agent.close()
+
+
+# A leaked Harmony tool-call envelope in the text content — the whole call arrives
+# as literal prose (generic `browse` tool) instead of parsed `tool_calls`, the
+# shape some non-Ollama gpt-oss backends emit.
+_HARMONY_LEAK = "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
+
+
+class TestHarmonyEnvelopeLeakGuard:
+    """A backend that fails to parse gpt-oss's Harmony format leaks the whole tool
+    call into ``message.content`` as literal control-token text; ``tool_calls`` is
+    empty, so nothing downstream catches it and the raw envelope would be delivered
+    to the user verbatim.  Reusing the degeneracy discard-and-reroll machinery, the
+    loop discards that output and re-draws on the UNCHANGED context (the leak is
+    intermittent), and throws the run out if it persists — never reconstructing the
+    call from the envelope grammar."""
+
+    def test_detector_has_no_false_positives(self):
+        """The detector fires on a leaked envelope but NOT on ordinary prose or a
+        code reply that merely contains an ellipsis — the same zero-false-positive
+        discipline the degeneracy regex holds."""
+        assert has_leaked_harmony_envelope(_HARMONY_LEAK) is True
+        assert has_leaked_harmony_envelope("Sure, here's the latest stable version.") is False
+        assert (
+            has_leaked_harmony_envelope("The slice is `nums[1:]` and `foo(...)` returns.") is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_leaked_envelope_discarded_and_rerolled(self, test_db, mock_llm):
+        """A leaked Harmony envelope in the text content is discarded and re-rolled
+        on the unchanged context — the raw tokens never reach the context (or the
+        user), and the fresh draw comes back clean."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_text_response(request, _HARMONY_LEAK)
+            return mock_llm._make_text_response(request, "here is the real answer")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what's the latest version?", max_steps=max_steps)
+        assert response.answer == "here is the real answer"
+        # Exactly one reroll on the unchanged context; the leak was never appended.
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert "<|call|>" not in str(mock_llm.requests[-1]["messages"])
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_persistent_leak_aborts_run(self, test_db, mock_llm):
+        """When every reroll still leaks the envelope, the run is thrown out with
+        AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — raw
+        Harmony tokens are never delivered."""
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+
+        def handler(request, count):
+            return mock_llm._make_text_response(request, _HARMONY_LEAK)
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("what's the latest version?", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
         await agent.close()
 

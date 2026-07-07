@@ -126,6 +126,40 @@ def is_degenerate_run(content: str) -> bool:
     return bool(_DEGENERATE_RUN_RE.search(content))
 
 
+# The Harmony (gpt-oss's native format) tool-call envelope, leaked into
+# ``message.content`` as literal text.  Stock Ollama parses the envelope into
+# structured ``tool_calls``, but some remote OpenAI-compatible backends serving
+# gpt-oss fail to and leak the whole call as prose, e.g.
+#   "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
+# with ``tool_calls`` empty — so a chat text turn finalizes the raw envelope as the
+# reply and delivers it to the user verbatim.  The pipe-bracketed control tokens
+# (``<|start|>`` … ``<|call|>``) and the ``to=functions.`` recipient marker are
+# Harmony sentinels that never occur in legitimate prose or code, so any hit means
+# the call leaked and the output is unusable (the real call was never routed through
+# the tool-call channel).  Sibling of
+# :func:`penny.llm.models.strip_harmony_control_tokens`, which repairs a leak in the
+# tool-call NAME field; this catches the whole call leaking into content, which the
+# name path never sees.  Kept high-precision (specific token names, not a bare
+# ``<|``) for zero false positives, the same corpus discipline as the collapse regex.
+_HARMONY_ENVELOPE_RE = re.compile(
+    r"<\|(?:start|end|channel|message|call|constrain|return)\|>|to=functions\."
+)
+
+
+def has_leaked_harmony_envelope(content: str) -> bool:
+    """True if ``content`` carries a leaked Harmony tool-call envelope.
+
+    A backend that doesn't fully parse gpt-oss's Harmony format leaks the tool
+    call into the text channel as literal control-token prose instead of parsing
+    it into ``tool_calls``.  The agent-loop reroll guard treats that exactly like
+    a degeneration collapse — discard the poisoned output and re-draw on the
+    unchanged context, since the leak is intermittent (a fresh draw usually comes
+    back clean) — rather than reconstructing the call from the envelope grammar.
+    See :data:`_HARMONY_ENVELOPE_RE`.
+    """
+    return bool(_HARMONY_ENVELOPE_RE.search(content))
+
+
 # The collapse fingerprint scoped to a tool-call NAME — any `?` / `!` / `…`
 # anywhere, or a run of 2+ dots.  A name is a short identifier, so the prose
 # heuristics in `_DEGENERATE_RUN_RE` (which need two clusters or a 5-char run to
