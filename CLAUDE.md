@@ -121,6 +121,8 @@ The project runs inside Docker Compose. A top-level Makefile wraps all commands:
 make up               # Start all services (penny + team) with Docker Compose
 make prod             # Deploy penny only (no team, no override)
 make kill             # Tear down containers and remove local images
+make clean-project-images # Remove this compose project's built images + anon volumes (agent teardown; alias target of kill)
+make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image
 make team-build       # Build the penny-team Docker image
 make token            # Generate GitHub App installation token for gh CLI
