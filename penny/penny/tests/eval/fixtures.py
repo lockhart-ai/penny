@@ -220,16 +220,18 @@ MESSAGES: tuple[Message, ...] = (
 # ── Canned browse pages (for the browse-driven tool-reasoning cases) ──────────
 # All invented, privacy-safe topics on example.com domains.
 
-# chat-browse-answer: one search whose result carries the fact (version 4.2) + URL.
-VERSION_PAGES = (
+# chat-browse-answer: one search whose result carries the fact (Lake Baikal) + URL.
+# A plain topic lookup — "look something up, find the fact, answer/store it" — the
+# canonical Penny workflow (never software-version discrimination).
+TOPIC_PAGES = (
     CannedPage(
-        match="quillpad",
+        match="lake",
         text=(
-            "Title: Quillpad releases\n"
-            "Quillpad release history and downloads below.\n"
-            "[Quillpad 4.2 release notes](https://quillpad.example.com/releases/4.2)\n"
-            "Quillpad 4.2 is the latest stable release, published this year, "
-            "adding end-to-end sync and a dark theme.\n"
+            "Title: The world's deepest lakes\n"
+            "A rundown of the deepest freshwater lakes on Earth.\n"
+            "[Lake Baikal — profile](https://geo.example.test/lakes/baikal)\n"
+            "Lake Baikal, in southern Siberia, is the deepest lake in the world at "
+            "1,642 metres, holding roughly a fifth of Earth's unfrozen fresh water.\n"
         ),
     ),
 )

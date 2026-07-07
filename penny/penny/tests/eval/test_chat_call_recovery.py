@@ -32,7 +32,7 @@ import pytest
 
 from penny.database import Database
 from penny.tests.eval.conftest import ChatEval, _InjectTextBail
-from penny.tests.eval.fixtures import VERSION_PAGES
+from penny.tests.eval.fixtures import TOPIC_PAGES
 from penny.validation.response_validators import is_call_as_text_bail
 
 pytestmark = pytest.mark.eval
@@ -40,8 +40,8 @@ pytestmark = pytest.mark.eval
 # A well-formed browse call the injector emits as plain text after the model's first
 # real tool call — the exact Harmony call-as-text shape seen in production.
 _CALL_AS_TEXT = (
-    '{"queries": ["quillpad latest release notes"], '
-    '"reasoning": "Open the official release page to read the current version."}'
+    '{"queries": ["deepest lake in the world"], '
+    '"reasoning": "Look up which lake is the deepest and read the details."}'
 )
 
 
@@ -62,8 +62,8 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
 async def test_call_as_text_is_caught_and_recovers(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="chat-call-as-text-recovery",
-        message="what's the latest stable version of the quillpad note-taking app?",
-        browse=list(VERSION_PAGES),
+        message="what's the deepest lake in the world?",
+        browse=list(TOPIC_PAGES),
         wrap_client=lambda real: _InjectTextBail(real, _CALL_AS_TEXT),
         score=_score_recovered,
         min_pass_rate=0.75,

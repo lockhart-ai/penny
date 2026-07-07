@@ -35,7 +35,7 @@ import pytest
 
 from penny.database import Database
 from penny.tests.eval.conftest import ChatEval, _InjectTextBail
-from penny.tests.eval.fixtures import VERSION_PAGES
+from penny.tests.eval.fixtures import TOPIC_PAGES
 from penny.text_validity import has_leaked_harmony_envelope
 
 pytestmark = pytest.mark.eval
@@ -63,8 +63,8 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
 async def test_harmony_envelope_leak_is_caught_and_recovers(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="chat-harmony-envelope-leak-recovery",
-        message="what's the latest stable version of the quillpad note-taking app?",
-        browse=list(VERSION_PAGES),
+        message="what's the deepest lake in the world?",
+        browse=list(TOPIC_PAGES),
         wrap_client=lambda real: _InjectTextBail(real, _HARMONY_LEAK),
         score=_score_recovered,
         min_pass_rate=0.75,

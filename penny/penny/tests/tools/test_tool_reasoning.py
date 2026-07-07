@@ -149,9 +149,9 @@ class TestBrowseResultNarration:
 
     def test_search_success_narrates_searched(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["quillpad version"]}, ToolResult(message="v4.2")
+            {"queries": ["deepest lake"]}, ToolResult(message="Lake Baikal")
         )
-        assert narration == 'You searched for "quillpad version"'
+        assert narration == 'You searched for "deepest lake"'
         assert "(browse result)" not in narration  # the tag is the seam's job
 
     def test_url_read_success_narrates_opened(self):
@@ -162,17 +162,17 @@ class TestBrowseResultNarration:
 
     def test_mixed_search_and_read(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["quillpad version", "https://example.com/a"]},
+            {"queries": ["deepest lake", "https://example.com/a"]},
             ToolResult(message="ok"),
         )
-        assert narration == 'You searched for "quillpad version" and opened https://example.com/a'
+        assert narration == 'You searched for "deepest lake" and opened https://example.com/a'
 
     def test_total_failure_narrates_honestly(self):
         narration = BrowseTool.to_result_narration(
-            {"queries": ["quillpad version"]},
+            {"queries": ["deepest lake"]},
             ToolResult(message="## browse error: ...", success=False),
         )
-        assert narration == 'You searched for "quillpad version" but couldn\'t read anything'
+        assert narration == 'You searched for "deepest lake" but couldn\'t read anything'
 
     def test_url_read_failure_narrates_honestly(self):
         narration = BrowseTool.to_result_narration(
@@ -196,9 +196,14 @@ class TestBrowseResultNarration:
         """End-to-end through the seam: registry dispatch → browse override →
         `(browse result)` tag → body, in one framed string the model reads."""
         framed = Tool.format_result(
-            "browse", {"queries": ["quillpad version"]}, ToolResult(message="v4.2 is out")
+            "browse",
+            {"queries": ["deepest lake"]},
+            ToolResult(message="Lake Baikal is the deepest lake"),
         )
-        assert framed == 'You searched for "quillpad version" (browse result)\nv4.2 is out'
+        assert (
+            framed
+            == 'You searched for "deepest lake" (browse result)\nLake Baikal is the deepest lake'
+        )
 
 
 class TestScheduleResultNarration:

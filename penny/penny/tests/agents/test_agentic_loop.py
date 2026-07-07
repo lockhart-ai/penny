@@ -362,16 +362,19 @@ class TestResultNarration:
 
     def test_success_result_carries_narration_tag_and_body(self):
         framed = Tool.format_result(
-            "example_tool", {"queries": ["quillpad release"]}, ToolResult(message="v4.2 is out")
+            "example_tool",
+            {"queries": ["deepest lake"]},
+            ToolResult(message="Lake Baikal is the deepest lake"),
         )
         assert framed == (
-            "You used `example_tool` and here's the result: (example_tool result)\nv4.2 is out"
+            "You used `example_tool` and here's the result: (example_tool result)\n"
+            "Lake Baikal is the deepest lake"
         )
 
     def test_failure_result_narrates_honestly_and_keeps_the_tag(self):
         framed = Tool.format_result(
             "example_tool",
-            {"queries": ["quillpad release"]},
+            {"queries": ["deepest lake"]},
             ToolResult(message="Error: no", success=False),
         )
         assert framed == (
@@ -662,7 +665,7 @@ class TestHarmonyEnvelopeLeakGuard:
         code reply that merely contains an ellipsis — the same zero-false-positive
         discipline the degeneracy regex holds."""
         assert has_leaked_harmony_envelope(_HARMONY_LEAK) is True
-        assert has_leaked_harmony_envelope("Sure, here's the latest stable version.") is False
+        assert has_leaked_harmony_envelope("Sure, here's the answer.") is False
         assert (
             has_leaked_harmony_envelope("The slice is `nums[1:]` and `foo(...)` returns.") is False
         )
@@ -681,7 +684,7 @@ class TestHarmonyEnvelopeLeakGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the latest version?", max_steps=max_steps)
+        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
         assert response.answer == "here is the real answer"
         # Exactly one reroll on the unchanged context; the leak was never appended.
         assert len(mock_llm.requests) == 2
@@ -702,7 +705,7 @@ class TestHarmonyEnvelopeLeakGuard:
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("what's the latest version?", max_steps=max_steps)
+        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
@@ -2496,16 +2499,18 @@ class TestChatCallAsTextNudge:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "quillpad"})
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "deepest lake"}
+                )
             if count == 2:
                 return mock_llm._make_text_response(
-                    request, '{"queries": ["quillpad releases"], "reasoning": "read the page"}'
+                    request, '{"queries": ["deepest lake"], "reasoning": "read the page"}'
                 )
             return mock_llm._make_text_response(request, "I couldn't find that app anywhere.")
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("latest quillpad version?", max_steps=max_steps)
+        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
 
         # The JSON blob never became the reply — the model was re-called and answered.
         assert response.answer == "I couldn't find that app anywhere."
@@ -2524,13 +2529,15 @@ class TestChatCallAsTextNudge:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "quillpad"})
-            return mock_llm._make_text_response(request, "QuillPad's latest version is 4.2!")
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": "deepest lake"}
+                )
+            return mock_llm._make_text_response(request, "Lake Baikal is the deepest lake!")
 
         mock_llm.set_response_handler(handler)
 
-        response = await agent.run("latest quillpad version?", max_steps=max_steps)
-        assert response.answer == "QuillPad's latest version is 4.2!"
+        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        assert response.answer == "Lake Baikal is the deepest lake!"
         assert len(mock_llm.requests) == 2  # no extra nudge round-trip
 
         await agent.close()
@@ -2713,7 +2720,8 @@ class TestResponseValidators:
         # A real prose reply, a tool-call response, and the final step all Proceed —
         # the guard must never fire on a genuine answer or steal the last step.
         assert isinstance(
-            CallAsTextValidator().check(_text_response("QuillPad is on 4.2!"), _ctx()), Proceed
+            CallAsTextValidator().check(_text_response("Lake Baikal is the deepest!"), _ctx()),
+            Proceed,
         )
         assert isinstance(
             CallAsTextValidator().check(_tool_response("search", {}), _ctx()), Proceed
@@ -2732,7 +2740,7 @@ class TestResponseValidators:
             '{"name": 5, "arguments": {}}',  # non-string name
             '{"name": "browse", "arguments": "oops"}',  # non-dict arguments
             'The config looks like {"queries": [...]} roughly.',  # not a lone object
-            "QuillPad's latest version is 4.2!",  # normal prose
+            "Lake Baikal is the deepest lake!",  # normal prose
             "",  # empty
         ):
             assert not is_call_as_text_bail(prose), prose

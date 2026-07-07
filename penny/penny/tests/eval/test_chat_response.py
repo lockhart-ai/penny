@@ -32,7 +32,7 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.fixtures import (
     BOARD_GAMES,
     MULTIHOP_PAGES,
-    VERSION_PAGES,
+    TOPIC_PAGES,
 )
 
 pytestmark = pytest.mark.eval
@@ -78,8 +78,8 @@ def _score_browse_answer(db: Database, before: set[str], reply: str) -> list[str
     fails = []
     if not tool_was_called(db, "browse"):
         fails.append("did not browse for a current-info question")
-    if "4.2" not in reply:
-        fails.append("reply missing the version fact (4.2) from the browsed page")
+    if "baikal" not in reply.lower():
+        fails.append("reply missing the fact (Lake Baikal) from the browsed page")
     return fails
 
 
@@ -114,8 +114,8 @@ async def test_recall_answer(chat_eval: ChatEval) -> None:
 async def test_browse_answer(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="chat-browse-answer",
-        message="what's the latest stable version of the quillpad note-taking app?",
-        browse=list(VERSION_PAGES),
+        message="what's the deepest lake in the world?",
+        browse=list(TOPIC_PAGES),
         score=_score_browse_answer,
     )
 
