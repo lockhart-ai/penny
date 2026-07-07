@@ -49,8 +49,8 @@ _SCHEDULED = re.compile(
 )
 _STOPPED = re.compile(
     r"\b(stopped|stop|removed|remov(e|ing)|cancel(l?ed|ling)?|deleted|delet(e|ing)|"
-    r"turned off|turn(ed)? off|no longer|won'?t send|will not send|off your|"
-    r"cleared|done sending|not send)\b",
+    r"turned off|turn(ed)? off|no longer|no more|won'?t send|will not send|off (the|your|my)|"
+    r"unhook(ed)?|taken .* off|took .* off|cleared|done sending|not send)\b",
     re.I,
 )
 _LISTED = re.compile(
