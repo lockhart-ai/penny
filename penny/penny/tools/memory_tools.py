@@ -152,11 +152,19 @@ _BRACKET_KEY_REJECTION = (
 )
 
 
+def _named(arguments: dict, arg_key: str, fallback: str) -> str:
+    """Backtick-quoted value of a name-like argument for narration, or a
+    caller-chosen fallback noun when the call omitted it (an arg-validation
+    failure still narrates).  Tools name their target under different keys —
+    ``memory``, ``name``, ``target``, ``collector`` — so the narration reads
+    whichever key applies."""
+    value = arguments.get(arg_key)
+    return f"`{value}`" if value else fallback
+
+
 def _memory_name(arguments: dict, fallback: str) -> str:
-    """Backtick-quoted memory name for narration, or a caller-chosen fallback noun
-    when the call omitted it (an arg-validation failure still narrates)."""
-    name = arguments.get("memory")
-    return f"`{name}`" if name else fallback
+    """Backtick-quoted ``memory`` argument for narration (the common case)."""
+    return _named(arguments, "memory", fallback)
 
 
 def _entry_label(arguments: dict) -> str:
@@ -455,6 +463,13 @@ class CollectionCreateTool(MemoryTool):
     }
     args_model = CollectionCreateArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        name = _named(arguments, "name", "a new collection")
+        if not result.success:
+            return f"You tried to set up the {name} collection but it didn't work:"
+        return f"You set up the {name} collection:"
+
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
@@ -514,6 +529,13 @@ class LogCreateTool(MemoryTool):
     }
     args_model = LogCreateArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        name = _named(arguments, "name", "a new log")
+        if not result.success:
+            return f"You tried to set up the {name} log but it didn't work:"
+        return f"You set up the {name} log:"
+
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
@@ -548,6 +570,13 @@ class CollectionArchiveTool(MemoryTool):
     }
     args_model = MemoryNameArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to archive {memory} but it didn't work:"
+        return f"You archived {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -568,6 +597,13 @@ class CollectionUnarchiveTool(MemoryTool):
         "required": ["memory"],
     }
     args_model = MemoryNameArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to restore {memory} from the archive but it didn't work:"
+        return f"You restored {memory} from the archive:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -598,6 +634,14 @@ class CollectionGetTool(MemoryTool):
         "required": ["memory", "key"],
     }
     args_model = CollectionGetArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to look up {entry} in {memory} but it didn't work:"
+        return f"You looked up {entry} in {memory}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -678,6 +722,13 @@ class CollectionReadRandomTool(MemoryTool):
     }
     args_model = ReadRandomArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to pull a random sample from {memory} but it didn't work:"
+        return f"You pulled a random sample from {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -756,6 +807,13 @@ class CollectionKeysTool(MemoryTool):
         "required": ["memory"],
     }
     args_model = MemoryNameArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to list the keys in {memory} but it didn't work:"
+        return f"You listed the keys in {memory}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1014,6 +1072,16 @@ class UpdateEntryTool(MemoryTool):
     }
     args_model = UpdateEntryArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to update {entry} in {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You couldn't find {entry} to update in {memory}:"
+        return f"You updated {entry} in {memory}:"
+
     def __init__(self, db: Database, author: str, scope: str | None = None) -> None:
         self._db = db
         self._author = author
@@ -1149,6 +1217,13 @@ class CollectionUpdateTool(MemoryTool):
         "required": ["name"],
     }
     args_model = CollectionUpdateArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        name = _named(arguments, "name", "a collection")
+        if not result.success:
+            return f"You tried to update {name}'s settings but it didn't work:"
+        return f"You updated {name}'s settings:"
 
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
@@ -1331,6 +1406,14 @@ class CollectionMergeTool(MemoryTool):
         "required": ["from_memory", "to_memory"],
     }
     args_model = CollectionMergeArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        from_memory = _named(arguments, "from_memory", "one collection")
+        to_memory = _named(arguments, "to_memory", "another")
+        if not result.success:
+            return f"You tried to merge {from_memory} into {to_memory} but it didn't work:"
+        return f"You merged {from_memory} into {to_memory}:"
 
     def __init__(self, db: Database, author: str) -> None:
         self._db = db
@@ -1549,6 +1632,13 @@ class ReadRunCallsTool(CursorReadTool):
     name = "read_run_calls"
     args_model = ReadRunCallsArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        target = _named(arguments, "target", "a source")
+        if not result.success:
+            return f"You tried to review {target}'s recent runs but it didn't work:"
+        return f"You reviewed {target}'s recent runs:"
+
     def __init__(self, db: Database, agent_name: str) -> None:
         super().__init__(db, agent_name)
         # Discover the valid targets from the DB so the model sees the current set —
@@ -1648,6 +1738,13 @@ class CollectorRunHistoryTool(MemoryTool):
         "fixed."
     )
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        collector = _named(arguments, "collector", "a collector")
+        if not result.success:
+            return f"You tried to review {collector}'s run history but it didn't work:"
+        return f"You reviewed {collector}'s run history:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -1729,6 +1826,12 @@ class ReadPublishedLatestTool(CursorReadTool):
     }
     args_model = ReadPublishedLatestArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to check for new entries to share but it didn't work:"
+        return "You checked for new entries to share:"
+
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadPublishedLatestArgs(**kwargs)
         selected = self._select(args.n)
@@ -1802,6 +1905,13 @@ class LogAppendTool(MemoryTool):
     }
     args_model = LogAppendArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a log")
+        if not result.success:
+            return f"You tried to add an entry to {memory} but it didn't work:"
+        return f"You added an entry to {memory}:"
+
     def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
         self._db = db
         self._llm = llm_client
@@ -1860,6 +1970,12 @@ class ExistsTool(MemoryTool):
         "required": ["memories", "content"],
     }
     args_model = ExistsArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to check whether that entry already exists but it didn't work:"
+        return "You checked whether that entry already exists:"
 
     def __init__(
         self,
@@ -1933,6 +2049,14 @@ class DoneTool(Tool):
     }
     args_model = DoneArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        # The done call itself always succeeds; its ``success`` argument reports
+        # the *cycle's* outcome, so the narration reflects that.
+        if arguments.get("success") is False:
+            return "You wrapped up the cycle, marking it unfinished:"
+        return "You wrapped up the cycle:"
+
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = DoneArgs(**kwargs)
         marker = "success" if args.success else "no-op/fail"
@@ -1964,6 +2088,13 @@ class TestExtractionPromptTool(Tool):
         "required": ["memory"],
     }
     args_model = MemoryNameArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You ran the {memory} collector to test it, but the cycle didn't succeed:"
+        return f"You ran the {memory} collector to test it:"
 
     def __init__(self, collector: Collector) -> None:
         self._collector = collector

@@ -42,6 +42,14 @@ _NOOP = re.compile(
     r"quiet|didn'?t (write|find|add)|none|empty|no fresh",
     re.I,
 )
+# The done() summary reflected the cycle's READ actions (log_read the messages,
+# collection_read_latest the current summary) — the FIRST calls of the cycle,
+# which a summary that only names the final write would drop.
+_READ = re.compile(
+    r"read|fetched|pulled|reviewed|checked|looked|gathered|went through|scanned|"
+    r"caught up|(the |new |recent )messages|user-messages|current (summary|entry)",
+    re.I,
+)
 
 
 def _create_digest(db: Database) -> None:
@@ -102,4 +110,34 @@ async def test_done_reflects_noop(collector_eval: CollectorEval) -> None:
         seed=_seed_no_messages,
         score=_score_done(_NOOP, "no-op", forbid=_WROTE),
         min_pass_rate=0.75,
+    )
+
+
+def _score_done_all_calls(db: Database, before, sent) -> list[str]:
+    """The stronger aggregation contract (#1488): the summary must reflect EVERY
+    tool call the cycle made, not just the final write.  The digest cycle reads
+    the messages (``log_read``) AND writes the summary (``collection_write``), so
+    an honest recap names BOTH the read and the write — a summary that mentions
+    only the write has dropped the earlier narration(s)."""
+    fails: list[str] = []
+    done = last_tool_args(db, "done")
+    summary = str((done or {}).get("summary", ""))
+    print(f"[DONE all-calls] :: {summary!r}")
+    if done is None:
+        fails.append("cycle never closed with done()")
+        return fails
+    if not _WROTE.search(summary):
+        fails.append(f"done() summary dropped the write action: {summary!r}")
+    if not _READ.search(summary):
+        fails.append(f"done() summary dropped the read action: {summary!r}")
+    return fails
+
+
+async def test_done_reflects_all_calls(collector_eval: CollectorEval) -> None:
+    await collector_eval(
+        case_id="done-recap-all-calls",
+        collection=WEEKLY_DIGEST.name,
+        seed=_seed_with_messages,
+        score=_score_done_all_calls,
+        min_pass_rate=None,
     )

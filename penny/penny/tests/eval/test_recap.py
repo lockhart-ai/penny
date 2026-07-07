@@ -45,6 +45,21 @@ def _reflects_action(reply: str) -> bool:
     return any(re.search(pattern, lowered) for pattern in _RECAP_PATTERNS)
 
 
+# First-person reflection of a SAVE — "I saved / added / noted chess to your
+# likes / list".  The other action family a multi-tool turn must recap.  Broad,
+# never exact wording.
+_SAVE_PATTERNS = (
+    r"\b(saved|added|noted|jotted|logged|recorded|stored|popped|tucked|filed|put)\b",
+    r"\byour (likes|list)\b",
+    r"\bnoting\b",
+)
+
+
+def _reflects_save(reply: str) -> bool:
+    lowered = reply.lower()
+    return any(re.search(pattern, lowered) for pattern in _SAVE_PATTERNS)
+
+
 def _score_recap(db: Database, before: set[str], reply: str) -> list[str]:
     fails = []
     if not reply.strip():
@@ -65,4 +80,44 @@ async def test_recap_reflects_actions(chat_eval: ChatEval) -> None:
         message="what's the latest stable version of the quillpad note-taking app?",
         browse=list(VERSION_PAGES),
         score=_score_recap,
+    )
+
+
+# One message that drives TWO distinct tool calls: a like-save (collection_write
+# onto `likes`, taught by the seeded like/dislike skill) AND a browse (the factual
+# version question).  The aggregation contract (#1478): the recap must reflect
+# EVERY call, not just the last one or just the browse — a reply that recaps only
+# the search has dropped the save narration.
+_MULTI_ACTION_MESSAGE = (
+    "i'm really into chess these days. also, what's the latest stable version "
+    "of the quillpad note-taking app?"
+)
+
+
+def _score_multi_recap(db: Database, before: set[str], reply: str) -> list[str]:
+    fails = []
+    if not reply.strip():
+        fails.append("empty reply")
+        return fails
+    saved = tool_was_called(db, "collection_write")
+    browsed = tool_was_called(db, "browse")
+    if not saved:
+        fails.append("did not save the like (no collection_write) — no save narration to recap")
+    if not browsed:
+        fails.append("did not browse — no search narration to recap")
+    # Only meaningful once BOTH calls happened: then the recap must reflect both.
+    if saved and not _reflects_save(reply):
+        fails.append("recap dropped the save — reply doesn't reflect noting the like")
+    if browsed and not _reflects_action(reply):
+        fails.append("recap dropped the search — reply doesn't reflect the lookup")
+    return fails
+
+
+async def test_recap_reflects_multiple_actions(chat_eval: ChatEval) -> None:
+    await chat_eval(
+        case_id="chat-recap-multi",
+        message=_MULTI_ACTION_MESSAGE,
+        browse=list(VERSION_PAGES),
+        score=_score_multi_recap,
+        min_pass_rate=None,
     )

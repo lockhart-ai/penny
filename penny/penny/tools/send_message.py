@@ -99,6 +99,19 @@ class SendMessageTool(Tool):
         "to exit — do not retry.  This is normal cycle behaviour, not a failure."
     )
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        # ``execute`` never returns ``success=False`` — a half-formed body is
+        # rejected earlier at arg-validation, which supplies its own framework
+        # narration — but branch defensively.  A queued send is ``mutated=True``;
+        # a correct no-op decline (refusal / no recipient / muted) is
+        # ``success=True, mutated=False``, so the narration says she held off.
+        if not result.success:
+            return "You tried to message the user but it didn't work:"
+        if not result.mutated:
+            return "You started to message the user but held off:"
+        return "You messaged the user:"
+
     def __init__(self, agent_name: str, db: Database) -> None:
         self._agent_name = agent_name
         self._db = db

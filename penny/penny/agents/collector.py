@@ -82,18 +82,23 @@ class Collector(BackgroundAgent):
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- Always end the cycle with `done(success=<true|false>, summary=<one sentence on "
-        "what actually happened>)`.  `success` is true only if the cycle did what the "
-        "prompt asked, false on no-op or failure.  `summary` must state what *actually* "
-        "happened this cycle — never claim entries were written unless a "
-        "`collection_write(entries=[...])` succeeded.  On a cycle that wrote entries, "
-        "compose the summary fresh from the real "
-        'work: `done(success=true, summary="<one sentence on what you wrote this cycle>")`.  '
-        "If your sources could not be read (every browse failed), say so and set "
-        '`success=false` (e.g. `done(success=false, summary="could not read any source '
-        'this cycle; 0 entries written")`).  If the sources read fine but nothing new '
-        'matched, call `done(success=true, summary="no new matches this cycle")` — quiet '
-        "cycles are normal.\n"
+        "- End every cycle with `done(success=<true|false>, summary=<recap of what you "
+        "did>)`.  Each tool result this cycle opened with a first-person line naming what "
+        'that call actually did — "You read the new messages", "You searched for X", "You '
+        'saved Y to `<collection>`", "You didn\'t add anything new — it was already there", '
+        '"You couldn\'t read any source".  The `summary` TRANSCRIBES those lines: weave '
+        "EVERY one together into one honest sentence, in order, mirroring each call's "
+        "OUTCOME — never compose it fresh from what you set out to do, and never claim a "
+        "write the tool didn't confirm.  Three shapes:\n"
+        "  - Wrote something → name the reads AND the write, e.g. `done(success=true, "
+        'summary="read the new messages, browsed two pages, and saved one entry to '
+        '<collection>")`.\n'
+        "  - Nothing new matched → this is a QUIET cycle: do NOT force a "
+        '`collection_write` just to have one; close `done(success=true, summary="checked '
+        'the sources; no new matches this cycle")`.  Quiet cycles are normal and expected.\n'
+        "  - Couldn't read your sources (every browse failed) → `done(success=false, "
+        'summary="tried the sources but every browse failed, so nothing was written")`.\n'
+        "  `success` is true only if the cycle did what the prompt asked, false on failure.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
