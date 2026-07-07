@@ -176,6 +176,20 @@ def _written_label(arguments: dict) -> str:
     return "an entry"
 
 
+def _log_name(arguments: dict) -> str:
+    """Backtick-quoted log name (from the ``name`` arg) for narration, or a generic
+    noun when the call omitted it (an arg-validation failure still narrates)."""
+    name = arguments.get("name")
+    return f"`{name}`" if name else "a new log"
+
+
+def _exists_label(arguments: dict) -> str:
+    """Quoted probe subject for narration — the content (or key) being checked for —
+    or a generic noun when the call omitted it."""
+    probe = arguments.get("content") or arguments.get("key")
+    return f'"{probe}"' if probe else "that entry"
+
+
 def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolResult | None:
     """A teaching rejection when a missed key is the bracket-wrapped display
     form of an entry that exists.
@@ -514,6 +528,13 @@ class LogCreateTool(MemoryTool):
     }
     args_model = LogCreateArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        log = _log_name(arguments)
+        if not result.success:
+            return f"You tried to create the log {log} but it didn't work:"
+        return f"You created the log {log}:"
+
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm_client = llm_client
@@ -599,6 +620,14 @@ class CollectionGetTool(MemoryTool):
     }
     args_model = CollectionGetArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to look up {entry} in {memory} but it didn't work:"
+        return f"You looked up {entry} in {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -678,6 +707,13 @@ class CollectionReadRandomTool(MemoryTool):
     }
     args_model = ReadRandomArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to sample {memory} at random but it didn't work:"
+        return f"You sampled {memory} at random:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -746,6 +782,13 @@ class CollectionKeysTool(MemoryTool):
         "required": ["memory"],
     }
     args_model = MemoryNameArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to list the keys in {memory} but it didn't work:"
+        return f"You listed the keys in {memory}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -1699,6 +1742,12 @@ class ReadPublishedLatestTool(CursorReadTool):
     }
     args_model = ReadPublishedLatestArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to check for new updates to share but it didn't work:"
+        return "You checked for new updates to share:"
+
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadPublishedLatestArgs(**kwargs)
         selected = self._select(args.n)
@@ -1772,6 +1821,13 @@ class LogAppendTool(MemoryTool):
     }
     args_model = LogAppendArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a log")
+        if not result.success:
+            return f"You tried to add an entry to {memory} but it didn't work:"
+        return f"You added an entry to {memory}:"
+
     def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
         self._db = db
         self._llm = llm_client
@@ -1830,6 +1886,13 @@ class ExistsTool(MemoryTool):
         "required": ["memories", "content"],
     }
     args_model = ExistsArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        label = _exists_label(arguments)
+        if not result.success:
+            return f"You tried to check whether {label} is already saved but it didn't work:"
+        return f"You checked whether {label} is already saved:"
 
     def __init__(
         self,
