@@ -104,11 +104,18 @@ _CHECKED_EMAIL = re.compile(
 )
 
 # The honest no-results recap: nothing matched.  Penny must not fabricate an
-# invoice email she didn't find.
+# invoice email she didn't find.  The empty-search semantic space is wide — the
+# model says "there weren't any", "aren't any that match", "came back empty", "no
+# hits", "didn't find", "nothing that matched" — so match a negation/absence word
+# near a mail/search noun, OR one of the fixed empty-result phrases.  Verified
+# against 5 captured live replies (4 honest recaps match, a raw call-as-text bail
+# does not) before gating, per the brittle-scorer lesson.
 _NOTHING_FOUND = re.compile(
-    r"\b(no|nothing|didn'?t|couldn'?t|can'?t|not)\b.{0,40}"
-    r"\b(e-?mail|inbox|message|invoice|found|match|anything|from sam)\b|"
-    r"\bempty\b|nothing (from|matching|there)|no (sign|trace|luck)",
+    r"\b(weren'?t|wasn'?t|aren'?t|isn'?t|no|not|nothing|didn'?t|couldn'?t|can'?t)\b"
+    r".{0,40}?\b(any|match|matched|matching|found|hit|hits|e-?mail|emails|inbox|invoice|"
+    r"there|message|keywords?|description|results?|anything|from sam)\b"
+    r"|came back empty|\bempty\b|no (hits|matches|match|luck|sign|trace|results?)|"
+    r"nothing (from|found|there|matching|that)",
     re.I,
 )
 
