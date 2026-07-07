@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct ChatMessageView: View {
@@ -88,7 +89,7 @@ struct ChatMessageView: View {
     private func messageContentBlock(_ block: ChatMessageContentBlock) -> some View {
         switch block.kind {
         case .text(let text):
-            Text(text)
+            ChatAttributedText(attributedText: text)
                 .lineLimit(nil)
                 .font(.body)
         case .table(let table):
@@ -196,6 +197,117 @@ struct ChatMessageView: View {
     }
 }
 
+private struct ChatAttributedText: View {
+    let attributedText: AttributedString
+
+    var body: some View {
+        ChatInlineFlowLayout(horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(fragments) { fragment in
+                switch fragment.kind {
+                case .text(let text):
+                    Text(text)
+                case .compactLink(let title, let url):
+                    Link(destination: url) {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text(title)
+                            Image(systemName: "link")
+                                .imageScale(.small)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                }
+            }
+        }
+    }
+
+    private var fragments: [Fragment] {
+        var fragments: [Fragment] = []
+        var id = 0
+
+        for run in attributedText.runs {
+            let runText = AttributedString(attributedText[run.range])
+            let displayText = String(runText.characters)
+
+            if let url = run.link, url.host == displayText {
+                fragments.append(Fragment(id: id, kind: .compactLink(title: displayText, url: url)))
+            } else {
+                fragments.append(Fragment(id: id, kind: .text(runText)))
+            }
+
+            id += 1
+        }
+
+        return fragments
+    }
+
+    private struct Fragment: Identifiable {
+        let id: Int
+        let kind: Kind
+
+        enum Kind {
+            case text(AttributedString)
+            case compactLink(title: String, url: URL)
+        }
+    }
+}
+
+private struct ChatInlineFlowLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let availableWidth = proposal.width ?? .greatestFiniteMagnitude
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var measuredWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: availableWidth, height: proposal.height))
+
+            if currentX > 0, currentX + size.width > availableWidth {
+                measuredWidth = max(measuredWidth, currentX - horizontalSpacing)
+                currentX = 0
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+
+            currentX += min(size.width, availableWidth) + horizontalSpacing
+            lineHeight = max(lineHeight, size.height)
+        }
+
+        measuredWidth = max(measuredWidth, currentX > 0 ? currentX - horizontalSpacing : 0)
+        return CGSize(width: min(measuredWidth, availableWidth), height: currentY + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let availableWidth = bounds.width
+        var currentX = bounds.minX
+        var currentY = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: availableWidth, height: proposal.height))
+
+            if currentX > bounds.minX, currentX + size.width > bounds.maxX {
+                currentX = bounds.minX
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+
+            subview.place(
+                at: CGPoint(x: currentX, y: currentY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: min(size.width, availableWidth), height: size.height)
+            )
+            currentX += min(size.width, availableWidth) + horizontalSpacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
 struct ChatMessageContentBlock: Identifiable {
     let id: Int
     let kind: Kind
@@ -277,7 +389,7 @@ private struct ChatMarkdownTableView: View {
         let attributedValue = ChatMessageContentParser.markdownText(from: value.isEmpty ? " " : value)
         let alignment = table.alignment(for: columnIndex)
 
-        return Text(attributedValue)
+        return ChatAttributedText(attributedText: attributedValue)
             .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
             .multilineTextAlignment(alignment.textAlignment)
             .lineLimit(nil)
@@ -444,10 +556,161 @@ enum ChatMessageContentParser {
             }
 
             let lineText = line.isEmpty ? " " : line
-            result.append((try? AttributedString(markdown: lineText)) ?? AttributedString(lineText))
+            result.append(markdownLine(from: lineText))
         }
 
         return result
+    }
+
+    private static func markdownLine(from lineText: String) -> AttributedString {
+        compactURLLikeLinkText(in: markdownAttributedString(from: markdownTextWithCompactedRawLinks(from: lineText)))
+    }
+
+    private static func markdownAttributedString(from text: String) -> AttributedString {
+        guard let leadingEndIndex = text.firstIndex(where: { !$0.isWhitespace }) else {
+            return AttributedString(text)
+        }
+
+        let trailingStartIndex = text.lastIndex(where: { !$0.isWhitespace }).map { text.index(after: $0) } ?? leadingEndIndex
+        let markdownText = String(text[leadingEndIndex..<trailingStartIndex])
+        var result = AttributedString(String(text[..<leadingEndIndex]))
+        result.append((try? AttributedString(markdown: markdownText)) ?? AttributedString(markdownText))
+        result.append(AttributedString(String(text[trailingStartIndex...])))
+        return result
+    }
+
+    private static func markdownTextWithCompactedRawLinks(from lineText: String) -> String {
+        let protectedRanges = markdownLinkSyntaxRanges(in: lineText)
+        let links = rawLinks(in: lineText, excluding: protectedRanges)
+        guard !links.isEmpty else { return lineText }
+
+        var result = ""
+        var currentIndex = lineText.startIndex
+
+        for link in links {
+            result += lineText[currentIndex..<link.range.lowerBound]
+            result += "[\(link.displayText)](\(link.url.absoluteString))"
+            currentIndex = link.range.upperBound
+        }
+
+        result += lineText[currentIndex...]
+        return result
+    }
+
+    private static func compactURLLikeLinkText(in attributedText: AttributedString) -> AttributedString {
+        var result = AttributedString()
+
+        for run in attributedText.runs {
+            guard let url = run.link, let host = url.host else {
+                result.append(AttributedString(attributedText[run.range]))
+                continue
+            }
+
+            let displayText = String(attributedText[run.range].characters)
+            guard isURLLikeDisplayText(displayText) else {
+                result.append(AttributedString(attributedText[run.range]))
+                continue
+            }
+
+            var replacement = AttributedString(host)
+            replacement.link = url
+            result.append(replacement)
+        }
+
+        return result
+    }
+
+    private static func rawLinks(in lineText: String, excluding protectedRanges: [Range<String.Index>]) -> [RawLink] {
+        var links: [RawLink] = []
+        var index = lineText.startIndex
+
+        while index < lineText.endIndex {
+            if let protectedRange = protectedRanges.first(where: { $0.contains(index) }) {
+                index = protectedRange.upperBound
+                continue
+            }
+
+            guard startsRawLink(at: index, in: lineText) else {
+                index = lineText.index(after: index)
+                continue
+            }
+
+            let linkStartIndex = index
+            let rangeStartIndex = previousCharacter(before: index, in: lineText) == "<" ? lineText.index(before: index) : index
+            var scanIndex = index
+            while scanIndex < lineText.endIndex, !isRawLinkTerminator(lineText[scanIndex]) {
+                scanIndex = lineText.index(after: scanIndex)
+            }
+
+            var linkEndIndex = scanIndex
+            while linkEndIndex > linkStartIndex, let lastCharacter = lineText[lineText.index(before: linkEndIndex)].unicodeScalars.first, CharacterSet(charactersIn: ".,!?;:)").contains(lastCharacter) {
+                linkEndIndex = lineText.index(before: linkEndIndex)
+            }
+
+            let rangeEndIndex = scanIndex < lineText.endIndex && lineText[scanIndex] == ">" && rangeStartIndex < linkStartIndex ? lineText.index(after: scanIndex) : linkEndIndex
+            let rawValue = String(lineText[linkStartIndex..<linkEndIndex])
+            if linkEndIndex > linkStartIndex, let url = normalizedURL(from: rawValue), let host = url.host {
+                links.append(RawLink(range: rangeStartIndex..<rangeEndIndex, url: url, displayText: host))
+            }
+
+            index = scanIndex
+        }
+
+        return links
+    }
+
+    private static func markdownLinkSyntaxRanges(in lineText: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var searchIndex = lineText.startIndex
+
+        while let labelStart = lineText[searchIndex...].firstIndex(of: "["),
+              let labelEnd = lineText[labelStart...].firstIndex(of: "]") {
+            let destinationStart = lineText.index(after: labelEnd)
+            guard destinationStart < lineText.endIndex, lineText[destinationStart] == "(" else {
+                searchIndex = lineText.index(after: labelStart)
+                continue
+            }
+
+            let destinationContentStart = lineText.index(after: destinationStart)
+            guard let destinationEnd = lineText[destinationContentStart...].firstIndex(of: ")") else { break }
+
+            ranges.append(labelStart..<lineText.index(after: destinationEnd))
+            searchIndex = lineText.index(after: destinationEnd)
+        }
+
+        return ranges
+    }
+
+    private static func startsRawLink(at index: String.Index, in lineText: String) -> Bool {
+        let suffix = lineText[index...]
+        return suffix.hasPrefix("https://") || suffix.hasPrefix("http://") || suffix.hasPrefix("www.")
+    }
+
+    private static func isRawLinkTerminator(_ character: Character) -> Bool {
+        character.isWhitespace || character == "<" || character == ">" || character == "[" || character == "]"
+    }
+
+    private static func normalizedURL(from rawValue: String) -> URL? {
+        if rawValue.hasPrefix("www.") {
+            return URL(string: "https://\(rawValue)")
+        }
+        return URL(string: rawValue)
+    }
+
+    private static func previousCharacter(before index: String.Index, in text: String) -> Character? {
+        guard index > text.startIndex else { return nil }
+        return text[text.index(before: index)]
+    }
+
+    private static func isURLLikeDisplayText(_ displayText: String) -> Bool {
+        let trimmedText = displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedURL(from: trimmedText)?.host != nil
+    }
+
+    private struct RawLink {
+        let range: Range<String.Index>
+        let url: URL
+        let displayText: String
     }
 
     private static func table(startingAt index: Int, in lines: [String]) -> (value: ChatMarkdownTable, endIndex: Int)? {
