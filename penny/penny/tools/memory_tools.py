@@ -152,6 +152,30 @@ _BRACKET_KEY_REJECTION = (
 )
 
 
+def _memory_name(arguments: dict, fallback: str) -> str:
+    """Backtick-quoted memory name for narration, or a caller-chosen fallback noun
+    when the call omitted it (an arg-validation failure still narrates)."""
+    name = arguments.get("memory")
+    return f"`{name}`" if name else fallback
+
+
+def _entry_label(arguments: dict) -> str:
+    """Quoted entry key for narration, or a generic noun when the call omitted it."""
+    key = arguments.get("key")
+    return f'"{key}"' if key else "an entry"
+
+
+def _written_label(arguments: dict) -> str:
+    """Name the write's single entry by key, or a count of several, for narration."""
+    entries = arguments.get("entries", [])
+    keys = [entry.get("key") for entry in entries if isinstance(entry, dict) and entry.get("key")]
+    if len(keys) == 1:
+        return f'"{keys[0]}"'
+    if keys:
+        return f"{len(keys)} entries"
+    return "an entry"
+
+
 def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolResult | None:
     """A teaching rejection when a missed key is the bracket-wrapped display
     form of an entry that exists.
@@ -621,6 +645,13 @@ class CollectionReadLatestTool(MemoryTool):
     }
     args_model = ReadLatestArgs
 
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "collection")
+        if not result.success:
+            return f"You tried to look up your {memory} but it didn't work:"
+        return f"You looked up your {memory}:"
+
     def __init__(self, db: Database) -> None:
         self._db = db
 
@@ -837,6 +868,15 @@ class CollectionWriteTool(MemoryTool):
         "required": ["memory", "entries"],
     }
     args_model = CollectionWriteArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to save to {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You didn't add anything new to {memory} — it was already there:"
+        return f"You saved {_written_label(arguments)} to {memory}:"
 
     def __init__(
         self,
@@ -1323,6 +1363,16 @@ class CollectionDeleteEntryTool(MemoryTool):
         "required": ["memory", "key"],
     }
     args_model = CollectionDeleteEntryArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        memory = _memory_name(arguments, "a collection")
+        entry = _entry_label(arguments)
+        if not result.success:
+            return f"You tried to remove {entry} from {memory} but it didn't work:"
+        if not result.mutated:
+            return f"You couldn't find {entry} to remove from {memory}:"
+        return f"You removed {entry} from {memory}:"
 
     def __init__(self, db: Database, scope: str | None = None) -> None:
         self._db = db
