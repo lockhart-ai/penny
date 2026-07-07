@@ -24,6 +24,15 @@ Branch protection is enabled on `main`. All changes must go through pull request
   - Agent containers already have `GH_TOKEN` set by the orchestrator — just use `gh` directly
 - The user reviews and approves the PR (code-owner review); the **merge queue** does the merging — flag the PR with `gh pr merge <n> --auto` ("merge when ready"; no strategy flag — the queue sets it and rejects `--squash`) so it enqueues itself once approved and green, runs the `merge_group` checks against latest `main`, and merges with no manual step. A force-push clears the flag — re-run it after every rebase push
 
+## Working Directory Discipline
+
+**Every session that will modify files works in its own git worktree off `origin/main` — not just fleet subagents, and not just the primary checkout.** This applies to a top-level interactive session exactly as it does to a dispatched task agent. The reason is isolation: the primary checkout (`/Users/decker/Documents/penny`) is shared with the user and any other session, so editing it directly means your uncommitted work can be silently discarded by a branch switch happening under you, and your changes tangle with whatever else is in flight. A worktree off `origin/main` gives you a private tree that nothing else touches.
+
+- **Read-only / conversational sessions stay put.** A pure Q&A, log review, or investigation with no file edits does not need a worktree. The rule triggers at the *first* `Edit`/`Write`/commit: cut the worktree first, then edit.
+- **How** (top-level session, mirrors SOP §1): `git fetch origin main`, then `git worktree add -b <descriptive-branch> .claude/worktrees/<name> origin/main` (that path is gitignored). Do all editing, `make fix check`, and committing from **inside the worktree**. You are creating the worktree yourself, so `git worktree add` is correct — unlike a subagent dispatched with `isolation: "worktree"`, which is *already* in one and must not add another.
+- **Then follow the child SOP end to end** — [`docs/agent-task-workflow.md`](docs/agent-task-workflow.md): gate (§4), quality (§5), privacy (§6), PR (§7), shepherd (§8), cleanup (§9). The SOP is the operating contract for *any* session making changes, top-level or dispatched.
+- **`make token` gotcha** still applies: run it against the primary checkout (`make -C /Users/decker/Documents/penny token`), never the worktree (it has no real `.env`).
+
 ## Agent Supervision (task-agent fleets)
 
 When work is fanned out to task agents (each owning one issue per `docs/agent-task-workflow.md`), a **supervisor** — the parent Claude session or the user — owns the fleet. **The operating procedure — bootstrapping a fresh session onto a fleet (from the meta ticket + live queries, never a prior session's summary), meta-ticket conventions, dispatch mechanics (worktree isolation, Opus for implementation subagents), wave planning, fleet-end — is [`docs/agent-supervisor-runbook.md`](docs/agent-supervisor-runbook.md); start there.** The SOP is the child's contract; these are the supervisor's standing duties:

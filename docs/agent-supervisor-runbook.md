@@ -4,6 +4,22 @@ How a Claude session **runs a fleet**: one supervisor owns a meta ticket, dispat
 
 The design: **GitHub is the durable state, not your context.** A fresh session must be able to pick up a half-finished fleet from the meta ticket + `git worktree list` alone. Record everything that matters (dispatches, PRs, decisions) on the meta as it happens.
 
+## 0. Should this be a fleet at all? (decide before dispatching)
+
+Fan-out is **not** a general speedup — it is leverage for a specific workload shape, and the wrong shape makes it *slower and far more expensive* than one session working the tickets in sequence. Decide deliberately; the default for a small or eval-gated batch is **one sequential session, not a fleet**. (A single session still works in a worktree per `CLAUDE.md` → Working Directory Discipline — that's isolation, not fan-out.)
+
+The three failure modes to weigh — each observed to make a real fleet cost far more than the sequential alternative for no throughput gain:
+
+- **Coordination can outweigh the work.** Dispatching, heartbeating, relaying, and shepherding all cost tokens that never touch code. When the changes are small, this fixed per-ticket overhead dwarfs the diff — and a fleet pays it once per ticket instead of amortizing it once across a whole session.
+- **A fleet cannot outrun its slowest serial resource.** If every child must pass a single-tenant gate — the eval GPU — the "parallel" agents just queue behind it and sit idle. The parallelism is illusory at the bottleneck; adding agents only lengthens the line.
+- **Cold starts and idle-polling dominate the token bill.** Each fresh subagent re-derives the world (reads the SOP, greps the tree, orients in git), and an agent blocked on a slow check burns turns re-reading its entire context just to wait. Many cold contexts cost dramatically more than one warm session that reuses its own.
+
+**Fan out when ALL hold:** tickets are genuinely independent (disjoint code areas), verification is fast/local/parallel (`make fix check` only — **no GPU eval**), and each unit is *substantial* relative to its setup (a mechanical migration across many files, a broad audit, per-module refactors).
+
+**Do NOT fan out when ANY hold — do it in one sequential session instead:** the units are small (a run of 10-line prompt/eval tweaks), verification is gated on the serial eval GPU, or the tickets touch shared files. A batch of tiny eval-gated PRs is the anti-pattern this gate exists to catch.
+
+If it's a mixed bag, split it: sequence the small/eval-gated tickets in one session, and fan out only the independent `make fix check`-only cluster.
+
 ## 1. Bootstrap (fresh session, cold start or resume)
 
 1. Find the meta: `GH_TOKEN=$(make token) gh issue list --label meta --state open`. Read it **and its comments** — decisions and dispatch records live there.
