@@ -67,12 +67,19 @@ def _first_index(reply: str, pattern: str) -> int:
 
 # ════════════════════════ 1. Legibility (prompt -> NL) ════════════════════════
 
-# The unambiguous spine of the recipe — search for games, then write them to the
-# collection.  These are the two families that can be matched robustly (specific verbs,
-# not generic "add"/"keep"/"store"), so legibility GATES on them + their order.
+# The spine of the recipe — search for games, then write them to the collection —
+# is what legibility GATES on.  The search step is described many ways ("browse",
+# "look on the web", "pulls in new games from databases and hobby sites", "scans"), so
+# match a broad verb set AND fall back to the sources a faithful description names (the
+# web / sites / databases / online).  The noun fallback is what makes it robust — a
+# reply that describes searching almost always names where it searches.  (Verified
+# against captured samples before widening: the earlier verb-only regex false-negatived
+# "look on the web" and "pulls in … databases", scoring faithful replies as fails.)
 _SEARCH = (
-    r"\b(search\w*|browse\w*|look\w*\s+(for|up)|scours?|scans?|hunts?|finds?|crawls?|"
-    r"checks?\s+the\s+web|reads?\s+(pages|articles|sites))\b"
+    r"\b(search\w*|browse\w*|scours?|scans?|hunts?|crawls?|monitors?|gathers?|pulls?\s+in|"
+    r"look\w*\s+(for|up|on|at|across|through)|finds?\s+new|"
+    r"checks?\s+(the\s+web|sites|online)|reads?\s+(pages|articles|sites))\b"
+    r"|\b(the\s+web|online|the\s+internet|sites?|databases?)\b"
 )
 # The save step is phrased many ways ("writes entries", "an entry gets added", "store
 # them", "keeps a curated list").  Direct persist verbs match bare; the ambiguous ones

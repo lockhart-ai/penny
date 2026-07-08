@@ -1313,20 +1313,32 @@ class MemoryMetadataTool(MemoryTool):
         )
         created = format_log_timestamp(memory.created_at)
         updated = format_log_timestamp(memory.updated_at)
+        # Lead with what the collection is FOR (intent) and what it DOES (the recipe),
+        # because that is the substance a description should convey; the operational
+        # settings (routing/cadence/timestamps) are secondary and go last.  Ordered this
+        # way — and with the nudge below — so a model asked "what does this do?" walks
+        # through the recipe's steps instead of reciting the cadence/recall trivia (the
+        # failure the #1530 legibility baseline surfaced).
         lines = [
             f"name: {memory.name}",
             f"type: {memory.type}",
             f"description: {memory.description}",
             f"intent: {memory.intent or 'none'}",
+            "",
+            "What it does each cycle — the recipe below is the collection's actual "
+            "behaviour.  When explaining the collection, walk through THESE steps, not the "
+            "operational settings.",
+            f"extraction prompt: {memory.extraction_prompt or 'none'}",
+            "",
+            "Operational settings (routing + cadence — secondary):",
             f"inclusion: {memory.inclusion}",
             f"recall: {memory.recall}",
             f"published: {memory.published}",
+            f"interval: {interval}",
             f"archived: {memory.archived}",
             f"created: {created}",
             f"updated: {updated}",
-            f"interval: {interval}",
             f"last collected: {last_collected}",
-            f"extraction prompt: {memory.extraction_prompt or 'none'}",
         ]
         return "\n".join(lines)
 
