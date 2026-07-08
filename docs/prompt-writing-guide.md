@@ -87,6 +87,21 @@ Two corollaries, both measured on this codebase:
 7. **Examples beat abstraction for a tricky case.** One concrete good/bad pair teaches a
    discrimination that a paragraph of rules won't.
 
+8. **Classify-then-act: decompose a fuzzy judgement into a small set of NAMED cases.** When a
+   rule is really "decide which situation this is, then respond," don't leave it to open-ended
+   judgement — enumerate the cases (keep N ~2–4) and give each a prescribed response. gpt-oss
+   reasons through discrete cases far better than a vague "act appropriately," and it *names its
+   choice* in the thinking trace before acting. This is the shape of the `quality` collector's
+   tiers (did-any-work? → matches-intent? → ignore-as-capacity) and the chat agent's imperative
+   gate (direct ask → do it; tells you about themselves → remember it; passing mention → just
+   reply). Rules of thumb: the cases must be model-distinguishable from the input and cover the
+   space (+ a default), and **name the tricky boundary case explicitly** — that's where
+   mis-classification lives. *Measured:* the imperative gate cut over-firing (`no-fire` 2/5→5/5),
+   but a first wording that lumped "sharing a preference" under "casual share → don't act"
+   suppressed the implicit "I'm into X" save (`likes-add-like` 5/5→3/5); carving the preference
+   case out as its own named clause recovered it to 5/5. The **eval is what surfaces a mis-cut
+   boundary** — it shows up as one specific case regressing, invisible from reading the prompt.
+
 ## The canonical call notation
 
 The core pattern above says *name every call in ONE format*. This section pins what that
