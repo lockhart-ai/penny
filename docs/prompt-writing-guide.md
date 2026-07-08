@@ -6,6 +6,30 @@ agent system prompts, and tool descriptions — against a local gpt-oss:20b. Dis
 our own live-model evals (`make eval`) have repeatedly shown. Every claim here that cites a
 number was measured on this codebase.
 
+## Start here: it's a presentation problem before a capability problem
+
+The model can only reason about what you put in front of it — so most of "get Penny to do X"
+is really "present what X needs in a form the model can act on." Work in that order:
+
+1. **First, present information so it guides the model toward the outcome.** Reach for the
+   cheap, high-leverage levers — what a tool surfaces, how a tool *response* is worded and
+   ordered, a line of system-prompt guidance — before retries, scaffolding, or code. *Measured:*
+   reordering the `memory_metadata` response so a collection's intent + recipe **led** (instead
+   of trailing a dozen operational settings) took "walk me through what this collection does"
+   from **1/3 to 3/3** — zero new capability, the same facts shown differently. So when a
+   behaviour is missing, the first question is "is the model being shown the right thing, the
+   right way?" — not "can the model do this?" Most "it can't" turns out to be "it was never
+   shown it legibly."
+
+2. **Then add guardrails for the stochastic edges.** Presentation raises the odds; it doesn't
+   guarantee. Where a wrong answer is unacceptable — a fictitious tool persisted in a recipe, a
+   duplicate notification — move that certainty out of model-space into deterministic code: a
+   tool boundary that rejects-and-teaches (see *Reject and teach* below), or structural state
+   read rather than re-judged (root `CLAUDE.md` → *Structural state over model judgment*).
+
+Present well for the common case; structure deterministically for the tail. Everything below is
+*how* to present; the reject-and-teach and process sections are the guardrail half.
+
 ## The four that matter most
 
 If you remember nothing else:
