@@ -54,6 +54,3 @@ node_modules/
 # claude
 .claude/
 QUALITY-REVIEW.md
-
-# eval run reports (generated into the PR body, never committed)
-penny/penny/tests/eval/_reports/
