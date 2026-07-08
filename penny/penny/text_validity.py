@@ -1,8 +1,8 @@
 """Content-validity primitives — pure text predicates, no DB / no model.
 
-The one home for "is this text usable?" rules, kept dependency-light (only ``re``
-+ ``PennyConstants``) so every layer can import it without dragging in the
-database or agent packages.  Two callers that must agree share these:
+The one home for "is this text usable?" rules, kept dependency-light (standard
+library + ``PennyConstants`` only) so every layer can import it without dragging in
+the database or agent packages.  Two callers that must agree share these:
 
   * the memory write path (``Collection.write`` / the ``exists`` probe) rejects
     degenerate corpus content via :func:`degenerate_reason` — a SUBSTRING poison
@@ -25,7 +25,9 @@ here, so its public import surface is unchanged.
 
 from __future__ import annotations
 
+import difflib
 import re
+from collections.abc import Collection
 
 from penny.constants import PennyConstants
 
@@ -356,6 +358,63 @@ def require_extraction_prompt(value: str) -> str:
     if error := check_extraction_prompt(value):
         raise ValueError(error)
     return value
+
+
+# Canonical tool-call notation in a numbered extraction_prompt is ``tool(args)`` — a
+# lowercase snake_case identifier IMMEDIATELY followed by ``(``, no space (the
+# prompt-writing guide's ``N. tool(args) — purpose`` shape).  Two precision levers
+# keep a prose word from reading as a call:
+#   * NO space before ``(`` — English prose puts a space before an aside
+#     ("one result (e.g. the first)") while a call never does ("browse(").
+#   * NOT the pluralisation idiom — ``word(s)`` / ``word(es)`` / ``word(ies)``
+#     ("store the url(s)", "skip duplicate(s)") is prose, not a ``done()``-style
+#     empty call, so a bare short plural suffix immediately closing the paren is
+#     excluded via the negative lookahead.
+# Not preceded by a word char or ``.`` so a dotted/wrapped artifact
+# (``functions.browse(``) isn't split into a spurious bare name.  (A no-space
+# parenthetical enumeration like ``category(euro/co-op)`` is a rare residual — the
+# common case is the plural suffix.)
+_TOOL_CALL_RE = re.compile(r"(?<![\w.])([a-z_][a-z0-9_]*)\((?!(?:s|es|ies)\))")
+
+
+def extract_tool_call_names(prompt: str) -> list[str]:
+    """Return the tool-call names written in ``prompt``, in first-seen order.
+
+    A pure text scan for the canonical ``tool(args)`` call shape (see
+    :data:`_TOOL_CALL_RE`); it does not know which names are real tools — the
+    caller checks membership.  Order-preserving and de-duplicated, so a repeated
+    call is reported once.
+    """
+    seen: dict[str, None] = {}
+    for match in _TOOL_CALL_RE.finditer(prompt):
+        seen.setdefault(match.group(1), None)
+    return list(seen)
+
+
+def check_extraction_prompt_tools(prompt: str, valid_tools: Collection[str]) -> str | None:
+    """Return an error naming any tool call outside ``valid_tools``, else None.
+
+    Every ``tool(args)`` in a collector's ``extraction_prompt`` must name a tool the
+    collector can actually run.  The caller supplies that surface (``valid_tools``) —
+    so this stays a pure text rule that doesn't know the tool registry, and a test can
+    exercise it with a small contrived set.  A fictitious call (a hallucinated
+    ``extract_text(...)`` the model wrote into its own recipe) would otherwise be
+    persisted into a prompt the collector later tries to run and then fail every
+    cycle, so it is rejected at write time with an actionable message (the offending
+    tool, a did-you-mean, and the tools that DO exist), mirroring the executor's live
+    tool-not-found response.
+    """
+    unknown = [name for name in extract_tool_call_names(prompt) if name not in valid_tools]
+    if not unknown:
+        return None
+    close = difflib.get_close_matches(unknown[0], valid_tools, n=1, cutoff=0.6)
+    did_you_mean = f" Did you mean '{close[0]}'?" if close else ""
+    offending = ", ".join(repr(name) for name in unknown)
+    available = ", ".join(sorted(valid_tools))
+    return (
+        f"extraction_prompt calls {offending}, which a collector cannot use."
+        f"{did_you_mean} Rewrite the step(s) using only these tools: {available}."
+    )
 
 
 def require_non_blank_description(value: str) -> str:

@@ -353,6 +353,28 @@ class TestCreateAndList:
         assert "Created" in result.message
 
     @pytest.mark.asyncio
+    async def test_create_rejects_fictitious_tool_call(self, tmp_path):
+        # A hallucinated tool named in the extraction_prompt (extract_text) is
+        # rejected at the args_model, before execute — so a fictitious call can
+        # never be persisted into a prompt the collector would later fail to run.
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
+            name="notes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt=(
+                'Collect things.\n1. browse(["x"])\n2. extract_text(page)\n'
+                '3. collection_write("notes", entries=[{key: "k", content: "c"}])\n4. done()'
+            ),
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        assert result.success is False
+        assert "extract_text" in result.message
+        assert db.memories.get("notes") is None  # nothing persisted
+
+    @pytest.mark.asyncio
     async def test_update_rejects_short_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
         original_prompt = "test fixture extraction prompt"
@@ -374,6 +396,35 @@ class TestCreateAndList:
         assert "extraction_prompt" in result.message
         assert "too short" in result.message
         # Update rejected — original prompt preserved unchanged
+        assert db.memories.get("notes").extraction_prompt == original_prompt
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_fictitious_tool_call(self, tmp_path):
+        db = _make_db(tmp_path)
+        original_prompt = (
+            'Collect notes.\n1. browse(["x"])\n'
+            '2. collection_write("notes", entries=[{key: "k", content: "c"}])\n3. done()'
+        )
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="notes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt=original_prompt,
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        # A rewrite that introduces a fictitious tool is rejected via the pre-execute
+        # Tool.run gate, and the stored prompt is left untouched.
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
+            name="notes",
+            extraction_prompt=(
+                'Collect notes.\n1. browse(["x"])\n2. extract_text(page)\n'
+                '3. collection_write("notes", entries=[{key: "k", content: "c"}])\n4. done()'
+            ),
+        )
+        assert result.success is False
+        assert "extract_text" in result.message
         assert db.memories.get("notes").extraction_prompt == original_prompt
 
     @pytest.mark.asyncio

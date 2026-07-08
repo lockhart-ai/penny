@@ -46,6 +46,7 @@ from penny.database.memory import (
 from penny.database.models import MemoryEntry, MemoryRow
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.similarity import embed_text
+from penny.text_validity import check_extraction_prompt_tools
 from penny.tools.base import Tool
 from penny.tools.memory_args import (
     CatalogArgs,
@@ -476,6 +477,10 @@ class CollectionCreateTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionCreateArgs(**kwargs)
+        if rejection := _reject_unknown_extraction_tools(
+            self._db, self._llm_client, args.extraction_prompt
+        ):
+            return rejection
         description_embedding = await embed_text(self._llm_client, args.description)
         memory = self._db.memories.create_collection(
             args.name,
@@ -1231,6 +1236,10 @@ class CollectionUpdateTool(MemoryTool):
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionUpdateArgs(**kwargs)
+        if rejection := _reject_unknown_extraction_tools(
+            self._db, self._llm_client, args.extraction_prompt
+        ):
+            return rejection
         inclusion = Inclusion(args.inclusion) if args.inclusion is not None else None
         recall = RecallMode(args.recall) if args.recall is not None else None
         # Re-embed the routing anchor whenever the description changes.
@@ -2111,6 +2120,44 @@ class TestExtractionPromptTool(Tool):
 
 
 # ── Factory ─────────────────────────────────────────────────────────────────
+
+# The agent name passed to ``build_memory_tools`` purely to enumerate the collector's
+# tool NAMES — it only sets a tool's cursor identity, which is irrelevant to the names.
+_VOCAB_PROBE_AGENT = "collector"
+
+
+def _collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str]:
+    """The names of every tool a collector runs with — the surface an
+    ``extraction_prompt`` may legitimately call.
+
+    Discovered from the *real* assembly (``build_memory_tools`` + browse + done +
+    send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so
+    it can never drift from what a collector actually runs — add a collector tool and
+    it's covered for free.  ``BrowseTool`` / ``SendMessageTool`` are imported lazily:
+    ``send_message`` imports ``DoneTool`` from this module, so a top-level import here
+    would close that cycle.
+    """
+    from penny.tools.browse import BrowseTool
+    from penny.tools.send_message import SendMessageTool
+
+    memory_names = {tool.name for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT)}
+    return frozenset(memory_names | {BrowseTool.name, DoneTool.name, SendMessageTool.name})
+
+
+def _reject_unknown_extraction_tools(
+    db: Database, llm_client: LlmClient, extraction_prompt: str | None
+) -> ToolResult | None:
+    """A failed ``ToolResult`` if ``extraction_prompt`` names a tool no collector can
+    run (a hallucinated ``extract_text``), else ``None``.  A ``None`` prompt — an
+    update leaving it unchanged — is nothing to check.  Runs at ``collection_create`` /
+    ``collection_update`` time so a fictitious call is never persisted into a prompt the
+    collector would then fail to run every cycle."""
+    if extraction_prompt is None:
+        return None
+    surface = _collector_tool_surface(db, llm_client)
+    if error := check_extraction_prompt_tools(extraction_prompt, surface):
+        return ToolResult(message=error, success=False)
+    return None
 
 
 def build_memory_tools(

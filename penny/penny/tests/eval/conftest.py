@@ -845,6 +845,45 @@ class _InjectDoneBail(_InjectingClient):
         return await self._real.chat(messages, *args, tools=tools, **kwargs)
 
 
+class _InjectFictitiousToolPrompt(_InjectingClient):
+    """Forces ONE ``collection_update`` whose ``extraction_prompt`` names a tool no
+    collector has, as the model's FIRST response.
+
+    Reproduces — deterministically against the live model — the chat agent writing a
+    hallucinated tool into a collection's recipe (observed: a made-up ``extract_text``
+    for a "read the page" step).  The write-time gate refuses it with the
+    correction-teaching message, and the live model must recover: re-issue a
+    ``collection_update`` whose prompt uses only real tools (``browse`` for the read),
+    which then persists.  ``bail_injected`` records the scenario actually fired."""
+
+    def __init__(self, real: LlmClient, collection: str, prompt: str) -> None:
+        super().__init__(real)
+        self._collection = collection
+        self._prompt = prompt
+
+    async def chat(self, messages, tools=None, *args, **kwargs):
+        if not self.bail_injected:
+            self.bail_injected = True
+            return LlmResponse(
+                message=LlmMessage(
+                    role="assistant",
+                    tool_calls=[
+                        LlmToolCall(
+                            id="bail-fictitious-tool",
+                            function=LlmToolCallFunction(
+                                name="collection_update",
+                                arguments={
+                                    "name": self._collection,
+                                    "extraction_prompt": self._prompt,
+                                },
+                            ),
+                        )
+                    ],
+                )
+            )
+        return await self._real.chat(messages, *args, tools=tools, **kwargs)
+
+
 class _InjectSendBail(_InjectAfterToolCall):
     """Injects ONE malformed ``send_message`` tool call right after the model's
     first real tool call.
