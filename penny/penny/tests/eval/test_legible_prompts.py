@@ -14,6 +14,9 @@ rest of #1528 (and the #1471 teach-by-example rework) rides on:
   * **Discuss then adjust** (multi-turn, the full loop): the user and Penny discuss the
     recipe in plain words, then the user adjusts it in plain words a turn later — the edit
     rides on the prior discussion (Penny sees it via the DB history) and still lands + echoes.
+  * **Edit operations** (deeper multi-turn): the three distinct edit KINDS in one
+    conversation — TWEAK a step, ADD a step, REMOVE a step, then stop — each building on the
+    last edited state, all three landing with the recipe's spine intact.
   * **Round-trip** (true two-turn): Penny describes the recipe, then re-encodes that
     description back into the recipe unchanged — the tool families survive in order.
 
@@ -198,6 +201,55 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_edit_and_echo,
         min_pass_rate=None,  # baseline (eval-first) — the multi-turn gap drives #1531
+    )
+
+
+# ═══════ 2c. Edit operations across turns (tweak, add, remove, then stop) ══════
+# The three distinct edit KINDS, in one conversation, each building on the last edited
+# state (not the seed): TWEAK an existing step (record the designer), ADD a new step (a
+# solo-play filter), REMOVE a step (the notify send), then STOP.  All three must show in
+# the final recipe with the spine intact — this is where multi-turn state-carrying either
+# holds or unravels (a later edit reverting an earlier one; a remove that clobbers the
+# spine; the closer over-reacting).  "add designer" alone only exercises a tweak.
+
+
+def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[str]:
+    row = db.memories.get(_COLLECTION)
+    stored = (row.extraction_prompt or "").lower() if row is not None else ""
+    print(f"\n[EDIT-OPS stored] {stored!r}")
+    fails: list[str] = []
+    if "designer" not in stored:  # TWEAK: modified the entry-content step
+        fails.append(f"tweak (designer) missing from the recipe: {stored!r}")
+    if "solo" not in stored:  # ADD: a new solo-play filter step
+        fails.append(f"added step (solo-play filter) missing from the recipe: {stored!r}")
+    if "send_message" in stored or "found a new game" in stored:  # REMOVE: the notify step
+        fails.append(f"removed step (notify) still present in the recipe: {stored!r}")
+    # The spine must survive all three edits (no edit clobbered it).
+    for family in ("browse", "collection_write", "done"):
+        if family not in stored:
+            fails.append(f"an edit clobbered the '{family}' step: {stored!r}")
+    # The closing "thanks" turn must not spawn a collection.
+    if created := new_collections(db, before):
+        fails.append(f"a turn spuriously created a collection: {[m.name for m in created]}")
+    return fails
+
+
+async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
+    """Deeper multi-turn: get the recipe, TWEAK a step, ADD a step, REMOVE a step, stop —
+    each edit builds on the last edited state and all three land, spine intact."""
+    await chat_eval(
+        case_id="legible-edit-operations",
+        messages=[
+            "before I change anything — walk me through what the board-games collection does.",
+            "got it. have it record each game's designer too when it saves one.",
+            "now add a step so it only keeps games that support solo play.",
+            "actually, drop the part where it messages me about each new game — "
+            "I don't want the pings.",
+            "perfect, that's everything — thanks!",
+        ],
+        seed=_seed,
+        score=_score_edit_operations,
+        min_pass_rate=None,  # baseline (eval-first) — the deeper multi-turn gap drives #1531
     )
 
 
