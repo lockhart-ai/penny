@@ -443,8 +443,9 @@ def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[str]:
 # and collector-runs (5/5).  The other four are report-only with the gap/confound
 # documented in each case docstring and handed to #1522/#1524: user-messages-act
 # (ambient recall substitutes for the log_read), penny-messages-recall (browses
-# instead of recalling what Penny said), collector_run_history (browses the named
-# collection), and the no-fire log guard (variance + over-firing on a musing).
+# instead of recalling what Penny said), and collector_run_history (browses the
+# named collection).  The no-fire log guard now gates at 0.6 — its over-firing is
+# closed by the imperative-gating clause in CONVERSATION_PROMPT.
 
 
 async def test_user_messages_act(chat_eval: ChatEval) -> None:
@@ -519,9 +520,11 @@ async def test_collector_run_history(chat_eval: ChatEval) -> None:
 
 
 async def test_no_fire(chat_eval: ChatEval) -> None:
+    """The over-firing on a log-adjacent musing is now closed by the
+    imperative-gating clause in ``Prompt.CONVERSATION_PROMPT``; gated at 0.6."""
     await chat_eval(
         case_id="speak-logread-no-fire",
         message="man, I really should reread our old chats sometime",
         score=_score_no_fire,
-        min_pass_rate=None,
+        min_pass_rate=0.6,
     )
