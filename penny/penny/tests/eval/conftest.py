@@ -17,6 +17,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from math import ceil
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -490,6 +491,86 @@ def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: boo
     print("===== END THINKING =====\n")
 
 
+# ── Eval run report (verbatim transcripts, for the PR body) ──────────────────
+# When EVAL_REPORT_DIR is set (wired through by the Makefile `eval` target), each sample
+# appends a markdown section — the full turn-by-turn transcript read from the ephemeral
+# promptlog before the --rm DB is discarded — to <dir>/<case_id>.md.  The SOP
+# (docs/agent-task-workflow.md §4) folds these into the PR body under a <details> per case,
+# so a reviewer sees every run verbatim without a wall of text.  Off by default (no dir set
+# ⇒ no-op), so ordinary `make eval` runs are unaffected.
+
+_ACTOR = {
+    "user": "👤 user",
+    "tool": "📥 tool result",
+    "call": "🔧 Penny → tool",
+    "penny": "🤖 Penny",
+}
+
+
+def _report_cell(text: str, limit: int = 1500) -> str:
+    """One markdown table cell: escape pipes, newlines → <br>, truncate a long result."""
+    cell = str(text).strip().replace("|", "\\|").replace("\n", "<br>")
+    return cell if len(cell) <= limit else cell[:limit] + " …[truncated]"
+
+
+def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
+    """(actor, content) for every turn of the sample — read from the last promptlog row's
+    message array (the whole conversation up to the final call), then the final reply.
+    System prompt omitted; tool calls, tool results, and text turns kept in order."""
+    turns: list[tuple[str, str]] = []
+    messages = json.loads(rows[-1].messages) if rows and rows[-1].messages else []
+    for message in messages:
+        role, content = message.get("role"), message.get("content") or ""
+        if role == "system":
+            continue
+        if role == "user":
+            turns.append((_ACTOR["user"], content))
+        elif role == "tool":
+            turns.append((_ACTOR["tool"], content))
+        elif role == "assistant":
+            for call in message.get("tool_calls") or []:
+                function = call.get("function", {})
+                turns.append(
+                    (_ACTOR["call"], f"{function.get('name')}({function.get('arguments')})")
+                )
+            if content:
+                turns.append((_ACTOR["penny"], content))
+    if reply.strip():
+        turns.append((_ACTOR["penny"], reply))
+    return turns
+
+
+def _write_sample_report(
+    db: Database, case_id: str, sample_index: int, *, fails: list[str], reply: str = ""
+) -> None:
+    """Append one sample's verbatim transcript to ``EVAL_REPORT_DIR/<case_id>.md``.
+
+    No-op unless ``EVAL_REPORT_DIR`` is set.  ``reply`` is the chat agent's final text
+    (appended as the last turn); a collector run passes none — its ``done()`` / sends are
+    already tool-call turns in the transcript."""
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    if not report_dir:
+        return
+    with Session(db.engine) as session:
+        rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+    lines = [
+        f"#### sample {sample_index + 1} — {'✅ PASS' if not fails else '❌ FAIL'}",
+        "",
+        "| # | Actor | Content |",
+        "|---|---|---|",
+    ]
+    lines += [
+        f"| {index} | {actor} | {_report_cell(content)} |"
+        for index, (actor, content) in enumerate(_sample_turns(rows, reply), start=1)
+    ]
+    if fails:
+        lines += ["", f"**Failed:** {'; '.join(fails)}"]
+    directory = Path(report_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{case_id}.md").open("a") as handle:
+        handle.write("\n".join(lines) + "\n\n")
+
+
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
 ChatEval = Callable[..., Awaitable[None]]
 
@@ -558,6 +639,9 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                         if wrapper is not None and not wrapper.bail_injected:
                             fails.append("forced bail never fired — contract not exercised")
                         results.append(SampleResult(not fails, fails))
+                        _write_sample_report(
+                            penny.db, case_id, sample_index, fails=fails, reply=reply
+                        )
                     except TimeoutError:
                         results.append(SampleResult(False, ["no reply within timeout"]))
                     _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
@@ -625,6 +709,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     ]
                     fails = score(penny.db, before, sent)
                     results.append(SampleResult(not fails, fails))
+                    _write_sample_report(penny.db, case_id, sample_index, fails=list(fails))
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -802,6 +887,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                     elif not success:
                         fails.append("cycle did not recover to a successful close after the nudge")
                     results.append(SampleResult(not fails, fails))
+                    _write_sample_report(penny.db, case_id, sample_index, fails=fails)
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -1124,6 +1210,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
                     if not wrapper.bail_injected:
                         fails.append("forced bail never fired — contract not exercised")
                     results.append(SampleResult(not fails, fails))
+                    _write_sample_report(penny.db, case_id, sample_index, fails=fails)
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
