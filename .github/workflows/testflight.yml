@@ -1,8 +1,9 @@
 name: testflight
 
-# Manually-triggered release: archives the PennyTestflight target (the "real"
-# deploy build — bundle id com.blockoftext.pennyclient.testflight) and uploads it
-# to TestFlight. Signing is handled entirely by an App Store Connect API key
+# Archives the PennyTestflight target (the "real" deploy build — bundle id
+# com.blockoftext.pennyclient.testflight) and uploads it to TestFlight. Runs
+# automatically on every merge to main that touches penny-client/, and can also
+# be run manually. Signing is handled entirely by an App Store Connect API key
 # (repo secrets) via xcodebuild -allowProvisioningUpdates, so it needs no local
 # certificates, provisioning profiles, or Xcode Cloud.
 #
@@ -12,6 +13,9 @@ name: testflight
 #   APP_STORE_CONNECT_PRIVATE_KEY — the .p8 private key contents (whole file)
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["penny-client/**"]
 
 concurrency:
   group: testflight
