@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -575,22 +575,42 @@ def _write_sample_report(
 ChatEval = Callable[..., Awaitable[None]]
 
 
+def _conversation_turns(message: str | None, messages: Sequence[str] | None) -> list[str]:
+    """The user turns to drive, in order — exactly one of ``message`` (a single turn) or
+    ``messages`` (a multi-turn conversation) must be given.  A conversation drives the turns
+    sequentially against the same Penny; Penny sees each earlier turn via the DB history it
+    reconstructs, so a later turn can build on (or adjust) what an earlier one discussed."""
+    if message is not None and messages is None:
+        return [message]
+    if messages is not None and message is None:
+        if not messages:
+            raise ValueError("chat_eval `messages` must contain at least one turn")
+        return list(messages)
+    raise ValueError("chat_eval needs exactly one of `message` or `messages`")
+
+
 @pytest.fixture
 def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
-    """Drive the real chat flow N times for one user message and score each run.
+    """Drive the real chat flow N times for one user message (or a multi-turn
+    conversation) and score each run.
 
     Each sample is fully hermetic — its own mock Signal server, DB, and
     real-model Penny: seed user (+ any case seed), embed the seeds, push the
-    message, wait for the reply, then score persisted state.  A per-sample
-    server is essential: a shared one leaks a prior sample's shut-down channel,
-    which then errors on the next sample's broadcast.  A timeout counts as a
-    failed sample, not a crash.
+    turn(s), wait for each reply, then score persisted state against the LAST
+    reply.  A per-sample server is essential: a shared one leaks a prior
+    sample's shut-down channel, which then errors on the next sample's
+    broadcast.  A timeout on any turn counts as a failed sample, not a crash.
+
+    Single-message vs. conversation: pass ``message`` for one turn, or
+    ``messages`` for a discuss-then-adjust conversation (see
+    ``_conversation_turns``).
     """
 
     async def _run(
         *,
         case_id: str,
-        message: str,
+        message: str | None = None,
+        messages: Sequence[str] | None = None,
         score: Scorer,
         seed: Seeder | None = None,
         browse: list[CannedPage] | None = None,
@@ -600,6 +620,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
     ) -> None:
+        turns = _conversation_turns(message, messages)
         results: list[SampleResult] = []
         perf = _Perf()
         for sample_index in range(samples):
@@ -632,9 +653,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                         penny.chat_agent._model_client = wrapper
                     before = collection_names(penny.db)
                     try:
-                        await server.push_message(sender=TEST_SENDER, content=message)
-                        response = await server.wait_for_message(timeout=timeout)
-                        reply = str(response.get("message", ""))
+                        reply = ""
+                        for turn in turns:
+                            await server.push_message(sender=TEST_SENDER, content=turn)
+                            response = await server.wait_for_message(timeout=timeout)
+                            reply = str(response.get("message", ""))
                         fails = list(score(penny.db, before, reply))
                         if wrapper is not None and not wrapper.bail_injected:
                             fails.append("forced bail never fired — contract not exercised")
