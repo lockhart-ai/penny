@@ -255,6 +255,54 @@ def tool_call_keys(db: Database, tool_name: str) -> list[str]:
     return keys
 
 
+def tool_call_sequence(db: Database) -> list[str]:
+    """Every tool the model invoked this run, in chronological call order.
+
+    ``recent_prompts`` returns newest-first, so walk it reversed to read the run
+    forward; within one response the ``tool_calls`` array is already in emission
+    order.  This is the ordering primitive for the multi-step speakable cases: a
+    compound NL instruction must fire the RIGHT tools in the RIGHT order, and this
+    is the persisted record of what actually fired (not a harness spy)."""
+    names: list[str] = []
+    for row in reversed(db.messages.recent_prompts(limit=200)):
+        for call in _response_tool_calls(row):
+            name = call.get("function", {}).get("name")
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def is_ordered_subsequence(expected: list[str], actual: list[str]) -> bool:
+    """True when every name in ``expected`` appears in ``actual`` in that relative
+    order — extra calls before, between, or after are allowed.  This is the
+    ordering contract for a multi-step NL sequence: the named tools fired, and in
+    the order the user described them, while tolerating an extra browse hop (a
+    read of a linked page) or a dedup re-read the model interleaves."""
+    remaining = iter(actual)
+    return all(name in remaining for name in expected)
+
+
+def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
+    """Every string value the model passed for ``field`` across all ``tool_name``
+    calls this run — the general form of ``tool_call_keys`` (which is this with
+    ``field="key"``).  Lets a scorer assert WHICH collections a multi-read swept
+    (the ``memory`` field of each ``collection_read_latest``) without re-parsing
+    the promptlog.  Sourced from the persisted promptlog (the real record)."""
+    values: list[str] = []
+    for row in db.messages.recent_prompts(limit=200):
+        for call in _response_tool_calls(row):
+            if call.get("function", {}).get("name") != tool_name:
+                continue
+            try:
+                args = json.loads(call.get("function", {}).get("arguments") or "{}")
+            except json.JSONDecodeError, TypeError:
+                continue
+            value = args.get(field)
+            if isinstance(value, str):
+                values.append(value)
+    return values
+
+
 # Tools whose arguments carry an entry key the model copies from a render.
 _KEY_BEARING_TOOLS = (
     "update_entry",
