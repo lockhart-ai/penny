@@ -1,0 +1,83 @@
+name: testflight
+
+# Archives the PennyTestflight target (the "real" deploy build — bundle id
+# com.blockoftext.pennyclient.testflight) and uploads it to TestFlight. Runs
+# automatically on every merge to main that touches penny-client/, and can also
+# be run manually. Signing is handled entirely by an App Store Connect API key
+# (repo secrets) via xcodebuild -allowProvisioningUpdates, so it needs no local
+# certificates, provisioning profiles, or Xcode Cloud.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   APP_STORE_CONNECT_KEY_ID      — the API key's Key ID
+#   APP_STORE_CONNECT_ISSUER_ID   — the API key's Issuer ID
+#   APP_STORE_CONNECT_PRIVATE_KEY — the .p8 private key contents (whole file)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["penny-client/**"]
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the build number (git commit count) is monotonic,
+          # matching ci_scripts/ci_pre_xcodebuild.sh's convention.
+          fetch-depth: 0
+
+      - name: Select newest Xcode 26
+        run: |
+          if ls -d /Applications/Xcode_26*.app >/dev/null 2>&1; then
+            sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
+          fi
+          xcodebuild -version
+
+      - name: Write App Store Connect API key
+        env:
+          PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          printf '%s\n' "$PRIVATE_KEY" > "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8"
+
+      - name: Archive PennyTestflight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          echo "Build number: $BUILD_NUMBER"
+          xcodebuild archive \
+            -project penny-client/PennyClient.xcodeproj \
+            -scheme PennyTestflight \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/PennyTestflight.xcarchive" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+      - name: Export and upload to TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/PennyTestflight.xcarchive" \
+            -exportOptionsPlist penny-client/ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID"

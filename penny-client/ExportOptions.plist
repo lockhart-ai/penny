@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Store Connect distribution. On Xcode < 15.3 this value is "app-store". -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<!-- Upload straight to App Store Connect / TestFlight after export. -->
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>P87URHZFZ4</string>
+	<!-- Automatic signing; xcodebuild fetches the distribution cert + profile
+	     via the App Store Connect API key passed with -allowProvisioningUpdates. -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+</dict>
+</plist>
