@@ -16,7 +16,6 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from math import ceil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -46,7 +45,10 @@ _EMBED_BATCH = 100
 
 # A chat scorer reads persisted DB state (the pre-run collection names + the
 # final reply text) and returns failure strings — empty means the sample passed.
-Scorer = Callable[[Database, set[str], str], list[str]]
+# A chat scorer returns either failure strings (binary: empty = pass) or a list of graded
+# ``Check``s (partial credit: the sample scores passed/total).  Both flow through the same
+# runner, which grades by the returned type.
+Scorer = Callable[[Database, set[str], str], "list[str] | list[Check]"]
 Seeder = Callable[[Database], None]
 # A preparer mutates the constructed Penny before the message is pushed — e.g.
 # to mock an external boundary (the image client) the case exercises.
@@ -61,9 +63,45 @@ TextScorer = Callable[[str], list[str]]
 
 
 @dataclass
+class Check:
+    """One graded expectation of a sample — an expected tool call or an outcome.
+
+    A scorer can return a list of these instead of a list of failure strings; the sample
+    then scores as (checks that passed) / (checks total) — partial credit — instead of
+    all-or-nothing.  ``label`` names the expectation so the report shows exactly which
+    check missed (e.g. "turn-1 memory_metadata called")."""
+
+    label: str
+    ok: bool
+
+
+@dataclass
 class SampleResult:
-    passed: bool
-    fails: list[str]
+    """A sample's score in [0, 1] + the labels of whatever didn't pass (for the report).
+
+    Binary scoring is the degenerate one-check case (score 1.0 or 0.0); graded scoring
+    (a scorer returning ``Check``s) is passed/total.  A case's metric is the MEAN of its
+    sample scores — identical to the old pass-rate when every sample is binary, but with
+    partial credit when a scorer grades."""
+
+    score: float
+    failed: list[str]
+    total: int = 1
+
+    @property
+    def passed(self) -> bool:
+        return self.score >= 1.0
+
+    @classmethod
+    def binary(cls, fails: list[str]) -> SampleResult:
+        return cls(0.0 if fails else 1.0, list(fails), 1)
+
+    @classmethod
+    def graded(cls, checks: list[Check]) -> SampleResult:
+        if not checks:
+            return cls(1.0, [], 1)
+        passed = sum(1 for check in checks if check.ok)
+        return cls(passed / len(checks), [c.label for c in checks if not c.ok], len(checks))
 
 
 @dataclass
@@ -446,22 +484,24 @@ def _assert_threshold(
     self-correction cases — the model can't clear every cross-run repeat, and a
     flaky red adds no signal beyond the printed rate).
     """
-    passed = sum(1 for result in results if result.passed)
     total = len(results)
-    failures = "\n".join(
-        f"  [{i + 1}] {'; '.join(result.fails)}"
+    mean = sum(result.score for result in results) / total if total else 0.0
+    # Per-sample detail: the score (1.0/0.0 for binary, the check fraction for graded) and
+    # what missed — for every sample that wasn't perfect.
+    detail = "\n".join(
+        f"  [{i + 1}] {result.score:.2f}"
+        + (f" — {'; '.join(result.failed)}" if result.failed else "")
         for i, result in enumerate(results)
-        if not result.passed
+        if result.failed
     )
     if min_pass_rate is None:
-        print(f"\nRESULT [{case_id}] {passed}/{total} passed (report-only)")
-        if failures:
-            print(failures)
+        print(f"\nRESULT [{case_id}] mean {mean:.2f} across {total} samples (report-only)")
+        if detail:
+            print(detail)
         return
-    need = ceil(min_pass_rate * total)
-    print(f"\nRESULT [{case_id}] {passed}/{total} passed (need >={need}, rate {min_pass_rate})")
-    if passed < need:
-        pytest.fail(f"{case_id}: {passed}/{total} passed (need >={need}):\n{failures}")
+    print(f"\nRESULT [{case_id}] mean {mean:.2f} across {total} samples (need >={min_pass_rate})")
+    if mean < min_pass_rate:
+        pytest.fail(f"{case_id}: mean {mean:.2f} < {min_pass_rate}:\n{detail}")
 
 
 def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: bool) -> None:
@@ -548,20 +588,27 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
 
 
 def _write_sample_report(
-    db: Database, case_id: str, sample_index: int, *, fails: list[str], reply: str = ""
+    db: Database, case_id: str, sample_index: int, *, result: SampleResult, reply: str = ""
 ) -> None:
     """Append one sample's verbatim transcript to ``EVAL_REPORT_DIR/<case_id>.md``.
 
     No-op unless ``EVAL_REPORT_DIR`` is set.  ``reply`` is the chat agent's final text
     (appended as the last turn); a collector run passes none — its ``done()`` / sends are
-    already tool-call turns in the transcript."""
+    already tool-call turns in the transcript.  The header shows PASS/FAIL for a binary
+    sample, or ``N/M checks`` for a graded one, so the partial credit is visible."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
     with Session(db.engine) as session:
         rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+    passed_checks = round(result.score * result.total)
+    verdict = (
+        ("✅ PASS" if result.passed else "❌ FAIL")
+        if result.total == 1
+        else f"{'✅' if result.passed else '❌'} {passed_checks}/{result.total} checks"
+    )
     lines = [
-        f"#### sample {sample_index + 1} — {'✅ PASS' if not fails else '❌ FAIL'}",
+        f"#### sample {sample_index + 1} — {verdict}",
         "",
         "| # | Actor | Content |",
         "|---|---|---|",
@@ -570,8 +617,8 @@ def _write_sample_report(
         f"| {index} | {actor} | {_report_cell(content)} |"
         for index, (actor, content) in enumerate(_sample_turns(rows, reply), start=1)
     ]
-    if fails:
-        lines += ["", f"**Failed:** {'; '.join(fails)}"]
+    if result.failed:
+        lines += ["", f"**Failed:** {'; '.join(result.failed)}"]
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:
@@ -665,15 +712,21 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                             await server.push_message(sender=TEST_SENDER, content=turn)
                             response = await server.wait_for_message(timeout=timeout)
                             reply = str(response.get("message", ""))
-                        fails = list(score(penny.db, before, reply))
-                        if wrapper is not None and not wrapper.bail_injected:
-                            fails.append("forced bail never fired — contract not exercised")
-                        results.append(SampleResult(not fails, fails))
+                        scored = score(penny.db, before, reply)
+                        if scored and isinstance(scored[0], Check):
+                            checks = [c for c in scored if isinstance(c, Check)]  # partial credit
+                            result = SampleResult.graded(checks)
+                        else:
+                            fails = [s for s in scored if isinstance(s, str)]  # binary scorer
+                            if wrapper is not None and not wrapper.bail_injected:
+                                fails.append("forced bail never fired — contract not exercised")
+                            result = SampleResult.binary(fails)
+                        results.append(result)
                         _write_sample_report(
-                            penny.db, case_id, sample_index, fails=fails, reply=reply
+                            penny.db, case_id, sample_index, result=result, reply=reply
                         )
                     except TimeoutError:
-                        results.append(SampleResult(False, ["no reply within timeout"]))
+                        results.append(SampleResult.binary(["no reply within timeout"]))
                     _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -738,8 +791,8 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                         for message in server.outgoing_messages[sent_before:]
                     ]
                     fails = score(penny.db, before, sent)
-                    results.append(SampleResult(not fails, fails))
-                    _write_sample_report(penny.db, case_id, sample_index, fails=list(fails))
+                    results.append(SampleResult.binary(fails))
+                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -916,8 +969,8 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                         fails.append("forced bail never fired — contract not exercised")
                     elif not success:
                         fails.append("cycle did not recover to a successful close after the nudge")
-                    results.append(SampleResult(not fails, fails))
-                    _write_sample_report(penny.db, case_id, sample_index, fails=fails)
+                    results.append(SampleResult.binary(fails))
+                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -1239,8 +1292,8 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
                     fails = list(score(penny.db, sent))
                     if not wrapper.bail_injected:
                         fails.append("forced bail never fired — contract not exercised")
-                    results.append(SampleResult(not fails, fails))
-                    _write_sample_report(penny.db, case_id, sample_index, fails=fails)
+                    results.append(SampleResult.binary(fails))
+                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -1290,7 +1343,7 @@ def recall_eval(make_config: Callable[..., Config], tmp_path) -> RecallEval:
                         limit=limit,
                     )
                     fails = check(recall_block or "", message)
-                    results.append(SampleResult(not fails, fails))
+                    results.append(SampleResult.binary(fails))
                 _assert_threshold(case_id, results, min_pass_rate)
         finally:
             await server.stop()
@@ -1344,7 +1397,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
                         else:
                             os.environ["GIT_COMMIT_MESSAGE"] = prior
                     fails = score(announcement)
-                    results.append(SampleResult(not fails, fails))
+                    results.append(SampleResult.binary(fails))
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

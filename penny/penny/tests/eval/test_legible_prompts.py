@@ -36,7 +36,14 @@ import re
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, new_collections, seed_collection, tool_was_called
+from penny.tests.eval.conftest import (
+    ChatEval,
+    Check,
+    count_tool_calls,
+    new_collections,
+    seed_collection,
+    tool_was_called,
+)
 from penny.tests.eval.fixtures import (
     BOARD_GAMES,
     BOARD_GAMES_EXTRACTION_PROMPT,
@@ -97,42 +104,21 @@ _SAVE = (
     r"[\w\s,'-]{0,20}\b(entry|entries|list|record|records|collection|them|it)\b"
     r"|\bentr(y|ies)\b[^.]{0,30}\b(added|stored|written|saved|created)\b"
 )
-# Reported (not gated) — the notify step and any fabrication.  Both are phrasing-fragile:
-# notify wording varies wildly and conversational "tell you how it works" false-positives;
-# a fabrication check false-positives on negation ("doesn't delete", "never emails you").
-# For the eval-first BASELINE they're printed for the #1531 gap map, not part of pass/fail —
-# turning them into gates (a faithful-notify contract, a negation-aware honesty guard) is
-# exactly the structural work #1531 owns.  (The INTERVAL "every hour" + recall/publish flags
-# ARE real memory_metadata fields, so naming them is faithful, never embellishment.)
-_NOTIFY = (
-    r"\b(tell|message|ping|alert|notif\w*|send|let)\w*\s+you\b[^.]{0,45}"
-    r"\b(new|found|finds?|when|game|note|about)\b|send_message"
-)
-_EMBELLISH = r"\b(deletes?|emails?\s+you|draws?\s+an?\s+image|generates?\s+an?\s+image)\b"
 
 
-def _score_legibility(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]:
     print(f"\n[LEGIBILITY reply] {reply.strip()!r}")
     search_i = _first_index(reply, _SEARCH)
     save_i = _first_index(reply, _SAVE)
-    notify = _first_index(reply, _NOTIFY) >= 0
-    embellish = re.search(_EMBELLISH, _norm(reply))
-    print(
-        f"[LEGIBILITY idx] search={search_i} save={save_i} "
-        f"notify={notify} embellish={embellish.group(0) if embellish else None}"
-    )
-    fails: list[str] = []
-    if search_i < 0:
-        fails.append("reply did not reflect the search/browse step")
-    if save_i < 0:
-        fails.append("reply did not reflect the save/write step")
-    # Order is REPORTED, not gated: the model often leads with the collection's PURPOSE
-    # ("keeps a list of games") before enumerating the steps, so a save-verb legitimately
-    # precedes the search-verb in the whole reply — that's natural phrasing, not misordered
-    # steps.  Gating on step-enumeration order (vs. whole-reply order) is #1531 refinement.
-    if search_i >= 0 and save_i >= 0 and search_i > save_i:
-        print("[LEGIBILITY note] save mentioned before search (purpose-first phrasing)")
-    return fails
+    return [
+        # Expected tool call: she must READ the recipe (memory_metadata), not answer from
+        # the ambient recall block — which surfaces entries + description but NOT the recipe,
+        # so an answer-from-recall describes settings, never the steps (the gap the full
+        # report surfaced).  Making the read a scored check is what catches that.
+        Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
+        Check("reply reflects the search/browse step", search_i >= 0),
+        Check("reply reflects the save/write step", save_i >= 0),
+    ]
 
 
 async def test_legibility_describes_the_recipe(chat_eval: ChatEval) -> None:
@@ -149,22 +135,23 @@ async def test_legibility_describes_the_recipe(chat_eval: ChatEval) -> None:
 # ══════════════════════ 2. Editing + echo (NL -> prompt) ══════════════════════
 
 
-def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[str]:
+def _echoes_designer(reply: str) -> bool:
+    return bool(re.search(r"\bdesigner|who\s+(made|designed|created)\b", _norm(reply)))
+
+
+def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
-    stored = (row.extraction_prompt or "") if row is not None else ""
+    stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[EDIT stored] {stored!r}\n[EDIT reply] {reply.strip()[:240]!r}")
-    fails: list[str] = []
-    if "designer" not in stored.lower():
-        fails.append(f"edit did not land — 'designer' absent from the recipe: {stored!r}")
-    if stored == BOARD_GAMES_EXTRACTION_PROMPT:
-        fails.append("recipe unchanged — no collection_update applied")
-    # A holds: no fictitious tool slipped in.
-    if "extract_text" in stored.lower():
-        fails.append("a fictitious tool persisted in the recipe")
-    # The echo prong (the #1530-new bit): the reply reflects the change.
-    if not re.search(r"\bdesigner|who\s+(made|designed|created)\b", _norm(reply)):
-        fails.append(f"reply did not echo the change (designer): {reply[:200]!r}")
-    return fails
+    return [
+        Check(
+            "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
+        ),
+        Check("designer landed in the recipe", "designer" in stored),
+        Check("recipe changed from the seed", stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()),
+        Check("no fictitious tool persisted", "extract_text" not in stored),
+        Check("reply echoes the change", _echoes_designer(reply)),
+    ]
 
 
 async def test_editing_lands_and_echoes(chat_eval: ChatEval) -> None:
@@ -186,8 +173,29 @@ async def test_editing_lands_and_echoes(chat_eval: ChatEval) -> None:
 # then the user ADJUSTS it in plain words — across turns, so the edit rides on the prior
 # discussion (Penny sees turn 1 via the DB history).  Turn 1 is legibility (describe the
 # recipe); turn 2 is editing (an NL edit that must still land as a real collection_update
-# and echo).  Scored on the SAME persisted-edit contract as the single-turn editing case —
-# the point here is that the multi-turn context doesn't derail the adjustment.
+# and echo).  Graded per expected tool call: BOTH turns should read the recipe (the discuss
+# turn to describe it, the adjust turn before editing) — so a correct run calls
+# memory_metadata twice; a sample that answers the discuss turn from ambient recall (no read)
+# scores that check as failed instead of hiding behind a green edit.
+
+
+def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> list[Check]:
+    row = db.memories.get(_COLLECTION)
+    stored = (row.extraction_prompt or "").lower() if row is not None else ""
+    print(f"\n[DISCUSS stored] {stored!r}\n[DISCUSS reply] {reply.strip()[:240]!r}")
+    return [
+        # Every turn expects a read: the discuss turn AND the adjust turn — count >= 2 catches
+        # a discuss turn answered from recall (the gap the full report surfaced).
+        Check(
+            "read the recipe each turn (memory_metadata >=2)",
+            count_tool_calls(db, "memory_metadata") >= 2,
+        ),
+        Check(
+            "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
+        ),
+        Check("designer landed in the recipe", "designer" in stored),
+        Check("reply echoes the change", _echoes_designer(reply)),
+    ]
 
 
 async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
@@ -199,7 +207,7 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
             "got it. can you also have it record each game's designer when it saves one?",
         ],
         seed=_seed,
-        score=_score_edit_and_echo,
+        score=_score_discuss_then_adjust,
         min_pass_rate=None,  # baseline (eval-first) — the multi-turn gap drives #1531
     )
 
@@ -213,29 +221,27 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
 # spine; the closer over-reacting).  "add designer" alone only exercises a tweak.
 
 
-def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[EDIT-OPS stored] {stored!r}")
-    fails: list[str] = []
-    if "designer" not in stored:  # TWEAK: modified the entry-content step
-        fails.append(f"tweak (designer) missing from the recipe: {stored!r}")
-    if "solo" not in stored:  # ADD: a new solo-play filter step
-        fails.append(f"added step (solo-play filter) missing from the recipe: {stored!r}")
-    # REMOVE: the notify step is gone iff its content ("found a new game") and an active
-    # send_message( call are both absent.  Key on those, NOT the bare word "send_message" —
-    # a prose "no send_message / write silently" note (a correct removal) contains the word
-    # but is not an active step (the scorer FN the full report surfaced).
-    if "found a new game" in stored or "send_message(" in stored:
-        fails.append(f"removed step (notify) still present in the recipe: {stored!r}")
-    # The spine must survive all three edits (no edit clobbered it).
-    for family in ("browse", "collection_write", "done"):
-        if family not in stored:
-            fails.append(f"an edit clobbered the '{family}' step: {stored!r}")
-    # The closing "thanks" turn must not spawn a collection.
-    if created := new_collections(db, before):
-        fails.append(f"a turn spuriously created a collection: {[m.name for m in created]}")
-    return fails
+    # REMOVE (notify): gone iff its content ("found a new game") and an active send_message(
+    # call are both absent — NOT the bare word "send_message", which a prose "no send_message"
+    # note (a correct removal) contains (the scorer FN the full report surfaced).
+    notify_gone = "found a new game" not in stored and "send_message(" not in stored
+    checks = [
+        Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
+        Check("applied edits (collection_update called)", tool_was_called(db, "collection_update")),
+        Check("tweak: designer recorded", "designer" in stored),
+        Check("add: solo-play filter", "solo" in stored),
+        Check("remove: notify step gone", notify_gone),
+        Check("closer spawned no collection", not new_collections(db, before)),
+    ]
+    checks += [
+        Check(f"spine intact: {family}", family in stored)
+        for family in ("browse", "collection_write", "done")
+    ]
+    return checks
 
 
 async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
@@ -289,29 +295,25 @@ async def test_no_overreach_on_casual_mention(chat_eval: ChatEval) -> None:
 # single-turn proxy; now that chat_eval drives conversations it's the real thing.)
 
 
-def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[ROUNDTRIP stored] {stored!r}")
-    fails: list[str] = []
-    # A round-trip only happened if Penny RE-ENCODED the recipe — wrote it back via
-    # collection_update.  Without this the recipe is the untouched seed and the family
-    # checks below pass trivially (Penny just describing it in a text reply = false pass).
-    if not tool_was_called(db, "collection_update"):
-        fails.append(
-            "no re-encode — recipe never written back via collection_update (described in text?)"
-        )
     browse_i = stored.find("browse")
     write_i = stored.find("collection_write")
     done_i = stored.rfind("done")
-    for name, index in (("browse", browse_i), ("collection_write", write_i), ("done", done_i)):
-        if index < 0:
-            fails.append(f"round-trip dropped the '{name}' step")
-    if browse_i >= 0 and write_i >= 0 and not browse_i < write_i:
-        fails.append("round-trip reordered browse/collection_write")
-    if write_i >= 0 and done_i >= 0 and not write_i < done_i:
-        fails.append("round-trip reordered collection_write/done")
-    return fails
+    return [
+        Check(
+            "described the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")
+        ),
+        # A round-trip happened only if Penny RE-ENCODED via collection_update — else the recipe
+        # is the untouched seed and the family checks pass trivially (describe-in-text false pass).
+        Check("re-encoded it (collection_update called)", tool_was_called(db, "collection_update")),
+        Check("browse step preserved", browse_i >= 0),
+        Check("collection_write step preserved", write_i >= 0),
+        Check("done step preserved", done_i >= 0),
+        Check("family order preserved (browse < write < done)", 0 <= browse_i < write_i < done_i),
+    ]
 
 
 async def test_roundtrip_preserves_the_sequence(chat_eval: ChatEval) -> None:
