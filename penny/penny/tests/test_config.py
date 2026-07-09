@@ -146,18 +146,23 @@ class TestIosApnsProductionConfig:
             "/penny/data/private/AuthKey_PRODKEY.p8",
         )
         monkeypatch.setenv("IOS_BUNDLE_ID", "com.example.Penny")
+        monkeypatch.setenv("IOS_APNS_PRODUCTION_BUNDLE_ID", "com.example.PennyTestflight")
 
         config = Config.load()
 
         assert config.ios_apns_production_team_id == "PRODTEAM"
         assert config.ios_apns_production_key_id == "PRODKEY"
         assert config.ios_apns_production_key_path == "/penny/data/private/AuthKey_PRODKEY.p8"
+        assert config.ios_apns_production_bundle_id == "com.example.PennyTestflight"
 
     def test_partial_production_apns_credentials_raise(self, monkeypatch):
         monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
         monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
         monkeypatch.setenv("IOS_ENABLED", "true")
         monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+        monkeypatch.delenv("IOS_APNS_PRODUCTION_TEAM_ID", raising=False)
+        monkeypatch.delenv("IOS_APNS_PRODUCTION_KEY_PATH", raising=False)
+        monkeypatch.delenv("IOS_APNS_PRODUCTION_BUNDLE_ID", raising=False)
         monkeypatch.setenv("IOS_APNS_PRODUCTION_KEY_ID", "PRODKEY")
 
         with pytest.raises(ValueError, match="IOS_APNS_PRODUCTION_TEAM_ID"):

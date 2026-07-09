@@ -170,7 +170,9 @@ For APNs setup, create an Apple Push Notifications authentication key in the App
 
 If production APNs tokens should use a different auth key, also set
 `IOS_APNS_PRODUCTION_TEAM_ID`, `IOS_APNS_PRODUCTION_KEY_ID`, and
-`IOS_APNS_PRODUCTION_KEY_PATH`. When an iOS client registers with
+`IOS_APNS_PRODUCTION_KEY_PATH`. Set `IOS_APNS_PRODUCTION_BUNDLE_ID` when the
+production APNs topic differs from `IOS_BUNDLE_ID`, such as a TestFlight bundle
+ID. When an iOS client registers with
 `apns_environment=production`, Penny uses those production credentials; otherwise
 it falls back to the default APNs credentials above.
 
@@ -265,6 +267,7 @@ IOS_APNS_PRODUCTION_TEAM_ID=""            # Optional production APNs Team ID ove
 IOS_APNS_PRODUCTION_KEY_ID=""             # Optional production APNs auth key ID override
 IOS_APNS_PRODUCTION_KEY_PATH=""           # Optional production APNs .p8 path override
 IOS_BUNDLE_ID=""                          # iOS app bundle id, e.g. com.example.Penny
+IOS_APNS_PRODUCTION_BUNDLE_ID=""          # Optional production APNs topic, e.g. TestFlight bundle id
 IOS_APNS_SANDBOX=true                     # Fallback only: devices report sandbox/production at registration
 
 # LLM Configuration — any OpenAI-compatible endpoint (Ollama, omlx, vLLM,
@@ -348,6 +351,7 @@ Penny auto-detects which channel to use based on configured credentials:
 - `IOS_APNS_PRODUCTION_KEY_ID`: optional production APNs auth key ID override
 - `IOS_APNS_PRODUCTION_KEY_PATH`: optional container path to the production APNs `.p8` auth key
 - `IOS_BUNDLE_ID`: iOS app bundle identifier used as the APNs topic
+- `IOS_APNS_PRODUCTION_BUNDLE_ID`: optional production APNs topic override, for example the TestFlight bundle identifier
 - `IOS_APNS_SANDBOX`: fallback APNs environment (`true` = sandbox) for devices that did not report a recognized `apns_environment` at registration; the per-device value wins otherwise
 
 **Behavior:**

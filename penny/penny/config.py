@@ -78,14 +78,18 @@ def _validate_ios_config() -> None:
         os.getenv("IOS_APNS_PRODUCTION_KEY_ID"),
         os.getenv("IOS_APNS_PRODUCTION_KEY_PATH"),
     )
+    production_bundle_id = os.getenv("IOS_APNS_PRODUCTION_BUNDLE_ID")
     if any(production_apns_fields) and not all(production_apns_fields):
         raise ValueError(
             "IOS_APNS_PRODUCTION_TEAM_ID, IOS_APNS_PRODUCTION_KEY_ID, and "
             "IOS_APNS_PRODUCTION_KEY_PATH are all required when production APNs "
             "credentials are configured"
         )
-    if any(production_apns_fields) and not os.getenv("IOS_BUNDLE_ID"):
-        raise ValueError("IOS_BUNDLE_ID is required when APNs is configured")
+    if (any(production_apns_fields) or production_bundle_id) and not all(apns_fields):
+        raise ValueError(
+            "IOS_APNS_TEAM_ID, IOS_APNS_KEY_ID, IOS_APNS_KEY_PATH, and "
+            "IOS_BUNDLE_ID are all required when production APNs overrides are configured"
+        )
 
 
 def _validate_channel_config(channel_type: str, ios_enabled: bool) -> None:
@@ -168,6 +172,7 @@ def _collect_env_vars(channel_type: str) -> dict:
         "ios_apns_production_team_id": os.getenv("IOS_APNS_PRODUCTION_TEAM_ID"),
         "ios_apns_production_key_id": os.getenv("IOS_APNS_PRODUCTION_KEY_ID"),
         "ios_apns_production_key_path": os.getenv("IOS_APNS_PRODUCTION_KEY_PATH"),
+        "ios_apns_production_bundle_id": os.getenv("IOS_APNS_PRODUCTION_BUNDLE_ID"),
         "ios_bundle_id": os.getenv("IOS_BUNDLE_ID"),
         "ios_apns_sandbox": os.getenv("IOS_APNS_SANDBOX", "true").lower() in ("1", "true", "yes"),
     }
@@ -261,6 +266,7 @@ class Config:
     ios_apns_production_team_id: str | None = None
     ios_apns_production_key_id: str | None = None
     ios_apns_production_key_path: str | None = None
+    ios_apns_production_bundle_id: str | None = None
     ios_bundle_id: str | None = None
     ios_apns_sandbox: bool = True
 

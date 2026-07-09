@@ -99,13 +99,20 @@ BOARD_GAMES_INTENT = (
     "Keep me on top of new heavier euro-style strategy board games worth buying, "
     "and tell me when a good one shows up."
 )
+# Guideline-compliant seed: EVERY numbered step is a canonical ``tool(args)`` call — no prose
+# steps, no reasoning/filter lines (a prose step trains the model to emit its own calls as
+# prose — the notation drift the eval surfaced; a reasoning step it tries to "perform" as
+# text).  The entry shape lives INSIDE ``collection_write``'s args, not a separate line.
+# Notification is pub/sub: seeded ``published=true``, the ``notifier`` consumer delivers —
+# NO ``send_message`` step (that is the deprecated direct-send pattern).  ``log_read`` is the
+# removable call the edit-operations case drops.
 BOARD_GAMES_EXTRACTION_PROMPT = (
     "Collect heavier euro-style strategy board games and modern tabletop classics.\n"
-    "1. browse the web for new strategy board games; read actual pages.\n"
-    "2. Each entry: key = game name; content = name + description + player count + URL.\n"
-    '3. collection_write("board-games", entries=[...]).\n'
-    '4. If a write succeeded, send_message a one-sentence "found a new game" note + URL.\n'
-    "5. done()."
+    '1. browse(queries=["<new strategy board game releases>"]) — read the actual pages.\n'
+    '2. log_read("user-messages") — note which games the user has said they want.\n'
+    '3. collection_write("board-games", entries=[<one per game: key = game name; '
+    "content = name + description + player count + URL>]).\n"
+    "4. done()."
 )
 
 ESPRESSO_GEAR = SynthCollection(
