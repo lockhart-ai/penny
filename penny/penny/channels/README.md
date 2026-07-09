@@ -160,6 +160,9 @@ Set these environment variables for background notifications:
 - `IOS_APNS_TEAM_ID`
 - `IOS_APNS_KEY_ID`
 - `IOS_APNS_KEY_PATH`
+- `IOS_APNS_PRODUCTION_TEAM_ID` (optional production credential override)
+- `IOS_APNS_PRODUCTION_KEY_ID` (optional production credential override)
+- `IOS_APNS_PRODUCTION_KEY_PATH` (optional production credential override)
 - `IOS_BUNDLE_ID`
 - `IOS_APNS_SANDBOX` (fallback only — each device reports its own `apns_environment` at registration, which selects the APNs host per device)
 
@@ -167,6 +170,11 @@ Set these environment variables for background notifications:
 container. The project mounts `./data` at `/penny/data`, so
 `/penny/data/private/AuthKey_XXXX.p8` is a convenient location. `.p8` files are
 gitignored.
+
+When production override credentials are configured and a device registers with
+`apns_environment=production`, Penny signs the APNs provider token with the
+production key. If those overrides are not configured, production sends use the
+default APNs credentials.
 
 ### Diagnostics
 

@@ -123,3 +123,42 @@ class TestIosChannelDetection:
 
         assert config.channel_type == ChannelType.IOS
         assert config.ios_enabled is True
+
+
+class TestIosApnsProductionConfig:
+    """Production APNs credentials are optional overrides for production tokens."""
+
+    def test_production_apns_credentials_land_on_config(self, monkeypatch):
+        monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
+        monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
+        monkeypatch.setenv("IOS_ENABLED", "true")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+        monkeypatch.setenv("IOS_APNS_TEAM_ID", "SANDBOXTEAM")
+        monkeypatch.setenv("IOS_APNS_KEY_ID", "SANDBOXKEY")
+        monkeypatch.setenv(
+            "IOS_APNS_KEY_PATH",
+            "/penny/data/private/AuthKey_SANDBOXKEY.p8",
+        )
+        monkeypatch.setenv("IOS_APNS_PRODUCTION_TEAM_ID", "PRODTEAM")
+        monkeypatch.setenv("IOS_APNS_PRODUCTION_KEY_ID", "PRODKEY")
+        monkeypatch.setenv(
+            "IOS_APNS_PRODUCTION_KEY_PATH",
+            "/penny/data/private/AuthKey_PRODKEY.p8",
+        )
+        monkeypatch.setenv("IOS_BUNDLE_ID", "com.example.Penny")
+
+        config = Config.load()
+
+        assert config.ios_apns_production_team_id == "PRODTEAM"
+        assert config.ios_apns_production_key_id == "PRODKEY"
+        assert config.ios_apns_production_key_path == "/penny/data/private/AuthKey_PRODKEY.p8"
+
+    def test_partial_production_apns_credentials_raise(self, monkeypatch):
+        monkeypatch.setattr("penny.config._load_dotenv", lambda: None)
+        monkeypatch.setenv("SIGNAL_NUMBER", "+15551234567")
+        monkeypatch.setenv("IOS_ENABLED", "true")
+        monkeypatch.setenv("LLM_EMBEDDING_MODEL", "embeddinggemma")
+        monkeypatch.setenv("IOS_APNS_PRODUCTION_KEY_ID", "PRODKEY")
+
+        with pytest.raises(ValueError, match="IOS_APNS_PRODUCTION_TEAM_ID"):
+            Config.load()

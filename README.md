@@ -168,6 +168,12 @@ Device registration is gated by `IOS_PAIRING_TOKEN` when configured. The client 
 
 For APNs setup, create an Apple Push Notifications authentication key in the Apple Developer portal. `IOS_APNS_KEY_ID` is the Key ID shown for that key, and `IOS_APNS_KEY_PATH` should point at the downloaded `.p8` file inside the container. The repo mounts `./data` at `/penny/data`, so a common setup is to put the key under `data/private/AuthKey_XXXX.p8` and set `IOS_APNS_KEY_PATH="/penny/data/private/AuthKey_XXXX.p8"`. `.p8` files are ignored by git.
 
+If production APNs tokens should use a different auth key, also set
+`IOS_APNS_PRODUCTION_TEAM_ID`, `IOS_APNS_PRODUCTION_KEY_ID`, and
+`IOS_APNS_PRODUCTION_KEY_PATH`. When an iOS client registers with
+`apns_environment=production`, Penny uses those production credentials; otherwise
+it falls back to the default APNs credentials above.
+
 Diagnostic phrase: send `send me a test push` from the iOS app to force a test APNs notification to that registered device, even while the WebSocket is connected. Similar phrases such as `test push` and `send a test notification` work too.
 
 ### iOS Service Diagram
@@ -255,6 +261,9 @@ IOS_PAIRING_TOKEN=""                      # Required by server if set; client se
 IOS_APNS_TEAM_ID=""                       # Apple Developer Team ID
 IOS_APNS_KEY_ID=""                        # APNs auth key ID
 IOS_APNS_KEY_PATH=""                      # Container path to .p8, e.g. /penny/data/private/AuthKey_XXXX.p8
+IOS_APNS_PRODUCTION_TEAM_ID=""            # Optional production APNs Team ID override
+IOS_APNS_PRODUCTION_KEY_ID=""             # Optional production APNs auth key ID override
+IOS_APNS_PRODUCTION_KEY_PATH=""           # Optional production APNs .p8 path override
 IOS_BUNDLE_ID=""                          # iOS app bundle id, e.g. com.example.Penny
 IOS_APNS_SANDBOX=true                     # Fallback only: devices report sandbox/production at registration
 
@@ -335,6 +344,9 @@ Penny auto-detects which channel to use based on configured credentials:
 - `IOS_APNS_TEAM_ID`: Apple Developer Team ID
 - `IOS_APNS_KEY_ID`: APNs auth key ID from the Apple Developer portal
 - `IOS_APNS_KEY_PATH`: container path to the APNs `.p8` auth key
+- `IOS_APNS_PRODUCTION_TEAM_ID`: optional production APNs Team ID override
+- `IOS_APNS_PRODUCTION_KEY_ID`: optional production APNs auth key ID override
+- `IOS_APNS_PRODUCTION_KEY_PATH`: optional container path to the production APNs `.p8` auth key
 - `IOS_BUNDLE_ID`: iOS app bundle identifier used as the APNs topic
 - `IOS_APNS_SANDBOX`: fallback APNs environment (`true` = sandbox) for devices that did not report a recognized `apns_environment` at registration; the per-device value wins otherwise
 

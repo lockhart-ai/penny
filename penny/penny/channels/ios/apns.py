@@ -61,6 +61,15 @@ class ApnsError(Exception):
 
 
 @dataclass
+class ApnsCredentials:
+    """APNs provider-token credential set."""
+
+    team_id: str
+    key_id: str
+    key_path: str
+
+
+@dataclass
 class ApnsConfig:
     """APNs token-auth configuration."""
 
@@ -69,11 +78,33 @@ class ApnsConfig:
     key_path: str
     bundle_id: str
     sandbox: bool = True
+    production_team_id: str | None = None
+    production_key_id: str | None = None
+    production_key_path: str | None = None
 
     @property
     def host(self) -> str:
         default = ApnsEnvironment.SANDBOX if self.sandbox else ApnsEnvironment.PRODUCTION
         return default.host
+
+    @property
+    def default_environment(self) -> ApnsEnvironment:
+        return ApnsEnvironment.SANDBOX if self.sandbox else ApnsEnvironment.PRODUCTION
+
+    def credentials_for(self, environment: ApnsEnvironment) -> ApnsCredentials:
+        """Return credentials for an APNs environment, falling back to the default set."""
+        if (
+            environment is ApnsEnvironment.PRODUCTION
+            and self.production_team_id
+            and self.production_key_id
+            and self.production_key_path
+        ):
+            return ApnsCredentials(
+                team_id=self.production_team_id,
+                key_id=self.production_key_id,
+                key_path=self.production_key_path,
+            )
+        return ApnsCredentials(team_id=self.team_id, key_id=self.key_id, key_path=self.key_path)
 
 
 class ApnsClient:
@@ -81,9 +112,8 @@ class ApnsClient:
 
     def __init__(self, config: ApnsConfig) -> None:
         self._config = config
-        self._private_key = Path(config.key_path).read_text()
-        self._token: str | None = None
-        self._token_iat = 0
+        self._private_keys: dict[str, str] = {}
+        self._tokens: dict[str, tuple[str, int]] = {}
         self._http = httpx.AsyncClient(http2=True, timeout=10.0)
 
     async def send_preview(
@@ -120,10 +150,11 @@ class ApnsClient:
         if source_name:
             payload["source_name"] = source_name
 
+        resolved_environment = self._environment_for(environment)
         response = await self._http.post(
-            f"https://{self._host_for(environment)}/3/device/{device_token}",
+            f"https://{resolved_environment.host}/3/device/{device_token}",
             headers={
-                "authorization": f"bearer {self._provider_token()}",
+                "authorization": f"bearer {self._provider_token(resolved_environment)}",
                 "apns-topic": self._config.bundle_id,
                 "apns-push-type": "alert",
                 "apns-priority": "10",
@@ -137,33 +168,43 @@ class ApnsClient:
             reason = response.json().get("reason") or reason
         raise ApnsError(response.status_code, reason)
 
-    def _host_for(self, environment: str | None) -> str:
-        """Resolve the APNs host for a device, falling back to the global default."""
+    def _environment_for(self, environment: str | None) -> ApnsEnvironment:
+        """Resolve the APNs environment for a device, falling back to the global default."""
         resolved = ApnsEnvironment.from_value(environment)
         if resolved is not None:
-            return resolved.host
+            return resolved
         if environment is not None:
             logger.warning(
                 "Unrecognized APNs environment %r; using global default host %s",
                 environment,
                 self._config.host,
             )
-        return self._config.host
+        return self._config.default_environment
 
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._http.aclose()
 
-    def _provider_token(self) -> str:
+    def _provider_token(self, environment: ApnsEnvironment | None = None) -> str:
         """Return a cached provider token; APNs allows reuse for up to one hour."""
+        environment = environment or self._config.default_environment
+        credentials = self._config.credentials_for(environment)
+        cache_key = f"{credentials.team_id}:{credentials.key_id}:{credentials.key_path}"
         now = int(time.time())
-        if self._token and now - self._token_iat < 50 * 60:
-            return self._token
-        self._token_iat = now
-        self._token = jwt.encode(
-            {"iss": self._config.team_id, "iat": now},
-            self._private_key,
+        cached = self._tokens.get(cache_key)
+        if cached and now - cached[1] < 50 * 60:
+            return cached[0]
+        token = jwt.encode(
+            {"iss": credentials.team_id, "iat": now},
+            self._private_key(credentials.key_path),
             algorithm="ES256",
-            headers={"alg": "ES256", "kid": self._config.key_id},
+            headers={"alg": "ES256", "kid": credentials.key_id},
         )
-        return self._token
+        self._tokens[cache_key] = (token, now)
+        return token
+
+    def _private_key(self, key_path: str) -> str:
+        """Read and cache a provider private key."""
+        if key_path not in self._private_keys:
+            self._private_keys[key_path] = Path(key_path).read_text()
+        return self._private_keys[key_path]

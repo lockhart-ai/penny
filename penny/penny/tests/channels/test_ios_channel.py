@@ -11,7 +11,7 @@ import httpx
 import pytest
 from sqlmodel import Session
 
-from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsError
+from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
 from penny.channels.ios.channel import PUSH_GREETING_TITLE, TEST_PUSH_MESSAGE, IosChannel
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
@@ -361,7 +361,11 @@ async def test_send_preview_selects_host_from_device_environment(monkeypatch, ca
         sandbox=True,  # global default host is sandbox
     )
     client._http = FakeHttp()
-    monkeypatch.setattr(client, "_provider_token", lambda: "provider-token")
+    monkeypatch.setattr(
+        client,
+        "_provider_token",
+        lambda environment=None: "provider-token",
+    )
 
     async def send(environment):
         await client.send_preview(
@@ -392,6 +396,52 @@ async def test_send_preview_selects_host_from_device_environment(monkeypatch, ca
         "Unrecognized APNs environment 'unexpected'" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_apns_provider_token_uses_production_credentials(monkeypatch):
+    encoded: list[dict] = []
+    client = object.__new__(ApnsClient)
+    client._config = ApnsConfig(
+        team_id="SANDBOXTEAM",
+        key_id="SANDBOXKEY",
+        key_path="/unused/AuthKey_SANDBOXKEY.p8",
+        bundle_id="com.example.Penny",
+        sandbox=True,
+        production_team_id="PRODTEAM",
+        production_key_id="PRODKEY",
+        production_key_path="/unused/AuthKey_PRODKEY.p8",
+    )
+    client._private_keys = {
+        "/unused/AuthKey_SANDBOXKEY.p8": "sandbox-private-key",
+        "/unused/AuthKey_PRODKEY.p8": "production-private-key",
+    }
+    client._tokens = {}
+
+    def fake_encode(payload, private_key, *, algorithm, headers):
+        encoded.append(
+            {
+                "payload": payload,
+                "private_key": private_key,
+                "algorithm": algorithm,
+                "headers": headers,
+            }
+        )
+        return f"token-{headers['kid']}"
+
+    monkeypatch.setattr("penny.channels.ios.apns.jwt.encode", fake_encode)
+    monkeypatch.setattr("penny.channels.ios.apns.time.time", lambda: 1234)
+
+    token = client._provider_token(ApnsEnvironment.PRODUCTION)
+
+    assert token == "token-PRODKEY"
+    assert encoded == [
+        {
+            "payload": {"iss": "PRODTEAM", "iat": 1234},
+            "private_key": "production-private-key",
+            "algorithm": "ES256",
+            "headers": {"alg": "ES256", "kid": "PRODKEY"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -483,7 +533,11 @@ async def test_apns_preview_payload_includes_greeting_summary_and_badge(monkeypa
         sandbox=True,
     )
     client._http = FakeHttp()
-    monkeypatch.setattr(client, "_provider_token", lambda: "provider-token")
+    monkeypatch.setattr(
+        client,
+        "_provider_token",
+        lambda environment=None: "provider-token",
+    )
 
     await client.send_preview(
         device_token="device-token",
