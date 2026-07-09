@@ -1,0 +1,15 @@
+included:
+  - PennyClient
+  - PennyClientTests
+
+excluded:
+  - swift-syntax
+  - SQLite.swift
+  - SQLPropertyMacros
+  - PennyClient.xcodeproj
+
+reporter: xcode
+
+line_length: 240
+file_length: 2000
+large_tuple: 5

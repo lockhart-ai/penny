@@ -101,6 +101,9 @@
 			);
 			buildRules = (
 			);
+			dependencies = (
+				D10235292FFF4848008CD9FF /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* PennyClient */,
 			);
@@ -124,6 +127,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				D102352D2FFF4855008CD9FF /* PBXTargetDependency */,
 				D18FD9B92FF98AC900225D47 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
@@ -143,6 +147,9 @@
 				D1F83D872FF9A0000010DBDD /* Resources */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				D102352B2FFF484F008CD9FF /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* PennyClient */,
@@ -190,6 +197,7 @@
 			packageReferences = (
 				D18FD9872FF8E53D00225D47 /* XCRemoteSwiftPackageReference "SQLite" */,
 				D18FD98C2FF8E5A400225D47 /* XCLocalSwiftPackageReference "SQLPropertyMacros" */,
+				D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -242,6 +250,18 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		D10235292FFF4848008CD9FF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = D10235282FFF4848008CD9FF /* SwiftLintBuildToolPlugin */;
+		};
+		D102352B2FFF484F008CD9FF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = D102352A2FFF484F008CD9FF /* SwiftLintBuildToolPlugin */;
+		};
+		D102352D2FFF4855008CD9FF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = D102352C2FFF4855008CD9FF /* SwiftLintBuildToolPlugin */;
+		};
 		D18FD9B92FF98AC900225D47 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 000000000000000100000000 /* PennyDev */;
@@ -710,6 +730,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/realm/SwiftLint";
+			requirement = {
+				kind = exactVersion;
+				version = 0.59.1;
+			};
+		};
 		D18FD9872FF8E53D00225D47 /* XCRemoteSwiftPackageReference "SQLite" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/stephencelis/SQLite.swift";
@@ -721,6 +749,21 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		D10235282FFF4848008CD9FF /* SwiftLintBuildToolPlugin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */;
+			productName = "plugin:SwiftLintBuildToolPlugin";
+		};
+		D102352A2FFF484F008CD9FF /* SwiftLintBuildToolPlugin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */;
+			productName = "plugin:SwiftLintBuildToolPlugin";
+		};
+		D102352C2FFF4855008CD9FF /* SwiftLintBuildToolPlugin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10234D92FFF458C008CD9FF /* XCRemoteSwiftPackageReference "SwiftLint" */;
+			productName = "plugin:SwiftLintBuildToolPlugin";
+		};
 		D18FD9882FF8E53D00225D47 /* SQLite */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = D18FD9872FF8E53D00225D47 /* XCRemoteSwiftPackageReference "SQLite" */;
