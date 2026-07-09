@@ -23,6 +23,9 @@ concurrency:
 
 jobs:
   testflight:
+    # Only deploy from the canonical repo — skip on forks (e.g. when a fork
+    # owner syncs their main), which also lack the App Store Connect secrets.
+    if: github.repository == 'lockhart-ai/penny'
     runs-on: macos-26
     timeout-minutes: 45
     steps:
