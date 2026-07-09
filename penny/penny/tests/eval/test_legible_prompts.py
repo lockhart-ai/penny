@@ -22,8 +22,9 @@ rest of #1528 (and the #1471 teach-by-example rework) rides on:
 
 Granularity is inherited from ``test_narration_survival.py``: scored STRUCTURALLY on the
 persisted recipe + which action families the NL reflects, never wording.  This is
-**eval-first** (#1530) — the cases are baselined against the current model; the gap
-drives the structural work in #1531, so several ship report-only (``min_pass_rate=None``).
+**eval-first** (#1530) — the cases were baselined against the current model; Ticket C
+(#1531) iterated the levers until they held, and the cases now **gate** at thresholds set
+with margin below their N=5 baselines (legibility/edit/round-trip 0.80, discuss 0.75).
 
 The seeded recipe is guideline-compliant: EVERY step is a canonical ``tool(args)`` call, and
 notification is pub/sub (the ``published`` flag + the ``notifier`` consumer), NOT a
@@ -137,7 +138,7 @@ async def test_legibility_describes_the_recipe(chat_eval: ChatEval) -> None:
         message="what does the board-games collection actually do? walk me through it.",
         seed=_seed,
         score=_score_legibility,
-        min_pass_rate=None,  # baseline (eval-first) — gap drives #1531
+        min_pass_rate=0.80,  # N=5 baseline 1.00 — Ticket C threshold (#1531)
     )
 
 
@@ -176,7 +177,7 @@ async def test_editing_lands_and_echoes(chat_eval: ChatEval) -> None:
         ),
         seed=_seed,
         score=_score_edit_and_echo,
-        min_pass_rate=None,  # baseline (eval-first)
+        min_pass_rate=0.80,  # N=5 baseline 0.97 — Ticket C threshold (#1531)
     )
 
 
@@ -225,7 +226,7 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
         ],
         seed=_seed,
         score=_score_discuss_then_adjust,
-        min_pass_rate=None,  # baseline (eval-first) — the multi-turn gap drives #1531
+        min_pass_rate=0.75,  # N=5 baseline 0.90 — Ticket C threshold (#1531)
     )
 
 
@@ -300,7 +301,7 @@ async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
         ],
         seed=_seed,
         score=_score_edit_operations,
-        min_pass_rate=None,  # baseline (eval-first) — the deeper multi-turn gap drives #1531
+        min_pass_rate=0.80,  # N=5 baseline 0.95 — Ticket C threshold (#1531)
     )
 
 
@@ -376,5 +377,5 @@ async def test_roundtrip_preserves_the_sequence(chat_eval: ChatEval) -> None:
         ],
         seed=_seed,
         score=_score_roundtrip,
-        min_pass_rate=None,  # baseline (eval-first)
+        min_pass_rate=0.80,  # N=5 baseline 0.97 — Ticket C threshold (#1531)
     )
