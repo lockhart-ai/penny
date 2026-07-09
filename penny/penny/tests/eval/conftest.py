@@ -660,9 +660,11 @@ def _write_sample_report(
         f"| {index} | {actor} | {_report_cell(content)} |"
         for index, (actor, content) in enumerate(_sample_turns(rows, reply), start=1)
     ]
-    if result.checks:  # graded: a scorecard — every check with ✅ / ❌
-        lines += ["", "| | Check |", "|---|---|"]
-        lines += [f"| {'✅' if c.ok else '❌'} | {_report_cell(c.label)} |" for c in result.checks]
+    if result.checks:  # graded: append each check as a row in the SAME table, ✅/❌ inline
+        lines += [
+            f"| {'✅' if check.ok else '❌'} | check | {_report_cell(check.label)} |"
+            for check in result.checks
+        ]
     elif result.failed:  # binary: just the failure reasons
         lines += ["", f"**Failed:** {'; '.join(result.failed)}"]
     directory = Path(report_dir)
