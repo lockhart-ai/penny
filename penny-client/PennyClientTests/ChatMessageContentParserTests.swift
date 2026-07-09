@@ -80,7 +80,7 @@ struct ChatMessageContentParserTests {
         let content = """
         | Meme | Caption snippet |
         |------|-----------------|
-        | **#15** | "Meme contrasting dogs looking guilty with cats staring intensely... " -  
+        | **#15** | "Meme contrasting dogs looking guilty with cats staring intensely... " -
           *highlighting that cats just *look* like tiny statues* |
         | **#57** | "Orange cat wearing a pizza slice on its head" |
         """

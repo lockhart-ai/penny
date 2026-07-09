@@ -1,0 +1,22 @@
+included:
+  - PennyClient
+  - PennyClientTests
+
+excluded:
+  - swift-syntax
+  - SQLite.swift
+  - SQLPropertyMacros
+  - PennyClient.xcodeproj
+
+disabled_rules:
+  - cyclomatic_complexity
+
+reporter: xcode
+
+line_length: 240
+file_length: 2000
+function_body_length: 100
+type_body_length: 500
+nesting:
+  type_level: 3
+large_tuple: 5

@@ -429,24 +429,24 @@ private struct ChatMarkdownTableLayout: Layout {
         let columnWidths = widths(for: subviews, availableWidth: bounds.width)
         let rowHeights = heights(for: subviews, columnWidths: columnWidths)
         let rows = groupedSubviews(subviews)
-        var y = bounds.minY
+        var currentY = bounds.minY
 
         for rowIndex in rows.keys.sorted() {
-            var x = bounds.minX
+            var currentX = bounds.minX
             for columnIndex in 0..<columnCount {
                 guard let subview = rows[rowIndex]?[columnIndex] else {
-                    x += columnWidths[columnIndex]
+                    currentX += columnWidths[columnIndex]
                     continue
                 }
 
                 subview.place(
-                    at: CGPoint(x: x, y: y),
+                    at: CGPoint(x: currentX, y: currentY),
                     anchor: .topLeading,
                     proposal: ProposedViewSize(width: columnWidths[columnIndex], height: rowHeights[rowIndex])
                 )
-                x += columnWidths[columnIndex]
+                currentX += columnWidths[columnIndex]
             }
-            y += rowHeights[rowIndex]
+            currentY += rowHeights[rowIndex]
         }
     }
 

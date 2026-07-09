@@ -400,7 +400,9 @@ private final class MockWebSocketTransport: WebSocketTransport {
     }
 
     func send(_ data: Data) async throws {
-        sentStrings.append(String(decoding: data, as: UTF8.self))
+        if let string = String(bytes: data, encoding: .utf8) {
+            sentStrings.append(string)
+        }
         sentPayloads.append(try JSONDecoder().decode([String: JSONValue].self, from: data))
     }
 

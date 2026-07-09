@@ -691,6 +691,7 @@ private enum ClientMessage: Encodable {
     case domainDelete(domain: String)
     case permissionDecision(requestID: String, allowed: Bool)
 
+    // swiftlint:disable:next function_body_length
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
@@ -1696,7 +1697,16 @@ struct ChatMessage: Identifiable {
     fileprivate static func remote(_ message: ServerChatMessage) -> ChatMessage {
         let imageAttachmentDataURLs = message.attachments.compactMap(\.dataURL)
         let imageAttachments = message.attachments.compactMap(\.image).map(ImageAttachment.init(image:))
-        return ChatMessage(id: message.id, serverID: message.id, createdAt: message.createdAt, content: message.content, sourceHint: message.sourceHint, imageAttachmentDataURLs: imageAttachmentDataURLs, imageAttachments: imageAttachments, isOutgoing: false)
+        return ChatMessage(
+            id: message.id,
+            serverID: message.id,
+            createdAt: message.createdAt,
+            content: message.content,
+            sourceHint: message.sourceHint,
+            imageAttachmentDataURLs: imageAttachmentDataURLs,
+            imageAttachments: imageAttachments,
+            isOutgoing: false
+        )
     }
 }
 

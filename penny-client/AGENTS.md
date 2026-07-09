@@ -29,6 +29,7 @@ The real `PennyClient/PennyClient/Secrets.plist` is local-only and ignored by gi
 
 ## Build And Validation
 Use `BuildProject` for full validation. Use `XcodeRefreshCodeIssuesInFile` for fast Swift diagnostics, but treat stale cross-file scope errors cautiously if the full build and Issue Navigator are clean.
+Zero warnings are expected. Treat all warnings as issues to fix before finishing, including SwiftLint warnings; do not leave new or existing SwiftLint warnings unresolved.
 For final verification, prefer:
 - diagnostics on touched Swift files
 - `XcodeListNavigatorIssues` for workspace errors
