@@ -40,6 +40,7 @@ import pytest
 
 from penny.database import Database
 from penny.tests.eval.conftest import (
+    REPLY_ANCHOR,
     ChatEval,
     Check,
     count_tool_calls,
@@ -126,8 +127,8 @@ def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]
             tool_was_called(db, "memory_metadata"),
             anchor="memory_metadata(",
         ),
-        Check("reply reflects the search/browse step", search_i >= 0),
-        Check("reply reflects the save/write step", save_i >= 0),
+        Check("reply reflects the search/browse step", search_i >= 0, anchor=REPLY_ANCHOR),
+        Check("reply reflects the save/write step", save_i >= 0, anchor=REPLY_ANCHOR),
     ]
 
 
@@ -305,10 +306,14 @@ async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
     )
 
 
-# ═══════════════════════════ 3. No-overreach guard ════════════════════════════
+# ════════════════════ 3. No silent recipe edit on a casual mention ════════════════════
+# NB: this guards ONLY against an unprompted STRUCTURAL change — silently rewriting the recipe
+# or spawning a collection when the user just made a passing remark.  It deliberately does NOT
+# police browsing or tool-call count: Penny browses in normal chat, and a matched-but-dummy
+# browse fixture can make a passing remark look like a "tool maze" that isn't a real regression.
 
 
-def _score_no_overreach(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_no_silent_edit(db: Database, before: set[str], reply: str) -> list[str]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "") if row is not None else ""
     fails: list[str] = []
@@ -319,13 +324,14 @@ def _score_no_overreach(db: Database, before: set[str], reply: str) -> list[str]
     return fails
 
 
-async def test_no_overreach_on_casual_mention(chat_eval: ChatEval) -> None:
-    """A conversational remark with no imperative must not silently edit the recipe."""
+async def test_no_silent_recipe_edit_on_casual_mention(chat_eval: ChatEval) -> None:
+    """A conversational remark with no imperative must not silently edit the recipe or spawn a
+    collection.  (Browsing / a chatty reply is fine — this only guards the structural change.)"""
     await chat_eval(
-        case_id="legible-no-overreach",
+        case_id="legible-no-silent-recipe-edit",
         message="ugh, board games have gotten so pricey lately.",
         seed=_seed,
-        score=_score_no_overreach,
+        score=_score_no_silent_edit,
         min_pass_rate=0.75,
     )
 

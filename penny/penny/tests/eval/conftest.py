@@ -631,6 +631,11 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
     return turns
 
 
+# A check whose `anchor` is this sentinel is about the final NL reply itself (not a tool
+# call) — it stamps the last Penny-reply row rather than falling to the footer.
+REPLY_ANCHOR = "__reply__"
+
+
 def _anchor_hits(needle: str, content: str) -> bool:
     """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_metadata(``)
     matches that call; a keyword anchor (``designer``, ``"published": false``) must live inside
@@ -646,16 +651,21 @@ def _place_checks(
 ) -> tuple[dict[int, str], list[Check]]:
     """Bind each anchored check to the FIRST turn whose content contains its anchor.
 
-    Returns ``(turn_index -> concatenated ✅/❌ marks, leftover checks)``.  A check with no
-    anchor — or whose anchor matches no turn (a *missing* expected action, a tool call that
-    never happened) — has no row to sit on, so it falls to ``leftover`` (a footer) rather
-    than being hidden."""
+    A ``REPLY_ANCHOR`` check stamps the final Penny-reply row (it tests the reply's text, not
+    a tool call).  Returns ``(turn_index -> concatenated ✅/❌ marks, leftover checks)``.  A
+    check with no anchor — or whose anchor matches no turn (a *missing* expected action, a tool
+    call that never happened) — has no row to sit on, so it falls to ``leftover`` (a footer)."""
     marks: dict[int, str] = {}
     leftover: list[Check] = []
+    reply_row = max(  # the final NL reply row — where a REPLY_ANCHOR check lands
+        (i for i, (actor, _c) in enumerate(turns) if actor == _ACTOR["penny"]), default=None
+    )
     for check in checks:
-        needle = (check.anchor or "").lower()
         hit = None
-        if needle:  # match only Penny's tool-call rows — never the user turn that named the word
+        if check.anchor == REPLY_ANCHOR:
+            hit = reply_row
+        elif check.anchor:  # match only Penny's tool-call rows — never the user turn naming it
+            needle = check.anchor.lower()
             hit = next(
                 (
                     i
