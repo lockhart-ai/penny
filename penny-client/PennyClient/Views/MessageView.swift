@@ -6,6 +6,11 @@ struct MessageView: View {
     @State private var viewModel = ViewModel()
     @State private var isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     @State private var presentedCardMessage: ChatMessage?
+    @State private var activeMessageContext: MessageActionContext?
+    @State private var messageFrames: [Int: CGRect] = [:]
+    @State private var messageActionProxyHeights: [Int: CGFloat] = [:]
+    @State private var messageContextScale: CGFloat = 1
+    @State private var shouldUseFastComposerScroll = false
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
 
@@ -90,6 +95,13 @@ struct MessageView: View {
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
             }
+            .coordinateSpace(name: messageRootCoordinateSpace)
+            .onPreferenceChange(MessageFramePreferenceKey.self) { frames in
+                messageFrames = frames
+            }
+            .overlay {
+                messageActionOverlay
+            }
             .onChange(of: viewModel.isShowingSettings) { _, isShowingSettings in
                 guard !isShowingSettings else { return }
                 refreshFeaturePreferences()
@@ -148,7 +160,11 @@ struct MessageView: View {
                 }
             }
             .onChange(of: viewModel.scrollToBottomRequest) { _, _ in
-                scheduleScrollToBottom(with: proxy, animated: false)
+                scheduleScrollToBottom(
+                    with: proxy,
+                    animated: false,
+                    shouldSettleLayout: viewModel.shouldSettleScrollToBottom
+                )
             }
         }
     }
@@ -179,7 +195,11 @@ struct MessageView: View {
                 scheduleScrollToBottom(with: proxy, animated: false)
             }
             .onChange(of: viewModel.scrollToBottomRequest) { _, _ in
-                scheduleScrollToBottom(with: proxy, animated: false)
+                scheduleScrollToBottom(
+                    with: proxy,
+                    animated: false,
+                    shouldSettleLayout: viewModel.shouldSettleScrollToBottom
+                )
             }
         }
     }
@@ -262,40 +282,82 @@ struct MessageView: View {
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message", text: $viewModel.draftMessage, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...5)
-                .submitLabel(.send)
-                .focused($isComposerFocused)
-                .onSubmit(viewModel.sendDraft)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .glassEffect(.regular, in: .capsule)
-
-            Button(action: viewModel.sendDraft) {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 32, height: 32)
+        VStack(alignment: .leading, spacing: 8) {
+            if let replyMessage = viewModel.replyMessage {
+                replyPreview(for: replyMessage)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .disabled(viewModel.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.client.canSend)
-            .accessibilityLabel("Send")
+
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Message", text: $viewModel.draftMessage, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .lineLimit(1...5)
+                    .submitLabel(.send)
+                    .focused($isComposerFocused)
+                    .onSubmit(viewModel.sendDraft)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+
+                Button(action: viewModel.sendDraft) {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.circle)
+                .disabled(viewModel.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !viewModel.client.canSend)
+                .accessibilityLabel("Send")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.clear)
     }
 
-    private var bottomAnchorID: String {
-        "message-list-bottom"
+    private func replyPreview(for message: ChatMessage) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Color.accentColor)
+                .frame(width: 3, height: 38)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(message.isOutgoing ? "You" : (message.sourceHint ?? "Penny"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(viewModel.replySummary(for: message))
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                viewModel.cancelReply()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Cancel reply")
+        }
+        .frame(height: 52)
+        .padding(.horizontal, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Replying to \(viewModel.replySummary(for: message))")
     }
 
-    private var messageScrollCoordinateSpace: String {
-        "message-scroll-coordinate-space"
-    }
+    private var bottomAnchorID: String { "message-list-bottom" }
+
+    private var messageScrollCoordinateSpace: String { "message-scroll-coordinate-space" }
+
+    private var messageRootCoordinateSpace: String { "message-root-coordinate-space" }
 
     private var bottomSpacer: some View {
         Color.clear
@@ -332,12 +394,29 @@ struct MessageView: View {
     private func messageGridCell(_ message: ChatMessage, layout: MessageLayout) -> some View {
         ChatMessageView(message: message, layout: layout)
             .id(message.id)
+            .opacity(activeMessageContext?.message.id == message.id ? 0 : 1)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: MessageFramePreferenceKey.self,
+                        value: [message.id: geometry.frame(in: .named(messageRootCoordinateSpace))]
+                    )
+                }
+            }
             .contentShape(Rectangle())
             .onTapGesture {
+                if activeMessageContext?.message.id == message.id {
+                    dismissMessageActions()
+                    return
+                }
                 guard layout != .message else { return }
                 presentedCardMessage = message
             }
+            .onLongPressGesture(minimumDuration: 0.35) {
+                presentMessageActions(for: message)
+            }
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: activeMessageContext?.message.id)
     }
 
     private func messageGridRows(for layout: MessageLayout) -> [MessageGridRow] {
@@ -382,21 +461,21 @@ struct MessageView: View {
 
     private func handleComposerFocusChanged(_ isFocused: Bool) {
         guard isFocused else {
+            shouldUseFastComposerScroll = false
             keyboardSettledScrollTask?.cancel()
             return
         }
-        if isMessageLayoutSwitcherEnabled {
-            viewModel.prepareComposerFocus()
-        }
-        scheduleScrollAfterKeyboardSettles()
+        let didChangeMessageLayout = isMessageLayoutSwitcherEnabled && viewModel.prepareComposerFocus()
+        scheduleScrollAfterKeyboardSettles(fast: shouldUseFastComposerScroll && !didChangeMessageLayout)
+        shouldUseFastComposerScroll = false
     }
 
-    private func scheduleScrollAfterKeyboardSettles() {
+    private func scheduleScrollAfterKeyboardSettles(fast: Bool = false) {
         keyboardSettledScrollTask?.cancel()
         keyboardSettledScrollTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: fast ? .milliseconds(120) : .milliseconds(350))
             guard !Task.isCancelled && isComposerFocused else { return }
-            viewModel.requestScrollToBottom()
+            viewModel.requestScrollToBottom(shouldSettleLayout: !fast)
         }
     }
 
@@ -465,6 +544,241 @@ struct MessageView: View {
         }
     }
 
+}
+
+private extension MessageView {
+    @ViewBuilder
+    var messageActionOverlay: some View {
+        if let context = activeMessageContext {
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    Rectangle()
+                        .fill(.regularMaterial)
+                        .opacity(0.86)
+                        .ignoresSafeArea()
+                        .onTapGesture(perform: dismissMessageActions)
+
+                    messageActionStack(for: context, in: geometry.size)
+                }
+                .onPreferenceChange(MessageActionProxyHeightPreferenceKey.self) { heights in
+                    messageActionProxyHeights.merge(heights, uniquingKeysWith: { _, newValue in newValue })
+                }
+            }
+            .transition(.opacity)
+        }
+    }
+
+    func messageActionStack(for context: MessageActionContext, in containerSize: CGSize) -> some View {
+        let stackWidth = actionProxyWidth(for: context, in: containerSize)
+        let estimatedMenuHeight: CGFloat = 112
+        let stackSpacing: CGFloat = 10
+        let availableStackHeight = max(1, containerSize.height - 32)
+        let maximumProxyHeight = max(44, availableStackHeight - estimatedMenuHeight - stackSpacing)
+        let measuredProxyHeight = messageActionProxyHeights[context.id]
+        let shouldScrollProxy = shouldScrollMessageActionProxy(
+            for: context,
+            measuredHeight: measuredProxyHeight,
+            maxHeight: maximumProxyHeight
+        )
+        let fallbackProxyHeight = effectiveMessageLayout == .message ? context.frame.height : maximumProxyHeight
+        let proxyHeight = shouldScrollProxy ? maximumProxyHeight : min(maximumProxyHeight, max(1, measuredProxyHeight ?? fallbackProxyHeight))
+        let stackHeight = proxyHeight + estimatedMenuHeight + stackSpacing
+        let leading = actionProxyLeading(for: context, width: stackWidth, in: containerSize)
+        let maximumTop = max(16, containerSize.height - stackHeight - 16)
+        let top = min(max(16, context.frame.minY), maximumTop)
+        let messageAlignment: Alignment = context.message.isOutgoing ? .trailing : .leading
+
+        return VStack(alignment: context.message.isOutgoing ? .trailing : .leading, spacing: stackSpacing) {
+            messageActionProxy(
+                for: context,
+                layout: MessageActionProxyLayout(
+                    width: stackWidth,
+                    height: proxyHeight,
+                    measuredHeight: measuredProxyHeight,
+                    maxHeight: maximumProxyHeight,
+                    alignment: messageAlignment
+                )
+            )
+            .scaleEffect(messageContextScale)
+
+            messageActionMenu(for: context.message)
+                .frame(width: 220)
+        }
+        .frame(width: stackWidth, alignment: messageAlignment)
+        .background {
+            messageActionProxyMeasurement(for: context, width: stackWidth, alignment: messageAlignment)
+        }
+        .offset(x: leading, y: top)
+        .animation(.spring(response: 0.22, dampingFraction: 0.72), value: messageContextScale)
+    }
+
+    func messageActionProxyMeasurement(for context: MessageActionContext, width: CGFloat, alignment: Alignment) -> some View {
+        ChatMessageView(message: context.message, layout: .message)
+            .frame(width: width, alignment: alignment)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: MessageActionProxyHeightPreferenceKey.self,
+                        value: [context.id: geometry.size.height]
+                    )
+                }
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+    }
+
+    func actionProxyWidth(for context: MessageActionContext, in containerSize: CGSize) -> CGFloat {
+        let maximumWidth = max(1, containerSize.width - MessageLayout.message.horizontalPadding * 2)
+        guard effectiveMessageLayout != .message else {
+            return min(max(1, context.frame.width), maximumWidth)
+        }
+        return maximumWidth
+    }
+
+    func actionProxyLeading(for context: MessageActionContext, width: CGFloat, in containerSize: CGSize) -> CGFloat {
+        let maximumLeading = max(MessageLayout.message.horizontalPadding, containerSize.width - width - MessageLayout.message.horizontalPadding)
+        if effectiveMessageLayout != .message {
+            return context.message.isOutgoing ? maximumLeading : MessageLayout.message.horizontalPadding
+        }
+        return min(max(MessageLayout.message.horizontalPadding, context.frame.minX), maximumLeading)
+    }
+
+    func shouldScrollMessageActionProxy(
+        for context: MessageActionContext,
+        measuredHeight: CGFloat?,
+        maxHeight: CGFloat
+    ) -> Bool {
+        if let measuredHeight {
+            return measuredHeight > maxHeight
+        }
+        return context.frame.height > maxHeight || (effectiveMessageLayout != .message && context.message.content.count > 280)
+    }
+
+    @ViewBuilder
+    func messageActionProxy(for context: MessageActionContext, layout: MessageActionProxyLayout) -> some View {
+        if shouldScrollMessageActionProxy(for: context, measuredHeight: layout.measuredHeight, maxHeight: layout.maxHeight) {
+            ScrollView {
+                ChatMessageView(message: context.message, layout: .message)
+                    .frame(width: layout.width, alignment: layout.alignment)
+            }
+            .frame(width: layout.width)
+            .frame(height: layout.height, alignment: .top)
+            .scrollIndicators(.hidden)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: dismissMessageActions)
+        } else {
+            ChatMessageView(message: context.message, layout: .message)
+                .frame(width: layout.width, alignment: layout.alignment)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: dismissMessageActions)
+        }
+    }
+
+    func messageActionMenu(for message: ChatMessage) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                shouldUseFastComposerScroll = true
+                withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
+                    viewModel.startReply(to: message)
+                    dismissMessageActions()
+                }
+                Task { @MainActor in
+                    await Task.yield()
+                    isComposerFocused = true
+                }
+            } label: {
+                menuButtonRow(title: "Reply", systemImage: "arrowshape.turn.up.left")
+            }
+
+            Divider()
+                .padding(.leading, 48)
+
+            Button {
+                UIPasteboard.general.string = message.content
+                dismissMessageActions()
+            } label: {
+                menuButtonRow(title: "Copy", systemImage: "doc.on.doc")
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.body)
+        .foregroundStyle(.primary)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color(.separator).opacity(0.28), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+
+    func menuButtonRow(title: String, systemImage: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .frame(width: 22)
+
+            Text(title)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.clear)
+        .contentShape(Rectangle())
+    }
+
+    func presentMessageActions(for message: ChatMessage) {
+        guard let frame = messageFrames[message.id] else { return }
+        activeMessageContext = MessageActionContext(message: message, frame: frame)
+        messageContextScale = 1.06
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            guard activeMessageContext?.message.id == message.id else { return }
+            messageContextScale = 1
+        }
+    }
+
+    func dismissMessageActions() {
+        if let activeMessageContext {
+            messageActionProxyHeights[activeMessageContext.id] = nil
+        }
+        activeMessageContext = nil
+        messageContextScale = 1
+    }
+}
+
+private struct MessageActionContext: Identifiable {
+    let message: ChatMessage
+    let frame: CGRect
+
+    var id: Int {
+        message.id
+    }
+}
+
+private struct MessageActionProxyLayout {
+    let width: CGFloat
+    let height: CGFloat
+    let measuredHeight: CGFloat?
+    let maxHeight: CGFloat
+    let alignment: Alignment
+}
+
+private struct MessageFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [Int: CGRect] = [:]
+
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
+    }
+}
+
+private struct MessageActionProxyHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
+    }
 }
 
 private struct MessageGridRow: Identifiable {

@@ -101,6 +101,23 @@ struct ChatMessageContentParserTests {
         #expect(table.rows[1] == ["**#57**", "\"Orange cat wearing a pizza slice on its head\""])
     }
 
+    @Test func parsesReplyContextForBubbleRendering() {
+        let content = """
+        Hacks
+
+        In reply to You:
+        > /console ffxglow 0
+        """
+
+        let replyContent = ChatReplyContentParser.parse(content)
+
+        #expect(replyContent == ChatReplyContent(body: "Hacks", author: "You", summary: "/console ffxglow 0"))
+    }
+
+    @Test func ignoresContentWithoutReplyContext() {
+        #expect(ChatReplyContentParser.parse("Hacks\n> quoted but no reply marker") == nil)
+    }
+
     @Test func preservesLineBreaksInMarkdownTextBlocks() {
         let text = ChatMessageContentParser.markdownText(from: "first\n*second*\nthird")
 
