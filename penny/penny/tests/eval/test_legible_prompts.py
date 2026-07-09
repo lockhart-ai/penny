@@ -42,8 +42,10 @@ from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     count_tool_calls,
+    gave_up_mid_run,
     new_collections,
     seed_collection,
+    tool_call_rejected,
     tool_was_called,
 )
 from penny.tests.eval.fixtures import (
@@ -150,6 +152,7 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
         Check(
             "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
         ),
+        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
         Check("designer landed in the recipe", "designer" in stored),
         Check("recipe changed from the seed", stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()),
         Check("no fictitious tool persisted", "extract_text" not in stored),
@@ -196,6 +199,8 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
         Check(
             "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
         ),
+        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
         Check("designer landed in the recipe", "designer" in stored),
         Check("reply echoes the change", _echoes_designer(reply)),
     ]
@@ -234,6 +239,12 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
     checks = [
         Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
         Check("applied edits (collection_update called)", tool_was_called(db, "collection_update")),
+        # Process fidelity: the final-state checks below can pass when an intermediate
+        # collection_update was REJECTED and a *later* turn re-landed the content (the
+        # rejected-`intent`-param + give-up sample the graded outcome hid).  These two catch
+        # the broken turn — the reason we don't merge a scorer that final-state alone fooled.
+        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
         Check("modify: designer added to collection_write", "designer" in stored),
         Check("add: Amazon-price browse call", "amazon" in stored or "price" in stored),
         Check('remove: log_read("user-messages") gone', log_read_gone),
@@ -312,6 +323,7 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
         # A round-trip happened only if Penny RE-ENCODED via collection_update — else the recipe
         # is the untouched seed and the family checks pass trivially (describe-in-text false pass).
         Check("re-encoded it (collection_update called)", tool_was_called(db, "collection_update")),
+        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
         Check("browse step preserved", browse_i >= 0),
         Check("collection_write step preserved", write_i >= 0),
         Check("done step preserved", done_i >= 0),

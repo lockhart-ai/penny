@@ -256,6 +256,46 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
     )
 
 
+_GAVE_UP = re.compile(
+    r"\b(sorry|apolog\w+)\b.{0,50}"
+    r"\b(wasn't|was not|couldn't|could not|can't|cannot|unable|not able)\b",
+    re.IGNORECASE,
+)
+
+
+def _iter_prompt_messages(db: Database):
+    """Every message across the run's promptlog (accumulated history + tool results)."""
+    for row in db.messages.recent_prompts(limit=200):
+        yield from (json.loads(row.messages) if row.messages else [])
+
+
+def tool_call_rejected(db: Database, tool_name: str) -> bool:
+    """Did any call to ``tool_name`` come back REJECTED (arg-validation / failure)?
+
+    The process-fidelity counterpart to ``tool_was_called``: a graded contract that checks
+    the final STATE can still pass when an intermediate call was rejected and a *later* turn
+    happened to re-land the content — this catches the rejected turn (the tool-result failure
+    frame ``You tried to use `<tool>` but …``)."""
+    for message in _iter_prompt_messages(db):
+        content = message.get("content") or ""
+        if (
+            message.get("role") == "tool"
+            and f"`{tool_name}`" in content
+            and ("arguments were wrong" in content or "didn't work" in content)
+        ):
+            return True
+    return False
+
+
+def gave_up_mid_run(db: Database) -> bool:
+    """Did any assistant reply apologise for a failure it should have recovered from — a
+    defeatist give-up ("Sorry, I wasn't able to get results right now") instead of a retry?"""
+    return any(
+        message.get("role") == "assistant" and _GAVE_UP.search(message.get("content") or "")
+        for message in _iter_prompt_messages(db)
+    )
+
+
 def last_tool_args(db: Database, tool_name: str) -> dict | None:
     """Parsed ``arguments`` of the most recent ``tool_name`` call this run (``None``
     if never called).  Like ``tool_was_called`` but returns the call's args — e.g.
