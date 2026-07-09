@@ -349,7 +349,7 @@ async def test_send_preview_selects_host_from_device_environment(monkeypatch, ca
 
     class FakeHttp:
         async def post(self, url, *, headers, json):
-            requests.append({"url": url})
+            requests.append({"url": url, "headers": headers})
             return httpx.Response(200)
 
     client = object.__new__(ApnsClient)
@@ -359,6 +359,7 @@ async def test_send_preview_selects_host_from_device_environment(monkeypatch, ca
         key_path="/unused/AuthKey_KEYID.p8",
         bundle_id="com.example.Penny",
         sandbox=True,  # global default host is sandbox
+        production_bundle_id="com.example.PennyTestflight",
     )
     client._http = FakeHttp()
     monkeypatch.setattr(
@@ -391,6 +392,12 @@ async def test_send_preview_selects_host_from_device_environment(monkeypatch, ca
         "https://api.sandbox.push.apple.com",
         "https://api.sandbox.push.apple.com",
         "https://api.sandbox.push.apple.com",
+    ]
+    assert [request["headers"]["apns-topic"] for request in requests] == [
+        "com.example.PennyTestflight",
+        "com.example.Penny",
+        "com.example.Penny",
+        "com.example.Penny",
     ]
     assert any(
         "Unrecognized APNs environment 'unexpected'" in record.getMessage()

@@ -159,6 +159,7 @@ def _build_apns_client(config: Config) -> ApnsClient | None:
             production_team_id=config.ios_apns_production_team_id,
             production_key_id=config.ios_apns_production_key_id,
             production_key_path=config.ios_apns_production_key_path,
+            production_bundle_id=config.ios_apns_production_bundle_id,
         )
     )
 

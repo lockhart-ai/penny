@@ -81,6 +81,7 @@ class ApnsConfig:
     production_team_id: str | None = None
     production_key_id: str | None = None
     production_key_path: str | None = None
+    production_bundle_id: str | None = None
 
     @property
     def host(self) -> str:
@@ -105,6 +106,12 @@ class ApnsConfig:
                 key_path=self.production_key_path,
             )
         return ApnsCredentials(team_id=self.team_id, key_id=self.key_id, key_path=self.key_path)
+
+    def topic_for(self, environment: ApnsEnvironment) -> str:
+        """Return the APNs topic for an environment."""
+        if environment is ApnsEnvironment.PRODUCTION and self.production_bundle_id:
+            return self.production_bundle_id
+        return self.bundle_id
 
 
 class ApnsClient:
@@ -155,7 +162,7 @@ class ApnsClient:
             f"https://{resolved_environment.host}/3/device/{device_token}",
             headers={
                 "authorization": f"bearer {self._provider_token(resolved_environment)}",
-                "apns-topic": self._config.bundle_id,
+                "apns-topic": self._config.topic_for(resolved_environment),
                 "apns-push-type": "alert",
                 "apns-priority": "10",
             },

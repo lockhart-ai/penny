@@ -164,6 +164,7 @@ Set these environment variables for background notifications:
 - `IOS_APNS_PRODUCTION_KEY_ID` (optional production credential override)
 - `IOS_APNS_PRODUCTION_KEY_PATH` (optional production credential override)
 - `IOS_BUNDLE_ID`
+- `IOS_APNS_PRODUCTION_BUNDLE_ID` (optional production APNs topic override)
 - `IOS_APNS_SANDBOX` (fallback only — each device reports its own `apns_environment` at registration, which selects the APNs host per device)
 
 `IOS_APNS_KEY_PATH` must point to an Apple `.p8` APNs auth key inside the
@@ -174,7 +175,9 @@ gitignored.
 When production override credentials are configured and a device registers with
 `apns_environment=production`, Penny signs the APNs provider token with the
 production key. If those overrides are not configured, production sends use the
-default APNs credentials.
+default APNs credentials. When `IOS_APNS_PRODUCTION_BUNDLE_ID` is configured,
+production sends use that bundle ID as the APNs topic; sandbox sends continue to
+use `IOS_BUNDLE_ID`.
 
 ### Diagnostics
 
