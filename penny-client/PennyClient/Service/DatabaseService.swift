@@ -5,7 +5,7 @@ import SQLPropertyMacros
 final class DatabaseService {
     static let shared = DatabaseService()
 
-    private var db: Connection!
+    private var databaseConnection: Connection!
     private var isSetup = false
 
     func setupForTesting() {
@@ -27,7 +27,7 @@ final class DatabaseService {
         ).first!
 
         do {
-            db = try Connection("\(path)/db.sqlite3")
+            databaseConnection = try Connection("\(path)/db.sqlite3")
         } catch {
             fatalError(error.localizedDescription)
         }
@@ -35,7 +35,7 @@ final class DatabaseService {
 
     fileprivate func connectForTesting() {
         do {
-            db = try Connection()
+            databaseConnection = try Connection()
         } catch {
             fatalError(error.localizedDescription)
         }
@@ -43,7 +43,7 @@ final class DatabaseService {
 
     fileprivate func createTables() {
         do {
-            try MessageModel.createTable(db: db)
+            try MessageModel.createTable(database: databaseConnection)
             try migrateDatabase()
         } catch {
             fatalError(error.localizedDescription)
@@ -51,17 +51,17 @@ final class DatabaseService {
     }
 
     fileprivate func migrateDatabase() throws {
-        let currentVersion = db.userVersion ?? 0
+        let currentVersion = databaseConnection.userVersion ?? 0
 
         if currentVersion < 1 {
-            db.userVersion = 1
+            databaseConnection.userVersion = 1
         }
 
         if currentVersion < 2 {
-            if try !MessageModel.columnExists(db: db, name: "image_attachment_data_urls") {
-                try db.run(MessageModel.table().addColumn(MessageModel.imageAttachmentDataURLsExp, defaultValue: "[]"))
+            if try !MessageModel.columnExists(database: databaseConnection, name: "image_attachment_data_urls") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.imageAttachmentDataURLsExp, defaultValue: "[]"))
             }
-            db.userVersion = 2
+            databaseConnection.userVersion = 2
         }
     }
 }
@@ -71,7 +71,7 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.load(db: db)
+            return try MessageModel.load(database: databaseConnection)
         } catch {
             print(error)
             return []
@@ -83,7 +83,7 @@ extension DatabaseService {
         setup()
 
         do {
-            let page = try MessageModel.loadPage(db: db, request: request)
+            let page = try MessageModel.loadPage(database: databaseConnection, request: request)
             return MessagePage(
                 messages: page.models.map(ChatMessage.init(model:)),
                 nextCursor: page.nextCursor,
@@ -99,7 +99,7 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.minimumID(db: db)
+            return try MessageModel.minimumID(database: databaseConnection)
         } catch {
             print(error)
             return nil
@@ -110,7 +110,7 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.contains(db: db, serverID: serverID)
+            return try MessageModel.contains(database: databaseConnection, serverID: serverID)
         } catch {
             print(error)
             return false
@@ -121,7 +121,7 @@ extension DatabaseService {
         setup()
 
         do {
-            try message.save(db: db)
+            try message.save(database: databaseConnection)
         } catch {
             print(error)
         }
@@ -170,22 +170,22 @@ struct MessageModel: Codable, Identifiable, Hashable {
         Table("messages")
     }
 
-    fileprivate static func createTable(db: Connection) throws {
-        try db.run(
-            table().create(ifNotExists: true) { t in
-                t.column(idExp, primaryKey: true)
-                t.column(serverIDExp, unique: true)
-                t.column(createdAtExp)
-                t.column(contentExp)
-                t.column(sourceHintExp)
-                t.column(imageAttachmentDataURLsExp, defaultValue: "[]")
-                t.column(isOutgoingExp)
+    fileprivate static func createTable(database: Connection) throws {
+        try database.run(
+            table().create(ifNotExists: true) { tableBuilder in
+                tableBuilder.column(idExp, primaryKey: true)
+                tableBuilder.column(serverIDExp, unique: true)
+                tableBuilder.column(createdAtExp)
+                tableBuilder.column(contentExp)
+                tableBuilder.column(sourceHintExp)
+                tableBuilder.column(imageAttachmentDataURLsExp, defaultValue: "[]")
+                tableBuilder.column(isOutgoingExp)
             }
         )
     }
 
-    fileprivate func save(db: Connection) throws {
-        try db.run(
+    fileprivate func save(database: Connection) throws {
+        try database.run(
             MessageModel.table().insert(or: .replace,
                 MessageModel.idExp <- id,
                 MessageModel.serverIDExp <- serverID,
@@ -198,16 +198,16 @@ struct MessageModel: Codable, Identifiable, Hashable {
         )
     }
 
-    fileprivate static func load(db: Connection) throws -> [MessageModel] {
+    fileprivate static func load(database: Connection) throws -> [MessageModel] {
         var result = [MessageModel]()
-        for entry in try db.prepare(table().order(createdAtExp.asc)) {
+        for entry in try database.prepare(table().order(createdAtExp.asc)) {
             result.append(message(from: entry))
         }
         return result
     }
 
     @MainActor
-    fileprivate static func loadPage(db: Connection, request: MessagePageRequest) throws -> (models: [MessageModel], nextCursor: MessagePageCursor?, hasMore: Bool) {
+    fileprivate static func loadPage(database: Connection, request: MessagePageRequest) throws -> (models: [MessageModel], nextCursor: MessagePageCursor?, hasMore: Bool) {
         let limit = max(1, request.limit)
         var query = filteredTable(for: request.filter)
 
@@ -219,22 +219,22 @@ struct MessageModel: Codable, Identifiable, Hashable {
             .order(createdAtExp.desc, idExp.desc)
             .limit(limit + 1)
 
-        let fetched = try db.prepare(query).map(message(from:))
+        let fetched = try database.prepare(query).map(message(from:))
         let hasMore = fetched.count > limit
         let models = fetched.prefix(limit).reversed()
         let nextCursor = models.first.map { MessagePageCursor(createdAt: $0.createdAt, id: $0.id) }
         return (Array(models), nextCursor, hasMore)
     }
 
-    fileprivate static func minimumID(db: Connection) throws -> Int? {
-        for entry in try db.prepare(table().select(idExp).order(idExp.asc).limit(1)) {
+    fileprivate static func minimumID(database: Connection) throws -> Int? {
+        for entry in try database.prepare(table().select(idExp).order(idExp.asc).limit(1)) {
             return entry[idExp]
         }
         return nil
     }
 
-    fileprivate static func contains(db: Connection, serverID: Int) throws -> Bool {
-        try db.scalar(table().filter(serverIDExp == serverID).count) > 0
+    fileprivate static func contains(database: Connection, serverID: Int) throws -> Bool {
+        try database.scalar(table().filter(serverIDExp == serverID).count) > 0
     }
 
     private static func filteredTable(for filter: MessagePageFilter) -> Table {
@@ -282,8 +282,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
         return dataURLs
     }
 
-    fileprivate static func columnExists(db: Connection, name: String) throws -> Bool {
-        try db.schema.columnDefinitions(table: "messages").contains { column in
+    fileprivate static func columnExists(database: Connection, name: String) throws -> Bool {
+        try database.schema.columnDefinitions(table: "messages").contains { column in
             column.name == name
         }
     }

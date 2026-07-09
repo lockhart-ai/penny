@@ -483,7 +483,6 @@ private struct TopMessageLoaderPreferenceKey: PreferenceKey {
     }
 }
 
-
 private struct MessageCardDetailSheet: View {
     let message: ChatMessage
 
