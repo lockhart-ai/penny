@@ -120,7 +120,11 @@ def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]
         # the ambient recall block — which surfaces entries + description but NOT the recipe,
         # so an answer-from-recall describes settings, never the steps (the gap the full
         # report surfaced).  Making the read a scored check is what catches that.
-        Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
+        Check(
+            "read the recipe (memory_metadata called)",
+            tool_was_called(db, "memory_metadata"),
+            anchor="memory_metadata(",
+        ),
         Check("reply reflects the search/browse step", search_i >= 0),
         Check("reply reflects the save/write step", save_i >= 0),
     ]
@@ -150,10 +154,12 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
     print(f"\n[EDIT stored] {stored!r}\n[EDIT reply] {reply.strip()[:240]!r}")
     return [
         Check(
-            "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
+            "applied the edit (collection_update called)",
+            tool_was_called(db, "collection_update"),
+            anchor="collection_update(",
         ),
         Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
-        Check("designer landed in the recipe", "designer" in stored),
+        Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
         Check("recipe changed from the seed", stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()),
         Check("no fictitious tool persisted", "extract_text" not in stored),
         Check("reply echoes the change", _echoes_designer(reply)),
@@ -195,13 +201,16 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
         Check(
             "read the recipe each turn (memory_metadata >=2)",
             count_tool_calls(db, "memory_metadata") >= 2,
+            anchor="memory_metadata(",
         ),
         Check(
-            "applied the edit (collection_update called)", tool_was_called(db, "collection_update")
+            "applied the edit (collection_update called)",
+            tool_was_called(db, "collection_update"),
+            anchor="collection_update(",
         ),
         Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
         Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
-        Check("designer landed in the recipe", "designer" in stored),
+        Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
         Check("reply echoes the change", _echoes_designer(reply)),
     ]
 
@@ -237,18 +246,36 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
     # NOTIFY-OFF: the pub/sub published flag flips false.
     log_read_gone = "log_read" not in stored and "user-messages" not in stored
     checks = [
-        Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
-        Check("applied edits (collection_update called)", tool_was_called(db, "collection_update")),
+        Check(
+            "read the recipe (memory_metadata called)",
+            tool_was_called(db, "memory_metadata"),
+            anchor="memory_metadata(",
+        ),
+        Check(
+            "applied edits (collection_update called)",
+            tool_was_called(db, "collection_update"),
+            anchor="collection_update(",
+        ),
         # Process fidelity: the final-state checks below can pass when an intermediate
         # collection_update was REJECTED and a *later* turn re-landed the content (the
         # rejected-`intent`-param + give-up sample the graded outcome hid).  These two catch
         # the broken turn — the reason we don't merge a scorer that final-state alone fooled.
         Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
         Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
-        Check("modify: designer added to collection_write", "designer" in stored),
-        Check("add: Amazon-price browse call", "amazon" in stored or "price" in stored),
+        Check(
+            "modify: designer added to collection_write", "designer" in stored, anchor="designer"
+        ),
+        Check(
+            "add: Amazon-price browse call",
+            "amazon" in stored or "price" in stored,
+            anchor="amazon",
+        ),
         Check('remove: log_read("user-messages") gone', log_read_gone),
-        Check("notify-off: published set false", row is not None and not row.published),
+        Check(
+            "notify-off: published set false",
+            row is not None and not row.published,
+            anchor='"published": false',
+        ),
         Check("closer spawned no collection", not new_collections(db, before)),
     ]
     checks += [
@@ -318,11 +345,17 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
     done_i = stored.rfind("done")
     return [
         Check(
-            "described the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")
+            "described the recipe (memory_metadata called)",
+            tool_was_called(db, "memory_metadata"),
+            anchor="memory_metadata(",
         ),
         # A round-trip happened only if Penny RE-ENCODED via collection_update — else the recipe
         # is the untouched seed and the family checks pass trivially (describe-in-text false pass).
-        Check("re-encoded it (collection_update called)", tool_was_called(db, "collection_update")),
+        Check(
+            "re-encoded it (collection_update called)",
+            tool_was_called(db, "collection_update"),
+            anchor="collection_update(",
+        ),
         Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
         Check("browse step preserved", browse_i >= 0),
         Check("collection_write step preserved", write_i >= 0),
