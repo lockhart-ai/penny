@@ -12,6 +12,7 @@ struct MessageView: View {
     @State private var messageContextScale: CGFloat = 1
     @State private var shouldUseFastComposerScroll = false
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
+    @State private var selectedPennyNavigation: PennyNavigationDestination?
     @FocusState private var isComposerFocused: Bool
 
     private var effectiveMessageLayout: MessageLayout {
@@ -42,6 +43,7 @@ struct MessageView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 8) {
                         messageFilterMenu
+                        pennyNavigationMenu
 
                         if viewModel.hasHiddenNewMessages {
                             hiddenNewMessagesButton
@@ -91,6 +93,9 @@ struct MessageView: View {
             }
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 SettingsView(client: viewModel.client)
+            }
+            .navigationDestination(item: $selectedPennyNavigation) { destination in
+                pennyNavigationDestination(destination)
             }
             .sheet(item: $presentedCardMessage) { message in
                 MessageCardDetailSheet(message: message)
@@ -201,6 +206,37 @@ struct MessageView: View {
                     shouldSettleLayout: viewModel.shouldSettleScrollToBottom
                 )
             }
+        }
+    }
+
+    private var pennyNavigationMenu: some View {
+        Menu {
+            ForEach(PennyNavigationDestination.allCases) { destination in
+                Button {
+                    selectedPennyNavigation = destination
+                } label: {
+                    Label(destination.title, systemImage: destination.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "memories")
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("Penny navigation")
+    }
+
+    @ViewBuilder
+    private func pennyNavigationDestination(_ destination: PennyNavigationDestination) -> some View {
+        switch destination {
+        case .schedules:
+            SchedulesView(client: viewModel.client)
+        case .insights:
+            InsightsView(client: viewModel.client)
+        case .memories:
+            MemoryManagementView(client: viewModel.client)
         }
     }
 
@@ -455,11 +491,44 @@ struct MessageView: View {
             }
     }
 
-    private func refreshFeaturePreferences() {
+}
+
+private enum PennyNavigationDestination: String, CaseIterable, Identifiable {
+    case schedules
+    case insights
+    case memories
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .schedules:
+            return "Schedules"
+        case .insights:
+            return "Insights"
+        case .memories:
+            return "Memories"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .schedules:
+            return "calendar"
+        case .insights:
+            return "chart.bar.doc.horizontal"
+        case .memories:
+            return "tray.full"
+        }
+    }
+}
+
+private extension MessageView {
+    func refreshFeaturePreferences() {
         isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     }
 
-    private func handleComposerFocusChanged(_ isFocused: Bool) {
+    func handleComposerFocusChanged(_ isFocused: Bool) {
         guard isFocused else {
             shouldUseFastComposerScroll = false
             keyboardSettledScrollTask?.cancel()
@@ -470,7 +539,7 @@ struct MessageView: View {
         shouldUseFastComposerScroll = false
     }
 
-    private func scheduleScrollAfterKeyboardSettles(fast: Bool = false) {
+    func scheduleScrollAfterKeyboardSettles(fast: Bool = false) {
         keyboardSettledScrollTask?.cancel()
         keyboardSettledScrollTask = Task { @MainActor in
             try? await Task.sleep(for: fast ? .milliseconds(120) : .milliseconds(350))
@@ -479,7 +548,7 @@ struct MessageView: View {
         }
     }
 
-    private func changeMessageLayout(to layout: MessageLayout) {
+    func changeMessageLayout(to layout: MessageLayout) {
         guard viewModel.selectedMessageLayout != layout else { return }
         if layout != .message {
             isComposerFocused = false
@@ -494,7 +563,7 @@ struct MessageView: View {
         viewModel.requestScrollToBottom()
     }
 
-    private func scheduleScrollToBottom(
+    func scheduleScrollToBottom(
         with proxy: ScrollViewProxy,
         animated: Bool = true,
         shouldSettleLayout: Bool = true
@@ -512,7 +581,7 @@ struct MessageView: View {
         }
     }
 
-    private func scrollToBottom(
+    func scrollToBottom(
         with proxy: ScrollViewProxy,
         animated: Bool = true,
         enableOlderPaging: Bool = true
@@ -530,7 +599,7 @@ struct MessageView: View {
         }
     }
 
-    private func loadOlderMessages(with proxy: ScrollViewProxy) {
+    func loadOlderMessages(with proxy: ScrollViewProxy) {
         guard let anchorID = viewModel.reserveOlderMessageLoad() else { return }
         Task {
             guard await viewModel.loadReservedOlderMessages() else { return }
@@ -544,9 +613,6 @@ struct MessageView: View {
         }
     }
 
-}
-
-private extension MessageView {
     @ViewBuilder
     var messageActionOverlay: some View {
         if let context = activeMessageContext {

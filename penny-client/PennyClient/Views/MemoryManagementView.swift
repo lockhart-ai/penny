@@ -7,6 +7,7 @@ struct MemoryManagementView: View {
     @State private var editedInclusion: MemoryInclusion = .relevant
     @State private var editedRecall: MemoryRecall = .recent
     @State private var editedPublished = false
+    @State private var isShowingCreateMemory = false
 
     init(client: PennyWebSocketClient) {
         _viewModel = State(initialValue: MemoryManagementViewModel(client: client))
@@ -14,46 +15,6 @@ struct MemoryManagementView: View {
 
     var body: some View {
         Form {
-            Section("Find") {
-                TextField("Search memories", text: $viewModel.query)
-                Button {
-                    viewModel.refresh()
-                } label: {
-                    Label("Search", systemImage: "magnifyingglass")
-                }
-            }
-
-            Section("Create") {
-                TextField("Name", text: $viewModel.newName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("Description", text: $viewModel.newDescription, axis: .vertical)
-                    .lineLimit(1...3)
-                TextField("Intent", text: $viewModel.newIntent, axis: .vertical)
-                    .lineLimit(1...3)
-                Picker("Inclusion", selection: $viewModel.newInclusion) {
-                    ForEach(MemoryInclusion.allCasesForUI, id: \.self) { inclusion in
-                        Text(inclusion.title).tag(inclusion)
-                    }
-                }
-                Picker("Recall", selection: $viewModel.newRecall) {
-                    ForEach(MemoryRecall.allCasesForUI, id: \.self) { recall in
-                        Text(recall.title).tag(recall)
-                    }
-                }
-                Toggle("Published", isOn: $viewModel.newPublished)
-                TextField("Extraction prompt", text: $viewModel.newExtractionPrompt, axis: .vertical)
-                    .lineLimit(1...4)
-                TextField("Collector interval seconds", text: $viewModel.newCollectorIntervalText)
-                    .keyboardType(.numberPad)
-                Button {
-                    viewModel.createMemory()
-                } label: {
-                    Label("Create", systemImage: "plus")
-                }
-                .disabled(!viewModel.canCreateMemory)
-            }
-
             Section("Memories") {
                 if viewModel.memories.isEmpty {
                     ContentUnavailableView("No Memories", systemImage: "tray")
@@ -176,18 +137,84 @@ struct MemoryManagementView: View {
         }
         .navigationTitle("Memory")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $viewModel.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search memories")
+        .onSubmit(of: .search) {
+            viewModel.refresh()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    viewModel.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                HStack(spacing: 14) {
+                    Button {
+                        isShowingCreateMemory = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add memory")
+
+                    Button {
+                        viewModel.refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .accessibilityLabel("Refresh memories")
                 }
-                .accessibilityLabel("Refresh memories")
             }
+        }
+        .sheet(isPresented: $isShowingCreateMemory) {
+            createMemorySheet
         }
         .task {
             viewModel.refresh()
+        }
+    }
+
+    private var createMemorySheet: some View {
+        NavigationStack {
+            Form {
+                Section("Memory") {
+                    TextField("Name", text: $viewModel.newName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Description", text: $viewModel.newDescription, axis: .vertical)
+                        .lineLimit(1...3)
+                    TextField("Intent", text: $viewModel.newIntent, axis: .vertical)
+                        .lineLimit(1...3)
+                    Picker("Inclusion", selection: $viewModel.newInclusion) {
+                        ForEach(MemoryInclusion.allCasesForUI, id: \.self) { inclusion in
+                            Text(inclusion.title).tag(inclusion)
+                        }
+                    }
+                    Picker("Recall", selection: $viewModel.newRecall) {
+                        ForEach(MemoryRecall.allCasesForUI, id: \.self) { recall in
+                            Text(recall.title).tag(recall)
+                        }
+                    }
+                    Toggle("Published", isOn: $viewModel.newPublished)
+                }
+
+                Section("Collection") {
+                    TextField("Extraction prompt", text: $viewModel.newExtractionPrompt, axis: .vertical)
+                        .lineLimit(1...4)
+                    TextField("Collector interval seconds", text: $viewModel.newCollectorIntervalText)
+                        .keyboardType(.numberPad)
+                }
+            }
+            .navigationTitle("Add Memory")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        isShowingCreateMemory = false
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Create") {
+                        submitCreateMemory()
+                    }
+                    .disabled(!viewModel.canCreateMemory)
+                }
+            }
         }
     }
 
@@ -198,6 +225,11 @@ struct MemoryManagementView: View {
         editedInclusion = memory.inclusion
         editedRecall = memory.recall
         editedPublished = memory.published
+    }
+
+    private func submitCreateMemory() {
+        viewModel.createMemory()
+        isShowingCreateMemory = false
     }
 }
 

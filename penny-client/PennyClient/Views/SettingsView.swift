@@ -17,26 +17,6 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Penny") {
-                    NavigationLink {
-                        SchedulesView(client: viewModel.client)
-                    } label: {
-                        Label("Schedules", systemImage: "calendar")
-                    }
-
-                    NavigationLink {
-                        InsightsView(client: viewModel.client)
-                    } label: {
-                        Label("Insights", systemImage: "chart.bar.doc.horizontal")
-                    }
-
-                    NavigationLink {
-                        MemoryManagementView(client: viewModel.client)
-                    } label: {
-                        Label("Memory Management", systemImage: "tray.full")
-                    }
-                }
-
                 Section("Status") {
                     LabeledContent("Connection", value: viewModel.client.statusText)
                     LabeledContent("Pending", value: "\(viewModel.client.pendingCount)")
