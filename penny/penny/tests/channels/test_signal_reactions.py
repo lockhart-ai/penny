@@ -10,6 +10,34 @@ from penny.database.models import MessageLog
 from penny.tests.conftest import TEST_SENDER, wait_until
 
 
+async def _wait_for_outgoing_ids(penny) -> tuple[int, str]:
+    """Return ``(id, external_id)`` of the outgoing message once it is stamped.
+
+    ``MockSignalServer.wait_for_message`` unblocks the moment the send reaches
+    the mock, but the channel writes ``external_id`` onto the DB row only
+    *after* that send call returns (``_log_and_send`` → ``set_external_id``).
+    Reading the row the instant the message lands therefore races that write and
+    intermittently sees ``external_id is None`` — the source of this test's
+    flakiness. Poll until the stamp lands before reading.
+    """
+
+    def stamped() -> bool:
+        with penny.db.get_session() as session:
+            outgoing = session.exec(
+                select(MessageLog).where(MessageLog.direction == "outgoing")
+            ).first()
+            return outgoing is not None and outgoing.external_id is not None
+
+    await wait_until(stamped)
+    with penny.db.get_session() as session:
+        outgoing = session.exec(
+            select(MessageLog).where(MessageLog.direction == "outgoing")
+        ).first()
+        assert outgoing is not None
+        assert outgoing.external_id is not None
+        return outgoing.id, outgoing.external_id
+
+
 @pytest.mark.asyncio
 async def test_signal_reaction_message(
     signal_server,
@@ -37,15 +65,8 @@ async def test_signal_reaction_message(
         response = await signal_server.wait_for_message(timeout=10.0)
         assert "cool fact" in response["message"].lower()
 
-        # Get the outgoing message's signal timestamp
-        with penny.db.get_session() as session:
-            outgoing = session.exec(
-                select(MessageLog).where(MessageLog.direction == "outgoing")
-            ).first()
-            assert outgoing is not None
-            assert outgoing.external_id is not None
-            message_id = outgoing.id
-            external_id = outgoing.external_id
+        # Get the outgoing message's signal timestamp (waiting for the stamp)
+        message_id, external_id = await _wait_for_outgoing_ids(penny)
 
         # Send a reaction to Penny's response
         await signal_server.push_reaction(
@@ -113,14 +134,8 @@ async def test_signal_reaction_raw_format(
         await signal_server.push_message(sender=TEST_SENDER, content="test message")
         await signal_server.wait_for_message(timeout=10.0)
 
-        # Get the outgoing message's signal timestamp
-        with penny.db.get_session() as session:
-            outgoing = session.exec(
-                select(MessageLog).where(MessageLog.direction == "outgoing")
-            ).first()
-            assert outgoing is not None
-            message_id = outgoing.id
-            external_id = outgoing.external_id
+        # Get the outgoing message's signal timestamp (waiting for the stamp)
+        message_id, external_id = await _wait_for_outgoing_ids(penny)
 
         # Send a reaction using the raw format that Signal actually sends
         # (not the mock format with {"value": emoji})
