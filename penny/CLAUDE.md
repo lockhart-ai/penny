@@ -531,6 +531,20 @@ shared `ALL_BROWSES_FAIL` catch-all makes every source unreachable — the way t
 exercise read-failure honesty (a cycle that browsed a lot, read nothing, and must
 not confabulate a write/success at `done()`). See `docs/self-improvement-loop.md`.
 
+**Scoring is graded, not binary.** A chat scorer returns either failure strings (binary:
+empty = pass) or a list of `Check`s (partial credit: the sample scores checks-passed/total;
+the case metric is the mean). Prefer graded `Check`s for a multi-step contract — each
+expected tool call and outcome is its own named check, so the report shows exactly which
+expectation missed (e.g. a discuss turn answered from ambient recall dings the
+"memory_metadata called" check instead of hiding behind a green PASS).
+
+**Presenting eval runs on a PR (the report-as-comment process).** The harness emits a
+verbatim per-case markdown report when `EVAL_REPORT_DIR` is set (`make eval` passes it
+through). The **PR body stays a stable description**; **every tweak + re-run pushes the
+commit and ADDS A NEW COMMENT** with that run's report — never rewrite the body, never
+overwrite a prior comment — so the iteration history (each review round's before/after)
+survives. See `docs/agent-task-workflow.md` §4.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,
