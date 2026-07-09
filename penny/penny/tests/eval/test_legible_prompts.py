@@ -25,8 +25,10 @@ persisted recipe + which action families the NL reflects, never wording.  This i
 **eval-first** (#1530) — the cases are baselined against the current model; the gap
 drives the structural work in #1531, so several ship report-only (``min_pass_rate=None``).
 
-The seeded ``BOARD_GAMES_EXTRACTION_PROMPT`` families, in order:
-  browse (search + read pages) -> collection_write (save) -> send_message (notify) -> done.
+The seeded recipe is guideline-compliant: EVERY step is a canonical ``tool(args)`` call, and
+notification is pub/sub (the ``published`` flag + the ``notifier`` consumer), NOT a
+``send_message`` step.  Calls, in order: browse (search) -> log_read (the removable one) ->
+collection_write (save) -> done.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ def _seed(db: Database) -> None:
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
         intent=BOARD_GAMES_INTENT,
         interval=3600,
+        published=True,  # pub/sub notify is ON — "don't notify me" flips this to False
     )
 
 
@@ -212,29 +215,29 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
     )
 
 
-# ═══════ 2c. Edit operations across turns (tweak, add, remove, then stop) ══════
-# The three distinct edit KINDS, in one conversation, each building on the last edited
-# state (not the seed): TWEAK an existing step (record the designer), ADD a new step (a
-# solo-play filter), REMOVE a step (the notify send), then STOP.  All three must show in
-# the final recipe with the spine intact — this is where multi-turn state-carrying either
-# holds or unravels (a later edit reverting an earlier one; a remove that clobbers the
-# spine; the closer over-reacting).  "add designer" alone only exercises a tweak.
+# ═══════ 2c. Edit operations across turns (modify / add / remove a CALL, notify-off, stop) ══
+# Every recipe step is a tool call, so every edit operates on a CALL, in one conversation,
+# each building on the last edited state: MODIFY a call (collection_write's entry content +=
+# designer), ADD a call (a browse for Amazon prices), REMOVE a call (the log_read of the
+# user's messages), turn NOTIFICATIONS OFF (flip the pub/sub `published` flag — notify is a
+# flag, not a step), then STOP.  Each must land with the spine intact — this is where
+# multi-turn state-carrying holds or unravels.
 
 
 def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
-    print(f"\n[EDIT-OPS stored] {stored!r}")
-    # REMOVE (notify): gone iff its content ("found a new game") and an active send_message(
-    # call are both absent — NOT the bare word "send_message", which a prose "no send_message"
-    # note (a correct removal) contains (the scorer FN the full report surfaced).
-    notify_gone = "found a new game" not in stored and "send_message(" not in stored
+    print(f"\n[EDIT-OPS stored] {stored!r}  published={row.published if row is not None else None}")
+    # REMOVE: the log_read call is gone iff neither its name nor its target survive.
+    # NOTIFY-OFF: the pub/sub published flag flips false.
+    log_read_gone = "log_read" not in stored and "user-messages" not in stored
     checks = [
         Check("read the recipe (memory_metadata called)", tool_was_called(db, "memory_metadata")),
         Check("applied edits (collection_update called)", tool_was_called(db, "collection_update")),
-        Check("tweak: designer recorded", "designer" in stored),
-        Check("add: solo-play filter", "solo" in stored),
-        Check("remove: notify step gone", notify_gone),
+        Check("modify: designer added to collection_write", "designer" in stored),
+        Check("add: Amazon-price browse call", "amazon" in stored or "price" in stored),
+        Check('remove: log_read("user-messages") gone', log_read_gone),
+        Check("notify-off: published set false", row is not None and not row.published),
         Check("closer spawned no collection", not new_collections(db, before)),
     ]
     checks += [
@@ -245,16 +248,16 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
 
 
 async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
-    """Deeper multi-turn: get the recipe, TWEAK a step, ADD a step, REMOVE a step, stop —
-    each edit builds on the last edited state and all three land, spine intact."""
+    """Deeper multi-turn: MODIFY a call, ADD a call, REMOVE a call, turn notifications OFF
+    (the published flag), stop — every edit is on a tool call, each builds on the last."""
     await chat_eval(
         case_id="legible-edit-operations",
         messages=[
             "before I change anything — walk me through what the board-games collection does.",
             "got it. have it record each game's designer too when it saves one.",
-            "now add a step so it only keeps games that support solo play.",
-            "actually, drop the part where it messages me about each new game — "
-            "I don't want the pings.",
+            "also add a step to look up each game's current price on Amazon.",
+            "actually, drop the step where it reads my messages — I don't need that.",
+            "and stop notifying me about new finds — no more pings.",
             "perfect, that's everything — thanks!",
         ],
         seed=_seed,
