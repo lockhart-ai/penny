@@ -12,7 +12,8 @@ Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode t
 - `PennyClient/PennyClient/Service/DatabaseService.swift`: SQLite-backed message persistence.
 - `PennyClient/PennyClient/Service/Prefs.swift`: UserDefaults wrapper and optional `Secrets.plist` loading.
 - `PennyClient/PennyClient/AppDelegate.swift`: Push notification registration and foreground notification handling.
-- `PennyClient/PennyClient/PennyClient.entitlements`: App entitlements.
+- `PennyClient/PennyClient/PennyDev.entitlements`: PennyDev push notification entitlements.
+- `PennyClient/PennyClient/PennyTestflight.entitlements`: PennyTestflight push notification entitlements.
 
 ## Secrets And Preferences
 Connection settings are managed by `Prefs`.
