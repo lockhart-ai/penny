@@ -251,6 +251,11 @@ class CollectionUpdateArgs(ToolArgs):
     fields coerce ``""`` to ``None`` so a field the model passes empty (to
     mean "leave it alone") is skipped rather than overwriting the existing
     value.  ``inclusion`` and ``recall`` are validated in the store layer.
+
+    ``intent`` is ACCEPTED but not applied — we serialize it in the metadata the
+    model reads, so it naturally passes it back on an edit; rather than reject the
+    whole call over an immutable field, the tool ignores it and says so (the model
+    kept getting the whole update rejected + then gave up).  See ``CollectionUpdateTool``.
     """
 
     name: MemoryName
@@ -260,6 +265,7 @@ class CollectionUpdateArgs(ToolArgs):
     extraction_prompt: OptionalExtractionPrompt = None
     collector_interval_seconds: int | None = None
     published: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
+    intent: OptionalText = None  # accepted but NOT applied — immutable; the tool explains
 
 
 # ── Collection reads ────────────────────────────────────────────────────────

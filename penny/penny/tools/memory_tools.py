@@ -1260,6 +1260,14 @@ class CollectionUpdateTool(MemoryTool):
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
+        if args.intent is not None:
+            # We serialize `intent` in the metadata the model reads, so it passes it back on
+            # an edit.  Accept-and-explain rather than reject the whole call over an immutable
+            # field (the model kept getting the update rejected, then giving up).
+            message += (
+                "\n\n`intent` was not changed — it's fixed at creation and can't be edited via "
+                "collection_update (everything else above was applied)."
+            )
         return ToolResult(message=message, mutated=True)
 
 

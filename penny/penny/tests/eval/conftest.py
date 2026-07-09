@@ -15,7 +15,7 @@ import json
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -87,6 +87,7 @@ class SampleResult:
     score: float
     failed: list[str]
     total: int = 1
+    checks: list[Check] = field(default_factory=list)  # full graded checks (empty = binary)
 
     @property
     def passed(self) -> bool:
@@ -101,7 +102,9 @@ class SampleResult:
         if not checks:
             return cls(1.0, [], 1)
         passed = sum(1 for check in checks if check.ok)
-        return cls(passed / len(checks), [c.label for c in checks if not c.ok], len(checks))
+        return cls(
+            passed / len(checks), [c.label for c in checks if not c.ok], len(checks), list(checks)
+        )
 
 
 @dataclass
@@ -657,7 +660,10 @@ def _write_sample_report(
         f"| {index} | {actor} | {_report_cell(content)} |"
         for index, (actor, content) in enumerate(_sample_turns(rows, reply), start=1)
     ]
-    if result.failed:
+    if result.checks:  # graded: a scorecard — every check with ✅ / ❌
+        lines += ["", "| | Check |", "|---|---|"]
+        lines += [f"| {'✅' if c.ok else '❌'} | {_report_cell(c.label)} |" for c in result.checks]
+    elif result.failed:  # binary: just the failure reasons
         lines += ["", f"**Failed:** {'; '.join(result.failed)}"]
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)

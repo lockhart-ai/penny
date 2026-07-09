@@ -460,6 +460,32 @@ class TestCreateAndList:
         assert updated.published is True
 
     @pytest.mark.asyncio
+    async def test_update_accepts_but_ignores_intent(self, tmp_path, mock_llm):
+        # `intent` is serialized in the metadata the model reads, so it passes it back on an
+        # edit.  Rather than reject the whole call over the immutable field (the model then
+        # gave up), accept it, leave intent unchanged, and SAY SO in the result.
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="notes",
+            description="real description",
+            inclusion="relevant",
+            recall="all",
+            extraction_prompt="test fixture extraction prompt that is long enough",
+            collector_interval_seconds=3600,
+            intent="the original goal, set at creation",
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="notes",
+            recall="relevant",
+            intent="a rewritten goal the model tried to set",
+        )
+        assert result.success  # accepted, not rejected over the immutable field
+        assert "`intent` was not changed" in result.message  # visible + actionable
+        updated = db.memories.get("notes")
+        assert updated.recall == "relevant"  # the real edit landed
+        assert updated.intent == "the original goal, set at creation"  # intent untouched
+
+    @pytest.mark.asyncio
     async def test_create_surfaces_description_embed_degradation(self, tmp_path):
         """A transient description-embed failure still creates the collection, but the
         result NAMES the degraded routing anchor and leaves it NULL for the startup
