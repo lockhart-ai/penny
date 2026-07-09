@@ -56,7 +56,8 @@ jobs:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           BUILD_NUMBER="$(git rev-list --count HEAD)"
-          BUILD_COMMIT_HASH="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+          FULL_COMMIT_HASH="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+          BUILD_COMMIT_HASH="${FULL_COMMIT_HASH:0:8}"
           echo "Build number: $BUILD_NUMBER"
           echo "Build commit: $BUILD_COMMIT_HASH"
           xcodebuild archive \
@@ -72,7 +73,9 @@ jobs:
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            INFOPLIST_KEY_PennyBuildCommitHash="$BUILD_COMMIT_HASH"
+            GIT_COMMIT="$BUILD_COMMIT_HASH"
+          ACTUAL_COMMIT_HASH="$(/usr/libexec/PlistBuddy -c 'Print :PennyBuildCommitHash' "$RUNNER_TEMP/PennyTestflight.xcarchive/Products/Applications/PennyTestflight.app/Info.plist")"
+          test "$ACTUAL_COMMIT_HASH" = "$BUILD_COMMIT_HASH"
 
       - name: Export and upload to TestFlight
         env:

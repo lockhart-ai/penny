@@ -141,6 +141,7 @@
 				D1F83D862FF9A0000010DBDD /* Sources */,
 				D1F83D842FF9A0000010DBDD /* Frameworks */,
 				D1F83D872FF9A0000010DBDD /* Resources */,
+				D1F83D8B2FF9A0000010DBDD /* Inject Build Commit Hash */,
 			);
 			buildRules = (
 			);
@@ -222,6 +223,28 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		D1F83D8B2FF9A0000010DBDD /* Inject Build Commit Hash */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Inject Build Commit Hash";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\n\ncommit=\"${GIT_COMMIT:-}\"\nplist_path=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nif [ -z \"$commit\" ]; then\n    /usr/libexec/PlistBuddy -c \"Delete :PennyBuildCommitHash\" \"$plist_path\" 2>/dev/null || true\n    exit 0\nfi\n\n/usr/libexec/PlistBuddy -c \"Set :PennyBuildCommitHash $commit\" \"$plist_path\" 2>/dev/null || \\\n    /usr/libexec/PlistBuddy -c \"Add :PennyBuildCommitHash string $commit\" \"$plist_path\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000120000000 /* Sources */ = {
@@ -570,8 +593,8 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				GIT_COMMIT = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Penny;
-				INFOPLIST_KEY_PennyBuildCommitHash = "";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -630,8 +653,8 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				GIT_COMMIT = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Penny;
-				INFOPLIST_KEY_PennyBuildCommitHash = "";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
