@@ -514,29 +514,36 @@ def _report_cell(text: str, limit: int = 1500) -> str:
 
 
 def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
-    """(actor, content) for every turn of the sample — read from the last promptlog row's
-    message array (the whole conversation up to the final call), then the final reply.
-    System prompt omitted; tool calls, tool results, and text turns kept in order."""
+    """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
+    multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
+
+    Each row's ``messages`` array accumulates the conversation up to that LLM call (a later
+    turn carries an earlier one only as text history, so an earlier turn's tool calls live
+    only in that turn's own rows).  Walking every row and de-duplicating by (actor, content)
+    yields each user turn, tool call, tool result, and intermediate reply exactly once, in
+    order.  The final reply (the last response's text, which is in no messages array) is
+    appended last.  System prompt omitted."""
     turns: list[tuple[str, str]] = []
-    messages = json.loads(rows[-1].messages) if rows and rows[-1].messages else []
-    for message in messages:
-        role, content = message.get("role"), message.get("content") or ""
-        if role == "system":
-            continue
-        if role == "user":
-            turns.append((_ACTOR["user"], content))
-        elif role == "tool":
-            turns.append((_ACTOR["tool"], content))
-        elif role == "assistant":
-            for call in message.get("tool_calls") or []:
-                function = call.get("function", {})
-                turns.append(
-                    (_ACTOR["call"], f"{function.get('name')}({function.get('arguments')})")
-                )
-            if content:
-                turns.append((_ACTOR["penny"], content))
-    if reply.strip():
-        turns.append((_ACTOR["penny"], reply))
+    seen: set[tuple[str, str]] = set()
+
+    def emit(actor: str, content: str) -> None:
+        if content and (actor, content) not in seen:
+            seen.add((actor, content))
+            turns.append((actor, content))
+
+    for row in rows:
+        for message in json.loads(row.messages) if row.messages else []:
+            role, content = message.get("role"), message.get("content") or ""
+            if role == "user":
+                emit(_ACTOR["user"], content)
+            elif role == "tool":
+                emit(_ACTOR["tool"], content)
+            elif role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    function = call.get("function", {})
+                    emit(_ACTOR["call"], f"{function.get('name')}({function.get('arguments')})")
+                emit(_ACTOR["penny"], content)
+    emit(_ACTOR["penny"], reply.strip())
     return turns
 
 

@@ -36,7 +36,7 @@ import re
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, new_collections, seed_collection
+from penny.tests.eval.conftest import ChatEval, new_collections, seed_collection, tool_was_called
 from penny.tests.eval.fixtures import (
     BOARD_GAMES,
     BOARD_GAMES_EXTRACTION_PROMPT,
@@ -222,7 +222,11 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[s
         fails.append(f"tweak (designer) missing from the recipe: {stored!r}")
     if "solo" not in stored:  # ADD: a new solo-play filter step
         fails.append(f"added step (solo-play filter) missing from the recipe: {stored!r}")
-    if "send_message" in stored or "found a new game" in stored:  # REMOVE: the notify step
+    # REMOVE: the notify step is gone iff its content ("found a new game") and an active
+    # send_message( call are both absent.  Key on those, NOT the bare word "send_message" —
+    # a prose "no send_message / write silently" note (a correct removal) contains the word
+    # but is not an active step (the scorer FN the full report surfaced).
+    if "found a new game" in stored or "send_message(" in stored:
         fails.append(f"removed step (notify) still present in the recipe: {stored!r}")
     # The spine must survive all three edits (no edit clobbered it).
     for family in ("browse", "collection_write", "done"):
@@ -290,6 +294,13 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[str]:
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[ROUNDTRIP stored] {stored!r}")
     fails: list[str] = []
+    # A round-trip only happened if Penny RE-ENCODED the recipe — wrote it back via
+    # collection_update.  Without this the recipe is the untouched seed and the family
+    # checks below pass trivially (Penny just describing it in a text reply = false pass).
+    if not tool_was_called(db, "collection_update"):
+        fails.append(
+            "no re-encode — recipe never written back via collection_update (described in text?)"
+        )
     browse_i = stored.find("browse")
     write_i = stored.find("collection_write")
     done_i = stored.rfind("done")
@@ -310,8 +321,8 @@ async def test_roundtrip_preserves_the_sequence(chat_eval: ChatEval) -> None:
         case_id="legible-roundtrip",
         messages=[
             "walk me through what the board-games collection does, step by step.",
-            "perfect — now write that back out as the recipe, cleanly, "
-            "without changing what it actually does.",
+            "perfect — now update the board-games recipe itself with a cleaned-up "
+            "version that does exactly the same thing.",
         ],
         seed=_seed,
         score=_score_roundtrip,
