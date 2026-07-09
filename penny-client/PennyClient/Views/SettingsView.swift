@@ -11,6 +11,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let commitHash = AppBuildInfo.current.commitHash {
+                    Section("Build") {
+                        LabeledContent("Commit", value: commitHash)
+                    }
+                }
+
                 Section("Penny") {
                     NavigationLink {
                         SchedulesView(client: viewModel.client)
@@ -156,6 +162,26 @@ struct SettingsView: View {
     private func save() {
         viewModel.saveConnection()
         dismiss()
+    }
+}
+
+struct AppBuildInfo {
+    private static let commitHashKey = "PennyBuildCommitHash"
+
+    let commitHash: String?
+
+    static var current: AppBuildInfo {
+        AppBuildInfo(infoDictionary: Bundle.main.infoDictionary)
+    }
+
+    init(infoDictionary: [String: Any]?) {
+        commitHash = Self.trimmedNilIfEmpty(infoDictionary?[Self.commitHashKey] as? String)
+    }
+
+    private static func trimmedNilIfEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

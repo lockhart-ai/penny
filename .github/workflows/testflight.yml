@@ -56,7 +56,9 @@ jobs:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           BUILD_NUMBER="$(git rev-list --count HEAD)"
+          BUILD_COMMIT_HASH="${GITHUB_SHA:-$(git rev-parse HEAD)}"
           echo "Build number: $BUILD_NUMBER"
+          echo "Build commit: $BUILD_COMMIT_HASH"
           xcodebuild archive \
             -project penny-client/PennyClient.xcodeproj \
             -scheme PennyTestflight \
@@ -69,7 +71,8 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${KEY_ID}.p8" \
             -authenticationKeyID "$KEY_ID" \
             -authenticationKeyIssuerID "$ISSUER_ID" \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            INFOPLIST_KEY_PennyBuildCommitHash="$BUILD_COMMIT_HASH"
 
       - name: Export and upload to TestFlight
         env:

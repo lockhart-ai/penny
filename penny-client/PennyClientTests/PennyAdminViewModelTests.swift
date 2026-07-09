@@ -5,6 +5,12 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct PennyAdminViewModelTests {
+    @Test func appBuildInfoReadsCommitHashOnlyWhenPresent() {
+        #expect(AppBuildInfo(infoDictionary: nil).commitHash == nil)
+        #expect(AppBuildInfo(infoDictionary: ["PennyBuildCommitHash": "   "]).commitHash == nil)
+        #expect(AppBuildInfo(infoDictionary: ["PennyBuildCommitHash": " abc123def456 \n"]).commitHash == "abc123def456")
+    }
+
     @Test func schedulesViewModelRefreshesAddsUpdatesAndDeletes() async throws {
         let (client, transport) = makeAdminClient()
         await connectAndClearStartupFrames(client, transport)
