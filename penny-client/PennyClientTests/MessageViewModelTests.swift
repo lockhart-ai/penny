@@ -26,8 +26,9 @@ struct MessageViewModelTests {
         viewModel.selectedMessageLayout = .media
         let previousScrollRequest = viewModel.scrollToBottomRequest
 
-        viewModel.prepareComposerFocus()
+        let didChangeLayout = viewModel.prepareComposerFocus()
 
+        #expect(didChangeLayout)
         #expect(viewModel.selectedMessageLayout == .message)
         #expect(viewModel.scrollToBottomRequest == previousScrollRequest)
     }
@@ -36,8 +37,9 @@ struct MessageViewModelTests {
         let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
         let previousScrollRequest = viewModel.scrollToBottomRequest
 
-        viewModel.prepareComposerFocus()
+        let didChangeLayout = viewModel.prepareComposerFocus()
 
+        #expect(didChangeLayout == false)
         #expect(viewModel.selectedMessageLayout == .message)
         #expect(viewModel.scrollToBottomRequest == previousScrollRequest)
     }
@@ -89,6 +91,15 @@ struct MessageViewModelTests {
         #expect(thirdAnchorID == nil)
         #expect(fourthAnchorID == 2)
         #expect(viewModel.displayedMessages.map(\.id) == [2, 3, 4, 5])
+    }
+
+    @Test func scrollRequestCanSkipLayoutSettling() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+
+        viewModel.requestScrollToBottom(shouldSettleLayout: false)
+
+        #expect(viewModel.shouldSettleScrollToBottom == false)
+        #expect(viewModel.scrollToBottomRequest == 1)
     }
 
     @Test func bottomScrollRequestBlocksOlderPagingUntilScrollLands() async {
@@ -177,6 +188,40 @@ struct MessageViewModelTests {
         #expect(database.loadMessages().first?.content == "hello Penny")
         #expect(viewModel.scrollToBottomRequest > previousScrollRequest)
         #expect(viewModel.isAtBottom)
+    }
+
+    @Test func sendDraftAppendsReplyContextAndClearsReplyState() async {
+        let database = configuredDatabase()
+        let (viewModel, _) = makePagingViewModel(database: database, pageSize: 20)
+        await viewModel.connect()
+        let originalMessage = ChatMessage(model: testMessage(
+            id: 42,
+            content: "First line\n\nSecond line",
+            sourceHint: "Chat"
+        ))
+        viewModel.startReply(to: originalMessage)
+        viewModel.draftMessage = "  That makes sense  "
+
+        viewModel.sendDraft()
+
+        #expect(viewModel.replyMessage == nil)
+        #expect(viewModel.draftMessage.isEmpty)
+        #expect(database.loadMessages().last?.content == """
+        That makes sense
+
+        In reply to Chat:
+        > First line Second line
+        """)
+    }
+
+    @Test func cancelReplyClearsReplyState() {
+        let viewModel = MessageView.ViewModel(client: PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs()))
+        let originalMessage = ChatMessage(model: testMessage(id: 42, content: "Original", sourceHint: "Chat"))
+
+        viewModel.startReply(to: originalMessage)
+        viewModel.cancelReply()
+
+        #expect(viewModel.replyMessage == nil)
     }
 
     @Test func sendDraftIgnoresWhitespaceOnlyDraft() {

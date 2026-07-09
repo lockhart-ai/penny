@@ -18,6 +18,10 @@ struct ChatMessageView: View {
         ChatMessageContentParser.parse(message.content)
     }
 
+    private var replyContent: ChatReplyContent? {
+        ChatReplyContentParser.parse(message.content)
+    }
+
     private var sourceTitle: String {
         if let sourceHint = message.sourceHint, !sourceHint.isEmpty {
             return sourceHint
@@ -56,13 +60,7 @@ struct ChatMessageView: View {
     @ViewBuilder
     private var messageBubble: some View {
         if message.isOutgoing {
-            Text(message.content)
-                .font(.body)
-                .foregroundStyle(.white)
-                .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            outgoingMessageBubble
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(messageContentBlocks) { block in
@@ -83,6 +81,57 @@ struct ChatMessageView: View {
             .padding(.vertical, 9)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+    }
+
+    @ViewBuilder
+    private var outgoingMessageBubble: some View {
+        if let replyContent {
+            VStack(alignment: .leading, spacing: 8) {
+                replyPreviewBlock(replyContent)
+
+                Text(replyContent.body)
+                    .font(.body)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        } else {
+            Text(message.content)
+                .font(.body)
+                .foregroundStyle(.white)
+                .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private func replyPreviewBlock(_ replyContent: ChatReplyContent) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(.white.opacity(0.86))
+                .frame(width: 3)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(replyContent.author)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(replyContent.summary)
+                    .font(.body)
+                    .italic()
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.38), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     @ViewBuilder
@@ -509,6 +558,40 @@ private struct ChatMarkdownTableRowKey: LayoutValueKey {
 
 private struct ChatMarkdownTableColumnKey: LayoutValueKey {
     nonisolated static let defaultValue = 0
+}
+
+struct ChatReplyContent: Equatable {
+    let body: String
+    let author: String
+    let summary: String
+}
+
+enum ChatReplyContentParser {
+    static func parse(_ content: String) -> ChatReplyContent? {
+        let separator = "\n\nIn reply to "
+        guard let separatorRange = content.range(of: separator, options: .backwards) else { return nil }
+
+        let body = String(content[..<separatorRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let replyContext = String(content[separatorRange.upperBound...])
+        guard let authorEndIndex = replyContext.firstIndex(of: ":") else { return nil }
+
+        let author = String(replyContext[..<authorEndIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let quotedText = String(replyContext[replyContext.index(after: authorEndIndex)...])
+        let summary = quotedText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                var lineText = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if lineText.hasPrefix(">") {
+                    lineText.removeFirst()
+                }
+                return lineText.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        guard !body.isEmpty, !author.isEmpty, !summary.isEmpty else { return nil }
+        return ChatReplyContent(body: body, author: author, summary: summary)
+    }
 }
 
 enum ChatMessageContentParser {

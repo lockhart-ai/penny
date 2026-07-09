@@ -95,6 +95,7 @@ extension MessageView {
         var isShowingConnectionError = false
         var isShowingSettings = false
         var hasHiddenNewMessages = false
+        var replyMessage: ChatMessage?
         var selectedMessageLayout: MessageLayout = .message
         var selectedMessageFilter: MessageFilter = .all {
             didSet {
@@ -115,6 +116,7 @@ extension MessageView {
         var isLoadingOlderMessages = false
         var hasMoreOlderMessages = false
         var scrollToBottomRequest = 0
+        var shouldSettleScrollToBottom = true
 
         @ObservationIgnored private let messagePageSize: Int
         @ObservationIgnored private var nextOlderCursor: MessagePageCursor?
@@ -228,18 +230,20 @@ extension MessageView {
             olderPagingEnabled = true
         }
 
-        func requestScrollToBottom() {
+        func requestScrollToBottom(shouldSettleLayout: Bool = true) {
             olderPagingEnabled = false
             reservedOlderMessageLoad = nil
             isRestoringOlderMessageScroll = false
             isAtBottom = true
+            shouldSettleScrollToBottom = shouldSettleLayout
             scrollToBottomRequest += 1
         }
 
-        func prepareComposerFocus() {
-            if selectedMessageLayout != .message {
-                selectedMessageLayout = .message
-            }
+        @discardableResult
+        func prepareComposerFocus() -> Bool {
+            guard selectedMessageLayout != .message else { return false }
+            selectedMessageLayout = .message
+            return true
         }
 
         func updateBottomVisibility(_ isVisible: Bool) {
@@ -257,6 +261,23 @@ extension MessageView {
             await waitForPaging()
         }
 
+        func startReply(to message: ChatMessage) {
+            replyMessage = message
+        }
+
+        func cancelReply() {
+            replyMessage = nil
+        }
+
+        func replySummary(for message: ChatMessage) -> String {
+            let normalized = message.content
+                .split(whereSeparator: \.isNewline)
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return normalized.isEmpty ? "Attachment" : normalized
+        }
+
         func clearFiltersAndShowNewMessages() async {
             hasHiddenNewMessages = false
             if selectedMessageFilter == .all {
@@ -271,11 +292,13 @@ extension MessageView {
             let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedMessage.isEmpty else { return }
 
+            let messageToSend = replyMessage.map { replyContent(for: trimmedMessage, replyingTo: $0) } ?? trimmedMessage
             draftMessage = ""
+            replyMessage = nil
             if selectedMessageFilter != .all {
                 selectedMessageFilter = .all
             }
-            client.sendMessage(trimmedMessage)
+            client.sendMessage(messageToSend)
             requestScrollToBottom()
         }
 
@@ -290,6 +313,15 @@ extension MessageView {
             @unknown default:
                 break
             }
+        }
+
+        private func replyContent(for message: String, replyingTo originalMessage: ChatMessage) -> String {
+            """
+            \(message)
+
+            In reply to \(originalMessage.isOutgoing ? "you" : (originalMessage.sourceHint ?? "Penny")):
+            > \(replySummary(for: originalMessage))
+            """
         }
 
         private func reloadMessagesForSelectedFilter() {
