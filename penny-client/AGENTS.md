@@ -4,6 +4,9 @@
 PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The main app entry point and chat UI live in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
 Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
 
+## Roadmap
+The current roadmap is tracked in https://github.com/lockhart-ai/penny/issues/1496. Check that issue for current priorities before making broad product or architectural changes.
+
 ## Important Files
 - `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, toolbar, composer, message rows.
 - `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`: Message screen view model.

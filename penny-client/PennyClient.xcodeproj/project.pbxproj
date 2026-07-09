@@ -145,7 +145,6 @@
 				D1F83D862FF9A0000010DBDD /* Sources */,
 				D1F83D842FF9A0000010DBDD /* Frameworks */,
 				D1F83D872FF9A0000010DBDD /* Resources */,
-				D1F83D8B2FF9A0000010DBDD /* Inject Build Commit Hash */,
 			);
 			buildRules = (
 			);
@@ -231,28 +230,6 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		D1F83D8B2FF9A0000010DBDD /* Inject Build Commit Hash */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Inject Build Commit Hash";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -eu\n\ncommit=\"${GIT_COMMIT:-}\"\nplist_path=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nif [ -z \"$commit\" ]; then\n    /usr/libexec/PlistBuddy -c \"Delete :PennyBuildCommitHash\" \"$plist_path\" 2>/dev/null || true\n    exit 0\nfi\n\n/usr/libexec/PlistBuddy -c \"Set :PennyBuildCommitHash $commit\" \"$plist_path\" 2>/dev/null || \\\n    /usr/libexec/PlistBuddy -c \"Add :PennyBuildCommitHash string $commit\" \"$plist_path\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		000000000000000120000000 /* Sources */ = {
@@ -621,6 +598,7 @@
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_PennyBuildCommitHash = "$(GIT_COMMIT)";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
@@ -681,6 +659,7 @@
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				INFOPLIST_KEY_PennyBuildCommitHash = "$(GIT_COMMIT)";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
