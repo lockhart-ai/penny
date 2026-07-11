@@ -657,70 +657,29 @@ class TestReads:
 
         assert db.memories.memory("likes").read_similar(anchor, k=5, floor=0.5) == []
 
-    def test_read_similar_demotes_centroid_magnet(self, tmp_path):
-        """Centroid-proxy penalty: an entry with high cosine to the anchor
-        AND high projection on the corpus centroid is demoted below a less
-        central entry whose cosine to the anchor is slightly lower."""
-        db = _make_db(tmp_path)
-        db.memories.create_collection("notes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
-        anchor = [1.0, 0.0, 0.0]
-        db.memories.memory("notes").write(
-            [
-                EntryInput(
-                    key="magnet",
-                    content="centroid magnet",
-                    # cos to anchor = 0.9, but lives on the same axis as the crowd
-                    content_embedding=[0.9, 0.436, 0.0],
-                ),
-                EntryInput(
-                    key="specific",
-                    content="orthogonal to crowd",
-                    # cos to anchor = 0.85, orthogonal to the crowd axis
-                    content_embedding=[0.85, 0.0, 0.527],
-                ),
-                EntryInput(
-                    key="crowd1",
-                    content="boilerplate one",
-                    content_embedding=[0.5, 0.866, 0.0],
-                ),
-                EntryInput(
-                    key="crowd2",
-                    content="boilerplate two",
-                    content_embedding=[0.4, 0.917, 0.0],
-                ),
-            ],
-            author="chat",
-        )
-
-        similar = db.memories.memory("notes").read_similar(anchor)
-        keys = [e.key for e in similar]
-        # Without the centroid-proxy penalty 'magnet' (raw cos 0.9) would lead.
-        # With the penalty, 'specific' (raw cos 0.85, far from the crowd) wins.
-        assert "specific" in keys and "magnet" in keys
-        assert keys.index("specific") < keys.index("magnet")
-
-    def test_read_similar_suppresses_flat_noise_plateau(self, tmp_path):
-        """Adaptive cluster gate: a corpus with no real cluster around the
-        anchor (head_mean ≈ sample_mean) returns empty rather than emitting
-        the noise floor."""
+    def test_read_similar_returns_populated_homogeneous_collection(self, tmp_path):
+        """A populated but homogeneous collection (every entry near-identical,
+        like ``skills``' TRIGGER+STEPS recipes) must still return its entries —
+        the explicit search is plain nearest-neighbour, with no cluster gate to
+        collapse a flat corpus to "No entries" (#1565: that broke the model's
+        fuzzy-recovery path exactly when guessing at a skill's identity)."""
         db = _make_db(tmp_path)
         db.memories.create_log("events", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
         anchor = [1.0, 0.0, 0.0]
-        # Twenty entries with identical content embeddings — every adjusted
-        # score is the same, so head_mean / sample_mean = 1.0, well below
-        # CLUSTER_GATE (1.15).
+        # Twenty entries with identical content embeddings — a maximally flat
+        # corpus, which the old adaptive cluster gate suppressed entirely.
         for i in range(20):
             db.memories.memory("events").append(
                 [LogEntryInput(content=f"flat-{i}", content_embedding=[0.7, 0.7, 0.07])],
                 author="chat",
             )
 
-        assert db.memories.memory("events").read_similar(anchor) == []
+        similar = db.memories.memory("events").read_similar(anchor)
+        assert len(similar) == 20
 
-    def test_read_similar_returns_real_cluster_above_noise(self, tmp_path):
-        """Adaptive cluster gate: when the corpus has a real cluster around
-        the anchor, the gate passes and only the cluster — not the noise
-        floor — is returned."""
+    def test_read_similar_ranks_cluster_ahead_of_weak_matches(self, tmp_path):
+        """Plain nearest-neighbour ranking: the strong-cluster entries come back
+        ahead of the weak ones, so a bounded ``k`` returns the cluster first."""
         db = _make_db(tmp_path)
         db.memories.create_log("events", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
         anchor = [1.0, 0.0, 0.0]
@@ -737,8 +696,8 @@ class TestReads:
                 author="chat",
             )
 
-        contents = [e.content for e in db.memories.memory("events").read_similar(anchor)]
-        assert contents and all(c.startswith("hit-") for c in contents)
+        top = [e.content for e in db.memories.memory("events").read_similar(anchor, k=5)]
+        assert top and all(c.startswith("hit-") for c in top)
 
     def test_read_similar_hybrid_filters_low_info_entries(self, tmp_path):
         """Entries with fewer than ``MEMORY_RELEVANT_MIN_WORDS`` words are

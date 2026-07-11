@@ -841,10 +841,46 @@ class TestCollectionWritesAndReads:
             memory="likes", entries=[{"key": "coffee", "content": "loves coffee"}]
         )
         # Anchor shares the "coffee" word with the entry — the bag-of-words
-        # mock embedding gives meaningful cosine, so the entry survives the
-        # adaptive cutoff in ``read_similar``.
+        # mock embedding gives meaningful cosine.
         rendered = await ReadSimilarTool(db, client).execute(memory="likes", anchor="coffee please")
         assert "coffee" in rendered.message
+
+    @pytest.mark.asyncio
+    async def test_read_similar_returns_populated_homogeneous_collection(self, tmp_path, mock_llm):
+        """A populated but homogeneous collection (recipe-shaped entries that all
+        cluster together, like the real ``skills`` collection) must return its
+        entries for a fuzzy anchor — not "No entries" (#1565).  The old ambient
+        cluster/centrality gate on the explicit search suppressed exactly this
+        case, removing the model's fuzzy-recovery path when guessing a key."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="playbooks",
+            description="reusable how-to recipes",
+            inclusion="always",
+            recall="all",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a set of reusable how-to recipes",
+        )
+        client = _make_llm_client(mock_llm)
+        # Distinct keys + shared "recipe workflow step" stem: the entries cluster
+        # tightly (high centrality) yet stay well under the dedup threshold.
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="playbooks",
+            entries=[
+                {"key": "morning-briefing", "content": "recipe workflow step sunrise breakfast"},
+                {"key": "evening-recap", "content": "recipe workflow step sunset supper"},
+                {"key": "weekly-digest", "content": "recipe workflow step calendar planner"},
+                {"key": "topic-tracker", "content": "recipe workflow step magnet compass"},
+            ],
+        )
+        # A vague anchor ("recipe reminder") that only weakly matches — the shape
+        # of the model guessing at a recipe's identity.
+        rendered = await ReadSimilarTool(db, client).execute(
+            memory="playbooks", anchor="recipe reminder"
+        )
+        assert "No entries" not in rendered.message
+        assert "morning-briefing" in rendered.message
 
 
 class TestEmbedFailureRefusesWrite:
@@ -1356,8 +1392,7 @@ class TestLogTools:
             memory="events", content="coffee is great"
         )
         # Anchor shares words with the entry so the bag-of-words mock
-        # embedding gives meaningful cosine and the entry survives the
-        # adaptive cutoff in ``read_similar``.
+        # embedding gives meaningful cosine and the entry ranks in ``read_similar``.
         rendered = await ReadSimilarTool(db, client).execute(
             memory="events", anchor="coffee morning"
         )

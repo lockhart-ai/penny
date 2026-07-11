@@ -208,10 +208,18 @@ class Memory:
     def read_similar(
         self, anchor: list[float], k: int | None = None, floor: float = 0.0
     ) -> list[MemoryEntry]:
-        """Entries similar to ``anchor`` by cosine, with the adaptive
-        cluster-strength cutoff suppressing flat noise plateaus.  Entries
-        without a content embedding are skipped; ``k=None`` returns all that
-        clear the cutoff."""
+        """Entries ranked by plain cosine similarity to ``anchor``, best-first.
+
+        Backs the explicit ``read_similar`` search tool, so it returns the
+        nearest neighbours and lets the model judge them — no centrality-magnet
+        penalty or cluster-strength gate (those are ambient-recall policies that
+        decide whether to inject *unprompted*; applying them to an explicit
+        search collapsed a populated but homogeneous collection like ``skills``
+        to "No entries" and removed the model's fuzzy-recovery path, #1565).
+        Entries without a content embedding are skipped.  ``floor`` (default 0.0,
+        i.e. drop only anti-correlated entries) filters by cosine; ``k=None``
+        returns every survivor.  An empty result reflects the corpus and floor —
+        not an ambient "nothing relevant enough" suppression."""
         scored = [
             (row, row.content_embedding)
             for row in self._embedded_rows()
@@ -220,13 +228,10 @@ class Memory:
         if not scored:
             return []
         valid = [row for row, _ in scored]
-        scores = sim.score_against_anchors([blob for _, blob in scored], [anchor])
+        scores = sim.cosine_scores([blob for _, blob in scored], anchor)
         order = list(np.argsort(-scores))
-        cutoff = sim.adaptive_cutoff([float(scores[i]) for i in order], floor)
-        if cutoff is None:
-            return []
-        ordered = [valid[i] for i in order if float(scores[i]) >= cutoff]
-        return ordered if k is None else ordered[:k]
+        ranked = [valid[i] for i in order if float(scores[i]) >= floor]
+        return ranked if k is None else ranked[:k]
 
     def read_similar_hybrid(
         self,

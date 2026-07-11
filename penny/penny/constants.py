@@ -327,30 +327,6 @@ class PennyConstants:
         }
     )
 
-    # Centroid-proxy penalty applied during similarity-ranked retrieval:
-    # ``adjusted = max(weighted, current_cos) - α * cos(entry, corpus_centroid)``.
-    # The proxy is rank-equivalent to mean cosine to every other entry in the
-    # same corpus (true centrality) up to an O(1/N) constant, so it acts as
-    # the same centroid-magnet penalty without the O(N²) precompute — one
-    # mean and one matrix-vector product per query, folded into ``_score``.
-    MEMORY_RELEVANT_CENTRALITY_PENALTY = 0.5
-    # Cluster-strength gate: top_head_mean / top_sample_mean must exceed this
-    # for any entries to be returned — separates real clusters from flat
-    # noise plateaus.
-    MEMORY_RELEVANT_CLUSTER_GATE = 1.05
-    # Cutoff is ``max(top_head_mean * RELATIVE_RATIO, ABSOLUTE_FLOOR)``.
-    # The relative band adapts cluster width to cluster height; the
-    # absolute floor is the empirical noise ceiling below which adjusted
-    # scores are statistically indistinguishable from random.
-    MEMORY_RELEVANT_RELATIVE_RATIO = 0.85
-    MEMORY_RELEVANT_ABSOLUTE_FLOOR = 0.25
-    # Number of top candidates averaged to estimate the cluster center
-    # (numerator of the gate ratio).
-    MEMORY_RELEVANT_GATE_HEAD_SIZE = 5
-    # Number of top candidates averaged to estimate the broader noise floor
-    # (denominator of the gate ratio).  Also doubles as the cold-start
-    # threshold — below this we skip the gate and use just the absolute floor.
-    MEMORY_RELEVANT_GATE_SAMPLE_SIZE = 20
     # Temporal neighbor expansion window for ``relevant``-mode log reads:
     # after similarity hits are selected, expand each by ±N minutes of
     # surrounding entries from the same log.  Captures conversational
