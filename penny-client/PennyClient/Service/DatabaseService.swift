@@ -7,6 +7,10 @@ final class DatabaseService {
 
     private var databaseConnection: Connection!
     private var isSetup = false
+    private let historySaveQueue = DispatchQueue(
+        label: "com.penny.history-save",
+        qos: .userInitiated
+    )
 
     func setupForTesting() {
         connectForTesting()
@@ -79,6 +83,13 @@ final class DatabaseService {
             }
             databaseConnection.userVersion = 3
         }
+
+        if currentVersion < 4 {
+            if try !MessageModel.columnExists(database: databaseConnection, name: "embedding") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.embeddingExp))
+            }
+            databaseConnection.userVersion = 4
+        }
     }
 }
 
@@ -91,6 +102,14 @@ extension DatabaseService {
         } catch {
             print(error)
             return []
+        }
+    }
+
+    func loadMessagesInBackground() async -> [MessageModel] {
+        await withCheckedContinuation { continuation in
+            historySaveQueue.async { [self] in
+                continuation.resume(returning: loadMessages())
+            }
         }
     }
 
@@ -170,9 +189,64 @@ extension DatabaseService {
         setup()
 
         do {
+            var message = message
+            if message.embedding == nil, let serverID = message.serverID {
+                message.embedding = try MessageModel.embedding(
+                    database: databaseConnection,
+                    serverID: serverID
+                )
+            }
             try message.save(database: databaseConnection)
         } catch {
             print(error)
+        }
+    }
+
+    /// Persist a history page in one transaction away from the main actor.
+    /// Keeping the whole page in one transaction avoids a UI stall caused by
+    /// opening and committing SQLite work once per message.
+    func saveMessagesInBackground(
+        _ messages: [MessageModel],
+        preserveAttachments: Bool
+    ) async -> Int {
+        await withCheckedContinuation { continuation in
+            historySaveQueue.async { [self] in
+                continuation.resume(
+                    returning: saveMessages(messages, preserveAttachments: preserveAttachments)
+                )
+            }
+        }
+    }
+
+    @discardableResult
+    func saveMessages(_ messages: [MessageModel], preserveAttachments: Bool) -> Int {
+        guard !messages.isEmpty else { return 0 }
+        setup()
+
+        do {
+            var messages = messages
+            try databaseConnection.transaction {
+                for index in messages.indices {
+                    if messages[index].embedding == nil, let serverID = messages[index].serverID {
+                        messages[index].embedding = try MessageModel.embedding(
+                            database: databaseConnection,
+                            serverID: serverID
+                        )
+                    }
+                    if preserveAttachments, let serverID = messages[index].serverID,
+                       let existing = try MessageModel.attachments(
+                           database: databaseConnection,
+                           serverID: serverID
+                       ) {
+                        messages[index].imageAttachmentDataURLs = existing
+                    }
+                    try messages[index].save(database: databaseConnection)
+                }
+            }
+            return messages.count
+        } catch {
+            print(error)
+            return 0
         }
     }
 
@@ -199,6 +273,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceIdentifier = message.deviceIdentifier
         parentID = message.parentID
         imageAttachmentDataURLs = message.imageAttachmentDataURLs
+        embedding = message.embedding
         isOutgoing = message.isOutgoing
     }
 
@@ -213,7 +288,8 @@ struct MessageModel: Codable, Identifiable, Hashable {
         deviceIdentifier: String? = nil,
         parentID: Int? = nil,
         imageAttachmentDataURLs: [String],
-        isOutgoing: Bool
+        isOutgoing: Bool,
+        embedding: Data? = nil
     ) {
         self.id = id
         self.serverID = serverID
@@ -225,6 +301,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
         self.deviceIdentifier = deviceIdentifier
         self.parentID = parentID
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
+        self.embedding = embedding
         self.isOutgoing = isOutgoing
     }
 
@@ -250,6 +327,10 @@ struct MessageModel: Codable, Identifiable, Hashable {
     fileprivate static var imageAttachmentDataURLsExp: SQLite.Expression<String> {
         Expression<String>("image_attachment_data_urls")
     }
+    var embedding: Data?
+    fileprivate static var embeddingExp: SQLite.Expression<Data?> {
+        Expression<Data?>("embedding")
+    }
     @SqlProperty
     var isOutgoing: Bool
 
@@ -266,6 +347,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
                 tableBuilder.column(contentExp)
                 tableBuilder.column(sourceHintExp)
                 tableBuilder.column(imageAttachmentDataURLsExp, defaultValue: "[]")
+                tableBuilder.column(embeddingExp)
                 tableBuilder.column(isOutgoingExp)
             }
         )
@@ -284,6 +366,7 @@ struct MessageModel: Codable, Identifiable, Hashable {
                 MessageModel.deviceIdentifierExp <- deviceIdentifier,
                 MessageModel.parentIDExp <- parentID,
                 MessageModel.imageAttachmentDataURLsExp <- MessageModel.encodedImageAttachmentDataURLs(imageAttachmentDataURLs),
+                MessageModel.embeddingExp <- embedding,
                 MessageModel.isOutgoingExp <- isOutgoing
             )
         )
@@ -410,8 +493,20 @@ struct MessageModel: Codable, Identifiable, Hashable {
             deviceIdentifier: entry[deviceIdentifierExp],
             parentID: entry[parentIDExp],
             imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
-            isOutgoing: entry[isOutgoingExp]
+            isOutgoing: entry[isOutgoingExp],
+            embedding: entry[embeddingExp]
         )
+    }
+
+    fileprivate static func embedding(database: Connection, serverID: Int) throws -> Data? {
+        try database.pluck(table().filter(serverIDExp == serverID))?[embeddingExp]
+    }
+
+    fileprivate static func attachments(database: Connection, serverID: Int) throws -> [String]? {
+        guard let row = try database.pluck(table().filter(serverIDExp == serverID)) else {
+            return nil
+        }
+        return decodedImageAttachmentDataURLs(row[imageAttachmentDataURLsExp])
     }
 
     fileprivate static func encodedImageAttachmentDataURLs(_ dataURLs: [String]) -> String {

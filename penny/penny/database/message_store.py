@@ -457,7 +457,7 @@ class MessageStore:
         channel_types: list[str] | None,
         before: tuple[datetime, int] | None,
         limit: int,
-    ) -> tuple[list[tuple[MessageLog, Device | None, IosOutboxItem | None]], bool]:
+    ) -> tuple[list[tuple[MessageLog, Device | None, IosOutboxItem | None]], bool, int]:
         """Return one newest-first boundary page for the iOS history surface.
 
         Device identifiers are used as a compatibility fallback because older
@@ -470,7 +470,7 @@ class MessageStore:
             if channel_types:
                 devices = [device for device in devices if device.channel_type in channel_types]
             if not devices:
-                return [], False
+                return [], False, 0
 
             device_ids = [device.id for device in devices if device.id is not None]
             identifiers = [device.identifier for device in devices]
@@ -513,6 +513,34 @@ class MessageStore:
             )
             has_more = len(rows) > limit
             ordered = list(reversed(rows[:limit]))
+            remaining_count = 0
+            if ordered:
+                oldest_message = ordered[0][0]
+                older_than = message_columns.timestamp < oldest_message.timestamp
+                if oldest_message.id is not None:
+                    older_than = or_(
+                        older_than,
+                        and_(
+                            message_columns.timestamp == oldest_message.timestamp,
+                            message_columns.id < oldest_message.id,
+                        ),
+                    )
+                remaining_query = (
+                    select(func.count())
+                    .select_from(MessageLog)
+                    .where(
+                        message_columns.direction.in_(
+                            [
+                                PennyConstants.MessageDirection.INCOMING,
+                                PennyConstants.MessageDirection.OUTGOING,
+                            ]
+                        ),
+                        message_columns.is_reaction.is_(False),
+                        scope,
+                        older_than,
+                    )
+                )
+                remaining_count = int(session.exec(remaining_query).one())
             message_ids = [message.id for message, _ in ordered if message.id is not None]
             outbox_ids = []
             for message, _ in ordered:
@@ -547,7 +575,7 @@ class MessageStore:
                 if outbox is None and message.external_id and message.external_id.isdecimal():
                     outbox = outbox_by_id.get(int(message.external_id))
                 resolved.append((message, device, outbox))
-            return resolved, has_more
+            return resolved, has_more, remaining_count
 
     def get_unprocessed(self, sender: str, limit: int) -> list[MessageLog]:
         """Get recent unprocessed non-reaction messages from a specific user."""

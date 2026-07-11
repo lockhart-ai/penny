@@ -103,6 +103,7 @@ class MessageChannel(ABC):
         self._command_registry = command_registry
         self._scheduler: BackgroundScheduler | None = None
         self._config: Config | None = None
+        self._embedding_model_client: LlmClient | None = None
 
     def set_scheduler(self, scheduler: BackgroundScheduler) -> None:
         """Set the scheduler for message notifications."""
@@ -142,6 +143,12 @@ class MessageChannel(ABC):
             embedding_model_client=embedding_model_client,
             scheduler=self._scheduler,
         )
+
+    async def _embed_message(self, text: str) -> list[float] | None:
+        """Best-effort embed helper for channels before command context wiring."""
+        if self._embedding_model_client is None:
+            return None
+        return await embed_text(self._embedding_model_client, text)
 
     @property
     @abstractmethod
@@ -307,13 +314,21 @@ class MessageChannel(ABC):
         prompts, startup announcements. The message is logged ``OUTGOING`` to
         ``messagelog`` (so it surfaces in the ``penny-messages`` facade) before
         delivery, so nothing Penny sends can skip the conversation record.
-        Unlike ``send_response`` it computes no embedding and attaches no
-        nearest-image media — the embedding is filled by the startup backfill.
+        It computes the message embedding before persistence.  If embedding
+        generation fails, delivery continues and startup backfill remains the
+        recovery path for that row.
 
         Returns the platform external id (or None on failure).
         """
         prepared = self.prepare_outgoing(content)
-        _, external_id = await self._log_and_send(recipient, prepared, attachments, quote_message)
+        embedding = await self._embed_message(prepared) if prepared.strip() else None
+        _, external_id = await self._log_and_send(
+            recipient,
+            prepared,
+            attachments,
+            quote_message,
+            embedding=embedding,
+        )
         logger.info("Sent message to %s (%d chars)", recipient, len(prepared))
         return external_id
 
@@ -352,7 +367,7 @@ class MessageChannel(ABC):
         prepared = self.prepare_outgoing(content)
         # Embed once: stored on the messagelog row (the penny-messages facade's
         # read_similar ranks on it) and reused for nearest-image matching.
-        embedding = await embed_text(self._embedding_model_client, prepared)
+        embedding = await self._embed_message(prepared)
         attachments = self._resolve_media(attachments, prepared, embedding, media_ids)
         message_id, external_id = await self._log_and_send(
             recipient,
@@ -613,12 +628,14 @@ class MessageChannel(ABC):
         self, message: IncomingMessage, user_sender: str, device_id: int | None
     ) -> None:
         """Log the message but redirect the user to profile setup."""
+        embedding = await self._embed_message(message.content)
         self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
             message.content,
             signal_timestamp=message.signal_timestamp,
             device_id=device_id,
+            embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
@@ -650,7 +667,7 @@ class MessageChannel(ABC):
             quoted_text=message.quoted_text,
             **self._make_handle_kwargs(message, progress),
         )
-        incoming_embedding = await embed_text(self._embedding_model_client, message.content)
+        incoming_embedding = await self._embed_message(message.content)
         incoming_id = self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
@@ -717,6 +734,7 @@ class MessageChannel(ABC):
 
         device_id = self._resolve_device_id(message)
         user_sender = self._resolve_user_sender(message.sender)
+        embedding = await self._embed_message(message.content)
         self._db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING,
             user_sender,
@@ -724,6 +742,7 @@ class MessageChannel(ABC):
             parent_id=reacted_msg.id,
             is_reaction=True,
             device_id=device_id,
+            embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
 
         logger.info(

@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import Foundation
 import Observation
 import SwiftUI
@@ -35,7 +36,33 @@ struct MessagePage {
 
 private struct HistoryPageResult {
     let payload: MessagesPayload
-    let newMessageCount: Int
+    let savedOrUpdatedCount: Int
+}
+
+private struct HistorySyncState: Codable, Equatable {
+    let channelTypes: [String]
+    let includeAttachments: Bool
+    var cursor: String?
+    var requestedCount: Int
+    var savedOrUpdatedCount: Int
+    var remainingCount: Int
+}
+
+enum PennyEmbeddingError: LocalizedError {
+    case unavailable(String)
+    case invalidResponse
+    case disconnected
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let message):
+            return message
+        case .invalidResponse:
+            return "The server returned an invalid embedding."
+        case .disconnected:
+            return "Penny is disconnected."
+        }
+    }
 }
 
 private enum HistorySyncEvent {
@@ -107,6 +134,7 @@ final class PennyService {
     @ObservationIgnored private var historySyncTask: Task<Void, Never>?
     @ObservationIgnored private var historyResponseContinuation: AsyncStream<HistorySyncEvent>.Continuation?
     @ObservationIgnored private var historyPageIsNewest = false
+    @ObservationIgnored private var embeddingContinuations: [String: CheckedContinuation<Data, Error>] = [:]
 
     var messages: [ChatMessage] = []
     var pendingCount = 0
@@ -127,8 +155,14 @@ final class PennyService {
     var domainPermissions: [DomainPermissionEntry] = []
     var permissionPrompt: PermissionPrompt?
     var historySyncing = false
-    var historySyncedCount = 0
+    var historyRequestedCount = 0
+    var historySavedOrUpdatedCount = 0
+    var historyRemainingCount = 0
     var historyStatus = "Not started"
+
+    var historyProgressText: String {
+        "Requested \(historyRequestedCount) · Saved/updated \(historySavedOrUpdatedCount) · Remaining \(historyRemainingCount)"
+    }
 
     private let pendingMessagePullLimit = 3
 
@@ -232,6 +266,11 @@ extension PennyService {
         historyResponseContinuation = nil
         historySyncTask?.cancel()
         historySyncTask = nil
+        let pendingEmbeddingRequests = Array(embeddingContinuations.values)
+        embeddingContinuations.removeAll()
+        for continuation in pendingEmbeddingRequests {
+            continuation.resume(throwing: PennyEmbeddingError.disconnected)
+        }
         if clearLiveBindings {
             unbindLiveMessages()
         }
@@ -254,6 +293,26 @@ extension PennyService {
         return page
     }
 
+    func requestEmbedding(_ text: String) async throws -> Data {
+        guard canSend else { throw PennyEmbeddingError.disconnected }
+        let requestID = UUID().uuidString
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                embeddingContinuations[requestID] = continuation
+                send(.embeddingRequest(requestID: requestID, text: text))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelEmbeddingRequest(requestID)
+            }
+        }
+    }
+
+    private func cancelEmbeddingRequest(_ requestID: String) {
+        guard let continuation = embeddingContinuations.removeValue(forKey: requestID) else { return }
+        continuation.resume(throwing: CancellationError())
+    }
+
     func bindLiveMessages(
         _ messages: Binding<[ChatMessage]>,
         hasNewMessages: Binding<Bool>,
@@ -270,7 +329,7 @@ extension PennyService {
         liveMessageFilter = filter
     }
 
-    func startHistorySync(channelTypes: [String]) {
+    func startHistorySync(channelTypes: [String], includeAttachments: Bool = true) {
         guard !channelTypes.isEmpty else {
             historyStatus = "Select at least one channel"
             return
@@ -278,12 +337,40 @@ extension PennyService {
         guard !historySyncing else { return }
 
         historySyncTask?.cancel()
-        historySyncedCount = 0
-        historyStatus = "Starting..."
+        let state = (prefs.value(HistorySyncState.self, forKey: .historySyncState)
+            .flatMap { existing in
+                existing.channelTypes == channelTypes && existing.includeAttachments == includeAttachments
+                    ? existing
+                    : nil
+            }) ?? HistorySyncState(
+                channelTypes: channelTypes,
+                includeAttachments: includeAttachments,
+                cursor: nil,
+                requestedCount: 0,
+                savedOrUpdatedCount: 0,
+                remainingCount: 0
+            )
+        saveHistorySyncState(state)
+        applyHistoryProgress(state, status: "Starting...")
         historySyncing = true
-        historySyncTask = Task { [weak self] in
-            await self?.crawlHistory(channelTypes: channelTypes)
+        historySyncTask = makeHistorySyncTask(state: state)
+    }
+
+    private func makeHistorySyncTask(state: HistorySyncState) -> Task<Void, Never> {
+        Task { [weak self] in
+            await self?.crawlHistory(state: state)
         }
+    }
+
+    private func saveHistorySyncState(_ state: HistorySyncState?) {
+        prefs.set(state, forKey: .historySyncState)
+    }
+
+    private func applyHistoryProgress(_ state: HistorySyncState, status: String? = nil) {
+        historyRequestedCount = state.requestedCount
+        historySavedOrUpdatedCount = state.savedOrUpdatedCount
+        historyRemainingCount = state.remainingCount
+        if let status { historyStatus = status }
     }
 
     func deleteAllMessages() {
@@ -292,8 +379,11 @@ extension PennyService {
         historySyncTask?.cancel()
         historySyncTask = nil
         historySyncing = false
-        historySyncedCount = 0
+        historyRequestedCount = 0
+        historySavedOrUpdatedCount = 0
+        historyRemainingCount = 0
         historyStatus = "Not started"
+        saveHistorySyncState(nil)
         databaseService.deleteAllMessages()
         messages.removeAll()
         liveMessages?.wrappedValue = []
@@ -524,7 +614,8 @@ extension PennyService {
 
     private func handle(_ data: Data) {
         do {
-            apply(try decoder.decode(ServerEnvelope.self, from: data))
+            let envelope = try decoder.decode(ServerEnvelope.self, from: data)
+            apply(envelope)
         } catch {
             skipUndecodableMessage(data)
         }
@@ -548,13 +639,15 @@ extension PennyService {
             isRegistered = true
             pendingCount = payload.pendingCount
             send(.pullMessages(limit: pendingMessagePullLimit))
+            resumeHistorySyncIfNeeded()
         case .outboxChanged(let payload):
             pendingCount = payload.pendingCount
             if payload.pendingCount > 0 {
                 send(.pullMessages(limit: pendingMessagePullLimit))
             }
         case .messages(let payload):
-            let newMessages = receive(payload)
+            let receiveResult = receive(payload)
+            let newMessages = receiveResult.newMessages
             if payload.mode == "history" {
                 if historyPageIsNewest {
                     let visibleMessages = newMessages.filter { liveMessageFilter.includes($0) }
@@ -566,11 +659,22 @@ extension PennyService {
                 }
                 historyResponseContinuation?.yield(.page(HistoryPageResult(
                     payload: payload,
-                    newMessageCount: newMessages.count
+                    savedOrUpdatedCount: receiveResult.savedOrUpdatedCount
                 )))
             }
         case .messagesAcked:
             break
+        case .embeddingResponse(let payload):
+            guard let continuation = embeddingContinuations.removeValue(forKey: payload.requestID) else {
+                break
+            }
+            if let error = payload.error {
+                continuation.resume(throwing: PennyEmbeddingError.unavailable(error))
+            } else if let encoded = payload.embedding, let data = Data(base64Encoded: encoded) {
+                continuation.resume(returning: data)
+            } else {
+                continuation.resume(throwing: PennyEmbeddingError.invalidResponse)
+            }
         case .typing(let payload):
             isTyping = payload.active
         case .configResponse(let payload):
@@ -639,8 +743,12 @@ extension PennyService {
         promptLogRuns[index].runReason = payload.reason
     }
 
-    @discardableResult
-    private func receive(_ payload: MessagesPayload) -> [ChatMessage] {
+    private struct ReceiveResult {
+        let newMessages: [ChatMessage]
+        let savedOrUpdatedCount: Int
+    }
+
+    private func receive(_ payload: MessagesPayload) -> ReceiveResult {
         // Deduplicate repeated canonical IDs before updating persistence or UI.
         var seenMessageIDs = Set<Int>()
         let incomingMessages = payload.messages.filter { seenMessageIDs.insert($0.canonicalID).inserted }
@@ -649,7 +757,7 @@ extension PennyService {
             if payload.mode == "outbox" {
                 pendingCount = 0
             }
-            return []
+            return ReceiveResult(newMessages: [], savedOrUpdatedCount: 0)
         }
 
         incomingMessages.forEach { message in
@@ -675,7 +783,10 @@ extension PennyService {
         }
 
         // Persist the canonical representation, including metadata corrections.
-        decodedMessages.forEach { databaseService.save(message: MessageModel(message: $0)) }
+        let savedOrUpdatedCount = databaseService.saveMessages(
+            decodedMessages.map(MessageModel.init(message:)),
+            preserveAttachments: payload.mode == "history" && !payload.attachmentsIncluded
+        )
 
         if !newMessages.isEmpty {
             messages.append(contentsOf: newMessages)
@@ -692,17 +803,27 @@ extension PennyService {
         if pendingCount > 0 {
             send(.pullMessages(limit: pendingMessagePullLimit))
         }
-        return newMessages
+        return ReceiveResult(newMessages: newMessages, savedOrUpdatedCount: savedOrUpdatedCount)
     }
 }
 
 extension PennyService {
-    private func crawlHistory(channelTypes: [String]) async {
+    private func resumeHistorySyncIfNeeded() {
+        guard !historySyncing, let state: HistorySyncState = prefs.value(
+            HistorySyncState.self,
+            forKey: .historySyncState
+        ) else { return }
+        applyHistoryProgress(state, status: "Resuming...")
+        historySyncing = true
+        historySyncTask = makeHistorySyncTask(state: state)
+    }
+
+    private func crawlHistory(state initialState: HistorySyncState) async {
         let stream = AsyncStream<HistorySyncEvent> { continuation in
             historyResponseContinuation = continuation
         }
         var iterator = stream.makeAsyncIterator()
-        var cursor: String?
+        var state = initialState
 
         defer {
             historyResponseContinuation?.finish()
@@ -719,8 +840,13 @@ extension PennyService {
                 return
             }
 
-            historyPageIsNewest = cursor == nil
-            send(.historyRequest(limit: 30, before: cursor, channelTypes: channelTypes))
+            historyPageIsNewest = state.cursor == nil && state.requestedCount == 0
+            send(.historyRequest(
+                limit: 30,
+                before: state.cursor,
+                channelTypes: state.channelTypes,
+                includeAttachments: state.includeAttachments
+            ))
             guard let event = await iterator.next() else { return }
             guard case .page(let result) = event else {
                 if case .error(let error) = event {
@@ -729,16 +855,23 @@ extension PennyService {
                 return
             }
 
-            historySyncedCount += result.newMessageCount
-            historyStatus = "Synced \(historySyncedCount) messages"
+            state.requestedCount += result.payload.messages.count
+            state.savedOrUpdatedCount += result.savedOrUpdatedCount
+            state.remainingCount = result.payload.remainingCount
+            state.cursor = result.payload.nextCursor
+            saveHistorySyncState(state)
+            applyHistoryProgress(state)
+            historyStatus = historyProgressText
             guard result.payload.hasMore, let nextCursor = result.payload.nextCursor else {
-                historyStatus = "Complete: \(historySyncedCount) messages synced"
+                saveHistorySyncState(nil)
+                historyStatus = "Complete · \(historyProgressText)"
                 return
             }
-            cursor = nextCursor
+            state.cursor = nextCursor
+            saveHistorySyncState(state)
 
             do {
-                try await Task.sleep(for: .milliseconds(250))
+                try await Task.sleep(for: .milliseconds(10))
             } catch {
                 return
             }
@@ -800,8 +933,9 @@ private enum ClientMessage: Encodable {
     case register(RegisterPayload)
     case message(content: String)
     case pullMessages(limit: Int)
-    case historyRequest(limit: Int, before: String?, channelTypes: [String]?)
+    case historyRequest(limit: Int, before: String?, channelTypes: [String]?, includeAttachments: Bool)
     case ackMessages(ids: [Int])
+    case embeddingRequest(requestID: String, text: String)
     case heartbeat
     case configRequest
     case configUpdate(key: String, value: String)
@@ -842,7 +976,7 @@ private enum ClientMessage: Encodable {
     case cursorClear(name: String, logName: String)
     case domainUpdate(domain: String, permission: DomainPermission)
     case domainDelete(domain: String)
-    case permissionDecision(requestID: String, allowed: Bool)
+        case permissionDecision(requestID: String, allowed: Bool)
 
     // swiftlint:disable:next function_body_length
     func encode(to encoder: Encoder) throws {
@@ -864,14 +998,19 @@ private enum ClientMessage: Encodable {
         case .pullMessages(let limit):
             try container.encode("pull_messages", forKey: .type)
             try container.encode(limit, forKey: .limit)
-        case .historyRequest(let limit, let before, let channelTypes):
+        case .historyRequest(let limit, let before, let channelTypes, let includeAttachments):
             try container.encode("history_request", forKey: .type)
             try container.encode(limit, forKey: .limit)
             try container.encodeIfPresent(before, forKey: .before)
             try container.encodeIfPresent(channelTypes, forKey: .channelTypes)
+            try container.encode(includeAttachments, forKey: .includeAttachments)
         case .ackMessages(let ids):
             try container.encode("ack_messages", forKey: .type)
             try container.encode(ids, forKey: .ids)
+        case .embeddingRequest(let requestID, let text):
+            try container.encode("embedding_request", forKey: .type)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(text, forKey: .text)
         case .heartbeat:
             try container.encode("heartbeat", forKey: .type)
         case .configRequest:
@@ -1005,6 +1144,7 @@ private enum ClientMessage: Encodable {
         case limit
         case before
         case channelTypes = "channel_types"
+        case includeAttachments = "include_attachments"
         case ids
         case key
         case value
@@ -1030,6 +1170,7 @@ private enum ClientMessage: Encodable {
         case domain
         case permission
         case requestID = "request_id"
+        case text
         case allowed
     }
 }
@@ -1126,6 +1267,7 @@ private enum ServerEnvelope: Decodable {
     case outboxChanged(OutboxChangedPayload)
     case messages(MessagesPayload)
     case messagesAcked(MessagesAckedPayload)
+    case embeddingResponse(EmbeddingResponsePayload)
     case typing(TypingPayload)
     case configResponse(ConfigResponsePayload)
     case schedulesResponse(SchedulesResponsePayload)
@@ -1156,6 +1298,8 @@ private enum ServerEnvelope: Decodable {
             self = .messages(try MessagesPayload(from: decoder))
         case "messages_acked":
             self = .messagesAcked(try MessagesAckedPayload(from: decoder))
+        case "embedding_response":
+            self = .embeddingResponse(try EmbeddingResponsePayload(from: decoder))
         case "typing":
             self = .typing(try TypingPayload(from: decoder))
         case "config_response":
@@ -1224,12 +1368,16 @@ private struct MessagesPayload: Decodable {
     let mode: String
     let nextCursor: String?
     let hasMore: Bool
+    let remainingCount: Int
+    let attachmentsIncluded: Bool
 
     private enum CodingKeys: String, CodingKey {
         case messages
         case mode
         case nextCursor = "next_cursor"
         case hasMore = "has_more"
+        case remainingCount = "remaining_count"
+        case attachmentsIncluded = "attachments_included"
     }
 
     init(from decoder: Decoder) throws {
@@ -1238,11 +1386,25 @@ private struct MessagesPayload: Decodable {
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "outbox"
         nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        remainingCount = try container.decodeIfPresent(Int.self, forKey: .remainingCount) ?? 0
+        attachmentsIncluded = try container.decodeIfPresent(Bool.self, forKey: .attachmentsIncluded) ?? true
     }
 }
 
 private struct MessagesAckedPayload: Decodable {
     let count: Int
+}
+
+private struct EmbeddingResponsePayload: Decodable {
+    let requestID: String
+    let embedding: String?
+    let error: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case embedding
+        case error
+    }
 }
 
 private struct TypingPayload: Decodable {
@@ -1758,6 +1920,7 @@ private struct ServerChatMessage: Decodable {
     let deviceLabel: String?
     let deviceIdentifier: String?
     let parentID: Int?
+    let embedding: Data?
 
     var canonicalID: Int { messageID ?? id }
 
@@ -1778,6 +1941,7 @@ private struct ServerChatMessage: Decodable {
         case deviceLabel = "device_label"
         case deviceIdentifier = "device_identifier"
         case parentID = "parent_id"
+        case embedding
     }
 
     init(from decoder: Decoder) throws {
@@ -1797,6 +1961,11 @@ private struct ServerChatMessage: Decodable {
         deviceLabel = try container.decodeIfPresent(String.self, forKey: .deviceLabel)
         deviceIdentifier = try container.decodeIfPresent(String.self, forKey: .deviceIdentifier)
         parentID = try container.decodeIfPresent(Int.self, forKey: .parentID)
+        if let encodedEmbedding = try container.decodeIfPresent(String.self, forKey: .embedding) {
+            embedding = Data(base64Encoded: encodedEmbedding)
+        } else {
+            embedding = nil
+        }
 
         let createdAtString = try container.decode(String.self, forKey: .createdAt)
         createdAt = DateParser.parse(createdAtString) ?? .now
@@ -1856,6 +2025,7 @@ struct ChatMessage: Identifiable {
     let imageAttachmentDataURLs: [String]
     let imageAttachments: [ImageAttachment]
     let isOutgoing: Bool
+    let embedding: Data?
 
     var displayTime: String {
         createdAt.formatted(date: .omitted, time: .shortened)
@@ -1873,7 +2043,8 @@ struct ChatMessage: Identifiable {
         parentID: Int? = nil,
         imageAttachmentDataURLs: [String] = [],
         imageAttachments: [ImageAttachment],
-        isOutgoing: Bool
+        isOutgoing: Bool,
+        embedding: Data? = nil
     ) {
         self.id = id
         self.serverID = serverID
@@ -1887,6 +2058,7 @@ struct ChatMessage: Identifiable {
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.imageAttachments = imageAttachments
         self.isOutgoing = isOutgoing
+        self.embedding = embedding
     }
 
     init(model: MessageModel) {
@@ -1900,6 +2072,7 @@ struct ChatMessage: Identifiable {
         deviceIdentifier = model.deviceIdentifier
         parentID = model.parentID
         imageAttachmentDataURLs = model.imageAttachmentDataURLs
+        embedding = model.embedding
         imageAttachments = model.imageAttachmentDataURLs.compactMap { dataURL in
             guard let data = DataURLDecoder.decode(dataURL), let image = UIImage(data: data) else { return nil }
             return ImageAttachment(image: image)
@@ -1908,7 +2081,7 @@ struct ChatMessage: Identifiable {
     }
 
     static func local(id: Int, content: String) -> ChatMessage {
-        ChatMessage(id: id, serverID: nil, createdAt: .now, content: content, sourceHint: nil, imageAttachments: [], isOutgoing: true)
+        ChatMessage(id: id, serverID: nil, createdAt: .now, content: content, sourceHint: nil, imageAttachments: [], isOutgoing: true, embedding: nil)
     }
 
     fileprivate static func remote(_ message: ServerChatMessage) -> ChatMessage {
@@ -1926,7 +2099,8 @@ struct ChatMessage: Identifiable {
             parentID: message.parentID,
             imageAttachmentDataURLs: imageAttachmentDataURLs,
             imageAttachments: imageAttachments,
-            isOutgoing: message.direction == "incoming"
+            isOutgoing: message.direction == "incoming",
+            embedding: message.embedding
         )
     }
 }

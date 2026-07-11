@@ -57,6 +57,17 @@ struct MessageView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 14) {
+                        Button {
+                            viewModel.isShowingSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                                .frame(width: 28, height: 28)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.primary)
+                        .accessibilityLabel("Search messages")
+
                         if viewModel.client.lastError != nil {
                             Button {
                                 viewModel.isShowingConnectionError = true
@@ -93,6 +104,9 @@ struct MessageView: View {
             }
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 SettingsView(client: viewModel.client)
+            }
+            .sheet(isPresented: $viewModel.isShowingSearch) {
+                MessageSearchView(client: viewModel.client)
             }
             .navigationDestination(item: $selectedPennyNavigation) { destination in
                 pennyNavigationDestination(destination)
@@ -863,7 +877,7 @@ private struct TopMessageLoaderPreferenceKey: PreferenceKey {
     }
 }
 
-private struct MessageCardDetailSheet: View {
+struct MessageCardDetailSheet: View {
     let message: ChatMessage
 
     private var title: String {

@@ -81,12 +81,15 @@ from penny.channels.browser.models import (
 from penny.channels.ios.apns import ApnsClient, ApnsError
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
+    IOS_MSG_TYPE_EMBEDDING_REQUEST,
     IOS_MSG_TYPE_HEARTBEAT,
     IOS_MSG_TYPE_HISTORY,
     IOS_MSG_TYPE_MESSAGE,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
     IosAckMessages,
+    IosEmbeddingRequest,
+    IosEmbeddingResponse,
     IosHistoryRequest,
     IosIncomingMessage,
     IosMessages,
@@ -112,6 +115,8 @@ from penny.database.memory import (
 )
 from penny.database.models import RuntimeConfig, Schedule, UserInfo
 from penny.datetime_utils import current_datetime_line
+from penny.llm.embeddings import serialize_embedding
+from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.tools.schedule_tools import ScheduleParseResult
 
@@ -271,6 +276,8 @@ class IosChannel(MessageChannel):
             return None
         if msg_type == IOS_MSG_TYPE_MESSAGE:
             await self._handle_chat_message(data, device_identifier)
+        elif msg_type == IOS_MSG_TYPE_EMBEDDING_REQUEST:
+            await self._handle_embedding_request(ws, data)
         elif msg_type == IOS_MSG_TYPE_PULL:
             await self._handle_pull(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_HISTORY:
@@ -979,6 +986,47 @@ class IosChannel(MessageChannel):
             }
         )
 
+    async def _handle_embedding_request(self, ws: ServerConnection, data: dict) -> None:
+        """Return one query embedding for client-side semantic search."""
+        try:
+            request = IosEmbeddingRequest(**data)
+        except ValidationError:
+            await self._send_ws(
+                ws,
+                IosEmbeddingResponse(
+                    request_id=str(data.get("request_id", "")),
+                    error="invalid_embedding_request",
+                ),
+            )
+            return
+
+        text = request.text.strip()
+        if not text:
+            await self._send_ws(
+                ws,
+                IosEmbeddingResponse(request_id=request.request_id, error="empty_embedding_text"),
+            )
+            return
+        try:
+            vectors = await self._embedding_model_client.embed(text)
+            embedding = serialize_embedding(vectors[0])
+        except LlmError as error:
+            await self._send_ws(
+                ws,
+                IosEmbeddingResponse(
+                    request_id=request.request_id,
+                    error=f"embedding_unavailable: {error}",
+                ),
+            )
+            return
+        await self._send_ws(
+            ws,
+            IosEmbeddingResponse(
+                request_id=request.request_id,
+                embedding=base64.b64encode(embedding).decode("ascii"),
+            ),
+        )
+
     async def _handle_pull(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
         """Return unacknowledged outbox messages."""
         try:
@@ -991,9 +1039,13 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
         rows = self._db.ios.pending_for_device(conn.device_id, limit=msg.limit)
-        await self._send_ws(
-            ws, IosMessages(messages=[_outbox_record(row) for row in rows], mode="outbox")
-        )
+        records = []
+        for row in rows:
+            message = (
+                self._db.messages.get_by_id(row.message_log_id) if row.message_log_id else None
+            )
+            records.append(_outbox_record(row, message.embedding if message else None))
+        await self._send_ws(ws, IosMessages(messages=records, mode="outbox"))
 
     async def _handle_history(
         self, ws: ServerConnection, data: dict, device_identifier: str
@@ -1009,12 +1061,14 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
 
-        rows, has_more = self._db.messages.ios_history_page(
+        rows, has_more, remaining_count = self._db.messages.ios_history_page(
             channel_types=request.channel_types,
             before=cursor,
             limit=request.limit,
         )
-        records = [_history_record(row) for row in rows]
+        records = [
+            _history_record(row, include_attachments=request.include_attachments) for row in rows
+        ]
         next_cursor = None
         if has_more and rows:
             oldest = rows[0]
@@ -1028,6 +1082,8 @@ class IosChannel(MessageChannel):
                 mode="history",
                 next_cursor=next_cursor,
                 has_more=has_more,
+                remaining_count=remaining_count,
+                attachments_included=request.include_attachments,
             ),
         )
 
@@ -1220,7 +1276,7 @@ class IosChannel(MessageChannel):
             await ws.send(msg.model_dump_json(exclude_none=True))
 
 
-def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
+def _outbox_record(row: IosOutboxItem, embedding: bytes | None = None) -> IosOutboxRecord:
     return IosOutboxRecord(
         id=_required_outbox_id(row),
         message_id=row.message_log_id,
@@ -1233,10 +1289,15 @@ def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
         source_hint=row.source_hint,
         push_title=row.push_title,
         push_summary=row.push_summary,
+        embedding=_encode_embedding(embedding),
     )
 
 
-def _history_record(row: tuple[MessageLog, Device | None, IosOutboxItem | None]) -> IosOutboxRecord:
+def _history_record(
+    row: tuple[MessageLog, Device | None, IosOutboxItem | None],
+    *,
+    include_attachments: bool = True,
+) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
         source_type = outbox.source_type
@@ -1261,7 +1322,9 @@ def _history_record(row: tuple[MessageLog, Device | None, IosOutboxItem | None])
         outbox_id=outbox.id if outbox is not None else None,
         created_at=message.timestamp.isoformat(),
         content=message.content,
-        attachments=_decode_outbox_attachments(outbox) if outbox is not None else [],
+        attachments=(
+            _decode_outbox_attachments(outbox) if include_attachments and outbox is not None else []
+        ),
         source_type=source_type,
         source_name=source_name,
         source_hint=source_hint,
@@ -1272,7 +1335,13 @@ def _history_record(row: tuple[MessageLog, Device | None, IosOutboxItem | None])
         device_label=device.label if device is not None else None,
         device_identifier=device.identifier if device is not None else None,
         parent_id=message.parent_id,
+        embedding=_encode_embedding(message.embedding),
     )
+
+
+def _encode_embedding(embedding: bytes | None) -> str | None:
+    """Encode Penny's stored Float32 vector for the iOS wire protocol."""
+    return base64.b64encode(embedding).decode("ascii") if embedding is not None else None
 
 
 def _decode_outbox_attachments(row: IosOutboxItem) -> list[str]:

@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel
     @State private var selectedHistoryChannels = Set(HistoryChannel.allCases.map(\.rawValue))
+    @State private var includeHistoryAttachments = true
     @State private var isShowingDeleteMessagesConfirmation = false
 
     init(client: PennyWebSocketClient) {
@@ -60,13 +61,19 @@ struct SettingsView: View {
                         .disabled(viewModel.client.historySyncing)
                     }
 
-                    LabeledContent("Messages synced", value: "\(viewModel.client.historySyncedCount)")
+                    Toggle("Include attachments", isOn: $includeHistoryAttachments)
+                        .disabled(viewModel.client.historySyncing)
+
+                    LabeledContent("History sync", value: viewModel.client.historyProgressText)
                     Text(viewModel.client.historyStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     Button {
-                        viewModel.startHistorySync(channelTypes: Array(selectedHistoryChannels).sorted())
+                        viewModel.startHistorySync(
+                            channelTypes: Array(selectedHistoryChannels).sorted(),
+                            includeAttachments: includeHistoryAttachments
+                        )
                     } label: {
                         Label(
                             viewModel.client.historySyncing ? "Syncing History" : "Sync History",

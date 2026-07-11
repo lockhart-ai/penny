@@ -32,6 +32,68 @@ struct DatabaseServiceTests {
         #expect(loaded.first?.isOutgoing == false)
     }
 
+    @Test func persistsEmbeddingsAndPreservesExistingVectorWhenSyncPayloadOmitsIt() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        let embedding = Data([0, 0, 128, 63])
+        database.save(message: MessageModel(
+            id: 42,
+            serverID: 42,
+            createdAt: Date(timeIntervalSince1970: 1),
+            content: "Original",
+            sourceHint: "Chat",
+            imageAttachmentDataURLs: [],
+            isOutgoing: false,
+            embedding: embedding
+        ))
+
+        database.save(message: MessageModel(
+            id: 42,
+            serverID: 42,
+            createdAt: Date(timeIntervalSince1970: 1),
+            content: "History refresh",
+            sourceHint: "Chat",
+            imageAttachmentDataURLs: [],
+            isOutgoing: false,
+            embedding: nil
+        ))
+
+        #expect(database.loadMessages().first?.content == "History refresh")
+        #expect(database.loadMessages().first?.embedding == embedding)
+    }
+
+    @Test func backgroundHistorySavePreservesAttachmentsWhenPageOmitsThem() async {
+        let database = DatabaseService()
+        database.setupForTesting()
+        let createdAt = Date(timeIntervalSince1970: 1)
+        database.save(message: MessageModel(
+            id: 7,
+            serverID: 7,
+            createdAt: createdAt,
+            content: "Original",
+            sourceHint: "Chat",
+            imageAttachmentDataURLs: ["data:image/png;base64,aGVsbG8="],
+            isOutgoing: false
+        ))
+
+        let saved = await database.saveMessagesInBackground(
+            [MessageModel(
+                id: 7,
+                serverID: 7,
+                createdAt: createdAt,
+                content: "Updated",
+                sourceHint: "Chat",
+                imageAttachmentDataURLs: [],
+                isOutgoing: false
+            )],
+            preserveAttachments: true
+        )
+
+        #expect(saved == 1)
+        #expect(database.loadMessages().first?.content == "Updated")
+        #expect(database.loadMessages().first?.imageAttachmentDataURLs == ["data:image/png;base64,aGVsbG8="])
+    }
+
     @Test func loadsMessagesInCreationOrder() {
         let database = DatabaseService()
         database.setupForTesting()

@@ -79,6 +79,36 @@ struct PennyWebSocketClientTests {
         #expect(database.loadMessages().first?.content == "hello Penny")
     }
 
+    @Test func embeddingRequestUsesCorrelationIDAndDecodesResponse() async throws {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.emit("""
+        {"type":"registered","device_id":"device","is_default":true,"pending_count":0}
+        """)
+
+        let requestTask = Task { try await client.requestEmbedding("coffee") }
+        let payloads = await sentPayloads(transport, count: 3)
+        guard case .string(let requestID)? = payloads.last?["request_id"] else {
+            Issue.record("Embedding request did not include a request_id")
+            return
+        }
+        #expect(payloads.last?["type"] == .string("embedding_request"))
+        #expect(payloads.last?["text"] == .string("coffee"))
+
+        transport.emit("""
+        {"type":"embedding_response","request_id":"\(requestID)","embedding":"AACAPwAAAD8AAIC/"}
+        """)
+
+        #expect(try await requestTask.value == Data([0, 0, 128, 63, 0, 0, 0, 63, 0, 0, 128, 191]))
+    }
+
     @Test func receivedMessagesPersistAckDedupeAndPublishLiveMessages() async {
         let database = configuredDatabase()
         let transport = MessagePagingMockTransport()

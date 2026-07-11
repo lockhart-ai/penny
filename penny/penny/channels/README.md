@@ -128,6 +128,11 @@ delivery and background APNs notifications:
 - Penny stores/updates the generic device row and the iOS APNs registration, then
   responds with `registered`.
 - Outgoing Penny messages always go into `ios_outbox`.
+- History and outbox message records include an optional base64-encoded
+  little-endian Float32 `embedding` when Penny has one.
+- Registered clients may send `embedding_request` with a `request_id` and
+  search text; Penny replies with a correlated `embedding_response` carrying
+  the base64 vector or an error.
 - If the target device has an active WebSocket connection, Penny sends
   `outbox_changed`; the client should then send `pull_messages`.
 - If the target device is disconnected, Penny sends an APNs alert preview with a
@@ -141,6 +146,9 @@ delivery and background APNs notifications:
   optional `app_version`
 - `message`: `content`
 - `pull_messages`: optional `limit`
+- `history_request`: optional `limit`, `before`, `channel_types`, and
+  `include_attachments` (defaults to `true`). The client may persist the
+  returned `next_cursor` and resend it after reconnecting to resume.
 - `ack_messages`: `ids`
 - `heartbeat`
 
@@ -148,6 +156,9 @@ delivery and background APNs notifications:
 
 - `status`: connection or protocol error status
 - `registered`: device id, default status, pending count
+- `messages` in `history` mode: `next_cursor`, `has_more`, `remaining_count`,
+  and `attachments_included` accompany the message records. `remaining_count`
+  is the number of eligible older rows after the returned page.
 - `outbox_changed`: pending count hint
 - `messages`: durable outbox rows
 - `messages_acked`: ack count

@@ -338,8 +338,11 @@ final class SettingsViewModel {
         client.deleteDomain(domain: entry.domain)
     }
 
-    func startHistorySync(channelTypes: [String]) {
-        client.startHistorySync(channelTypes: channelTypes)
+    func startHistorySync(channelTypes: [String], includeAttachments: Bool) {
+        client.startHistorySync(
+            channelTypes: channelTypes,
+            includeAttachments: includeAttachments
+        )
     }
 
     func deleteAllMessages() {

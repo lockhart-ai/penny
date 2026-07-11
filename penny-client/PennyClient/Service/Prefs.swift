@@ -135,6 +135,7 @@ extension Prefs.Key {
     static let username = Self("connection.username")
     static let password = Self("connection.password")
     static let isMessageLayoutSwitcherEnabled = Self("features.messageLayoutSwitcherEnabled")
+    static let historySyncState = Self("history.syncState")
 }
 
 private struct SecretsPlist: Decodable {

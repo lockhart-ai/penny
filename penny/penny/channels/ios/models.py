@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 IOS_MSG_TYPE_ACK = "ack_messages"
+IOS_MSG_TYPE_EMBEDDING_REQUEST = "embedding_request"
 IOS_MSG_TYPE_HEARTBEAT = "heartbeat"
 IOS_MSG_TYPE_HISTORY = "history_request"
 IOS_MSG_TYPE_MESSAGE = "message"
@@ -12,6 +13,7 @@ IOS_MSG_TYPE_PULL = "pull_messages"
 IOS_MSG_TYPE_REGISTER = "register"
 
 IOS_RESP_TYPE_ACKED = "messages_acked"
+IOS_RESP_TYPE_EMBEDDING = "embedding_response"
 IOS_RESP_TYPE_MESSAGES = "messages"
 IOS_RESP_TYPE_OUTBOX_CHANGED = "outbox_changed"
 IOS_RESP_TYPE_REGISTERED = "registered"
@@ -53,6 +55,7 @@ class IosHistoryRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
     before: str | None = None
     channel_types: list[str] | None = None
+    include_attachments: bool = True
 
 
 class IosAckMessages(BaseModel):
@@ -60,6 +63,23 @@ class IosAckMessages(BaseModel):
 
     type: str = IOS_MSG_TYPE_ACK
     ids: list[int]
+
+
+class IosEmbeddingRequest(BaseModel):
+    """Request an embedding for client-side semantic search."""
+
+    type: str = IOS_MSG_TYPE_EMBEDDING_REQUEST
+    request_id: str
+    text: str
+
+
+class IosEmbeddingResponse(BaseModel):
+    """Embedding response correlated to an iOS client request."""
+
+    type: str = IOS_RESP_TYPE_EMBEDDING
+    request_id: str
+    embedding: str | None = None
+    error: str | None = None
 
 
 class IosOutboxRecord(BaseModel):
@@ -81,6 +101,7 @@ class IosOutboxRecord(BaseModel):
     device_label: str | None = None
     device_identifier: str | None = None
     parent_id: int | None = None
+    embedding: str | None = None
 
 
 class IosStatus(BaseModel):
@@ -108,6 +129,8 @@ class IosMessages(BaseModel):
     mode: str = "outbox"
     next_cursor: str | None = None
     has_more: bool = False
+    remaining_count: int = 0
+    attachments_included: bool = True
 
 
 class IosMessagesAcked(BaseModel):
