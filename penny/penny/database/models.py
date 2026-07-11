@@ -373,12 +373,13 @@ class Media(SQLModel, table=True):
     """Binary media (images) captured while browsing or drawn on request.
 
     The browse tool stores each page's image here with its source URL, page
-    title, and an embedding of that metadata; at channel egress a browsed image
-    is attached only to a reply that cites its source page (exact URL, then
-    domain — ``MediaStore.select_image``), with no model involvement.  A
-    ``generate_image`` row carries no ``source_url``/``embedding``: it is
-    delivered deterministically by id to its own reply
-    (``send_response(media_ids=...)``), never fuzzy-matched.
+    title, and an embedding of that metadata.  At channel egress the outgoing
+    message text is embedded and ``MediaStore.select_image`` attaches the most
+    relevant image (cited URL → domain → jittered nearest), with no model
+    involvement.  A ``generate_image`` row is delivered deterministically by id
+    to its *own* reply (``send_response(media_ids=...)``) — never fuzzy-matched
+    for that reply — but carries an embedding of its description so it joins
+    the nearest-image pool for future replies.
     """
 
     __tablename__ = "media"

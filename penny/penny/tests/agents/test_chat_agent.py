@@ -1180,10 +1180,12 @@ async def test_generate_image_delivers_the_drawn_image_deterministically(
 
     The model calls generate_image with a faithful description, then replies in
     text; the tool stores the image in the media table and stamps its id onto the
-    tool result, and egress attaches *exactly that row* to the reply — never a
-    fuzzy embedding-nearest guess.  A decoy browsed image is seeded first: the old
-    jittered fallback could have shipped it instead, so asserting the drawn bytes
-    (not the decoy) prove the generate→deliver link is structural.
+    tool result, and egress attaches *exactly that row* to the reply — the
+    media_ids path takes precedence over the fuzzy nearest-image ladder (which
+    still serves replies that didn't generate anything).  A decoy browsed image
+    is seeded first: the jittered fallback could ship it on a fuzzy match, so
+    asserting the drawn bytes (not the decoy) proves the generate→deliver link
+    is structural.
     """
     config = make_config()
 
@@ -1221,14 +1223,15 @@ async def test_generate_image_delivers_the_drawn_image_deterministically(
         image_client.generate_image.assert_awaited_once()
         assert "dragon" in image_client.generate_image.await_args.kwargs["prompt"]
 
-        # The drawn image was stored (side-channel) with no embedding — it is
-        # delivered by id, not fuzzy-matched, so there is nothing to match on.
+        # The drawn image was stored (side-channel) WITH an embedding of its
+        # description: delivery to this reply is by id, but the row stays
+        # matchable by the nearest-image ladder for future replies.
         with penny.db.get_session() as session:
             media_rows = session.exec(select(Media)).all()
         drawn = [row for row in media_rows if row.source_url is None]
         assert len(drawn) == 1
         assert drawn[0].mime_type == "image/png"
-        assert drawn[0].embedding is None
+        assert drawn[0].embedding is not None
         assert drawn[0].data == base64.b64decode(ONE_PX_PNG_B64)
 
         # ...and exactly that drawn image (not the decoy) is attached to the reply.

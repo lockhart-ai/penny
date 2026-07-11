@@ -351,7 +351,7 @@ class MessageChannel(ABC):
         """
         prepared = self.prepare_outgoing(content)
         # Embed once: stored on the messagelog row (the penny-messages facade's
-        # read_similar ranks on it) and reused for cited-page image matching.
+        # read_similar ranks on it) and reused for nearest-image matching.
         embedding = await embed_text(self._embedding_model_client, prepared)
         attachments = self._resolve_media(attachments, prepared, embedding, media_ids)
         message_id, external_id = await self._log_and_send(
@@ -427,15 +427,18 @@ class MessageChannel(ABC):
         1. Caller-supplied ``attachments`` win outright.
         2. ``media_ids`` — rows this run *generated* (``generate_image``) — are
            attached deterministically: exactly those images, fetched by id, land
-           on the reply that describes them.
-        3. Otherwise the browsed-image side-channel: ``select_image`` attaches a
-           cited page's own image (exact URL, then same domain).  A reply that
-           cites no source gets no image — no random embedding-nearest guess.
+           on the reply that describes them.  The fuzzy ladder does not also run
+           (no double attach).
+        3. Otherwise the nearest-image ladder: ``select_image`` prefers a cited
+           page's own image (exact URL, then same domain) and falls back to a
+           jittered embedding-nearest pick — so every reply carries an image
+           whenever one can be matched.
         """
         if attachments:
             return attachments
-        if media_ids:
-            return self._encode_media(media_ids)
+        generated = self._encode_media(media_ids) if media_ids else None
+        if generated:
+            return generated
         urls = _MESSAGE_URL_RE.findall(text)
         media = self._db.media.select_image(urls, embedding)
         if media is None:
@@ -447,7 +450,9 @@ class MessageChannel(ABC):
 
         A missing id (the row was just committed, so this should not happen)
         is logged and skipped rather than crashing egress — a visible signal,
-        not a silent swallow.
+        not a silent swallow.  Returning None (nothing resolved) lets
+        ``_resolve_media`` fall back to the nearest-image ladder, so the reply
+        still carries an image.
         """
         encoded: list[str] = []
         for media_id in media_ids:

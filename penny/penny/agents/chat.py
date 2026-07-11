@@ -113,7 +113,9 @@ class ChatAgent(Agent):
         if self._collector is not None:
             tools.append(TestExtractionPromptTool(self._collector))
         if self._image_client is not None:
-            tools.append(GenerateImageTool(self._image_client, self.db))
+            tools.append(
+                GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
+            )
         tools.extend(self._email_tools())
         return tools
 

@@ -134,7 +134,7 @@ class ToolResult(BaseModel):
 
     Image *bytes* are never carried here.  Browsed images ride the side-channel: the
     browse tool stores them in the media table at capture time and they are matched
-    back to a reply that cites their source page at egress.
+    back to the most relevant reply at egress (``MediaStore.select_image``).
     """
 
     message: str

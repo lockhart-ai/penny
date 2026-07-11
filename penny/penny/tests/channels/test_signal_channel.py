@@ -703,11 +703,11 @@ def test_reaction_without_callback_returns_normal_message():
 
 
 @pytest.mark.asyncio
-async def test_send_response_attaches_cited_page_media(signal_server, test_config, mock_llm):
-    """The image captured from a page the reply *cites* is attached at egress
-    (tier-1 exact-URL match — the deterministic cited-source path); and a
-    generated ``media_ids`` that no longer resolves degrades visibly (logged,
-    skipped) instead of crashing egress."""
+async def test_send_response_attaches_matching_media(signal_server, test_config, mock_llm):
+    """The browsed image whose metadata is closest to the outgoing text is
+    attached at egress (the single nearest image always wins); and a generated
+    ``media_ids`` that no longer resolves degrades visibly — logged, then egress
+    falls back to the nearest-image ladder so the reply still carries an image."""
     import base64
     from typing import Any, cast
 
@@ -742,32 +742,31 @@ async def test_send_response_attaches_cited_page_media(signal_server, test_confi
         message_agent=message_agent,
         db=db,
     )
+    # The default mock embeds deterministically per text, so storing the media
+    # embedding as the vector of the outgoing text guarantees the nearest match.
     channel._embedding_model_client = cast(Any, MockLlmClient())
 
     raw = b"\xff\xd8 jpeg bytes"
     db.media.put(
         raw,
         "image/jpeg",
-        source_url="https://ex.com/page",
+        source_url="https://ex.com",
         title="Ex",
-        embedding=serialize_embedding(deterministic_embed("ex")),
+        embedding=serialize_embedding(deterministic_embed("tell me about ex")),
     )
 
-    # The reply cites the source page, so its captured image attaches (tier 1).
-    await channel.send_response(
-        TEST_SENDER, "here's what I found: https://ex.com/page", parent_id=None, author="penny"
-    )
+    await channel.send_response(TEST_SENDER, "tell me about ex", parent_id=None, author="penny")
 
     sent = signal_server.outgoing_messages[-1]
     expected = f"data:image/jpeg;base64,{base64.b64encode(raw).decode()}"
     assert sent.get("base64_attachments") == [expected]
 
     # A generated media id that no longer resolves degrades visibly, not fatally:
-    # egress logs and skips it, delivering the reply text with no attachment
-    # (rather than crashing or silently falling back to a fuzzy match).
+    # egress logs and skips it, then falls back to the nearest-image ladder so
+    # the reply still carries an image (every reply gets one when one matches).
     await channel.send_response(
-        TEST_SENDER, "here you go", parent_id=None, author="penny", media_ids=[999999]
+        TEST_SENDER, "tell me about ex", parent_id=None, author="penny", media_ids=[999999]
     )
-    assert signal_server.outgoing_messages[-1].get("base64_attachments") is None
+    assert signal_server.outgoing_messages[-1].get("base64_attachments") == [expected]
 
     await channel.close()

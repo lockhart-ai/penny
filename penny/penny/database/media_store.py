@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from datetime import UTC, datetime
 from typing import NamedTuple
 from urllib.parse import urlparse
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from similarity.embeddings import find_similar
 from sqlmodel import Session, select
 
+from penny.constants import PennyConstants
 from penny.database.models import Media
 from penny.llm.embeddings import deserialize_embedding
 
@@ -41,13 +43,13 @@ class _Candidate(NamedTuple):
 
 
 class MediaStore:
-    """Store browsed images and retrieve the cited-page match to an egress message.
+    """Store browsed images and retrieve the most relevant match to an egress
+    message — the cited page's own image when the message links one, else a
+    jittered embedding-nearest pick.
 
-    Selection is deterministic: a browsed image is attached only when the outgoing
-    message links its source page (exact URL, then same domain).  A reply that
-    cites no source gets no image — there is no random embedding-nearest fallback,
-    so ordinary messages never carry an unrelated image.  (Generated images are
-    delivered by id via ``send_response(media_ids=...)``, not through this path.)"""
+    A reply whose run *generated* an image bypasses this matching entirely — it
+    is delivered by id via ``send_response(media_ids=...)`` — but generated rows
+    are stored with an embedding, so they join this pool for future replies."""
 
     def __init__(self, engine):
         self.engine = engine
@@ -86,24 +88,29 @@ class MediaStore:
             return session.get(Media, media_id)
 
     def select_image(self, urls: list[str], embedding: list[float] | None) -> Media | None:
-        """Pick the cited-page image to attach to an egress message, if any.
+        """Pick the image to attach to an egress message, most-relevant first.
 
         ``urls`` are the links the message itself contains (Penny cites her
-        source), ``embedding`` is the message text's vector.  Two deterministic
-        tiers, both keyed on a cited source:
+        source), ``embedding`` is the message text's vector.  Three tiers:
 
         1. **Exact URL** — the message links a page we captured an image from:
-           attach that page's own image (newest capture).  It *is* the right image.
+           attach that page's own image (newest capture).  Deterministic — it
+           *is* the right image.
         2. **Same domain** — the message links a site we have images from but not
            that exact page: the embedding-nearest image from that domain.
+           Deterministic.
+        3. **No source linked** — embedding-nearest over everything, but a uniform
+           random pick among the top-K so a centroid "magnet" image can't repeat
+           on consecutive messages (jitter applies *only* to this fallback).
 
-        Returns None when the message cites no source we have an image for — an
-        ordinary reply is left imageless rather than carrying a random, unrelated
-        picture (there is no embedding-nearest fallback).
+        Returns None only when nothing qualifies (no URL match and no embedded
+        media), so a reply still carries an image whenever one can be matched.
         """
         rows = self._candidates()
-        chosen = self._cited_page_image(rows, urls) or self._cited_domain_image(
-            rows, urls, embedding
+        chosen = (
+            self._cited_page_image(rows, urls)
+            or self._cited_domain_image(rows, urls, embedding)
+            or self._jittered_nearest(rows, embedding)
         )
         return self.get(chosen) if chosen is not None else None
 
@@ -146,6 +153,20 @@ class MediaStore:
         if best_id is not None:
             logger.debug("Matched media %d by cited domain", best_id)
         return best_id
+
+    def _jittered_nearest(
+        self, rows: list[_Candidate], embedding: list[float] | None
+    ) -> int | None:
+        """Tier 3: uniform random among the top-K embedding-nearest images."""
+        if embedding is None:
+            return None
+        scored = self._scored(embedding, [row for row in rows if row.vector])
+        if not scored:
+            return None
+        pool = [media_id for media_id, _ in scored[: PennyConstants.MEDIA_MATCH_JITTER_TOPK]]
+        chosen = random.choice(pool)
+        logger.debug("Matched media %d by jittered embedding (pool of %d)", chosen, len(pool))
+        return chosen
 
     def _scored(self, embedding: list[float], rows: list[_Candidate]) -> list[tuple[int, float]]:
         """(id, cosine) for ``rows``, nearest first, no floor."""
