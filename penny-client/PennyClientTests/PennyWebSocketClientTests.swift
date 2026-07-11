@@ -142,6 +142,187 @@ struct PennyWebSocketClientTests {
         #expect(database.loadMessages().filter { $0.serverID == 11 }.count == 1)
     }
 
+    @Test func duplicateMessagesInOnePayloadBecomeOnePersistedAndDisplayedMessage() async {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: database,
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+
+        await client.connect()
+        transport.clearSentPayloads()
+        transport.emit("""
+        {
+          "type": "messages",
+          "messages": [
+            {
+              "id": 41,
+              "created_at": "2026-07-05T00:00:01Z",
+              "content": "Penny response",
+              "source_hint": "Penny"
+            },
+            {
+              "id": 41,
+              "created_at": "2026-07-05T00:00:01Z",
+              "content": "Penny response duplicate",
+              "source_hint": "Penny"
+            }
+          ]
+        }
+        """)
+
+        #expect(liveMessages.map(\.id) == [41])
+        #expect(database.loadMessages().filter { $0.serverID == 41 }.count == 1)
+        #expect(client.messages.map(\.id) == [41])
+        #expect(hasNewMessages == false)
+    }
+
+    @Test func historyReconcilesLocallyStoredOutgoingMessage() async {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: database,
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+        await client.connect()
+        client.sendMessage("hi")
+        #expect(liveMessages.map(\.id) == [-1])
+
+        transport.emit("""
+        {
+          "type": "messages",
+          "mode": "history",
+          "messages": [
+            {
+              "id": 51,
+              "created_at": "2026-07-05T00:00:01Z",
+              "content": "hi",
+              "direction": "incoming",
+              "source_hint": "Chat"
+            }
+          ]
+        }
+        """)
+
+        #expect(liveMessages.map(\.id) == [51])
+        #expect(client.messages.map(\.id) == [51])
+        #expect(database.loadMessages().map(\.id) == [51])
+        #expect(hasNewMessages == false)
+    }
+
+    @Test func outboxDeliveryPublishesMessageAlreadyPersistedByHistory() async {
+        let database = configuredDatabase()
+        database.save(message: MessageModel(
+            id: 21,
+            serverID: 21,
+            createdAt: Date(timeIntervalSince1970: 21),
+            content: "Historical message",
+            sourceHint: "Penny",
+            imageAttachmentDataURLs: [],
+            isOutgoing: false
+        ))
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: database,
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+        transport.emit("""
+        {
+          "type": "messages",
+          "messages": [
+            {
+              "id": 7,
+              "message_id": 21,
+              "outbox_id": 7,
+              "created_at": "2026-07-05T00:00:00Z",
+              "content": "Historical message",
+              "source_hint": "Penny"
+            }
+          ]
+        }
+        """)
+
+        _ = await sentPayloads(transport, count: 1)
+        // Keep the assertion focused on the live binding rather than persistence.
+        #expect(liveMessages.map(\.content) == ["Historical message"])
+        #expect(hasNewMessages == false)
+    }
+
+    @Test func historyMarksUserSentMessagesAsOutgoing() async {
+        let database = configuredDatabase()
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: database,
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        var liveMessages: [ChatMessage] = []
+        var hasNewMessages = false
+        client.bindLiveMessages(
+            Binding(get: { liveMessages }, set: { liveMessages = $0 }),
+            hasNewMessages: Binding(get: { hasNewMessages }, set: { hasNewMessages = $0 }),
+            filter: .all
+        )
+        await client.connect()
+        transport.clearSentPayloads()
+        client.isConnected = true
+        client.isRegistered = true
+        client.startHistorySync(channelTypes: ["ios"])
+        _ = await sentPayloads(transport, count: 1)
+
+        transport.emit("""
+        {
+          "type": "messages",
+          "mode": "history",
+          "has_more": false,
+          "messages": [
+            {
+              "id": 31,
+              "message_id": 31,
+              "created_at": "2026-07-05T00:00:00Z",
+              "content": "Message from me",
+              "direction": "incoming",
+              "source_hint": "Chat"
+            }
+          ]
+        }
+        """)
+
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(liveMessages.first?.isOutgoing == true)
+        #expect(database.loadMessages().first?.isOutgoing == true)
+        #expect(hasNewMessages == false)
+    }
+
     @Test func connectionStatusReflectsState() {
         let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
 

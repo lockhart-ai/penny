@@ -7,13 +7,20 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, NamedTuple
 
-from sqlalchemy import bindparam, func, text
+from sqlalchemy import and_, bindparam, func, or_, text
 from sqlmodel import Session, select
 
 from penny.agents.models import MessageRole
 from penny.constants import PennyConstants, RunOutcome
 from penny.database.memory.objects import classify_run, render_run_record
-from penny.database.models import CommandLog, MemoryEntry, MessageLog, PromptLog
+from penny.database.models import (
+    CommandLog,
+    Device,
+    IosOutboxItem,
+    MemoryEntry,
+    MessageLog,
+    PromptLog,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +450,104 @@ class MessageStore:
             all_messages = incoming + threaded + autonomous
             all_messages.sort(key=lambda m: m.timestamp)
             return all_messages[-limit:]
+
+    def ios_history_page(
+        self,
+        *,
+        channel_types: list[str] | None,
+        before: tuple[datetime, int] | None,
+        limit: int,
+    ) -> tuple[list[tuple[MessageLog, Device | None, IosOutboxItem | None]], bool]:
+        """Return one newest-first boundary page for the iOS history surface.
+
+        Device identifiers are used as a compatibility fallback because older
+        message-log rows may not have a populated ``device_id``.
+        """
+        with self._session() as session:
+            message_columns = MessageLog.__table__.c
+            outbox_columns = IosOutboxItem.__table__.c
+            devices = list(session.exec(select(Device)).all())
+            if channel_types:
+                devices = [device for device in devices if device.channel_type in channel_types]
+            if not devices:
+                return [], False
+
+            device_ids = [device.id for device in devices if device.id is not None]
+            identifiers = [device.identifier for device in devices]
+            scope = or_(
+                message_columns.device_id.in_(device_ids),
+                message_columns.sender.in_(identifiers),
+                message_columns.recipient.in_(identifiers),
+            )
+            query = (
+                select(MessageLog, Device)
+                .join(Device, isouter=True)
+                .where(
+                    message_columns.direction.in_(
+                        [
+                            PennyConstants.MessageDirection.INCOMING,
+                            PennyConstants.MessageDirection.OUTGOING,
+                        ]
+                    ),
+                    message_columns.is_reaction.is_(False),
+                    scope,
+                )
+            )
+            if before is not None:
+                timestamp, message_id = before
+                query = query.where(
+                    or_(
+                        message_columns.timestamp < timestamp,
+                        and_(
+                            message_columns.timestamp == timestamp,
+                            message_columns.id < message_id,
+                        ),
+                    )
+                )
+            rows = list(
+                session.exec(
+                    query.order_by(
+                        message_columns.timestamp.desc(), message_columns.id.desc()
+                    ).limit(limit + 1)
+                ).all()
+            )
+            has_more = len(rows) > limit
+            ordered = list(reversed(rows[:limit]))
+            message_ids = [message.id for message, _ in ordered if message.id is not None]
+            outbox_ids = []
+            for message, _ in ordered:
+                if message.external_id and message.external_id.isdecimal():
+                    outbox_ids.append(int(message.external_id))
+            outbox_rows = list(
+                session.exec(
+                    select(IosOutboxItem).where(
+                        or_(
+                            outbox_columns.message_log_id.in_(message_ids),
+                            outbox_columns.id.in_(outbox_ids),
+                        )
+                    )
+                ).all()
+            )
+            outbox_by_message_id = {
+                row.message_log_id: row for row in outbox_rows if row.message_log_id is not None
+            }
+            outbox_by_id = {row.id: row for row in outbox_rows if row.id is not None}
+            resolved: list[tuple[MessageLog, Device | None, IosOutboxItem | None]] = []
+            for message, device in ordered:
+                if device is None:
+                    device = next(
+                        (
+                            candidate
+                            for candidate in devices
+                            if candidate.identifier in {message.sender, message.recipient}
+                        ),
+                        None,
+                    )
+                outbox = outbox_by_message_id.get(message.id)
+                if outbox is None and message.external_id and message.external_id.isdecimal():
+                    outbox = outbox_by_id.get(int(message.external_id))
+                resolved.append((message, device, outbox))
+            return resolved, has_more
 
     def get_unprocessed(self, sender: str, limit: int) -> list[MessageLog]:
         """Get recent unprocessed non-reaction messages from a specific user."""

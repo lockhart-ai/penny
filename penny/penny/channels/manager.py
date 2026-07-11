@@ -127,6 +127,7 @@ class ChannelManager(MessageChannel):
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
         source_name: str | None = None,
+        message_log_id: int | None = None,
     ) -> int | None:
         """Route a prepared message to the correct channel via device lookup.
 
@@ -136,7 +137,9 @@ class ChannelManager(MessageChannel):
         exactly once, not double-logged by the concrete channel.
         """
         channel = self._resolve_channel(recipient)
-        return await channel._send_raw(recipient, message, attachments, quote_message, source_name)
+        return await channel._send_raw(
+            recipient, message, attachments, quote_message, source_name, message_log_id
+        )
 
     async def send_typing(self, recipient: str, typing: bool) -> bool:
         """Route a typing indicator to the correct channel."""

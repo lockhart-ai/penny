@@ -33,6 +33,16 @@ struct MessagePage {
     let hasMore: Bool
 }
 
+private struct HistoryPageResult {
+    let payload: MessagesPayload
+    let newMessageCount: Int
+}
+
+private enum HistorySyncEvent {
+    case page(HistoryPageResult)
+    case error(String)
+}
+
 enum MessagePageFilter: Equatable, Sendable {
     case all
     case penny
@@ -90,9 +100,13 @@ final class PennyService {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    @ObservationIgnored private var liveMessages: Binding<[ChatMessage]>?
+    @ObservationIgnored var liveMessages: Binding<[ChatMessage]>?
     @ObservationIgnored private var liveHasNewMessages: Binding<Bool>?
+    @ObservationIgnored private var historicalMessagesHandler: (([ChatMessage]) -> Void)?
     @ObservationIgnored private var liveMessageFilter: MessagePageFilter = .all
+    @ObservationIgnored private var historySyncTask: Task<Void, Never>?
+    @ObservationIgnored private var historyResponseContinuation: AsyncStream<HistorySyncEvent>.Continuation?
+    @ObservationIgnored private var historyPageIsNewest = false
 
     var messages: [ChatMessage] = []
     var pendingCount = 0
@@ -112,6 +126,9 @@ final class PennyService {
     var collectionTriggerResult: CollectionTriggerResult?
     var domainPermissions: [DomainPermissionEntry] = []
     var permissionPrompt: PermissionPrompt?
+    var historySyncing = false
+    var historySyncedCount = 0
+    var historyStatus = "Not started"
 
     private let pendingMessagePullLimit = 3
 
@@ -177,7 +194,8 @@ final class PennyService {
         if isConnected { return .orange }
         return .red
     }
-
+}
+extension PennyService {
     func connect() async {
         guard !webSocketClient.isConnected else { return }
 
@@ -210,6 +228,10 @@ final class PennyService {
 
     private func disconnect(clearLiveBindings: Bool) {
         stopBackgroundTasks()
+        historyResponseContinuation?.finish()
+        historyResponseContinuation = nil
+        historySyncTask?.cancel()
+        historySyncTask = nil
         if clearLiveBindings {
             unbindLiveMessages()
         }
@@ -235,20 +257,53 @@ final class PennyService {
     func bindLiveMessages(
         _ messages: Binding<[ChatMessage]>,
         hasNewMessages: Binding<Bool>,
-        filter: MessagePageFilter
+        filter: MessagePageFilter,
+        historicalMessages: (([ChatMessage]) -> Void)? = nil
     ) {
         liveMessages = messages
         liveHasNewMessages = hasNewMessages
         liveMessageFilter = filter
+        historicalMessagesHandler = historicalMessages
     }
 
     func updateLiveMessageFilter(_ filter: MessagePageFilter) {
         liveMessageFilter = filter
     }
 
+    func startHistorySync(channelTypes: [String]) {
+        guard !channelTypes.isEmpty else {
+            historyStatus = "Select at least one channel"
+            return
+        }
+        guard !historySyncing else { return }
+
+        historySyncTask?.cancel()
+        historySyncedCount = 0
+        historyStatus = "Starting..."
+        historySyncing = true
+        historySyncTask = Task { [weak self] in
+            await self?.crawlHistory(channelTypes: channelTypes)
+        }
+    }
+
+    func deleteAllMessages() {
+        historyResponseContinuation?.finish()
+        historyResponseContinuation = nil
+        historySyncTask?.cancel()
+        historySyncTask = nil
+        historySyncing = false
+        historySyncedCount = 0
+        historyStatus = "Not started"
+        databaseService.deleteAllMessages()
+        messages.removeAll()
+        liveMessages?.wrappedValue = []
+        liveHasNewMessages?.wrappedValue = false
+    }
+
     func unbindLiveMessages() {
         liveMessages = nil
         liveHasNewMessages = nil
+        historicalMessagesHandler = nil
     }
 
     func sendMessage(_ content: String) {
@@ -418,7 +473,9 @@ final class PennyService {
         request.setValue("Basic \(encodedCredentials)", forHTTPHeaderField: "Authorization")
         return request
     }
+}
 
+extension PennyService {
     private func startBackgroundTasks() {
         stopBackgroundTasks()
         heartbeatTask = Task { [weak self] in
@@ -483,6 +540,9 @@ final class PennyService {
         case .status(let payload):
             isConnected = payload.connected
             lastError = payload.error
+            if historySyncing, let error = payload.error {
+                historyResponseContinuation?.yield(.error(error))
+            }
         case .registered(let payload):
             isConnected = true
             isRegistered = true
@@ -494,7 +554,21 @@ final class PennyService {
                 send(.pullMessages(limit: pendingMessagePullLimit))
             }
         case .messages(let payload):
-            receive(payload.messages)
+            let newMessages = receive(payload)
+            if payload.mode == "history" {
+                if historyPageIsNewest {
+                    let visibleMessages = newMessages.filter { liveMessageFilter.includes($0) }
+                    if let historicalMessagesHandler {
+                        historicalMessagesHandler(visibleMessages)
+                    } else {
+                        publishLiveMessages(visibleMessages)
+                    }
+                }
+                historyResponseContinuation?.yield(.page(HistoryPageResult(
+                    payload: payload,
+                    newMessageCount: newMessages.count
+                )))
+            }
         case .messagesAcked:
             break
         case .typing(let payload):
@@ -565,30 +639,109 @@ final class PennyService {
         promptLogRuns[index].runReason = payload.reason
     }
 
-    private func receive(_ incomingMessages: [ServerChatMessage]) {
+    @discardableResult
+    private func receive(_ payload: MessagesPayload) -> [ChatMessage] {
+        // Deduplicate repeated canonical IDs before updating persistence or UI.
+        var seenMessageIDs = Set<Int>()
+        let incomingMessages = payload.messages.filter { seenMessageIDs.insert($0.canonicalID).inserted }
         let incomingIDs = incomingMessages.map(\.id)
         if incomingIDs.isEmpty {
-            pendingCount = 0
-            return
+            if payload.mode == "outbox" {
+                pendingCount = 0
+            }
+            return []
         }
 
-        let newMessages = incomingMessages
-            .filter { !databaseService.containsMessage(serverID: $0.id) }
-            .map(ChatMessage.remote)
+        incomingMessages.forEach { message in
+            guard let messageID = message.messageID,
+                  let outboxID = message.outboxID else { return }
+            databaseService.reconcileLegacyMessage(
+                outboxID: outboxID,
+                canonicalID: messageID
+            )
+        }
+
+        let decodedMessages = incomingMessages.map(ChatMessage.remote)
+        for message in decodedMessages where message.isOutgoing {
+            guard let localID = databaseService.reconcileLocalMessage(
+                content: message.content,
+                createdAt: message.createdAt,
+                canonicalID: message.id
+            ) else { continue }
+            replaceOptimisticMessage(localID: localID, with: message)
+        }
+        let newMessages = decodedMessages.filter {
+            !databaseService.containsMessage(serverID: $0.id)
+        }
+
+        // Persist the canonical representation, including metadata corrections.
+        decodedMessages.forEach { databaseService.save(message: MessageModel(message: $0)) }
 
         if !newMessages.isEmpty {
-            newMessages.forEach { databaseService.save(message: MessageModel(message: $0)) }
             messages.append(contentsOf: newMessages)
             messages.sort { $0.createdAt < $1.createdAt }
-            publishLiveMessages(newMessages)
         }
 
-        send(.ackMessages(ids: incomingIDs))
-        pendingCount = max(0, pendingCount - incomingIDs.count)
-        clearAppBadge()
+        if payload.mode == "outbox" {
+            publishLiveMessages(decodedMessages)
+            send(.ackMessages(ids: incomingIDs))
+            pendingCount = max(0, pendingCount - incomingIDs.count)
+            clearAppBadge()
+        }
 
         if pendingCount > 0 {
             send(.pullMessages(limit: pendingMessagePullLimit))
+        }
+        return newMessages
+    }
+}
+
+extension PennyService {
+    private func crawlHistory(channelTypes: [String]) async {
+        let stream = AsyncStream<HistorySyncEvent> { continuation in
+            historyResponseContinuation = continuation
+        }
+        var iterator = stream.makeAsyncIterator()
+        var cursor: String?
+
+        defer {
+            historyResponseContinuation?.finish()
+            historyResponseContinuation = nil
+            historySyncTask = nil
+            if historySyncing {
+                historySyncing = false
+            }
+        }
+
+        while !Task.isCancelled {
+            guard isConnected, isRegistered else {
+                historyStatus = "Waiting for connection"
+                return
+            }
+
+            historyPageIsNewest = cursor == nil
+            send(.historyRequest(limit: 30, before: cursor, channelTypes: channelTypes))
+            guard let event = await iterator.next() else { return }
+            guard case .page(let result) = event else {
+                if case .error(let error) = event {
+                    historyStatus = "Sync failed: \(error)"
+                }
+                return
+            }
+
+            historySyncedCount += result.newMessageCount
+            historyStatus = "Synced \(historySyncedCount) messages"
+            guard result.payload.hasMore, let nextCursor = result.payload.nextCursor else {
+                historyStatus = "Complete: \(historySyncedCount) messages synced"
+                return
+            }
+            cursor = nextCursor
+
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
         }
     }
 
@@ -597,19 +750,18 @@ final class PennyService {
 
         let visibleMessages = newMessages.filter { liveMessageFilter.includes($0) }
         if !visibleMessages.isEmpty {
-            liveMessages?.wrappedValue.append(contentsOf: visibleMessages)
+            var mergedMessages = liveMessages?.wrappedValue ?? []
+            for message in visibleMessages where !mergedMessages.contains(where: { $0.id == message.id }) {
+                mergedMessages.append(message)
+            }
+            mergedMessages.sort {
+                $0.createdAt < $1.createdAt || ($0.createdAt == $1.createdAt && $0.id < $1.id)
+            }
+            liveMessages?.wrappedValue = mergedMessages
         }
 
         if visibleMessages.count != newMessages.count {
             liveHasNewMessages?.wrappedValue = true
-        }
-    }
-
-    private func clearAppBadge() {
-        UNUserNotificationCenter.current().setBadgeCount(0) { error in
-            if let error {
-                print("Failed to clear badge count: \(error.localizedDescription)")
-            }
         }
     }
 
@@ -648,6 +800,7 @@ private enum ClientMessage: Encodable {
     case register(RegisterPayload)
     case message(content: String)
     case pullMessages(limit: Int)
+    case historyRequest(limit: Int, before: String?, channelTypes: [String]?)
     case ackMessages(ids: [Int])
     case heartbeat
     case configRequest
@@ -711,6 +864,11 @@ private enum ClientMessage: Encodable {
         case .pullMessages(let limit):
             try container.encode("pull_messages", forKey: .type)
             try container.encode(limit, forKey: .limit)
+        case .historyRequest(let limit, let before, let channelTypes):
+            try container.encode("history_request", forKey: .type)
+            try container.encode(limit, forKey: .limit)
+            try container.encodeIfPresent(before, forKey: .before)
+            try container.encodeIfPresent(channelTypes, forKey: .channelTypes)
         case .ackMessages(let ids):
             try container.encode("ack_messages", forKey: .type)
             try container.encode(ids, forKey: .ids)
@@ -845,6 +1003,8 @@ private enum ClientMessage: Encodable {
         case appVersion = "app_version"
         case content
         case limit
+        case before
+        case channelTypes = "channel_types"
         case ids
         case key
         case value
@@ -1061,6 +1221,24 @@ private struct OutboxChangedPayload: Decodable {
 
 private struct MessagesPayload: Decodable {
     let messages: [ServerChatMessage]
+    let mode: String
+    let nextCursor: String?
+    let hasMore: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case messages
+        case mode
+        case nextCursor = "next_cursor"
+        case hasMore = "has_more"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messages = try container.decode([ServerChatMessage].self, forKey: .messages)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "outbox"
+        nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+    }
 }
 
 private struct MessagesAckedPayload: Decodable {
@@ -1573,6 +1751,15 @@ private struct ServerChatMessage: Decodable {
     let sourceHint: String?
     let pushTitle: String?
     let pushSummary: String?
+    let messageID: Int?
+    let outboxID: Int?
+    let direction: String?
+    let channelType: String?
+    let deviceLabel: String?
+    let deviceIdentifier: String?
+    let parentID: Int?
+
+    var canonicalID: Int { messageID ?? id }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -1584,6 +1771,13 @@ private struct ServerChatMessage: Decodable {
         case sourceHint = "source_hint"
         case pushTitle = "push_title"
         case pushSummary = "push_summary"
+        case messageID = "message_id"
+        case outboxID = "outbox_id"
+        case direction
+        case channelType = "channel_type"
+        case deviceLabel = "device_label"
+        case deviceIdentifier = "device_identifier"
+        case parentID = "parent_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -1596,6 +1790,13 @@ private struct ServerChatMessage: Decodable {
         sourceHint = try container.decodeIfPresent(String.self, forKey: .sourceHint)
         pushTitle = try container.decodeIfPresent(String.self, forKey: .pushTitle)
         pushSummary = try container.decodeIfPresent(String.self, forKey: .pushSummary)
+        messageID = try container.decodeIfPresent(Int.self, forKey: .messageID)
+        outboxID = try container.decodeIfPresent(Int.self, forKey: .outboxID)
+        direction = try container.decodeIfPresent(String.self, forKey: .direction)
+        channelType = try container.decodeIfPresent(String.self, forKey: .channelType)
+        deviceLabel = try container.decodeIfPresent(String.self, forKey: .deviceLabel)
+        deviceIdentifier = try container.decodeIfPresent(String.self, forKey: .deviceIdentifier)
+        parentID = try container.decodeIfPresent(Int.self, forKey: .parentID)
 
         let createdAtString = try container.decode(String.self, forKey: .createdAt)
         createdAt = DateParser.parse(createdAtString) ?? .now
@@ -1648,6 +1849,10 @@ struct ChatMessage: Identifiable {
     let createdAt: Date
     let content: String
     let sourceHint: String?
+    let channelType: String?
+    let deviceLabel: String?
+    let deviceIdentifier: String?
+    let parentID: Int?
     let imageAttachmentDataURLs: [String]
     let imageAttachments: [ImageAttachment]
     let isOutgoing: Bool
@@ -1662,6 +1867,10 @@ struct ChatMessage: Identifiable {
         createdAt: Date,
         content: String,
         sourceHint: String?,
+        channelType: String? = nil,
+        deviceLabel: String? = nil,
+        deviceIdentifier: String? = nil,
+        parentID: Int? = nil,
         imageAttachmentDataURLs: [String] = [],
         imageAttachments: [ImageAttachment],
         isOutgoing: Bool
@@ -1671,6 +1880,10 @@ struct ChatMessage: Identifiable {
         self.createdAt = createdAt
         self.content = content
         self.sourceHint = sourceHint
+        self.channelType = channelType
+        self.deviceLabel = deviceLabel
+        self.deviceIdentifier = deviceIdentifier
+        self.parentID = parentID
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.imageAttachments = imageAttachments
         self.isOutgoing = isOutgoing
@@ -1682,6 +1895,10 @@ struct ChatMessage: Identifiable {
         createdAt = model.createdAt
         content = model.content
         sourceHint = model.sourceHint
+        channelType = model.channelType
+        deviceLabel = model.deviceLabel
+        deviceIdentifier = model.deviceIdentifier
+        parentID = model.parentID
         imageAttachmentDataURLs = model.imageAttachmentDataURLs
         imageAttachments = model.imageAttachmentDataURLs.compactMap { dataURL in
             guard let data = DataURLDecoder.decode(dataURL), let image = UIImage(data: data) else { return nil }
@@ -1698,14 +1915,18 @@ struct ChatMessage: Identifiable {
         let imageAttachmentDataURLs = message.attachments.compactMap(\.dataURL)
         let imageAttachments = message.attachments.compactMap(\.image).map(ImageAttachment.init(image:))
         return ChatMessage(
-            id: message.id,
-            serverID: message.id,
+            id: message.canonicalID,
+            serverID: message.canonicalID,
             createdAt: message.createdAt,
             content: message.content,
             sourceHint: message.sourceHint,
+            channelType: message.channelType,
+            deviceLabel: message.deviceLabel,
+            deviceIdentifier: message.deviceIdentifier,
+            parentID: message.parentID,
             imageAttachmentDataURLs: imageAttachmentDataURLs,
             imageAttachments: imageAttachments,
-            isOutgoing: false
+            isOutgoing: message.direction == "incoming"
         )
     }
 }
@@ -1772,28 +1993,4 @@ private enum DateParser {
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
         return formatter
     }()
-}
-
-private enum DeviceIdentity {
-    private static let keychain = SystemKeychain()
-    private static let deviceIDAccount = "device_id"
-    private static let deviceSecretAccount = "device_secret"
-
-    static func stableDeviceID() -> String {
-        stableUUID(account: deviceIDAccount)
-    }
-
-    static func deviceSecret() -> String {
-        stableUUID(account: deviceSecretAccount)
-    }
-
-    private static func stableUUID(account: String) -> String {
-        if let existingValue = keychain.string(account: account) {
-            return existingValue
-        }
-
-        let newValue = UUID().uuidString
-        keychain.set(newValue, account: account)
-        return newValue
-    }
 }

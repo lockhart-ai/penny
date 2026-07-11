@@ -67,6 +67,7 @@ class IosStore:
     def enqueue_outbox(
         self,
         *,
+        message_log_id: int | None = None,
         device_id: int,
         content: str,
         attachments: list[str] | None,
@@ -79,6 +80,7 @@ class IosStore:
         """Append a message to the durable iOS outbox."""
         with self._session() as session:
             row = IosOutboxItem(
+                message_log_id=message_log_id,
                 device_id=device_id,
                 content=content,
                 attachments_json=json.dumps(attachments) if attachments else None,

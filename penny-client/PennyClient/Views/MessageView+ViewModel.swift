@@ -346,9 +346,39 @@ extension MessageView {
                     get: { [weak self] in self?.hasHiddenNewMessages ?? false },
                     set: { [weak self] hasNewMessages in self?.hasHiddenNewMessages = hasNewMessages }
                 ),
-                filter: selectedMessageFilter.pageFilter
+                filter: selectedMessageFilter.pageFilter,
+                historicalMessages: { [weak self] messages in
+                    self?.mergeNewestHistoricalMessages(messages)
+                }
             )
             hasBoundLiveMessages = true
+        }
+
+        private func mergeNewestHistoricalMessages(_ incomingMessages: [ChatMessage]) {
+            guard !incomingMessages.isEmpty else { return }
+
+            let existingIDs = Set(displayedMessages.map(\.id))
+            let candidates = incomingMessages.filter { !existingIDs.contains($0.id) }
+            guard !candidates.isEmpty else { return }
+
+            guard let newest = displayedMessages.last else {
+                replaceDisplayedMessages(with: candidates.sorted { $0.createdAt < $1.createdAt })
+                scrollToBottomRequest += 1
+                return
+            }
+
+            let newestMessages = candidates.filter {
+                $0.createdAt > newest.createdAt || ($0.createdAt == newest.createdAt && $0.id > newest.id)
+            }
+            guard !newestMessages.isEmpty else { return }
+
+            suppressDisplayedMessageChanges = true
+            displayedMessages.append(contentsOf: newestMessages)
+            displayedMessages.sort {
+                $0.createdAt < $1.createdAt || ($0.createdAt == $1.createdAt && $0.id < $1.id)
+            }
+            suppressDisplayedMessageChanges = false
+            scrollToBottomRequest += 1
         }
 
         private func replaceDisplayedMessages(with messages: [ChatMessage]) {
