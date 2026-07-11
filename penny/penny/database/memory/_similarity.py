@@ -4,9 +4,9 @@ Two families of shape-independent math the ``Memory`` objects compose:
 
   * dedup — the three-signal collision rule used by ``Collection.write`` and
     the ``exists`` probe (key TCR, key cosine, content cosine).
-  * retrieval — embedding stacking, hybrid cosine+lexical ranking, the
-    centrality-magnet penalty, and the adaptive cluster-strength cutoff used by
-    ``read_similar`` / ``read_similar_hybrid``.
+  * retrieval — embedding stacking, plain cosine nearest-neighbor scoring for
+    the explicit ``read_similar`` search, and the hybrid cosine+lexical ranking
+    used by ambient recall's ``read_similar_hybrid``.
 
 Everything here is a free function over plain values so it stays trivially
 testable and reusable from both the entity classes and the registry.
@@ -131,42 +131,20 @@ def stack_normalized_anchors(anchors: list[list[float]]) -> np.ndarray:
     return matrix / np.where(norms == 0, 1, norms)
 
 
-def hybrid_scores(cos_matrix: np.ndarray, decay: float = 0.5) -> np.ndarray:
-    """Combine a (N, M) cosine matrix into a per-row hybrid score.
+def cosine_scores(content_blobs: list[bytes], anchor: list[float]) -> np.ndarray:
+    """Per-row cosine of each stored embedding to a single ``anchor`` vector.
 
-    Hybrid = max(weighted_decay_over_history, cosine_to_current).  Anchors
-    are oldest→newest, so weights go ``decay**(M-1) … decay**0`` and the
-    last column is the current message.  With M=1 the weighted branch
-    equals the current branch and ``maximum`` returns that single cosine.
+    Plain nearest-neighbor scoring for the explicit ``read_similar`` search
+    tool.  Deliberately carries none of the ambient-recall machinery — no
+    centrality-magnet penalty, no cluster-strength gate — because those decide
+    *whether anything is relevant enough to inject unprompted* into a bounded
+    prompt, which is the wrong policy for an explicit, model-invoked search
+    whose result feeds the model's own judgment.  Ambient recall keeps its own
+    gated path (``hybrid_rank_ids``).
     """
-    anchor_count = cos_matrix.shape[1]
-    weights = np.array(
-        [decay ** (anchor_count - 1 - i) for i in range(anchor_count)],
-        dtype=np.float32,
-    )
-    weighted = (cos_matrix * weights).sum(axis=1) / weights.sum()
-    current = cos_matrix[:, -1]
-    return np.maximum(weighted, current)
-
-
-def centrality_via_centroid(matrix: np.ndarray) -> np.ndarray:
-    """Per-row mean cosine to all OTHER rows, computed via the corpus centroid.
-
-    Algebraically identical to the O(N²) loop ``mean_{j≠i}(cos(v_i, v_j))``:
-
-        mean_{j≠i}(cos) = (N · v_i · centroid − 1) / (N − 1)
-
-    where ``centroid = matrix.mean(axis=0)`` and rows are L2-normalized so
-    ``v_i · v_i = 1``.  Cost is one ``mean`` and one matrix-vector product —
-    O(N · D) per query, no precompute, no cache.
-
-    Returns zeros for corpora of fewer than 2 rows (no neighbors to average).
-    """
-    n = matrix.shape[0]
-    if n < 2:
-        return np.zeros(n, dtype=np.float32)
-    centroid = matrix.mean(axis=0)
-    return (n * (matrix @ centroid) - 1) / (n - 1)
+    matrix = stack_normalized(content_blobs)  # (N, D)
+    anchor_matrix = stack_normalized_anchors([anchor])  # (1, D)
+    return (matrix @ anchor_matrix.T)[:, 0]  # (N,)
 
 
 def hybrid_rank_ids(
@@ -214,53 +192,3 @@ def _length_normalize(coverage: np.ndarray, document_tokens: list[set[str]]) -> 
     b = PennyConstants.MEMORY_LEXICAL_LENGTH_B
     length_norm = (1.0 - b) + b * np.sqrt(doc_len / mean_len)
     return coverage / length_norm
-
-
-def score_against_anchors(
-    content_blobs: list[bytes],
-    anchors: list[list[float]],
-) -> np.ndarray:
-    """Per-row ``max(weighted_decay, current_cos) - α·centrality`` for ranking.
-
-    Stacks all candidate embeddings into an (N, D) matrix and all anchors into
-    an (M, D) matrix, then a single matmul produces the full (N, M) cosine
-    table.  The centrality-magnet penalty keeps generic boilerplate from
-    leaking into unrelated queries.  Single-anchor reduces cleanly (M=1 → the
-    weighted-decay branch is the lone cosine).  Returns the adjusted scores in
-    row order (caller sorts).
-    """
-    matrix = stack_normalized(content_blobs)
-    anchor_matrix = stack_normalized_anchors(anchors)
-    cos_matrix = matrix @ anchor_matrix.T  # (N, M)
-    return hybrid_scores(cos_matrix) - (
-        PennyConstants.MEMORY_RELEVANT_CENTRALITY_PENALTY * centrality_via_centroid(matrix)
-    )
-
-
-def adaptive_cutoff(scores: list[float], floor: float) -> float | None:
-    """Adaptive cutoff for similarity-ranked retrieval (scores sorted desc).
-
-    With at least ``GATE_SAMPLE_SIZE`` candidates, applies a cluster-strength
-    gate: if the head-mean / sample-mean ratio falls below ``CLUSTER_GATE``,
-    returns ``None`` to suppress the result entirely (flat noise plateau, no
-    real cluster).  Otherwise the cutoff combines a relative band against the
-    cluster center with the absolute floor.
-
-    Below the cold-start sample-size threshold, the gate is skipped and the
-    larger of the configured absolute floor and the caller's ``floor`` is used.
-    """
-    if not scores:
-        return None
-    head_size = PennyConstants.MEMORY_RELEVANT_GATE_HEAD_SIZE
-    sample_size = PennyConstants.MEMORY_RELEVANT_GATE_SAMPLE_SIZE
-    absolute_floor = max(floor, PennyConstants.MEMORY_RELEVANT_ABSOLUTE_FLOOR)
-    if len(scores) >= sample_size:
-        head_mean = sum(scores[:head_size]) / head_size
-        sample_mean = sum(scores[:sample_size]) / sample_size
-        if (
-            sample_mean <= 0
-            or head_mean / sample_mean < PennyConstants.MEMORY_RELEVANT_CLUSTER_GATE
-        ):
-            return None
-        return max(head_mean * PennyConstants.MEMORY_RELEVANT_RELATIVE_RATIO, absolute_floor)
-    return absolute_floor

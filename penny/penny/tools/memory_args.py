@@ -295,9 +295,12 @@ class ReadRandomArgs(ToolArgs):
 class ReadSimilarArgs(ToolArgs):
     """Top-k by content cosine similarity to ``anchor`` (embedded by the tool).
 
-    The similarity floor is fixed (``MEMORY_RELEVANT_ABSOLUTE_FLOOR`` plus
-    the adaptive cluster gate) — the model can't override it, since cosine
-    thresholds are opaque values it has no grounding to pick.
+    A plain nearest-neighbour search: entries come back ranked best-first so the
+    model can judge them.  There is no relevance floor or cluster gate — those
+    ambient-recall policies suppressed a populated but homogeneous collection
+    (e.g. ``skills``) to "No entries" and broke fuzzy recovery (#1565).  An empty
+    result therefore reflects the corpus, not an ambient "nothing matched well
+    enough" judgment.  ``k`` caps the count; omit for all.
     """
 
     memory: MemoryName
