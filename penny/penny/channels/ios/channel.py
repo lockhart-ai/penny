@@ -116,7 +116,6 @@ from penny.database.memory import (
 from penny.database.models import RuntimeConfig, Schedule, UserInfo
 from penny.datetime_utils import current_datetime_line
 from penny.llm.embeddings import serialize_embedding
-from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.tools.schedule_tools import ScheduleParseResult
 
@@ -1007,15 +1006,13 @@ class IosChannel(MessageChannel):
                 IosEmbeddingResponse(request_id=request.request_id, error="empty_embedding_text"),
             )
             return
-        try:
-            vectors = await self._embedding_model_client.embed(text)
-            embedding = serialize_embedding(vectors[0])
-        except LlmError as error:
+        embedding = await self._embed_message(text)
+        if embedding is None:
             await self._send_ws(
                 ws,
                 IosEmbeddingResponse(
                     request_id=request.request_id,
-                    error=f"embedding_unavailable: {error}",
+                    error="embedding_unavailable",
                 ),
             )
             return
@@ -1023,7 +1020,7 @@ class IosChannel(MessageChannel):
             ws,
             IosEmbeddingResponse(
                 request_id=request.request_id,
-                embedding=base64.b64encode(embedding).decode("ascii"),
+                embedding=base64.b64encode(serialize_embedding(embedding)).decode("ascii"),
             ),
         )
 
@@ -1039,11 +1036,12 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
         rows = self._db.ios.pending_for_device(conn.device_id, limit=msg.limit)
+        messages_by_id = self._db.messages.get_by_ids(
+            {row.message_log_id for row in rows if row.message_log_id is not None}
+        )
         records = []
         for row in rows:
-            message = (
-                self._db.messages.get_by_id(row.message_log_id) if row.message_log_id else None
-            )
+            message = messages_by_id.get(row.message_log_id) if row.message_log_id else None
             records.append(_outbox_record(row, message.embedding if message else None))
         await self._send_ws(ws, IosMessages(messages=records, mode="outbox"))
 

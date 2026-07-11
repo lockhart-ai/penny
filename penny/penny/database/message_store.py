@@ -282,6 +282,14 @@ class MessageStore:
         with self._session() as session:
             return session.get(MessageLog, message_id)
 
+    def get_by_ids(self, message_ids: set[int]) -> dict[int, MessageLog]:
+        """Get multiple messages in one query, keyed by database ID."""
+        if not message_ids:
+            return {}
+        with self._session() as session:
+            messages = session.exec(select(MessageLog).where(MessageLog.id.in_(message_ids))).all()
+            return {message.id: message for message in messages if message.id is not None}
+
     def find_by_external_id(self, external_id: str) -> MessageLog | None:
         """Find a message by its platform-specific external ID."""
         with self._session() as session:

@@ -122,6 +122,33 @@ async def test_embedding_request_returns_correlated_base64_vector(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_embedding_request_without_model_returns_actionable_error(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    ws = FakeWs()
+
+    await channel._process_raw_message(
+        cast(Any, ws),
+        json.dumps(
+            {
+                "type": IOS_MSG_TYPE_EMBEDDING_REQUEST,
+                "request_id": "search-2",
+                "text": "coffee preferences",
+            }
+        ),
+        "ios-keychain-id",
+    )
+
+    assert ws.sent == [
+        {
+            "type": "embedding_response",
+            "request_id": "search-2",
+            "error": "embedding_unavailable",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_listen_returns_after_close(tmp_path):
     db = _make_db(tmp_path)
     channel = IosChannel(host="localhost", port=0, message_agent=MagicMock(), db=db)
@@ -867,3 +894,36 @@ async def test_pull_and_ack_messages(tmp_path):
     assert ws.sent[-1]["count"] == 2
     assert db.ios.pending_for_device(device.id) == []
     assert db.ios.pending_count(device.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_sent_message_embedding_reaches_pull_and_history_wire_records(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    channel._embedding_model_client = MagicMock()
+    channel._embedding_model_client.embed = AsyncMock(return_value=[[1.0, 0.5, -1.0]])
+    ws = FakeWs()
+    server_ws = cast(Any, ws)
+    await channel._handle_register(
+        server_ws,
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+
+    await channel.send_message("ios-keychain-id", "embedded outgoing message")
+
+    await channel._handle_pull(server_ws, {"type": IOS_MSG_TYPE_PULL}, "ios-keychain-id")
+    pull_record = ws.sent[-1]["messages"][0]
+    assert pull_record["embedding"] == "AACAPwAAAD8AAIC/"
+
+    await channel._handle_history(
+        server_ws,
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 1},
+        "ios-keychain-id",
+    )
+    history_record = ws.sent[-1]["messages"][0]
+    assert history_record["embedding"] == "AACAPwAAAD8AAIC/"
