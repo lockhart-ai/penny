@@ -141,7 +141,7 @@ class PennyConstants:
 
     # Current date/time anchor — the single "Current date and time: <stamp>" line
     # handed to the model, shared by the agent-loop envelope and every ad-hoc
-    # one-shot LLM flow (schedule/profile parse, startup announcement, email
+    # one-shot LLM flow (the /profile parse, startup announcement, email
     # summarize).  Rendered via ``datetime_utils.current_datetime_line``.
     CURRENT_DATETIME_FORMAT = "%A, %B %d, %Y at %I:%M %p %Z"
     CURRENT_DATETIME_PREFIX = "Current date and time: "

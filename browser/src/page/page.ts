@@ -1,6 +1,6 @@
 /**
  * Full page — consolidates the prompt log, memory explorer, and settings.
- * Tabs: Prompts, Memories, Schedules, Domains, Config.
+ * Tabs: Prompts, Memories, Domains, Config.
  */
 
 import {
@@ -22,7 +22,6 @@ import {
   type RuntimeMemoryPageResponse,
   type RuntimeMessage,
   RuntimeMessageType,
-  type ScheduleItem,
   STORAGE_KEY_DOMAIN_ALLOWLIST,
   STORAGE_KEY_TOOL_USE,
 } from "../protocol.js";
@@ -32,7 +31,6 @@ import {
 type Tab =
   | "prompts"
   | "memories"
-  | "schedules"
   | "domains"
   | "config";
 
@@ -124,7 +122,6 @@ function init(): void {
   // Set up all panel interactions
   setupPrompts();
   setupMemories();
-  setupSchedules();
   setupDomains();
   setupConfig();
 }
@@ -143,8 +140,6 @@ function switchTab(tab: Tab): void {
     promptsLoaded = true;
   } else if (tab === "memories") {
     requestMemories();
-  } else if (tab === "schedules") {
-    browser.runtime.sendMessage({ type: RuntimeMessageType.SchedulesRequest });
   } else if (tab === "domains") {
     loadDomainsFromCache();
   } else if (tab === "config") {
@@ -172,8 +167,6 @@ function handleMessage(message: RuntimeMessage): void {
     handlePromptUpdate(message.prompt);
   } else if (message.type === RuntimeMessageType.RunOutcomeUpdate) {
     handleRunOutcome(message.run_id, message.outcome, message.reason);
-  } else if (message.type === RuntimeMessageType.SchedulesResponse) {
-    renderSchedules(message.schedules, message.error);
   } else if (message.type === RuntimeMessageType.ConfigResponse) {
     renderConfig(message.params);
     if (pendingConfigSave) {
@@ -1018,156 +1011,6 @@ function formatDuration(ms: number): string {
  * with the two-character escape instead of an actual newline. */
 function unescapeNewlines(text: string): string {
   return text.replace(/\\n/g, "\n");
-}
-// ============================================================
-// Schedules
-// ============================================================
-
-function setScheduleAddEnabled(enabled: boolean): void {
-  const input = document.getElementById("schedules-input") as HTMLInputElement | null;
-  const btn = document.getElementById("schedules-add-btn") as HTMLButtonElement | null;
-  if (input) input.disabled = !enabled;
-  if (btn) btn.disabled = !enabled;
-}
-
-function renderSchedules(schedules: ScheduleItem[], error: string | null): void {
-  const listEl = document.getElementById("schedules-list")!;
-  listEl.innerHTML = "";
-  setScheduleAddEnabled(true);
-
-  if (error) {
-    const errEl = document.createElement("div");
-    errEl.className = "schedule-error";
-    errEl.textContent = error;
-    listEl.appendChild(errEl);
-  }
-
-  if (schedules.length === 0 && !error) {
-    const empty = document.createElement("div");
-    empty.className = "schedules-empty";
-    empty.textContent = "No scheduled tasks yet.";
-    listEl.appendChild(empty);
-    return;
-  }
-
-  for (const schedule of schedules) {
-    listEl.appendChild(createScheduleRow(schedule));
-  }
-}
-
-function createScheduleRow(schedule: ScheduleItem): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "schedule-row";
-
-  const header = document.createElement("div");
-  header.className = "schedule-header";
-
-  const timing = document.createElement("span");
-  timing.className = "schedule-timing";
-  timing.textContent = schedule.timing_description;
-
-  const prompt = document.createElement("span");
-  prompt.className = "schedule-prompt";
-  prompt.textContent = schedule.prompt_text;
-
-  const cron = document.createElement("span");
-  cron.className = "schedule-cron-inline";
-  cron.textContent = schedule.cron_expression;
-
-  const del = document.createElement("button");
-  del.className = "schedule-delete";
-  del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-  del.setAttribute("aria-label", `Delete schedule: ${schedule.prompt_text}`);
-  del.addEventListener("click", (e) => {
-    e.stopPropagation();
-    browser.runtime.sendMessage({
-      type: RuntimeMessageType.ScheduleDelete,
-      schedule_id: schedule.id,
-    });
-  });
-
-  header.appendChild(timing);
-  header.appendChild(prompt);
-  header.appendChild(cron);
-  header.appendChild(del);
-
-  const detail = document.createElement("div");
-  detail.className = "schedule-detail";
-
-  const editInput = document.createElement("textarea");
-  editInput.className = "schedule-edit-input";
-  editInput.value = schedule.prompt_text;
-  editInput.rows = 2;
-
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "schedule-save";
-  saveBtn.textContent = "Save";
-  saveBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const newText = editInput.value.trim();
-    if (newText && newText !== schedule.prompt_text) {
-      browser.runtime.sendMessage({
-        type: RuntimeMessageType.ScheduleUpdate,
-        schedule_id: schedule.id,
-        prompt_text: newText,
-      });
-    }
-  });
-
-  detail.appendChild(editInput);
-  detail.appendChild(saveBtn);
-
-  row.appendChild(header);
-  row.appendChild(detail);
-
-  header.addEventListener("click", () => {
-    row.classList.toggle("expanded");
-  });
-
-  return row;
-}
-
-function createSkeletonRow(): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "schedule-row schedule-skeleton";
-
-  const header = document.createElement("div");
-  header.className = "schedule-header";
-
-  const timing = document.createElement("span");
-  timing.className = "skeleton-block skeleton-timing";
-
-  const prompt = document.createElement("span");
-  prompt.className = "skeleton-block skeleton-prompt";
-
-  header.appendChild(timing);
-  header.appendChild(prompt);
-  row.appendChild(header);
-  return row;
-}
-
-function setupSchedules(): void {
-  const input = document.getElementById("schedules-input") as HTMLInputElement;
-  const btn = document.getElementById("schedules-add-btn")!;
-
-  function add(): void {
-    const command = input.value.trim();
-    if (!command) return;
-    browser.runtime.sendMessage({ type: RuntimeMessageType.ScheduleAdd, command });
-    input.value = "";
-    setScheduleAddEnabled(false);
-    showToast(`Adding schedule: ${command}`);
-
-    const listEl = document.getElementById("schedules-list")!;
-    const empty = listEl.querySelector(".schedules-empty");
-    if (empty) empty.remove();
-    listEl.appendChild(createSkeletonRow());
-  }
-
-  btn.addEventListener("click", add);
-  input.addEventListener("keydown", (e: KeyboardEvent) => {
-    if (e.key === "Enter") add();
-  });
 }
 
 // ============================================================

@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from sqlmodel import Session
 
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
 from penny.channels.ios.channel import PUSH_GREETING_TITLE, TEST_PUSH_MESSAGE, IosChannel
@@ -27,7 +26,6 @@ from penny.constants import ChannelType
 from penny.database import Database
 from penny.database.memory import Inclusion, RecallMode
 from penny.database.migrate import migrate
-from penny.database.models import Schedule
 
 
 class FakeWs:
@@ -266,31 +264,6 @@ async def test_admin_prompt_logs_request_returns_unfiltered_runs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admin_schedules_request_returns_existing_schedules(tmp_path, monkeypatch):
-    db = _make_db(tmp_path)
-    monkeypatch.setattr(db.users, "get_primary_sender", lambda: "testuser")
-    channel = _make_channel(db)
-    with Session(db.engine) as session:
-        session.add(
-            Schedule(
-                user_id="testuser",
-                user_timezone="America/Vancouver",
-                cron_expression="0 9 * * *",
-                prompt_text="check the news",
-                timing_description="daily at 9",
-            )
-        )
-        session.commit()
-
-    response = await _ios_admin_request(channel, {"type": "schedules_request"})
-
-    assert response["type"] == "schedules_response"
-    assert response["error"] is None
-    assert response["schedules"][0]["prompt_text"] == "check the news"
-    assert response["schedules"][0]["cron_expression"] == "0 9 * * *"
-
-
-@pytest.mark.asyncio
 async def test_admin_memories_request_returns_memory_records(tmp_path):
     db = _make_db(tmp_path)
     channel = _make_channel(db)
@@ -520,7 +493,7 @@ async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
     message_id = db.messages.log_message(
         "outgoing",
         "penny",
-        "scheduled historical message",
+        "historical push message",
         recipient="ios-keychain-id",
         device_id=device.id,
     )
@@ -528,13 +501,13 @@ async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
     db.ios.enqueue_outbox(
         message_log_id=message_id,
         device_id=device.id,
-        content="scheduled historical message",
+        content="historical push message",
         attachments=["data:image/png;base64,aGVsbG8="],
-        source_type="schedule",
-        source_name="schedule",
-        source_hint="Schedule",
+        source_type="startup",
+        source_name="startup",
+        source_hint="Startup",
         push_title="Hi from Penny",
-        push_summary="scheduled historical message",
+        push_summary="historical push message",
     )
 
     await channel._handle_history(
@@ -546,10 +519,10 @@ async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
     record = next(
         message
         for message in ws.sent[-1]["messages"]
-        if message["content"] == "scheduled historical message"
+        if message["content"] == "historical push message"
     )
-    assert record["source_hint"] == "Schedule"
-    assert record["source_name"] == "schedule"
+    assert record["source_hint"] == "Startup"
+    assert record["source_name"] == "startup"
     assert record["outbox_id"] is not None
     assert record["attachments"] == ["data:image/png;base64,aGVsbG8="]
 

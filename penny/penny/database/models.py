@@ -112,18 +112,6 @@ class RuntimeConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-class Schedule(SQLModel, table=True):
-    """User-created scheduled background tasks."""
-
-    id: int | None = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True)  # Signal number or Discord user ID
-    user_timezone: str = Field(default="UTC")  # IANA timezone (e.g., "America/Los_Angeles")
-    cron_expression: str  # Cron format for recurring execution
-    prompt_text: str  # Prompt to execute when schedule fires
-    timing_description: str  # Original human description for display (e.g., "daily 9am")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
 class MuteState(SQLModel, table=True):
     """Per-user mute state for notifications.
 
@@ -295,6 +283,14 @@ class MemoryRow(SQLModel, table=True):
     source_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
     created_by_run_id: str | None = Field(default=None)
     expires_at: datetime | None = Field(default=None)
+    # Once-shaped trigger (#1556, store-level only — no model-facing create args
+    # yet; #1562 exposes them).  ``run_at``: the collector runs only at/after this
+    # UTC time (a delayed / one-shot start), NULL for an ordinary recurring
+    # cadence.  ``max_runs``: after this many completed (non-cancelled) cycles the
+    # scheduler archives the collection via a system-actor mutation, so a one-shot
+    # reminder (``run_at`` + ``max_runs=1``) retires itself.  NULL = unlimited.
+    run_at: datetime | None = Field(default=None)
+    max_runs: int | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(

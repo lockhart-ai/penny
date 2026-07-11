@@ -126,8 +126,8 @@ def _is_collector_prompt(messages: list[dict]) -> bool:
 
     Only collector prompts carry the ``## Runtime rules`` + ``You are the collector``
     markers the placement experiment splits on.  Any other prompt (a chat turn, a
-    schedule task) is replayed verbatim instead — the loop's core move (read a row by
-    id, replay it N times) works for every prompt; the system/user split does not.
+    startup announcement) is replayed verbatim instead — the loop's core move (read a
+    row by id, replay it N times) works for every prompt; the system/user split does not.
     """
     system = next((message for message in messages if message["role"] == "system"), None)
     return (

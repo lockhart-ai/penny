@@ -10,7 +10,7 @@ model and asserts every call the model made is reflected, plus the honesty branc
 happen).
 
 This SUPERSEDES the per-tool ``*_recap`` survival evals (email/image/memory-reads/
-notifications/schedule/preference): those each re-proved the one tool-agnostic
+notifications/preference): those each re-proved the one tool-agnostic
 survival mechanism for a single tool in a single-action turn.  The narration
 STRINGS are covered deterministically by unit tests (``tests/tools/``); the
 survival mechanism is covered holistically here.

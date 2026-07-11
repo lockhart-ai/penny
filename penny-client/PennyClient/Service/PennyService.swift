@@ -34,8 +34,6 @@ final class PennyService {
     var isTyping = false
     var lastError: String?
     var runtimeConfigParams: [RuntimeConfigParam] = []
-    var schedules: [ScheduleItem] = []
-    var schedulesError: String?
     var promptLogRuns: [PromptLogRun] = []
     var promptLogsHasMore = false
     var memories: [MemoryRecord] = []
@@ -307,22 +305,6 @@ extension PennyService {
         send(.configUpdate(key: key, value: value))
     }
 
-    func requestSchedules() {
-        send(.schedulesRequest)
-    }
-
-    func addSchedule(command: String) {
-        send(.scheduleAdd(command: command))
-    }
-
-    func updateSchedule(scheduleID: Int, promptText: String) {
-        send(.scheduleUpdate(scheduleID: scheduleID, promptText: promptText))
-    }
-
-    func deleteSchedule(scheduleID: Int) {
-        send(.scheduleDelete(scheduleID: scheduleID))
-    }
-
     func requestPromptLogs(
         agentName: String? = nil,
         offset: Int? = nil,
@@ -580,9 +562,6 @@ extension PennyService {
             isTyping = payload.active
         case .configResponse(let payload):
             runtimeConfigParams = payload.params
-        case .schedulesResponse(let payload):
-            schedules = payload.schedules
-            schedulesError = payload.error
         case .promptLogsResponse(let payload):
             if payload.runs.isEmpty || promptLogRuns.isEmpty {
                 promptLogRuns = payload.runs

@@ -576,8 +576,6 @@ struct MessageModel: Codable, Identifiable, Hashable {
             return table()
         case .penny:
             return table().filter(sourceHintExp == "Penny" || sourceHintExp == "Startup" || sourceHintExp == "Test Push")
-        case .schedule:
-            return table().filter(sourceHintExp == "Schedule")
         case .chat:
             return table().filter(isOutgoingExp || sourceHintExp == "Chat")
         case .notifier:

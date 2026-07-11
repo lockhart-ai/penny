@@ -18,25 +18,6 @@ struct PennyServiceAdminSurfaceTests {
         #expect(payloads[1]["value"] == .string("0.2"))
     }
 
-    @Test func scheduleRequestsEncodeExpectedFrames() async throws {
-        let (service, transport) = makeSubject()
-
-        service.requestSchedules()
-        service.addSchedule(command: "summarize unread mail")
-        service.updateSchedule(scheduleID: 42, promptText: "new prompt")
-        service.deleteSchedule(scheduleID: 42)
-
-        let payloads = await sentPayloads(transport, count: 4)
-        #expect(payloads[0]["type"] == .string("schedules_request"))
-        #expect(payloads[1]["type"] == .string("schedule_add"))
-        #expect(payloads[1]["command"] == .string("summarize unread mail"))
-        #expect(payloads[2]["type"] == .string("schedule_update"))
-        #expect(payloads[2]["schedule_id"] == .number(42))
-        #expect(payloads[2]["prompt_text"] == .string("new prompt"))
-        #expect(payloads[3]["type"] == .string("schedule_delete"))
-        #expect(payloads[3]["schedule_id"] == .number(42))
-    }
-
     @Test func promptLogRequestEncodesFilters() async throws {
         let (service, transport) = makeSubject()
 
@@ -129,7 +110,7 @@ struct PennyServiceAdminSurfaceTests {
         #expect(payloads[2]["allowed"] == .bool(false))
     }
 
-    @Test func appliesConfigScheduleAndDomainResponses() async throws {
+    @Test func appliesConfigAndDomainResponses() async throws {
         let (service, transport) = makeSubject()
         await connectAndClearStartupFrames(service, transport)
 
@@ -148,18 +129,6 @@ struct PennyServiceAdminSurfaceTests {
         """)
         transport.emit("""
         {
-          "type": "schedules_response",
-          "error": null,
-          "schedules": [{
-            "id": 9,
-            "timing_description": "every hour",
-            "prompt_text": "summarize",
-            "cron_expression": "0 * * * *"
-          }]
-        }
-        """)
-        transport.emit("""
-        {
           "type": "domain_permissions_sync",
           "permissions": [{
             "domain": "example.com",
@@ -170,9 +139,6 @@ struct PennyServiceAdminSurfaceTests {
 
         #expect(service.runtimeConfigParams.first?.key == "LLM_TEMPERATURE")
         #expect(service.runtimeConfigParams.first?.defaultValue == "0.7")
-        #expect(service.schedules.first?.id == 9)
-        #expect(service.schedules.first?.promptText == "summarize")
-        #expect(service.schedulesError == nil)
         #expect(service.domainPermissions.first?.domain == "example.com")
         #expect(service.domainPermissions.first?.permission == .blocked)
         service.disconnect()

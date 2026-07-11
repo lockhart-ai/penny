@@ -3,61 +3,6 @@ import Observation
 
 @MainActor
 @Observable
-final class SchedulesViewModel {
-    let client: PennyWebSocketClient
-    var draftCommand = ""
-    var editedPromptText: [Int: String] = [:]
-
-    init(client: PennyWebSocketClient) {
-        self.client = client
-    }
-
-    var schedules: [ScheduleItem] {
-        client.schedules
-    }
-
-    var errorText: String? {
-        client.schedulesError
-    }
-
-    var canAddSchedule: Bool {
-        !draftCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    func refresh() {
-        client.requestSchedules()
-    }
-
-    func addSchedule() {
-        let command = draftCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !command.isEmpty else { return }
-        draftCommand = ""
-        client.addSchedule(command: command)
-    }
-
-    func promptText(for schedule: ScheduleItem) -> String {
-        editedPromptText[schedule.id] ?? schedule.promptText
-    }
-
-    func setPromptText(_ promptText: String, for schedule: ScheduleItem) {
-        editedPromptText[schedule.id] = promptText
-    }
-
-    func save(schedule: ScheduleItem) {
-        let promptText = promptText(for: schedule).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !promptText.isEmpty else { return }
-        editedPromptText[schedule.id] = promptText
-        client.updateSchedule(scheduleID: schedule.id, promptText: promptText)
-    }
-
-    func delete(schedule: ScheduleItem) {
-        editedPromptText[schedule.id] = nil
-        client.deleteSchedule(scheduleID: schedule.id)
-    }
-}
-
-@MainActor
-@Observable
 final class InsightsViewModel {
     let client: PennyWebSocketClient
     var selectedAgentName = ""

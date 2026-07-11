@@ -70,7 +70,6 @@ enum HistorySyncEvent {
 enum MessagePageFilter: Equatable, Sendable {
     case all
     case penny
-    case schedule
     case chat
     case notifier
     case collector
@@ -83,8 +82,6 @@ enum MessagePageFilter: Equatable, Sendable {
             return "all"
         case .penny:
             return "penny"
-        case .schedule:
-            return "schedule"
         case .chat:
             return "chat"
         case .notifier:
@@ -100,8 +97,6 @@ enum MessagePageFilter: Equatable, Sendable {
             return true
         case .penny:
             return ["Penny", "Startup", "Test Push"].contains(message.sourceHint)
-        case .schedule:
-            return message.sourceHint == "Schedule"
         case .chat:
             return message.isOutgoing || message.sourceHint == "Chat"
         case .notifier:

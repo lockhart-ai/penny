@@ -716,6 +716,27 @@ class MessageStore:
             ).all()
         return [(timestamp, reason) for timestamp, reason in rows if reason]
 
+    def count_completed_runs(self, run_target: str) -> int:
+        """How many completed (non-cancelled) cycles this collector has run.
+
+        Each run stamps ``run_outcome`` on exactly one prompt row, so the
+        completion rows ARE the run count — one row per run.  Cancelled runs
+        (preempted by a foreground message, not a real cycle) are excluded, so a
+        preemption never burns a ``max_runs`` allotment.  Read from the ledger,
+        never re-decided by the model — the once-shaped trigger's retire gate
+        (#1556).
+        """
+        with self._session() as session:
+            return session.exec(
+                select(func.count())
+                .select_from(PromptLog)
+                .where(
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_target == run_target,
+                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                )
+            ).one()
+
     def target_run_records(self, run_target: str, limit: int) -> list[MemoryEntry]:
         """One collector's recent runs as rendered RECORDS (newest first) — the
         same ``render_run_record`` representation the model reads from

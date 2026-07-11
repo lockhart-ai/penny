@@ -38,10 +38,6 @@ export type WsOutgoingType =
   | "domain_update"
   | "domain_delete"
   | "permission_decision"
-  | "schedules_request"
-  | "schedule_add"
-  | "schedule_update"
-  | "schedule_delete"
   | "prompt_logs_request"
   | "memories_request"
   | "memory_detail_request"
@@ -66,10 +62,6 @@ export const WsOutgoingType = {
   DomainUpdate: "domain_update",
   DomainDelete: "domain_delete",
   PermissionDecision: "permission_decision",
-  SchedulesRequest: "schedules_request",
-  ScheduleAdd: "schedule_add",
-  ScheduleUpdate: "schedule_update",
-  ScheduleDelete: "schedule_delete",
   PromptLogsRequest: "prompt_logs_request",
   MemoriesRequest: "memories_request",
   MemoryDetailRequest: "memory_detail_request",
@@ -108,35 +100,11 @@ export interface WsOutgoingCapabilitiesUpdate {
   tool_use_enabled: boolean;
 }
 
-export interface WsOutgoingSchedulesRequest {
-  type: typeof WsOutgoingType.SchedulesRequest;
-}
-
-export interface WsOutgoingScheduleAdd {
-  type: typeof WsOutgoingType.ScheduleAdd;
-  command: string;
-}
-
-export interface WsOutgoingScheduleUpdate {
-  type: typeof WsOutgoingType.ScheduleUpdate;
-  schedule_id: number;
-  prompt_text: string;
-}
-
-export interface WsOutgoingScheduleDelete {
-  type: typeof WsOutgoingType.ScheduleDelete;
-  schedule_id: number;
-}
-
 export type WsOutgoing =
   | WsOutgoingMessage
   | WsOutgoingToolResponse
   | WsOutgoingHeartbeat
-  | WsOutgoingCapabilitiesUpdate
-  | WsOutgoingSchedulesRequest
-  | WsOutgoingScheduleAdd
-  | WsOutgoingScheduleUpdate
-  | WsOutgoingScheduleDelete;
+  | WsOutgoingCapabilitiesUpdate;
 
 // --- WebSocket: incoming (server → browser) ---
 
@@ -149,7 +117,6 @@ export type WsIncomingType =
   | "domain_permissions_sync"
   | "permission_prompt"
   | "permission_dismiss"
-  | "schedules_response"
   | "prompt_logs_response"
   | "prompt_log_update"
   | "run_outcome_update"
@@ -167,7 +134,6 @@ export const WsIncomingType = {
   DomainPermissionsSync: "domain_permissions_sync",
   PermissionPrompt: "permission_prompt",
   PermissionDismiss: "permission_dismiss",
-  SchedulesResponse: "schedules_response",
   PromptLogsResponse: "prompt_logs_response",
   PromptLogUpdate: "prompt_log_update",
   RunOutcomeUpdate: "run_outcome_update",
@@ -237,19 +203,6 @@ export interface WsIncomingPermissionDismissPayload {
   request_id: string;
 }
 
-export interface ScheduleItem {
-  id: number;
-  timing_description: string;
-  prompt_text: string;
-  cron_expression: string;
-}
-
-export interface WsIncomingSchedulesPayload {
-  type: typeof WsIncomingType.SchedulesResponse;
-  schedules: ScheduleItem[];
-  error: string | null;
-}
-
 export interface PromptLogEntry {
   id: number;
   timestamp: string;
@@ -259,7 +212,7 @@ export interface PromptLogEntry {
   duration_ms: number;
   input_tokens: number;
   output_tokens: number;
-  // The bound collection (collector cycles) / null (chat, schedule), stamped at
+  // The bound collection (collector cycles) / null (chat), stamped at
   // write time so a live run is labelled from its first prompt.
   run_target: string | null;
   messages: Record<string, unknown>[];
@@ -414,7 +367,6 @@ export type WsIncomingPayload =
   | WsIncomingDomainPermissionsPayload
   | WsIncomingPermissionPromptPayload
   | WsIncomingPermissionDismissPayload
-  | WsIncomingSchedulesPayload
   | WsIncomingPromptLogsPayload
   | WsIncomingPromptLogUpdatePayload
   | WsIncomingRunOutcomePayload
@@ -443,11 +395,6 @@ export type RuntimeMessageType =
   | "domain_update"
   | "domain_delete"
   | "domain_permissions_sync"
-  | "schedules_request"
-  | "schedules_response"
-  | "schedule_add"
-  | "schedule_update"
-  | "schedule_delete"
   | "prompt_logs_request"
   | "prompt_logs_response"
   | "prompt_log_update"
@@ -487,11 +434,6 @@ export const RuntimeMessageType = {
   DomainUpdate: "domain_update",
   DomainDelete: "domain_delete",
   DomainPermissionsSync: "domain_permissions_sync",
-  SchedulesRequest: "schedules_request",
-  SchedulesResponse: "schedules_response",
-  ScheduleAdd: "schedule_add",
-  ScheduleUpdate: "schedule_update",
-  ScheduleDelete: "schedule_delete",
   PromptLogsRequest: "prompt_logs_request",
   PromptLogsResponse: "prompt_logs_response",
   PromptLogUpdate: "prompt_log_update",
@@ -618,37 +560,6 @@ export interface RuntimeDomainDelete {
 export interface RuntimeDomainPermissionsSync {
   type: typeof RuntimeMessageType.DomainPermissionsSync;
   permissions: DomainPermissionEntry[];
-}
-
-/** Sidebar → background: request all schedules */
-export interface RuntimeSchedulesRequest {
-  type: typeof RuntimeMessageType.SchedulesRequest;
-}
-
-/** Background → sidebar: schedules list */
-export interface RuntimeSchedulesResponse {
-  type: typeof RuntimeMessageType.SchedulesResponse;
-  schedules: ScheduleItem[];
-  error: string | null;
-}
-
-/** Sidebar → background: add a new schedule */
-export interface RuntimeScheduleAdd {
-  type: typeof RuntimeMessageType.ScheduleAdd;
-  command: string;
-}
-
-/** Sidebar → background: update a schedule's prompt text */
-export interface RuntimeScheduleUpdate {
-  type: typeof RuntimeMessageType.ScheduleUpdate;
-  schedule_id: number;
-  prompt_text: string;
-}
-
-/** Sidebar → background: delete a schedule */
-export interface RuntimeScheduleDelete {
-  type: typeof RuntimeMessageType.ScheduleDelete;
-  schedule_id: number;
 }
 
 /** Prompts page → background: request prompt logs */
@@ -851,11 +762,6 @@ export type RuntimeMessage =
   | RuntimeDomainUpdate
   | RuntimeDomainDelete
   | RuntimeDomainPermissionsSync
-  | RuntimeSchedulesRequest
-  | RuntimeSchedulesResponse
-  | RuntimeScheduleAdd
-  | RuntimeScheduleUpdate
-  | RuntimeScheduleDelete
   | RuntimePromptLogsRequest
   | RuntimePromptLogsResponse
   | RuntimePromptLogUpdate

@@ -72,5 +72,5 @@ class Database:
         logger.info("Database tables created")
 
     def get_session(self) -> Session:
-        """Get a database session (for direct use by schedule/config modules)."""
+        """Get a database session (for direct use by config modules)."""
         return Session(self.engine)

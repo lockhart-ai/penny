@@ -29,7 +29,7 @@ class ChannelManager(MessageChannel):
 
     Outgoing (proactive): send_message(recipient) looks up the device table,
     resolves the channel type, and delegates to the correct concrete channel.
-    This is what NotifyAgent, ScheduleExecutor, and startup announcements use.
+    This is what the collector's autonomous sends and startup announcements use.
     """
 
     def __init__(

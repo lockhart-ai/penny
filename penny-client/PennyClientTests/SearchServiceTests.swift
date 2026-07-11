@@ -66,8 +66,8 @@ struct SearchServiceTests {
             id: 2,
             serverID: 2,
             createdAt: Date(timeIntervalSince1970: 2),
-            content: "Coffee schedule note",
-            sourceHint: "Schedule",
+            content: "Coffee notifier note",
+            sourceHint: "Notifier",
             imageAttachmentDataURLs: [],
             isOutgoing: false,
             embedding: floatData([1, 0])
@@ -79,12 +79,12 @@ struct SearchServiceTests {
             requestEmbedding: recorder.request
         )
 
-        let search = Task { await service.search("coffee", filter: .schedule) }
+        let search = Task { await service.search("coffee", filter: .notifier) }
         await waitFor { recorder.requests == ["coffee"] }
         recorder.resumeRequest(at: 0, with: floatData([1, 0]))
         await search.value
 
-        #expect(service.results.map(\.message.content) == ["Coffee schedule note"])
+        #expect(service.results.map(\.message.content) == ["Coffee notifier note"])
         #expect(service.hasSearched)
     }
 

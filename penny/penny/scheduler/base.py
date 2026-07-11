@@ -15,8 +15,8 @@ class ScheduledTask(Protocol):
     """A unit the scheduler can run.
 
     Structural: anything with a ``name`` (for logging/status) and an async
-    ``execute()`` returning whether it did work this tick.  Background agents
-    (Collector, ScheduleExecutor) satisfy it, and so does the deterministic
+    ``execute()`` returning whether it did work this tick.  The background
+    ``Collector`` satisfies it, and so does the deterministic
     ``SendQueueDrainer`` — which is not an LLM agent.
     """
 

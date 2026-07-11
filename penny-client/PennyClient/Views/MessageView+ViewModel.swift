@@ -28,7 +28,6 @@ extension MessageView {
     enum MessageFilter: String, CaseIterable, Identifiable, Sendable {
         case all
         case penny
-        case schedule
         case chat
         case notifier
         case collector
@@ -41,8 +40,6 @@ extension MessageView {
                 return "All Messages"
             case .penny:
                 return "Penny"
-            case .schedule:
-                return "Schedule"
             case .chat:
                 return "Chat"
             case .notifier:
@@ -58,8 +55,6 @@ extension MessageView {
                 return "tray.full"
             case .penny:
                 return "sparkles"
-            case .schedule:
-                return "calendar"
             case .chat:
                 return "bubble.left.and.bubble.right"
             case .notifier:
@@ -75,8 +70,6 @@ extension MessageView {
                 return .all
             case .penny:
                 return .penny
-            case .schedule:
-                return .schedule
             case .chat:
                 return .chat
             case .notifier:

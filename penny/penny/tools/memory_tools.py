@@ -2254,14 +2254,21 @@ def _collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[st
     Discovered from the *real* assembly (``build_memory_tools`` + browse + done +
     send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so
     it can never drift from what a collector actually runs — add a collector tool and
-    it's covered for free.  ``BrowseTool`` / ``SendMessageTool`` are imported lazily:
-    ``send_message`` imports ``DoneTool`` from this module, so a top-level import here
-    would close that cycle.
+    it's covered for free.  ``include_lifecycle=False`` mirrors the collector's masked
+    surface (#1556): the registry-shape tools are absent from a cadence run, so an
+    ``extraction_prompt`` that names ``collection_create`` / ``collection_update`` /
+    archive / merge is rejected at authoring time rather than persisted into a prompt
+    the collector could never run.  ``BrowseTool`` / ``SendMessageTool`` are imported
+    lazily: ``send_message`` imports ``DoneTool`` from this module, so a top-level
+    import here would close that cycle.
     """
     from penny.tools.browse import BrowseTool
     from penny.tools.send_message import SendMessageTool
 
-    memory_names = {tool.name for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT)}
+    memory_names = {
+        tool.name
+        for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
+    }
     return frozenset(memory_names | {BrowseTool.name, DoneTool.name, SendMessageTool.name})
 
 
@@ -2287,12 +2294,14 @@ def build_memory_tools(
     agent_name: str,
     scope: str | None = None,
     created_by_run_id: str | None = None,
+    include_lifecycle: bool = True,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
-    **One uniform surface for every agent** — reads + lifecycle (shape)
-    + entry mutations (contents).  Capability is no longer curated by
-    omission; instead every tool funnels its resolve + op through one ``try``:
+    **Reads + entry mutations for every agent; lifecycle (registry-shape) tools
+    only when ``include_lifecycle`` is set.**  Capability within a tier is not
+    curated by omission; instead every tool funnels its resolve + op through one
+    ``try``:
     ``_resolve(db, name)`` (missing → ``MemoryNotFoundError``) and the method on
     the returned ``Memory`` object (wrong shape → ``WrongShapeError``; read-only
     facade → ``ReadOnlyMemoryError``).  All three share the ``MemoryAccessError``
@@ -2325,6 +2334,16 @@ def build_memory_tools(
     ambient state.  ``None`` for a collector / non-chat creator, which leaves the
     column NULL.  (The spawning ``source_message_id`` is linked afterward by the
     channel, since the message id isn't known until the run returns.)
+
+    ``include_lifecycle`` gates the registry-shape tier — ``collection_create`` /
+    ``collection_update`` / ``collection_merge`` / ``collection_archive`` /
+    ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
+    evolves collections through them); a cadence-fired collector run passes
+    ``False`` (#1556), so those tools are structurally ABSENT from its surface — a
+    background poll cannot create, reconfigure, merge, or archive mechanisms, no
+    matter what its extraction_prompt says.  The declaration lives on the agent
+    (``Agent._include_lifecycle_tools``, overridden by ``Collector``), not as a
+    branch here.
     """
     reads: list[Tool] = [
         CollectionReadLatestTool(db),
@@ -2354,4 +2373,4 @@ def build_memory_tools(
         CollectionDeleteEntryTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name),
     ]
-    return reads + lifecycle + mutations
+    return reads + (lifecycle if include_lifecycle else []) + mutations

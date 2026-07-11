@@ -8,8 +8,8 @@ STRUCTURALLY on the persisted tool sequence + DB state, never on wording.
 
 Scope is entry- and browse-level actions the user dictates in the moment —
 searching/reading, reading collection entries, writing/updating/deleting entries.
-It deliberately excludes standing-up machinery (creating collections, schedules,
-skills, or extraction prompts); those are a downstream concern.
+It deliberately excludes standing-up machinery (creating collections, skills, or
+extraction prompts); those are a downstream concern.
 
 The representative ``search → read → store`` case is driven first; the rest fan
 out from it.  Synthetic topics only (the repo is public): the looked-up subject
@@ -293,7 +293,7 @@ def _score_no_fire_reads(db: Database, before: set[str], reply: str) -> list[str
 
 # ── Cases ─────────────────────────────────────────────────────────────────────
 # Sequence cases gate at 0.6 (majority-dispatch), no-fire at 0.75 — the project's
-# NL-dispatch convention (see test_schedule_dispatch).  The bar is deliberately
+# NL-dispatch convention (see test_command_tools).  The bar is deliberately
 # NOT tighter: across runs the sub-perfect samples are dominated by the known
 # gpt-oss degeneracy collapse (a run whose tool name/args collapse into "...?"),
 # a transient pathology the reroll guard mostly but not always catches — NOT a

@@ -23,25 +23,6 @@ struct ConfigResponsePayload: Decodable {
     let params: [RuntimeConfigParam]
 }
 
-struct ScheduleItem: Decodable, Identifiable {
-    let id: Int
-    let timingDescription: String
-    let promptText: String
-    let cronExpression: String
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case timingDescription = "timing_description"
-        case promptText = "prompt_text"
-        case cronExpression = "cron_expression"
-    }
-}
-
-struct SchedulesResponsePayload: Decodable {
-    let schedules: [ScheduleItem]
-    let error: String?
-}
-
 enum RunOutcome: String, Codable {
     case failed
     case noWork = "no_work"

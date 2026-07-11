@@ -138,6 +138,8 @@ class MemoryStore:
         published: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
+        run_at: datetime | None = None,
+        max_runs: int | None = None,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -153,6 +155,8 @@ class MemoryStore:
             published=published,
             created_by_run_id=created_by_run_id,
             expires_at=expires_at,
+            run_at=run_at,
+            max_runs=max_runs,
         )
 
     def create_log(
@@ -191,6 +195,8 @@ class MemoryStore:
         published: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
+        run_at: datetime | None = None,
+        max_runs: int | None = None,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -216,6 +222,10 @@ class MemoryStore:
                 # message is linked post-run via ``link_source_message``.
                 created_by_run_id=created_by_run_id,
                 expires_at=expires_at,
+                # Once-shaped trigger (#1556): delayed/one-shot start + run quota.
+                # Store-level only — no model-facing create args yet (#1562).
+                run_at=run_at,
+                max_runs=max_runs,
                 created_at=datetime.now(UTC),
             )
             session.add(memory)

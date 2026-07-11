@@ -149,11 +149,11 @@ struct DatabaseServiceTests {
         let database = DatabaseService()
         database.setupForTesting()
         database.save(message: makeMessage(id: 1, content: "Penny", sourceHint: "Penny", embedding: floatData([1, 0])))
-        database.save(message: makeMessage(id: 2, content: "Schedule", sourceHint: "Schedule", embedding: floatData([0, 1])))
-        database.save(message: makeMessage(id: 3, content: "Unembedded", sourceHint: "Schedule"))
+        database.save(message: makeMessage(id: 2, content: "Notifier", sourceHint: "Notifier", embedding: floatData([0, 1])))
+        database.save(message: makeMessage(id: 3, content: "Unembedded", sourceHint: "Notifier"))
 
         #expect(database.loadEmbeddedMessages(filter: .all).map(\.id) == [1, 2])
-        #expect(database.loadEmbeddedMessages(filter: .schedule).map(\.id) == [2])
+        #expect(database.loadEmbeddedMessages(filter: .notifier).map(\.id) == [2])
     }
 
     @Test func messagePagesApplySourceFilters() {
@@ -161,7 +161,6 @@ struct DatabaseServiceTests {
         database.setupForTesting()
         database.save(message: makeMessage(id: 1, content: "Penny", sourceHint: "Penny"))
         database.save(message: makeMessage(id: 2, content: "Startup", sourceHint: "Startup"))
-        database.save(message: makeMessage(id: 3, content: "Schedule", sourceHint: "Schedule"))
         database.save(message: makeMessage(id: 4, content: "Chat", sourceHint: "Chat"))
         database.save(message: makeMessage(id: 5, content: "Test Push", sourceHint: "Test Push"))
         database.save(message: makeMessage(id: 6, content: "Notifier", sourceHint: "Notifier"))
@@ -169,7 +168,6 @@ struct DatabaseServiceTests {
         database.save(message: makeMessage(id: 8, serverID: nil, content: "Outgoing", isOutgoing: true))
 
         #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .penny)).messages.map(\.id) == [1, 2, 5])
-        #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .schedule)).messages.map(\.id) == [3])
         #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .chat)).messages.map(\.id) == [4, 8])
         #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .notifier)).messages.map(\.id) == [6])
         #expect(database.loadMessagePage(MessagePageRequest(limit: 20, filter: .collector)).messages.map(\.id) == [7])

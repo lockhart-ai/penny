@@ -200,6 +200,12 @@ class Collector(BackgroundAgent):
                     outcome, summary = self._cycle_result(response)
                     self._tag_promptlog_run(run_id, outcome, summary, self._tool_failures(response))
                     self._apply_throttle(collection, outcome)
+                    # Once-shaped trigger: retire the collection after it has run
+                    # its allotted number of times (a one-shot reminder archives
+                    # itself).  Runs after the outcome is tagged so this cycle is
+                    # counted; a cancelled cycle never reaches here, so it doesn't
+                    # burn a run.
+                    self._archive_if_run_limit_reached(collection)
                 self._current_target = None
         _, summary = self._extract_done_args(response)
         tool_trace = self._format_tool_trace(response)
@@ -312,6 +318,32 @@ class Collector(BackgroundAgent):
                 interval = current
         if interval != current or idle != collection.consecutive_idle_runs:
             self.db.memories.set_cadence(collection.name, interval, idle)
+
+    def _archive_if_run_limit_reached(self, collection: MemoryRow) -> None:
+        """Archive a ``max_runs``-bounded collection once it has run its quota.
+
+        The once-shaped trigger (#1556): after ``max_runs`` completed (non-
+        cancelled) cycles the collection has done its job — a one-shot reminder
+        (``run_at`` + ``max_runs=1``) retires itself, and any bounded collection
+        stops re-firing.  Archival (not deletion) via the ordinary archive path
+        keeps the row as a visible tombstone in the archived-inclusive catalog
+        (#1566); the actor is the scheduler, not the user.  ``None`` = unlimited,
+        the ordinary recurring case.  The run count is read from the ledger
+        (completed ``promptlog`` runs for this target), never re-decided by the
+        model.
+        """
+        if collection.max_runs is None:
+            return
+        completed = self.db.messages.count_completed_runs(collection.name)
+        if completed < collection.max_runs:
+            return
+        logger.info(
+            "Archiving '%s': reached its run limit (%d of %d completed runs)",
+            collection.name,
+            completed,
+            collection.max_runs,
+        )
+        self.db.memories.archive(collection.name)
 
     # ── Per-cycle audit (on the promptlog run itself) ─────────────────────
 
@@ -435,6 +467,17 @@ class Collector(BackgroundAgent):
         """Pin entry mutations to the bound target collection."""
         return self._require_target().name
 
+    def _include_lifecycle_tools(self) -> bool:
+        """A cadence-fired collector run never reshapes the registry (#1556).
+
+        Overrides the ``Agent`` default: the create / update / merge / archive /
+        unarchive / log_create tier is absent from a collector's surface, so a
+        background poll cannot create, reconfigure, merge, or archive a mechanism
+        — the mid-poll config mutation and create-instead-of-delete slips are
+        structurally impossible, not just discouraged.
+        """
+        return False
+
     def _require_target(self) -> MemoryRow:
         if self._current_target is None:
             raise RuntimeError(
@@ -470,6 +513,12 @@ class Collector(BackgroundAgent):
                 "set a cadence via collection_update to enable collection",
                 memory.name,
             )
+            return False
+        # Once-shaped trigger (#1556): a collection with a ``run_at`` doesn't fire
+        # until that UTC time — a delayed / one-shot start.  NULL for the ordinary
+        # recurring cadence.  ``max_runs`` retires it after firing (handled in the
+        # cycle-completion path), so the interval never re-triggers a one-shot.
+        if memory.run_at is not None and now < _aware(memory.run_at):
             return False
         if memory.last_collected_at is not None:
             elapsed = (now - _aware(memory.last_collected_at)).total_seconds()

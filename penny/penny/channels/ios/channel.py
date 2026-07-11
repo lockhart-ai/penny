@@ -9,13 +9,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import httpx
 import websockets
 from pydantic import BaseModel, ValidationError
-from sqlmodel import Session, select
+from sqlmodel import Session
 from websockets.asyncio.server import Server, ServerConnection
 
 from penny.channels.base import IncomingMessage, MessageChannel
@@ -38,13 +38,8 @@ from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_MEMORY_UPDATE,
     BROWSER_MSG_TYPE_PERMISSION_DECISION,
     BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST,
-    BROWSER_MSG_TYPE_SCHEDULE_ADD,
-    BROWSER_MSG_TYPE_SCHEDULE_DELETE,
-    BROWSER_MSG_TYPE_SCHEDULE_UPDATE,
-    BROWSER_MSG_TYPE_SCHEDULES_REQUEST,
     BROWSER_RESP_TYPE_CONFIG,
     BROWSER_RESP_TYPE_PROMPT_LOGS,
-    BROWSER_RESP_TYPE_SCHEDULES,
     MEMORY_SECTION_COLLECTOR_RUNS,
     BrowserCollectionTrigger,
     BrowserCollectionTriggerResult,
@@ -69,14 +64,10 @@ from penny.channels.browser.models import (
     BrowserPermissionDecision,
     BrowserPermissionDismiss,
     BrowserPermissionPrompt,
-    BrowserScheduleAdd,
-    BrowserScheduleDelete,
-    BrowserScheduleUpdate,
     CursorRecord,
     DomainPermissionRecord,
     MemoryEntryRecord,
     MemoryRecord,
-    ScheduleRecord,
 )
 from penny.channels.ios.apns import ApnsClient, ApnsError
 from penny.channels.ios.models import (
@@ -113,11 +104,8 @@ from penny.database.memory import (
     MemoryTypeError,
     RecallMode,
 )
-from penny.database.models import RuntimeConfig, Schedule, UserInfo
-from penny.datetime_utils import current_datetime_line
+from penny.database.models import RuntimeConfig
 from penny.llm.embeddings import serialize_embedding
-from penny.prompts import Prompt
-from penny.tools.schedule_tools import ScheduleParseResult
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -135,7 +123,6 @@ PUSH_GREETING_TITLE = "Hi from Penny"
 # for iOS push attribution.  ``chat``/``notifier`` reuse their canonical homes on
 # ``PennyConstants``; these are the ones with no home elsewhere.
 SOURCE_NAME_STARTUP = "startup"
-SOURCE_NAME_SCHEDULE = "schedule"
 SOURCE_NAME_TEST_PUSH = "test_push"
 
 # ``source_type`` values stamped on an outbox row and the APNs payload.
@@ -289,14 +276,6 @@ class IosChannel(MessageChannel):
             await self._handle_config_request(ws)
         elif msg_type == BROWSER_MSG_TYPE_CONFIG_UPDATE:
             await self._handle_config_update(ws, data)
-        elif msg_type == BROWSER_MSG_TYPE_SCHEDULES_REQUEST:
-            await self._handle_schedules_request(ws)
-        elif msg_type == BROWSER_MSG_TYPE_SCHEDULE_ADD:
-            await self._handle_schedule_add(ws, data)
-        elif msg_type == BROWSER_MSG_TYPE_SCHEDULE_UPDATE:
-            await self._handle_schedule_update(ws, data)
-        elif msg_type == BROWSER_MSG_TYPE_SCHEDULE_DELETE:
-            await self._handle_schedule_delete(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST:
             await self._handle_prompt_logs_request(ws, data)
         elif msg_type == BROWSER_MSG_TYPE_MEMORIES_REQUEST:
@@ -438,119 +417,6 @@ class IosChannel(MessageChannel):
             session.commit()
         logger.info("Config updated via iOS: %s = %s", req.key, validated)
         await self._handle_config_request(ws)
-
-    async def _handle_schedules_request(self, ws: ServerConnection) -> None:
-        """Query all schedules for the primary user and send them."""
-        await self._send_schedules(ws)
-
-    async def _handle_schedule_add(self, ws: ServerConnection, data: dict) -> None:
-        """Parse a natural language schedule command and create it."""
-        try:
-            req = BrowserScheduleAdd(**data)
-        except ValidationError:
-            logger.warning("Invalid schedule_add: %s", str(data)[:200])
-            return
-
-        primary = self._db.users.get_primary_sender()
-        if not primary or not req.command.strip():
-            await self._send_schedules(ws, error="No user profile found")
-            return
-
-        with Session(self._db.engine) as session:
-            user_info = session.exec(select(UserInfo).where(UserInfo.sender == primary)).first()
-            if not user_info or not user_info.timezone:
-                await self._send_schedules(ws, error="Set your timezone first via /profile")
-                return
-            user_timezone = user_info.timezone
-
-        prompt = Prompt.SCHEDULE_PARSE_PROMPT.format(
-            today=current_datetime_line(self._db),
-            timezone=user_timezone,
-            command=req.command.strip(),
-        )
-        try:
-            response = await self._model_client.generate(prompt=prompt, format="json")
-            result = ScheduleParseResult.model_validate_json(response.message.content)
-        except Exception as error:
-            logger.warning("Failed to parse schedule from iOS: %s", error)
-            await self._send_schedules(ws, error="Could not parse schedule timing")
-            return
-
-        cron_parts = result.cron_expression.split()
-        if len(cron_parts) != 5:
-            await self._send_schedules(ws, error="Invalid cron expression")
-            return
-
-        with Session(self._db.engine) as session:
-            session.add(
-                Schedule(
-                    user_id=primary,
-                    user_timezone=user_timezone,
-                    cron_expression=result.cron_expression,
-                    prompt_text=result.prompt_text,
-                    timing_description=result.timing_description,
-                    created_at=datetime.now(UTC),
-                )
-            )
-            session.commit()
-        await self._send_schedules(ws)
-
-    async def _handle_schedule_update(self, ws: ServerConnection, data: dict) -> None:
-        """Update a schedule's prompt text."""
-        try:
-            req = BrowserScheduleUpdate(**data)
-        except ValidationError:
-            logger.warning("Invalid schedule_update: %s", str(data)[:200])
-            return
-        with Session(self._db.engine) as session:
-            schedule = session.get(Schedule, req.schedule_id)
-            if schedule:
-                schedule.prompt_text = req.prompt_text
-                session.add(schedule)
-                session.commit()
-        await self._send_schedules(ws)
-
-    async def _handle_schedule_delete(self, ws: ServerConnection, data: dict) -> None:
-        """Delete a schedule by ID."""
-        try:
-            req = BrowserScheduleDelete(**data)
-        except ValidationError:
-            logger.warning("Invalid schedule_delete: %s", str(data)[:200])
-            return
-        with Session(self._db.engine) as session:
-            schedule = session.get(Schedule, req.schedule_id)
-            if schedule:
-                session.delete(schedule)
-                session.commit()
-        await self._send_schedules(ws)
-
-    async def _send_schedules(self, ws: ServerConnection, error: str | None = None) -> None:
-        """Send all schedules for the primary user."""
-        primary = self._db.users.get_primary_sender()
-        schedules: list[ScheduleRecord] = []
-        if primary:
-            with Session(self._db.engine) as session:
-                rows = list(session.exec(select(Schedule).where(Schedule.user_id == primary)))
-                schedules = []
-                for s in sorted(rows, key=lambda schedule: schedule.created_at):
-                    if s.id is None:
-                        continue
-                    schedules.append(
-                        ScheduleRecord(
-                            id=s.id,
-                            timing_description=s.timing_description,
-                            prompt_text=s.prompt_text,
-                            cron_expression=s.cron_expression,
-                        )
-                    )
-        await self._send_json(
-            ws,
-            {
-                "type": BROWSER_RESP_TYPE_SCHEDULES,
-                "schedules": [s.model_dump() for s in schedules],
-                "error": error,
-            },
-        )
 
     _PROMPT_LOG_PAGE_SIZE = 50
 
@@ -1408,9 +1274,7 @@ def _required_outbox_id(row: IosOutboxItem) -> int:
     return row.id
 
 
-_PASSTHROUGH_SOURCE_NAMES = frozenset(
-    {SOURCE_NAME_STARTUP, SOURCE_NAME_SCHEDULE, PennyConstants.CHAT_AGENT_NAME}
-)
+_PASSTHROUGH_SOURCE_NAMES = frozenset({SOURCE_NAME_STARTUP, PennyConstants.CHAT_AGENT_NAME})
 
 
 def _source_metadata(source_name: str | None) -> tuple[str | None, str | None]:

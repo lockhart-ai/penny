@@ -27,7 +27,6 @@ from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
-from penny.tools.schedule_tools import ScheduleCreateTool, ScheduleDeleteTool, ScheduleListTool
 from penny.validation.response_validators import CallAsTextValidator
 
 if TYPE_CHECKING:
@@ -105,11 +104,6 @@ class ChatAgent(Agent):
         # surface — the model dispatches to them from natural language.
         tools.append(NotificationsMuteTool(self.db))
         tools.append(NotificationsUnmuteTool(self.db))
-        # Recurring-task scheduling (the retired /schedule + /unschedule commands)
-        # is likewise chat-driven — create/delete/list over the Schedule table.
-        tools.append(ScheduleCreateTool(self.db, self._model_client))
-        tools.append(ScheduleDeleteTool(self.db, self._embedding_model_client))
-        tools.append(ScheduleListTool(self.db))
         if self._collector is not None:
             tools.append(TestExtractionPromptTool(self._collector))
         if self._image_client is not None:

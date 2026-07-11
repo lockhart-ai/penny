@@ -96,7 +96,7 @@ flowchart TB
         Coll["Background work<br>picks an overdue task,<br>updates one memory per cycle"]
     end
 
-    MemoryFW -.->|"schedule + instructions"| Coll
+    MemoryFW -.->|"cadence + instructions"| Coll
     Coll -->|"writes new entries"| MemoryFW
     Coll -->|"shares thoughts when ready"| User
 
@@ -117,7 +117,7 @@ Penny uses up to four LLM model roles, all running locally by default:
 
 | Role | Env | Purpose | Required? |
 |---|---|---|---|
-| **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat, background work, scheduled tasks | Yes |
+| **Text** | `LLM_MODEL` | Single model for all of Penny's reasoning — chat and background work | Yes |
 | **Embedding** | `LLM_EMBEDDING_MODEL` | Embeddings for knowledge retrieval, message similarity, and preference dedup | Yes |
 | **Vision** | `LLM_VISION_MODEL` | Image captioning when users send photos | Optional |
 | **Image** | `LLM_IMAGE_MODEL` | Image generation (ask Penny to draw — the `generate_image` tool) | Optional |
@@ -126,9 +126,9 @@ Text, vision, and embedding all go through the OpenAI SDK and can each point at 
 
 ### Scheduling
 
-Two background tracks run when Penny is idle (default: 60s after the last message): scheduled tasks you've created and Penny's own background work — extracting preferences, summarizing pages, thinking, choosing what to share. Each piece of background work has its own cadence; Penny picks the most-overdue ready task per tick, and skips the tick entirely if nothing is due. A foreground message cancels any in-progress background task immediately so the LLM is free to respond.
+When Penny is idle (default: 60s after the last message) she runs her own background work — extracting preferences, summarizing pages, thinking, choosing what to share. Each collection has its own cadence; Penny picks the most-overdue ready one per tick, and skips the tick entirely if nothing is due. A foreground message cancels any in-progress background task immediately so the LLM is free to respond.
 
-Recurring tasks — just ask in chat ("every morning send me a weather briefing") and Penny sets one up — run on their own timer regardless of idle state, so a daily weather briefing won't be blocked by an active conversation.
+Recurring "watch this and keep me posted" work lives as a collection with a background collector, all managed through the same registry as everything else — there is no separate schedule mechanism.
 
 ### Runtime Configuration
 
@@ -143,7 +143,6 @@ The Firefox extension adds a visual, interactive layer on top of Penny's existin
 - **Browser tools** — `browse_url` opens pages in hidden tabs with the full web engine and your session. Per-addon "tool use" toggle controls whether each browser participates in tool dispatch
 - **Domain permissions** — first-time access to a new domain triggers an approve/deny prompt. Approvals persist server-side and sync across all connected addons; prompts can also be answered from Signal so you don't need a browser open. `/config DOMAIN_PERMISSION_MODE allow_all` skips prompting entirely
 - **Memory Explorer** — every memory in one place: a list view with entry counts and last-updated timestamps, plus a drill-in view where you can edit how each memory works (description, what it should remember, how often) and add, edit, or delete individual entries. Each memory's detail page also shows a recent history of background work so you can see exactly what Penny has been doing
-- **Schedule manager** — UI for creating, editing, and deleting recurring cron tasks without touching the chat
 - **Settings panel** — domain allowlist, runtime config params (the same 30+ values `/config` exposes), and addon-level toggles
 - **Prompt log viewer** — every LLM call Penny makes, browseable from the extension: input prompt, response, internal reasoning, and (for background work) which memory the result was written to and why. Useful for understanding "why did Penny say that"
 - **Multi-device** — each browser registers as a device (e.g., "firefox macbook 16"). All devices share the same user identity and conversation history. In-flight progress reactions on Signal also surface on the user's message via emoji morphing (💭 → 🔍 → 📖 → cleared on completion)

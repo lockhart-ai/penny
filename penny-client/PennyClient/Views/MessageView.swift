@@ -245,8 +245,6 @@ struct MessageView: View {
     @ViewBuilder
     private func pennyNavigationDestination(_ destination: PennyNavigationDestination) -> some View {
         switch destination {
-        case .schedules:
-            SchedulesView(client: viewModel.client)
         case .insights:
             InsightsView(client: viewModel.client)
         case .memories:
@@ -508,7 +506,6 @@ struct MessageView: View {
 }
 
 private enum PennyNavigationDestination: String, CaseIterable, Identifiable {
-    case schedules
     case insights
     case memories
 
@@ -516,8 +513,6 @@ private enum PennyNavigationDestination: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .schedules:
-            return "Schedules"
         case .insights:
             return "Insights"
         case .memories:
@@ -527,8 +522,6 @@ private enum PennyNavigationDestination: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .schedules:
-            return "calendar"
         case .insights:
             return "chart.bar.doc.horizontal"
         case .memories:
@@ -925,8 +918,6 @@ private struct EmptyMessageFilterView: View {
             return "No messages yet"
         case .penny:
             return "No Penny messages"
-        case .schedule:
-            return "No scheduled messages"
         case .chat:
             return "No chat messages"
         case .notifier:

@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 81
+        assert count == 82
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -96,7 +96,6 @@ class TestMigrate:
             "userinfo",
             "command_logs",
             "runtime_config",
-            "schedule",
             "mutestate",
             "thought",
             "preference",
@@ -108,6 +107,8 @@ class TestMigrate:
         assert "fact" not in tables
         # conversationhistory should NOT exist (dropped by 0024)
         assert "conversationhistory" not in tables
+        # schedule should NOT exist (mechanism retired, dropped by 0082)
+        assert "schedule" not in tables
         conn.close()
 
     def test_idempotent(self, tmp_path):
@@ -120,7 +121,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 81
+        assert count1 == 82
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +159,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0081 run = 80 migrations
-        assert count == 80
+        # 0001 is skipped; 0002 through 0082 run = 81 migrations
+        assert count == 81
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +186,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 81  # all migrations applied
+        assert count == 82  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")

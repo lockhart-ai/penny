@@ -121,34 +121,6 @@ class Prompt:
         "Emails:\n{emails}"
     )
 
-    # Schedule command prompt
-    SCHEDULE_PARSE_PROMPT = """Parse this schedule command into structured components.
-
-Extract:
-1. The timing description (e.g., "daily 9am", "every monday", "hourly")
-2. The prompt text (the task to execute when the schedule fires)
-3. A cron expression representing the timing (use standard cron format)
-   Format: minute hour day month weekday
-
-{today}
-User timezone: {timezone}
-
-Command: {command}
-
-Return JSON with:
-- timing_description: the natural language timing description you extracted
-- prompt_text: the prompt to execute
-- cron_expression: cron expression (5 fields: minute hour day month weekday, use * for "any")
-
-Examples:
-- "daily 9am check the news"
-  → timing="daily 9am", prompt="check the news", cron="0 9 * * *"
-- "every monday morning meal ideas"
-  → timing="every monday morning", prompt="meal ideas", cron="0 9 * * 1"
-- "hourly sports scores"
-  → timing="hourly", prompt="sports scores", cron="0 * * * *"
-"""
-
     # Vision prompts
     VISION_AUTO_DESCRIBE_PROMPT = "Describe this image in detail."
 

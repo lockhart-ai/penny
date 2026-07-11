@@ -36,12 +36,10 @@ from penny.llm.models import LlmError
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
-    AlwaysRunSchedule,
     BackgroundScheduler,
     PeriodicSchedule,
     Schedule,
 )
-from penny.scheduler.schedule_runner import ScheduleExecutor
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
 from penny.startup import get_restart_message
 from penny.tools import Tool
@@ -226,12 +224,6 @@ class Penny:
             embedding_model_client=self.embedding_model_client,
         )
         self.chat_agent.set_collector(self.collector)
-        self.schedule_executor = ScheduleExecutor(
-            model_client=self.model_client,
-            db=self.db,
-            config=config,
-            embedding_model_client=self.embedding_model_client,
-        )
         # Deterministic task (no LLM) that delivers queued send_message output
         # once the autonomous-send cooldown clears.
         self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
@@ -263,7 +255,6 @@ class Penny:
             db=self.db,
             command_registry=self.command_registry,
         )
-        self.schedule_executor.set_channel(self.channel)
         self.chat_agent.set_channel(self.channel)
         self.send_queue_drainer.set_channel(self.channel)
         # Collector needs the channel so consumer cycles (e.g. the ``notifier``,
@@ -306,7 +297,7 @@ class Penny:
         self.collector._on_tool_start_factory = browser_ch.make_background_tool_callback
 
     def _init_scheduler(self, config: Config) -> None:
-        """Create background scheduler — schedule_executor + collector dispatcher.
+        """Create background scheduler — send-queue drainer + collector dispatcher.
 
         The Collector is a single idle-gated schedule that ticks fast
         (COLLECTOR_TICK_INTERVAL).  Each tick it picks the most-overdue
@@ -316,7 +307,6 @@ class Penny:
         store fills up "between conversations".
         """
         schedules: list[Schedule] = [
-            AlwaysRunSchedule(agent=self.schedule_executor, interval=60.0),
             # Drain before the collector so a queued message is delivered
             # promptly once its cooldown clears, rather than waiting behind a
             # collection cycle.  Idle-gated: queued autonomous messages never

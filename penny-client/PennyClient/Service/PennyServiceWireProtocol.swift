@@ -13,10 +13,6 @@ enum ClientMessage: Encodable {
     case heartbeat
     case configRequest
     case configUpdate(key: String, value: String)
-    case schedulesRequest
-    case scheduleAdd(command: String)
-    case scheduleUpdate(scheduleID: Int, promptText: String)
-    case scheduleDelete(scheduleID: Int)
     case promptLogsRequest(agentName: String?, offset: Int?, query: String?, flaggedOnly: Bool?)
     case memoriesRequest(query: String?)
     case memoryDetailRequest(name: String, query: String?)
@@ -94,18 +90,6 @@ enum ClientMessage: Encodable {
             try container.encode("config_update", forKey: .type)
             try container.encode(key, forKey: .key)
             try container.encode(value, forKey: .value)
-        case .schedulesRequest:
-            try container.encode("schedules_request", forKey: .type)
-        case .scheduleAdd(let command):
-            try container.encode("schedule_add", forKey: .type)
-            try container.encode(command, forKey: .command)
-        case .scheduleUpdate(let scheduleID, let promptText):
-            try container.encode("schedule_update", forKey: .type)
-            try container.encode(scheduleID, forKey: .scheduleID)
-            try container.encode(promptText, forKey: .promptText)
-        case .scheduleDelete(let scheduleID):
-            try container.encode("schedule_delete", forKey: .type)
-            try container.encode(scheduleID, forKey: .scheduleID)
         case .promptLogsRequest(let agentName, let offset, let query, let flaggedOnly):
             try container.encode("prompt_logs_request", forKey: .type)
             try container.encodeIfPresent(agentName, forKey: .agentName)
@@ -224,8 +208,6 @@ enum ClientMessage: Encodable {
             return nil
         case .configRequest, .configUpdate:
             return "config_response"
-        case .schedulesRequest, .scheduleAdd, .scheduleUpdate, .scheduleDelete:
-            return "schedules_response"
         case .promptLogsRequest:
             return "prompt_logs_response"
         case .memoriesRequest:
@@ -265,14 +247,6 @@ enum ClientMessage: Encodable {
             return "config_request"
         case .configUpdate:
             return "config_update"
-        case .schedulesRequest:
-            return "schedules_request"
-        case .scheduleAdd:
-            return "schedule_add"
-        case .scheduleUpdate:
-            return "schedule_update"
-        case .scheduleDelete:
-            return "schedule_delete"
         case .promptLogsRequest:
             return "prompt_logs_request"
         case .memoriesRequest:
@@ -326,9 +300,6 @@ enum ClientMessage: Encodable {
         case ids
         case key
         case value
-        case command
-        case scheduleID = "schedule_id"
-        case promptText = "prompt_text"
         case agentName = "agent_name"
         case offset
         case query
@@ -448,7 +419,6 @@ enum ServerEnvelope: Decodable {
     case embeddingResponse(EmbeddingResponsePayload)
     case typing(TypingPayload)
     case configResponse(ConfigResponsePayload)
-    case schedulesResponse(SchedulesResponsePayload)
     case promptLogsResponse(PromptLogsResponsePayload)
     case promptLogUpdate(PromptLogUpdatePayload)
     case runOutcomeUpdate(RunOutcomeUpdatePayload)
@@ -482,8 +452,6 @@ enum ServerEnvelope: Decodable {
             self = .typing(try TypingPayload(from: decoder))
         case "config_response":
             self = .configResponse(try ConfigResponsePayload(from: decoder))
-        case "schedules_response":
-            self = .schedulesResponse(try SchedulesResponsePayload(from: decoder))
         case "prompt_logs_response":
             self = .promptLogsResponse(try PromptLogsResponsePayload(from: decoder))
         case "prompt_log_update":
@@ -529,8 +497,6 @@ enum ServerEnvelope: Decodable {
             return nil
         case .configResponse:
             return "config_response"
-        case .schedulesResponse:
-            return "schedules_response"
         case .promptLogsResponse:
             return "prompt_logs_response"
         case .promptLogUpdate:
@@ -574,8 +540,6 @@ enum ServerEnvelope: Decodable {
             return "typing"
         case .configResponse:
             return "config_response"
-        case .schedulesResponse:
-            return "schedules_response"
         case .promptLogsResponse:
             return "prompt_logs_response"
         case .promptLogUpdate:

@@ -11,47 +11,6 @@ struct PennyAdminViewModelTests {
         #expect(AppBuildInfo(infoDictionary: ["PennyBuildCommitHash": " abc123def456 \n"]).commitHash == "abc123def456")
     }
 
-    @Test func schedulesViewModelRefreshesAddsUpdatesAndDeletes() async throws {
-        let (client, transport) = makeAdminClient()
-        await connectAndClearStartupFrames(client, transport)
-        let viewModel = SchedulesViewModel(client: client)
-
-        viewModel.refresh()
-        viewModel.draftCommand = "  summarize unread newsletters  "
-        viewModel.addSchedule()
-
-        transport.emit("""
-        {
-          "type": "schedules_response",
-          "error": null,
-          "schedules": [{
-            "id": 42,
-            "timing_description": "every morning",
-            "prompt_text": "old prompt",
-            "cron_expression": "0 8 * * *"
-          }]
-        }
-        """)
-        let schedule = try #require(viewModel.schedules.first)
-        viewModel.setPromptText("  new prompt  ", for: schedule)
-        viewModel.save(schedule: schedule)
-        viewModel.delete(schedule: schedule)
-
-        let payloads = await sentPayloads(transport, count: 4)
-        #expect(payloads.map(typeName) == [
-            "schedules_request",
-            "schedule_add",
-            "schedule_update",
-            "schedule_delete"
-        ])
-        #expect(payloads[1]["command"] == .string("summarize unread newsletters"))
-        #expect(payloads[2]["schedule_id"] == .number(42))
-        #expect(payloads[2]["prompt_text"] == .string("new prompt"))
-        #expect(payloads[3]["schedule_id"] == .number(42))
-        #expect(viewModel.draftCommand.isEmpty)
-        client.disconnect()
-    }
-
     @Test func insightsViewModelRequestsFiltersAndLoadMore() async throws {
         let (client, transport) = makeAdminClient()
         await connectAndClearStartupFrames(client, transport)

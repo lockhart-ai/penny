@@ -694,7 +694,7 @@ class Agent:
                 agent_name=self.name,
                 prompt_type=prompt_type,
                 run_id=run_id,
-                # The bound collection (collectors) / None (chat, schedule) is
+                # The bound collection (collectors) / None (chat) is
                 # known from the first prompt — stamp it on every row so the run
                 # is identifiable at write time, not retroactively at cycle end.
                 run_target=self._memory_scope(),
@@ -872,8 +872,7 @@ class Agent:
 
         ``created_by_run_id`` is the chat turn's run id (#1566), threaded to
         ``collection_create`` so a collection it makes records its creating run.
-        ``None`` for collectors and scheduled agents — they aren't spawned by a
-        chat message.
+        ``None`` for collectors — they aren't spawned by a chat message.
         """
         scope = self._memory_scope()
         # Key the memory tools (read cursors + entry author) on the bound
@@ -882,16 +881,30 @@ class Agent:
         # ``self.name`` collapsed all collections that read the same log onto
         # a single shared cursor — whichever ran first consumed the new
         # entries and starved the rest.  ``scope`` is the bound collection for
-        # collectors and None for chat/schedule agents (which keep self.name).
+        # collectors and None for chat agents (which keep self.name).
         tools: list[Tool] = build_memory_tools(
             self.db,
             self._embedding_model_client,
             agent_name=scope or self.name,
             scope=scope,
             created_by_run_id=created_by_run_id,
+            include_lifecycle=self._include_lifecycle_tools(),
         )
         tools.append(self._build_browse_tool(author=self.name))
         return tools
+
+    def _include_lifecycle_tools(self) -> bool:
+        """Whether this agent may reshape the registry — create / update / merge /
+        archive / unarchive collections and create logs.
+
+        Chat-style agents do: the user evolves collections through them.  A
+        cadence-fired collector run does NOT (``Collector`` overrides to False,
+        #1556) — a background poll has no business re-architecting the system, so
+        those tools are structurally ABSENT from its surface, not merely
+        discouraged in its prompt.  Declared here as a template method (the run
+        type decides), never as an if/else on run type inside the loop.
+        """
+        return True
 
     def _build_browse_tool(self, author: str) -> BrowseTool:
         """Build a fresh BrowseTool from config, updating self._browse_tool."""

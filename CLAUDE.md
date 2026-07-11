@@ -191,7 +191,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 
 **LLM** (OpenAI-compatible endpoint — no Ollama-specific dependencies in the runtime):
 - `LLM_API_URL`: API endpoint (default: http://host.docker.internal:11434)
-- `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify, schedules (default: gpt-oss:20b)
+- `LLM_MODEL`: Single text model for all penny agents — chat, thinking, history, notify (default: gpt-oss:20b)
 - `LLM_API_KEY`: API key (default: "not-needed")
 - `LLM_VISION_MODEL`: Vision model for image understanding (e.g., qwen3-vl). Optional; if unset, image messages get an acknowledgment response
 - `LLM_VISION_API_URL` / `LLM_VISION_API_KEY`: Override endpoint for vision model

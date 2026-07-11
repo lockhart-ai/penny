@@ -20,10 +20,6 @@ BROWSER_MSG_TYPE_DOMAIN_UPDATE = "domain_update"
 BROWSER_MSG_TYPE_DOMAIN_DELETE = "domain_delete"
 BROWSER_MSG_TYPE_PERMISSION_REQUEST = "permission_request"
 BROWSER_MSG_TYPE_PERMISSION_DECISION = "permission_decision"
-BROWSER_MSG_TYPE_SCHEDULES_REQUEST = "schedules_request"
-BROWSER_MSG_TYPE_SCHEDULE_ADD = "schedule_add"
-BROWSER_MSG_TYPE_SCHEDULE_UPDATE = "schedule_update"
-BROWSER_MSG_TYPE_SCHEDULE_DELETE = "schedule_delete"
 BROWSER_MSG_TYPE_PROMPT_LOGS_REQUEST = "prompt_logs_request"
 BROWSER_MSG_TYPE_MEMORIES_REQUEST = "memories_request"
 BROWSER_MSG_TYPE_MEMORY_DETAIL_REQUEST = "memory_detail_request"
@@ -47,7 +43,6 @@ BROWSER_RESP_TYPE_CONFIG = "config_response"
 BROWSER_RESP_TYPE_DOMAIN_PERMISSIONS = "domain_permissions_sync"
 BROWSER_RESP_TYPE_PERMISSION_PROMPT = "permission_prompt"
 BROWSER_RESP_TYPE_PERMISSION_DISMISS = "permission_dismiss"
-BROWSER_RESP_TYPE_SCHEDULES = "schedules_response"
 BROWSER_RESP_TYPE_PROMPT_LOGS = "prompt_logs_response"
 BROWSER_RESP_TYPE_PROMPT_LOG_UPDATE = "prompt_log_update"
 BROWSER_RESP_TYPE_RUN_OUTCOME = "run_outcome_update"
@@ -181,37 +176,6 @@ class BrowserPermissionDismiss(BaseModel):
 
     type: str = BROWSER_RESP_TYPE_PERMISSION_DISMISS
     request_id: str
-
-
-class BrowserScheduleAdd(BaseModel):
-    """A request to add a new schedule via natural language."""
-
-    type: str
-    command: str
-
-
-class BrowserScheduleUpdate(BaseModel):
-    """A request to update a schedule's prompt text."""
-
-    type: str
-    schedule_id: int
-    prompt_text: str
-
-
-class BrowserScheduleDelete(BaseModel):
-    """A request to delete a schedule by ID."""
-
-    type: str
-    schedule_id: int
-
-
-class ScheduleRecord(BaseModel):
-    """A single schedule entry for response payloads."""
-
-    id: int
-    timing_description: str
-    prompt_text: str
-    cron_expression: str
 
 
 class BrowserRunOutcomeUpdate(BaseModel):

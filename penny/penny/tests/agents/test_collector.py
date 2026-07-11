@@ -23,7 +23,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
-from penny.tools.memory_tools import LogReadTool
+from penny.tools.memory_tools import LogReadTool, build_memory_tools
 
 
 def _llm_client() -> LlmClient:
@@ -262,6 +262,160 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
     collector, _ = _make_collector(test_config, tmp_path)
     with pytest.raises(RuntimeError, match="outside an execute"):
         collector.get_tools()
+
+
+# ── Scoped tool surface: a cadence run cannot reshape the registry (#1556) ──
+
+_LIFECYCLE_TOOL_NAMES = frozenset(
+    {
+        "collection_create",
+        "collection_update",
+        "collection_merge",
+        "collection_archive",
+        "collection_unarchive",
+        "log_create",
+    }
+)
+
+
+def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
+    """A cadence-fired collector run's surface is read / write-entry / browse /
+    notify — the registry-shape tools are ABSENT, not merely discouraged, so a
+    background poll cannot create, reconfigure, merge, or archive a mechanism."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("watch", "d", Inclusion.NEVER, RecallMode.RECENT)
+    collector._current_target = db.memories.get("watch")
+    try:
+        names = {tool.name for tool in collector.get_tools()}
+    finally:
+        collector._current_target = None
+    assert names.isdisjoint(_LIFECYCLE_TOOL_NAMES), (
+        f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
+    )
+    # It keeps its actual job: reads, scoped entry writes, browse, notify, done.
+    assert {"collection_write", "collection_read_latest", "browse", "done"} <= names
+
+
+def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
+    """The chat-style surface keeps the lifecycle tier; the collector surface
+    drops it.  The distinction is a single declared flag, not a per-tool branch."""
+    _, db = _make_collector(test_config, tmp_path)
+    chat_names = {t.name for t in build_memory_tools(db, _llm_client(), "chat")}
+    collector_names = {
+        t.name for t in build_memory_tools(db, _llm_client(), "collector", include_lifecycle=False)
+    }
+    assert chat_names >= _LIFECYCLE_TOOL_NAMES
+    assert collector_names.isdisjoint(_LIFECYCLE_TOOL_NAMES)
+    # Reads + entry mutations are present in BOTH — only the lifecycle tier differs.
+    assert {"collection_write", "collection_read_latest"} <= collector_names <= chat_names
+
+
+# ── Once-shaped trigger: run_at delays the fire, max_runs retires it (#1556) ──
+
+_ONE_SHOT_PROMPT = "Browse the web for a daily fact and write one entry each cycle."
+
+
+def test_dispatcher_skips_collection_before_run_at(test_config, tmp_path):
+    """A collection with a future ``run_at`` doesn't fire until that time — a
+    delayed / one-shot start, gated before the interval floor."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "delayed",
+        "x",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        run_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    assert collector._next_ready_collection() is None
+
+
+def test_dispatcher_runs_collection_at_run_at(test_config, tmp_path):
+    """Once ``run_at`` has passed the collection becomes eligible like any other."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "due",
+        "x",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        run_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    target = collector._next_ready_collection()
+    assert target is not None and target.name == "due"
+
+
+def test_max_runs_archives_after_quota(test_config, tmp_path):
+    """After ``max_runs`` completed (non-cancelled) cycles the scheduler archives
+    the collection — a one-shot reminder retires itself.  The count is read from
+    the ledger (completed promptlog runs), and a cancelled run never counts."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "one-shot",
+        "x",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        run_at=datetime.now(UTC) - timedelta(minutes=1),
+        max_runs=2,
+    )
+
+    def _record_run(run_id: str, outcome: RunOutcome) -> None:
+        db.messages.log_prompt(
+            model="test",
+            messages=[],
+            response={},
+            agent_name="collector",
+            run_id=run_id,
+            run_target="one-shot",
+        )
+        collector._tag_promptlog_run(run_id, outcome, "s", 0)
+
+    # A cancelled run does not burn the allotment.
+    _record_run("r-cancelled", RunOutcome.CANCELLED)
+    assert db.messages.count_completed_runs("one-shot") == 0
+
+    # First completed run: below the quota, still active.
+    _record_run("r1", RunOutcome.WORKED)
+    collector._archive_if_run_limit_reached(_get(db, "one-shot"))
+    assert _get(db, "one-shot").archived is False
+
+    # Second completed run reaches the quota → archived (system-actor mutation),
+    # and the row remains as a visible tombstone.
+    _record_run("r2", RunOutcome.NO_WORK)
+    collector._archive_if_run_limit_reached(_get(db, "one-shot"))
+    archived = _get(db, "one-shot")
+    assert archived.archived is True
+    assert collector._next_ready_collection() is None
+
+
+def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
+    """An ordinary recurring collection (``max_runs`` NULL) is never retired by
+    the run-limit path no matter how many times it has run."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "recurring",
+        "x",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+    )
+    for run_id in ("a", "b", "c"):
+        db.messages.log_prompt(
+            model="test",
+            messages=[],
+            response={},
+            agent_name="collector",
+            run_id=run_id,
+            run_target="recurring",
+        )
+        collector._tag_promptlog_run(run_id, RunOutcome.WORKED, "s", 0)
+    collector._archive_if_run_limit_reached(_get(db, "recurring"))
+    assert _get(db, "recurring").archived is False
 
 
 # ── Composed system prompt (target identity + extraction_prompt + runtime tail) ──

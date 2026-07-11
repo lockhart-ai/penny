@@ -6,10 +6,6 @@ models.
                    announcement.  Driven via the ``startup_eval`` runner.
 
 Scored on structure/behaviour (non-fallback, length, voice), never exact wording.
-
-The schedule NL→cron parse now runs inside the ``schedule_create`` tool the chat
-agent dispatches from natural language (epic #1445); its contract — dispatch +
-a sane cron in the user's timezone — lives in ``test_schedule_dispatch.py``.
 """
 
 from __future__ import annotations
