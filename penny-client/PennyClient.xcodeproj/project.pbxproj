@@ -236,21 +236,22 @@
 		D1F83D8B2FF9A0000010DBDD /* Inject Build Commit Hash */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
 			name = "Inject Build Commit Hash";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\n\ncommit=\"${GIT_COMMIT:-}\"\nplist_path=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nif [ -z \"$commit\" ]; then\n    /usr/libexec/PlistBuddy -c \"Delete :PennyBuildCommitHash\" \"$plist_path\" 2>/dev/null || true\n    exit 0\nfi\n\n/usr/libexec/PlistBuddy -c \"Set :PennyBuildCommitHash $commit\" \"$plist_path\" 2>/dev/null || \\\n    /usr/libexec/PlistBuddy -c \"Add :PennyBuildCommitHash string $commit\" \"$plist_path\"\n";
+			shellScript = (
+				"set -eu",
+				"",
+				"commit=\"${GIT_COMMIT:-}\"",
+				"plist_path=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"",
+				"if [ -z \"$commit\" ]; then",
+				"    /usr/libexec/PlistBuddy -c \"Delete :PennyBuildCommitHash\" \"$plist_path\" 2>/dev/null || true",
+				"    exit 0",
+				"fi",
+				"",
+				"/usr/libexec/PlistBuddy -c \"Set :PennyBuildCommitHash $commit\" \"$plist_path\" 2>/dev/null || \\",
+				"    /usr/libexec/PlistBuddy -c \"Add :PennyBuildCommitHash string $commit\" \"$plist_path\"",
+				"",
+			);
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -616,13 +617,13 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				GIT_COMMIT = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
@@ -677,13 +678,13 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				GIT_COMMIT = "";
 				INFOPLIST_KEY_CFBundleDisplayName = Penny;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;

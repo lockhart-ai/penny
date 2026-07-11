@@ -43,6 +43,19 @@ struct DatabaseServiceTests {
         #expect(loaded.map(\.content) == ["First", "Second"])
     }
 
+    @Test func deletesAllMessagesWithoutRemovingTheDatabase() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 1, content: "First"))
+        database.save(message: makeMessage(id: 2, content: "Second"))
+
+        database.deleteAllMessages()
+
+        #expect(database.loadMessages().isEmpty)
+        database.save(message: makeMessage(id: 3, content: "Still usable"))
+        #expect(database.loadMessages().map(\.content) == ["Still usable"])
+    }
+
     @Test func latestMessagePageReturnsNewestMessagesInDisplayOrder() {
         let database = DatabaseService()
         database.setupForTesting()
@@ -98,6 +111,29 @@ struct DatabaseServiceTests {
         #expect(database.minimumMessageID() == -3)
         #expect(database.containsMessage(serverID: 10))
         #expect(database.containsMessage(serverID: 11) == false)
+    }
+
+    @Test func reconcilesLegacyOutboxServerIDToCanonicalMessageID() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 17, serverID: 17, content: "Legacy"))
+
+        #expect(database.reconcileLegacyMessage(outboxID: 17, canonicalID: 42))
+        let loaded = database.loadMessages()
+        #expect(loaded.count == 1)
+        #expect(loaded.first?.id == 42)
+        #expect(loaded.first?.serverID == 42)
+    }
+
+    @Test func removesLegacyRowWhenCanonicalMessageAlreadyExists() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 17, serverID: 17, content: "Legacy"))
+        database.save(message: makeMessage(id: 42, serverID: 42, content: "Canonical"))
+
+        #expect(database.reconcileLegacyMessage(outboxID: 17, canonicalID: 42))
+        let loaded = database.loadMessages()
+        #expect(loaded.map(\.content) == ["Canonical"])
     }
 }
 

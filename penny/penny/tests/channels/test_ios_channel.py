@@ -15,6 +15,7 @@ from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, Apn
 from penny.channels.ios.channel import PUSH_GREETING_TITLE, TEST_PUSH_MESSAGE, IosChannel
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
+    IOS_MSG_TYPE_HISTORY,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
     IOS_RESP_TYPE_MESSAGES,
@@ -312,6 +313,172 @@ async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(t
     assert apns.sent[0]["body"] == "Found a fare drop."
     assert apns.sent[0]["badge"] == 1
     assert apns.sent[0]["environment"] == "sandbox"
+
+
+@pytest.mark.asyncio
+async def test_history_request_returns_cross_channel_page_without_ack(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+    ios_device = db.devices.get_by_identifier("ios-keychain-id")
+    signal_device = db.devices.register("signal", "+15551234567", "Signal")
+    assert ios_device is not None and ios_device.id is not None
+    assert signal_device.id is not None
+
+    db.messages.log_message("incoming", "ios-keychain-id", "ios question", device_id=ios_device.id)
+    db.messages.log_message(
+        "outgoing", "penny", "signal reply", recipient="+15551234567", device_id=signal_device.id
+    )
+    db.messages.log_message(
+        "incoming", "+15551234567", "signal question", device_id=signal_device.id
+    )
+
+    await channel._handle_history(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 2},
+        "ios-keychain-id",
+    )
+
+    response = ws.sent[-1]
+    assert response["type"] == IOS_RESP_TYPE_MESSAGES
+    assert response["mode"] == "history"
+    assert response["has_more"] is True
+    assert [message["content"] for message in response["messages"]] == [
+        "signal reply",
+        "signal question",
+    ]
+    assert response["messages"][-1]["source_hint"] == "Chat"
+    assert all("outbox_id" not in message for message in response["messages"])
+    assert not any(message["type"] == "ack_messages" for message in ws.sent)
+
+
+@pytest.mark.asyncio
+async def test_history_cursor_fetches_next_page_without_overlap(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+
+    for content in ["oldest", "middle", "newest"]:
+        db.messages.log_message("incoming", "ios-keychain-id", content, device_id=device.id)
+
+    await channel._handle_history(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 2},
+        "ios-keychain-id",
+    )
+    first_page = ws.sent[-1]
+    assert [message["content"] for message in first_page["messages"]] == ["middle", "newest"]
+    assert first_page["has_more"] is True
+    assert first_page["next_cursor"] is not None
+
+    await channel._handle_history(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 2, "before": first_page["next_cursor"]},
+        "ios-keychain-id",
+    )
+    second_page = ws.sent[-1]
+    assert [message["content"] for message in second_page["messages"]] == ["oldest"]
+    assert second_page["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db)
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    message_id = db.messages.log_message(
+        "outgoing",
+        "penny",
+        "scheduled historical message",
+        recipient="ios-keychain-id",
+        device_id=device.id,
+    )
+    assert message_id is not None
+    db.ios.enqueue_outbox(
+        message_log_id=message_id,
+        device_id=device.id,
+        content="scheduled historical message",
+        attachments=["data:image/png;base64,aGVsbG8="],
+        source_type="schedule",
+        source_name="schedule",
+        source_hint="Schedule",
+        push_title="Hi from Penny",
+        push_summary="scheduled historical message",
+    )
+
+    await channel._handle_history(
+        cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "limit": 10},
+        "ios-keychain-id",
+    )
+
+    record = next(
+        message
+        for message in ws.sent[-1]["messages"]
+        if message["content"] == "scheduled historical message"
+    )
+    assert record["source_hint"] == "Schedule"
+    assert record["source_name"] == "schedule"
+    assert record["outbox_id"] is not None
+    assert record["attachments"] == ["data:image/png;base64,aGVsbG8="]
+
+
+@pytest.mark.asyncio
+async def test_outbox_record_links_to_message_log_id(tmp_path):
+    db = _make_db(tmp_path)
+    channel = _make_channel(db, apns=FakeApns())
+    ws = FakeWs()
+    await channel._handle_register(
+        cast(Any, ws),
+        {
+            "type": IOS_MSG_TYPE_REGISTER,
+            "device_id": "ios-keychain-id",
+            "label": "iPhone",
+            "pairing_token": "pair-me",
+        },
+    )
+
+    message_id, outbox_id = await channel._log_and_send(
+        "ios-keychain-id", "linked message", None, None
+    )
+
+    assert message_id is not None and outbox_id is not None
+    device = db.devices.get_by_identifier("ios-keychain-id")
+    assert device is not None and device.id is not None
+    pending = db.ios.pending_for_device(device.id)
+    assert pending[0].id == outbox_id
+    assert pending[0].message_log_id == message_id
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -81,10 +82,12 @@ from penny.channels.ios.apns import ApnsClient, ApnsError
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
     IOS_MSG_TYPE_HEARTBEAT,
+    IOS_MSG_TYPE_HISTORY,
     IOS_MSG_TYPE_MESSAGE,
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
     IosAckMessages,
+    IosHistoryRequest,
     IosIncomingMessage,
     IosMessages,
     IosMessagesAcked,
@@ -270,6 +273,8 @@ class IosChannel(MessageChannel):
             await self._handle_chat_message(data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_PULL:
             await self._handle_pull(ws, data, device_identifier)
+        elif msg_type == IOS_MSG_TYPE_HISTORY:
+            await self._handle_history(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_ACK:
             await self._handle_ack(ws, data, device_identifier)
         elif msg_type == IOS_MSG_TYPE_HEARTBEAT:
@@ -986,7 +991,45 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
         rows = self._db.ios.pending_for_device(conn.device_id, limit=msg.limit)
-        await self._send_ws(ws, IosMessages(messages=[_outbox_record(row) for row in rows]))
+        await self._send_ws(
+            ws, IosMessages(messages=[_outbox_record(row) for row in rows], mode="outbox")
+        )
+
+    async def _handle_history(
+        self, ws: ServerConnection, data: dict, device_identifier: str
+    ) -> None:
+        """Return one bounded, older-first page from the shared message log."""
+        try:
+            request = IosHistoryRequest(**data)
+            cursor = _decode_history_cursor(request.before, request.channel_types)
+        except ValidationError, ValueError:
+            await self._send_ws(ws, IosStatus(error="invalid_history_request"))
+            return
+        if self._connections.get(device_identifier) is None:
+            await self._send_ws(ws, IosStatus(error="register_required"))
+            return
+
+        rows, has_more = self._db.messages.ios_history_page(
+            channel_types=request.channel_types,
+            before=cursor,
+            limit=request.limit,
+        )
+        records = [_history_record(row) for row in rows]
+        next_cursor = None
+        if has_more and rows:
+            oldest = rows[0]
+            next_cursor = _encode_history_cursor(
+                oldest[0].timestamp, oldest[0].id or 0, request.channel_types
+            )
+        await self._send_ws(
+            ws,
+            IosMessages(
+                messages=records,
+                mode="history",
+                next_cursor=next_cursor,
+                has_more=has_more,
+            ),
+        )
 
     async def _handle_ack(self, ws: ServerConnection, data: dict, device_identifier: str) -> None:
         """Acknowledge displayed/persisted outbox rows."""
@@ -1029,6 +1072,7 @@ class IosChannel(MessageChannel):
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
         source_name: str | None = None,
+        message_log_id: int | None = None,
     ) -> int | None:
         """Persist message to the iOS outbox and notify the app."""
         device = self._db.devices.get_by_identifier(recipient)
@@ -1041,6 +1085,7 @@ class IosChannel(MessageChannel):
             message=message,
             attachments=attachments,
             source_name=source_name,
+            message_log_id=message_log_id,
         )
         if item.id is None:
             return None
@@ -1075,6 +1120,7 @@ class IosChannel(MessageChannel):
     def _enqueue_ios_outbox_item(
         self,
         *,
+        message_log_id: int | None = None,
         device_id: int,
         message: str,
         attachments: list[str] | None,
@@ -1083,6 +1129,7 @@ class IosChannel(MessageChannel):
         source_type, source_hint = _source_metadata(source_name)
         push_title, push_summary = _push_preview(message)
         return self._db.ios.enqueue_outbox(
+            message_log_id=message_log_id,
             device_id=device_id,
             content=message,
             attachments=attachments,
@@ -1174,18 +1221,98 @@ class IosChannel(MessageChannel):
 
 
 def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
-    attachments = json.loads(row.attachments_json) if row.attachments_json else []
     return IosOutboxRecord(
         id=row.id or 0,
+        message_id=row.message_log_id,
+        outbox_id=row.id,
         created_at=row.created_at.isoformat(),
         content=row.content,
-        attachments=attachments,
+        attachments=_decode_outbox_attachments(row),
         source_type=row.source_type,
         source_name=row.source_name,
         source_hint=row.source_hint,
         push_title=row.push_title,
         push_summary=row.push_summary,
     )
+
+
+def _history_record(row: tuple[MessageLog, object, IosOutboxItem | None]) -> IosOutboxRecord:
+    message, device, outbox = row
+    if outbox is not None and (outbox.source_hint or outbox.source_name):
+        source_type = outbox.source_type
+        source_name = outbox.source_name
+        _, derived_hint = _source_metadata(outbox.source_name)
+        source_hint = outbox.source_hint or derived_hint
+    elif message.direction == "incoming" or message.parent_id is not None:
+        source_hint = "Chat"
+        source_type = None
+        source_name = None
+    elif message.thought_id is not None:
+        source_hint = "Notifier"
+        source_type = "collector"
+        source_name = None
+    else:
+        source_hint = "Penny"
+        source_type = None
+        source_name = None
+    return IosOutboxRecord(
+        id=message.id or 0,
+        message_id=message.id,
+        outbox_id=outbox.id if outbox is not None else None,
+        created_at=message.timestamp.isoformat(),
+        content=message.content,
+        attachments=_decode_outbox_attachments(outbox) if outbox is not None else [],
+        source_type=source_type,
+        source_name=source_name,
+        source_hint=source_hint,
+        push_title="",
+        push_summary="",
+        direction=message.direction,
+        channel_type=getattr(device, "channel_type", None),
+        device_label=getattr(device, "label", None),
+        device_identifier=getattr(device, "identifier", None),
+        parent_id=message.parent_id,
+    )
+
+
+def _decode_outbox_attachments(row: IosOutboxItem) -> list[str]:
+    """Recover the inline attachment payload retained by an outbox row."""
+    if not row.attachments_json:
+        return []
+    try:
+        attachments = json.loads(row.attachments_json)
+    except TypeError, ValueError:
+        logger.warning("Ignoring malformed iOS outbox attachments (outbox_id=%s)", row.id)
+        return []
+    if not isinstance(attachments, list):
+        return []
+    return [attachment for attachment in attachments if isinstance(attachment, str)]
+
+
+def _encode_history_cursor(
+    timestamp: datetime, message_id: int, channel_types: list[str] | None
+) -> str:
+    payload = {
+        "timestamp": timestamp.isoformat(),
+        "id": message_id,
+        "channels": channel_types or [],
+    }
+    return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+
+
+def _decode_history_cursor(
+    value: str | None, channel_types: list[str] | None
+) -> tuple[datetime, int] | None:
+    if value is None:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(value.encode()).decode())
+        if payload.get("channels", []) != (channel_types or []):
+            raise ValueError("history cursor scope mismatch")
+        timestamp = datetime.fromisoformat(payload["timestamp"])
+        return timestamp.replace(tzinfo=None), int(payload["id"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid history cursor") from exc
 
 
 _PASSTHROUGH_SOURCE_NAMES = frozenset(

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 IOS_MSG_TYPE_ACK = "ack_messages"
 IOS_MSG_TYPE_HEARTBEAT = "heartbeat"
+IOS_MSG_TYPE_HISTORY = "history_request"
 IOS_MSG_TYPE_MESSAGE = "message"
 IOS_MSG_TYPE_PULL = "pull_messages"
 IOS_MSG_TYPE_REGISTER = "register"
@@ -45,6 +46,15 @@ class IosPullMessages(BaseModel):
     limit: int = Field(default=50, ge=1, le=200)
 
 
+class IosHistoryRequest(BaseModel):
+    """Request one older page from the shared message log."""
+
+    type: str = IOS_MSG_TYPE_HISTORY
+    limit: int = Field(default=50, ge=1, le=200)
+    before: str | None = None
+    channel_types: list[str] | None = None
+
+
 class IosAckMessages(BaseModel):
     """Acknowledge outbox rows after the app has persisted/displayed them."""
 
@@ -56,6 +66,8 @@ class IosOutboxRecord(BaseModel):
     """One outbox row returned to the app."""
 
     id: int
+    message_id: int | None = None
+    outbox_id: int | None = None
     created_at: str
     content: str
     attachments: list[str] = []
@@ -64,6 +76,11 @@ class IosOutboxRecord(BaseModel):
     source_hint: str | None = None
     push_title: str
     push_summary: str
+    direction: str | None = None
+    channel_type: str | None = None
+    device_label: str | None = None
+    device_identifier: str | None = None
+    parent_id: int | None = None
 
 
 class IosStatus(BaseModel):
@@ -84,10 +101,13 @@ class IosRegistered(BaseModel):
 
 
 class IosMessages(BaseModel):
-    """Outbox response."""
+    """Outbox or history response."""
 
     type: str = IOS_RESP_TYPE_MESSAGES
     messages: list[IosOutboxRecord]
+    mode: str = "outbox"
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class IosMessagesAcked(BaseModel):

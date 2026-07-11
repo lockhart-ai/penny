@@ -166,6 +166,7 @@ class MessageChannel(ABC):
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
         source_name: str | None = None,
+        message_log_id: int | None = None,
     ) -> int | None:
         """
         Deliver an already-prepared message to the platform.
@@ -182,7 +183,8 @@ class MessageChannel(ABC):
             message: Message content (already prepared via prepare_outgoing)
             attachments: Optional list of base64-encoded attachments
             quote_message: Optional message to quote-reply to
-            source_name: Optional source attribution for durable channels
+        source_name: Optional source attribution for durable channels
+            message_log_id: Canonical messagelog ID for channels with durable delivery metadata
 
         Returns:
             Platform message id / timestamp on success, None on failure
@@ -397,7 +399,12 @@ class MessageChannel(ABC):
             embedding=serialize_embedding(embedding) if embedding is not None else None,
         )
         external_id = await self._send_raw(
-            recipient, prepared, attachments, quote_message, source_name
+            recipient,
+            prepared,
+            attachments,
+            quote_message,
+            source_name,
+            message_id,
         )
         # Store the external ID for future reactions and quote replies
         if external_id and message_id:

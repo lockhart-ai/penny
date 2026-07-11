@@ -3,6 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel
+    @State private var selectedHistoryChannels = Set(HistoryChannel.allCases.map(\.rawValue))
+    @State private var isShowingDeleteMessagesConfirmation = false
 
     init(client: PennyWebSocketClient) {
         _viewModel = State(initialValue: SettingsViewModel(client: client, prefs: .shared))
@@ -42,6 +44,49 @@ struct SettingsView: View {
                 Section("Features") {
                     Toggle("1-2-3 layout", isOn: $viewModel.isMessageLayoutSwitcherEnabled)
                 }
+
+                Section("History") {
+                    ForEach(HistoryChannel.allCases) { channel in
+                        Toggle(channel.title, isOn: Binding(
+                            get: { selectedHistoryChannels.contains(channel.rawValue) },
+                            set: { isSelected in
+                                if isSelected {
+                                    selectedHistoryChannels.insert(channel.rawValue)
+                                } else {
+                                    selectedHistoryChannels.remove(channel.rawValue)
+                                }
+                            }
+                        ))
+                        .disabled(viewModel.client.historySyncing)
+                    }
+
+                    LabeledContent("Messages synced", value: "\(viewModel.client.historySyncedCount)")
+                    Text(viewModel.client.historyStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        viewModel.startHistorySync(channelTypes: Array(selectedHistoryChannels).sorted())
+                    } label: {
+                        Label(
+                            viewModel.client.historySyncing ? "Syncing History" : "Sync History",
+                            systemImage: viewModel.client.historySyncing
+                                ? "arrow.triangle.2.circlepath"
+                                : "clock.arrow.circlepath"
+                        )
+                    }
+                    .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
+                }
+
+                #if DEBUG
+                Section("Developer") {
+                    Button(role: .destructive) {
+                        isShowingDeleteMessagesConfirmation = true
+                    } label: {
+                        Label("Delete All Local Messages", systemImage: "trash")
+                    }
+                }
+                #endif
 
                 if let prompt = viewModel.permissionPrompt {
                     Section("Permission Request") {
@@ -136,6 +181,19 @@ struct SettingsView: View {
             .task {
                 viewModel.refresh()
             }
+            #if DEBUG
+            .confirmationDialog(
+                "Delete all local messages?",
+                isPresented: $isShowingDeleteMessagesConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete All Messages", role: .destructive) {
+                    viewModel.deleteAllMessages()
+                }
+            } message: {
+                Text("This removes every message stored on this device. It does not delete messages from the server.")
+            }
+            #endif
         }
     }
 
@@ -207,6 +265,28 @@ private extension DomainPermission {
             return "Allowed"
         case .blocked:
             return "Blocked"
+        }
+    }
+}
+
+private enum HistoryChannel: String, CaseIterable, Identifiable {
+    case ios
+    case signal
+    case discord
+    case browser
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .ios:
+            return "iOS"
+        case .signal:
+            return "Signal"
+        case .discord:
+            return "Discord"
+        case .browser:
+            return "Browser"
         }
     }
 }

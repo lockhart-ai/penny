@@ -111,7 +111,9 @@ struct ChatMessageContentParserTests {
 
         let replyContent = ChatReplyContentParser.parse(content)
 
-        #expect(replyContent == ChatReplyContent(body: "Hacks", author: "You", summary: "/console ffxglow 0"))
+        #expect(replyContent?.body == "Hacks")
+        #expect(replyContent?.author == "You")
+        #expect(replyContent?.summary == "/console ffxglow 0")
     }
 
     @Test func ignoresContentWithoutReplyContext() {

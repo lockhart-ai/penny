@@ -338,6 +338,14 @@ final class SettingsViewModel {
         client.deleteDomain(domain: entry.domain)
     }
 
+    func startHistorySync(channelTypes: [String]) {
+        client.startHistorySync(channelTypes: channelTypes)
+    }
+
+    func deleteAllMessages() {
+        client.deleteAllMessages()
+    }
+
     func decidePermissionPrompt(allowed: Bool) {
         guard let prompt = permissionPrompt else { return }
         client.decidePermission(requestID: prompt.requestID, allowed: allowed)

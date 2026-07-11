@@ -53,6 +53,7 @@ class StartupReadyChannel(MessageChannel):
         attachments: list[str] | None = None,
         quote_message=None,
         source_name: str | None = None,
+        message_log_id: int | None = None,
     ) -> int | None:
         self.sent.append((recipient, message))
         return len(self.sent)

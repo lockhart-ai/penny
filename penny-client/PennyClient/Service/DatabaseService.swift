@@ -63,6 +63,22 @@ final class DatabaseService {
             }
             databaseConnection.userVersion = 2
         }
+
+        if currentVersion < 3 {
+            if try !MessageModel.columnExists(database: databaseConnection, name: "channel_type") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.channelTypeExp))
+            }
+            if try !MessageModel.columnExists(database: databaseConnection, name: "device_label") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.deviceLabelExp))
+            }
+            if try !MessageModel.columnExists(database: databaseConnection, name: "device_identifier") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.deviceIdentifierExp))
+            }
+            if try !MessageModel.columnExists(database: databaseConnection, name: "parent_id") {
+                try databaseConnection.run(MessageModel.table().addColumn(MessageModel.parentIDExp))
+            }
+            databaseConnection.userVersion = 3
+        }
     }
 }
 
@@ -117,11 +133,54 @@ extension DatabaseService {
         }
     }
 
+    @discardableResult
+    func reconcileLegacyMessage(outboxID: Int, canonicalID: Int) -> Bool {
+        setup()
+
+        do {
+            return try MessageModel.reconcileLegacyMessage(
+                database: databaseConnection,
+                outboxID: outboxID,
+                canonicalID: canonicalID
+            )
+        } catch {
+            print(error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func reconcileLocalMessage(content: String, createdAt: Date, canonicalID: Int) -> Int? {
+        setup()
+
+        do {
+            return try MessageModel.reconcileLocalMessage(
+                database: databaseConnection,
+                content: content,
+                createdAt: createdAt,
+                canonicalID: canonicalID
+            )
+        } catch {
+            print(error)
+            return nil
+        }
+    }
+
     func save(message: MessageModel) {
         setup()
 
         do {
             try message.save(database: databaseConnection)
+        } catch {
+            print(error)
+        }
+    }
+
+    func deleteAllMessages() {
+        setup()
+
+        do {
+            try databaseConnection.run(MessageModel.table().delete())
         } catch {
             print(error)
         }
@@ -135,16 +194,36 @@ struct MessageModel: Codable, Identifiable, Hashable {
         createdAt = message.createdAt
         content = message.content
         sourceHint = message.sourceHint
+        channelType = message.channelType
+        deviceLabel = message.deviceLabel
+        deviceIdentifier = message.deviceIdentifier
+        parentID = message.parentID
         imageAttachmentDataURLs = message.imageAttachmentDataURLs
         isOutgoing = message.isOutgoing
     }
 
-    init(id: Int, serverID: Int?, createdAt: Date, content: String, sourceHint: String?, imageAttachmentDataURLs: [String], isOutgoing: Bool) {
+    init(
+        id: Int,
+        serverID: Int?,
+        createdAt: Date,
+        content: String,
+        sourceHint: String?,
+        channelType: String? = nil,
+        deviceLabel: String? = nil,
+        deviceIdentifier: String? = nil,
+        parentID: Int? = nil,
+        imageAttachmentDataURLs: [String],
+        isOutgoing: Bool
+    ) {
         self.id = id
         self.serverID = serverID
         self.createdAt = createdAt
         self.content = content
         self.sourceHint = sourceHint
+        self.channelType = channelType
+        self.deviceLabel = deviceLabel
+        self.deviceIdentifier = deviceIdentifier
+        self.parentID = parentID
         self.imageAttachmentDataURLs = imageAttachmentDataURLs
         self.isOutgoing = isOutgoing
     }
@@ -159,6 +238,14 @@ struct MessageModel: Codable, Identifiable, Hashable {
     var content: String
     @SqlProperty
     var sourceHint: String?
+    @SqlProperty
+    var channelType: String?
+    @SqlProperty
+    var deviceLabel: String?
+    @SqlProperty
+    var deviceIdentifier: String?
+    @SqlProperty
+    var parentID: Int?
     var imageAttachmentDataURLs: [String]
     fileprivate static var imageAttachmentDataURLsExp: SQLite.Expression<String> {
         Expression<String>("image_attachment_data_urls")
@@ -192,6 +279,10 @@ struct MessageModel: Codable, Identifiable, Hashable {
                 MessageModel.createdAtExp <- createdAt,
                 MessageModel.contentExp <- content,
                 MessageModel.sourceHintExp <- sourceHint,
+                MessageModel.channelTypeExp <- channelType,
+                MessageModel.deviceLabelExp <- deviceLabel,
+                MessageModel.deviceIdentifierExp <- deviceIdentifier,
+                MessageModel.parentIDExp <- parentID,
                 MessageModel.imageAttachmentDataURLsExp <- MessageModel.encodedImageAttachmentDataURLs(imageAttachmentDataURLs),
                 MessageModel.isOutgoingExp <- isOutgoing
             )
@@ -237,6 +328,59 @@ struct MessageModel: Codable, Identifiable, Hashable {
         try database.scalar(table().filter(serverIDExp == serverID).count) > 0
     }
 
+    fileprivate static func reconcileLegacyMessage(
+        database: Connection,
+        outboxID: Int,
+        canonicalID: Int
+    ) throws -> Bool {
+        guard outboxID != canonicalID,
+              let legacy = try database.pluck(table().filter(serverIDExp == outboxID)) else {
+            return false
+        }
+
+        let legacyID = legacy[idExp]
+        if let canonical = try database.pluck(table().filter(serverIDExp == canonicalID)) {
+            guard canonical[idExp] != legacyID else { return false }
+            try database.run(table().filter(idExp == legacyID).delete())
+            return true
+        }
+
+        try database.run(
+            table()
+                .filter(idExp == legacyID)
+                .update(idExp <- canonicalID, serverIDExp <- canonicalID)
+        )
+        return true
+    }
+
+    fileprivate static func reconcileLocalMessage(
+        database: Connection,
+        content: String,
+        createdAt: Date,
+        canonicalID: Int
+    ) throws -> Int? {
+        let candidates = try load(database: database).filter {
+            $0.serverID == nil && $0.id < 0 && $0.isOutgoing && $0.content == content
+        }
+        guard let local = candidates.min(by: {
+            abs($0.createdAt.timeIntervalSince(createdAt)) < abs($1.createdAt.timeIntervalSince(createdAt))
+        }) else {
+            return nil
+        }
+
+        if let canonical = try database.pluck(table().filter(serverIDExp == canonicalID)) {
+            guard canonical[idExp] != local.id else { return nil }
+            try database.run(table().filter(idExp == local.id).delete())
+        } else {
+            try database.run(
+                table()
+                    .filter(idExp == local.id)
+                    .update(idExp <- canonicalID, serverIDExp <- canonicalID)
+            )
+        }
+        return local.id
+    }
+
     private static func filteredTable(for filter: MessagePageFilter) -> Table {
         switch filter {
         case .all:
@@ -261,6 +405,10 @@ struct MessageModel: Codable, Identifiable, Hashable {
             createdAt: entry[createdAtExp],
             content: entry[contentExp],
             sourceHint: entry[sourceHintExp],
+            channelType: entry[channelTypeExp],
+            deviceLabel: entry[deviceLabelExp],
+            deviceIdentifier: entry[deviceIdentifierExp],
+            parentID: entry[parentIDExp],
             imageAttachmentDataURLs: decodedImageAttachmentDataURLs(entry[imageAttachmentDataURLsExp]),
             isOutgoing: entry[isOutgoingExp]
         )

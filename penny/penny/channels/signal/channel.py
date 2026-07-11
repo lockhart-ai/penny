@@ -384,6 +384,7 @@ class SignalChannel(MessageChannel):
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
         source_name: str | None = None,
+        message_log_id: int | None = None,
     ) -> int | None:
         """Deliver a prepared message via the Signal REST API.
 

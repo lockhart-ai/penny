@@ -347,6 +347,7 @@ class IosOutboxItem(SQLModel, table=True):
     __tablename__ = "ios_outbox"
 
     id: int | None = Field(default=None, primary_key=True)
+    message_log_id: int | None = Field(default=None, foreign_key="messagelog.id", index=True)
     device_id: int = Field(foreign_key="device.id", index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
     content: str
