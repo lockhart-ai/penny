@@ -44,6 +44,7 @@ from penny.database.memory import (
     strip_display_brackets,
 )
 from penny.database.models import MemoryEntry, MemoryRow
+from penny.database.mutation_store import render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt_tools
@@ -378,6 +379,20 @@ def _lifecycle_block(db: Database, row: MemoryRow) -> list[str]:
     ]
 
 
+def _recent_changes_block(db: Database, name: str) -> list[str]:
+    """The collection's recent config-change history from the mutation ledger
+    (#1560) — each line naming its run id, so "when was this archived, and by
+    what?" is a read, and the surface stays an anchor (the run is one hop away,
+    never guessed).  Bounded by the shared ``RUN_HISTORY_RECORDS`` (the same
+    recent-N used for a memory's run history), so no new limit is invented.  Empty
+    (no block) for a collection with no recorded mutations (seeded / migration
+    rows)."""
+    events = db.mutations.history(name, PennyConstants.RUN_HISTORY_RECORDS)
+    if not events:
+        return []
+    return ["", "Recent changes (newest first):", *(f"  {render_mutation(e)}" for e in events)]
+
+
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
@@ -672,12 +687,16 @@ class CollectionArchiveTool(MemoryTool):
             return f"You tried to archive {memory} but it didn't work:"
         return f"You archived {memory}:"
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, run_id: str | None = None) -> None:
         self._db = db
+        # The chat run archiving this collection — recorded as the mutation's
+        # cause (#1560).  The scheduler's max_runs/expiry archive takes a
+        # different path (actor=system); this tool is always a user-run archive.
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = MemoryNameArgs(**kwargs)
-        self._db.memories.archive(args.memory)
+        self._db.memories.archive(args.memory, run_id=self._run_id)
         return ToolResult(message=f"Archived '{args.memory}'.", mutated=True)
 
 
@@ -700,12 +719,13 @@ class CollectionUnarchiveTool(MemoryTool):
             return f"You tried to restore {memory} from the archive but it didn't work:"
         return f"You restored {memory} from the archive:"
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, run_id: str | None = None) -> None:
         self._db = db
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = MemoryNameArgs(**kwargs)
-        self._db.memories.unarchive(args.memory)
+        self._db.memories.unarchive(args.memory, run_id=self._run_id)
         return ToolResult(message=f"Unarchived '{args.memory}'.", mutated=True)
 
 
@@ -1047,11 +1067,15 @@ class CollectionWriteTool(MemoryTool):
         llm_client: LlmClient,
         author: str,
         scope: str | None = None,
+        run_id: str | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
         self._scope = scope
+        # The writing run — stamped on each new entry (created/last-written) so a
+        # stored value cites the run that produced it (#1560).
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionWriteArgs(**kwargs)
@@ -1065,7 +1089,7 @@ class CollectionWriteTool(MemoryTool):
         embed_failure = self._embed_failure(args.memory, entries)
         if embed_failure is not None:
             return embed_failure
-        results = memory.write(entries, author=self._author)
+        results = memory.write(entries, author=self._author, run_id=self._run_id)
         return self._format_results(args.memory, results)
 
     def _embed_failure(self, memory: str, entries: list[EntryInput]) -> ToolResult | None:
@@ -1177,10 +1201,14 @@ class UpdateEntryTool(MemoryTool):
             return f"You couldn't find {entry} to update in {memory}:"
         return f"You updated {entry} in {memory}:"
 
-    def __init__(self, db: Database, author: str, scope: str | None = None) -> None:
+    def __init__(
+        self, db: Database, author: str, scope: str | None = None, run_id: str | None = None
+    ) -> None:
         self._db = db
         self._author = author
         self._scope = scope
+        # The rewriting run — advances the entry's last_written_by_run_id (#1560).
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = UpdateEntryArgs(**kwargs)
@@ -1190,7 +1218,7 @@ class UpdateEntryTool(MemoryTool):
                 success=False,
             )
         memory = _resolve(self._db, args.memory)
-        outcome = memory.update(args.key, args.content, self._author)
+        outcome = memory.update(args.key, args.content, self._author, run_id=self._run_id)
         if outcome == "not_found":
             rejection = _bracket_key_rejection(memory, args.memory, args.key)
             if rejection is not None:
@@ -1320,9 +1348,12 @@ class CollectionUpdateTool(MemoryTool):
             return f"You tried to update {name}'s settings but it didn't work:"
         return f"You updated {name}'s settings:"
 
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+    def __init__(self, db: Database, llm_client: LlmClient, run_id: str | None = None) -> None:
         self._db = db
         self._llm_client = llm_client
+        # The chat run making this config change — recorded as the update
+        # mutation's cause (#1560).
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionUpdateArgs(**kwargs)
@@ -1347,6 +1378,7 @@ class CollectionUpdateTool(MemoryTool):
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
             published=args.published,
+            run_id=self._run_id,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
@@ -1440,6 +1472,10 @@ class MemoryMetadataTool(MemoryTool):
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
+            # The config-change history from the mutation ledger (#1560) — so a
+            # mechanism can enumerate everything done to it (create/update/archive)
+            # in time order, each change citing the run that made it.
+            *_recent_changes_block(self._db, memory.name),
         ]
         return "\n".join(lines)
 
@@ -1545,9 +1581,11 @@ class CollectionMergeTool(MemoryTool):
             return f"You tried to merge {from_memory} into {to_memory} but it didn't work:"
         return f"You merged {from_memory} into {to_memory}:"
 
-    def __init__(self, db: Database, author: str) -> None:
+    def __init__(self, db: Database, author: str, run_id: str | None = None) -> None:
         self._db = db
         self._author = author
+        # The chat run merging — the source-archive mutation's cause (#1560).
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionMergeArgs(**kwargs)
@@ -1557,10 +1595,10 @@ class CollectionMergeTool(MemoryTool):
         source = _resolve(self._db, from_name)
         source_keys = source.keys()
         if not source_keys:
-            self._db.memories.archive(from_name)
+            self._db.memories.archive(from_name, run_id=self._run_id)
             return f"'{from_name}' was empty — archived with nothing to move."
         moved, dropped = self._move_entries(source, to_name, source_keys)
-        self._db.memories.archive(from_name)
+        self._db.memories.archive(from_name, run_id=self._run_id)
         return self._summary(from_name, to_name, moved, dropped)
 
     def _move_entries(self, source: Memory, to_name: str, keys: list[str]) -> tuple[int, list[str]]:
@@ -2042,10 +2080,14 @@ class LogAppendTool(MemoryTool):
             return f"You tried to add an entry to {memory} but it didn't work:"
         return f"You added an entry to {memory}:"
 
-    def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
+    def __init__(
+        self, db: Database, llm_client: LlmClient, author: str, run_id: str | None = None
+    ) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
+        # The appending run — stamped on the new log entry (#1560).
+        self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = LogAppendArgs(**kwargs)
@@ -2059,6 +2101,7 @@ class LogAppendTool(MemoryTool):
         memory.append(
             [LogEntryInput(content=args.content, content_embedding=vec)],
             author=self._author,
+            run_id=self._run_id,
         )
         return ToolResult(message=f"Appended to '{args.memory}'.", mutated=True)
 
@@ -2293,7 +2336,7 @@ def build_memory_tools(
     llm_client: LlmClient,
     agent_name: str,
     scope: str | None = None,
-    created_by_run_id: str | None = None,
+    run_id: str | None = None,
     include_lifecycle: bool = True,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
@@ -2329,11 +2372,16 @@ def build_memory_tools(
     Chat replies via final text and must not have ``done`` available, or
     the model may call it instead of producing a reply.
 
-    ``created_by_run_id`` stamps ``collection_create`` with the id of the chat
-    run that built the surface (#1566) — passed as an explicit parameter, never
-    ambient state.  ``None`` for a collector / non-chat creator, which leaves the
-    column NULL.  (The spawning ``source_message_id`` is linked afterward by the
-    channel, since the message id isn't known until the run returns.)
+    ``run_id`` is the id of the run that built the surface — the chat turn's run,
+    or the collector cycle's — passed as an explicit parameter, never ambient state
+    (#1560).  It threads to every write- and mutation-capable tool as the executing
+    run: entry writes stamp it as ``created_by_run_id`` / ``last_written_by_run_id``
+    on the rows they add or rewrite; ``collection_create`` records it as the new
+    mechanism's ``created_by_run_id`` (#1566); and create / update / archive /
+    unarchive record it on the durable mutation event they emit (the ledger's
+    provenance closure).  ``None`` for a non-run caller, which leaves the columns
+    NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
+    since the message id isn't known until the run returns.)
 
     ``include_lifecycle`` gates the registry-shape tier — ``collection_create`` /
     ``collection_update`` / ``collection_merge`` / ``collection_archive`` /
@@ -2360,17 +2408,17 @@ def build_memory_tools(
         ExistsTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionCreateTool(db, llm_client, created_by_run_id=created_by_run_id),
-        CollectionUpdateTool(db, llm_client),
-        CollectionMergeTool(db, agent_name),
-        CollectionArchiveTool(db),
-        CollectionUnarchiveTool(db),
+        CollectionCreateTool(db, llm_client, created_by_run_id=run_id),
+        CollectionUpdateTool(db, llm_client, run_id=run_id),
+        CollectionMergeTool(db, agent_name, run_id=run_id),
+        CollectionArchiveTool(db, run_id=run_id),
+        CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),
     ]
     mutations: list[Tool] = [
-        CollectionWriteTool(db, llm_client, agent_name, scope=scope),
-        UpdateEntryTool(db, agent_name, scope=scope),
+        CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
+        UpdateEntryTool(db, agent_name, scope=scope, run_id=run_id),
         CollectionDeleteEntryTool(db, scope=scope),
-        LogAppendTool(db, llm_client, agent_name),
+        LogAppendTool(db, llm_client, agent_name, run_id=run_id),
     ]
     return reads + (lifecycle if include_lifecycle else []) + mutations

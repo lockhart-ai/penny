@@ -10,6 +10,7 @@ dispatch in :mod:`store`; shared value types in :mod:`types`.
 from penny.database.memory.objects import (
     Collection,
     Log,
+    LoggedToolCall,
     Memory,
     MessageLogMemory,
     RunHealth,
@@ -58,6 +59,7 @@ __all__ = [
     "Inclusion",
     "is_blank",
     "Log",
+    "LoggedToolCall",
     "LogEntryInput",
     "Memory",
     "MemoryAccessError",

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import PennyConstants
+from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Media, MemoryEntry, MessageLog
 from penny.llm.embeddings import serialize_embedding
@@ -492,6 +492,23 @@ async def test_collection_create_stamps_chat_provenance(
         assert source is not None
         assert source.content == ask
         assert source.direction == PennyConstants.MessageDirection.INCOMING
+
+        # The create is also a durable ledger event whose run is the SAME turn run
+        # that stamped the row — proving the run id threads end-to-end from the
+        # channel through the tool surface into the mutation ledger (#1560, C1/C4).
+        events = penny.db.mutations.history("indie-platformers", limit=5)
+        assert [e.action for e in events] == [MutationAction.CREATED.value]
+        assert events[0].actor == MutationActor.USER_RUN.value
+        assert events[0].run_id == row.created_by_run_id
+        # And that run served this live conversation, not a mechanism: a chat run is
+        # enumerable by ``read_run_calls(target="chat")`` and stamps no run_target —
+        # the served-entity closure that identifies it by its cause.
+        chat_runs = penny.db.messages.run_call_groups(PennyConstants.CHAT_AGENT_NAME, None, 20)
+        this_run = next(
+            (g for g in chat_runs if any(p.run_id == row.created_by_run_id for p in g)), None
+        )
+        assert this_run is not None
+        assert all(p.run_target is None for p in this_run)
 
 
 # ── 2. Special success cases ──────────────────────────────────────────────

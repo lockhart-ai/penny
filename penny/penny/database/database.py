@@ -13,6 +13,7 @@ from penny.database.ios_store import IosStore
 from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
+from penny.database.mutation_store import MutationStore
 from penny.database.preference_store import PreferenceStore
 from penny.database.send_queue_store import SendQueueStore
 from penny.database.thought_store import ThoughtStore
@@ -31,6 +32,7 @@ class Database:
         media: Binary media referenced by memory entries via <media:ID> tokens
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries
+        mutations: Registry-mutation event ledger (create/update/archive provenance)
         preferences: User preference CRUD and dedup
         send_queue: Durable outbound message queue, drained on the send cooldown
         thoughts: Inner monologue persistence (append-only thought log)
@@ -47,7 +49,10 @@ class Database:
         self.domain_permissions = DomainPermissionStore(self.engine)
         self.ios = IosStore(self.engine)
         self.media = MediaStore(self.engine)
-        self.memories = MemoryStore(self.engine, runtime=runtime)
+        # The registry-mutation ledger (#1560).  Constructed before ``memories``
+        # so the memory store records create/update/archive events through it.
+        self.mutations = MutationStore(self.engine)
+        self.memories = MemoryStore(self.engine, runtime=runtime, mutations=self.mutations)
         self.messages = MessageStore(self.engine)
         self.preferences = PreferenceStore(self.engine)
         self.send_queue = SendQueueStore(self.engine)

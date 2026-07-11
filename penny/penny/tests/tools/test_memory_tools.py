@@ -1260,6 +1260,9 @@ class TestLogTools:
         assert "user: find me a grinder" in chat.message
         assert "browse(['espresso grinder'])" in chat.message
         assert "penny: Here's a good grinder." in chat.message
+        # Each rendered run names its own id, so the surface is an anchor: a reader
+        # can reference the run it's inspecting rather than guess it (#1560).
+        assert "run chat-1" in chat.message
 
         # An unknown/typo'd target resolves to a failed, actionable refusal that
         # names the offending value — not a silent empty batch that reads as "this

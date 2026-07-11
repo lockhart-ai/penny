@@ -237,12 +237,13 @@ class Agent:
         its pending cursor committed on success and discarded on failure.
 
         ``run_id`` is supplied by the caller — the same UUID stamps every
-        promptlog row this cycle produces and is what subclass cleanup
-        passes back to ``set_run_outcome``.  Returning the response
-        alongside ``success`` keeps the call chain explicit; no
+        promptlog row this cycle produces, threads to the tool surface as the
+        writing run (so this cycle's entry writes cite it, #1560), and is what
+        subclass cleanup passes back to ``set_run_outcome``.  Returning the
+        response alongside ``success`` keeps the call chain explicit; no
         per-cycle state lives on ``self``.
         """
-        tools = self.get_tools()
+        tools = self.get_tools(run_id=run_id)
         cursor_tools = [t for t in tools if isinstance(t, CursorReadTool)]
         self._install_tools(tools)
 
@@ -859,7 +860,7 @@ class Agent:
         """
         return None
 
-    def get_tools(self, created_by_run_id: str | None = None) -> list[Tool]:
+    def get_tools(self, run_id: str | None = None) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
         ``BackgroundAgent.get_tools`` extends this with ``done`` and
@@ -870,9 +871,12 @@ class Agent:
         immediately and the underlying ``BrowseTool``'s author + cursor
         identity match the agent's current ``name``.
 
-        ``created_by_run_id`` is the chat turn's run id (#1566), threaded to
-        ``collection_create`` so a collection it makes records its creating run.
-        ``None`` for collectors — they aren't spawned by a chat message.
+        ``run_id`` is the id of the run building this surface — the chat turn's or
+        the collector cycle's — threaded to every write/mutation-capable tool as
+        the executing run (#1560): entry writes stamp it, ``collection_create``
+        records it as the new mechanism's creating run (#1566), and each registry
+        mutation records it as the change's cause.  Passed as an explicit
+        parameter, never ambient state.
         """
         scope = self._memory_scope()
         # Key the memory tools (read cursors + entry author) on the bound
@@ -887,7 +891,7 @@ class Agent:
             self._embedding_model_client,
             agent_name=scope or self.name,
             scope=scope,
-            created_by_run_id=created_by_run_id,
+            run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
         )
         tools.append(self._build_browse_tool(author=self.name))
@@ -1318,8 +1322,8 @@ class BackgroundAgent(Agent):
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)
 
-    def get_tools(self, created_by_run_id: str | None = None) -> list[Tool]:
-        tools = super().get_tools(created_by_run_id)
+    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+        tools = super().get_tools(run_id)
         tools.append(DoneTool())
         # send_message only enters the surface when a channel is wired, since the
         # drain schedule needs one to deliver.  The tool itself only enqueues, so

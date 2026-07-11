@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse
 from penny.config import Config
-from penny.constants import PennyConstants, RunOutcome
+from penny.constants import MutationActor, PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryRow
@@ -204,8 +204,9 @@ class Collector(BackgroundAgent):
                     # its allotted number of times (a one-shot reminder archives
                     # itself).  Runs after the outcome is tagged so this cycle is
                     # counted; a cancelled cycle never reaches here, so it doesn't
-                    # burn a run.
-                    self._archive_if_run_limit_reached(collection)
+                    # burn a run.  ``run_id`` is this cycle's run — recorded as the
+                    # system archive's cause in the mutation ledger (#1560).
+                    self._archive_if_run_limit_reached(collection, run_id)
                 self._current_target = None
         _, summary = self._extract_done_args(response)
         tool_trace = self._format_tool_trace(response)
@@ -319,7 +320,7 @@ class Collector(BackgroundAgent):
         if interval != current or idle != collection.consecutive_idle_runs:
             self.db.memories.set_cadence(collection.name, interval, idle)
 
-    def _archive_if_run_limit_reached(self, collection: MemoryRow) -> None:
+    def _archive_if_run_limit_reached(self, collection: MemoryRow, run_id: str) -> None:
         """Archive a ``max_runs``-bounded collection once it has run its quota.
 
         The once-shaped trigger (#1556): after ``max_runs`` completed (non-
@@ -331,19 +332,22 @@ class Collector(BackgroundAgent):
         the ordinary recurring case.  The run count is read from the ledger
         (completed ``promptlog`` runs for this target), never re-decided by the
         model.
+
+        The archive is recorded as a durable mutation event with ``actor=system``
+        (no model in the loop) and a policy ``note`` naming its cause — the run
+        limit — so "when was this archived, and by what?" is answerable by a read
+        even though no run prompt records this system action (#1560).
         """
         if collection.max_runs is None:
             return
         completed = self.db.messages.count_completed_runs(collection.name)
         if completed < collection.max_runs:
             return
-        logger.info(
-            "Archiving '%s': reached its run limit (%d of %d completed runs)",
-            collection.name,
-            completed,
-            collection.max_runs,
+        note = f"reached run limit ({completed} of {collection.max_runs} completed runs)"
+        logger.info("Archiving '%s': %s", collection.name, note)
+        self.db.memories.archive(
+            collection.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note
         )
-        self.db.memories.archive(collection.name)
 
     # ── Per-cycle audit (on the promptlog run itself) ─────────────────────
 

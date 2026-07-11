@@ -18,7 +18,7 @@ from sqlalchemy import text
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
-from penny.constants import RunOutcome
+from penny.constants import MutationAction, MutationActor, RunOutcome
 from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
@@ -380,16 +380,26 @@ def test_max_runs_archives_after_quota(test_config, tmp_path):
 
     # First completed run: below the quota, still active.
     _record_run("r1", RunOutcome.WORKED)
-    collector._archive_if_run_limit_reached(_get(db, "one-shot"))
+    collector._archive_if_run_limit_reached(_get(db, "one-shot"), "r1")
     assert _get(db, "one-shot").archived is False
 
     # Second completed run reaches the quota → archived (system-actor mutation),
     # and the row remains as a visible tombstone.
     _record_run("r2", RunOutcome.NO_WORK)
-    collector._archive_if_run_limit_reached(_get(db, "one-shot"))
+    collector._archive_if_run_limit_reached(_get(db, "one-shot"), "r2")
     archived = _get(db, "one-shot")
     assert archived.archived is True
     assert collector._next_ready_collection() is None
+    # The system archive is a durable, attributable ledger event (#1560): actor is
+    # the scheduler (no model in the loop), the run that triggered it is the join
+    # key, and the cause (the run limit) is carried in the note — so "when was this
+    # archived, and by what?" is a read.
+    events = db.mutations.history("one-shot", limit=10)
+    archive_events = [e for e in events if e.action == MutationAction.ARCHIVED.value]
+    assert len(archive_events) == 1
+    assert archive_events[0].actor == MutationActor.SYSTEM.value
+    assert archive_events[0].run_id == "r2"
+    assert "run limit" in (archive_events[0].detail or "")
 
 
 def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
@@ -414,7 +424,7 @@ def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
             run_target="recurring",
         )
         collector._tag_promptlog_run(run_id, RunOutcome.WORKED, "s", 0)
-    collector._archive_if_run_limit_reached(_get(db, "recurring"))
+    collector._archive_if_run_limit_reached(_get(db, "recurring"), "c")
     assert _get(db, "recurring").archived is False
 
 

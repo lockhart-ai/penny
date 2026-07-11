@@ -97,8 +97,8 @@ class ChatAgent(Agent):
         """Bind the Collector so test_extraction_prompt is available in chat."""
         self._collector = collector
 
-    def get_tools(self, created_by_run_id: str | None = None) -> list[Tool]:
-        tools = super().get_tools(created_by_run_id)
+    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+        tools = super().get_tools(run_id)
         # Notification mute/unmute is a chat-driven action over the MuteState row
         # (the retired /mute + /unmute commands), so both tools live on the chat
         # surface — the model dispatches to them from natural language.
@@ -180,7 +180,7 @@ class ChatAgent(Agent):
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
-            self._install_tools(self.get_tools(created_by_run_id=run_id))
+            self._install_tools(self.get_tools(run_id=run_id))
             system_prompt = await self._build_system_prompt(sender, content)
             return await self.run(
                 prompt=content,

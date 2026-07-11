@@ -17,11 +17,12 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from pydantic import BaseModel
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
-from penny.constants import PennyConstants
+from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.memory import _similarity as sim
 from penny.database.memory.objects import Collection, Log, Memory, MessageLogMemory, RunLog
 from penny.database.memory.types import (
@@ -37,6 +38,7 @@ from penny.database.memory.types import (
     wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.database.mutation_store import MutationDetail, MutationStore
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,52 @@ _MESSAGE_LOG_DIRECTIONS = {
     PennyConstants.MEMORY_USER_MESSAGES_LOG: PennyConstants.MessageDirection.INCOMING,
     PennyConstants.MEMORY_PENNY_MESSAGES_LOG: PennyConstants.MessageDirection.OUTGOING,
 }
+
+
+class _MetadataUpdate(BaseModel):
+    """The optional fields of a collection metadata update — only the set ones are
+    applied.  ``apply_to`` mutates the row in place and returns the names of the
+    fields that actually changed (the mutation event's ``changed_fields``, #1560),
+    keeping ``update_collection_metadata`` short."""
+
+    description: str | None = None
+    description_embedding: list[float] | None = None
+    inclusion: Inclusion | None = None
+    recall: RecallMode | None = None
+    published: bool | None = None
+    extraction_prompt: str | None = None
+    collector_interval_seconds: int | None = None
+    intent: str | None = None
+
+    def apply_to(self, memory: MemoryRow) -> list[str]:
+        changed: list[str] = []
+        if self.description is not None:
+            memory.description = self.description
+            memory.description_embedding = sim.maybe_serialize(self.description_embedding)
+            changed.append("description")
+        if self.inclusion is not None:
+            memory.inclusion = self.inclusion.value
+            changed.append("inclusion")
+        if self.recall is not None:
+            memory.recall = self.recall.value
+            changed.append("recall")
+        if self.published is not None:
+            memory.published = self.published
+            changed.append("published")
+        if self.extraction_prompt is not None:
+            memory.extraction_prompt = self.extraction_prompt
+            changed.append("extraction_prompt")
+        if self.collector_interval_seconds is not None:
+            # Editing the interval declares a new intended cadence: current and
+            # snap-back base both move, and any throttle backoff clears.
+            memory.collector_interval_seconds = self.collector_interval_seconds
+            memory.base_interval_seconds = self.collector_interval_seconds
+            memory.consecutive_idle_runs = 0
+            changed.append("collector_interval_seconds")
+        if self.intent is not None:
+            memory.intent = self.intent
+            changed.append("intent")
+        return changed
 
 
 class MemoryStore:
@@ -64,10 +112,22 @@ class MemoryStore:
           set_entry_embeddings
     """
 
-    def __init__(self, engine, runtime: RuntimeParams | None = None):
+    def __init__(
+        self,
+        engine,
+        runtime: RuntimeParams | None = None,
+        mutations: MutationStore | None = None,
+    ):
         self.engine = engine
         # /config-tunable dedup thresholds; tests get vanilla defaults.
         self._runtime = runtime if runtime is not None else RuntimeParams()
+        # The registry-mutation ledger (#1560).  Create/update/archive/unarchive
+        # of a collection each write a durable event here, at this Python
+        # chokepoint — so no caller (chat tool, scheduler) can mutate a mechanism
+        # without the provenance being recorded.  Defaults to one over the shared
+        # engine when the facade doesn't inject it (isolated tests), so the
+        # recording is never silently skipped.
+        self._mutations = mutations if mutations is not None else MutationStore(engine)
         # Fired after any mutation so observers (the browser channel) can refresh.
         # The factory injects it into each Memory object it builds.
         self._on_memory_changed: Callable[[str | None], None] | None = None
@@ -232,6 +292,20 @@ class MemoryStore:
             session.commit()
             session.refresh(memory)
             logger.debug("Created %s memory %s", type_.value, name)
+        # A collection is a registry mechanism — its creation is a mutation event
+        # (#1560).  Logs aren't mechanisms (the reference map's mutation stream is
+        # collections/skills), so they don't get one; nor do seeded/migration
+        # creates, which bypass this store entirely (correct — they carry no
+        # creating run).  The actor is always a chat run here (collectors can't
+        # create, #1556), so ``created_by_run_id`` is the cause.
+        if type_ == MemoryType.COLLECTION:
+            self._mutations.record(
+                entity_type=MutationEntityType.COLLECTION,
+                entity_name=name,
+                action=MutationAction.CREATED,
+                actor=MutationActor.USER_RUN,
+                run_id=created_by_run_id,
+            )
         self._notify_changed(name)
         return memory
 
@@ -297,13 +371,41 @@ class MemoryStore:
         if self._on_memory_changed is not None:
             self._on_memory_changed(name)
 
-    def archive(self, name: str) -> None:
-        self._set_archived(name, True)
+    def archive(
+        self,
+        name: str,
+        *,
+        actor: MutationActor = MutationActor.USER_RUN,
+        run_id: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        """Archive a collection and record the mutation (#1560).
 
-    def unarchive(self, name: str) -> None:
-        self._set_archived(name, False)
+        ``actor`` / ``run_id`` / ``note`` carry the provenance: a chat archive is
+        ``USER_RUN`` + its run id; the scheduler's ``max_runs`` / ``expires_at``
+        retire is ``SYSTEM`` + the collector run + a policy ``note`` (its cause,
+        which no run prompt otherwise records)."""
+        self._set_archived(name, True, MutationAction.ARCHIVED, actor, run_id, note)
 
-    def _set_archived(self, name: str, archived: bool) -> None:
+    def unarchive(
+        self,
+        name: str,
+        *,
+        actor: MutationActor = MutationActor.USER_RUN,
+        run_id: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        self._set_archived(name, False, MutationAction.UNARCHIVED, actor, run_id, note)
+
+    def _set_archived(
+        self,
+        name: str,
+        archived: bool,
+        action: MutationAction,
+        actor: MutationActor,
+        run_id: str | None,
+        note: str | None,
+    ) -> None:
         name = slug(name)
         with self._session() as session:
             memory = session.get(MemoryRow, name)
@@ -313,6 +415,14 @@ class MemoryStore:
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
             session.commit()
+        self._mutations.record(
+            entity_type=MutationEntityType.COLLECTION,
+            entity_name=name,
+            action=action,
+            actor=actor,
+            run_id=run_id,
+            detail=MutationDetail(note=note) if note else None,
+        )
         self._notify_changed(name)
 
     def update_collection_metadata(
@@ -327,6 +437,7 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         published: bool | None = None,
+        run_id: str | None = None,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
 
@@ -344,33 +455,38 @@ class MemoryStore:
         """
         name = slug(name)
         self._require_collection(name)
+        fields = _MetadataUpdate(
+            description=description,
+            description_embedding=description_embedding,
+            inclusion=inclusion,
+            recall=recall,
+            published=published,
+            extraction_prompt=extraction_prompt,
+            collector_interval_seconds=collector_interval_seconds,
+            intent=intent,
+        )
         with self._session() as session:
             memory = session.get(MemoryRow, name)
             if memory is None:
                 raise MemoryNotFoundError(name)
-            if description is not None:
-                memory.description = description
-                memory.description_embedding = sim.maybe_serialize(description_embedding)
-            if inclusion is not None:
-                memory.inclusion = inclusion.value
-            if recall is not None:
-                memory.recall = recall.value
-            if published is not None:
-                memory.published = published
-            if extraction_prompt is not None:
-                memory.extraction_prompt = extraction_prompt
-            if collector_interval_seconds is not None:
-                # Editing the interval declares a new intended cadence: current
-                # and snap-back base both move, and any throttle backoff clears.
-                memory.collector_interval_seconds = collector_interval_seconds
-                memory.base_interval_seconds = collector_interval_seconds
-                memory.consecutive_idle_runs = 0
-            if intent is not None:
-                memory.intent = intent
+            changed = fields.apply_to(memory)
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
             session.commit()
             session.refresh(memory)
+        # Record the config change as a durable event (#1560).  Only when a field
+        # actually moved — a no-op update (every field None) isn't a mutation.
+        # The new values live verbatim in the run's promptlog tool call; the event
+        # names which fields changed so the history reads without re-fetching them.
+        if changed:
+            self._mutations.record(
+                entity_type=MutationEntityType.COLLECTION,
+                entity_name=name,
+                action=MutationAction.UPDATED,
+                actor=MutationActor.USER_RUN,
+                run_id=run_id,
+                detail=MutationDetail(changed_fields=changed),
+            )
         self._notify_changed(name)
         return memory
 

@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from penny.constants import PennyConstants
+from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -79,11 +79,58 @@ class TestMemoryMetadata:
 
     def test_archive_and_unarchive(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("notes", "scratch", Inclusion.NEVER, RecallMode.RECENT)
-        db.memories.archive("notes")
+        db.memories.create_collection(
+            "notes", "scratch", Inclusion.NEVER, RecallMode.RECENT, created_by_run_id="run-create"
+        )
+        db.memories.archive("notes", run_id="run-arch")
         assert db.memories.get("notes").archived is True
-        db.memories.unarchive("notes")
+        db.memories.unarchive("notes", run_id="run-unarch")
         assert db.memories.get("notes").archived is False
+
+    def test_registry_mutations_are_durable_events(self, tmp_path):
+        """Every create / update / archive / unarchive of a collection writes a
+        ledger event carrying (entity, run, actor, what changed) — so a
+        mechanism's config history is a read, in time order (#1560, criteria
+        2 + 4)."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection(
+            "watch", "a watch", Inclusion.RELEVANT, RecallMode.RECENT, created_by_run_id="run-1"
+        )
+        db.memories.update_collection_metadata("watch", recall=RecallMode.ALL, run_id="run-2")
+        db.memories.archive("watch", run_id="run-3")
+        db.memories.unarchive("watch", run_id="run-4")
+
+        events = db.mutations.history("watch", limit=10)
+        # Newest first (datetime ordering), one row per mutation.
+        assert [e.action for e in events] == [
+            MutationAction.UNARCHIVED.value,
+            MutationAction.ARCHIVED.value,
+            MutationAction.UPDATED.value,
+            MutationAction.CREATED.value,
+        ]
+        assert [e.run_id for e in events] == ["run-4", "run-3", "run-2", "run-1"]
+        # A chat-driven change is actor=user-run; the run id is the join key.
+        assert all(e.actor == MutationActor.USER_RUN.value for e in events)
+        # The update names which field changed (values live in the run's promptlog).
+        update = next(e for e in events if e.action == MutationAction.UPDATED.value)
+        assert update.detail is not None and "recall" in update.detail
+        # A no-op update (nothing supplied) is not a mutation.
+        db.memories.update_collection_metadata("watch")
+        assert len(db.mutations.history("watch", limit=10)) == 4
+
+    def test_metadata_renders_recent_change_history(self, tmp_path):
+        """memory_metadata surfaces the mutation ledger so "when was this
+        archived, and by what?" is answerable by a read, each change naming its
+        run id (the anchor invariant, #1560)."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection(
+            "watch", "a watch", Inclusion.NEVER, RecallMode.RECENT, created_by_run_id="run-1"
+        )
+        db.memories.archive("watch", run_id="run-9")
+        result = asyncio.run(MemoryMetadataTool(db).execute(memory="watch")).message
+        assert "Recent changes" in result
+        assert "archived by user-run" in result
+        assert "run run-9" in result
 
     def test_archive_missing_raises(self, tmp_path):
         db = _make_db(tmp_path)
@@ -289,11 +336,23 @@ class TestCollectionWrites:
         db.memories.memory("likes").write(
             [EntryInput(key="k", content="old body")],
             author="chat",
+            run_id="run-create",
         )
+        # The writing run stamps both anchors on the new entry (#1560).
+        created = db.memories.memory("likes").get("k")[0]
+        assert created.created_by_run_id == "run-create"
+        assert created.last_written_by_run_id == "run-create"
 
-        assert db.memories.memory("likes").update("k", "new body", "chat") == "ok"
+        assert (
+            db.memories.memory("likes").update("k", "new body", "chat", run_id="run-edit") == "ok"
+        )
         entries = db.memories.memory("likes").get("k")
         assert entries[0].content == "new body"
+        # A rewrite advances last_written but leaves the creating run intact — the
+        # two anchors keep "who wrote the current value?" distinct from "who
+        # created it?", the read-path into the ledger's write history.
+        assert entries[0].created_by_run_id == "run-create"
+        assert entries[0].last_written_by_run_id == "run-edit"
 
         # Lookups are strictly exact — a bracket-wrapped key (the `[key]` display
         # form copied from an entry list) is NOT silently normalized at the data

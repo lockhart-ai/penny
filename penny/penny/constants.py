@@ -45,6 +45,40 @@ class RunOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
+class MutationAction(StrEnum):
+    """The kind of registry-entity lifecycle change a mutation event records
+    (#1560).  Each create / update / archive / unarchive of a collection writes
+    one ``mutation_event`` row, so "when was this archived, and by what?" is a
+    read, not a memory the model re-asserts from its own past narration."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    ARCHIVED = "archived"
+    UNARCHIVED = "unarchived"
+
+
+class MutationActor(StrEnum):
+    """Who caused a registry mutation (#1560).
+
+    ``USER_RUN`` — a chat turn's run did it (the user asked, the model acted);
+    the run id is the join key into the ledger.  ``SYSTEM`` — the scheduler did
+    it with no model in the loop (a ``max_runs`` / ``expires_at`` archive reading
+    columns), so its cause is a policy, carried in the event's detail note."""
+
+    USER_RUN = "user-run"
+    SYSTEM = "system"
+
+
+class MutationEntityType(StrEnum):
+    """The kind of registry entity a mutation event points at (#1560).
+
+    Only ``COLLECTION`` today — post-#1556 the collection is the one background
+    mechanism.  Declared as an enum so a future first-class ``skill`` (its
+    versioning is #1562/#1471) slots in without reshaping the event."""
+
+    COLLECTION = "collection"
+
+
 class ProgressEmoji(StrEnum):
     """Emojis used by ProgressTracker implementations to surface in-flight work.
 
@@ -136,6 +170,11 @@ class PennyConstants:
     BROWSE_DROPPED_HEADER = "## browse dropped: "
     BROWSE_TITLE_PREFIX = "Title: "
     BROWSE_URL_PREFIX = "URL: "
+    # The leading marker of a ``generate_image`` tool result — names the stored
+    # media row's id so the id is an addressable part of the run's egress/media
+    # trace (#1560).  Single source of truth: ``GenerateImageTool`` formats with
+    # it and ``render_run_calls`` parses it back, so the two can't drift.
+    GENERATED_IMAGE_RESULT_PREFIX = "Generated image #"
     SECTION_SEPARATOR = "\n\n---\n\n"
     DISLIKE_FILTER_THRESHOLD = 0.8
 

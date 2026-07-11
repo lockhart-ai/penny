@@ -23,6 +23,7 @@ import base64
 import logging
 from typing import TYPE_CHECKING, Any
 
+from penny.constants import PennyConstants
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
 from penny.tools.base import Tool
@@ -81,9 +82,13 @@ class GenerateImageTool(Tool):
         logger.info("Generated image %d for description: %s", media_id, args.description)
         return ToolResult(
             message=(
-                f"Generated an image of: {args.description}.  It will be delivered to "
-                "the user with your reply — tell them their image is ready and describe "
-                "what you drew."
+                # Naming the stored media id (via the shared prefix constant) makes
+                # the drawn image an addressable part of the egress/media trace:
+                # ``read_run_calls`` reads this id back so a delivery can be inspected
+                # by a read, not confabulated (#1560).
+                f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: "
+                f"{args.description}.  It will be delivered to the user with your "
+                "reply — tell them their image is ready and describe what you drew."
             ),
             mutated=True,
             media_id=media_id,

@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 82
+        assert count == 83
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -121,7 +121,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 82
+        assert count1 == 83
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -159,8 +159,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0082 run = 81 migrations
-        assert count == 81
+        # 0001 is skipped; 0002 through 0083 run = 82 migrations
+        assert count == 82
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -186,7 +186,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 82  # all migrations applied
+        assert count == 83  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -768,3 +768,50 @@ class TestMigrate:
         conn.close()
 
         assert {"source_message_id", "created_by_run_id", "expires_at"}.issubset(columns)
+
+    def test_0083_adds_entry_stamps_and_mutation_event_table(self, tmp_path):
+        """Migration 0083 adds the two entry run-id stamp columns to
+        ``memory_entry`` and creates the ``mutation_event`` table, and is
+        idempotent on a DB that already carries them (#1560)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        # A ``memory_entry`` table as it existed before the stamp columns.
+        conn.execute(
+            "CREATE TABLE memory_entry (id INTEGER PRIMARY KEY, memory_name TEXT, content TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0083_ledger_provenance_closure.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0083", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        mod.up(conn)  # second application is a no-op (guarded)
+        entry_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(memory_entry)").fetchall()
+        }
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        mutation_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(mutation_event)").fetchall()
+        }
+        conn.close()
+
+        assert {"created_by_run_id", "last_written_by_run_id"}.issubset(entry_columns)
+        assert "mutation_event" in tables
+        assert {"entity_type", "entity_name", "action", "actor", "run_id", "detail"}.issubset(
+            mutation_columns
+        )

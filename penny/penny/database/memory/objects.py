@@ -34,11 +34,12 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import numpy as np
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
@@ -61,6 +62,7 @@ from penny.database.memory.types import (
     wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.database.mutation_store import EnumeratedDecision
 from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
 from penny.validation.conditions import ConditionKey, run_flag_conditions
 
@@ -154,12 +156,18 @@ class Memory:
         return []
 
     def write(
-        self, entries: list[EntryInput], author: str, thresholds: DedupThresholds | None = None
+        self,
+        entries: list[EntryInput],
+        author: str,
+        thresholds: DedupThresholds | None = None,
+        run_id: str | None = None,
     ) -> list[WriteResult]:
         self._refuse_collection_op()
         return []
 
-    def update(self, key: str, content: str, author: str) -> UpdateOutcome:
+    def update(
+        self, key: str, content: str, author: str, run_id: str | None = None
+    ) -> UpdateOutcome:
         self._refuse_collection_op()
         return "not_found"
 
@@ -171,7 +179,9 @@ class Memory:
         self._refuse_collection_op()
         return 0
 
-    def append(self, entries: list[LogEntryInput], author: str) -> list[MemoryEntry]:
+    def append(
+        self, entries: list[LogEntryInput], author: str, run_id: str | None = None
+    ) -> list[MemoryEntry]:
         self._refuse_log_op()
         return []
 
@@ -400,24 +410,40 @@ class Collection(Memory):
         return ordered
 
     def write(
-        self, entries: list[EntryInput], author: str, thresholds: DedupThresholds | None = None
+        self,
+        entries: list[EntryInput],
+        author: str,
+        thresholds: DedupThresholds | None = None,
+        run_id: str | None = None,
     ) -> list[WriteResult]:
         """Write entries with per-entry similarity dedup.  One ``WriteResult``
         per input; dedup runs against the existing corpus using the configured
-        (or default) thresholds."""
+        (or default) thresholds.
+
+        ``run_id`` (the writing run, threaded as a parameter — no ambient state)
+        stamps ``created_by_run_id`` and ``last_written_by_run_id`` on each new
+        row, so an entry cites the run that produced it (#1560)."""
         thresholds = thresholds or DedupThresholds.from_runtime(self._runtime)
         existing = self._entries_with_vectors()
         results: list[WriteResult] = []
         with self._session() as session:
             for entry in entries:
-                results.append(self._write_one(session, entry, author, existing, thresholds))
+                results.append(
+                    self._write_one(session, entry, author, existing, thresholds, run_id)
+                )
             session.commit()
         if any(result.outcome == "written" for result in results):
             self._notify()
         return results
 
-    def update(self, key: str, content: str, author: str) -> UpdateOutcome:
-        """Replace the content of every entry with ``key`` (dedup keeps it to one)."""
+    def update(
+        self, key: str, content: str, author: str, run_id: str | None = None
+    ) -> UpdateOutcome:
+        """Replace the content of every entry with ``key`` (dedup keeps it to one).
+
+        A rewrite, so ``last_written_by_run_id`` advances to ``run_id`` while
+        ``created_by_run_id`` is left untouched — the read-path anchors that keep
+        "who wrote the current value?" distinct from "who created it?" (#1560)."""
         with self._session() as session:
             rows = self._rows_by_key(session, self.name, key)
             if not rows:
@@ -425,6 +451,7 @@ class Collection(Memory):
             for row in rows:
                 row.content = content
                 row.author = author
+                row.last_written_by_run_id = run_id
                 session.add(row)
             session.commit()
         self._notify()
@@ -498,6 +525,7 @@ class Collection(Memory):
         author: str,
         existing: list[EntrySide],
         thresholds: DedupThresholds,
+        run_id: str | None = None,
     ) -> WriteResult:
         rejection_reason = degenerate_reason(entry.content)
         if rejection_reason is not None:
@@ -515,6 +543,8 @@ class Collection(Memory):
             key_embedding=sim.maybe_serialize(entry.key_embedding),
             content_embedding=sim.maybe_serialize(entry.content_embedding),
             created_at=datetime.now(UTC),
+            created_by_run_id=run_id,
+            last_written_by_run_id=run_id,
         )
         session.add(row)
         session.flush()
@@ -531,7 +561,9 @@ class Log(Memory):
     reader's pending/commit lifecycle stays in ``LogReadTool``.
     """
 
-    def append(self, entries: list[LogEntryInput], author: str) -> list[MemoryEntry]:
+    def append(
+        self, entries: list[LogEntryInput], author: str, run_id: str | None = None
+    ) -> list[MemoryEntry]:
         created: list[MemoryEntry] = []
         with self._session() as session:
             for entry in entries:
@@ -543,6 +575,10 @@ class Log(Memory):
                     key_embedding=None,
                     content_embedding=sim.maybe_serialize(entry.content_embedding),
                     created_at=datetime.now(UTC),
+                    # Log entries are immutable (append-only), so the creating run
+                    # is also the last writer (#1560).
+                    created_by_run_id=run_id,
+                    last_written_by_run_id=run_id,
                 )
                 session.add(row)
                 created.append(row)
@@ -618,7 +654,9 @@ class MessageLogMemory(Log):
             else PennyConstants.MessageAuthor.PENNY
         )
 
-    def append(self, entries: list[LogEntryInput], author: str) -> list[MemoryEntry]:
+    def append(
+        self, entries: list[LogEntryInput], author: str, run_id: str | None = None
+    ) -> list[MemoryEntry]:
         raise ReadOnlyMemoryError(
             f"'{self.name}' is a read view over the conversation log — messages "
             "are recorded by the channel, not appended here."
@@ -731,6 +769,79 @@ def _parse_tool_args(function: dict) -> object:
         return json.loads(raw)
     except json.JSONDecodeError:
         return raw
+
+
+def _decode_arguments(raw: object) -> dict[str, Any]:
+    """A stored/wire tool call's ``arguments`` (a JSON string) as a dict.
+
+    Non-string or unparseable arguments yield ``{}`` — the canonical shape is
+    always a dict of fields, and the verbatim string is preserved in the log
+    itself (this is a read projection, never the storage)."""
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+class LoggedToolCall(BaseModel):
+    """The canonical, round-trippable shape of one logged tool call (#1560).
+
+    A logged call and the outgoing wire call are the SAME structure: the model's
+    response is stored verbatim in ``promptlog.response`` (``raw.model_dump()``),
+    where a tool call is ``{"function": {"name": …, "arguments": "<json string>"}}``
+    — the exact envelope the loop re-emits via ``LlmMessage.to_input_message`` and
+    the executor parses via ``LlmClient._parse_tool_call``.  So logs contain calls;
+    they never paraphrase them, and ``replay(logged_call) == original_call`` holds
+    structurally.  This model formalizes that invariant: ``from_function`` reads a
+    stored (or wire) ``function`` dict, ``to_wire`` re-emits the identical envelope,
+    and ``from_function(x.to_wire()) == x`` is the identity.
+
+    It is the one datatype that later doubles as a script / skill step (promotion is
+    a copy, not a parse — #1471) and carries the options-presented ``decision``
+    accommodation for the enumerated-decision unions of #1562/#1563 (a field on the
+    shape now; populated at call sites there, not forced here)."""
+
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    decision: EnumeratedDecision | None = None
+
+    @classmethod
+    def from_function(cls, function: dict) -> LoggedToolCall:
+        """Parse a stored/wire ``function`` dict into the canonical shape."""
+        return cls(
+            name=function.get("name") or "",
+            arguments=_decode_arguments(function.get("arguments")),
+        )
+
+    def to_wire(self) -> dict[str, str]:
+        """Re-emit the OpenAI wire ``function`` envelope — arguments re-serialized
+        exactly as ``LlmMessage.to_input_message`` does, so a round-trip is the
+        identity and the loop would re-send this call unchanged."""
+        return {"name": self.name, "arguments": json.dumps(self.arguments)}
+
+    def render(self) -> str:
+        """The canonical one-line ``name(args)`` projection — call syntax, not
+        narration.  ``read_run_calls`` renders a run as this canonical projection
+        (the prose is composed by the model from the in-context trace); the
+        first-person ``to_result_narration`` is a separate projection."""
+        return render_tool_call(self.name, self.arguments)
+
+
+def _run_logged_steps(prompts: list[PromptLog]) -> list[tuple[str | None, LoggedToolCall]]:
+    """Every tool call across a run's prompts as ``(call_id, LoggedToolCall)``, in
+    order — the canonical projection paired with the id that keys its result."""
+    steps: list[tuple[str | None, LoggedToolCall]] = []
+    for prompt in prompts:
+        response = json.loads(prompt.response) if prompt.response else {}
+        for choice in response.get("choices", []):
+            message = choice.get("message") or {}
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function") or {}
+                steps.append((tool_call.get("id"), LoggedToolCall.from_function(function)))
+    return steps
 
 
 def _write_contents(fields: dict) -> str:
@@ -1088,25 +1199,122 @@ def _run_conclusion(prompts: list[PromptLog]) -> str:
     return f"penny: {reply}" if reply else ""
 
 
+def _run_header(prompts: list[PromptLog]) -> str:
+    """``run <run_id>`` — the run's own addressable identifier, so every rendered
+    run is an anchor surface (a reader can name the run it's looking at, not guess
+    it), per the compositional n≤1 invariant (#1560)."""
+    run_id = prompts[0].run_id if prompts else None
+    return f"run {run_id}" if run_id else ""
+
+
+# ``generate_image``'s result names the stored media row's id via a shared prefix
+# constant (so format + parse can't drift) — the egress/media trace reads it back so
+# a reader can name (and re-fetch) exactly what was attached to the reply.
+_GENERATED_MEDIA_RE = re.compile(re.escape(PennyConstants.GENERATED_IMAGE_RESULT_PREFIX) + r"(\d+)")
+
+# A step's result renders as ONE compact line (bulk results — page content — stay
+# whole in the ledger and are rendered by reference here, per the canonical-call
+# policy): first line only, capped so a big result can't blow up the trace.
+_RESULT_PREVIEW_CHARS = 120
+
+
+def _generated_media_ids(prompts: list[PromptLog]) -> list[int]:
+    """Ids of the media a run generated and delivered with its reply (#1560).
+
+    A drawn image is delivered deterministically to its own reply (#1564); its
+    ``generate_image`` tool result records the stored media id, which lives in the
+    run's accumulated tool-result messages.  Read it back so the egress trace names
+    an addressable id, closing the delivery-introspection gap that let the model
+    confabulate a delivery it couldn't inspect."""
+    if not prompts or not prompts[-1].messages:
+        return []
+    messages = json.loads(prompts[-1].messages)
+    found: list[int] = []
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        found.extend(
+            int(m.group(1)) for m in _GENERATED_MEDIA_RE.finditer(message.get("content") or "")
+        )
+    return found
+
+
+def _egress_media_lines(prompts: list[PromptLog]) -> list[str]:
+    """The ``attached: image #<id>`` line(s) — what actually went out to the user
+    alongside the reply, by addressable id.  Empty when the run attached nothing."""
+    return [f"    attached: image #{media_id}" for media_id in _generated_media_ids(prompts)]
+
+
+def _tool_results_by_id(prompts: list[PromptLog]) -> dict[str, str]:
+    """``{tool_call_id: result content}`` from the run's accumulated tool turns.
+
+    Read off the last prompt's messages (the full conversation, where every step's
+    result sits exactly once), keyed by ``tool_call_id`` so each call renders with
+    its own outcome — the ``their outcomes`` half of chat-run introspection."""
+    if not prompts or not prompts[-1].messages:
+        return {}
+    messages = json.loads(prompts[-1].messages)
+    return {
+        message["tool_call_id"]: message.get("content") or ""
+        for message in messages
+        if message.get("role") == "tool" and message.get("tool_call_id")
+    }
+
+
+def _compact_result(content: str | None) -> str:
+    """One compact line for a step's result — first non-blank line, capped.  Bulk
+    results (page content) stay whole in the ledger; this render is by reference."""
+    if not content:
+        return ""
+    line = next((part.strip() for part in content.splitlines() if part.strip()), "")
+    return (
+        line if len(line) <= _RESULT_PREVIEW_CHARS else f"{line[:_RESULT_PREVIEW_CHARS].rstrip()}…"
+    )
+
+
+def _step_line(index: int, call: LoggedToolCall, result: str | None) -> str:
+    """One step of the canonical projection: ``step <N>: <call> => <result>``.
+
+    ``index`` is the step's coordinate in the run's FULL tool-call sequence — an
+    absolute ordinal, so a filtered view shows gaps rather than renumbering (a
+    persisted coordinate future skill selection can address as ``(run_id, range)``,
+    #1471).  The result renders compact/by-reference."""
+    rendered = f"    step {index}: {call.render()}"
+    preview = _compact_result(result)
+    return f"{rendered} => {preview}" if preview else rendered
+
+
 def render_run_calls(prompts: list[PromptLog]) -> str:
-    """One run as its tool-call SEQUENCE: ``origin → the tool calls → conclusion``.
+    """One run as its tool-call SEQUENCE: ``run id → origin → the numbered steps →
+    conclusion → egress``.
 
     The sequence lens — what a run *did*, with no health/regression signals (that's
-    ``render_run_record``'s job).  A run that produced tool calls is a candidate
-    workflow (the sequence IS the skill); a pure-reply turn shows just origin +
-    conclusion.  Reuses the shared ``render_tool_call`` so a tool reads the same
-    everywhere.  Content is never truncated."""
+    ``render_run_record``'s job).  Each step renders as the **canonical projection**
+    — call syntax (``LoggedToolCall.render``) plus a compact one-line result, ids
+    named with their type (``run <id>``, ``step <N>``, ``image #<id>``) so each feeds
+    exactly one addressing tool — not first-person narration (the model composes prose
+    from this in-context trace).  A run that produced tool calls is a candidate
+    workflow (the sequence IS the skill).
+
+    Step numbers are the run's FULL tool-call ordinals (``done`` consumes an index
+    but isn't shown), so they are stable coordinates: a view that omits steps shows
+    gaps, never renumbers — future skill selection can name ``(run_id, steps 2–5)``
+    unambiguously (#1471).  Leads with the run's own id and closes with the egress/
+    media trace — what was attached/delivered alongside the reply — so a reader can
+    inspect its own turn's delivery (tools + outcomes + what went out) instead of
+    confabulating it, every referenced neighbour named, never guessed (#1560)."""
     if not prompts:
         return "(no data)"
-    lines = [_run_origin(prompts)]
-    lines.extend(
-        f"    -> {render_tool_call(name, args)}"
-        for name, args in _run_tool_calls(prompts)
-        if name != "done"
-    )
+    results = _tool_results_by_id(prompts)
+    lines = [_run_header(prompts), _run_origin(prompts)]
+    for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1):
+        if call.name == "done":
+            continue  # consumes the coordinate (gap, never renumber), not shown
+        lines.append(_step_line(index, call, results.get(call_id) if call_id else None))
     conclusion = _run_conclusion(prompts)
     if conclusion:
         lines.append(conclusion)
+    lines.extend(_egress_media_lines(prompts))
     return "\n".join(line for line in lines if line)
 
 
@@ -1129,7 +1337,9 @@ class RunLog(Log):
     Activity tab renders them as the prompts tab's run → prompts → turns cards).
     """
 
-    def append(self, entries: list[LogEntryInput], author: str) -> list[MemoryEntry]:
+    def append(
+        self, entries: list[LogEntryInput], author: str, run_id: str | None = None
+    ) -> list[MemoryEntry]:
         raise ReadOnlyMemoryError(
             f"'{self.name}' is a read view over collector run history (promptlog) — "
             "runs are recorded by the dispatcher, not appended here."
@@ -1242,6 +1452,7 @@ __all__ = [
     "render_run_calls",
     "classify_run",
     "RunHealth",
+    "LoggedToolCall",
     "MessageLogMemory",
     "RunLog",
 ]

@@ -316,6 +316,57 @@ class MemoryEntry(SQLModel, table=True):
     key_embedding: bytes | None = None
     content_embedding: bytes | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
+    # Entry-level provenance (#1560): the run that first wrote this entry and the
+    # run that last rewrote it (a collection entry is overwritten — a watch's
+    # baseline changes every cycle — so "who wrote the current value?" differs
+    # from "who created it?").  The run id is the join key into the ledger
+    # (``promptlog`` for the run + tool calls); the full write history is those
+    # call records, and these two stamps are the read-path anchors that make
+    # ``read_run_calls`` one guess-free hop from wherever an entry renders.
+    # Threaded as a parameter from the writing run — never ambient state.  NULL
+    # for migration-seeded / pre-#1560 entries.
+    created_by_run_id: str | None = Field(default=None, index=True)
+    last_written_by_run_id: str | None = None
+
+
+class MutationEvent(SQLModel, table=True):
+    """One durable create / update / archive / unarchive of a registry entity —
+    the event half of the operational spine's mutation stream (#1560).
+
+    The registry row (``memory``) holds the *current* materialized state (the
+    ``archived`` flag is the truth); this table is the audit + provenance trail
+    of how it got there — so "when was this archived, and by what?" is answered
+    by a read, not re-decided by the model from its own past narration.  It is
+    the one ledger table with no other home: an entry write is a ``promptlog``
+    tool call and a run is a ``promptlog`` group, but a *system* archive (the
+    scheduler's ``max_runs`` / ``expires_at`` retire) runs no model and logs no
+    prompt, so without this row it would be invisible.
+
+    Audit, not event sourcing: state stays materialized on ``memory``; this only
+    records the transitions.
+    """
+
+    __tablename__ = "mutation_event"
+
+    id: int | None = Field(default=None, primary_key=True)
+    # The kind + name of the entity mutated (``MutationEntityType`` /
+    # ``memory.name`` — a join key into the registry, matching the FK-by-name
+    # discipline the rest of the memory layer uses).
+    entity_type: str = Field(index=True)  # MutationEntityType value
+    entity_name: str = Field(index=True)  # e.g. the collection name
+    action: str  # MutationAction value: created | updated | archived | unarchived
+    # Who caused it (``MutationActor``) and the run that did (the join key into
+    # the ledger; NULL only when no run was in the loop and the actor is system).
+    actor: str = Field(index=True)  # MutationActor value
+    run_id: str | None = Field(default=None, index=True)
+    # JSON-serialized ``MutationDetail`` — what changed (the edited field names),
+    # a human cause note (e.g. the system archive's "max_runs reached"), and the
+    # options-presented accommodation (present in the shape, populated by the
+    # enumerated-decision unions of #1562/#1563 — not forced at call sites now).
+    detail: str | None = None
+    # Datetime for ordering — never the id (criterion 2 enumerates a mechanism's
+    # history in time order).
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
 
 
 class AgentCursor(SQLModel, table=True):
