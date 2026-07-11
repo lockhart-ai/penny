@@ -1,5 +1,9 @@
 # PennyClient Instructions
 
+## Workflow And Review
+
+For task execution, use [`../docs/penny-client-agent-task-workflow.md`](../docs/penny-client-agent-task-workflow.md). For reviewing Swift/iOS pull requests, use [`../docs/penny-client-pr-review-guide.md`](../docs/penny-client-pr-review-guide.md) together with this file.
+
 ## Project Context
 PennyClient is a SwiftUI iOS chat client that connects to the Penny websocket service. The main app entry point and chat UI live in `PennyClient/PennyClient/Views/MessageView.swift`, with screen state and actions in `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`.
 Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode tools for reading, editing, diagnostics, and builds.
