@@ -20,6 +20,7 @@ protocol WebSocketTransport {
 final class WebSocketClient: WebSocketTransport {
     private let urlSession: URLSession
     private let maximumMessageSize: Int
+    private let logger: any LogService
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var onReceive: ReceiveHandler?
@@ -27,10 +28,12 @@ final class WebSocketClient: WebSocketTransport {
 
     init(
         urlSession: URLSession = URLSession(configuration: .default),
-        maximumMessageSize: Int = 20 * 1024 * 1024
+        maximumMessageSize: Int = 20 * 1024 * 1024,
+        logger: (any LogService)? = nil
     ) {
         self.urlSession = urlSession
         self.maximumMessageSize = maximumMessageSize
+        self.logger = logger ?? OSLogService(category: .webSocket)
     }
 
     var isConnected: Bool {
@@ -69,6 +72,7 @@ final class WebSocketClient: WebSocketTransport {
     func send(_ data: Data) async throws {
         guard let webSocketTask else { return }
         guard let message = String(data: data, encoding: .utf8) else { return }
+        logger.debug("sending frame (type=\(Self.frameType(from: data)), \(data.count) bytes)", privacy: .public)
         try await webSocketTask.send(.string(message))
     }
 
@@ -77,7 +81,7 @@ final class WebSocketClient: WebSocketTransport {
             do {
                 let incomingMessage = try await webSocketTask.receive()
                 guard let data = Self.data(from: incomingMessage) else { continue }
-                debugLogFrame("received frame (\(data.count) bytes)")
+                logger.debug("received frame (type=\(Self.frameType(from: data)), \(data.count) bytes)", privacy: .public)
                 onReceive?(data)
             } catch {
                 guard !Task.isCancelled else { return }
@@ -98,11 +102,16 @@ final class WebSocketClient: WebSocketTransport {
         }
     }
 
-    /// Logs a short, non-sensitive frame summary in debug builds only. Never logs frame
-    /// contents: outbound frames can carry device secrets, APNs tokens, or chat content.
-    private func debugLogFrame(_ summary: @autoclosure () -> String) {
-        #if DEBUG
-        print("[WebSocketClient] \(summary())")
-        #endif
+    private static func frameType(from data: Data) -> String {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = object["type"] as? String,
+            !type.isEmpty
+        else {
+            return "unknown"
+        }
+
+        return type
     }
+
 }

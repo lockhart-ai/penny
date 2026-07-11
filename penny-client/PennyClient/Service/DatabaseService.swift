@@ -5,12 +5,35 @@ import SQLPropertyMacros
 final class DatabaseService {
     static let shared = DatabaseService()
 
+    private let logger: any LogService
     private var databaseConnection: Connection!
     private var isSetup = false
     private let historySaveQueue = DispatchQueue(
         label: "com.penny.history-save",
         qos: .userInitiated
     )
+
+    init(logger: any LogService = OSLogService(category: .database)) {
+        self.logger = logger
+    }
+
+    private func measureQuery<T>(_ name: String, _ query: () throws -> T) rethrows -> T {
+        let startDate = Date()
+        defer {
+            let elapsedMS = Int(Date().timeIntervalSince(startDate) * 1_000)
+            logger.debug("database query completed (name=\(name), elapsed_ms=\(elapsedMS))", privacy: .public)
+        }
+        return try query()
+    }
+
+    private func measureWrite<T>(_ name: String, _ write: () throws -> T) rethrows -> T {
+        let startDate = Date()
+        defer {
+            let elapsedMS = Int(Date().timeIntervalSince(startDate) * 1_000)
+            logger.debug("database write completed (name=\(name), elapsed_ms=\(elapsedMS))", privacy: .public)
+        }
+        return try write()
+    }
 
     func setupForTesting() {
         connectForTesting()
@@ -98,9 +121,11 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.load(database: databaseConnection)
+            return try measureQuery("load_messages") {
+                try MessageModel.load(database: databaseConnection)
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return []
         }
     }
@@ -118,14 +143,16 @@ extension DatabaseService {
         setup()
 
         do {
-            let page = try MessageModel.loadPage(database: databaseConnection, request: request)
+            let page = try measureQuery("load_message_page") {
+                try MessageModel.loadPage(database: databaseConnection, request: request)
+            }
             return MessagePage(
                 messages: page.models.map(ChatMessage.init(model:)),
                 nextCursor: page.nextCursor,
                 hasMore: page.hasMore
             )
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return MessagePage(messages: [], nextCursor: nil, hasMore: false)
         }
     }
@@ -134,9 +161,11 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.minimumID(database: databaseConnection)
+            return try measureQuery("minimum_message_id") {
+                try MessageModel.minimumID(database: databaseConnection)
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return nil
         }
     }
@@ -145,9 +174,11 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.contains(database: databaseConnection, serverID: serverID)
+            return try measureQuery("contains_message") {
+                try MessageModel.contains(database: databaseConnection, serverID: serverID)
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return false
         }
     }
@@ -157,13 +188,15 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.reconcileLegacyMessage(
-                database: databaseConnection,
-                outboxID: outboxID,
-                canonicalID: canonicalID
-            )
+            return try measureWrite("reconcile_legacy_message") {
+                try MessageModel.reconcileLegacyMessage(
+                    database: databaseConnection,
+                    outboxID: outboxID,
+                    canonicalID: canonicalID
+                )
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return false
         }
     }
@@ -173,14 +206,16 @@ extension DatabaseService {
         setup()
 
         do {
-            return try MessageModel.reconcileLocalMessage(
-                database: databaseConnection,
-                content: content,
-                createdAt: createdAt,
-                canonicalID: canonicalID
-            )
+            return try measureWrite("reconcile_local_message") {
+                try MessageModel.reconcileLocalMessage(
+                    database: databaseConnection,
+                    content: content,
+                    createdAt: createdAt,
+                    canonicalID: canonicalID
+                )
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return nil
         }
     }
@@ -191,14 +226,18 @@ extension DatabaseService {
         do {
             var message = message
             if message.embedding == nil, let serverID = message.serverID {
-                message.embedding = try MessageModel.embedding(
-                    database: databaseConnection,
-                    serverID: serverID
-                )
+                message.embedding = try measureQuery("message_embedding") {
+                    try MessageModel.embedding(
+                        database: databaseConnection,
+                        serverID: serverID
+                    )
+                }
             }
-            try message.save(database: databaseConnection)
+            try measureWrite("save_message") {
+                try message.save(database: databaseConnection)
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
         }
     }
 
@@ -225,27 +264,35 @@ extension DatabaseService {
 
         do {
             var messages = messages
-            try databaseConnection.transaction {
-                for index in messages.indices {
-                    if messages[index].embedding == nil, let serverID = messages[index].serverID {
-                        messages[index].embedding = try MessageModel.embedding(
-                            database: databaseConnection,
-                            serverID: serverID
-                        )
+            try measureWrite("save_messages") {
+                try databaseConnection.transaction {
+                    for index in messages.indices {
+                        if messages[index].embedding == nil, let serverID = messages[index].serverID {
+                            messages[index].embedding = try measureQuery("message_embedding") {
+                                try MessageModel.embedding(
+                                    database: databaseConnection,
+                                    serverID: serverID
+                                )
+                            }
+                        }
+                        if preserveAttachments, let serverID = messages[index].serverID {
+                            let existing = try measureQuery("message_attachments") {
+                                try MessageModel.attachments(
+                                    database: databaseConnection,
+                                    serverID: serverID
+                                )
+                            }
+                            if let existing {
+                                messages[index].imageAttachmentDataURLs = existing
+                            }
+                        }
+                        try messages[index].save(database: databaseConnection)
                     }
-                    if preserveAttachments, let serverID = messages[index].serverID,
-                       let existing = try MessageModel.attachments(
-                           database: databaseConnection,
-                           serverID: serverID
-                       ) {
-                        messages[index].imageAttachmentDataURLs = existing
-                    }
-                    try messages[index].save(database: databaseConnection)
                 }
             }
             return messages.count
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
             return 0
         }
     }
@@ -254,9 +301,11 @@ extension DatabaseService {
         setup()
 
         do {
-            try databaseConnection.run(MessageModel.table().delete())
+            _ = try measureWrite("delete_all_messages") {
+                try databaseConnection.run(MessageModel.table().delete())
+            }
         } catch {
-            print(error)
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
         }
     }
 }

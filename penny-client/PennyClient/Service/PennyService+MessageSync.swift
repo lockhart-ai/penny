@@ -23,7 +23,7 @@ extension PennyService {
     func clearAppBadge() {
         UNUserNotificationCenter.current().setBadgeCount(0) { error in
             if let error {
-                print("Failed to clear badge count: \(error.localizedDescription)")
+                OSLogService(category: .pennyService).error("Failed to clear badge count: \(error.localizedDescription)", privacy: .public)
             }
         }
     }
