@@ -89,19 +89,15 @@ final class SearchService {
         errorMessage = nil
         defer { finishSearch(generation: generation) }
 
-        let messages = await databaseService.loadMessagesInBackground()
-            .filter { filter.includes(ChatMessage(model: $0)) }
+        let candidates = await databaseService.loadEmbeddedMessagesInBackground(filter: filter)
+            .compactMap { model -> (MessageModel, [Float])? in
+                guard let embedding = model.embedding,
+                      let vector = try? decodeFloat32Vector(embedding) else { return nil }
+                return (model, vector)
+            }
         guard generation == searchGeneration else { return }
-
-        let localMatches = lexicalMatches(in: messages, query: trimmedQuery)
-        let candidates = messages.compactMap { model -> (MessageModel, [Float])? in
-            guard let embedding = model.embedding,
-                  let vector = try? decodeFloat32Vector(embedding) else { return nil }
-            return (model, vector)
-        }
-
         guard !candidates.isEmpty else {
-            results = localMatches
+            results = []
             return
         }
 
@@ -113,7 +109,7 @@ final class SearchService {
 
             let compatibleCandidates = candidates.filter { $0.1.count == queryVector.count }
             guard !compatibleCandidates.isEmpty else {
-                results = localMatches
+                results = []
                 return
             }
 
@@ -135,17 +131,13 @@ final class SearchService {
                 }
                 .sorted { lhs, rhs in lhs.distance < rhs.distance }
 
-            results = mergeResults(semanticResults: semanticResults, localMatches: localMatches)
+            results = semanticResults.prefix(Self.maximumResults).map { $0 }
         } catch is CancellationError {
             return
         } catch {
             guard generation == searchGeneration else { return }
-            if localMatches.isEmpty {
-                results = []
-                errorMessage = error.localizedDescription
-            } else {
-                results = localMatches
-            }
+            results = []
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -181,49 +173,6 @@ final class SearchService {
             group.cancelAll()
             return result
         }
-    }
-
-    private func mergeResults(
-        semanticResults: [MessageSearchResult],
-        localMatches: [MessageSearchResult]
-    ) -> [MessageSearchResult] {
-        let semanticIDs = Set(semanticResults.map(\.id))
-        return (semanticResults + localMatches.filter { !semanticIDs.contains($0.id) })
-            .prefix(Self.maximumResults)
-            .map { $0 }
-    }
-
-    private func lexicalMatches(in messages: [MessageModel], query: String) -> [MessageSearchResult] {
-        let terms = query
-            .lowercased()
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map(String.init)
-        guard !terms.isEmpty else { return [] }
-
-        return messages.compactMap { model in
-            guard model.embedding == nil else { return nil }
-            let content = model.content.lowercased()
-            guard terms.allSatisfy({ content.contains($0) }) else { return nil }
-            return MessageSearchResult(
-                message: ChatMessage(model: model),
-                distance: lexicalDistance(content: content, terms: terms)
-            )
-        }
-        .sorted {
-            if $0.distance == $1.distance {
-                return $0.message.createdAt > $1.message.createdAt
-            }
-            return $0.distance < $1.distance
-        }
-        .prefix(Self.maximumResults)
-        .map { $0 }
-    }
-
-    private func lexicalDistance(content: String, terms: [String]) -> Float {
-        guard !content.isEmpty else { return 1 }
-        let queryLength = terms.reduce(0) { $0 + $1.count }
-        let coverage = min(1, Float(queryLength) / Float(content.count))
-        return 1 - max(Self.minimumSimilarity, coverage)
     }
 
     private func decodeFloat32Vector(_ data: Data) throws -> [Float] {

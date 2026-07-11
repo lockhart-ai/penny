@@ -118,6 +118,11 @@ final class DatabaseService {
             try MessageModel.createIndexes(database: databaseConnection)
             databaseConnection.userVersion = 5
         }
+
+        if currentVersion < 6 {
+            try MessageModel.createEmbeddedRowsIndex(database: databaseConnection)
+            databaseConnection.userVersion = 6
+        }
     }
 }
 
@@ -140,6 +145,27 @@ extension DatabaseService {
             historySaveQueue.async { [self] in
                 continuation.resume(returning: loadMessages())
             }
+        }
+    }
+
+    func loadEmbeddedMessagesInBackground(filter: MessagePageFilter) async -> [MessageModel] {
+        await withCheckedContinuation { continuation in
+            historySaveQueue.async { [self] in
+                continuation.resume(returning: loadEmbeddedMessages(filter: filter))
+            }
+        }
+    }
+
+    func loadEmbeddedMessages(filter: MessagePageFilter) -> [MessageModel] {
+        setup()
+
+        do {
+            return try measureQuery("load_embedded_messages") {
+                try MessageModel.loadEmbedded(database: databaseConnection, filter: filter)
+            }
+        } catch {
+            logger.error("Database operation failed: \(error.localizedDescription)", privacy: .public)
+            return []
         }
     }
 
@@ -414,6 +440,14 @@ struct MessageModel: Codable, Identifiable, Hashable {
         try database.run(table().createIndex(serverIDExp, isOutgoingExp, contentExp, createdAtExp, idExp, ifNotExists: true))
     }
 
+    fileprivate static func createEmbeddedRowsIndex(database: Connection) throws {
+        try database.run("""
+            CREATE INDEX IF NOT EXISTS index_messages_embedded_created_at_id
+            ON messages(created_at, id)
+            WHERE embedding IS NOT NULL
+            """)
+    }
+
     fileprivate func save(database: Connection) throws {
         try database.run(
             MessageModel.table().insert(or: .replace,
@@ -439,6 +473,15 @@ struct MessageModel: Codable, Identifiable, Hashable {
             result.append(message(from: entry))
         }
         return result
+    }
+
+    fileprivate static func loadEmbedded(database: Connection, filter: MessagePageFilter) throws -> [MessageModel] {
+        let query = filteredTable(for: filter)
+            .filter(embeddingExp != nil)
+            .order(createdAtExp.asc)
+        return try database.prepare(query).map { row in
+            message(from: row)
+        }
     }
 
     @MainActor

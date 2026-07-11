@@ -23,7 +23,7 @@ struct SearchServiceTests {
         #expect(recorder.requests.isEmpty)
     }
 
-    @Test func unembeddedCachedMessagesAreSearchableWithoutServerEmbedding() async {
+    @Test func searchIgnoresUnembeddedMessagesWithoutRequestingTheServer() async {
         let database = configuredDatabase()
         database.save(message: MessageModel(
             id: 1,
@@ -43,7 +43,7 @@ struct SearchServiceTests {
 
         await service.search("coffee pantry")
 
-        #expect(service.results.map(\.message.content) == ["Coffee beans are in the pantry"])
+        #expect(service.results.isEmpty)
         #expect(service.errorMessage == nil)
         #expect(service.isSearching == false)
         #expect(service.hasSearched)
@@ -59,7 +59,8 @@ struct SearchServiceTests {
             content: "Coffee chat note",
             sourceHint: "Chat",
             imageAttachmentDataURLs: [],
-            isOutgoing: false
+            isOutgoing: false,
+            embedding: floatData([1, 0])
         ))
         database.save(message: MessageModel(
             id: 2,
@@ -68,15 +69,20 @@ struct SearchServiceTests {
             content: "Coffee schedule note",
             sourceHint: "Schedule",
             imageAttachmentDataURLs: [],
-            isOutgoing: false
+            isOutgoing: false,
+            embedding: floatData([1, 0])
         ))
+        let recorder = EmbeddingRequestRecorder()
         let service = SearchService(
             databaseService: database,
             engine: SearchTestDistanceEngine(),
-            requestEmbedding: EmbeddingRequestRecorder().request
+            requestEmbedding: recorder.request
         )
 
-        await service.search("coffee", filter: .schedule)
+        let search = Task { await service.search("coffee", filter: .schedule) }
+        await waitFor { recorder.requests == ["coffee"] }
+        recorder.resumeRequest(at: 0, with: floatData([1, 0]))
+        await search.value
 
         #expect(service.results.map(\.message.content) == ["Coffee schedule note"])
         #expect(service.hasSearched)

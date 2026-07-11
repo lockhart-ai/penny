@@ -145,6 +145,17 @@ struct DatabaseServiceTests {
         #expect(oldestPage.hasMore == false)
     }
 
+    @Test func embeddedMessageLoadOnlyReturnsEmbeddedRowsAndAppliesFilters() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        database.save(message: makeMessage(id: 1, content: "Penny", sourceHint: "Penny", embedding: floatData([1, 0])))
+        database.save(message: makeMessage(id: 2, content: "Schedule", sourceHint: "Schedule", embedding: floatData([0, 1])))
+        database.save(message: makeMessage(id: 3, content: "Unembedded", sourceHint: "Schedule"))
+
+        #expect(database.loadEmbeddedMessages(filter: .all).map(\.id) == [1, 2])
+        #expect(database.loadEmbeddedMessages(filter: .schedule).map(\.id) == [2])
+    }
+
     @Test func messagePagesApplySourceFilters() {
         let database = DatabaseService()
         database.setupForTesting()
@@ -230,7 +241,8 @@ private func makeMessage(
     serverID: Int? = nil,
     content: String,
     sourceHint: String? = nil,
-    isOutgoing: Bool = false
+    isOutgoing: Bool = false,
+    embedding: Data? = nil
 ) -> MessageModel {
     MessageModel(
         id: id,
@@ -239,6 +251,12 @@ private func makeMessage(
         content: content,
         sourceHint: sourceHint,
         imageAttachmentDataURLs: [],
-        isOutgoing: isOutgoing
+        isOutgoing: isOutgoing,
+        embedding: embedding
     )
+}
+
+private func floatData(_ values: [Float]) -> Data {
+    var values = values
+    return Data(bytes: &values, count: values.count * MemoryLayout<Float>.size)
 }
