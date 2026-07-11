@@ -4,13 +4,17 @@ A thin wrapper over the same ``OllamaImageClient`` the retired ``/draw`` command
 used.  Registered on the chat surface only when an image model is configured
 (mirroring ``/draw``'s conditionality).
 
-The generated image rides the **existing media side-channel** rather than
-travelling through the model: the tool stores it in the ``media`` table with an
-embedding of the description, and at egress ``MediaStore.select_image`` attaches
-it to the mirror-back reply — the same path browsed images use (see the image
-side-channel design in ``penny/CLAUDE.md``).  The tool returns a text result
-naming what it drew so the model's final reply honestly describes the image the
-user is about to receive.
+The generated image is delivered **deterministically** to its own reply, not
+fuzzy-matched against the media table: the tool stores it in the ``media`` table
+and stamps that row's id onto its ``ToolResult.media_id``.  The loop threads the
+id onto ``ControllerResponse.generated_media_ids`` and the channel fetches
+exactly that row at egress (see the image side-channel design in
+``penny/CLAUDE.md``), so a just-drawn image always lands on the reply that
+describes it — never a stale, embedding-nearest one.  The row is still stored
+with an embedding of the description, so the drawn image joins the
+nearest-image pool (``MediaStore.select_image``) for *future* replies.  The
+tool returns a text result naming what it drew so the model's final reply
+honestly describes the image the user is about to receive.
 """
 
 from __future__ import annotations
@@ -73,8 +77,8 @@ class GenerateImageTool(Tool):
         """Generate the image, store it for egress, and confirm what was drawn."""
         args = GenerateImageArgs(**kwargs)
         image_b64 = await self._image_client.generate_image(prompt=args.description)
-        await self._store_media(args.description, image_b64)
-        logger.info("Generated image for description: %s", args.description)
+        media_id = await self._store_media(args.description, image_b64)
+        logger.info("Generated image %d for description: %s", media_id, args.description)
         return ToolResult(
             message=(
                 f"Generated an image of: {args.description}.  It will be delivered to "
@@ -82,17 +86,20 @@ class GenerateImageTool(Tool):
                 "what you drew."
             ),
             mutated=True,
+            media_id=media_id,
         )
 
-    async def _store_media(self, description: str, image_b64: str) -> None:
-        """Store the generated image so egress attaches it to the mirror-back reply.
+    async def _store_media(self, description: str, image_b64: str) -> int:
+        """Store the generated image and return its media id for deterministic egress.
 
-        The embedding of the description lets ``MediaStore.select_image`` match
-        the image to the reply text (which describes the same subject) at egress.
+        Delivery to *this* reply is by id (the ``ToolResult.media_id`` link), never
+        fuzzy-matched — but the row still carries an embedding of the description,
+        so the drawn image stays matchable by the nearest-image ladder for future
+        replies.
         """
         vector = await embed_text(self._embedding_client, description)
         embedding = serialize_embedding(vector) if vector else None
-        self._db.media.put(
+        return self._db.media.put(
             data=base64.b64decode(image_b64),
             mime_type=_GENERATED_IMAGE_MIME,
             title=description,

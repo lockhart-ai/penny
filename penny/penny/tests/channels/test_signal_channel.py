@@ -705,7 +705,9 @@ def test_reaction_without_callback_returns_normal_message():
 @pytest.mark.asyncio
 async def test_send_response_attaches_matching_media(signal_server, test_config, mock_llm):
     """The browsed image whose metadata is closest to the outgoing text is
-    attached at egress (the single nearest image always wins)."""
+    attached at egress (the single nearest image always wins); and a generated
+    ``media_ids`` that no longer resolves degrades visibly — logged, then egress
+    falls back to the nearest-image ladder so the reply still carries an image."""
     import base64
     from typing import Any, cast
 
@@ -758,5 +760,13 @@ async def test_send_response_attaches_matching_media(signal_server, test_config,
     sent = signal_server.outgoing_messages[-1]
     expected = f"data:image/jpeg;base64,{base64.b64encode(raw).decode()}"
     assert sent.get("base64_attachments") == [expected]
+
+    # A generated media id that no longer resolves degrades visibly, not fatally:
+    # egress logs and skips it, then falls back to the nearest-image ladder so
+    # the reply still carries an image (every reply gets one when one matches).
+    await channel.send_response(
+        TEST_SENDER, "tell me about ex", parent_id=None, author="penny", media_ids=[999999]
+    )
+    assert signal_server.outgoing_messages[-1].get("base64_attachments") == [expected]
 
     await channel.close()

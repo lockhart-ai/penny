@@ -45,7 +45,11 @@ class _Candidate(NamedTuple):
 class MediaStore:
     """Store browsed images and retrieve the most relevant match to an egress
     message — the cited page's own image when the message links one, else a
-    jittered embedding-nearest pick."""
+    jittered embedding-nearest pick.
+
+    A reply whose run *generated* an image bypasses this matching entirely — it
+    is delivered by id via ``send_response(media_ids=...)`` — but generated rows
+    are stored with an embedding, so they join this pool for future replies."""
 
     def __init__(self, engine):
         self.engine = engine

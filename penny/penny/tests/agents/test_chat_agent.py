@@ -9,6 +9,7 @@ Test organization:
 6. Tool surface (chat-only — entry-mutation tools removed)
 """
 
+import base64
 import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ from sqlmodel import Session, select
 
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Media, MemoryEntry, MessageLog
+from penny.llm.embeddings import serialize_embedding
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.read_emails import ReadEmailsTool
@@ -1171,15 +1173,19 @@ async def test_email_tools_registered_only_when_mailbox_configured(
 
 
 @pytest.mark.asyncio
-async def test_generate_image_stores_image_and_delivers_via_egress(
+async def test_generate_image_delivers_the_drawn_image_deterministically(
     signal_server, mock_llm, make_config, test_user_info, running_penny
 ):
-    """A drawn image rides the media side-channel to the mirror-back reply.
+    """A drawn image is delivered deterministically to its own reply, by id.
 
     The model calls generate_image with a faithful description, then replies in
-    text; the tool stores the image in the media table and the egress path
-    (MediaStore.select_image) attaches it to the outgoing reply — the same path
-    browsed images use, so no attachment travels through the model.
+    text; the tool stores the image in the media table and stamps its id onto the
+    tool result, and egress attaches *exactly that row* to the reply — the
+    media_ids path takes precedence over the fuzzy nearest-image ladder (which
+    still serves replies that didn't generate anything).  A decoy browsed image
+    is seeded first: the jittered fallback could ship it on a fuzzy match, so
+    asserting the drawn bytes (not the decoy) proves the generate→deliver link
+    is structural.
     """
     config = make_config()
 
@@ -1198,6 +1204,15 @@ async def test_generate_image_stores_image_and_delivers_via_egress(
     image_client.generate_image.return_value = ONE_PX_PNG_B64
 
     async with running_penny(config) as penny:
+        # A decoy browsed image already in the table — a candidate the removed
+        # jitter could have attached to a no-URL reply.
+        penny.db.media.put(
+            data=b"decoy-browsed-image",
+            mime_type="image/png",
+            source_url="https://decoy.test/p",
+            title="an unrelated page",
+            embedding=serialize_embedding([1.0, 0.0]),
+        )
         penny.chat_agent._image_client = image_client
         await signal_server.push_message(
             sender=TEST_SENDER, content="draw me a teal origami dragon on a coffee mug"
@@ -1208,14 +1223,19 @@ async def test_generate_image_stores_image_and_delivers_via_egress(
         image_client.generate_image.assert_awaited_once()
         assert "dragon" in image_client.generate_image.await_args.kwargs["prompt"]
 
-        # The image was stored in the media table (side-channel), not carried by the model.
+        # The drawn image was stored (side-channel) WITH an embedding of its
+        # description: delivery to this reply is by id, but the row stays
+        # matchable by the nearest-image ladder for future replies.
         with penny.db.get_session() as session:
             media_rows = session.exec(select(Media)).all()
-        assert len(media_rows) == 1
-        assert media_rows[0].mime_type == "image/png"
+        drawn = [row for row in media_rows if row.source_url is None]
+        assert len(drawn) == 1
+        assert drawn[0].mime_type == "image/png"
+        assert drawn[0].embedding is not None
+        assert drawn[0].data == base64.b64decode(ONE_PX_PNG_B64)
 
-        # ...and attached to the mirror-back reply at egress.
-        assert reply.get("base64_attachments")
+        # ...and exactly that drawn image (not the decoy) is attached to the reply.
+        assert reply.get("base64_attachments") == [f"data:image/png;base64,{ONE_PX_PNG_B64}"]
 
 
 # ── 7. Quote-reply handling ───────────────────────────────────────────────
