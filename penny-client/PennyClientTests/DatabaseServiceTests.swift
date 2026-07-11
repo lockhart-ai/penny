@@ -197,6 +197,26 @@ struct DatabaseServiceTests {
         let loaded = database.loadMessages()
         #expect(loaded.map(\.content) == ["Canonical"])
     }
+
+    @Test func reconcilesLocalMessageWithoutScanningUnrelatedRows() {
+        let database = DatabaseService()
+        database.setupForTesting()
+        saveNumberedMessages(in: database, ids: 1...200)
+        database.save(message: makeMessage(id: -2, serverID: nil, content: "Different", isOutgoing: true))
+        database.save(message: makeMessage(id: -3, serverID: nil, content: "Echo", isOutgoing: true))
+        database.save(message: makeMessage(id: -4, serverID: nil, content: "Echo", isOutgoing: true))
+
+        let localID = database.reconcileLocalMessage(
+            content: "Echo",
+            createdAt: Date(timeIntervalSince1970: -4),
+            canonicalID: 400
+        )
+
+        #expect(localID == -4)
+        let loaded = database.loadMessages()
+        #expect(loaded.contains { $0.id == 400 && $0.serverID == 400 && $0.content == "Echo" })
+        #expect(loaded.contains { $0.id == -3 && $0.serverID == nil && $0.content == "Echo" })
+    }
 }
 
 private func saveNumberedMessages(in database: DatabaseService, ids: ClosedRange<Int>) {

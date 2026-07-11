@@ -374,6 +374,16 @@ async def test_history_request_returns_cross_channel_page_without_ack(tmp_path):
 
     await channel._handle_history(
         cast(Any, ws),
+        {"type": IOS_MSG_TYPE_HISTORY, "count_only": True},
+        "ios-keychain-id",
+    )
+    count_response = ws.sent[-1]
+    assert count_response["mode"] == "history_count"
+    assert count_response["total_count"] == 3
+    assert count_response["messages"] == []
+
+    await channel._handle_history(
+        cast(Any, ws),
         {"type": IOS_MSG_TYPE_HISTORY, "limit": 2},
         "ios-keychain-id",
     )
@@ -382,7 +392,7 @@ async def test_history_request_returns_cross_channel_page_without_ack(tmp_path):
     assert response["type"] == IOS_RESP_TYPE_MESSAGES
     assert response["mode"] == "history"
     assert response["has_more"] is True
-    assert response["remaining_count"] == 1
+    assert "remaining_count" not in response
     assert response["attachments_included"] is True
     assert [message["content"] for message in response["messages"]] == [
         "signal reply",
@@ -421,7 +431,7 @@ async def test_history_cursor_fetches_next_page_without_overlap(tmp_path):
     first_page = ws.sent[-1]
     assert [message["content"] for message in first_page["messages"]] == ["middle", "newest"]
     assert first_page["has_more"] is True
-    assert first_page["remaining_count"] == 1
+    assert "remaining_count" not in first_page
     assert first_page["next_cursor"] is not None
 
     await channel._handle_history(
@@ -432,7 +442,7 @@ async def test_history_cursor_fetches_next_page_without_overlap(tmp_path):
     second_page = ws.sent[-1]
     assert [message["content"] for message in second_page["messages"]] == ["oldest"]
     assert second_page["has_more"] is False
-    assert second_page["remaining_count"] == 0
+    assert "remaining_count" not in second_page
 
 
 @pytest.mark.asyncio

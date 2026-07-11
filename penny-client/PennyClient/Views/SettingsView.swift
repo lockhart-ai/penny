@@ -65,24 +65,27 @@ struct SettingsView: View {
                         .disabled(viewModel.client.historySyncing)
 
                     LabeledContent("History sync", value: viewModel.client.historyProgressText)
-                    Text(viewModel.client.historyStatus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
 
-                    Button {
-                        viewModel.startHistorySync(
-                            channelTypes: Array(selectedHistoryChannels).sorted(),
-                            includeAttachments: includeHistoryAttachments
-                        )
-                    } label: {
-                        Label(
-                            viewModel.client.historySyncing ? "Syncing History" : "Sync History",
-                            systemImage: viewModel.client.historySyncing
-                                ? "arrow.triangle.2.circlepath"
-                                : "clock.arrow.circlepath"
-                        )
+                    HStack {
+                        Button {
+                            viewModel.startHistorySync(
+                                channelTypes: Array(selectedHistoryChannels).sorted(),
+                                includeAttachments: includeHistoryAttachments
+                            )
+                        } label: {
+                            Label(
+                                viewModel.client.historySyncing ? "Syncing History" : "Sync History",
+                                systemImage: viewModel.client.historySyncing
+                                    ? "arrow.triangle.2.circlepath"
+                                    : "clock.arrow.circlepath"
+                            )
+                        }
+                        .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
+                        Spacer()
+                        Text(viewModel.client.historyStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(selectedHistoryChannels.isEmpty || viewModel.client.historySyncing)
                 }
 
                 #if DEBUG

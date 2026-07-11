@@ -56,6 +56,7 @@ class IosHistoryRequest(BaseModel):
     before: str | None = None
     channel_types: list[str] | None = None
     include_attachments: bool = True
+    count_only: bool = False
 
 
 class IosAckMessages(BaseModel):
@@ -129,7 +130,7 @@ class IosMessages(BaseModel):
     mode: str = "outbox"
     next_cursor: str | None = None
     has_more: bool = False
-    remaining_count: int = 0
+    total_count: int | None = None
     attachments_included: bool = True
 
 

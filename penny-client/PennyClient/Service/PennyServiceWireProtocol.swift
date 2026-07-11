@@ -7,7 +7,7 @@ enum ClientMessage: Encodable {
     case register(RegisterPayload)
     case message(content: String)
     case pullMessages(limit: Int)
-    case historyRequest(limit: Int, before: String?, channelTypes: [String]?, includeAttachments: Bool)
+    case historyRequest(limit: Int, before: String?, channelTypes: [String]?, includeAttachments: Bool, countOnly: Bool)
     case ackMessages(ids: [Int])
     case embeddingRequest(requestID: String, text: String)
     case heartbeat
@@ -72,12 +72,13 @@ enum ClientMessage: Encodable {
         case .pullMessages(let limit):
             try container.encode("pull_messages", forKey: .type)
             try container.encode(limit, forKey: .limit)
-        case .historyRequest(let limit, let before, let channelTypes, let includeAttachments):
+        case .historyRequest(let limit, let before, let channelTypes, let includeAttachments, let countOnly):
             try container.encode("history_request", forKey: .type)
             try container.encode(limit, forKey: .limit)
             try container.encodeIfPresent(before, forKey: .before)
             try container.encodeIfPresent(channelTypes, forKey: .channelTypes)
             try container.encode(includeAttachments, forKey: .includeAttachments)
+            try container.encode(countOnly, forKey: .countOnly)
         case .ackMessages(let ids):
             try container.encode("ack_messages", forKey: .type)
             try container.encode(ids, forKey: .ids)
@@ -321,6 +322,7 @@ enum ClientMessage: Encodable {
         case before
         case channelTypes = "channel_types"
         case includeAttachments = "include_attachments"
+        case countOnly = "count_only"
         case ids
         case key
         case value
@@ -634,7 +636,7 @@ struct MessagesPayload: Decodable {
     let mode: String
     let nextCursor: String?
     let hasMore: Bool
-    let remainingCount: Int
+    let totalCount: Int?
     let attachmentsIncluded: Bool
 
     private enum CodingKeys: String, CodingKey {
@@ -642,7 +644,7 @@ struct MessagesPayload: Decodable {
         case mode
         case nextCursor = "next_cursor"
         case hasMore = "has_more"
-        case remainingCount = "remaining_count"
+        case totalCount = "total_count"
         case attachmentsIncluded = "attachments_included"
     }
 
@@ -652,7 +654,7 @@ struct MessagesPayload: Decodable {
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "outbox"
         nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
-        remainingCount = try container.decodeIfPresent(Int.self, forKey: .remainingCount) ?? 0
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount)
         attachmentsIncluded = try container.decodeIfPresent(Bool.self, forKey: .attachmentsIncluded) ?? true
     }
 }

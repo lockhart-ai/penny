@@ -147,7 +147,8 @@ delivery and background APNs notifications:
 - `message`: `content`
 - `pull_messages`: optional `limit`
 - `history_request`: optional `limit`, `before`, `channel_types`, and
-  `include_attachments` (defaults to `true`). The client may persist the
+  `include_attachments` (defaults to `true`). Set `count_only` to `true` for
+  the initial total-count request. The client may persist the
   returned `next_cursor` and resend it after reconnecting to resume.
 - `ack_messages`: `ids`
 - `heartbeat`
@@ -156,9 +157,10 @@ delivery and background APNs notifications:
 
 - `status`: connection or protocol error status
 - `registered`: device id, default status, pending count
-- `messages` in `history` mode: `next_cursor`, `has_more`, `remaining_count`,
-  and `attachments_included` accompany the message records. `remaining_count`
-  is the number of eligible older rows after the returned page.
+- `messages` in `history` mode: `next_cursor`, `has_more`, and
+  `attachments_included` accompany the message records. A `history_count`
+  response to a `count_only` request contains `total_count`; the client can
+  infer remaining rows as pages arrive.
 - `outbox_changed`: pending count hint
 - `messages`: durable outbox rows
 - `messages_acked`: ack count

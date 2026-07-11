@@ -331,6 +331,16 @@ struct PennyWebSocketClientTests {
         transport.emit("""
         {
           "type": "messages",
+          "mode": "history_count",
+          "total_count": 1,
+          "messages": []
+        }
+        """)
+        _ = await sentPayloads(transport, count: 1)
+
+        transport.emit("""
+        {
+          "type": "messages",
           "mode": "history",
           "has_more": false,
           "messages": [

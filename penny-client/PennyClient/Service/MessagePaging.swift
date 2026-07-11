@@ -41,6 +41,7 @@ struct HistorySyncState: Codable, Equatable {
     var requestedCount: Int
     var savedOrUpdatedCount: Int
     var remainingCount: Int
+    var totalCount: Int?
 }
 
 enum PennyEmbeddingError: LocalizedError {
@@ -62,6 +63,7 @@ enum PennyEmbeddingError: LocalizedError {
 
 enum HistorySyncEvent {
     case page(HistoryPageResult)
+    case count(Int)
     case error(String)
 }
 

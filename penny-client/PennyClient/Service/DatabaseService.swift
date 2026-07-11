@@ -113,6 +113,11 @@ final class DatabaseService {
             }
             databaseConnection.userVersion = 4
         }
+
+        if currentVersion < 5 {
+            try MessageModel.createIndexes(database: databaseConnection)
+            databaseConnection.userVersion = 5
+        }
     }
 }
 
@@ -201,6 +206,7 @@ extension DatabaseService {
         }
     }
 
+    @MainActor
     @discardableResult
     func reconcileLocalMessage(content: String, createdAt: Date, canonicalID: Int) -> Int? {
         setup()
@@ -402,6 +408,12 @@ struct MessageModel: Codable, Identifiable, Hashable {
         )
     }
 
+    fileprivate static func createIndexes(database: Connection) throws {
+        try database.run(table().createIndex(createdAtExp, idExp, ifNotExists: true))
+        try database.run(table().createIndex(sourceHintExp, createdAtExp, idExp, ifNotExists: true))
+        try database.run(table().createIndex(serverIDExp, isOutgoingExp, contentExp, createdAtExp, idExp, ifNotExists: true))
+    }
+
     fileprivate func save(database: Connection) throws {
         try database.run(
             MessageModel.table().insert(or: .replace,
@@ -485,15 +497,17 @@ struct MessageModel: Codable, Identifiable, Hashable {
         return true
     }
 
+    @MainActor
     fileprivate static func reconcileLocalMessage(
         database: Connection,
         content: String,
         createdAt: Date,
         canonicalID: Int
     ) throws -> Int? {
-        let candidates = try load(database: database).filter {
-            $0.serverID == nil && $0.id < 0 && $0.isOutgoing && $0.content == content
-        }
+        let candidates = try database.prepare(
+            table()
+                .filter(serverIDExp == nil && idExp < 0 && isOutgoingExp && contentExp == content)
+        ).map(message(from:))
         guard let local = candidates.min(by: {
             abs($0.createdAt.timeIntervalSince(createdAt)) < abs($1.createdAt.timeIntervalSince(createdAt))
         }) else {

@@ -242,7 +242,8 @@ extension PennyService {
                 cursor: nil,
                 requestedCount: 0,
                 savedOrUpdatedCount: 0,
-                remainingCount: 0
+                remainingCount: 0,
+                totalCount: nil
             )
         saveHistorySyncState(state)
         applyHistoryProgress(state, status: "Starting...")
@@ -542,6 +543,10 @@ extension PennyService {
                 send(.pullMessages(limit: pendingMessagePullLimit))
             }
         case .messages(let payload):
+            if payload.mode == "history_count" {
+                historyResponseContinuation?.yield(.count(payload.totalCount ?? 0))
+                break
+            }
             let receiveResult = receive(payload)
             let newMessages = receiveResult.newMessages
             if payload.mode == "history" {
@@ -736,14 +741,23 @@ extension PennyService {
                 return
             }
 
-            historyPageIsNewest = state.cursor == nil && state.requestedCount == 0
+            let countOnly = state.totalCount == nil
+            historyPageIsNewest = !countOnly && state.cursor == nil && state.requestedCount == 0
             send(.historyRequest(
                 limit: 30,
-                before: state.cursor,
+                before: countOnly ? nil : state.cursor,
                 channelTypes: state.channelTypes,
-                includeAttachments: state.includeAttachments
+                includeAttachments: state.includeAttachments,
+                countOnly: countOnly
             ))
             guard let event = await iterator.next() else { return }
+            if case .count(let totalCount) = event {
+                state.totalCount = totalCount
+                state.remainingCount = totalCount
+                saveHistorySyncState(state)
+                applyHistoryProgress(state)
+                continue
+            }
             guard case .page(let result) = event else {
                 if case .error(let error) = event {
                     historyStatus = "Sync failed: \(error)"
@@ -753,11 +767,11 @@ extension PennyService {
 
             state.requestedCount += result.payload.messages.count
             state.savedOrUpdatedCount += result.savedOrUpdatedCount
-            state.remainingCount = result.payload.remainingCount
+            state.remainingCount = max((state.totalCount ?? state.requestedCount) - state.requestedCount, 0)
             state.cursor = result.payload.nextCursor
             saveHistorySyncState(state)
             applyHistoryProgress(state)
-            historyStatus = historyProgressText
+            historyStatus = "In Progress"
             guard result.payload.hasMore, let nextCursor = result.payload.nextCursor else {
                 saveHistorySyncState(nil)
                 historyStatus = "Complete · \(historyProgressText)"

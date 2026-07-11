@@ -1061,7 +1061,21 @@ class IosChannel(MessageChannel):
             await self._send_ws(ws, IosStatus(error="register_required"))
             return
 
-        rows, has_more, remaining_count = self._db.messages.ios_history_page(
+        if request.count_only:
+            await self._send_ws(
+                ws,
+                IosMessages(
+                    messages=[],
+                    mode="history_count",
+                    total_count=self._db.messages.ios_history_count(
+                        channel_types=request.channel_types
+                    ),
+                    attachments_included=request.include_attachments,
+                ),
+            )
+            return
+
+        rows, has_more = self._db.messages.ios_history_page(
             channel_types=request.channel_types,
             before=cursor,
             limit=request.limit,
@@ -1082,7 +1096,6 @@ class IosChannel(MessageChannel):
                 mode="history",
                 next_cursor=next_cursor,
                 has_more=has_more,
-                remaining_count=remaining_count,
                 attachments_included=request.include_attachments,
             ),
         )
