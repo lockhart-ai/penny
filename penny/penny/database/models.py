@@ -370,12 +370,15 @@ class IosOutboxItem(SQLModel, table=True):
 
 
 class Media(SQLModel, table=True):
-    """Binary media (images) captured while browsing, delivered side-channel.
+    """Binary media (images) captured while browsing or drawn on request.
 
     The browse tool stores each page's image here with its source URL, page
-    title, and an embedding of that metadata. At channel egress the outgoing
-    message text is embedded and matched against these vectors — the single
-    nearest image is attached, with no model involvement.
+    title, and an embedding of that metadata; at channel egress a browsed image
+    is attached only to a reply that cites its source page (exact URL, then
+    domain — ``MediaStore.select_image``), with no model involvement.  A
+    ``generate_image`` row carries no ``source_url``/``embedding``: it is
+    delivered deterministically by id to its own reply
+    (``send_response(media_ids=...)``), never fuzzy-matched.
     """
 
     __tablename__ = "media"

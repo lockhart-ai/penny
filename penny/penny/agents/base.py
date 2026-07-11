@@ -1057,6 +1057,9 @@ class Agent:
         record.failed = not result.success
         record.mutated = result.mutated
         record.result = result.message
+        # A media row this call created (generate_image) rides to egress on the
+        # record → ControllerResponse.generated_media_ids → deterministic attach.
+        record.media_id = result.media_id
         logger.debug(
             "Tool result (success=%s mutated=%s): %s",
             result.success,

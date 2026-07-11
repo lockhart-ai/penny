@@ -104,13 +104,6 @@ class PennyConstants:
     BROWSE_RETRY_DELAY = 1.0
     BROWSE_REQUEST_TIMEOUT = 30.0
 
-    # Egress image matching (side-channel media attach).  When an outgoing message
-    # links no source page, we fall back to embedding-nearest and pick uniformly
-    # at random among the top-K so a centroid "magnet" image can't repeat on
-    # consecutive messages.  Exact-URL and same-domain matches are deterministic
-    # (the cited page's own image is the right one) — jitter applies only here.
-    MEDIA_MATCH_JITTER_TOPK = 5
-
     # ``log_read`` window-mode look-back (seconds) for chat/schedule reads — the
     # "what just happened" range.  1 hour.
     LOG_READ_WINDOW_SECONDS = 3600

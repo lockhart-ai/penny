@@ -899,42 +899,18 @@ class TestMediaStore:
         assert match is not None
         assert match.id == near
 
-    def test_select_image_jitters_among_top_k_when_no_url(self, tmp_path, monkeypatch):
-        """Tier 3: no cited URL — pick uniformly at random among the top-K nearest
-        (not the strict argmax), so a magnet image can't repeat on every message."""
+    def test_select_image_none_when_message_cites_no_source(self, tmp_path):
+        """No cited URL → no image, even when embedded media exists.
+
+        There is no embedding-nearest fallback: an ordinary reply that cites no
+        source is left imageless rather than carrying a random, unrelated picture
+        (the removed tier-3 jitter).  Generated images take the deterministic
+        media_ids path instead of this one.
+        """
         db = _make_db(tmp_path)
-        # 6 images at decreasing closeness to the query [1,0]; the 6th is farthest.
-        vectors = [[1.0, 0.0], [0.95, 0.05], [0.9, 0.1], [0.85, 0.15], [0.8, 0.2], [0.0, 1.0]]
-        ids = [
-            self._put(db, f"v{i}".encode(), f"https://s.test/{i}", v) for i, v in enumerate(vectors)
-        ]
-        seen = {}
-
-        def choose(pool):
-            seen["pool"] = list(pool)
-            return pool[-1]  # deliberately NOT the nearest
-
-        monkeypatch.setattr("penny.database.media_store.random.choice", choose)
-        match = db.media.select_image([], [1.0, 0.0])
-        assert match is not None
-        # The pool is the top-K nearest (K=5), excluding the farthest image.
-        assert len(seen["pool"]) == PennyConstants.MEDIA_MATCH_JITTER_TOPK
-        assert ids[-1] not in seen["pool"]
-        # Jitter honoured the random pick, not the argmax.
-        assert match.id == seen["pool"][-1]
-
-    def test_select_image_no_floor_attaches_even_weak_match(self, tmp_path):
-        """Tier 3 has no floor — a reply is never left imageless: with one image
-        the pool is that image regardless of how poor the cosine is."""
-        db = _make_db(tmp_path)
-        only = self._put(db, b"a", "https://a.test", [1.0, 0.0])
-        match = db.media.select_image([], [0.0, 1.0])  # orthogonal
-        assert match is not None and match.id == only
-
-    def test_select_image_none_when_no_url_match_and_no_embedded_media(self, tmp_path):
-        db = _make_db(tmp_path)
-        self._put(db, b"a", "https://a.test")  # no embedding
-        assert db.media.select_image([], [1.0, 0.0]) is None  # no embedded media to fall back to
+        # A close-embedding image is present, but the message cites nothing.
+        self._put(db, b"nearby", "https://s.test/x", [1.0, 0.0])
+        assert db.media.select_image([], [1.0, 0.0]) is None  # embedded media, no citation
         assert db.media.select_image([], None) is None  # nothing to match at all
         assert db.media.select_image(["https://nope.test/x"], [1.0, 0.0]) is None  # url misses
 

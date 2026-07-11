@@ -125,9 +125,16 @@ class ToolResult(BaseModel):
       normal dispatch", so every tool-returned result is unchanged.  The ``message``
       stays the actionable remedy (the #1414 house template's diagnosis + how-to-fix
       tail); this field is only the frame around it.
+    - ``media_id``: the id of a ``media`` row this call created that egress must attach
+      to the reply — the deterministic generate→deliver link (``generate_image``).  A
+      *structural reference*, not image bytes: the loop threads it onto the
+      ``ControllerResponse`` and the channel fetches exactly that row at egress, so the
+      generated image lands on its own reply instead of being fuzzy-matched against the
+      whole media table.  ``None`` for tools that produce no deliverable image.
 
-    Images are not carried here: the browse tool stores them in the media table at
-    capture time and they are matched back side-channel at egress.
+    Image *bytes* are never carried here.  Browsed images ride the side-channel: the
+    browse tool stores them in the media table at capture time and they are matched
+    back to a reply that cites their source page at egress.
     """
 
     message: str
@@ -135,6 +142,7 @@ class ToolResult(BaseModel):
     mutated: bool = False
     source_urls: list[str] = Field(default_factory=list)
     narration: str | None = None
+    media_id: int | None = None
 
     def __str__(self) -> str:
         return self.message

@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.database.models import MessageLog
+from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.similarity import embed_text
@@ -326,9 +326,10 @@ class MessageChannel(ABC):
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
         thought_id: int | None = None,
+        media_ids: list[int] | None = None,
     ) -> int | None:
         """
-        Log and deliver a conversational reply with embedding + nearest-image media.
+        Log and deliver a conversational reply with embedding + side-channel media.
 
         Args:
             recipient: Identifier for the recipient
@@ -341,15 +342,18 @@ class MessageChannel(ABC):
             attachments: Optional list of base64-encoded image attachments
             quote_message: Optional message to quote-reply to
             thought_id: Optional FK to the thought that triggered this message
+            media_ids: Media rows this run generated (``generate_image``) that must
+                be attached deterministically to *this* reply — the exact rows,
+                not an embedding-nearest guess.
 
         Returns:
             Database message ID if send was successful, None otherwise
         """
         prepared = self.prepare_outgoing(content)
         # Embed once: stored on the messagelog row (the penny-messages facade's
-        # read_similar ranks on it) and reused for nearest-image matching.
+        # read_similar ranks on it) and reused for cited-page image matching.
         embedding = await embed_text(self._embedding_model_client, prepared)
-        attachments = self._resolve_media(attachments, prepared, embedding)
+        attachments = self._resolve_media(attachments, prepared, embedding, media_ids)
         message_id, external_id = await self._log_and_send(
             recipient,
             prepared,
@@ -412,23 +416,53 @@ class MessageChannel(ABC):
         return message_id, external_id
 
     def _resolve_media(
-        self, attachments: list[str] | None, text: str, embedding: list[float] | None
+        self,
+        attachments: list[str] | None,
+        text: str,
+        embedding: list[float] | None,
+        media_ids: list[int] | None = None,
     ) -> list[str] | None:
-        """Attach the most relevant browsed image to this message.
+        """Resolve the image(s) to attach to this reply, most-authoritative first.
 
-        Skipped when the caller already supplied an attachment.
-        Otherwise ``select_image`` prefers the image captured from a page the
-        message links (exact URL, then domain) and falls back to a jittered
-        embedding-nearest pick — so replies carry an image whenever one matches.
+        1. Caller-supplied ``attachments`` win outright.
+        2. ``media_ids`` — rows this run *generated* (``generate_image``) — are
+           attached deterministically: exactly those images, fetched by id, land
+           on the reply that describes them.
+        3. Otherwise the browsed-image side-channel: ``select_image`` attaches a
+           cited page's own image (exact URL, then same domain).  A reply that
+           cites no source gets no image — no random embedding-nearest guess.
         """
         if attachments:
             return attachments
+        if media_ids:
+            return self._encode_media(media_ids)
         urls = _MESSAGE_URL_RE.findall(text)
         media = self._db.media.select_image(urls, embedding)
         if media is None:
-            return attachments
+            return None
+        return [self._encode_media_row(media)]
+
+    def _encode_media(self, media_ids: list[int]) -> list[str] | None:
+        """Fetch each generated media row by id and encode it as a data URI.
+
+        A missing id (the row was just committed, so this should not happen)
+        is logged and skipped rather than crashing egress — a visible signal,
+        not a silent swallow.
+        """
+        encoded: list[str] = []
+        for media_id in media_ids:
+            media = self._db.media.get(media_id)
+            if media is None:
+                logger.error("Generated media %d vanished before egress — not attached", media_id)
+                continue
+            encoded.append(self._encode_media_row(media))
+        return encoded or None
+
+    @staticmethod
+    def _encode_media_row(media: Media) -> str:
+        """Encode a media row's bytes as a base64 ``data:`` URI attachment."""
         encoded = base64.b64encode(media.data).decode()
-        return [f"data:{media.mime_type};base64,{encoded}"]
+        return f"data:{media.mime_type};base64,{encoded}"
 
     async def handle_message(self, envelope_data: dict) -> None:
         """
@@ -656,6 +690,7 @@ class MessageChannel(ABC):
             parent_id=incoming_id,
             author=author,
             quote_message=incoming_log,
+            media_ids=response.generated_media_ids,
         )
         if sent is None:
             logger.error("Failed to deliver response to %s — notifying user", message.sender)
