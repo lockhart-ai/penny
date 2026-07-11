@@ -120,7 +120,7 @@ if TYPE_CHECKING:
     from penny.agents.collector import Collector
     from penny.commands import CommandRegistry
     from penny.database import Database
-    from penny.database.models import IosOutboxItem, MessageLog
+    from penny.database.models import Device, IosOutboxItem, MessageLog
 
 logger = logging.getLogger(__name__)
 
@@ -1019,7 +1019,7 @@ class IosChannel(MessageChannel):
         if has_more and rows:
             oldest = rows[0]
             next_cursor = _encode_history_cursor(
-                oldest[0].timestamp, oldest[0].id or 0, request.channel_types
+                oldest[0].timestamp, _required_message_id(oldest[0]), request.channel_types
             )
         await self._send_ws(
             ws,
@@ -1222,7 +1222,7 @@ class IosChannel(MessageChannel):
 
 def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
     return IosOutboxRecord(
-        id=row.id or 0,
+        id=_required_outbox_id(row),
         message_id=row.message_log_id,
         outbox_id=row.id,
         created_at=row.created_at.isoformat(),
@@ -1236,7 +1236,7 @@ def _outbox_record(row: IosOutboxItem) -> IosOutboxRecord:
     )
 
 
-def _history_record(row: tuple[MessageLog, object, IosOutboxItem | None]) -> IosOutboxRecord:
+def _history_record(row: tuple[MessageLog, Device | None, IosOutboxItem | None]) -> IosOutboxRecord:
     message, device, outbox = row
     if outbox is not None and (outbox.source_hint or outbox.source_name):
         source_type = outbox.source_type
@@ -1256,7 +1256,7 @@ def _history_record(row: tuple[MessageLog, object, IosOutboxItem | None]) -> Ios
         source_type = None
         source_name = None
     return IosOutboxRecord(
-        id=message.id or 0,
+        id=_required_message_id(message),
         message_id=message.id,
         outbox_id=outbox.id if outbox is not None else None,
         created_at=message.timestamp.isoformat(),
@@ -1268,9 +1268,9 @@ def _history_record(row: tuple[MessageLog, object, IosOutboxItem | None]) -> Ios
         push_title="",
         push_summary="",
         direction=message.direction,
-        channel_type=getattr(device, "channel_type", None),
-        device_label=getattr(device, "label", None),
-        device_identifier=getattr(device, "identifier", None),
+        channel_type=device.channel_type if device is not None else None,
+        device_label=device.label if device is not None else None,
+        device_identifier=device.identifier if device is not None else None,
         parent_id=message.parent_id,
     )
 
@@ -1295,7 +1295,7 @@ def _encode_history_cursor(
     payload = {
         "timestamp": timestamp.isoformat(),
         "id": message_id,
-        "channels": channel_types or [],
+        "channels": channel_types if channel_types is not None else [],
     }
     return base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
 
@@ -1307,12 +1307,25 @@ def _decode_history_cursor(
         return None
     try:
         payload = json.loads(base64.urlsafe_b64decode(value.encode()).decode())
-        if payload.get("channels", []) != (channel_types or []):
+        expected_channels = channel_types if channel_types is not None else []
+        if payload.get("channels", []) != expected_channels:
             raise ValueError("history cursor scope mismatch")
         timestamp = datetime.fromisoformat(payload["timestamp"])
         return timestamp.replace(tzinfo=None), int(payload["id"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("invalid history cursor") from exc
+
+
+def _required_message_id(message: MessageLog) -> int:
+    if message.id is None:
+        raise ValueError("history message is missing its database ID")
+    return message.id
+
+
+def _required_outbox_id(row: IosOutboxItem) -> int:
+    if row.id is None:
+        raise ValueError("iOS outbox row is missing its database ID")
+    return row.id
 
 
 _PASSTHROUGH_SOURCE_NAMES = frozenset(

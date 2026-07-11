@@ -464,6 +464,8 @@ class MessageStore:
         message-log rows may not have a populated ``device_id``.
         """
         with self._session() as session:
+            message_columns = MessageLog.__table__.c
+            outbox_columns = IosOutboxItem.__table__.c
             devices = list(session.exec(select(Device)).all())
             if channel_types:
                 devices = [device for device in devices if device.channel_type in channel_types]
@@ -473,21 +475,21 @@ class MessageStore:
             device_ids = [device.id for device in devices if device.id is not None]
             identifiers = [device.identifier for device in devices]
             scope = or_(
-                MessageLog.device_id.in_(device_ids),
-                MessageLog.sender.in_(identifiers),
-                MessageLog.recipient.in_(identifiers),
+                message_columns.device_id.in_(device_ids),
+                message_columns.sender.in_(identifiers),
+                message_columns.recipient.in_(identifiers),
             )
             query = (
                 select(MessageLog, Device)
                 .join(Device, isouter=True)
                 .where(
-                    MessageLog.direction.in_(
+                    message_columns.direction.in_(
                         [
                             PennyConstants.MessageDirection.INCOMING,
                             PennyConstants.MessageDirection.OUTGOING,
                         ]
                     ),
-                    MessageLog.is_reaction == False,  # noqa: E712
+                    message_columns.is_reaction.is_(False),
                     scope,
                 )
             )
@@ -495,15 +497,18 @@ class MessageStore:
                 timestamp, message_id = before
                 query = query.where(
                     or_(
-                        MessageLog.timestamp < timestamp,
-                        and_(MessageLog.timestamp == timestamp, MessageLog.id < message_id),
+                        message_columns.timestamp < timestamp,
+                        and_(
+                            message_columns.timestamp == timestamp,
+                            message_columns.id < message_id,
+                        ),
                     )
                 )
             rows = list(
                 session.exec(
-                    query.order_by(MessageLog.timestamp.desc(), MessageLog.id.desc()).limit(
-                        limit + 1
-                    )
+                    query.order_by(
+                        message_columns.timestamp.desc(), message_columns.id.desc()
+                    ).limit(limit + 1)
                 ).all()
             )
             has_more = len(rows) > limit
@@ -517,8 +522,8 @@ class MessageStore:
                 session.exec(
                     select(IosOutboxItem).where(
                         or_(
-                            IosOutboxItem.message_log_id.in_(message_ids),
-                            IosOutboxItem.id.in_(outbox_ids),
+                            outbox_columns.message_log_id.in_(message_ids),
+                            outbox_columns.id.in_(outbox_ids),
                         )
                     )
                 ).all()

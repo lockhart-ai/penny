@@ -70,7 +70,7 @@ class IosOutboxRecord(BaseModel):
     outbox_id: int | None = None
     created_at: str
     content: str
-    attachments: list[str] = []
+    attachments: list[str] = Field(default_factory=list)
     source_type: str | None = None
     source_name: str | None = None
     source_hint: str | None = None

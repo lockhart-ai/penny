@@ -21,6 +21,18 @@ def up(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS ix_ios_outbox_message_log_id ON ios_outbox (message_log_id)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_messagelog_device_timestamp_id "
+        "ON messagelog (device_id, timestamp, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_messagelog_sender_timestamp_id "
+        "ON messagelog (sender, timestamp, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_messagelog_recipient_timestamp_id "
+        "ON messagelog (recipient, timestamp, id)"
+    )
     # Older iOS sends stored the outbox ID in messagelog.external_id. Recover
     # that relationship before the client starts using message-log IDs for
     # history deduplication.

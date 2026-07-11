@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime
 
+from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 
@@ -62,6 +63,12 @@ class MessageLog(SQLModel, table=True):
         default=None, foreign_key="device.id", index=True
     )  # FK to device that sent/received this message
     embedding: bytes | None = None  # Serialized float32 embedding vector
+
+    __table_args__ = (
+        Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
+        Index("ix_messagelog_sender_timestamp_id", "sender", "timestamp", "id"),
+        Index("ix_messagelog_recipient_timestamp_id", "recipient", "timestamp", "id"),
+    )
 
 
 class UserInfo(SQLModel, table=True):

@@ -8,16 +8,16 @@
 set -euo pipefail
 
 BUILD_INFO_DERIVED_DATA=""
-UDID=$(xcodebuild -project penny-client/PennyClient.xcodeproj -scheme PennyClient -showdestinations 2>/dev/null \
+UDID=$(xcodebuild -project penny-client/PennyClient.xcodeproj -scheme PennyClient -showdestinations 2>&1 \
     | awk -F'[{},]' '
-        /platform:iOS Simulator/ && /name:iPhone/ {
+        /platform:iOS Simulator/ && /name:iPhone/ && !found {
             for (i = 1; i <= NF; i++) {
                 gsub(/^ +| +$/, "", $i)
                 if ($i ~ /^id:/) {
                     sub(/^id:/, "", $i)
                     if ($i !~ /^dvtdevice-/) {
                         print $i
-                        exit
+                        found = 1
                     }
                 }
             }
