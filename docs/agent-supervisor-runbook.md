@@ -59,6 +59,9 @@ If it's a mixed bag, split it: sequence the small/eval-gated tickets in one sess
 
 Standing duties (details in `CLAUDE.md` → Agent Supervision): **heartbeat** every 30–60 min while anything waits on a serialized resource; **stall recovery** ("check your result artifacts FIRST, then relaunch only what's missing"); **resource arbitration** (full-suite evals need explicit user approval; GPU contention is yours to surface); **relay merge/close events** so children run §9; file children's out-of-scope findings as new tickets under the meta.
 
+- **Your PR watchers poll `mergeable`, not just open/merged.** A PR can be born CONFLICTING (a sibling merges in the window between the child's last fetch and its push) and sit there looking "up and green-ish" while nothing progresses — both a child's shepherd loop and a supervisor watcher missed exactly this once; the user caught it first. Watcher loop shape: `state` + `mergeable` + a failed-check count, alerting on any of the three.
+- **Stall detection is artifact-based, and "work looks done" is a stall state too.** On each heartbeat verify (a) the child's watched process actually exists (a gate/eval container in `docker ps`, a live waiter) and (b) its artifacts are progressing (new commits, the PR existing, checks advancing). The two observed stall phases are mid-§4 (a backgrounded gate that died — no process, no output file) and the §7 last mile (a clean, committed tree with **no PR** — the child judged the work "done" and went silent). A committed-but-unpublished tree is a stall even though nothing is red; the recovery nudge is the standing "check your artifacts first, then proceed straight to push → PR → `--auto` without ending your turn."
+
 ## 6. Fleet end
 
 1. Every child PR terminal → **fleet-end sweep**: inventory `git worktree list` against PR states; remove terminal trees, delete local+remote branches; locked trees belong to live agents — relay, never force.
