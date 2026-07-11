@@ -52,7 +52,7 @@ final class PennyService {
     var historyStatus = "Not started"
 
     var historyProgressText: String {
-        "Requested \(historyRequestedCount) · Saved/updated \(historySavedOrUpdatedCount) · Remaining \(historyRemainingCount)"
+        "Requested \(historyRequestedCount) · Saved \(historySavedOrUpdatedCount) · Remaining \(historyRemainingCount)"
     }
 
     private let pendingMessagePullLimit = 3
@@ -774,7 +774,7 @@ extension PennyService {
             historyStatus = "In Progress"
             guard result.payload.hasMore, let nextCursor = result.payload.nextCursor else {
                 saveHistorySyncState(nil)
-                historyStatus = "Complete · \(historyProgressText)"
+                historyStatus = "Complete"
                 return
             }
             state.cursor = nextCursor

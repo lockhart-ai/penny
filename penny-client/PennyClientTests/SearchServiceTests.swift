@@ -50,6 +50,38 @@ struct SearchServiceTests {
         #expect(recorder.requests.isEmpty)
     }
 
+    @Test func searchAppliesSelectedMessageFilter() async {
+        let database = configuredDatabase()
+        database.save(message: MessageModel(
+            id: 1,
+            serverID: 1,
+            createdAt: Date(timeIntervalSince1970: 1),
+            content: "Coffee chat note",
+            sourceHint: "Chat",
+            imageAttachmentDataURLs: [],
+            isOutgoing: false
+        ))
+        database.save(message: MessageModel(
+            id: 2,
+            serverID: 2,
+            createdAt: Date(timeIntervalSince1970: 2),
+            content: "Coffee schedule note",
+            sourceHint: "Schedule",
+            imageAttachmentDataURLs: [],
+            isOutgoing: false
+        ))
+        let service = SearchService(
+            databaseService: database,
+            engine: SearchTestDistanceEngine(),
+            requestEmbedding: EmbeddingRequestRecorder().request
+        )
+
+        await service.search("coffee", filter: .schedule)
+
+        #expect(service.results.map(\.message.content) == ["Coffee schedule note"])
+        #expect(service.hasSearched)
+    }
+
     @Test func submittedSearchWithNoMatchesRecordsThatSearchOccurred() async {
         let database = configuredDatabase()
         database.save(message: MessageModel(

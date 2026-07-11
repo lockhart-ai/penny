@@ -322,6 +322,7 @@ struct PennyWebSocketClientTests {
             filter: .all
         )
         await client.connect()
+        _ = await sentPayloads(transport, count: 2)
         transport.clearSentPayloads()
         client.isConnected = true
         client.isRegistered = true
@@ -336,7 +337,7 @@ struct PennyWebSocketClientTests {
           "messages": []
         }
         """)
-        _ = await sentPayloads(transport, count: 1)
+        _ = await sentPayloads(transport, count: 2)
 
         transport.emit("""
         {

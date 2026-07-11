@@ -75,7 +75,7 @@ final class SearchService {
         self.requestEmbedding = requestEmbedding
     }
 
-    func search(_ query: String) async {
+    func search(_ query: String, filter: MessagePageFilter = .all) async {
         searchGeneration += 1
         let generation = searchGeneration
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,6 +90,7 @@ final class SearchService {
         defer { finishSearch(generation: generation) }
 
         let messages = await databaseService.loadMessagesInBackground()
+            .filter { filter.includes(ChatMessage(model: $0)) }
         guard generation == searchGeneration else { return }
 
         let localMatches = lexicalMatches(in: messages, query: trimmedQuery)

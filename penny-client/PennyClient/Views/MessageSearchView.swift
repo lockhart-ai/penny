@@ -4,6 +4,7 @@ struct MessageSearchView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var selectedMessage: ChatMessage?
+    @State private var selectedFilter: MessageView.MessageFilter = .all
     @State private var searchService: SearchService
     @State private var searchTask: Task<Void, Never>?
 
@@ -18,6 +19,25 @@ struct MessageSearchView: View {
         )
     }
 
+    private var filterMenu: some View {
+        Menu {
+            Picker("Filter Messages", selection: $selectedFilter) {
+                ForEach(MessageView.MessageFilter.allCases) { filter in
+                    Label(filter.title, systemImage: filter.systemImage)
+                        .tag(filter)
+                }
+            }
+        } label: {
+            Image(systemName: selectedFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("Filter messages")
+        .accessibilityValue(selectedFilter.title)
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -29,7 +49,7 @@ struct MessageSearchView: View {
                     ContentUnavailableView(
                         searchService.hasSearched ? "No Matches" : "Search Messages",
                         systemImage: "magnifyingglass",
-                        description: Text(searchService.hasSearched ? "Try a different phrase." : "Search your cached conversation by meaning.")
+                        description: Text(searchService.hasSearched ? "Try a different phrase." : "Search your conversation history by meaning.")
                     )
                 } else {
                     ScrollView {
@@ -65,6 +85,9 @@ struct MessageSearchView: View {
                 cancelSearch()
                 searchService.clear()
             }
+            .onChange(of: selectedFilter) { _, _ in
+                handleFilterChanged()
+            }
             .onSubmit(of: .search) {
                 startSearch()
             }
@@ -72,6 +95,9 @@ struct MessageSearchView: View {
                 cancelSearch()
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    filterMenu
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Cancel") { dismiss() }
                 }
@@ -84,7 +110,17 @@ struct MessageSearchView: View {
 
     private func startSearch() {
         cancelSearch()
-        searchTask = Task { await searchService.search(query) }
+        searchTask = Task { await searchService.search(query, filter: selectedFilter.pageFilter) }
+    }
+
+    private func handleFilterChanged() {
+        cancelSearch()
+        guard searchService.hasSearched,
+              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searchService.clear()
+            return
+        }
+        startSearch()
     }
 
     private func cancelSearch() {
