@@ -26,6 +26,7 @@ from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.memory_tools import (
     CollectionArchiveTool,
+    CollectionCatalogTool,
     CollectionCreateTool,
     CollectionDeleteEntryTool,
     CollectionGetTool,
@@ -42,6 +43,7 @@ from penny.tools.memory_tools import (
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
+    MemoryMetadataTool,
     ReadPublishedLatestTool,
     ReadRunCallsTool,
     ReadSimilarTool,
@@ -178,6 +180,11 @@ class TestCreateAndList:
         assert memories["likes"].intent == "a running list the user asked me to keep"
         # The notify-on-new flag persists; omitting it defaults to silent (False).
         assert memories["likes"].published is True
+        # No chat provenance was passed (a collector / non-chat creator), so the
+        # registry columns stay NULL (#1566).
+        assert memories["likes"].source_message_id is None
+        assert memories["likes"].created_by_run_id is None
+        assert memories["likes"].expires_at is None
 
     @pytest.mark.asyncio
     async def test_create_log_persists(self, tmp_path):
@@ -2219,3 +2226,129 @@ class TestReadPublishedLatest:
         # But a fresh entry (within the window) is surfaced.
         self._write(db, "games", "new", "fresh game")
         assert "fresh game" in (await tool.execute(n=1)).message
+
+
+class TestRegistryProvenanceAndLifecycle:
+    """Operational registry (#1566): ``collection_create`` stamps the spawning
+    message + creating run; ``collection_catalog`` (archived-inclusive) and
+    ``memory_metadata`` render a status / expires / created-from-message block —
+    so any mechanism can state who asked for it, what created it, whether it's
+    live, and when it ends, and an archived one stays enumerable and inspectable.
+    """
+
+    async def _create(self, db, name, *, created_by_run_id=None, published=False):
+        return await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), created_by_run_id=created_by_run_id
+        ).execute(
+            name=name,
+            description=f"{name} subject matter",
+            inclusion="relevant",
+            recall="relevant",
+            extraction_prompt=(
+                f"1. gather fresh {name} items.\n"
+                "2. done(success=true, summary=<what happened this cycle>)."
+            ),
+            collector_interval_seconds=3600,
+            intent=f"the user's goal for {name}",
+            published=published,
+        )
+
+    def _spawn(self, db, run_id, content):
+        """Log an incoming user message and link it to ``run_id`` — mirroring the
+        channel's post-run provenance link (the message id isn't known until the
+        run returns)."""
+        message_id = db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, "user", content
+        )
+        db.memories.link_source_message(run_id, message_id)
+        return message_id
+
+    @pytest.mark.asyncio
+    async def test_create_stamps_run_then_channel_links_message(self, tmp_path):
+        db = _make_db(tmp_path)
+        # collection_create stamps only the creating run — the spawning message
+        # isn't known until the run returns, and there's no end condition.
+        await self._create(db, "espresso-reviews", created_by_run_id="run-espresso-01")
+        row = db.memories.get("espresso-reviews")
+        assert row.created_by_run_id == "run-espresso-01"
+        assert row.source_message_id is None
+        assert row.expires_at is None
+        # The channel then links the spawning message by run id.
+        message_id = self._spawn(
+            db, "run-espresso-01", "can you keep an eye on new espresso machine reviews?"
+        )
+        assert db.memories.get("espresso-reviews").source_message_id == message_id
+
+    @pytest.mark.asyncio
+    async def test_metadata_renders_full_lifecycle(self, tmp_path):
+        db = _make_db(tmp_path)
+        await self._create(db, "audiobooks", created_by_run_id="run-audiobooks-01")
+        message_id = self._spawn(
+            db, "run-audiobooks-01", "keep a running list of good sci-fi audiobooks"
+        )
+        result = await MemoryMetadataTool(db).execute(memory="audiobooks")
+        # One exact-name call answers the whole lifecycle question.
+        assert "status: active" in result.message
+        assert "expires: never" in result.message
+        assert "by run run-audiobooks-01" in result.message
+        assert f'from message {message_id} ("keep a running list of good sci-fi audiobooks")' in (
+            result.message
+        )
+
+    @pytest.mark.asyncio
+    async def test_catalog_is_archived_inclusive_and_marks_status(self, tmp_path):
+        db = _make_db(tmp_path)
+        await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
+        message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
+        await self._create(db, "trail-conditions")  # no run id (seeded-style)
+        # Archiving must change status, never visibility.
+        await CollectionArchiveTool(db).execute(memory="kickstarters")
+        result = await CollectionCatalogTool(db).execute()
+
+        # Both collections still render — the just-archived one clearly marked.
+        assert "## kickstarters" in result.message
+        assert "## trail-conditions" in result.message
+        assert "status: archived" in result.message
+        assert "status: active" in result.message
+        # A count over the inventory surface is correct wrt the DB (2 collections,
+        # one of them archived) — the archived row is not hidden.
+        assert result.message.count("## ") == 2
+        # Provenance (message + ask excerpt) renders on the created line.
+        assert (
+            f'from message {message_id} ("watch for new board game kickstarters")' in result.message
+        )
+
+    @pytest.mark.asyncio
+    async def test_long_ask_is_excerpted(self, tmp_path):
+        db = _make_db(tmp_path)
+        long_ask = (
+            "please keep a really thorough running list of every single new mechanical "
+            "keyboard group buy you can find anywhere on the internet, forever"
+        )
+        await self._create(db, "keyboards", created_by_run_id="run-kb-01")
+        self._spawn(db, "run-kb-01", long_ask)
+        result = await MemoryMetadataTool(db).execute(memory="keyboards")
+        # The ask is truncated to the first ~80 chars with an ellipsis marker, so
+        # a verbose request doesn't blow up the rendered line.
+        assert long_ask[:40] in result.message
+        assert long_ask not in result.message
+        assert "…" in result.message
+
+    @pytest.mark.asyncio
+    async def test_expires_at_renders_end_condition(self, tmp_path):
+        db = _make_db(tmp_path)
+        expiry = datetime(2026, 12, 25, 9, 0, tzinfo=UTC)
+        db.memories.create_collection(
+            "holiday-watch",
+            "seasonal watch subject matter",
+            Inclusion.RELEVANT,
+            RecallMode.RECENT,
+            extraction_prompt=(
+                "1. gather holiday deals.\n2. done(success=true, summary=<what happened>)."
+            ),
+            collector_interval_seconds=3600,
+            expires_at=expiry,
+        )
+        result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
+        # A set end condition renders as its UTC datetime, not "never".
+        assert "expires: 2026-12-25 09:00 UTC" in result.message
