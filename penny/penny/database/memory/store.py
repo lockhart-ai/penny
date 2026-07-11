@@ -55,7 +55,8 @@ class MemoryStore:
     Summary of the public surface:
         * dispatch: memory, active_memories, run_log
         * metadata: create_collection, create_log, get, list_all, archive,
-          unarchive, update_collection_metadata, mark_collected, set_cadence
+          unarchive, update_collection_metadata, link_source_message,
+          mark_collected, set_cadence
         * inventory: entry_counts, names_with_entry_match
         * dedup probe: exists
         * embedding backfill: get_entries_without_embeddings,
@@ -135,6 +136,8 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         published: bool = False,
+        created_by_run_id: str | None = None,
+        expires_at: datetime | None = None,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -148,6 +151,8 @@ class MemoryStore:
             description_embedding=description_embedding,
             intent=intent,
             published=published,
+            created_by_run_id=created_by_run_id,
+            expires_at=expires_at,
         )
 
     def create_log(
@@ -184,6 +189,8 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         published: bool = False,
+        created_by_run_id: str | None = None,
+        expires_at: datetime | None = None,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -204,6 +211,11 @@ class MemoryStore:
                 # snap-back target for auto-throttle.
                 base_interval_seconds=collector_interval_seconds,
                 intent=intent,
+                # Provenance + lifecycle (#1566): the creating run and the end
+                # condition.  Both None for seeded / system rows; the spawning
+                # message is linked post-run via ``link_source_message``.
+                created_by_run_id=created_by_run_id,
+                expires_at=expires_at,
                 created_at=datetime.now(UTC),
             )
             session.add(memory)
@@ -351,6 +363,32 @@ class MemoryStore:
             session.refresh(memory)
         self._notify_changed(name)
         return memory
+
+    def link_source_message(self, run_id: str, source_message_id: int) -> None:
+        """Stamp the spawning message on every mechanism a chat run created (#1566).
+
+        ``collection_create`` records ``created_by_run_id`` at creation, but the
+        triggering message's id isn't known until the run returns (the channel
+        logs it afterward, so it never doubles into the turn's own recall).  The
+        channel then calls this to link the two structurally — matching by the
+        unique per-turn ``run_id``, and only where a source isn't already set —
+        so the provenance is a read, not a reconstruction.  A no-op when the run
+        created nothing.
+        """
+        with self._session() as session:
+            rows = session.exec(
+                select(MemoryRow).where(
+                    MemoryRow.created_by_run_id == run_id,
+                    MemoryRow.source_message_id.is_(None),  # ty: ignore[unresolved-attribute]
+                )
+            ).all()
+            changed_names = [memory.name for memory in rows]
+            for memory in rows:
+                memory.source_message_id = source_message_id
+                session.add(memory)
+            session.commit()
+        for name in changed_names:
+            self._notify_changed(name)
 
     def mark_collected(self, name: str) -> None:
         """Stamp ``last_collected_at = now`` after a dispatcher cycle (whether it

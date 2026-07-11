@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 80
+        assert count == 81
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -120,7 +120,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 80
+        assert count1 == 81
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -158,8 +158,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0080 run = 79 migrations
-        assert count == 79
+        # 0001 is skipped; 0002 through 0081 run = 80 migrations
+        assert count == 80
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -185,7 +185,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 80  # all migrations applied
+        assert count == 81  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -733,3 +733,37 @@ class TestMigrate:
         # 1 (clean) and 2 (ordinary trailing ellipsis) survive; 3/4/5 (poison in
         # content or key) are deleted.
         assert surviving == {1, 2}
+
+    def test_0081_adds_registry_provenance_columns(self, tmp_path):
+        """Migration 0081 adds the provenance + lifecycle columns to ``memory``
+        (source_message_id, created_by_run_id, expires_at), and is idempotent on
+        a table that predates them."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        # A ``memory`` table as it existed before the registry columns.
+        conn.execute("CREATE TABLE memory (name TEXT PRIMARY KEY, description TEXT)")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0081_add_registry_provenance_columns.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0081", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        # A second application is a no-op (guarded on PRAGMA table_info) — proves
+        # the migration is safe on a fresh DB whose model already carries them.
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()}
+        conn.close()
+
+        assert {"source_message_id", "created_by_run_id", "expires_at"}.issubset(columns)

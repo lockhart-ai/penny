@@ -285,6 +285,16 @@ class MemoryRow(SQLModel, table=True):
     # thereafter (no field on ``collection_update``); NULL for system /
     # migration-seeded collections.
     intent: str | None = Field(default=None)
+    # Provenance + lifecycle (operational registry, #1566) — every mechanism
+    # created from a chat request can answer *who* asked for it, *what* run
+    # created it, and *when* it ends, by a read.  All nullable: seeded / system
+    # / migration-created rows have no chat provenance and no end condition.
+    # ``source_message_id`` is the spawning user message; ``created_by_run_id``
+    # is the ``promptlog.run_id`` of the creating run; ``expires_at`` is the
+    # end condition (consumed by #1562's lifecycle axis).
+    source_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
+    created_by_run_id: str | None = Field(default=None)
+    expires_at: datetime | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(

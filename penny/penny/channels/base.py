@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import re
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -654,8 +655,13 @@ class MessageChannel(ABC):
         threaded through ambient state.
         """
         logger.info("Dispatching to message agent for %s", message.sender)
-        # The incoming message is logged to ``messagelog`` below (``log_message``);
-        # ``user-messages`` is a read facade over it — no separate append.
+        # Mint the turn's run id here so the same id stamps every promptlog row of
+        # the run AND is recorded on any collection the run creates
+        # (``created_by_run_id``, #1566).  The incoming message is logged AFTER the
+        # run (below), so it never doubles into the turn's own recall — then it is
+        # linked structurally to the run by ``link_source_message``.
+        # ``user-messages`` is a read facade over ``messagelog`` — no separate append.
+        run_id = uuid.uuid4().hex
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
@@ -665,6 +671,7 @@ class MessageChannel(ABC):
             images=message.images or None,
             page_context=message.page_context,
             quoted_text=message.quoted_text,
+            run_id=run_id,
             **self._make_handle_kwargs(message, progress),
         )
         incoming_embedding = await self._embed_message(message.content)
@@ -679,6 +686,10 @@ class MessageChannel(ABC):
             if incoming_embedding is not None
             else None,
         )
+        # Link the spawning message to any mechanism this run created, now that the
+        # message has an id (#1566) — matched by the unique per-turn run id.
+        if incoming_id is not None:
+            self._db.memories.link_source_message(run_id, incoming_id)
         await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name
         )

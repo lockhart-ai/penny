@@ -98,8 +98,8 @@ class ChatAgent(Agent):
         """Bind the Collector so test_extraction_prompt is available in chat."""
         self._collector = collector
 
-    def get_tools(self) -> list[Tool]:
-        tools = super().get_tools()
+    def get_tools(self, created_by_run_id: str | None = None) -> list[Tool]:
+        tools = super().get_tools(created_by_run_id)
         # Notification mute/unmute is a chat-driven action over the MuteState row
         # (the retired /mute + /unmute commands), so both tools live on the chat
         # surface — the model dispatches to them from natural language.
@@ -148,14 +148,23 @@ class ChatAgent(Agent):
         images: list[str] | None = None,
         page_context: PageContext | None = None,
         quoted_text: str | None = None,
+        run_id: str | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
     ) -> ControllerResponse:
         """Handle an incoming message — summary method.
 
         Builds context, processes images, runs agentic loop.
+
+        ``run_id`` is the turn's run id, minted by the channel so the same id
+        both stamps every promptlog row and is recorded on any collection the
+        turn creates (``created_by_run_id``, #1566) — the channel later links the
+        spawning message to that run.  Passed as an explicit parameter down the
+        call chain, never held as ambient state; when a direct caller omits it,
+        one is minted here.
         """
         self._current_user = sender
         self._pending_page_context = page_context
+        run_id = run_id or uuid.uuid4().hex
         try:
             content, has_images = await self._process_images(content, images)
             self._current_message = content
@@ -172,17 +181,19 @@ class ChatAgent(Agent):
                     history=history,
                     max_steps=PennyConstants.VISION_MAX_STEPS,
                     system_prompt=system_prompt,
+                    run_id=run_id,
                     prompt_type=ChatPromptType.VISION_MESSAGE,
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
-            self._install_tools(self.get_tools())
+            self._install_tools(self.get_tools(created_by_run_id=run_id))
             system_prompt = await self._build_system_prompt(sender, content)
             return await self.run(
                 prompt=content,
                 max_steps=self.get_max_steps(),
                 history=history,
                 system_prompt=system_prompt,
+                run_id=run_id,
                 on_tool_start=on_tool_start,
                 prompt_type=ChatPromptType.USER_MESSAGE,
             )

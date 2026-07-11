@@ -17,9 +17,11 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlmodel import Session, select
 
+from penny.constants import PennyConstants
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Media, MemoryEntry, MessageLog
 from penny.llm.embeddings import serialize_embedding
+from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.read_emails import ReadEmailsTool
@@ -417,6 +419,79 @@ async def test_stage1_admits_only_top_relevant_collection(
 
     assert "espresso-facts" in included
     assert "tea-facts" not in included, "runner-up above the floor should be dropped by top-1"
+
+
+@pytest.mark.asyncio
+async def test_collection_create_stamps_chat_provenance(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A collection created from a chat message records that message as its
+    source and the turn's run as its creator (#1566).
+
+    Proves the provenance is threaded end-to-end — the channel logs the incoming
+    message first, ``handle`` mints the run_id and passes both down to
+    ``collection_create`` — rather than reconstructed after the fact.
+    """
+    ask = "can you keep a running list of new indie platformers for me?"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(message.get("content", "")) for message in messages)
+        # Only steer OUR chat turn; other agents' calls (background collectors)
+        # get a plain text no-op so they can't create anything.
+        if ask not in blob:
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content="nothing to do"),
+                model="test-model",
+            )
+        if any(message.get("role") == "tool" for message in messages):
+            return LlmResponse(
+                message=LlmMessage(role="assistant", content="done! i'll keep a list. 🌟"),
+                model="test-model",
+            )
+        return LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_0",
+                        function=LlmToolCallFunction(
+                            name="collection_create",
+                            arguments={
+                                "name": "indie-platformers",
+                                "description": "new indie platformer games",
+                                "inclusion": "relevant",
+                                "recall": "relevant",
+                                "extraction_prompt": (
+                                    "1. browse for new indie platformers.\n"
+                                    "2. done(success=true, summary=<what happened>)."
+                                ),
+                                "collector_interval_seconds": 3600,
+                                "intent": "a running list of new indie platformers",
+                            },
+                        ),
+                    )
+                ],
+            ),
+            model="test-model",
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        await wait_until(lambda: penny.db.memories.get("indie-platformers") is not None)
+
+        row = penny.db.memories.get("indie-platformers")
+        # The creating run is recorded, and the source points back at the exact
+        # incoming message that spawned the collection.
+        assert row.created_by_run_id is not None
+        assert row.source_message_id is not None
+        source = penny.db.messages.get_by_id(row.source_message_id)
+        assert source is not None
+        assert source.content == ask
+        assert source.direction == PennyConstants.MessageDirection.INCOMING
 
 
 # ── 2. Special success cases ──────────────────────────────────────────────

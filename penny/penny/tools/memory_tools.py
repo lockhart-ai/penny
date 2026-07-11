@@ -302,6 +302,82 @@ def _description_degraded_suffix(description: str | None, embedding: list[float]
     return ""
 
 
+# ── Provenance + lifecycle rendering (operational registry, #1566) ──────────
+#
+# ``collection_catalog`` (the inventory surface) and ``memory_metadata`` (the
+# single exact-name lookup) render the SAME lifecycle block, so one read answers
+# the whole "who asked for it, what run created it, is it live, when does it
+# end" question.  It's sourced structurally from the registry columns, never
+# reconstructed — so an archived mechanism stays enumerable and inspectable,
+# marked with its archive time rather than vanishing from the catalog.
+
+_STATUS_ACTIVE = "active"
+_STATUS_ARCHIVED = "archived"
+_EXPIRES_NEVER = "never"
+# First N characters of the spawning message, rendered as "the ask" (#1566).
+_ASK_EXCERPT_CHARS = 80
+
+
+def _ask_excerpt(db: Database, source_message_id: int | None) -> str | None:
+    """A one-line excerpt (first ``_ASK_EXCERPT_CHARS`` chars) of the user message
+    that spawned a mechanism, or ``None`` when there is no source message (seeded
+    / system rows) or the row can't be found.  Whitespace is collapsed so a
+    multi-line ask reads as one line."""
+    if source_message_id is None:
+        return None
+    message = db.messages.get_by_id(source_message_id)
+    if message is None:
+        return None
+    collapsed = " ".join(message.content.split())
+    if len(collapsed) <= _ASK_EXCERPT_CHARS:
+        return collapsed
+    return f"{collapsed[:_ASK_EXCERPT_CHARS].rstrip()}…"
+
+
+def _status_line(row: MemoryRow) -> str:
+    """``status: active`` or ``status: archived <UTC datetime>``.  A just-archived
+    row renders clearly marked, never absent; the archive timestamp is
+    ``updated_at``, which ``MemoryStore.archive`` stamps at archive time."""
+    if row.archived:
+        return f"status: {_STATUS_ARCHIVED} {format_log_timestamp(row.updated_at)}"
+    return f"status: {_STATUS_ACTIVE}"
+
+
+def _expires_line(row: MemoryRow) -> str:
+    """``expires: <UTC datetime>`` when an end condition is set, else
+    ``expires: never``."""
+    if row.expires_at is not None:
+        return f"expires: {format_log_timestamp(row.expires_at)}"
+    return f"expires: {_EXPIRES_NEVER}"
+
+
+def _created_line(row: MemoryRow, ask: str | None) -> str:
+    """``created: <UTC datetime>`` plus the creating run and spawning message when
+    they exist: ``… by run <run_id> from message <id> ("<ask>")``.  Seeded /
+    system rows carry neither, so the line is just the timestamp."""
+    parts = [f"created: {format_log_timestamp(row.created_at)}"]
+    if row.created_by_run_id is not None:
+        parts.append(f"by run {row.created_by_run_id}")
+    if row.source_message_id is not None:
+        if ask is not None:
+            parts.append(f'from message {row.source_message_id} ("{ask}")')
+        else:
+            parts.append(f"from message {row.source_message_id}")
+    return " ".join(parts)
+
+
+def _lifecycle_block(db: Database, row: MemoryRow) -> list[str]:
+    """The shared provenance + lifecycle lines — status, end condition, and the
+    creating run/message — read from the registry columns.  One definition so
+    the catalog and the metadata lookup answer the lifecycle question the same
+    way."""
+    return [
+        _status_line(row),
+        _expires_line(row),
+        _created_line(row, _ask_excerpt(db, row.source_message_id)),
+    ]
+
+
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
@@ -471,9 +547,22 @@ class CollectionCreateTool(MemoryTool):
             return f"You tried to set up the {name} collection but it didn't work:"
         return f"You set up the {name} collection:"
 
-    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlmClient,
+        created_by_run_id: str | None = None,
+    ) -> None:
         self._db = db
         self._llm_client = llm_client
+        # The creating run's id (``promptlog.run_id``), passed as an explicit
+        # parameter from the chat agent's turn context (#1566) — never ambient
+        # state.  ``None`` for a collector / non-chat creator, which leaves the
+        # column NULL.  ``source_message_id`` is NOT known at creation (the
+        # channel logs the spawning message only after the run returns), so the
+        # channel links it afterward by this run id — see
+        # ``MemoryStore.link_source_message``.
+        self._created_by_run_id = created_by_run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionCreateArgs(**kwargs)
@@ -492,6 +581,7 @@ class CollectionCreateTool(MemoryTool):
             description_embedding=description_embedding,
             intent=args.intent,
             published=args.published,
+            created_by_run_id=self._created_by_run_id,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         message = f"{_format_collection_echo(memory, 'Created')}{suffix}"
@@ -1319,8 +1409,12 @@ class MemoryMetadataTool(MemoryTool):
             if memory.last_collected_at is not None
             else "never"
         )
-        created = format_log_timestamp(memory.created_at)
         updated = format_log_timestamp(memory.updated_at)
+        # The provenance + lifecycle block (status / expires / created-from-message):
+        # the same lines collection_catalog renders, so this exact-name lookup answers
+        # the full lifecycle question — who asked for it, what run created it, whether
+        # it's live, and when it ends (#1566).
+        lifecycle = _lifecycle_block(self._db, memory)
         # Lead with what the collection is FOR (intent) and what it DOES (the recipe),
         # because that is the substance a description should convey; the operational
         # settings (routing/cadence/timestamps) are secondary and go last.  Ordered this
@@ -1343,8 +1437,7 @@ class MemoryMetadataTool(MemoryTool):
             f"recall: {memory.recall}",
             f"published: {memory.published}",
             f"interval: {interval}",
-            f"archived: {memory.archived}",
-            f"created: {created}",
+            *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
         ]
@@ -1352,22 +1445,29 @@ class MemoryMetadataTool(MemoryTool):
 
 
 class CollectionCatalogTool(MemoryTool):
-    """List every active collection with its full gather recipe.
+    """List every user collection — live AND archived — with its full recipe and
+    lifecycle.
 
-    The skills collector's window onto real use: each non-archived collection
-    (logs and framework collectors excluded) with its description, intent,
+    The inventory surface, and the skills collector's window onto real use: each
+    user collection (logs and framework collectors excluded) with its lifecycle
+    block (status / expires / created-from-message), description, intent,
     ``published`` flag, and full ``extraction_prompt`` — the prompts that
-    actually run.  The skills loop distils reusable workflow patterns from these
-    and reconciles them against the existing skills, so skills stay grounded in
-    the collections that exist rather than in hypothetical teachings.
+    actually run.  **Archived-inclusive** (#1566): archiving a mechanism changes
+    its status, never its visibility, so a just-archived collection still
+    renders (clearly marked ``status: archived <when>``) and a count over the
+    catalog is correct with respect to the database.  The skills loop distils
+    reusable workflow patterns from these and reconciles them against the
+    existing skills, so skills stay grounded in the collections that exist.
     """
 
     name = "collection_catalog"
     description = (
-        "List every active collection with its full gather recipe: name, "
-        "description, intent (the user's goal in their words), whether it "
-        "notifies the user (published), and its extraction_prompt.  Use it to "
-        "see what Penny actually collects and how each collection is built.  "
+        "List every collection — live and archived — with its full gather "
+        "recipe and lifecycle: name, status (active / archived with when), end "
+        "condition, when and from which message it was created, description, "
+        "intent (the user's goal in their words), whether it notifies the user "
+        "(published), and its extraction_prompt.  Use it to see what Penny "
+        "collects, how each collection is built, and which have been retired.  "
         "Logs and framework collectors are omitted."
     )
     parameters = {"type": "object", "properties": {}}
@@ -1389,24 +1489,25 @@ class CollectionCatalogTool(MemoryTool):
             key=lambda row: row.name,
         )
         if not rows:
-            return ToolResult(message="(no active collections)")
+            return ToolResult(message="(no collections)")
         return ToolResult(message="\n\n".join(self._format(row) for row in rows))
 
     @staticmethod
     def _is_user_collection(row: MemoryRow) -> bool:
-        """A non-archived, prompt-bearing collection that gathers user data —
-        not a log, not a framework collector (skills/quality/notifier)."""
+        """A prompt-bearing collection that gathers user data — not a log, not a
+        framework collector (skills/quality/notifier).  Archived-inclusive
+        (#1566): a retired collection still enumerates, marked by its status."""
         return (
             row.type == MemoryType.COLLECTION
-            and not row.archived
             and row.extraction_prompt is not None
             and row.name not in PennyConstants.SYSTEM_COLLECTIONS
         )
 
-    @staticmethod
-    def _format(row: MemoryRow) -> str:
+    def _format(self, row: MemoryRow) -> str:
+        lifecycle = "\n".join(_lifecycle_block(self._db, row))
         return (
             f"## {row.name}\n"
+            f"{lifecycle}\n"
             f"description: {row.description}\n"
             f"intent: {row.intent or '(none)'}\n"
             f"published: {row.published}\n"
@@ -2185,6 +2286,7 @@ def build_memory_tools(
     llm_client: LlmClient,
     agent_name: str,
     scope: str | None = None,
+    created_by_run_id: str | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -2217,6 +2319,12 @@ def build_memory_tools(
     loop-control, not capability, added in ``BackgroundAgent.get_tools``.
     Chat replies via final text and must not have ``done`` available, or
     the model may call it instead of producing a reply.
+
+    ``created_by_run_id`` stamps ``collection_create`` with the id of the chat
+    run that built the surface (#1566) — passed as an explicit parameter, never
+    ambient state.  ``None`` for a collector / non-chat creator, which leaves the
+    column NULL.  (The spawning ``source_message_id`` is linked afterward by the
+    channel, since the message id isn't known until the run returns.)
     """
     reads: list[Tool] = [
         CollectionReadLatestTool(db),
@@ -2233,7 +2341,7 @@ def build_memory_tools(
         ExistsTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionCreateTool(db, llm_client),
+        CollectionCreateTool(db, llm_client, created_by_run_id=created_by_run_id),
         CollectionUpdateTool(db, llm_client),
         CollectionMergeTool(db, agent_name),
         CollectionArchiveTool(db),
