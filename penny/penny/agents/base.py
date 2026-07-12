@@ -86,6 +86,23 @@ class _StepResult:
     source_urls: list[str]
 
 
+@dataclass(frozen=True)
+class AgentProgressEvent:
+    """Structured, transport-neutral progress emitted by an agent run."""
+
+    event: str
+    run_id: str
+    agent: str
+    scope: str
+    step: int | None = None
+    max_steps: int | None = None
+    tools: tuple[tuple[str, dict], ...] = ()
+    outcome: str | None = None
+
+
+ProgressCallback = Callable[[AgentProgressEvent], Awaitable[None]]
+
+
 class Agent:
     """
     AI agent with a specific persona and capabilities.
@@ -200,6 +217,9 @@ class Agent:
             ]
             | None
         ) = None
+        self._progress_factory: (
+            Callable[[], tuple[ProgressCallback, Callable[[], Awaitable[None]]]] | None
+        ) = None
 
         Agent._instances.append(self)
 
@@ -220,10 +240,20 @@ class Agent:
         binding is plumbed through here.
         """
         run_id = uuid.uuid4().hex
-        result = await self._run_cycle(run_id)
-        return result.success
+        progress: ProgressCallback | None = None
+        cleanup: Callable[[], Awaitable[None]] | None = None
+        if self._progress_factory is not None:
+            progress, cleanup = self._progress_factory()
+        try:
+            result = await self._run_cycle(run_id, on_progress=progress)
+            return result.success
+        finally:
+            if cleanup is not None:
+                await cleanup()
 
-    async def _run_cycle(self, run_id: str) -> CycleResult:
+    async def _run_cycle(
+        self, run_id: str, on_progress: ProgressCallback | None = None
+    ) -> CycleResult:
         """Generic agentic shell: install tools, run the loop, commit cursor.
 
         Builds the system prompt via ``_build_system_prompt(user)`` so
@@ -256,6 +286,8 @@ class Agent:
             system_prompt=system_prompt,
             run_id=run_id,
             prompt_type=self.name,
+            on_progress=on_progress,
+            progress_scope="background",
         )
         # A cycle ends successfully only on a real ``done()`` tool call.  A
         # model that signals completion as prose instead of calling the tool is
@@ -305,8 +337,10 @@ class Agent:
         history: list[tuple[str, str]] | None = None,
         system_prompt: str | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
+        on_progress: ProgressCallback | None = None,
         run_id: str | None = None,
         prompt_type: str | None = None,
+        progress_scope: str = "foreground",
     ) -> ControllerResponse:
         """Run the agentic loop — prompt in, response out."""
         if run_id is None:
@@ -315,7 +349,14 @@ class Agent:
         messages = self._build_messages(prompt, history, system_prompt)
         tools = self._tool_registry.get_ollama_tools()
         return await self._run_agentic_loop(
-            messages, tools, max_steps, on_tool_start, run_id, prompt_type
+            messages,
+            tools,
+            max_steps,
+            on_tool_start,
+            on_progress,
+            run_id,
+            prompt_type,
+            progress_scope,
         )
 
     # ── Agentic loop internals ───────────────────────────────────────────
@@ -326,16 +367,73 @@ class Agent:
         tools: list[dict],
         steps: int,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
+        on_progress: ProgressCallback | None = None,
         run_id: str | None = None,
         prompt_type: str | None = None,
+        progress_scope: str = "foreground",
+    ) -> ControllerResponse:
+        """Run the loop while guaranteeing a terminal progress event."""
+        run_id = run_id or uuid.uuid4().hex
+        outcome = "error"
+        await self._notify_progress(
+            on_progress, AgentProgressEvent("run_started", run_id, self.name, progress_scope)
+        )
+        try:
+            response = await self._run_agentic_loop_body(
+                messages,
+                tools,
+                steps,
+                on_tool_start,
+                on_progress,
+                run_id,
+                prompt_type,
+                progress_scope,
+            )
+            if response.answer == PennyResponse.AGENT_MAX_STEPS:
+                outcome = "max_steps"
+            elif response.answer == PennyResponse.AGENT_MODEL_ERROR or (
+                response.tool_calls and all(record.failed for record in response.tool_calls)
+            ):
+                outcome = "error"
+            else:
+                outcome = "completed"
+            return response
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            await self._notify_progress(
+                on_progress,
+                AgentProgressEvent(
+                    "run_finished", run_id, self.name, progress_scope, outcome=outcome
+                ),
+            )
+
+    async def _run_agentic_loop_body(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        steps: int,
+        on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
+        on_progress: ProgressCallback | None = None,
+        run_id: str | None = None,
+        prompt_type: str | None = None,
+        progress_scope: str = "foreground",
     ) -> ControllerResponse:
         """Execute the step loop: call model, process tool calls, or return final answer."""
+        run_id = run_id or uuid.uuid4().hex
         source_urls: list[str] = []
         called_tools: set[tuple[str, ...]] = set()
         tool_call_records: list[ToolCallRecord] = []
 
         for step in range(steps):
             logger.info("Agent step %d/%d", step + 1, steps)
+            await self._notify_progress(
+                on_progress,
+                AgentProgressEvent(
+                    "step_started", run_id, self.name, progress_scope, step + 1, steps
+                ),
+            )
             # Force final step early when batched tool calls accumulate to the cap,
             # preventing context growth beyond what the 1-per-step case allows.
             is_final_step = step == steps - 1 or len(tool_call_records) >= steps - 1
@@ -349,7 +447,16 @@ class Agent:
             if response.has_tool_calls:
                 if self._reject_premature_terminator(response, messages, ctx):
                     continue
-                result = await self._process_tool_calls(response, called_tools, on_tool_start)
+                result = await self._process_tool_calls(
+                    response,
+                    called_tools,
+                    on_tool_start,
+                    on_progress,
+                    run_id,
+                    progress_scope,
+                    step + 1,
+                    steps,
+                )
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
                 if self.should_stop_loop(result.records):
@@ -945,6 +1052,11 @@ class Agent:
         response,
         called_tools: set[tuple[str, ...]],
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
+        on_progress: ProgressCallback | None = None,
+        run_id: str = "",
+        progress_scope: str = "foreground",
+        step: int | None = None,
+        max_steps: int | None = None,
     ) -> _StepResult:
         """Process all tool calls from a model response, executing valid ones in parallel."""
         logger.info("Model requested %d tool call(s)", len(response.message.tool_calls or []))
@@ -954,6 +1066,19 @@ class Agent:
 
         pending = self._dedup_tool_calls(response, called_tools, messages)
         await self._notify_tool_start(on_tool_start, pending)
+        if pending:
+            await self._notify_progress(
+                on_progress,
+                AgentProgressEvent(
+                    "tools_started",
+                    run_id,
+                    self.name,
+                    progress_scope,
+                    step=step,
+                    max_steps=max_steps,
+                    tools=tuple((name, dict(args)) for _, name, args, _ in pending),
+                ),
+            )
 
         results = await asyncio.gather(
             *[
@@ -1022,6 +1147,16 @@ class Agent:
             await on_tool_start([(name, dict(args)) for _, name, args, _ in pending])
         except RuntimeError, ValueError:
             logger.debug("on_tool_start callback failed")
+
+    async def _notify_progress(
+        self, callback: ProgressCallback | None, event: AgentProgressEvent
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            await callback(event)
+        except RuntimeError, ValueError:
+            logger.debug("agent progress callback failed")
 
     def _collect_tool_results(
         self,

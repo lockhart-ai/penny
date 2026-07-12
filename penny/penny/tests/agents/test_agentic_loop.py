@@ -1950,6 +1950,37 @@ class TestOnToolStartCallback:
 
         await agent.close()
 
+    @pytest.mark.asyncio
+    async def test_structured_progress_covers_run_steps_tools_and_finish(self, test_db, mock_llm):
+        """Progress events bracket the loop and identify each tool batch."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._tool_executor.execute = AsyncMock(return_value=ToolResult(message="result"))
+        events = []
+
+        async def on_progress(event):
+            events.append(event)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "topic"})
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+        response = await agent.run("test", max_steps=max_steps, on_progress=on_progress)
+
+        assert response.answer == "done"
+        assert [event.event for event in events] == [
+            "run_started",
+            "step_started",
+            "tools_started",
+            "step_started",
+            "run_finished",
+        ]
+        assert events[2].tools == (("search", {"query": "topic"}),)
+        assert events[-1].outcome == "completed"
+
+        await agent.close()
+
 
 class TestPromptLogAnnotations:
     """Test that prompt logs are annotated with agent_name and run_id."""

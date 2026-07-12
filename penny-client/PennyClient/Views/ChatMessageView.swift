@@ -33,6 +33,18 @@ struct ChatMessageView: View {
         message.imageAttachments.first
     }
 
+    private var shouldFillIncomingMessageRow: Bool {
+        fillsMessageRowWidth || (layout == .message && !message.isOutgoing)
+    }
+
+    private var shouldFillMessageRowContent: Bool {
+        fillsMessageRowWidth || shouldFillIncomingMessageRow
+    }
+
+    private var messageRowContentAlignment: Alignment {
+        message.isOutgoing && !fillsMessageRowWidth ? .trailing : .leading
+    }
+
     private var compactCardBackground: Color {
         message.isOutgoing ? Color.accentColor : Color(.secondarySystemGroupedBackground)
     }
@@ -76,7 +88,7 @@ struct ChatMessageView: View {
                 }
             }
             .foregroundStyle(.primary)
-            .frame(maxWidth: fillsMessageRowWidth ? .infinity : nil, alignment: .leading)
+            .frame(maxWidth: shouldFillIncomingMessageRow ? .infinity : nil, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -180,8 +192,9 @@ struct ChatMessageView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: shouldFillMessageRowContent ? .infinity : nil, alignment: messageRowContentAlignment)
 
-            if !message.isOutgoing && !fillsMessageRowWidth {
+            if !message.isOutgoing && !shouldFillIncomingMessageRow {
                 Spacer(minLength: 48)
             }
         }

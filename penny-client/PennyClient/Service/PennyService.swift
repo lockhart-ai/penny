@@ -4,6 +4,26 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+struct AgentProgressToolItem: Identifiable {
+    let id = UUID()
+    let name: String
+    let arguments: [String: AgentProgressValue]
+}
+
+struct AgentProgressStepItem: Identifiable {
+    let id = UUID()
+    let number: Int
+    let maxSteps: Int?
+    var tools: [AgentProgressToolItem] = []
+}
+
+struct AgentProgressRunItem: Identifiable {
+    let id: String
+    let agent: String
+    let scope: AgentProgressScope
+    var steps: [AgentProgressStepItem] = []
+}
+
 @MainActor
 @Observable
 final class PennyService {
@@ -32,6 +52,15 @@ final class PennyService {
     var isConnected = false
     var isRegistered = false
     var isTyping = false
+    var agentProgressRuns: [String: AgentProgressRunItem] = [:]
+
+    var foregroundProgress: AgentProgressRunItem? {
+        agentProgressRuns.values.first(where: { $0.scope == .foreground })
+    }
+
+    var backgroundProgressRuns: [AgentProgressRunItem] {
+        agentProgressRuns.values.filter { $0.scope == .background }.sorted { $0.id < $1.id }
+    }
     var lastError: String?
     var runtimeConfigParams: [RuntimeConfigParam] = []
     var promptLogRuns: [PromptLogRun] = []
@@ -168,6 +197,7 @@ extension PennyService {
         isConnected = false
         isRegistered = false
         isTyping = false
+        agentProgressRuns.removeAll()
     }
 
     func requestMessagePage(_ request: MessagePageRequest) async -> MessagePage {
@@ -560,6 +590,8 @@ extension PennyService {
             }
         case .typing(let payload):
             isTyping = payload.active
+        case .agentProgress(let payload):
+            applyAgentProgress(payload)
         case .configResponse(let payload):
             runtimeConfigParams = payload.params
         case .promptLogsResponse(let payload):
@@ -601,6 +633,33 @@ extension PennyService {
             } else {
                 promptLogRuns.append(run)
             }
+        }
+    }
+
+    private func applyAgentProgress(_ payload: AgentProgressPayload) {
+        switch payload.event {
+        case .runStarted:
+            guard agentProgressRuns[payload.runID] == nil else { return }
+            agentProgressRuns[payload.runID] = AgentProgressRunItem(
+                id: payload.runID,
+                agent: payload.agent,
+                scope: payload.scope
+            )
+        case .stepStarted:
+            guard var run = agentProgressRuns[payload.runID], let step = payload.step else { return }
+            guard !run.steps.contains(where: { $0.number == step }) else { return }
+            run.steps.append(AgentProgressStepItem(number: step, maxSteps: payload.maxSteps))
+            agentProgressRuns[payload.runID] = run
+        case .toolsStarted:
+            guard var run = agentProgressRuns[payload.runID] else { return }
+            guard let step = payload.step ?? run.steps.last?.number,
+                  let index = run.steps.firstIndex(where: { $0.number == step }) else { return }
+            run.steps[index].tools.append(contentsOf: payload.tools.map {
+                AgentProgressToolItem(name: $0.name, arguments: $0.arguments)
+            })
+            agentProgressRuns[payload.runID] = run
+        case .runFinished:
+            agentProgressRuns.removeValue(forKey: payload.runID)
         }
     }
 

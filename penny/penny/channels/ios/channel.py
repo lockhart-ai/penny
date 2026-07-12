@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 from sqlmodel import Session
 from websockets.asyncio.server import Server, ServerConnection
 
+from penny.agents.base import AgentProgressEvent, ProgressCallback
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.channels.browser.models import (
     BROWSER_MSG_TYPE_COLLECTION_TRIGGER,
@@ -79,6 +81,8 @@ from penny.channels.ios.models import (
     IOS_MSG_TYPE_PULL,
     IOS_MSG_TYPE_REGISTER,
     IosAckMessages,
+    IosAgentProgress,
+    IosAgentProgressTool,
     IosEmbeddingRequest,
     IosEmbeddingResponse,
     IosHistoryRequest,
@@ -1135,6 +1139,81 @@ class IosChannel(MessageChannel):
             return False
         await self._send_ws(conn.ws, IosTyping(active=typing))
         return True
+
+    def _make_handle_kwargs(self, message: IncomingMessage, progress=None) -> dict:
+        """Attach structured foreground progress to the requesting device."""
+        return {"on_progress": self.make_foreground_progress_callback(message.sender)}
+
+    @staticmethod
+    def _redact_progress_arguments(tool_name: str, arguments: dict) -> dict[str, object]:
+        """Allowlist short, display-relevant fields; never send message bodies."""
+        allowed: dict[str, tuple[str, ...]] = {
+            "browse": ("queries",),
+            "search_emails": ("text", "from_addr", "subject", "after", "before"),
+            "read_emails": ("email_ids",),
+            "list_emails": ("folder",),
+            "list_folders": (),
+            "draft_email": ("to", "subject"),
+            "generate_image": (),
+        }
+        keys = allowed.get(tool_name, ())
+        redacted: dict[str, object] = {}
+        for key in keys:
+            value = arguments.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                redacted[key] = value[:120]
+            elif isinstance(value, list):
+                redacted[key] = [str(item)[:120] for item in value[:10]]
+        return redacted
+
+    async def _send_agent_progress(
+        self, event: AgentProgressEvent, recipient: str | None = None
+    ) -> None:
+        """Send transient progress to one device or all connected devices."""
+        tools = [
+            IosAgentProgressTool(
+                name=name,
+                arguments=self._redact_progress_arguments(name, arguments),
+            )
+            for name, arguments in event.tools
+        ]
+        payload = IosAgentProgress(
+            event=event.event,
+            run_id=event.run_id,
+            agent=event.agent,
+            scope=event.scope,
+            step=event.step,
+            max_steps=event.max_steps,
+            tools=tools,
+            outcome=event.outcome,
+        )
+        connections = (
+            [self._connections.get(recipient)]
+            if recipient is not None
+            else list(self._connections.values())
+        )
+        for conn in connections:
+            if conn is not None:
+                await self._send_ws(conn.ws, payload)
+
+    def make_foreground_progress_callback(self, recipient: str) -> ProgressCallback:
+        async def callback(event: AgentProgressEvent) -> None:
+            await self._send_agent_progress(event, recipient)
+
+        return callback
+
+    def make_background_progress_callback(
+        self,
+    ) -> tuple[ProgressCallback, Callable[[], Awaitable[None]]]:
+        async def callback(event: AgentProgressEvent) -> None:
+            await self._send_agent_progress(event)
+
+        async def cleanup() -> None:
+            return None
+
+        return callback, cleanup
 
     async def close(self) -> None:
         """Shut down websocket and APNs resources."""

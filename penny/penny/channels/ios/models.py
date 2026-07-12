@@ -19,6 +19,7 @@ IOS_RESP_TYPE_OUTBOX_CHANGED = "outbox_changed"
 IOS_RESP_TYPE_REGISTERED = "registered"
 IOS_RESP_TYPE_STATUS = "status"
 IOS_RESP_TYPE_TYPING = "typing"
+IOS_RESP_TYPE_AGENT_PROGRESS = "agent_progress"
 
 
 class IosRegister(BaseModel):
@@ -153,3 +154,24 @@ class IosTyping(BaseModel):
 
     type: str = IOS_RESP_TYPE_TYPING
     active: bool
+
+
+class IosAgentProgressTool(BaseModel):
+    """A redacted tool descriptor for client-side progress formatting."""
+
+    name: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+
+
+class IosAgentProgress(BaseModel):
+    """Ephemeral agent progress sent only to connected iOS clients."""
+
+    type: str = IOS_RESP_TYPE_AGENT_PROGRESS
+    event: str
+    run_id: str
+    agent: str
+    scope: str
+    step: int | None = None
+    max_steps: int | None = None
+    tools: list[IosAgentProgressTool] = Field(default_factory=list)
+    outcome: str | None = None

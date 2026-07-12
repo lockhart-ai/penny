@@ -418,6 +418,7 @@ enum ServerEnvelope: Decodable {
     case messagesAcked(MessagesAckedPayload)
     case embeddingResponse(EmbeddingResponsePayload)
     case typing(TypingPayload)
+    case agentProgress(AgentProgressPayload)
     case configResponse(ConfigResponsePayload)
     case promptLogsResponse(PromptLogsResponsePayload)
     case promptLogUpdate(PromptLogUpdatePayload)
@@ -450,6 +451,8 @@ enum ServerEnvelope: Decodable {
             self = .embeddingResponse(try EmbeddingResponsePayload(from: decoder))
         case "typing":
             self = .typing(try TypingPayload(from: decoder))
+        case "agent_progress":
+            self = .agentProgress(try AgentProgressPayload(from: decoder))
         case "config_response":
             self = .configResponse(try ConfigResponsePayload(from: decoder))
         case "prompt_logs_response":
@@ -495,6 +498,8 @@ enum ServerEnvelope: Decodable {
             return "embedding_response:\(payload.requestID)"
         case .typing:
             return nil
+        case .agentProgress:
+            return nil
         case .configResponse:
             return "config_response"
         case .promptLogsResponse:
@@ -538,6 +543,8 @@ enum ServerEnvelope: Decodable {
             return "embedding_response"
         case .typing:
             return "typing"
+        case .agentProgress:
+            return "agent_progress"
         case .configResponse:
             return "config_response"
         case .promptLogsResponse:
@@ -641,4 +648,87 @@ struct EmbeddingResponsePayload: Decodable {
 
 struct TypingPayload: Decodable {
     let active: Bool
+}
+
+enum AgentProgressEventType: String, Decodable {
+    case runStarted = "run_started"
+    case stepStarted = "step_started"
+    case toolsStarted = "tools_started"
+    case runFinished = "run_finished"
+}
+
+enum AgentProgressScope: String, Decodable {
+    case foreground
+    case background
+}
+
+enum AgentProgressOutcome: String, Decodable {
+    case completed
+    case maxSteps = "max_steps"
+    case error
+}
+
+enum AgentProgressValue: Decodable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case array([AgentProgressValue])
+    case object([String: AgentProgressValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(), container.decodeNil() {
+            self = .null
+        } else if let value = try? decoder.singleValueContainer().decode(String.self) {
+            self = .string(value)
+        } else if let value = try? decoder.singleValueContainer().decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? decoder.singleValueContainer().decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? decoder.singleValueContainer().decode([AgentProgressValue].self) {
+            self = .array(value)
+        } else {
+            let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+            var values: [String: AgentProgressValue] = [:]
+            for key in container.allKeys {
+                values[key.stringValue] = try container.decode(AgentProgressValue.self, forKey: key)
+            }
+            self = .object(values)
+        }
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+struct AgentProgressToolPayload: Decodable {
+    let name: String
+    let arguments: [String: AgentProgressValue]
+}
+
+struct AgentProgressPayload: Decodable {
+    let event: AgentProgressEventType
+    let runID: String
+    let agent: String
+    let scope: AgentProgressScope
+    let step: Int?
+    let maxSteps: Int?
+    let tools: [AgentProgressToolPayload]
+    let outcome: AgentProgressOutcome?
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+        case runID = "run_id"
+        case agent
+        case scope
+        case step
+        case maxSteps = "max_steps"
+        case tools
+        case outcome
+    }
 }

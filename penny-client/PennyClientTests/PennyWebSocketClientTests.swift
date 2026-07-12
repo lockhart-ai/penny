@@ -381,17 +381,73 @@ struct PennyWebSocketClientTests {
         #expect(client.statusText == "boom")
     }
 
+    @Test func agentProgressAccumulatesStepsAndClearsOnFinish() async {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+
+        transport.emit("""
+        {"type":"agent_progress","event":"run_started","run_id":"run-1","agent":"chat","scope":"foreground","tools":[]}
+        """)
+        transport.emit("""
+        {"type":"agent_progress","event":"step_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"max_steps":4,"tools":[]}
+        """)
+        transport.emit("""
+        {"type":"agent_progress","event":"tools_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"tools":[{"name":"browse","arguments":{"queries":["coffee"]}}]}
+        """)
+
+        // Duplicate step and an out-of-order tool event must not duplicate state.
+        transport.emit("""
+        {"type":"agent_progress","event":"step_started","run_id":"run-1","agent":"chat","scope":"foreground","step":1,"max_steps":4,"tools":[]}
+        """)
+        #expect(client.foregroundProgress?.steps.count == 1)
+        #expect(client.foregroundProgress?.steps.first?.tools.first?.name == "browse")
+
+        transport.emit("""
+        {"type":"agent_progress","event":"run_finished","run_id":"run-1","agent":"chat","scope":"foreground","outcome":"completed","tools":[]}
+        """)
+        #expect(client.agentProgressRuns.isEmpty)
+    }
+
+    @Test func typingPayloadUpdatesTypingState() async {
+        let transport = MessagePagingMockTransport()
+        let client = PennyWebSocketClient(
+            databaseService: configuredDatabase(),
+            prefs: configuredPrefs(),
+            webSocketClient: transport
+        )
+        await client.connect()
+        _ = await sentPayloads(transport, count: 2)
+
+        transport.emit("""
+        {"type":"typing","active":true}
+        """)
+        #expect(client.isTyping)
+
+        transport.emit("""
+        {"type":"typing","active":false}
+        """)
+        #expect(client.isTyping == false)
+    }
+
     @Test func disconnectClearsConnectionState() {
         let client = PennyWebSocketClient(databaseService: configuredDatabase(), prefs: configuredPrefs())
         client.isConnected = true
         client.isRegistered = true
         client.isTyping = true
+        client.agentProgressRuns["run"] = AgentProgressRunItem(id: "run", agent: "collector", scope: .background)
 
         client.disconnect()
 
         #expect(client.isConnected == false)
         #expect(client.isRegistered == false)
         #expect(client.isTyping == false)
+        #expect(client.agentProgressRuns.isEmpty)
         #expect(client.canSend == false)
     }
 }

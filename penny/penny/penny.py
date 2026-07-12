@@ -260,6 +260,8 @@ class Penny:
         # Collector needs the channel so consumer cycles (e.g. the ``notifier``,
         # which drains published collections) can call send_message.
         self.collector.set_channel(self.channel)
+        if isinstance(self.channel, IosChannel):
+            self.collector._progress_factory = self.channel.make_background_progress_callback
         self._wire_browser_tools(config)
 
     def _wire_browser_tools(self, config: Config) -> None:
@@ -279,6 +281,7 @@ class Penny:
         if isinstance(ios_ch, IosChannel):
             ios_ch.set_permission_manager(perm_mgr)
             ios_ch.set_collector(self.collector)
+            self.collector._progress_factory = ios_ch.make_background_progress_callback
         signal_ch = self.channel.get_channel(ChannelType.SIGNAL)
         if isinstance(signal_ch, SignalChannel):
             signal_ch.set_permission_manager(perm_mgr)
