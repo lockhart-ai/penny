@@ -1,4 +1,4 @@
-"""Shared similarity primitives for penny and penny-team."""
+"""Similarity primitives for penny (cosine similarity, TCR, dedup)."""
 
 from similarity.dedup import DedupStrategy, is_embedding_duplicate
 from similarity.embeddings import (

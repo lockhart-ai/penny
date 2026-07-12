@@ -1,4 +1,4 @@
-"""Shared GitHub API client for penny and penny-team."""
+"""GitHub API client (GraphQL + REST) with GitHub App authentication."""
 
 from github_api.api import GitHubAPI
 from github_api.auth import GitHubAuth

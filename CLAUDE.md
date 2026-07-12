@@ -6,11 +6,9 @@ Penny is a local-first AI agent that communicates via Signal, Discord, or a Fire
 
 Penny is single-user — a personal assistant deployed locally for one person. Multiple devices (Signal phone, browser instances) connect as different devices of the same user, sharing a single conversation history.
 
-Penny also has an autonomous development team (`penny-team/`) — Claude CLI agents that process GitHub Issues on a schedule, handling requirements, architecture, and implementation.
-
 ## Environment Notes
 
-- **Logs**: Runtime logs are written to `data/penny/logs/penny.log`; agent logs are in `data/penny-team/logs/` (not docker compose logs)
+- **Logs**: Runtime logs are written to `data/penny/logs/penny.log` (not docker compose logs)
 
 ## Git Workflow
 
@@ -65,17 +63,10 @@ penny/                          — Penny chat agent (Signal/Discord)
   Dockerfile
   pyproject.toml
   CLAUDE.md                     — Penny-specific context
-penny-team/                     — Autonomous dev team (Claude CLI agents)
-  penny_team/                   — Python package
-  scripts/
-    entrypoint.sh               — Docker entrypoint
-  Dockerfile
-  pyproject.toml
-  CLAUDE.md                     — Penny-team-specific context
-github_api/                     — Shared GitHub API client (GraphQL + REST)
+github_api/                     — GitHub API client (GraphQL + REST); backs `make token`
   api.py                        — GitHubAPI class (typed Pydantic return values)
   auth.py                       — GitHubAuth (App JWT token generation)
-similarity/                     — Shared similarity primitives (penny + penny-team)
+similarity/                     — Similarity primitives (embeddings, dedup)
   embeddings.py                 — Pure math: cosine similarity, TCR, serialization
   dedup.py                      — Dedup strategies (TCR + embedding)
 browser/                        — Firefox browser extension
@@ -91,16 +82,15 @@ browser/                        — Firefox browser extension
   build-content.mjs             — esbuild wrapper for content script
   package.json                  — Dependencies: defuddle, fontawesome, esbuild, web-ext
 Makefile                        — Dev commands (make up, make check, make prod)
-docker-compose.yml              — signal-api + penny + team services
+docker-compose.yml              — signal-api + penny services
 docker-compose.override.yml     — Dev source volume overrides
 scripts/
-  watcher/                      — Auto-deploy service
   client-check.sh               — iOS client build + simulator test run (make client-check)
 .github/
   workflows/
     check.yml                   — CI: runs make check on push/PR to main
     client-check.yml            — CI: runs make client-check on PRs touching penny-client/
-  CODEOWNERS                    — Trusted maintainers (used by penny-team filtering)
+  CODEOWNERS                    — Trusted maintainers / reviewers
 docs/                           — Design documents and review guides
   pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
   agent-task-workflow.md        — Task-agent SOP: one ticket → worktree → gate → PR → shepherd → cleanup
@@ -116,9 +106,6 @@ data/                           — Runtime data (gitignored)
     penny.db                    — Production database
     backups/                    — DB backups (max 5)
     logs/                       — Penny runtime logs (penny.log)
-  penny-team/                   — Agent team runtime
-    logs/                       — Agent logs + prompts
-    state/                      — Agent state files
   private/                      — Credentials (not in repo)
 ```
 
@@ -127,20 +114,19 @@ data/                           — Runtime data (gitignored)
 The project runs inside Docker Compose. A top-level Makefile wraps all commands:
 
 ```bash
-make up               # Start all services (penny + team) with Docker Compose
-make prod             # Deploy penny only (no team, no override)
+make up               # Start Penny with Docker Compose (dev source mounts)
+make prod             # Deploy penny (no dev override)
 make kill             # Tear down containers and remove local images
-make clean-project-images # Remove this compose project's built images + anon volumes (agent teardown; alias target of kill)
+make clean-project-images # Remove this compose project's built images + anon volumes (alias target of kill)
 make docker-prune     # Global best-effort reclaim: prune stopped containers, dangling images, build cache, unused volumes
 make build            # Build the penny Docker image
-make team-build       # Build the penny-team Docker image
 make token            # Generate GitHub App installation token for gh CLI
-make check            # Format check, lint, typecheck, and run tests (penny + penny-team)
+make check            # Format check, lint, typecheck, and run tests
 make pytest           # Run integration tests
-make fmt              # Format with ruff (penny + penny-team)
-make lint             # Lint with ruff (penny + penny-team)
-make fix              # Format + autofix lint issues (penny + penny-team)
-make typecheck        # Type check with ty (penny + penny-team)
+make fmt              # Format with ruff
+make lint             # Lint with ruff
+make fix              # Format + autofix lint issues
+make typecheck        # Type check with ty
 make migrate-test     # Test database migrations against a copy of prod DB
 make migrate-validate # Check for duplicate migration number prefixes
 make signal-avatar    # Set Penny's Signal profile picture from penny.png
@@ -159,15 +145,15 @@ npm run ext            # Launch Firefox with web-ext (no build/watch)
 
 `npm run dev` uses `web-ext` with `--firefox-profile=default-release --keep-profile-changes` to run in the user's real Firefox profile. The background script owns the WebSocket connection; the sidebar communicates via `browser.runtime` messaging.
 
-On the host, dev tool commands run via `docker compose run --rm` in a temporary container (penny service for `penny/`, team service for `penny-team/`). Inside agent containers (where `LOCAL=1` is set), the same `make` targets run tools directly — no Docker-in-Docker needed.
+On the host, dev tool commands run via `docker compose run --rm` in a temporary penny container, with source volume-mounted. Inside agent containers (where `LOCAL=1` is set), the same `make` targets run tools directly — no Docker-in-Docker needed.
 
-`make prod` starts the penny service only (skips `docker-compose.override.yml` and the `team` profile). The `signal-api` container sits behind the `signal` compose profile, which both `make up` and `make prod` enable (via the Makefile's `SIGNAL_PROFILE` variable) only when `SIGNAL_NUMBER` is set — so a Discord/iOS deployment starts penny alone and never waits on signal-api (penny's `depends_on` is `required: false`). The watcher container handles auto-deploy when running the full stack via `make up`.
+`make prod` starts the penny service only (skips `docker-compose.override.yml`). The `signal-api` container sits behind the `signal` compose profile, which both `make up` and `make prod` enable (via the Makefile's `SIGNAL_PROFILE` variable) only when `SIGNAL_NUMBER` is set — so a Discord/iOS deployment starts penny alone and never waits on signal-api (penny's `depends_on` is `required: false`).
 
 Prerequisites: signal-cli-rest-api on :8080 (for Signal), Ollama on :11434, browser extension for web search.
 
 ## CI
 
-GitHub Actions runs `make check` (format, lint, typecheck, tests) on every push to `main` and on pull requests. The workflow builds the Docker images and runs all checks inside containers, same as local dev. Config is in `.github/workflows/check.yml`. Both penny and penny-team code are checked in CI.
+GitHub Actions runs `make check` (format, lint, typecheck, tests) on every push to `main` and on pull requests. The workflow builds the Docker image and runs all checks inside containers, same as local dev. Config is in `.github/workflows/check.yml`.
 
 Changes touching `penny-client/` additionally run `make client-check` on a macOS runner (`.github/workflows/client-check.yml`): it builds the iOS app and runs `PennyClientTests` on a freshly booted simulator via `scripts/client-check.sh` — the same script used locally. The fresh erase + boot per run is load-bearing (a reused simulator flakes with "failed preflight checks").
 
@@ -199,15 +185,13 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `LLM_EMBEDDING_API_URL` / `LLM_EMBEDDING_API_KEY`: Override endpoint for embedding model
 - `LLM_IMAGE_MODEL`: Image generation model (e.g., x/z-image-turbo). Optional; enables the `generate_image` chat tool. Uses Ollama's native REST API at `LLM_IMAGE_API_URL`
 - `LLM_IMAGE_API_URL`: Ollama REST endpoint for image generation (default: http://host.docker.internal:11434)
-- `OLLAMA_BACKGROUND_MODEL`: Used only by penny-team's Quality agent — if set, the Quality agent is registered. Not used by penny
 
 **API Keys**:
-- `CLAUDE_CODE_OAUTH_TOKEN`: OAuth token for Claude CLI Max plan (agent containers, via `claude setup-token`)
 - `FASTMAIL_API_TOKEN`: API token for Fastmail JMAP email (optional, enables the email tools on the chat surface — `search_emails`, `read_emails`)
 - `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables the email tools on the chat surface with the Zoho backend — adds `list_emails`, `list_folders`, `draft_email`)
 - `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, part of the Zoho email-tools credential triple)
 - `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, part of the Zoho email-tools credential triple) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
-**GitHub App** (required for agent containers):
+**GitHub App** (used by `make token` to mint an installation token for gh CLI):
 - `GITHUB_APP_ID`: GitHub App ID for authenticated API access
 - `GITHUB_APP_PRIVATE_KEY_PATH`: Path to GitHub App private key file
 - `GITHUB_APP_INSTALLATION_ID`: GitHub App installation ID for the repository

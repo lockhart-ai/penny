@@ -210,17 +210,16 @@ make up
 ### Make Commands
 
 ```bash
-make up               # Build and start all services (foreground)
-make prod             # Deploy penny only (no team, no override)
+make up               # Build and start Penny (foreground, with dev source mounts)
+make prod             # Deploy penny only (no dev override)
 make prod-ios         # Run Penny as the iOS channel without starting signal-api
 make kill             # Tear down containers and remove local images
 make build            # Build the penny Docker image
-make team-build       # Build the penny-team Docker image
 make browser-build    # Bundle the browser extension content script
-make check            # Format check, lint, typecheck, migrate-validate, pytest (penny + team), tsc (browser)
-make pytest           # Run integration tests (penny + team)
-make fix              # Format + autofix lint issues (penny + team)
-make typecheck        # Type check with ty (penny + team)
+make check            # Format check, lint, typecheck, migrate-validate, pytest, tsc (browser)
+make pytest           # Run integration tests
+make fix              # Format + autofix lint issues
+make typecheck        # Type check with ty
 make token            # Generate GitHub App installation token for gh CLI
 make signal-avatar    # Set Penny's Signal profile picture
 make migrate-test     # Test database migrations against a copy of prod DB
@@ -292,14 +291,10 @@ LOG_LEVEL="INFO"
 # ZOHO_API_SECRET="..."
 # ZOHO_REFRESH_TOKEN="..."
 
-# GitHub App (optional, enables agent containers)
+# GitHub App (optional, used by `make token` for authenticated gh CLI access)
 # GITHUB_APP_ID="12345"
 # GITHUB_APP_PRIVATE_KEY_PATH="data/private/github-app.pem"
 # GITHUB_APP_INSTALLATION_ID="67890"
-
-# Penny-team agent containers (optional, leave blank to disable)
-# CLAUDE_CODE_OAUTH_TOKEN="..."           # From `claude setup-token` (Max plan)
-# OLLAMA_BACKGROUND_MODEL="..."           # Optional, enables team Quality agent
 ```
 
 ### Channel Selection
@@ -401,31 +396,6 @@ make check       # Run format, lint, typecheck, and tests
 CI runs `make check` in Docker on every push to `main` and on pull requests via GitHub Actions. Pull requests touching `penny-client/` also run `make client-check` on a macOS runner, building the iOS app and running its test suite on a simulator.
 
 Tests cover the full message flow (search, response, threading, typing indicators), all background agents (history, thinking, notify, scheduler coordination), every slash command, vision processing, and tool edge cases. External services are replaced with mock servers and SDK patches — a mock Signal WebSocket server and a mock LLM client (`MockLlmClient`, patches `openai.AsyncOpenAI`) with configurable responses.
-
-</details>
-
-<details>
-<summary><h2>Agent Orchestrator</h2></summary>
-
-Penny includes a Python-based agent orchestrator that manages autonomous Claude CLI agents. Agents process work from GitHub Issues on a schedule, using labels as a state machine:
-
-```
-backlog → requirements → specification → in-progress → in-review → closed   (features)
-bug → in-review → closed                                                     (bug fixes)
-```
-
-**Agents:**
-- **Product Manager**: Gathers requirements for `requirements` issues
-- **Architect**: Writes detailed specs for `specification` issues, handles spec feedback
-- **Worker**: Implements `in-progress` issues — creates branches, writes code/tests, runs `make check`, opens PRs; addresses PR feedback on `in-review` issues; fixes `bug` issues directly
-- **Monitor**: Watches production logs for errors, deduplicates against existing issues, and files `bug` issues automatically
-- **Quality**: Evaluates Penny's response quality via a local LLM, files `bug` issues for low-quality output (optional, requires `OLLAMA_BACKGROUND_MODEL`)
-
-Each agent checks for matching GitHub issue labels before waking Claude CLI, so idle cycles cost ~1 second instead of a full Claude invocation.
-
-```bash
-make up          # Run orchestrator with full stack
-```
 
 </details>
 

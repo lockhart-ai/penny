@@ -7,10 +7,8 @@ PYTEST_ARGS = penny/tests/ -v -m "not eval"
 EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # FIFO ticket directory for serializing make eval on the single-tenant GPU.
 EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
-TEAM_RUFF_TARGETS = penny_team/
-TEAM_PYTEST_ARGS = tests/ -v
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build team-build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -21,11 +19,11 @@ TEAM_PYTEST_ARGS = tests/ -v
 SIGNAL_PROFILE := $(shell awk -F= '/^[[:space:]]*SIGNAL_NUMBER[[:space:]]*=/{v=$$2; gsub(/["'\'' ]/,"",v); if (v!="") print "--profile signal"}' .env 2>/dev/null)
 
 up: browser-build
-	docker compose --profile team $(SIGNAL_PROFILE) down --remove-orphans
+	docker compose $(SIGNAL_PROFILE) down --remove-orphans
 	GIT_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	SNAPSHOT=1 \
-	docker compose --profile team $(SIGNAL_PROFILE) up --build
+	docker compose $(SIGNAL_PROFILE) up --build
 
 prod: browser-build
 	docker compose -f docker-compose.yml $(SIGNAL_PROFILE) down --remove-orphans
@@ -45,18 +43,16 @@ prod-ios: browser-build
 kill: clean-project-images
 
 # Remove THIS compose project's containers, locally-built images and anonymous
-# volumes without touching other projects or the shared build cache. Each task
-# agent runs in its own worktree under a unique compose project (agent-<hash>),
-# so its `make fix check` builds a fresh, project-scoped agent-<hash>-team image
-# that is never reused after the agent finishes — these are what pile up (56 once
-# filled the disk to 99%). `--rmi local` also drops the shared penny:latest tag,
-# which is rebuilt on the next `up` (and skipped here while a container holds it,
-# e.g. production). Run this at §9 teardown. Safe to run with no containers up —
-# `down` is a no-op and `--rmi local` still drops the images. `--volumes` only
-# clears this project's anonymous volumes; penny's persistent data lives in bind
-# mounts (./data), which it never touches.
+# volumes without touching other projects or the shared build cache. The penny
+# service is pinned to the fixed `penny` tag, so `make check` from any worktree
+# overwrites one shared image rather than leaving a project-scoped one behind;
+# `--rmi local` drops that tag (rebuilt on the next `up`, and skipped here while a
+# container holds it, e.g. production). Run this at §9 teardown. Safe to run with
+# no containers up — `down` is a no-op and `--rmi local` still drops the images.
+# `--volumes` only clears this project's anonymous volumes; penny's persistent
+# data lives in bind mounts (./data), which it never touches.
 clean-project-images:
-	docker compose --profile team down --rmi local --volumes --remove-orphans
+	docker compose $(SIGNAL_PROFILE) down --rmi local --volumes --remove-orphans
 
 # Best-effort global reclaim for when Docker has eaten the disk: drop stopped
 # containers, dangling (untagged) images, the build cache, and unused volumes.
@@ -76,9 +72,6 @@ build:
 	GIT_COMMIT_MESSAGE=$$(git log -1 --pretty=%B 2>/dev/null | tr '\n' ' ' | sed 's/ *$$//' || echo unknown) \
 	docker compose build penny
 
-team-build:
-	docker compose build team
-
 browser-build:
 	cd browser && npm install && npm run build
 
@@ -89,47 +82,39 @@ client-check:
 
 # Print a GitHub App installation token for use with gh CLI
 # Usage: GH_TOKEN=$(make token) gh pr create ...
+# auth.py is pure stdlib, so it runs in the penny service (github_api is mounted
+# there at /shared/github_api); the GitHub App creds come from the mounted .env.
 token:
-	@docker compose --profile team run --rm --no-deps --entrypoint "" pm uv run python /shared/github_api/auth.py 2>/dev/null
+	@docker compose run --rm --no-deps --entrypoint "" penny uv run python /shared/github_api/auth.py 2>/dev/null
 
 # --- Code quality (auto-detects host vs container via LOCAL env var) ---
 
 ifdef LOCAL
 # Inside a container — run tools directly
 RUN = cd penny &&
-TEAM_RUN = cd penny-team &&
 else
 # On host — run tools inside Docker containers
 # --no-deps: dev tools don't need signal-api healthy (would block on first run)
 RUN = docker compose run --rm --no-deps penny
-TEAM_RUN = docker compose run --rm --no-deps team
 endif
 
-fix: $(if $(LOCAL),,build team-build)
+fix: $(if $(LOCAL),,build)
 	$(RUN) ruff format $(RUFF_TARGETS)
 	$(RUN) ruff check --fix $(RUFF_TARGETS)
-	$(TEAM_RUN) ruff format $(TEAM_RUFF_TARGETS)
-	$(TEAM_RUN) ruff check --fix $(TEAM_RUFF_TARGETS)
 
-typecheck: $(if $(LOCAL),,build team-build)
+typecheck: $(if $(LOCAL),,build)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
-	$(TEAM_RUN) ty check --exit-zero-on-warning $(TEAM_RUFF_TARGETS)
 
-check: $(if $(LOCAL),,build team-build)
+check: $(if $(LOCAL),,build)
 	$(RUN) ruff format --check $(RUFF_TARGETS)
 	$(RUN) ruff check $(RUFF_TARGETS)
 	$(RUN) ty check --exit-zero-on-warning $(RUFF_TARGETS)
 	$(RUN) python -m penny.database.migrate --validate
 	$(RUN) pytest $(PYTEST_ARGS)
-	$(TEAM_RUN) ruff format --check $(TEAM_RUFF_TARGETS)
-	$(TEAM_RUN) ruff check $(TEAM_RUFF_TARGETS)
-	$(TEAM_RUN) ty check --exit-zero-on-warning $(TEAM_RUFF_TARGETS)
-	$(TEAM_RUN) pytest $(TEAM_PYTEST_ARGS)
 	cd browser && npm install --silent && npx tsc --noEmit
 
-pytest: $(if $(LOCAL),,build team-build)
+pytest: $(if $(LOCAL),,build)
 	$(RUN) pytest $(PYTEST_ARGS)
-	$(TEAM_RUN) pytest $(TEAM_PYTEST_ARGS)
 
 # Live-model contract suite — drives the REAL agents against a running Ollama
 # (gpt-oss + embeddinggemma) on synthetic seeds. Slow and stochastic, so it's
