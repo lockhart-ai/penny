@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlmodel import Session, select
 
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database import Database
@@ -25,6 +26,8 @@ from penny.database.memory import (
     RecallMode,
 )
 from penny.database.memory._similarity import hybrid_rank_ids
+from penny.database.models import MemoryRow, MutationEvent
+from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tools.memory_tools import MemoryMetadataTool
@@ -41,6 +44,25 @@ def _make_db(tmp_path) -> Database:
     db = Database(db_path)
     db.create_tables()
     return db
+
+
+def _pin_provenance_timestamps(
+    db: Database, name: str, *, created: datetime, updated: datetime
+) -> None:
+    """Pin a collection's row + mutation-event timestamps to fixed values so a
+    whole-render literal is exact: the row's ``created_at``/``updated_at``, the
+    created event to ``created``, and every other event to ``updated``."""
+    with Session(db.engine) as session:
+        row = session.get(MemoryRow, name)
+        assert row is not None
+        row.created_at = created
+        row.updated_at = updated
+        session.add(row)
+        events = session.exec(select(MutationEvent).where(MutationEvent.entity_name == name)).all()
+        for event in events:
+            event.created_at = created if event.action == MutationAction.CREATED.value else updated
+            session.add(event)
+        session.commit()
 
 
 def _unit_vec(idx: int, dim: int = 8) -> list[float]:
@@ -118,19 +140,105 @@ class TestMemoryMetadata:
         db.memories.update_collection_metadata("watch")
         assert len(db.mutations.history("watch", limit=10)) == 4
 
-    def test_metadata_renders_recent_change_history(self, tmp_path):
-        """memory_metadata surfaces the mutation ledger so "when was this
-        archived, and by what?" is answerable by a read, each change naming its
-        run id (the anchor invariant, #1560)."""
+    def test_metadata_full_render_with_change_history(self, tmp_path):
+        """The memory_metadata render contract, whole-output (#1560): one literal
+        of everything the model reads — identity, recipe, operational settings,
+        the lifecycle block, and the mutation ledger's "Recent changes" section,
+        each change naming its run id (the anchor invariant), so "when was this
+        archived, and by what?" is answerable by a read.  Timestamps are pinned so
+        the literal is exact."""
         db = _make_db(tmp_path)
         db.memories.create_collection(
-            "watch", "a watch", Inclusion.NEVER, RecallMode.RECENT, created_by_run_id="run-1"
+            "hedgehog-sightings",
+            "neighbourhood hedgehog sightings",
+            Inclusion.NEVER,
+            RecallMode.RECENT,
+            extraction_prompt="1. browse for hedgehog news. 2. done().",
+            collector_interval_seconds=3600,
+            intent="keep a log of hedgehog sightings",
+            created_by_run_id="run-t1",
         )
-        db.memories.archive("watch", run_id="run-9")
-        result = asyncio.run(MemoryMetadataTool(db).execute(memory="watch")).message
-        assert "Recent changes" in result
-        assert "archived by user-run" in result
-        assert "run run-9" in result
+        db.memories.archive("hedgehog-sightings", run_id="run-t9")
+        _pin_provenance_timestamps(
+            db,
+            "hedgehog-sightings",
+            created=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
+            updated=datetime(2026, 3, 5, 8, 10, tzinfo=UTC),
+        )
+        result = asyncio.run(MemoryMetadataTool(db).execute(memory="hedgehog-sightings"))
+        assert (
+            result.message
+            == """\
+name: hedgehog-sightings
+type: collection
+description: neighbourhood hedgehog sightings
+intent: keep a log of hedgehog sightings
+
+What it does each cycle — the recipe below is the collection's actual behaviour.  \
+When explaining the collection, walk through THESE steps, not the operational settings.
+extraction prompt: 1. browse for hedgehog news. 2. done().
+
+Operational settings (routing + cadence — secondary):
+inclusion: never
+recall: recent
+published: False
+interval: 3600s
+status: archived 2026-03-05 08:10 UTC
+expires: never
+created: 2026-03-05 08:00 UTC by run run-t1
+updated: 2026-03-05 08:10 UTC
+last collected: never
+
+Recent changes (newest first):
+  2026-03-05 08:10 UTC archived by user-run (run run-t9)
+  2026-03-05 08:00 UTC created by user-run (run run-t1)"""
+        )
+
+    def test_mutation_render_full_literals(self):
+        """The single-mutation render contract, whole-output per event shape
+        (#1560): a create (no detail), a user-run update naming its changed
+        fields, and a SYSTEM archive carrying its policy cause — each line naming
+        its actor and run id, so every change is one guess-free hop from its run."""
+        created = MutationEvent(
+            entity_type="collection",
+            entity_name="games",
+            action=MutationAction.CREATED.value,
+            actor=MutationActor.USER_RUN.value,
+            run_id="run-turn-1",
+            created_at=datetime(2026, 3, 5, 8, 0, tzinfo=UTC),
+        )
+        assert (
+            render_mutation(created) == "2026-03-05 08:00 UTC created by user-run (run run-turn-1)"
+        )
+        updated = MutationEvent(
+            entity_type="collection",
+            entity_name="games",
+            action=MutationAction.UPDATED.value,
+            actor=MutationActor.USER_RUN.value,
+            run_id="run-t4",
+            detail=MutationDetail(changed_fields=["recall", "published"]).model_dump_json(),
+            created_at=datetime(2026, 3, 5, 8, 15, tzinfo=UTC),
+        )
+        assert (
+            render_mutation(updated)
+            == "2026-03-05 08:15 UTC updated by user-run (run run-t4) — changed recall, published"
+        )
+        system_archive = MutationEvent(
+            entity_type="collection",
+            entity_name="games",
+            action=MutationAction.ARCHIVED.value,
+            actor=MutationActor.SYSTEM.value,
+            run_id="run-cycle-9",
+            detail=MutationDetail(
+                note="reached run limit (2 of 2 completed runs)"
+            ).model_dump_json(),
+            created_at=datetime(2026, 3, 5, 8, 30, tzinfo=UTC),
+        )
+        assert (
+            render_mutation(system_archive)
+            == "2026-03-05 08:30 UTC archived by system (run run-cycle-9) — "
+            "reached run limit (2 of 2 completed runs)"
+        )
 
     def test_archive_missing_raises(self, tmp_path):
         db = _make_db(tmp_path)

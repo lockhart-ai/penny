@@ -23,12 +23,19 @@ from penny.llm.models import LlmToolCallFunction
 from penny.text_validity import is_unfinished_fragment
 
 
-def _call(name: str, args: dict) -> dict:
+def _call(name: str, args: dict, call_id: str | None = None) -> dict:
+    """One wire-form tool call.  ``call_id`` defaults to the tool name; pass an
+    explicit id when a fixture repeats a tool so each call keys its own result."""
     return {
-        "id": name,
+        "id": call_id or name,
         "type": "function",
         "function": {"name": name, "arguments": json.dumps(args)},
     }
+
+
+def _tool_result(call_id: str, content: str) -> dict:
+    """One accumulated tool-result turn, keyed to its call id."""
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
 
 
 def _browse_messages(*, pages: int = 0, searches: int = 0, errors: int = 0) -> str:
@@ -49,19 +56,22 @@ def _prompt(
     *,
     outcome: str | None = None,
     reason: str | None = None,
-    target: str = "games",
+    target: str | None = "games",
     tool_failures: int | None = None,
     messages: str = "[]",
+    run_id: str = "r",
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
     (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
-    turns (browse sections) the I/O tally reads off the final prompt."""
+    turns (browse sections) the I/O tally reads off the final prompt.  ``target``
+    is ``None`` for chat-run fixtures (chat stamps no run_target); ``run_id`` is
+    fixed per fixture so whole-render literals are exact."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
     return PromptLog(
         model="m",
         messages=messages,
         response=json.dumps({"choices": [{"message": message}]}),
-        run_id="r",
+        run_id=run_id,
         run_target=target,
         run_outcome=outcome,
         run_reason=reason,
@@ -341,95 +351,211 @@ def test_logged_tool_call_round_trips_to_the_wire_form():
     assert replayed == parsed_original
 
 
-def _chat_run_with_generated_image(media_id: int) -> list[PromptLog]:
-    """A chat run that drew an image: opening user message, a generate_image call,
-    its result naming the stored media id, and a final plain reply."""
-    opening = json.dumps(
-        [
-            {
-                "role": "user",
-                "content": f"live context{PennyConstants.SECTION_SEPARATOR}draw me a cat",
-            }
-        ]
+# The run-calls render contract (#1560): every rendered surface the model reads is
+# asserted as its ENTIRE structure in ONE literal — a reviewer sees exactly what the
+# model sees.  The kitchen-sink case folds every input shape the surface can render
+# into one scenario; the sub-cases below isolate the variations (collector run,
+# pure-reply run with no egress, empty history).  Fixtures are fully deterministic:
+# fixed run ids, fixed call ids, fictional content.
+
+
+def _chat_kitchen_sink_run() -> list[PromptLog]:
+    """One chat run exercising EVERY shape the run-calls render can show: the
+    user's opening message, a browse step, a collection write with its gate
+    outcome, a mid-run rejected ``done()`` (the step-number GAP), a
+    generate_image with its media id, a failed call, a duplicate-rejected write,
+    the final reply, and the egress attachment."""
+    user_turn = {
+        "role": "user",
+        "content": f"Live context{PennyConstants.SECTION_SEPARATOR}"
+        "draw me a cartoon fox and log any new fox shows",
+    }
+    first = _prompt(
+        [_call("browse", {"queries": ["new fox cartoons"]})],
+        run_id="run-fixed",
+        target=None,
+        messages=json.dumps([user_turn]),
     )
-    first = PromptLog(
+    second = _prompt(
+        [
+            _call(
+                "collection_write",
+                {"memory": "shows", "entries": [{"key": "fox-tales", "content": "Fox Tales S2"}]},
+                call_id="w1",
+            ),
+            _call("done", {"success": True, "summary": "premature"}, call_id="d1"),
+        ],
+        run_id="run-fixed",
+        target=None,
+    )
+    third = _prompt(
+        [
+            _call("generate_image", {"description": "a cartoon fox"}, call_id="g1"),
+            _call("collection_get", {"memory": "old-shelf", "key": "fox tales"}, call_id="r1"),
+            _call(
+                "collection_write",
+                {
+                    "memory": "shows",
+                    "entries": [{"key": "fox-tales-2", "content": "Fox Tales again"}],
+                },
+                call_id="w2",
+            ),
+        ],
+        run_id="run-fixed",
+        target=None,
+    )
+    accumulated = [
+        user_turn,
+        _tool_result(
+            "browse", "## browse: https://example.com/fox-cartoons\nThree new fox shows reviewed."
+        ),
+        _tool_result("w1", "Wrote 1 entry: fox-tales."),
+        _tool_result("d1", "done() rejected — make a real tool call first."),
+        _tool_result("g1", f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}7 of: a cartoon fox."),
+        _tool_result("r1", "Memory 'old-shelf' not found."),
+        _tool_result("w2", "Duplicate of fox-tales."),
+    ]
+    final = PromptLog(
         model="m",
-        messages=opening,
+        messages=json.dumps(accumulated),
         response=json.dumps(
             {
                 "choices": [
                     {
                         "message": {
                             "role": "assistant",
-                            "content": "",
-                            "tool_calls": [_call("generate_image", {"description": "a cat"})],
+                            "content": "Done — logged the new season and drew your fox!",
                         }
                     }
                 ]
             }
         ),
-        run_id="run-abc",
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        run_id="run-fixed",
+        run_target=None,
     )
-    last_messages = json.dumps(
-        [
-            {
-                "role": "tool",
-                "tool_call_id": "generate_image",
-                "content": f"{PennyConstants.GENERATED_IMAGE_RESULT_PREFIX}{media_id} of: a cat. "
-                "It will be delivered...",
-            }
-        ]
+    return [first, second, third, final]
+
+
+def test_render_run_calls_chat_kitchen_sink_full_literal():
+    """The chat-run render contract, whole-output (#1560, criteria 3 + 5 + the
+    anchor invariant): the run names itself (``run <id>``), each step is the
+    canonical call projection with its compact result (``step <N>: <call> =>
+    <outcome>``), the mid-run rejected ``done()`` consumes step 3 and leaves a
+    visible GAP (numbers are persisted coordinates — never renumbered), the write
+    gate outcomes (written / duplicate-rejected) and the failed call render
+    honestly, and the egress trace names the delivered media by typed id — so a
+    delivery is inspected by a read, not confabulated."""
+    assert (
+        render_run_calls(_chat_kitchen_sink_run())
+        == """\
+run run-fixed
+user: draw me a cartoon fox and log any new fox shows
+    step 1: browse(['new fox cartoons']) => ## browse: https://example.com/fox-cartoons
+    step 2: collection_write(memory='shows', entries='Fox Tales S2') => Wrote 1 entry: fox-tales.
+    step 4: generate_image(description='a cartoon fox') => Generated image #7 of: a cartoon fox.
+    step 5: collection_get(memory='old-shelf', key='fox tales') => Memory 'old-shelf' not found.
+    step 6: collection_write(memory='shows', entries='Fox Tales again') => Duplicate of fox-tales.
+penny: Done — logged the new season and drew your fox!
+    attached: image #7"""
     )
-    last = PromptLog(
-        model="m",
-        messages=last_messages,
-        response=json.dumps(
-            {"choices": [{"message": {"role": "assistant", "content": "Here's your cat!"}}]}
-        ),
-        run_id="run-abc",
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
-    )
-    return [first, last]
 
 
-def test_render_run_calls_shows_run_id_origin_tools_reply_and_egress_media():
-    """read_run_calls' chat-run render is an anchor surface that shows what the
-    turn actually did AND what went out (#1560, criteria 3 + 5 + the anchor
-    invariant): the run's own id, the user's ask, the tool sequence, the reply,
-    and the delivered media by addressable id — so a delivery is inspected by a
-    read, not confabulated."""
-    rendered = render_run_calls(_chat_run_with_generated_image(42))
-    assert "run run-abc" in rendered  # the run names itself (addressable, typed)
-    assert "user: draw me a cat" in rendered  # origin
-    # Canonical projection: numbered step (typed id) + call syntax + compact result
-    # — not first-person narration.
-    assert "step 1: generate_image(description='a cat')" in rendered
-    assert "=> Generated image #42" in rendered  # the step's outcome, by reference
-    assert "penny: Here's your cat!" in rendered  # what went out (the reply)
-    assert "attached: image #42" in rendered  # what went out WITH it, by id
-
-
-def test_render_run_calls_step_numbers_are_stable_coordinates_with_gaps():
-    """Step numbers are the run's FULL tool-call ordinals — a persisted coordinate,
-    not render-time numbering (#1560/#1471).  A ``done`` mid-sequence consumes its
-    index, so the shown steps keep their absolute numbers and the omitted one leaves
-    a GAP — never a renumber, so ``(run_id, steps 2–5)`` means the same thing in
-    every view."""
+def test_render_run_calls_collector_run_full_literal():
+    """A collector run through the same lens, whole-output: origin is the bound
+    target (no user message), steps are the canonical projection, and the
+    conclusion is the ``done()`` summary — no egress line (nothing attached)."""
     run = [
         _prompt(
+            [_call("browse", {"queries": ["budget handhelds"]})],
+            run_id="coll-fixed",
+        ),
+        _prompt(
             [
-                _call("browse", {"queries": ["a"]}),
-                _call("done", {"success": False, "summary": "premature"}),
-                _call("collection_write", {"memory": "games", "entries": [{"content": "x"}]}),
+                _call(
+                    "collection_write",
+                    {
+                        "memory": "games",
+                        "entries": [{"key": "pocket-go", "content": "Pocket Go pick"}],
+                    },
+                    call_id="w1",
+                ),
+                _DONE_OK,
             ],
+            run_id="coll-fixed",
             outcome="worked",
-            reason="wrote one",
+            reason="wrote one new find",
+            messages=json.dumps(
+                [
+                    _tool_result("browse", "## browse: https://example.com/budget\nBudget picks."),
+                    _tool_result("w1", "Wrote 1 entry: pocket-go."),
+                ]
+            ),
+        ),
+    ]
+    assert (
+        render_run_calls(run)
+        == """\
+run coll-fixed
+[games]
+    step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget
+    step 2: collection_write(memory='games', entries='Pocket Go pick') => Wrote 1 entry: pocket-go.
+done: wrote one new find"""
+    )
+
+
+def test_render_run_calls_pure_reply_run_full_literal():
+    """A tool-less chat turn, whole-output: just the run id, the ask, and the
+    reply — no steps, no egress."""
+    turn = {
+        "role": "user",
+        "content": f"Live context{PennyConstants.SECTION_SEPARATOR}how are you?",
+    }
+    only = PromptLog(
+        model="m",
+        messages=json.dumps([turn]),
+        response=json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "doing great — thanks for asking!",
+                        }
+                    }
+                ]
+            }
+        ),
+        run_id="chat-quiet",
+        run_target=None,
+    )
+    assert (
+        render_run_calls([only])
+        == """\
+run chat-quiet
+user: how are you?
+penny: doing great — thanks for asking!"""
+    )
+
+
+def test_render_run_calls_empty_history():
+    """No prompts → the honest empty marker, not a fabricated frame."""
+    assert render_run_calls([]) == "(no data)"
+
+
+def test_render_run_calls_truncates_bulk_results_by_reference():
+    """Result-compaction logic (not a render contract): a bulk result renders as
+    its first line capped with an ellipsis — stored whole in the ledger, rendered
+    by reference.  The expected preview is computed (a 150-char run of x's is the
+    fixture), so this stays a logic test; the render contracts above are the
+    whole-output literals."""
+    long_line = "## browse: " + "x" * 150
+    run = [
+        _prompt(
+            [_call("browse", {"queries": ["a"]})],
+            run_id="run-long",
+            target=None,
+            messages=json.dumps([_tool_result("browse", f"{long_line}\npage body")]),
         )
     ]
-    rendered = render_run_calls(run)
-    # done (index 2) is not shown; browse is step 1 and the write keeps its absolute
-    # index 3 — the gap proves numbers aren't recomputed over the shown subset.
-    assert "step 1: browse" in rendered
-    assert "step 3: collection_write" in rendered
-    assert "step 2:" not in rendered
+    expected_preview = f"{long_line[:120].rstrip()}…"
+    assert render_run_calls(run) == f"run run-long\n    step 1: browse(['a']) => {expected_preview}"
