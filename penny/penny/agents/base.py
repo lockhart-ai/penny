@@ -289,12 +289,16 @@ class Agent:
             on_progress=on_progress,
             progress_scope="background",
         )
-        # A cycle ends successfully only on a real ``done()`` tool call.  A
-        # model that signals completion as prose instead of calling the tool is
-        # not accommodated (no text-form parsing) — the cycle is not successful,
-        # its cursor doesn't commit, and it re-runs next tick; the model is
-        # guided toward a structured ``done()`` by the in-loop tool-call nudge.
-        success = any(record.tool == self.terminator_tool for record in response.tool_calls)
+        # A cycle ends successfully on a real ``done()`` tool call OR a write-gate
+        # STOP (#1587) — both are clean, deliberate closes at the chokepoint, so the
+        # cursor commits and the tick isn't re-run.  A model that signals completion
+        # as prose instead is not accommodated (no text-form parsing) — the cycle is
+        # not successful, its cursor doesn't commit, and it re-runs next tick, guided
+        # toward a structured ``done()`` by the in-loop tool-call nudge.
+        success = any(
+            record.tool == self.terminator_tool or record.stop_reason is not None
+            for record in response.tool_calls
+        )
 
         # Commit every cursored read's pending advance on a productive cycle,
         # discard on a failed one — uniform across log_read and the published
@@ -1218,6 +1222,10 @@ class Agent:
         # A media row this call created (generate_image) rides to egress on the
         # record → ControllerResponse.generated_media_ids → deterministic attach.
         record.media_id = result.media_id
+        # A write-gate STOP (collection_write on a collector-scoped write, #1587)
+        # rides on the record → should_stop_loop exits the collector loop and
+        # _cycle_result stamps it as the run's stop reason.
+        record.stop_reason = result.stop
         logger.debug(
             "Tool result (success=%s mutated=%s): %s",
             result.success,

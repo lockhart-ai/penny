@@ -18,7 +18,13 @@ from sqlalchemy import text
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ToolCallRecord
-from penny.constants import MutationAction, MutationActor, RunOutcome
+from penny.constants import (
+    WRITE_GATE_STOP_REASONS,
+    MutationAction,
+    MutationActor,
+    RunOutcome,
+    WriteGateOutcome,
+)
 from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
@@ -762,6 +768,58 @@ def test_cycle_result_classifies_worked_no_work_failed():
         answer="", tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})]
     )
     assert Collector._cycle_result(no_done)[0] == RunOutcome.FAILED
+
+
+def test_cycle_result_write_gate_stop_closes_cleanly():
+    """A write-gate STOP (#1587) closes the cycle at the chokepoint with NO done():
+    a watch's unchanged re-observation carries ``stop_reason`` on the write record —
+    the outcome is a clean ``no_work`` (nothing changed) stamped with the declared
+    stop reason, NOT a ``failed`` bail (the mislabel that would fire if the missing
+    done() fell through to ``_extract_done_args``).  A STOP that also changed durable
+    state stays ``worked``."""
+    reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+
+    unchanged_stop = ControllerResponse(
+        answer="",
+        tool_calls=[
+            ToolCallRecord(
+                tool="collection_write",
+                arguments={},
+                mutated=False,
+                stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED,
+            )
+        ],
+    )
+    assert Collector._cycle_result(unchanged_stop) == (RunOutcome.NO_WORK, reason)
+
+    # A STOP preceded by a real write this cycle stays worked (work landed).
+    stop_after_work = ControllerResponse(
+        answer="",
+        tool_calls=[
+            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
+            ToolCallRecord(
+                tool="collection_write",
+                arguments={},
+                mutated=False,
+                stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED,
+            ),
+        ],
+    )
+    assert Collector._cycle_result(stop_after_work) == (RunOutcome.WORKED, reason)
+
+
+def test_should_stop_loop_honors_write_gate_stop(test_config, tmp_path):
+    """The collector loop exits on a successful done() OR a write-gate STOP record
+    (#1587); a plain write record (no done, no stop) does not stop it."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    done = ToolCallRecord(tool="done", arguments={"success": True, "summary": "s"})
+    stop = ToolCallRecord(
+        tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
+    )
+    plain = ToolCallRecord(tool="collection_write", arguments={}, mutated=True)
+    assert collector.should_stop_loop([done]) is True
+    assert collector.should_stop_loop([stop]) is True
+    assert collector.should_stop_loop([plain]) is False
 
 
 def test_tool_failures_counts_failed_calls():

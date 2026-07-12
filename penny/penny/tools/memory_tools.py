@@ -25,7 +25,7 @@ from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from penny.constants import PennyConstants
+from penny.constants import WRITE_GATE_STOP_REASONS, PennyConstants, WriteGateOutcome
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -996,6 +996,54 @@ def _format_duplicate(result: WriteResult) -> str:
     )
 
 
+def _format_changed(results: list[WriteResult]) -> str:
+    """The change-gate CHANGED part (#1587): the exact key already exists with a
+    DIFFERENT value — the observed value changed.  A collection is new-keys-only, so
+    nothing was written; bind ``update_entry`` per entry to refresh (advance) the
+    stored baseline, so the next observation of the same value reads as UNCHANGED."""
+    labelled = [
+        f"'{r.key}' changed — call update_entry(key='{r.key}', content=<the new value>) "
+        f"to refresh the stored value"
+        for r in results
+    ]
+    return f"Changed: {'; '.join(labelled)}."
+
+
+def _format_unchanged(results: list[WriteResult]) -> str:
+    """The change-gate UNCHANGED part (#1587): the exact key already holds this exact
+    value, so there is nothing to update — the watch's "no change" signal (which, on
+    a collector-scoped write, also STOPs the run at the chokepoint)."""
+    keys = ", ".join(f"'{r.key}'" for r in results)
+    noun = "entry" if len(results) == 1 else "entries"
+    return (
+        f"Unchanged: {keys} already holds the same value — no change since the last write ({noun})."
+    )
+
+
+def _format_written(memory: str, keys: list[str]) -> str:
+    """The NEW_KEY part: the entries that actually landed (new keys)."""
+    noun = "entry" if len(keys) == 1 else "entries"
+    return f"Wrote {len(keys)} {noun} to '{memory}': {', '.join(keys)}."
+
+
+def _format_degenerate(results: list[WriteResult]) -> str:
+    """The DEGENERATE part: content rejected as degenerate, with the remedy."""
+    labelled = ", ".join(f"{r.key} ({r.reason})" for r in results)
+    return (
+        f"Rejected as degenerate content: {labelled}.  Re-write these with substantive "
+        f"descriptive text (not a bare URL, punctuation, or a bail-out phrase)."
+    )
+
+
+def _format_unexpected(results: list[WriteResult]) -> str:
+    """The UNEXPECTED escape part (#1587): a write the change-gate could not classify
+    — surfaced for review rather than forced into a wrong box or silently dropped
+    (the visible-degradation principle).  Unreachable today (the write path is
+    total), but wired end-to-end so the escape label is honest if the union grows."""
+    keys = ", ".join(f"'{r.key}'" for r in results)
+    return f"Unclassified write outcome for {keys} — flagged for review (this shouldn't happen)."
+
+
 # ── Embed-failure at write time (fail-hard, #1412) ──────────────────────────
 #
 # Every stored entry MUST carry its similarity vector: an entry without one is
@@ -1123,42 +1171,96 @@ class CollectionWriteTool(MemoryTool):
         )
 
     def _format_results(self, memory: str, results: list[WriteResult]) -> ToolResult:
-        written = [r.key for r in results if r.outcome == "written"]
-        duplicates = [r for r in results if r.outcome == "duplicate"]
-        rejected = [r for r in results if r.outcome == "rejected"]
-        if duplicates:
+        """Compose the write's model-facing result from the change-gate outcomes.
+
+        Each entry carries one ``WriteGateOutcome`` (#1587); this buckets them, logs
+        the rejections, and renders one part per non-empty bucket.  ``mutated`` is
+        true only if a row actually landed (a NEW_KEY write) — an all-duplicate /
+        unchanged / changed / degenerate batch changed nothing, so it reads as
+        no-work for the throttle.  ``stop`` carries the write-gate STOP (collector
+        context only), honored by the collector loop."""
+        by = self._bucket(results)
+        self._log_rejections(memory, by)
+        parts = self._message_parts(memory, by)
+        message = " ".join(parts) if parts else "(no entries written)"
+        return ToolResult(
+            message=message,
+            mutated=bool(by[WriteGateOutcome.NEW_KEY]),
+            stop=self._stop_outcome(results),
+        )
+
+    @staticmethod
+    def _bucket(results: list[WriteResult]) -> dict[WriteGateOutcome, list[WriteResult]]:
+        """Group results by their change-gate outcome (every member present, so a
+        lookup is total and no branch guesses an empty bucket)."""
+        by: dict[WriteGateOutcome, list[WriteResult]] = {o: [] for o in WriteGateOutcome}
+        for result in results:
+            by[result.outcome].append(result)
+        return by
+
+    @staticmethod
+    def _log_rejections(memory: str, by: dict[WriteGateOutcome, list[WriteResult]]) -> None:
+        if duplicates := by[WriteGateOutcome.DUPLICATE]:
             logger.info(
                 "collection_write: %d duplicate(s) rejected in %s: %s",
                 len(duplicates),
                 memory,
                 ", ".join(r.key for r in duplicates),
             )
-        if rejected:
+        if degenerate := by[WriteGateOutcome.DEGENERATE]:
             logger.info(
                 "collection_write: %d degenerate entry(ies) rejected in %s: %s",
-                len(rejected),
+                len(degenerate),
                 memory,
-                ", ".join(f"{r.key!r} ({r.reason})" for r in rejected),
+                ", ".join(f"{r.key!r} ({r.reason})" for r in degenerate),
             )
-        parts: list[str] = []
-        if written:
-            noun = "entry" if len(written) == 1 else "entries"
-            parts.append(f"Wrote {len(written)} {noun} to '{memory}': {', '.join(written)}.")
-        if duplicates:
-            labelled = [_format_duplicate(r) for r in duplicates]
-            close = self._duplicate_close(all_duplicates=not written and not rejected)
-            parts.append(f"Rejected as duplicates: {'; '.join(labelled)}.  {close}")
-        if rejected:
-            labelled = [f"{r.key} ({r.reason})" for r in rejected]
-            parts.append(
-                f"Rejected as degenerate content: {', '.join(labelled)}.  "
-                f"Re-write these with substantive descriptive text (not a bare URL, "
-                f"punctuation, or a bail-out phrase)."
-            )
-        message = " ".join(parts) if parts else "(no entries written)"
-        # Work only if a row actually landed — a fully duplicate/rejected batch
-        # changed nothing, so it must read as no-work for the throttle.
-        return ToolResult(message=message, mutated=bool(written))
+
+    def _message_parts(
+        self, memory: str, by: dict[WriteGateOutcome, list[WriteResult]]
+    ) -> list[str]:
+        """One part per non-empty outcome bucket, composed in a fixed order — a
+        table of contents over the per-outcome formatters."""
+        written = [r.key for r in by[WriteGateOutcome.NEW_KEY]]
+        changed = by[WriteGateOutcome.KEY_EXISTS_CHANGED]
+        unchanged = by[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
+        duplicates = by[WriteGateOutcome.DUPLICATE]
+        degenerate = by[WriteGateOutcome.DEGENERATE]
+        # "Nothing landed" = the batch was ONLY duplicates: the close then names the
+        # cycle-ending move (done() for a collector), not just per-entry refreshes.
+        nothing_landed = not (written or changed or unchanged or degenerate)
+        unexpected = by[WriteGateOutcome.UNEXPECTED]
+        parts = [
+            _format_written(memory, written) if written else None,
+            _format_changed(changed) if changed else None,
+            _format_unchanged(unchanged) if unchanged else None,
+            self._duplicate_part(duplicates, all_duplicates=nothing_landed) if duplicates else None,
+            _format_degenerate(degenerate) if degenerate else None,
+            _format_unexpected(unexpected) if unexpected else None,
+        ]
+        return [part for part in parts if part]
+
+    def _duplicate_part(self, duplicates: list[WriteResult], *, all_duplicates: bool) -> str:
+        """The DUPLICATE part: per-entry ``update_entry`` binds + the trailing close."""
+        labelled = "; ".join(_format_duplicate(r) for r in duplicates)
+        close = self._duplicate_close(all_duplicates=all_duplicates)
+        return f"Rejected as duplicates: {labelled}.  {close}"
+
+    def _stop_outcome(self, results: list[WriteResult]) -> WriteGateOutcome | None:
+        """The write-gate STOP for this call — honored only in a collector (must-act)
+        context, so chat gets the enumerated text but never a loop-stop (#1587).
+
+        Fires when the whole write resolved to a single STOP-worthy outcome (nothing
+        new landed): a watch's unchanged re-observation.  Which outcomes are
+        STOP-worthy is the declared ``WRITE_GATE_STOP_REASONS`` table (data), so
+        later stages extend the table, not this code."""
+        if self._scope is None or not results:
+            return None
+        outcomes = {r.outcome for r in results}
+        if len(outcomes) == 1:
+            only = next(iter(outcomes))
+            if only in WRITE_GATE_STOP_REASONS:
+                return only
+        return None
 
     def _duplicate_close(self, *, all_duplicates: bool) -> str:
         """The trailing framing after the per-entry rejections (each already binds its

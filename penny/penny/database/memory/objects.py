@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field, computed_field
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
-from penny.constants import PennyConstants, RunOutcome
+from penny.constants import PennyConstants, RunOutcome, WriteGateOutcome
 from penny.database.memory import _similarity as sim
 from penny.database.memory.types import (
     DedupThresholds,
@@ -359,6 +359,14 @@ class Memory:
             )
 
 
+def _content_unchanged(stored: str, incoming: str) -> bool:
+    """The change-gate's deterministic value comparison (#1587): same value → never
+    news.  Whitespace-trimmed exact equality — the watched field is one value per
+    key, so an identical re-observation is byte-identical bar surrounding
+    whitespace, and a differing one is genuine news."""
+    return stored.strip() == incoming.strip()
+
+
 class Collection(Memory):
     """A keyed collection — similarity-deduped writes, exact-key lookup.
 
@@ -432,7 +440,7 @@ class Collection(Memory):
                     self._write_one(session, entry, author, existing, thresholds, run_id)
                 )
             session.commit()
-        if any(result.outcome == "written" for result in results):
+        if any(result.outcome == WriteGateOutcome.NEW_KEY for result in results):
             self._notify()
         return results
 
@@ -527,14 +535,65 @@ class Collection(Memory):
         thresholds: DedupThresholds,
         run_id: str | None = None,
     ) -> WriteResult:
+        """Classify one write into the closed ``WriteGateOutcome`` union — the
+        change-gate at the write chokepoint (#1587).  The comparison is
+        deterministic and total; nothing here is a model judgment.  The gate decides
+        the non-write outcomes; only a genuinely new key is persisted."""
+        gated = self._gate_outcome(session, entry, existing, thresholds)
+        if gated is not None:
+            return gated
+        return self._insert_new_entry(session, entry, author, existing, run_id)
+
+    def _gate_outcome(
+        self,
+        session: Session,
+        entry: EntryInput,
+        existing: list[EntrySide],
+        thresholds: DedupThresholds,
+    ) -> WriteResult | None:
+        """The change-gate itself: the non-NEW_KEY outcome for an entry that is NOT
+        stored — DEGENERATE, KEY_EXISTS_CHANGED/UNCHANGED (an exact-key hit compared
+        by value: same value → never news, different value → news, decided
+        deterministically, not by an embedding threshold), or DUPLICATE — or ``None``
+        when it's a genuinely new key to persist.
+
+        SINGLE-FIELD DISCIPLINE: the compared content must be one value per key;
+        cramming a volatile sibling (a countdown, a timestamp) into the same body
+        would trip a false CHANGED every cycle — the volatile-sibling false-alert
+        this gate exists to kill (#1562)."""
         rejection_reason = degenerate_reason(entry.content)
         if rejection_reason is not None:
             logger.debug("Rejected degenerate collection entry %r: %s", entry.key, rejection_reason)
-            return WriteResult(key=entry.key, outcome="rejected", reason=rejection_reason)
+            return WriteResult(
+                key=entry.key, outcome=WriteGateOutcome.DEGENERATE, reason=rejection_reason
+            )
+        stored = self._rows_by_key(session, self.name, entry.key)
+        if stored:
+            unchanged = _content_unchanged(stored[0].content, entry.content)
+            outcome = (
+                WriteGateOutcome.KEY_EXISTS_UNCHANGED
+                if unchanged
+                else WriteGateOutcome.KEY_EXISTS_CHANGED
+            )
+            return WriteResult(key=entry.key, outcome=outcome, matched_key=entry.key)
         candidate = EntrySide(entry.key, entry.key_embedding, entry.content_embedding)
         matched = sim.is_duplicate(candidate, existing, thresholds)
         if matched is not None:
-            return WriteResult(key=entry.key, outcome="duplicate", matched_key=matched.key)
+            return WriteResult(
+                key=entry.key, outcome=WriteGateOutcome.DUPLICATE, matched_key=matched.key
+            )
+        return None
+
+    def _insert_new_entry(
+        self,
+        session: Session,
+        entry: EntryInput,
+        author: str,
+        existing: list[EntrySide],
+        run_id: str | None,
+    ) -> WriteResult:
+        """Persist a genuinely new key (NEW_KEY) and record it for in-batch dedup so
+        a later entry in the same batch dedups against it."""
         row = MemoryEntry(
             memory_name=self.name,
             key=entry.key,
@@ -548,8 +607,8 @@ class Collection(Memory):
         )
         session.add(row)
         session.flush()
-        existing.append(candidate)
-        return WriteResult(key=entry.key, outcome="written", entry_id=row.id)
+        existing.append(EntrySide(entry.key, entry.key_embedding, entry.content_embedding))
+        return WriteResult(key=entry.key, outcome=WriteGateOutcome.NEW_KEY, entry_id=row.id)
 
 
 class Log(Memory):
@@ -871,6 +930,22 @@ def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
     return calls
 
 
+def _ended_via_write_gate_stop(prompts: list[PromptLog]) -> bool:
+    """True when a write-gate STOP ended the run (#1587): the run reached a clean
+    outcome (``no_work`` / ``worked``) but recorded NO ``done()`` call.
+
+    Structural signal, no new column: in the normal path a ``no_work`` / ``worked``
+    close always follows a successful ``done()`` (that's how the outcome is
+    determined), so a clean outcome with no ``done()`` in the trace can only be a
+    tool STOP — the collector exited at the chokepoint before ``done()``.  Historical
+    rows never satisfy it (they all closed via ``done()``), so it never misfires."""
+    outcome, reason, _ = _run_outcome(prompts)
+    if not reason or outcome not in (RunOutcome.NO_WORK.value, RunOutcome.WORKED.value):
+        return False
+    calls = _run_tool_calls(prompts)
+    return bool(calls) and not any(name == "done" for name, _ in calls)
+
+
 def _run_tool_failures(prompts: list[PromptLog]) -> int:
     """The persisted failed-tool-call count, off the run's outcome-bearing row.
 
@@ -1131,7 +1206,14 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     non_done = [(name, args) for name, args in calls if name != "done"]
     if health.bailed:
         lines.append("(no tool calls)" if not calls else render_tool_call(*calls[0]))
-    elif outcome == RunOutcome.WORKED.value or health.regressive:
+    elif (
+        outcome == RunOutcome.WORKED.value
+        or health.regressive
+        or _ended_via_write_gate_stop(prompts)
+    ):
+        # A STOP-ended run (#1587) shows its trace too — the stop point (the write
+        # call) alongside the stop reason on the header, so "why did it stop?" is a
+        # read.  Its reason is already the header line; no ⚠ flag (a clean stop).
         lines.extend(render_tool_call(name, args) for name, args in non_done)
     return "\n".join(lines)
 
@@ -1191,10 +1273,14 @@ def _run_origin(prompts: list[PromptLog]) -> str:
 
 
 def _run_conclusion(prompts: list[PromptLog]) -> str:
-    """How the run ended: ``penny: <reply>`` (chat) or ``done: <summary>`` (collector)."""
+    """How the run ended: ``penny: <reply>`` (chat), ``done: <summary>`` (a
+    collector that closed via ``done()``), or ``stopped: <reason>`` (a run a
+    write-gate STOP ended at the chokepoint, #1587) — so the trace reads honestly
+    as a stop, not a fabricated ``done()``."""
     _, reason, _ = _run_outcome(prompts)
     if reason:
-        return f"done: {reason}"
+        verb = "stopped" if _ended_via_write_gate_stop(prompts) else "done"
+        return f"{verb}: {reason}"
     reply = _final_assistant_text(prompts)
     return f"penny: {reply}" if reply else ""
 

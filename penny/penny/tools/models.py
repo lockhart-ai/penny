@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from penny.constants import WriteGateOutcome
 from penny.text_validity import half_formed_send_reason, is_blank
 
 
@@ -135,6 +136,14 @@ class ToolResult(BaseModel):
     Image *bytes* are never carried here.  Browsed images ride the side-channel: the
     browse tool stores them in the media table at capture time and they are matched
     back to the most relevant reply at egress (``MediaStore.select_image``).
+
+    - ``stop``: the enumerated write-gate outcome that ends a must-act (collector)
+      run at the chokepoint (#1587) — set by ``collection_write`` when the write
+      resolved to a STOP-worthy outcome (a watch's unchanged re-observation).  The
+      collector loop honors it (``should_stop_loop``) and stamps it as the run's
+      stop reason; the chat loop never reads it, so a chat write gets the same
+      enumerated text WITHOUT a loop-stop (chat isn't must-act).  ``None`` for every
+      other call.
     """
 
     message: str
@@ -143,6 +152,7 @@ class ToolResult(BaseModel):
     source_urls: list[str] = Field(default_factory=list)
     narration: str | None = None
     media_id: int | None = None
+    stop: WriteGateOutcome | None = None
 
     def __str__(self) -> str:
         return self.message

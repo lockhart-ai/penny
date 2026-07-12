@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from penny.constants import WriteGateOutcome
+
 
 class MessageRole(StrEnum):
     """Valid message roles in chat conversations."""
@@ -45,6 +47,16 @@ class ToolCallRecord(BaseModel):
     )
     result: str | None = Field(
         default=None, description="The tool's result/error text, set after execution"
+    )
+    stop_reason: WriteGateOutcome | None = Field(
+        default=None,
+        description=(
+            "The enumerated write-gate outcome that ends a must-act (collector) run "
+            "at the chokepoint (#1587).  Set from ``ToolResult.stop`` (collection_write "
+            "on a collector-scoped write); the collector's ``should_stop_loop`` reads "
+            "it to exit, and ``_cycle_result`` stamps it as the run's stop reason.  "
+            "None for every call that doesn't carry a STOP."
+        ),
     )
     media_id: int | None = Field(
         default=None,

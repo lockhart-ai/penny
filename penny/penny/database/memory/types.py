@@ -15,6 +15,12 @@ from similarity.embeddings import normalize_unicode
 
 from penny.config_params import RuntimeParams
 
+# The change-gate outcome enum (#1587) lives in ``penny.constants`` beside its peer
+# ``RunOutcome`` (both surface on the run record and want a cycle-free leaf home);
+# imported here so ``WriteResult.outcome`` types against it and the memory layer's
+# public surface (``penny.database.memory``) re-exports it beside ``WriteResult``.
+from penny.constants import WriteGateOutcome
+
 
 class MemoryType(StrEnum):
     COLLECTION = "collection"
@@ -185,20 +191,22 @@ class LogEntryInput(BaseModel):
     content_embedding: list[float] | None = None
 
 
-WriteOutcome = Literal["written", "duplicate", "rejected"]
 MoveOutcome = Literal["ok", "not_found", "collision"]
 UpdateOutcome = Literal["ok", "not_found"]
 
 
 class WriteResult(BaseModel):
     key: str
-    outcome: WriteOutcome
+    # The change-gate outcome (#1587) — one member of the closed ``WriteGateOutcome``
+    # union, computed deterministically by the write path (never a model judgment).
+    outcome: WriteGateOutcome
     entry_id: int | None = None
-    # Existing entry's key when ``outcome == "duplicate"`` — surfaces in
-    # the rejection message so the model can pivot to ``update_entry``
-    # when it has fresher info for the existing row.
+    # The existing entry's key that this write resolved against — its own key for an
+    # exact-key hit (``KEY_EXISTS_CHANGED`` / ``KEY_EXISTS_UNCHANGED``), or the
+    # colliding key for a ``DUPLICATE``.  Surfaces in the result so the model can
+    # pivot to ``update_entry`` when it has fresher info for the existing row.
     matched_key: str | None = None
-    # Human-readable reason when ``outcome == "rejected"``.
+    # Human-readable reason when ``outcome == WriteGateOutcome.DEGENERATE``.
     reason: str | None = None
 
 
