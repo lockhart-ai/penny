@@ -17,10 +17,11 @@ import pytest
 from pydantic import ValidationError
 from sqlmodel import Session, select
 
+from penny.agents.self_state import SelfStateHeader
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, RecallMode, WriteResult
-from penny.database.models import MemoryEntry
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
@@ -41,6 +42,8 @@ from penny.tools.memory_tools import (
     DoneTool,
     ExistsTool,
     FindMineTool,
+    IntentInventoryTool,
+    IntentTeardownTool,
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
@@ -1966,12 +1969,14 @@ class TestFactory:
         "read_similar",
         "exists",
         "find_mine",
+        "intent_inventory",
         # Lifecycle (shape)
         "collection_create",
         "collection_update",
         "collection_merge",
         "collection_archive",
         "collection_unarchive",
+        "intent_teardown",
         "log_create",
         # Entry mutations (contents)
         "collection_write",
@@ -2558,3 +2563,316 @@ class TestFindMine:
         assert result.success is False
         assert "Couldn't embed your query" in result.message
         assert "find_mine(query=" in result.message
+
+
+# ── intent_inventory + intent_teardown: the intent view + cascade (#1559) ─────
+#
+# ``intent_inventory`` enumerates everything one ask set up (exact provenance ∪
+# intent similarity, archived-inclusive); ``intent_teardown`` cascade-archives an
+# EXPLICIT list of those names, per-item.  Both renders are model-facing text, so
+# they're asserted as whole renders.
+
+
+def _add_intent_message(session: Session, message_id: int, content: str) -> None:
+    """An incoming user message with an explicit id, so the created-line ask
+    excerpt renders deterministically."""
+    session.add(
+        MessageLog(
+            id=message_id,
+            direction=PennyConstants.MessageDirection.INCOMING,
+            sender="user",
+            content=content,
+            timestamp=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+    )
+
+
+def _add_intent_collection(
+    session: Session,
+    name: str,
+    *,
+    intent: str,
+    source_message_id: int,
+    run_id: str,
+    created_at: datetime,
+    updated_at: datetime,
+    archived: bool = False,
+) -> None:
+    """A user mechanism (extraction_prompt-bearing collection) with fixed
+    provenance + timestamps, so the inventory render is byte-stable."""
+    session.add(
+        MemoryRow(
+            name=name,
+            type="collection",
+            description=f"{name} subject matter",
+            inclusion="relevant",
+            recall="recent",
+            extraction_prompt="1. gather.\n2. done(success=true, summary=<x>).",
+            intent=intent,
+            source_message_id=source_message_id,
+            created_by_run_id=run_id,
+            archived=archived,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+    )
+
+
+def _seed_intent_world(db) -> None:
+    """One ask (message 10) spawned a live forecast collection AND a same-ask
+    alerts sibling (its intent does NOT meaning-match the query — it's pulled in
+    only by shared provenance).  A separate ask (message 20) set up an archived
+    same-intent collection.  A third ask (message 30) set up an unrelated one
+    that must stay OUT of the set."""
+    with Session(db.engine) as session:
+        _add_intent_message(session, 10, "watch the aurora forecast and ping me about alerts")
+        _add_intent_message(session, 20, "keep an archived aurora watch")
+        _add_intent_message(session, 30, "track orbit nebula prices")
+        _add_intent_collection(
+            session,
+            "aurora-forecast",
+            intent="aurora beacon cascade",
+            source_message_id=10,
+            run_id="run-forecast",
+            created_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+        _add_intent_collection(
+            session,
+            "aurora-alerts",
+            intent="gamma delta echo",
+            source_message_id=10,
+            run_id="run-forecast",
+            created_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+        _add_intent_collection(
+            session,
+            "aurora-archive",
+            intent="aurora beacon delta",
+            source_message_id=20,
+            run_id="run-archive",
+            created_at=datetime(2026, 7, 9, 8, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 10, 15, 30, tzinfo=UTC),
+            archived=True,
+        )
+        _add_intent_collection(
+            session,
+            "unrelated-watch",
+            intent="orbit nebula foxtrot",
+            source_message_id=30,
+            run_id="run-unrelated",
+            created_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 11, 9, 0, tzinfo=UTC),
+        )
+        session.commit()
+
+
+class TestIntentInventory:
+    """The intent view: enumerate everything one ask set up — exact provenance
+    UNIONED with intent similarity, archived-inclusive, each row named with its
+    status + provenance identifiers, and the render naming the teardown call."""
+
+    _KITCHEN_SINK = (
+        'Everything set up for "aurora beacon": 3 mechanisms (2 live, 1 archived).\n'
+        "\n"
+        "1. aurora-archive — direct match\n"
+        "   status: archived 2026-07-10 15:30 UTC\n"
+        "   intent: aurora beacon delta\n"
+        "   created: 2026-07-09 08:00 UTC by run run-archive from message 20 "
+        '("keep an archived aurora watch")\n'
+        "   already retired — inspect with memory_metadata('aurora-archive'); its entries "
+        "stay readable with collection_read_latest('aurora-archive')\n"
+        "2. aurora-forecast — direct match\n"
+        "   status: active\n"
+        "   intent: aurora beacon cascade\n"
+        "   created: 2026-07-11 09:00 UTC by run run-forecast from message 10 "
+        '("watch the aurora forecast and ping me about alerts")\n'
+        "   inspect with memory_metadata('aurora-forecast')\n"
+        "3. aurora-alerts — same-ask sibling\n"
+        "   status: active\n"
+        "   intent: gamma delta echo\n"
+        "   created: 2026-07-11 09:00 UTC by run run-forecast from message 10 "
+        '("watch the aurora forecast and ping me about alerts")\n'
+        "   inspect with memory_metadata('aurora-alerts')\n"
+        "\n"
+        "To tear down this whole set, call intent_teardown(names=['aurora-archive', "
+        "'aurora-forecast', 'aurora-alerts']) — it archives each live mechanism "
+        "independently and reports every one's outcome (already-archived members are "
+        "noted, nothing outside this list is touched). Destructive: this is exactly the "
+        "set that will be torn down — confirm it with the user first."
+    )
+
+    @pytest.mark.asyncio
+    async def test_kitchen_sink_enumerates_provenance_and_intent_archived_inclusive(
+        self, tmp_path, mock_llm
+    ):
+        """A query matching one ask's mechanism pulls in its same-ask sibling
+        (shared provenance) AND a same-intent archived mechanism from another ask —
+        one set, archived-inclusive, each row with status + typed provenance ids,
+        and the exact teardown call.  The unrelated ask stays out."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        _seed_intent_world(db)
+        result = await IntentInventoryTool(db, client).execute(query="aurora beacon")
+        assert result.success
+        assert result.message == self._KITCHEN_SINK
+
+    @pytest.mark.asyncio
+    async def test_message_id_enumerates_the_exact_ask_cohort_without_embedding(
+        self, tmp_path, mock_llm
+    ):
+        """A message_id enumerates every mechanism that ask created — the sibling
+        the motivating teardown kept missing — and needs no embedding."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        _seed_intent_world(db)
+        result = await IntentInventoryTool(db, client).execute(message_id=10)
+        # Both message-10 mechanisms enumerate (the forecast and its alerts
+        # sibling), and the cohort's own intent anchors ALSO surface the
+        # same-intent archived collection from the separate message-20 ask.
+        assert "aurora-forecast" in result.message
+        assert "aurora-alerts" in result.message
+        assert "aurora-archive" in result.message
+        # The unrelated ask (message 30) stays out; the reference is the message.
+        assert "unrelated-watch" not in result.message
+        assert "message 10" in result.message
+        assert "3 mechanisms" in result.message
+
+    @pytest.mark.asyncio
+    async def test_empty_set_is_honest_not_an_error(self, tmp_path, mock_llm):
+        """A query matching no mechanism's intent returns an honest empty naming the
+        wider nets — not an error, nothing to tear down."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        _seed_intent_world(db)
+        result = await IntentInventoryTool(db, client).execute(query="reusable recipes")
+        assert result.success
+        assert result.message == (
+            'Nothing set up matches "reusable recipes" — nothing to enumerate or tear '
+            "down. collection_catalog() lists every collection (archived included), and "
+            "your current-state header names your active mechanisms."
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_reference_is_rejected_actionably(self, tmp_path, mock_llm):
+        """Neither query nor message_id is a missing input, named through the
+        arg-validation envelope, not a silent empty enumeration."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        result = await IntentInventoryTool(db, client).run()
+        assert result.success is False
+        assert "At least one is required" in result.message
+
+    @pytest.mark.asyncio
+    async def test_transient_embed_failure_names_the_message_id_path(self, tmp_path):
+        """A transient embed outage fails the meaning search actionably — and points
+        at the embedding-free message_id path — rather than silently returning an
+        incomplete set."""
+        db = _make_db(tmp_path)
+        _seed_intent_world(db)
+        result = await IntentInventoryTool(db, cast(Any, _FailingEmbedClient())).execute(
+            query="aurora beacon"
+        )
+        assert result.success is False
+        assert "message_id=<the spawning message id>" in result.message
+
+
+class TestIntentTeardown:
+    """The cascade: archive an EXPLICIT enumerated set, each independently, with a
+    per-item report and a summary that makes a partial failure impossible to miss."""
+
+    async def _create(self, db, name: str, *, run_id: str | None = None) -> None:
+        await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), created_by_run_id=run_id
+        ).execute(
+            name=name,
+            description=f"{name} subject matter",
+            inclusion="relevant",
+            recall="recent",
+            extraction_prompt="1. gather.\n2. done(success=true, summary=<what happened>).",
+            collector_interval_seconds=3600,
+            intent=f"the user's goal for {name}",
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_success_archives_every_named_mechanism(self, tmp_path):
+        """Every live name is archived; the report and summary confirm per item, and
+        the reported count matches the DB (both rows are archived)."""
+        db = _make_db(tmp_path)
+        await self._create(db, "watch-a")
+        await self._create(db, "watch-b")
+        result = await IntentTeardownTool(db, run_id="tear-run").execute(
+            names=["watch-a", "watch-b"]
+        )
+        assert result.success is True
+        assert result.mutated is True
+        assert result.message == (
+            "Tore down 2 of 2: 2 archived.\n"
+            "✓ watch-a — archived; its collector won't fire again.\n"
+            "✓ watch-b — archived; its collector won't fire again."
+        )
+        # Reported counts match the DB — both mechanisms are actually archived.
+        assert db.memories.get("watch-a").archived is True
+        assert db.memories.get("watch-b").archived is True
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_is_visible_and_siblings_still_archive(self, tmp_path):
+        """One bad name never aborts or hides the siblings (no-loop-and-bail): the
+        live one is archived, the unknown is reported, and a mechanism OUTSIDE the
+        list is untouched."""
+        db = _make_db(tmp_path)
+        await self._create(db, "keep-watch")
+        await self._create(db, "other-watch")  # NOT in the teardown list
+        result = await IntentTeardownTool(db, run_id="tear-run").execute(
+            names=["keep-watch", "ghost-watch"]
+        )
+        assert result.success is False  # an unknown name is a failed teardown
+        assert result.mutated is True  # but the live sibling still archived
+        assert result.message == (
+            "Tore down 1 of 2: 1 archived, 1 not found.\n"
+            "✓ keep-watch — archived; its collector won't fire again.\n"
+            "✗ ghost-watch — no such mechanism; nothing archived. Re-enumerate with "
+            "intent_inventory(...) to get the exact names."
+        )
+        assert db.memories.get("keep-watch").archived is True
+        # Nothing outside the named set is touched.
+        assert db.memories.get("other-watch").archived is False
+
+    @pytest.mark.asyncio
+    async def test_already_archived_is_idempotent_not_a_failure(self, tmp_path):
+        """Tearing down an already-archived mechanism is a no-op, reported honestly —
+        so re-running a teardown is safe (the count reads 0 archived, 1 already)."""
+        db = _make_db(tmp_path)
+        await self._create(db, "done-watch")
+        await CollectionArchiveTool(db).execute(memory="done-watch")
+        result = await IntentTeardownTool(db, run_id="tear-run").execute(names=["done-watch"])
+        assert result.success is True
+        assert result.mutated is False
+        assert result.message == (
+            "Tore down 0 of 1: 0 archived, 1 already archived.\n"
+            "• done-watch — already archived; nothing to do."
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_names_is_rejected_actionably(self, tmp_path):
+        """An empty list is a missing input, named through the arg-validation
+        envelope — teardown never re-derives the set, so it must be given."""
+        db = _make_db(tmp_path)
+        result = await IntentTeardownTool(db).run(names=[])
+        assert result.success is False
+        assert "the exact set" in result.message
+        assert "enumerate first" in result.message
+
+    @pytest.mark.asyncio
+    async def test_teardown_events_render_in_the_self_state_activity_block(self, tmp_path):
+        """The composition proof: teardown archives through the store path, so each
+        archive records a mutation event with the tearing run — and those events
+        surface in the SelfStateHeader's activity block with no extra wiring."""
+        db = _make_db(tmp_path)
+        await self._create(db, "compose-watch", run_id="create-run")
+        await IntentTeardownTool(db, run_id="tear-run").execute(names=["compose-watch"])
+        header = SelfStateHeader(db, user=None).render()
+        # The teardown's archive mutation renders in the activity block, anchored to
+        # the tearing run — the mutation ledger and the header compose for free.
+        assert "compose-watch archived by user-run (run tear-run)" in header

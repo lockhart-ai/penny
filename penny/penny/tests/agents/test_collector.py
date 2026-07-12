@@ -273,6 +273,9 @@ _LIFECYCLE_TOOL_NAMES = frozenset(
         "collection_merge",
         "collection_archive",
         "collection_unarchive",
+        # Cascade teardown archives collections (#1559) — a registry-shape
+        # mutation, so it's lifecycle-tier and absent from a cadence run.
+        "intent_teardown",
         "log_create",
     }
 )

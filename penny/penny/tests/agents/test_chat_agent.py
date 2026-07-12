@@ -581,6 +581,9 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "log_create" in names
         assert "collection_archive" in names
         assert "collection_unarchive" in names
+        # Cascade teardown of an enumerated intent set (#1559) — a lifecycle-tier
+        # mutation, so chat-only (a collector can't archive).
+        assert "intent_teardown" in names
 
         # Reads.
         assert "collection_read_latest" in names
@@ -593,6 +596,9 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "read_published_latest" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
         assert "find_mine" in names
+        # Intent inventory — "what did I set up for this?" (#1559), the read half
+        # whose render is the confirmation artifact for intent_teardown.
+        assert "intent_inventory" in names
 
         # Notification mute/unmute — chat-surface tools over the MuteState row
         # (the retired /mute + /unmute commands), dispatched from natural language.

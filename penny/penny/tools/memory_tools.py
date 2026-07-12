@@ -25,6 +25,9 @@ from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from similarity.embeddings import cosine_similarity
+
+from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
@@ -64,6 +67,8 @@ from penny.tools.memory_args import (
     DoneArgs,
     ExistsArgs,
     FindMineArgs,
+    IntentInventoryArgs,
+    IntentTeardownArgs,
     LogAppendArgs,
     LogCreateArgs,
     MemoryNameArgs,
@@ -2274,6 +2279,427 @@ class FindMineTool(MemoryTool):
         )
 
 
+# ── Intent inventory + cascade teardown (#1559) ─────────────────────────────
+#
+# "What did I set up for this?" and "tear it all down."  One ask can spawn
+# several collections (post-#1556 the only mechanism kind), and there was no
+# single view enumerating them nor a way to dismantle them as a unit — so a
+# teardown missed a sibling and left an orphan running.  Two tools close that:
+#
+#   * ``intent_inventory`` enumerates the whole set as ONE list — archived
+#     included — by exact provenance (rows sharing a source message) UNIONED with
+#     meaning-similarity over intent text (mechanisms set up across separate
+#     asks), each row rendered with its status and the typed identifiers of its
+#     provenance (the anchor discipline).
+#   * ``intent_teardown`` cascade-archives an EXPLICIT list of those names —
+#     verbatim, never a query it re-derives — archiving each independently (one
+#     failure never hides the siblings) and reporting per item.
+#
+# The two-tool shape IS the confirmation structure: the inventory render is the
+# artifact the user approves in conversation, and the teardown acts only on the
+# names it enumerated.  No separate confirm-flag state machine — enumerate, then
+# act on exactly what was shown.
+
+_INTENT_INVENTORY_EMBED_FAILURE = (
+    "Couldn't embed the intent query (a transient embedding error) — the "
+    "meaning-match across intents needs it. Retry in a moment, or enumerate the "
+    "exact ask-cohort with intent_inventory(message_id=<the spawning message id>), "
+    "which needs no embedding."
+)
+
+_INTENT_INVENTORY_EMPTY = (
+    "Nothing set up matches {ref} — nothing to enumerate or tear down. "
+    "collection_catalog() lists every collection (archived included), and your "
+    "current-state header names your active mechanisms."
+)
+
+# Why each enumerated mechanism is in the set — honest about how it was found:
+# a DIRECT hit (the message_id targets it, or its intent meaning-matched) versus
+# a SIBLING pulled in only by sharing an originating ask with a direct hit (the
+# orphan the motivating teardown kept missing).
+_BASIS_DIRECT = "direct match"
+_BASIS_SIBLING = "same-ask sibling"
+
+
+class _IntentMember(NamedTuple):
+    """One enumerated mechanism plus why it's in the set (its inclusion basis)."""
+
+    row: MemoryRow
+    basis: str
+
+
+class IntentInventoryTool(MemoryTool):
+    """Enumerate everything one ask set up — the intent view of #1559.
+
+    The union of two enumerations, archived-INCLUSIVE: the *exact provenance*
+    cohort (rows sharing a source message with a direct hit — so a query that
+    matches ONE mechanism pulls in the siblings its ask created too) and the
+    *intent-similarity* set (rows whose intent means the same thing, catching
+    mechanisms set up across separate asks — reusing the similarity primitives,
+    thresholded at ``MEMORY_INCLUSION_THRESHOLD``, the codebase's "same-topic"
+    cut).  Each row renders with its status and the typed identifiers of its
+    provenance (creating run + spawning message), and the render names the exact
+    ``intent_teardown`` call — so this result IS the confirmation artifact the
+    user approves before anything is dismantled.
+    """
+
+    name = "intent_inventory"
+    description = (
+        'Enumerate every mechanism one ask set up — the answer to "what did I set '
+        'up for this?" and the confirmation list for tearing it down.  Pass '
+        "`query` (a paraphrase of the intent, e.g. \"watching that product's "
+        'price") and/or `message_id` (the spawning user message id, as a created '
+        "line shows it — `from message <id>`).  Returns ONE set, archived "
+        "included: everything created by the same ask (shared provenance) plus "
+        "everything whose intent means the same thing (mechanisms set up across "
+        "separate asks), each with its status, provenance, and how to inspect it.  "
+        "The render is exactly the set intent_teardown archives — enumerate here "
+        "first and confirm it with the user, then tear it down."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "A paraphrase of the intent — what the mechanisms are about, not an exact name."
+                ),
+            },
+            "message_id": {
+                "type": "integer",
+                "description": (
+                    "The spawning user message id (as `from message <id>` renders "
+                    "it) — enumerates the exact ask-cohort with no embedding."
+                ),
+            },
+        },
+    }
+    args_model = IntentInventoryArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to enumerate what you set up but it didn't work:"
+        return "You enumerated what you set up:"
+
+    def __init__(self, db: Database, llm_client: LlmClient) -> None:
+        self._db = db
+        self._llm = llm_client
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = IntentInventoryArgs(**kwargs)
+        rows = [
+            row
+            for row in self._db.memories.list_all()
+            if CollectionCatalogTool._is_user_collection(row)
+        ]
+        matched, failure = await self._matched_names(args, rows)
+        if failure is not None:
+            return failure
+        members = self._members(args, rows, matched)
+        if not members:
+            return ToolResult(message=_INTENT_INVENTORY_EMPTY.format(ref=self._ref_label(args)))
+        return ToolResult(message=self._render(args, members))
+
+    # ── Membership ───────────────────────────────────────────────────────────
+
+    async def _matched_names(
+        self, args: IntentInventoryArgs, rows: list[MemoryRow]
+    ) -> tuple[set[str], ToolResult | None]:
+        """The DIRECT hits: rows the ``message_id`` targets, unioned with rows
+        whose intent meaning-matches the anchors.  A transient embed outage returns
+        an actionable failure (never a silent empty) — the message_id path is named
+        as the embedding-free alternative."""
+        matched: set[str] = set()
+        if args.message_id is not None:
+            matched |= {row.name for row in rows if row.source_message_id == args.message_id}
+        similar, failure = await self._similar_names(args, rows)
+        if failure is not None:
+            return set(), failure
+        return matched | similar, None
+
+    async def _similar_names(
+        self, args: IntentInventoryArgs, rows: list[MemoryRow]
+    ) -> tuple[set[str], ToolResult | None]:
+        """Names whose intent meaning-matches the anchors, or ``(set(), None)`` when
+        there's nothing to match on (a bare ``message_id`` whose cohort has no
+        intents)."""
+        anchors = self._anchor_texts(args, rows)
+        if not anchors:
+            return set(), None
+        anchor_vecs = await self._embed_all(anchors)
+        if anchor_vecs is None:
+            return set(), self._embed_failure()
+        return await self._match_intents(rows, anchor_vecs)
+
+    @staticmethod
+    def _anchor_texts(args: IntentInventoryArgs, rows: list[MemoryRow]) -> list[str]:
+        """The similarity anchors: the query plus the intents of the exact cohort a
+        ``message_id`` names — so a message reference also finds same-intent
+        mechanisms from other asks."""
+        texts: list[str] = []
+        if args.message_id is not None:
+            texts += [
+                row.intent
+                for row in rows
+                if row.source_message_id == args.message_id and row.intent
+            ]
+        if args.query is not None:
+            texts.append(args.query)
+        return texts
+
+    async def _embed_all(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed every anchor; ``None`` if any embed failed transiently — the whole
+        search can't run without all its anchors."""
+        vecs: list[list[float]] = []
+        for text in texts:
+            vec = await embed_text(self._llm, text)
+            if vec is None:
+                return None
+            vecs.append(vec)
+        return vecs
+
+    async def _match_intents(
+        self, rows: list[MemoryRow], anchor_vecs: list[list[float]]
+    ) -> tuple[set[str], ToolResult | None]:
+        """Rows whose intent clears the same-topic threshold against any anchor.
+        Intent text isn't pre-embedded, so each is embedded at query time (few
+        collections, single-user); a transient miss fails the whole call."""
+        threshold = RuntimeParams(self._db).MEMORY_INCLUSION_THRESHOLD
+        matched: set[str] = set()
+        for row in rows:
+            if row.intent is None:
+                continue
+            vec = await embed_text(self._llm, row.intent)
+            if vec is None:
+                return set(), self._embed_failure()
+            if max(cosine_similarity(vec, anchor) for anchor in anchor_vecs) >= threshold:
+                matched.add(row.name)
+        return matched, None
+
+    @staticmethod
+    def _embed_failure() -> ToolResult:
+        return ToolResult(message=_INTENT_INVENTORY_EMBED_FAILURE, success=False)
+
+    def _members(
+        self, args: IntentInventoryArgs, rows: list[MemoryRow], matched: set[str]
+    ) -> list[_IntentMember]:
+        """The full set: the direct hits plus every sibling sharing one of their
+        originating messages, direct hits first, each group by name (stable order).
+        The ``message_id`` seeds the cohort even when it targets nothing, so a bad
+        reference simply enumerates nothing rather than erroring."""
+        exact_ids: set[int] = set()
+        if args.message_id is not None:
+            exact_ids.add(args.message_id)
+        exact_ids |= {
+            row.source_message_id
+            for row in rows
+            if row.name in matched and row.source_message_id is not None
+        }
+        siblings = {
+            row.name
+            for row in rows
+            if row.source_message_id is not None and row.source_message_id in exact_ids
+        }
+        by_name = {row.name: row for row in rows}
+        direct = [_IntentMember(by_name[name], _BASIS_DIRECT) for name in sorted(matched)]
+        sibling = [
+            _IntentMember(by_name[name], _BASIS_SIBLING) for name in sorted(siblings - matched)
+        ]
+        return direct + sibling
+
+    # ── Render ───────────────────────────────────────────────────────────────
+
+    def _render(self, args: IntentInventoryArgs, members: list[_IntentMember]) -> str:
+        live = sum(1 for member in members if not member.row.archived)
+        archived = len(members) - live
+        noun = "mechanism" if len(members) == 1 else "mechanisms"
+        header = (
+            f"Everything set up for {self._ref_label(args)}: {len(members)} {noun} "
+            f"({live} live, {archived} archived)."
+        )
+        body = "\n".join(
+            self._member_block(index, member) for index, member in enumerate(members, start=1)
+        )
+        return f"{header}\n\n{body}\n\n{self._teardown_footer(members)}"
+
+    @staticmethod
+    def _ref_label(args: IntentInventoryArgs) -> str:
+        parts: list[str] = []
+        if args.query is not None:
+            parts.append(f'"{args.query}"')
+        if args.message_id is not None:
+            parts.append(f"message {args.message_id}")
+        return " and ".join(parts)
+
+    def _member_block(self, index: int, member: _IntentMember) -> str:
+        row = member.row
+        created = _created_line(row, _ask_excerpt(self._db, row.source_message_id))
+        return "\n".join(
+            [
+                f"{index}. {row.name} — {member.basis}",
+                f"   {_status_line(row)}",
+                f"   intent: {row.intent or '(none)'}",
+                f"   {created}",
+                f"   {self._inspect_hint(row)}",
+            ]
+        )
+
+    @staticmethod
+    def _inspect_hint(row: MemoryRow) -> str:
+        if row.archived:
+            return (
+                f"already retired — inspect with memory_metadata('{row.name}'); its entries "
+                f"stay readable with collection_read_latest('{row.name}')"
+            )
+        return f"inspect with memory_metadata('{row.name}')"
+
+    @staticmethod
+    def _teardown_footer(members: list[_IntentMember]) -> str:
+        names = ", ".join(f"'{member.row.name}'" for member in members)
+        return (
+            f"To tear down this whole set, call intent_teardown(names=[{names}]) — it "
+            "archives each live mechanism independently and reports every one's outcome "
+            "(already-archived members are noted, nothing outside this list is touched). "
+            "Destructive: this is exactly the set that will be torn down — confirm it with "
+            "the user first."
+        )
+
+
+# One create/archive/failure outcome per name in a cascade teardown (#1559).
+_TEARDOWN_ARCHIVED = "archived"
+_TEARDOWN_ALREADY = "already archived"
+_TEARDOWN_UNKNOWN = "unknown"
+_TEARDOWN_FAILED = "failed"
+
+
+class _TeardownReport(NamedTuple):
+    """One mechanism's teardown outcome — the name reported back, the outcome, and
+    a detail string for a failure."""
+
+    name: str
+    outcome: str
+    detail: str = ""
+
+
+class IntentTeardownTool(MemoryTool):
+    """Cascade-archive an explicit set of mechanisms — the teardown of #1559.
+
+    Takes the EXPLICIT names ``intent_inventory`` enumerated (verbatim, never a
+    query it re-derives — what is destroyed is exactly what was shown), archives
+    each INDEPENDENTLY so one failure can't abort or hide the siblings (the
+    no-loop-and-bail convention), and returns a per-item report (archived /
+    already-archived / not-found / failed) whose summary makes a partial failure
+    impossible to miss.  Archives go through the store's archive path, so each
+    records a mutation event with the tearing run's provenance for free — and the
+    events surface in the self-state header's activity block automatically.
+    """
+
+    name = "intent_teardown"
+    description = (
+        "Tear down a set of mechanisms as a unit — archive every collection you "
+        "name.  Pass `names`: the EXPLICIT list intent_inventory just enumerated, "
+        "verbatim — never a guess or a re-derived query, so what's torn down is "
+        "exactly what was shown and confirmed.\n"
+        "\n"
+        "ALWAYS enumerate first with intent_inventory(...) and let the user confirm "
+        "the set — teardown is destructive.  Each name is archived independently: "
+        "one failure never aborts the rest, and the result reports every name's "
+        "outcome (archived / already archived / not found / failed).  Archiving "
+        "keeps the data but stops the collector, so a torn-down mechanism never "
+        "fires again; nothing outside the list you pass is touched."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "The EXPLICIT list of mechanism names to archive — exactly the "
+                    "set intent_inventory enumerated, verbatim.  Never a guess or a "
+                    "re-derived query."
+                ),
+            },
+        },
+        "required": ["names"],
+    }
+    args_model = IntentTeardownArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        count = len(arguments.get("names") or [])
+        noun = "mechanism" if count == 1 else "mechanisms"
+        if not result.success:
+            return f"You tried to tear down {count} {noun}, but some couldn't be dismantled:"
+        return f"You tore down {count} {noun}:"
+
+    def __init__(self, db: Database, run_id: str | None = None) -> None:
+        self._db = db
+        # The chat run tearing this set down — recorded as each archive mutation's
+        # cause (#1560), so the teardown's provenance is a read, not a memory.
+        self._run_id = run_id
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = IntentTeardownArgs(**kwargs)
+        # Archive each name INDEPENDENTLY — one bad name or mid-cascade failure
+        # never aborts or hides the siblings (no-loop-and-bail); the per-item
+        # report + a summary that counts failures make a partial failure loud.
+        reports = [self._teardown_one(name) for name in args.names]
+        failed = {_TEARDOWN_UNKNOWN, _TEARDOWN_FAILED}
+        succeeded = not any(report.outcome in failed for report in reports)
+        archived_any = any(report.outcome == _TEARDOWN_ARCHIVED for report in reports)
+        return ToolResult(message=self._format(reports), success=succeeded, mutated=archived_any)
+
+    def _teardown_one(self, name: str) -> _TeardownReport:
+        """Archive one mechanism and report its outcome — never raising, so a bad
+        name or a mid-cascade failure can't abort the siblings.  An already-archived
+        row is honoured idempotently (nothing to do)."""
+        row = self._db.memories.get(name)
+        if row is None:
+            return _TeardownReport(name, _TEARDOWN_UNKNOWN)
+        if row.archived:
+            return _TeardownReport(row.name, _TEARDOWN_ALREADY)
+        try:
+            self._db.memories.archive(row.name, run_id=self._run_id)
+        except MemoryAccessError as exc:
+            return _TeardownReport(row.name, _TEARDOWN_FAILED, str(exc))
+        return _TeardownReport(row.name, _TEARDOWN_ARCHIVED)
+
+    def _format(self, reports: list[_TeardownReport]) -> str:
+        lines = [self._summary(reports)]
+        lines += [self._report_line(report) for report in reports]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summary(reports: list[_TeardownReport]) -> str:
+        archived = sum(1 for report in reports if report.outcome == _TEARDOWN_ARCHIVED)
+        already = sum(1 for report in reports if report.outcome == _TEARDOWN_ALREADY)
+        unknown = sum(1 for report in reports if report.outcome == _TEARDOWN_UNKNOWN)
+        failed = sum(1 for report in reports if report.outcome == _TEARDOWN_FAILED)
+        parts = [f"{archived} archived"]
+        if already:
+            parts.append(f"{already} already archived")
+        if unknown:
+            parts.append(f"{unknown} not found")
+        if failed:
+            parts.append(f"{failed} failed")
+        return f"Tore down {archived} of {len(reports)}: {', '.join(parts)}."
+
+    @staticmethod
+    def _report_line(report: _TeardownReport) -> str:
+        if report.outcome == _TEARDOWN_ARCHIVED:
+            return f"✓ {report.name} — archived; its collector won't fire again."
+        if report.outcome == _TEARDOWN_ALREADY:
+            return f"• {report.name} — already archived; nothing to do."
+        if report.outcome == _TEARDOWN_UNKNOWN:
+            return (
+                f"✗ {report.name} — no such mechanism; nothing archived. Re-enumerate with "
+                f"intent_inventory(...) to get the exact names."
+            )
+        return f"✗ {report.name} — couldn't archive: {report.detail}"
+
+
 # ── Introspection / lifecycle ───────────────────────────────────────────────
 
 
@@ -2578,6 +3004,7 @@ def build_memory_tools(
         ReadPublishedLatestTool(db, agent_name),
         ExistsTool(db, llm_client),
         FindMineTool(db, llm_client),
+        IntentInventoryTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
         CollectionCreateTool(db, llm_client, created_by_run_id=run_id),
@@ -2585,6 +3012,7 @@ def build_memory_tools(
         CollectionMergeTool(db, agent_name, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
+        IntentTeardownTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),
     ]
     mutations: list[Tool] = [

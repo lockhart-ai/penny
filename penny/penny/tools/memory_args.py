@@ -469,6 +469,65 @@ class FindMineArgs(ToolArgs):
     type: OptionalResolvedKind = None
 
 
+def _require_teardown_names(value: list[str]) -> list[str]:
+    """Reject an empty ``intent_teardown`` list with an actionable message.
+
+    Teardown acts on the EXPLICIT set ``intent_inventory`` enumerated — passed
+    verbatim, never re-derived from a query — so an empty list is a missing input,
+    not a no-op.  Name what to supply (and where it comes from)."""
+    if not value:
+        raise ValueError(
+            "provide the explicit list of mechanism names to tear down — the exact set "
+            "intent_inventory enumerated. Teardown never re-derives the set from a query; "
+            "enumerate first, then pass those names verbatim."
+        )
+    return value
+
+
+# The teardown target list: dashes normalised (per the memory-name convention),
+# non-empty (the set must be named explicitly).
+TeardownNameList = Annotated[
+    list[str], BeforeValidator(_normalize_dash_list), AfterValidator(_require_teardown_names)
+]
+
+
+class IntentInventoryArgs(ToolArgs):
+    """Enumerate every mechanism one ask set up (#1559).
+
+    ``query`` is a paraphrase of the intent ("watching that product's price");
+    ``message_id`` is the id of the spawning user message, exactly as a created
+    line renders it (``from message <id>``).  At least one must be given:
+    ``message_id`` enumerates the exact ask-cohort with no embedding, while
+    ``query`` (or the cohort's own intents) drives the meaning-match that also
+    catches mechanisms set up across separate asks.  ``OptionalText`` coerces a
+    blank ``query`` to ``None`` (omitted), so a bare ``message_id`` call is valid.
+    """
+
+    query: OptionalText = None
+    message_id: int | None = None
+
+    @model_validator(mode="after")
+    def _require_a_reference(self) -> IntentInventoryArgs:
+        if self.query is None and self.message_id is None:
+            raise ValueError(
+                "give a reference to the intent: query=<what it's about> (a meaning search "
+                "over intents) and/or message_id=<the spawning message id> (the exact "
+                "ask-cohort). At least one is required."
+            )
+        return self
+
+
+class IntentTeardownArgs(ToolArgs):
+    """Cascade-archive an explicit set of mechanisms (#1559).
+
+    ``names`` is the exact list ``intent_inventory`` enumerated, passed verbatim —
+    never a query the tool would re-derive — so what is torn down is exactly what
+    was shown and confirmed.
+    """
+
+    names: TeardownNameList
+
+
 class DoneArgs(ToolArgs):
     """Cycle terminator — pair the exit with a success flag and a summary.
 
