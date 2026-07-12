@@ -126,7 +126,15 @@ struct ChatMessage: Identifiable {
     let embedding: Data?
 
     var displayTime: String {
-        createdAt.formatted(date: .omitted, time: .shortened)
+        displayTimestamp(relativeTo: .now)
+    }
+
+    func displayTimestamp(relativeTo referenceDate: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDate(createdAt, inSameDayAs: referenceDate) {
+            return createdAt.formatted(date: .omitted, time: .shortened)
+        }
+
+        return createdAt.formatted(date: .abbreviated, time: .shortened)
     }
 
     init(
