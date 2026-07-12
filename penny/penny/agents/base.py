@@ -1147,8 +1147,12 @@ class Agent:
         """Build the full system prompt body — used by background agents.
 
         Envelope: identity + (profile + memory inventory) + task instructions.
-        ChatAgent overrides this to add ambient recall and a browser page
-        hint between profile and inventory.
+        ChatAgent overrides this entirely: it drops the speculative user-content
+        recall (the ambient inversion, #1555) and closes the prompt with a
+        deterministic self-state header (mechanisms · activity · store map ·
+        durable user facts) in the dynamic tail instead.  Background agents keep
+        this base envelope — they read memory explicitly per task and never open
+        on a chat entry point's self-state.
 
         Both chat and background include identity + profile because both
         types of agent can dispatch messages to the user; both include

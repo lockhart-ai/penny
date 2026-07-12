@@ -1402,53 +1402,6 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
     return _run
 
 
-# A recall-eval runner: (seed, check) over a single deterministic pass.
-RecallEval = Callable[..., Awaitable[None]]
-
-
-@pytest.fixture
-def recall_eval(make_config: Callable[..., Config], tmp_path) -> RecallEval:
-    """Drive the REAL two-stage recall path once and check routing per message.
-
-    Embeddings are deterministic, so this is a single pass (no sampling): build
-    one real-model Penny, seed the collections, backfill embeddings, then for
-    each message render ``ChatAgent._recall_section`` and run ``check`` against
-    the rendered block.  ``check(recall_block, message) -> list[str]`` failures
-    are aggregated and asserted to be empty.
-    """
-
-    async def _run(
-        *, case_id: str, seed: Seeder, messages, check, min_pass_rate: float | None = 0.75
-    ) -> None:
-        server = MockSignalServer()
-        await server.start()
-        try:
-            config = _real_model_config(
-                make_config,
-                signal_api_url=f"http://localhost:{server.port}",
-                db_path=str(tmp_path / f"{case_id}.db"),
-            )
-            async with run_penny_with_server(config, server) as penny:
-                seed_user(penny.db)
-                seed(penny.db)
-                await _embed_seeds(penny)
-                limit = int(penny.config.runtime.RECALL_LIMIT)
-                results: list[SampleResult] = []
-                for message in messages:
-                    recall_block = await penny.chat_agent._recall_section(
-                        current_message=message.text,
-                        conversation_history=list(message.history),
-                        limit=limit,
-                    )
-                    fails = check(recall_block or "", message)
-                    results.append(SampleResult.binary(fails))
-                _assert_threshold(case_id, results, min_pass_rate)
-        finally:
-            await server.stop()
-
-    return _run
-
-
 # A startup-eval runner: (case_id, commit_message, score) -> asserts threshold.
 StartupEval = Callable[..., Awaitable[None]]
 

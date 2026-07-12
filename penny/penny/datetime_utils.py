@@ -39,6 +39,29 @@ def format_log_timestamp(when: datetime) -> str:
     return when.strftime("%Y-%m-%d %H:%M UTC")
 
 
+_INTERVAL_UNITS: tuple[tuple[str, int], ...] = (
+    ("w", 604800),
+    ("d", 86400),
+    ("h", 3600),
+    ("m", 60),
+)
+
+
+def format_interval(seconds: int) -> str:
+    """Render a cadence in seconds as a compact human unit — ``300`` → ``"5m"``,
+    ``21600`` → ``"6h"``, ``604800`` → ``"1w"``.
+
+    Used by the self-state header (#1555) to show a collector's cadence at
+    rollup altitude.  Picks the largest whole unit the value divides into; a
+    value that isn't a whole number of minutes falls back to bare seconds
+    (``90`` → ``"90s"``).  These divisors are unit conversions, not invented
+    caps — no data is dropped."""
+    for unit, unit_seconds in _INTERVAL_UNITS:
+        if seconds >= unit_seconds and seconds % unit_seconds == 0:
+            return f"{seconds // unit_seconds}{unit}"
+    return f"{seconds}s"
+
+
 async def get_timezone(location: str) -> str | None:
     """
     Derive IANA timezone from natural language location.

@@ -101,6 +101,18 @@ def _detail_tail(detail: MutationDetail | None) -> str:
     return ""
 
 
+def mutation_change_summary(event: MutationEvent) -> str:
+    """The human tail of a mutation — its cause note or its changed-field list —
+    or ``""`` when the event carries neither (#1555).
+
+    Public sibling of ``render_mutation`` for callers (the self-state header's
+    interleaved activity block) that render their own left column — entity + a
+    typed event word — and only need the *what changed* tail, not the whole
+    ``<when> <action> by <actor>`` line ``render_mutation`` builds for a
+    per-entity change history."""
+    return _detail_tail(_parse_detail(event.detail))
+
+
 class MutationStore:
     """Read/write access to the ``mutation_event`` ledger."""
 
@@ -152,6 +164,26 @@ class MutationStore:
                     select(MutationEvent)
                     .where(MutationEvent.entity_name == entity_name)
                     .order_by(MutationEvent.created_at.desc())  # type: ignore[union-attr]
+                    .limit(limit)
+                ).all()
+            )
+
+    def recent(self, limit: int) -> list[MutationEvent]:
+        """The most recent mutations across ALL entities, newest first (#1555).
+
+        The cross-entity stream the self-state header interleaves with recent
+        runs into one time-ordered activity block — "what did you recently do?"
+        over configuration changes.  ``history`` scopes to one entity; this one
+        spans every entity.  Ordered by ``created_at`` (never id)."""
+        if limit <= 0:
+            return []
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MutationEvent)
+                    # ``id`` breaks same-timestamp ties deterministically (newest
+                    # id first = creation order) so the activity render is stable.
+                    .order_by(MutationEvent.created_at.desc(), MutationEvent.id.desc())  # type: ignore[union-attr]
                     .limit(limit)
                 ).all()
             )

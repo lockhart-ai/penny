@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, NamedTuple
 
+from pydantic import BaseModel
 from sqlalchemy import and_, bindparam, func, or_, text
 from sqlmodel import Session, select
 
@@ -65,6 +66,44 @@ class PromptPerf(NamedTuple):
         reasoning-token count."""
         total = self.thinking_chars + self.output_chars
         return self.thinking_chars / total if total else 0.0
+
+
+class RunActivity(BaseModel):
+    """One completed collector run at rollup altitude, for the self-state header's
+    recent-activity block (#1555).
+
+    ``run_id`` is the typed anchor the header names verbatim; ``target`` is the
+    collection it served (also the ``read_run_calls`` drill-down anchor);
+    ``outcome`` is the ``RunOutcome`` value; ``finished_at`` is the run's end
+    time (its outcome-bearing last prompt); ``call_count`` is the number of tool
+    calls the run made \u2014 the rollup summary in place of the per-call detail."""
+
+    run_id: str
+    target: str
+    outcome: str
+    finished_at: datetime
+    call_count: int
+
+
+class RunOutcomeStamp(BaseModel):
+    """A collector's most recent completed run \u2014 its ``RunOutcome`` value and
+    finish time.  The mechanism-inventory 'last run' line reads one of these per
+    mechanism (#1555)."""
+
+    outcome: str
+    finished_at: datetime
+
+
+def _count_run_tool_calls(prompts: list[PromptLog]) -> int:
+    """Total tool calls a run made, across its prompt rows \u2014 the rollup count the
+    self-state activity block shows in place of the per-call trace."""
+    total = 0
+    for prompt in prompts:
+        response = json.loads(prompt.response) if prompt.response else {}
+        for choice in response.get("choices", []):
+            message = choice.get("message") or {}
+            total += len(message.get("tool_calls") or [])
+    return total
 
 
 class MessageStore:
@@ -804,6 +843,81 @@ class MessageStore:
                 return []
             grouped = self._group_runs(session, run_ids)
         return [grouped[run_id] for run_id in run_ids if run_id in grouped]
+
+    def recent_collector_runs(self, limit: int) -> list[RunActivity]:
+        """The most recent completed collector runs across ALL collections, newest
+        first — the run half of the self-state header's activity block (#1555).
+
+        Chat turns are excluded by construction: a chat run stamps no
+        ``run_outcome`` and no ``run_target`` (the header renders the *complement*
+        of the conversation — background runs, not the turns already in context).
+        Cancelled runs (foreground-preempted, not a real cycle) are excluded, like
+        every other run index.  Each run's outcome lands on exactly one prompt row
+        (its last, via ``set_run_outcome``), so that row's timestamp is the finish
+        time and one row = one run.  A second bounded query groups those runs'
+        prompts to count their tool calls (the rollup summary)."""
+        if limit <= 0:
+            return []
+        with self._session() as session:
+            rows = session.exec(
+                select(
+                    PromptLog.run_id,
+                    PromptLog.run_target,
+                    PromptLog.run_outcome,
+                    PromptLog.timestamp,
+                )
+                .where(
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                )
+                # ``id`` breaks same-timestamp ties deterministically so the
+                # activity render is stable across runs.
+                .order_by(PromptLog.timestamp.desc(), PromptLog.id.desc())
+                .limit(limit)
+            ).all()
+            run_ids = [run_id for run_id, _, _, _ in rows if run_id is not None]
+            grouped = self._group_runs(session, run_ids) if run_ids else {}
+        return [
+            RunActivity(
+                run_id=run_id,
+                target=target,
+                outcome=outcome,
+                finished_at=finished,
+                call_count=_count_run_tool_calls(grouped.get(run_id, [])),
+            )
+            for run_id, target, outcome, finished in rows
+            if run_id is not None and target is not None and outcome is not None
+        ]
+
+    def latest_run_outcomes(self) -> dict[str, RunOutcomeStamp]:
+        """Each collector's most recent completed run outcome + finish time, keyed
+        by ``run_target`` — one grouped query (#1555).
+
+        The self-state mechanism inventory reads one of these per mechanism for
+        its 'last run' line.  ``run_outcome`` is the value from the row carrying
+        the max timestamp per target (SQLite resolves a bare column alongside
+        ``MAX()`` to that row).  Cancelled runs are excluded so 'last run' reports
+        the last real cycle, not a preemption."""
+        with self._session() as session:
+            rows = session.exec(
+                select(
+                    PromptLog.run_target,
+                    PromptLog.run_outcome,
+                    func.max(PromptLog.timestamp),
+                )
+                .where(
+                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    PromptLog.run_outcome != RunOutcome.CANCELLED.value,
+                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                )
+                .group_by(PromptLog.run_target)
+            ).all()
+        return {
+            target: RunOutcomeStamp(outcome=outcome, finished_at=finished)
+            for target, outcome, finished in rows
+            if target is not None and outcome is not None
+        }
 
     @staticmethod
     def _group_runs(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:

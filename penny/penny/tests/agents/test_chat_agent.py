@@ -11,15 +11,14 @@ Test organization:
 
 import base64
 import re
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
-from penny.database.models import Media, MemoryEntry, MessageLog
+from penny.database.models import Media, MessageLog
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
@@ -147,134 +146,7 @@ async def test_basic_message_flow(
         assert lines[0].startswith("Current date and time: ")
         rest = "\n".join(lines[1:])
         rest = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", rest)
-        expected = """\
-
-## Identity
-You are Penny. You and the user are friends who text regularly. \
-This is mid-conversation — not a fresh chat.
-
-Voice:
-- Reply like you're continuing a text thread.
-- React to what the user actually said before giving information. \
-If they corrected you, own it. If they expressed excitement, match it. \
-If they asked a follow-up, connect it to what came before.
-- Present information naturally but you can still use short formatted blocks \
-(bold names, links) when listing products or facts. \
-Just wrap them in conversational text, not a clinical dump.
-- Finish every message with an emoji.
-
-## Context
-### User Profile
-The user's name is Test User.
-
-### Memory Inventory
-- browse-results (log, 0 entries) — Every browse-tool fetch result
-- collector-runs (log, 0 entries) — One entry per Collector cycle: \
-target + success marker + done() summary
-- dislikes (collection, 0 entries) — Topics the user has expressed negative sentiment about
-- knowledge (collection, 0 entries) — Summarized facts from web pages Penny has read
-- likes (collection, 0 entries) — Topics the user has expressed positive sentiment about
-- notifier (collection, 0 entries) — Delivers new finds from published collections to the user.
-- penny-messages (log, 0 entries) — Every outgoing Penny reply
-- playlists (collection, 1 entries) — favorite playlists
-- quality (collection, 0 entries) — Reviews Penny's own runs and messages and \
-corrects collection prompts that have drifted from their stated intent
-- secrets (collection, 1 entries) — hidden
-- skills (collection, 13 entries) — Workflow patterns — how to compose tools to satisfy user intents
-- thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the user's interests.
-- tips (log, 1 entries) — useful tips
-- user-messages (log, 0 entries) — Every incoming user message
-
-### playlists
-favorite playlists
-
-#### key='morning' · YYYY-MM-DD HH:MM UTC
-prog rock
-
-### tips
-useful tips
-
-#### YYYY-MM-DD HH:MM UTC
-tune before playing
-
-## Instructions
-The user is talking to you — no greetings, no sign-offs, just pick up \
-the thread.
-
-Don't chase down topics the user only mentioned in passing. When they're \
-just sharing news, reacting to their day, or thinking out loud, reply like \
-a friend and don't run a browse or lookup they didn't ask for. Two things \
-are still yours to act on: when they tell you about themselves — what they \
-like, dislike, or are into — remember it; and when they directly ask you \
-to look something up, save, recall, change, or check something, do it.
-
-Every tool call has a `reasoning` field — use it to think out loud. \
-Explain what you're looking for, what you already know, \
-and what you'll do with the result.
-
-Search memory first. The recall block above shows the most relevant \
-entries verbatim, and your memory tools (`collection_read_latest(<collection>)`, \
-`read_similar(<query>)`, `log_read(<log>)`, etc.) cover everything else stored. \
-Only browse if memory \
-doesn't have what the user needs, or for current/external info \
-(news, products, prices, fresh facts).
-
-Workflow patterns live in your `skills` collection — relevant skills \
-surface automatically in the recall block above when the user's \
-message matches a skill's TRIGGER section. When a skill is \
-surfaced, follow its STEPS — they describe how to compose your \
-tools to satisfy that intent. When no skill matches, compose tools \
-directly. If the user teaches you a new pattern ("from now on \
-when I say X, do Y"), write it as a new entry in the `skills` \
-collection so you remember next time.
-
-When a 'Current Browser Page' section appears above, the user is browsing \
-that page right now. If they say 'this page', 'this thread', 'this article', \
-or anything ambiguous, they mean the Current Browser Page — not something \
-from earlier in the conversation.
-
-How to use the browse tool:
-1. If the user gave you URLs, read them directly — pass the URLs in the \
-queries array. Do NOT search for a site the user already linked.
-2. If the user gave you a topic (no URLs), call browse to discover \
-relevant pages.
-3. Read the most promising pages by passing their URLs in the queries \
-array (e.g., queries: ["https://example.com/page"]). \
-Real pages have full details that search snippets leave out.
-
-After reading pages, you MUST respond with what you found. Do not make \
-additional tool calls to re-fetch or supplement pages you already read. \
-If a page had limited content, report what was there.
-
-Do NOT answer from search snippets alone — read actual pages first.
-
-Every fact, name, and detail in your response must come from pages you \
-read or your recall context — not from search snippet summaries.
-
-Search results contain a 'Sources:' section at the bottom with real URLs. \
-When you reference something from a search, use ONLY these source URLs. \
-Copy them exactly — character for character. If a topic has no matching \
-source URL, mention it without a URL.
-
-When the user changes topics, just go with it.
-
-Open your reply with the story of what you just did:
-1. Each tool result you got this turn opens with a first-person line \
-naming what that call actually did — e.g. "You searched for X and \
-found…", "You saved X to `likes`", "You didn't add anything new — it \
-was already there", "You couldn't find X to remove". Lead your reply \
-with a brief, natural recap that reflects EACH of those lines, in order \
-— every call this turn, whether it succeeded, changed nothing, or failed \
-— woven into a sentence, NOT a bulleted log.
-2. Mirror the OUTCOME each tool reported, never what you set out to do: \
-if a save was already there, say it was already there; if a lookup came \
-back empty, say so; if a call failed, say so. NEVER imply something \
-changed when the tool said it didn't.
-3. Then give the answer.
-On a plain reply with no tool calls, skip the recap and just respond.
-
-Always include specific details (specs, dates, prices) and at least one \
-source URL so the user can follow up."""
+        expected = _BASIC_FLOW_EXPECTED
         assert rest == expected, f"System prompt mismatch:\n{rest!r}\n\nvs expected:\n{expected!r}"
 
         # Verify typing indicators were sent
@@ -321,104 +193,7 @@ source URL so the user can follow up."""
         assert len(conversation_echoes) == 0, "Conversation echo thoughts should not be logged"
 
 
-# ── 1b. Ambient-recall integration cases ─────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_chat_prompt_renders_relevant_mode_via_embedding(
-    signal_server, mock_llm, make_config, test_user_info, running_penny
-):
-    """A collection with recall=relevant surfaces its matching entry in the chat prompt.
-
-    The entry's content_embedding and the current-message embedding are both
-    the same unit vector (cosine=1), so the entry ranks first against the
-    0.0 floor.  A second orthogonal entry stays below nothing — with floor=0.0
-    it's included too, but only the matching one is asserted.
-    """
-    config = make_config()
-    # Dimension-consistent with the seeded corpus (embeddings are a required
-    # prerequisite, so the startup backfill vectorizes seeded memories).
-    match_vec = deterministic_embed("espresso")
-
-    async with running_penny(config) as penny:
-        # The seeded skills collection is inclusion=always; neutralize its recall
-        # so this test asserts only its own trivia entry (it stays in inventory).
-        penny.db.memories.update_collection_metadata("skills", inclusion=Inclusion.NEVER)
-        penny.db.memories.create_collection(
-            "trivia", "facts", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        penny.db.memory("trivia").write(
-            [
-                EntryInput(
-                    key="espresso",
-                    content="espresso uses 9 bars of pressure",
-                    content_embedding=match_vec,
-                )
-            ],
-            author="user",
-        )
-
-        mock_client = AsyncMock()
-        mock_client.embed = AsyncMock(side_effect=lambda texts: [match_vec] * len(texts))
-        penny.chat_agent._embedding_model_client = mock_client
-        penny.chat_agent._pending_page_context = None
-
-        history_texts = [text for _, text in penny.chat_agent._build_conversation(TEST_SENDER)]
-        recall = await penny.chat_agent._recall_section(
-            current_message="tell me about espresso",
-            conversation_history=history_texts,
-            limit=int(penny.chat_agent.config.runtime.RECALL_LIMIT),
-        )
-
-    # Verbatim: the recall block the system prompt embeds carries just trivia's
-    # matching entry (per-entry timestamp normalised to a placeholder).
-    recall = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", "YYYY-MM-DD HH:MM", recall or "")
-    assert (
-        recall
-        == """\
-### trivia
-facts
-
-#### key='espresso' · YYYY-MM-DD HH:MM UTC
-espresso uses 9 bars of pressure"""
-    ), f"Recall block mismatch:\n{recall!r}"
-
-
-@pytest.mark.asyncio
-async def test_stage1_admits_only_top_relevant_collection(
-    signal_server, mock_llm, make_config, test_user_info, running_penny
-):
-    """Stage-1 competitive routing (`RECALL_TOP_K`, default 1): among relevant
-    collections that BOTH clear the threshold, only the single top one by
-    current-message cosine is admitted — the adjacent runner-up is dropped, not
-    appended (the old behaviour admitted every collection over the floor).
-    """
-    async with running_penny(make_config()) as penny:
-        agent = penny.chat_agent
-        # Two relevant collections with known description anchors.  espresso is the
-        # closest to the current-message anchor (cosine 1.0); tea is a plausible
-        # runner-up that STILL clears the 0.40 floor (cosine ≈ 0.71 — one shared
-        # word out of two), so only top-1 can drop it.  All vectors come from the
-        # shared deterministic embedder so they match the seeded corpus dimension.
-        anchor = deterministic_embed("espresso")
-        penny.db.memories.create_collection(
-            "espresso-facts",
-            "espresso brewing",
-            Inclusion.RELEVANT,
-            RecallMode.RELEVANT,
-            description_embedding=deterministic_embed("espresso"),
-        )
-        penny.db.memories.create_collection(
-            "tea-facts",
-            "tea steeping",
-            Inclusion.RELEVANT,
-            RecallMode.RELEVANT,
-            description_embedding=deterministic_embed("espresso tea"),
-        )
-        included = {m.name for m in agent._included_memories(anchor)}
-
-    assert "espresso-facts" in included
-    assert "tea-facts" not in included, "runner-up above the floor should be dropped by top-1"
+# ── 1b. Provenance stamping ─────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -774,401 +549,6 @@ async def test_inventory_excludes_archived(signal_server, mock_llm, test_config,
         assert "retired-test" not in result
 
 
-# ── 5. Ambient recall ─────────────────────────────────────────────────────
-
-
-def _hash_embed_vec(text: str) -> list[float]:
-    """Deterministic embedding for similarity tests.
-
-    Shares the mock's ``deterministic_embed`` so test-written entries, test
-    anchors, and the startup backfill of seeded memories all use one embedder
-    at one dimension — a mixed-dimension corpus would crash cosine similarity.
-    """
-    return deterministic_embed(text)
-
-
-def _install_hash_embedding(agent) -> None:
-    """Replace the agent's embedding client with a deterministic hash embedder."""
-    mock_client = AsyncMock()
-    mock_client.embed = AsyncMock(side_effect=lambda texts: [_hash_embed_vec(t) for t in texts])
-    agent._embedding_model_client = mock_client
-
-
-def _write_embedded(db, name: str, key: str | None, content: str) -> None:
-    """Write an entry with a deterministic content embedding."""
-    vec = _hash_embed_vec(content)
-    if key is None:
-        db.memory(name).append(
-            [LogEntryInput(content=content, content_embedding=vec)], author="test"
-        )
-    else:
-        db.memory(name).write(
-            [EntryInput(key=key, content=content, content_embedding=vec)], author="test"
-        )
-
-
-def _backfill_created_at(db, name: str, content: str, when: datetime) -> None:
-    """Override an entry's created_at timestamp for temporal-window tests."""
-    with Session(db.engine) as session:
-        rows = session.exec(
-            select(MemoryEntry).where(
-                MemoryEntry.memory_name == name, MemoryEntry.content == content
-            )
-        ).all()
-        for row in rows:
-            row.created_at = when
-            session.add(row)
-        session.commit()
-
-
-@pytest.mark.asyncio
-async def test_recall_recent_mode_renders_latest_entries(
-    signal_server, mock_llm, test_config, running_penny
-):
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_log(
-            "conversation-test", "shared chat log", Inclusion.ALWAYS, RecallMode.RECENT
-        )
-        penny.db.memory("conversation-test").append(
-            [LogEntryInput(content="first message")], author="test"
-        )
-        penny.db.memory("conversation-test").append(
-            [LogEntryInput(content="second message")], author="test"
-        )
-
-        result = await penny.chat_agent._recall_section(current_message="anything")
-
-        assert result is not None
-        assert "first message" in result
-        assert "second message" in result
-
-
-@pytest.mark.asyncio
-async def test_recall_all_mode_renders_all_entries(
-    signal_server, mock_llm, test_config, running_penny
-):
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "playlists-test", "saved playlists", Inclusion.ALWAYS, RecallMode.ALL
-        )
-        penny.db.memory("playlists-test").write(
-            [EntryInput(key="morning", content="prog rock")],
-            author="test",
-        )
-        penny.db.memory("playlists-test").write(
-            [EntryInput(key="evening", content="lo-fi")],
-            author="test",
-        )
-
-        result = await penny.chat_agent._recall_section(current_message=None)
-
-        assert result is not None
-        assert "key='morning'" in result and "prog rock" in result
-        assert "key='evening'" in result and "lo-fi" in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_uses_embedding(
-    signal_server, mock_llm, test_config, running_penny
-):
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "prefs-test", "user prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "coffee", "really loves dark roast coffee in the morning"
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "noise", "really hates loud construction at sunrise"
-        )
-        _install_hash_embedding(penny.chat_agent)
-
-        # Stage 2 ranks by hybrid cosine+lexical and takes the top-N (no floor);
-        # with limit=1 only the best-matching entry survives, so the unrelated
-        # entry is excluded by rank, not by an absolute relevance floor.
-        result = await penny.chat_agent._recall_section(
-            current_message="dark roast coffee", limit=1
-        )
-
-        assert result is not None
-        assert "really loves dark roast coffee in the morning" in result
-        assert "really hates loud construction at sunrise" not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_hybrid_lifts_via_history(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """A vague current message ('yeah') alone wouldn't surface the entry —
-    the prior turn shares the entry's keywords, so weighted-decay scoring
-    pulls the entry above the absolute floor."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "prefs-test", "user prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "coffee", "really loves dark roast coffee in the morning"
-        )
-        _install_hash_embedding(penny.chat_agent)
-
-        result = await penny.chat_agent._recall_section(
-            current_message="yeah",
-            conversation_history=["dark roast coffee in the morning"],
-        )
-
-        assert result is not None
-        assert "really loves dark roast coffee in the morning" in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_log_expands_with_temporal_neighbors(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """A single keyword match in a log pulls in neighboring entries via the
-    temporal expansion window (±MEMORY_RELEVANT_NEIGHBOR_WINDOW_MINUTES)."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_log(
-            "conversation-test", "shared chat log", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        _write_embedded(
-            penny.db, "conversation-test", None, "dark roast coffee notes from this week"
-        )
-        _write_embedded(
-            penny.db, "conversation-test", None, "follow up question number one in conversation"
-        )
-        _write_embedded(
-            penny.db, "conversation-test", None, "follow up question number two in conversation"
-        )
-        _write_embedded(
-            penny.db, "conversation-test", None, "stale earlier comment from last month"
-        )
-
-        base = datetime.now(UTC)
-        _backfill_created_at(
-            penny.db,
-            "conversation-test",
-            "stale earlier comment from last month",
-            base - timedelta(hours=1),
-        )
-        _backfill_created_at(
-            penny.db,
-            "conversation-test",
-            "dark roast coffee notes from this week",
-            base - timedelta(minutes=2),
-        )
-        _backfill_created_at(
-            penny.db,
-            "conversation-test",
-            "follow up question number one in conversation",
-            base - timedelta(minutes=1),
-        )
-        _backfill_created_at(
-            penny.db, "conversation-test", "follow up question number two in conversation", base
-        )
-        _install_hash_embedding(penny.chat_agent)
-
-        # limit=1 isolates the single keyword hit; temporal expansion then pulls
-        # in its ±5min neighbours (the two follow-ups), while the hour-old stale
-        # entry stays outside the window.
-        result = await penny.chat_agent._recall_section(
-            current_message="dark roast coffee", limit=1
-        )
-
-        assert result is not None
-        assert "dark roast coffee notes from this week" in result
-        assert "follow up question number one in conversation" in result
-        assert "follow up question number two in conversation" in result
-        assert "stale earlier comment from last month" not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_log_caps_neighbor_expansion(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """Temporal expansion is bounded: each hit keeps at most
-    ``MEMORY_NEIGHBOR_PER_HIT`` entries (the hit plus its nearest-in-time
-    neighbours), so a dense burst around a hit can't drag every entry into the
-    prompt.  Here six entries sit inside the ±window; only the hit and its two
-    closest neighbours survive — the three farther ones are dropped."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_log(
-            "conversation-test", "shared chat log", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        hit = "dark roast coffee notes from this week"
-        # Five unrelated neighbours, all inside the ±5min window but at varying distance.
-        neighbours = {
-            "neighbour plus one minute away": 1,
-            "neighbour minus one minute away": -1,
-            "neighbour plus two minutes away": 2,
-            "neighbour minus two minutes away": -2,
-            "neighbour plus three minutes away": 3,
-        }
-        for content in (hit, *neighbours):
-            _write_embedded(penny.db, "conversation-test", None, content)
-
-        base = datetime.now(UTC)
-        _backfill_created_at(penny.db, "conversation-test", hit, base)
-        for content, offset in neighbours.items():
-            _backfill_created_at(
-                penny.db, "conversation-test", content, base + timedelta(minutes=offset)
-            )
-        _install_hash_embedding(penny.chat_agent)
-
-        # limit=1 isolates the single keyword hit; per-hit cap (3) then keeps the
-        # hit + its two nearest neighbours (±1 min), dropping the ±2 / +3 ones.
-        result = await penny.chat_agent._recall_section(
-            current_message="dark roast coffee", limit=1
-        )
-
-        assert result is not None
-        assert hit in result
-        assert "neighbour plus one minute away" in result
-        assert "neighbour minus one minute away" in result
-        assert "neighbour plus two minutes away" not in result
-        assert "neighbour minus two minutes away" not in result
-        assert "neighbour plus three minutes away" not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_log_excludes_self_match(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """The current turn (and conversation-history turns) live in log corpora
-    before recall runs.  Without filtering, those entries self-match their
-    own anchor at cosine ≈ 1.0 and dominate the hit list.  ``anchor_contents``
-    excludes them so historical content surfaces."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_log(
-            "user-messages-test", "incoming", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-
-        # Historical entry (30 days old) — contains the topic.
-        _write_embedded(
-            penny.db,
-            "user-messages-test",
-            None,
-            "what video games should i try",
-        )
-        historical = datetime.now(UTC) - timedelta(days=30)
-        _backfill_created_at(
-            penny.db,
-            "user-messages-test",
-            "what video games should i try",
-            historical,
-        )
-
-        # Current turn — same content as the anchor.
-        current_text = "do you remember any conversations about video games"
-        _write_embedded(penny.db, "user-messages-test", None, current_text)
-        _install_hash_embedding(penny.chat_agent)
-
-        result = await penny.chat_agent._recall_section(current_message=current_text)
-
-        assert result is not None
-        # Historical hit surfaces (not drowned out by the self-match)
-        assert "what video games should i try" in result
-        # Current-turn entry must NOT appear via the relevant path — it's the anchor.
-        assert current_text not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_mode_collection_skips_temporal_expansion(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """Collections don't have a temporal-stream meaning, so similarity hits
-    are returned without neighbor expansion even if entries are nearby in time."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "prefs-test", "user prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "coffee", "really loves dark roast coffee in the morning"
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "noise", "really hates loud construction at sunrise"
-        )
-        _install_hash_embedding(penny.chat_agent)
-
-        # Both entries sit within a 5min temporal window; a log would pull the
-        # unrelated one in as a neighbour, but a collection never expands, so
-        # limit=1 yields only the ranked hit.
-        result = await penny.chat_agent._recall_section(
-            current_message="dark roast coffee", limit=1
-        )
-
-        assert result is not None
-        assert "really loves dark roast coffee in the morning" in result
-        assert "really hates loud construction at sunrise" not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_relevant_collection_gated_by_stage1_anchor(
-    signal_server, mock_llm, test_config, running_penny
-):
-    """Stage-1 routing: a relevant-inclusion collection participates only when
-    the conversation matches its description anchor.  An off-topic message
-    scores below the threshold, so the collection (and every entry in it) drops
-    out entirely — the routing gate that replaced the per-entry relevance
-    floor.  An on-topic message clears the gate and the entry surfaces."""
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "prefs-test",
-            "dark roast coffee preferences",
-            Inclusion.RELEVANT,
-            RecallMode.RELEVANT,
-            description_embedding=_hash_embed_vec("dark roast coffee preferences"),
-        )
-        _write_embedded(
-            penny.db, "prefs-test", "coffee", "really loves dark roast coffee in the morning"
-        )
-        _install_hash_embedding(penny.chat_agent)
-
-        # Off-topic: shares no words with the anchor → cosine 0 < threshold →
-        # routed out before any entry is considered.
-        off_topic = await penny.chat_agent._recall_section(
-            current_message="construction noise outside"
-        )
-        assert off_topic is None or "really loves dark roast coffee in the morning" not in off_topic
-
-        # On-topic: clears the anchor gate → the collection's entry surfaces.
-        on_topic = await penny.chat_agent._recall_section(current_message="dark roast coffee")
-        assert on_topic is not None
-        assert "really loves dark roast coffee in the morning" in on_topic
-
-
-@pytest.mark.asyncio
-async def test_recall_off_mode_skipped(signal_server, mock_llm, test_config, running_penny):
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "hidden-test", "not shown", Inclusion.NEVER, RecallMode.RECENT
-        )
-        penny.db.memory("hidden-test").write(
-            [EntryInput(key="k", content="classified content")],
-            author="test",
-        )
-
-        result = await penny.chat_agent._recall_section(current_message=None)
-
-        assert result is None or "classified content" not in result
-
-
-@pytest.mark.asyncio
-async def test_recall_archived_memory_skipped(signal_server, mock_llm, test_config, running_penny):
-    async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "old-test", "archived", Inclusion.ALWAYS, RecallMode.RECENT
-        )
-        penny.db.memory("old-test").write(
-            [EntryInput(key="k", content="stale content")],
-            author="test",
-        )
-        penny.db.memories.archive("old-test")
-
-        result = await penny.chat_agent._recall_section(current_message=None)
-
-        assert result is None or "stale content" not in result
-
-
 # ── 6. Tool surface ──────────────────────────────────────────────────────
 
 
@@ -1443,3 +823,144 @@ async def test_startup_backfill_fills_missing_key_vector(
         assert healed.content_embedding is not None
         # No entry is left with an unfilled vector after the backfill.
         assert penny.db.memories.get_entries_without_embeddings(limit=100) == []
+
+
+_BASIC_FLOW_EXPECTED = (
+    "\n"
+    "## Identity\n"
+    "You are Penny. You and the user are friends who text regularly. This is "
+    "mid-conversation — not a fresh chat.\n"
+    "\n"
+    "Voice:\n"
+    "- Reply like you're continuing a text thread.\n"
+    "- React to what the user actually said before giving information. If they corrected "
+    "you, own it. If they expressed excitement, match it. If they asked a follow-up, "
+    "connect it to what came before.\n"
+    "- Present information naturally but you can still use short formatted blocks (bold "
+    "names, links) when listing products or facts. Just wrap them in conversational text, "
+    "not a clinical dump.\n"
+    "- Finish every message with an emoji.\n"
+    "\n"
+    "## Instructions\n"
+    "The user is talking to you — no greetings, no sign-offs, just pick up the thread.\n"
+    "\n"
+    "Don't chase down topics the user only mentioned in passing. When they're just "
+    "sharing news, reacting to their day, or thinking out loud, reply like a friend and "
+    "don't run a browse or lookup they didn't ask for. Two things are still yours to act "
+    "on: when they tell you about themselves — what they like, dislike, or are into — "
+    "remember it; and when they directly ask you to look something up, save, recall, "
+    "change, or check something, do it.\n"
+    "\n"
+    "Every tool call has a `reasoning` field — use it to think out loud. Explain what "
+    "you're looking for, what you already know, and what you'll do with the result.\n"
+    "\n"
+    "Search memory before browsing. Your memory tools "
+    "(`collection_read_latest(<collection>)`, `read_similar(query=<query>)`, "
+    "`log_read(<log>)`, etc.) read everything stored — the 'Your memory' list in the "
+    "'Penny's current state' section below names every store you can pull from, and the "
+    "mechanisms + recent activity there are your own operational state (what you're "
+    "running, what you just did). Only browse if memory doesn't have what the user needs, "
+    "or for current/external info (news, products, prices, fresh facts).\n"
+    "\n"
+    "Compose your tools directly to satisfy what the user asks. If the user teaches you a "
+    'new pattern ("from now on when I say X, do Y"), write it as a new entry in your '
+    "`skills` collection so it's saved for next time.\n"
+    "\n"
+    "When a 'Current Browser Page' section appears above, the user is browsing that page "
+    "right now. If they say 'this page', 'this thread', 'this article', or anything "
+    "ambiguous, they mean the Current Browser Page — not something from earlier in the "
+    "conversation.\n"
+    "\n"
+    "How to use the browse tool:\n"
+    "1. If the user gave you URLs, read them directly — pass the URLs in the queries "
+    "array. Do NOT search for a site the user already linked.\n"
+    "2. If the user gave you a topic (no URLs), call browse to discover relevant pages.\n"
+    "3. Read the most promising pages by passing their URLs in the queries array (e.g., "
+    'queries: ["https://example.com/page"]). Real pages have full details that search '
+    "snippets leave out.\n"
+    "\n"
+    "After reading pages, you MUST respond with what you found. Do not make additional "
+    "tool calls to re-fetch or supplement pages you already read. If a page had limited "
+    "content, report what was there.\n"
+    "\n"
+    "Do NOT answer from search snippets alone — read actual pages first.\n"
+    "\n"
+    "Every fact, name, and detail in your response must come from pages you read or your "
+    "memory — not from search snippet summaries.\n"
+    "\n"
+    "Search results contain a 'Sources:' section at the bottom with real URLs. When you "
+    "reference something from a search, use ONLY these source URLs. Copy them exactly — "
+    "character for character. If a topic has no matching source URL, mention it without a "
+    "URL.\n"
+    "\n"
+    "When the user changes topics, just go with it.\n"
+    "\n"
+    "Open your reply with the story of what you just did:\n"
+    "1. Each tool result you got this turn opens with a first-person line naming what "
+    'that call actually did — e.g. "You searched for X and found…", "You saved X to '
+    '`likes`", "You didn\'t add anything new — it was already there", "You couldn\'t find X '
+    'to remove". Lead your reply with a brief, natural recap that reflects EACH of those '
+    "lines, in order — every call this turn, whether it succeeded, changed nothing, or "
+    "failed — woven into a sentence, NOT a bulleted log.\n"
+    "2. Mirror the OUTCOME each tool reported, never what you set out to do: if a save "
+    "was already there, say it was already there; if a lookup came back empty, say so; if "
+    "a call failed, say so. NEVER imply something changed when the tool said it didn't.\n"
+    "3. Then give the answer.\n"
+    "On a plain reply with no tool calls, skip the recap and just respond.\n"
+    "\n"
+    "Always include specific details (specs, dates, prices) and at least one source URL "
+    "so the user can follow up.\n"
+    "\n"
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "- dislikes — active · every 5m · no runs yet\n"
+    "- knowledge — active · every 5m · no runs yet\n"
+    "- likes — active · every 5m · no runs yet\n"
+    "- notified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
+    "- notifier — active · every 10m · no runs yet\n"
+    "- quality — active · every 1h · no runs yet\n"
+    "- skills — active · every 6h · no runs yet\n"
+    "- thoughts — active · every 90m · no runs yet\n"
+    "- unnotified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
+    "\n"
+    "### Recent activity\n"
+    "change · YYYY-MM-DD HH:MM UTC · skills updated by user-run — changed inclusion\n"
+    "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"
+    "change · YYYY-MM-DD HH:MM UTC · playlists created by user-run\n"
+    "\n"
+    "### Your memory\n"
+    "- browse-results (log, 0 entries) — Every browse-tool fetch result\n"
+    "- collector-runs (log, 0 entries) — One entry per Collector cycle: target + success "
+    "marker + done() summary\n"
+    "- dislikes (collection, 0 entries) — Topics the user has expressed negative "
+    "sentiment about\n"
+    "- knowledge (collection, 0 entries) — Summarized facts from web pages Penny has read\n"
+    "- likes (collection, 0 entries) — Topics the user has expressed positive sentiment "
+    "about\n"
+    "- notifier (collection, 0 entries) — Delivers new finds from published collections "
+    "to the user.\n"
+    "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
+    "- playlists (collection, 1 entries) — favorite playlists\n"
+    "- quality (collection, 0 entries) — Reviews Penny's own runs and messages and "
+    "corrects collection prompts that have drifted from their stated intent\n"
+    "- secrets (collection, 1 entries) — hidden\n"
+    "- skills (collection, 13 entries) — Workflow patterns — how to compose tools to "
+    "satisfy user intents\n"
+    "- thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the "
+    "user's interests.\n"
+    "- tips (log, 1 entries) — useful tips\n"
+    "- user-messages (log, 0 entries) — Every incoming user message\n"
+    "\n"
+    "### About the user\n"
+    "- name: Test User\n"
+    "- timezone: America/Los_Angeles\n"
+    "- location: Seattle, WA\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)

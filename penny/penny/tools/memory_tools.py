@@ -464,9 +464,9 @@ class CollectionCreateTool(MemoryTool):
         "\n"
         "For workflow guidance — when to call this vs "
         "`collection_update(name=<collection>)` or just "
-        '`browse(queries=["<topic>"])`, how to shape the extraction_prompt for '
-        "common intents (research+notify, digest, silent research, etc.) — see "
-        "the skills surfaced in your recall context.\n"
+        '`browse(queries=["<topic>"])`, and how to shape the extraction_prompt for '
+        "common intents (research+notify, digest, silent research, etc.) — read "
+        "the recipes in your `skills` collection.\n"
         "\n"
         "IMPORTANT: the `extraction_prompt` MUST be a numbered list of "
         "tool-call steps (1., 2., 3.), never flowing prose — a prose prompt "
@@ -1277,7 +1277,7 @@ class CollectionUpdateTool(MemoryTool):
         "For workflow guidance — which field maps to which user intent "
         "(scope change vs cadence change vs silent flip), when to call "
         "`memory_metadata(<collection>)` first, when to propose before "
-        "applying — see the skills surfaced in your recall context.\n"
+        "applying — read the recipes in your `skills` collection.\n"
         "\n"
         "IMPORTANT: `extraction_prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
