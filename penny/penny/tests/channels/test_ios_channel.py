@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,7 +12,12 @@ import pytest
 
 from penny.agents.base import AgentProgressEvent
 from penny.channels.ios.apns import ApnsClient, ApnsConfig, ApnsEnvironment, ApnsError
-from penny.channels.ios.channel import PUSH_GREETING_TITLE, TEST_PUSH_MESSAGE, IosChannel
+from penny.channels.ios.channel import (
+    PUSH_GREETING_TITLE,
+    TEST_PUSH_MESSAGE,
+    IosChannel,
+    IosConnectionInfo,
+)
 from penny.channels.ios.models import (
     IOS_MSG_TYPE_ACK,
     IOS_MSG_TYPE_EMBEDDING_REQUEST,
@@ -169,8 +173,12 @@ async def test_agent_progress_is_redacted_and_connection_scoped(tmp_path):
     channel = _make_channel(db)
     foreground = FakeWs()
     other = FakeWs()
-    channel._connections["device-a"] = SimpleNamespace(ws=foreground)
-    channel._connections["device-b"] = SimpleNamespace(ws=other)
+    channel._connections["device-a"] = IosConnectionInfo(
+        ws=cast(Any, foreground), device_id=1, identifier="device-a"
+    )
+    channel._connections["device-b"] = IosConnectionInfo(
+        ws=cast(Any, other), device_id=2, identifier="device-b"
+    )
 
     event = AgentProgressEvent(
         event="tools_started",
