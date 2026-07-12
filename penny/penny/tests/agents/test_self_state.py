@@ -8,8 +8,10 @@ incidental mutations) so every literal is byte-stable.
 
 Cases: a kitchen-sink folding every shape (healthy + failed run, user-run +
 system-actor mutation, a mechanism nearing expiry, a one-shot, an archived
-tombstone), then the sub-cases (empty deployment, activity overflow, archived
--heavy), then the full chat system-prompt composition around the header.
+tombstone), the sub-cases (empty deployment, activity overflow, archived-heavy),
+the activity-block shape matrix (every run-outcome line shape, the by-design
+exclusions, the full mutation action × actor × detail cross-product), then the
+full chat system-prompt composition around the header.
 """
 
 from __future__ import annotations
@@ -118,6 +120,22 @@ def _add_run(
             run_reason=reason,
             run_target=target,
             timestamp=finished_at,
+        )
+    )
+
+
+def _add_chat_run(session: Session, *, run_id: str, when: datetime) -> None:
+    """A conversational chat-agent run: stamps NO ``run_outcome`` and NO
+    ``run_target`` — the structural shape the activity block excludes (chat turns
+    are already the conversation; the block renders its complement)."""
+    session.add(
+        PromptLog(
+            model="test-model",
+            messages="[]",
+            response=json.dumps({"choices": []}),
+            agent_name="chat",
+            run_id=run_id,
+            timestamp=when,
         )
     )
 
@@ -335,6 +353,181 @@ def test_self_state_archived_heavy_render(tmp_path):
     assert actual == _ARCHIVED_HEAVY
 
 
+# ── 4b. Activity-block shape matrix ───────────────────────────────────────
+#
+# The activity block is a render with an enumerable input space, so every line
+# shape renderable from today's substrate is pinned as a whole-render literal:
+# run lines across every RunOutcome value (plus the zero-call and singular-call
+# forms), the exclusions (cancelled runs; chat runs, per the complement-of-
+# context rule), and the full mutation cross-product — action (created /
+# updated / archived / unarchived) × actor (user-run WITH its run id / system
+# WITHOUT) × detail (changed-fields list / cause note / no detail), grouped one
+# test per detail variant with all eight action×actor cells in each literal.
+#
+# These literals are the template two later tickets grow: #1568 extends the
+# SAME renders with emission/send lines, and #1562's STOP enums replace the
+# RunOutcome vocabulary in the run lines when they land.
+
+
+def test_activity_run_lines_every_rendered_outcome(tmp_path):
+    """One run line per rendering RunOutcome — WORKED / FAILED / NO_WORK /
+    INCOMPLETE — plus the zero-call form and the singular '1 call' form.
+    (CANCELLED is excluded by design; pinned in the exclusion test below.)"""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_run(
+            session,
+            run_id="aa11worked",
+            target="alpha-watch",
+            outcome="worked",
+            calls=3,
+            finished_at=_t(9, 57),
+        )
+        _add_run(
+            session,
+            run_id="bb22failed",
+            target="beta-watch",
+            outcome="failed",
+            calls=2,
+            finished_at=_t(9, 56),
+        )
+        _add_run(
+            session,
+            run_id="cc33nowork",
+            target="gamma-watch",
+            outcome="no_work",
+            calls=1,
+            finished_at=_t(9, 55),
+        )
+        _add_run(
+            session,
+            run_id="dd44incomp",
+            target="delta-watch",
+            outcome="incomplete",
+            calls=4,
+            finished_at=_t(9, 54),
+        )
+        # A failed run that made NO tool call at all (the exhausted-no-call bail).
+        _add_run(
+            session,
+            run_id="ee55nocall",
+            target="alpha-watch",
+            outcome="failed",
+            calls=0,
+            finished_at=_t(9, 53),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _RUN_OUTCOME_MATRIX
+
+
+def test_activity_excludes_cancelled_and_chat_runs(tmp_path):
+    """The two by-design exclusions, proven against a rendering sibling: a
+    CANCELLED collector run (not a real cycle) and a chat run (no outcome, no
+    target — already the conversation) are seeded NEWER than a worked sibling,
+    yet only the sibling renders."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_run(
+            session,
+            run_id="ff66cancel",
+            target="alpha-watch",
+            outcome="cancelled",
+            calls=2,
+            finished_at=_t(9, 50),
+        )
+        _add_chat_run(session, run_id="99chatturn", when=_t(9, 45))
+        _add_run(
+            session,
+            run_id="aa77worked",
+            target="alpha-watch",
+            outcome="worked",
+            calls=1,
+            finished_at=_t(9, 30),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "ff66cancel" not in actual
+    assert "99chatturn" not in actual
+    assert actual == _EXCLUSION_RENDER
+
+
+def test_activity_mutation_lines_changed_fields_matrix(tmp_path):
+    """Every action × actor cell with a changed-fields detail: the multi-field
+    'changed a, b' tail, user-run rows naming their run id, system rows none."""
+    db = _db(tmp_path)
+    _seed_mutation_matrix(db, detail_factory=_changed_fields_detail)
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _MUTATION_CHANGED_FIELDS_MATRIX
+
+
+def test_activity_mutation_lines_note_matrix(tmp_path):
+    """Every action × actor cell with a cause-note detail (the system-archive
+    policy-reason shape, e.g. a max_runs retire)."""
+    db = _db(tmp_path)
+    _seed_mutation_matrix(db, detail_factory=_note_detail)
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _MUTATION_NOTE_MATRIX
+
+
+def test_activity_mutation_lines_no_detail_matrix(tmp_path):
+    """Every action × actor cell with NO detail payload: the bare line — no
+    tail, no dash."""
+    db = _db(tmp_path)
+    _seed_mutation_matrix(db, detail_factory=_no_detail)
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _MUTATION_BARE_MATRIX
+
+
+_MATRIX_ACTIONS = [
+    MutationAction.CREATED,
+    MutationAction.UPDATED,
+    MutationAction.ARCHIVED,
+    MutationAction.UNARCHIVED,
+]
+
+
+def _changed_fields_detail() -> MutationDetail:
+    return MutationDetail(changed_fields=["cadence", "expiry"])
+
+
+def _note_detail() -> MutationDetail:
+    return MutationDetail(note="max_runs reached (2 of 2)")
+
+
+def _no_detail() -> None:
+    return None
+
+
+def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
+    """All eight action × actor cells on one entity, one minute apart (newest
+    first = created/user-run), each cell carrying ``detail_factory()``'s detail
+    variant.  User-run cells carry a distinct run id; system cells carry none."""
+    with Session(db.engine) as session:
+        minute = 57
+        for index, action in enumerate(_MATRIX_ACTIONS):
+            _add_mutation(
+                session,
+                entity_name="demo-watch",
+                action=action,
+                actor=MutationActor.USER_RUN,
+                run_id=f"aa{index}0run",
+                created_at=_t(9, minute),
+                detail=detail_factory(),
+            )
+            minute -= 1
+            _add_mutation(
+                session,
+                entity_name="demo-watch",
+                action=action,
+                actor=MutationActor.SYSTEM,
+                created_at=_t(9, minute),
+                detail=detail_factory(),
+            )
+            minute -= 1
+        session.commit()
+
+
 # ── 5. Full chat system-prompt composition ────────────────────────────────
 
 
@@ -458,6 +651,155 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Your memory\n"
     "- live-watch (collection, 0 entries) — still running\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+
+# ── Shape-matrix literals (filled from the captured actual) ──────────────
+
+_RUN_OUTCOME_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "run aa11worked · 2026-07-11 09:57 UTC · alpha-watch → WORKED (3 calls)\n"
+    "run bb22failed · 2026-07-11 09:56 UTC · beta-watch → FAILED (2 calls)\n"
+    "run cc33nowork · 2026-07-11 09:55 UTC · gamma-watch → NO_WORK (1 call)\n"
+    "run dd44incomp · 2026-07-11 09:54 UTC · delta-watch → INCOMPLETE (4 calls)\n"
+    "run ee55nocall · 2026-07-11 09:53 UTC · alpha-watch → FAILED (0 calls)\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+_EXCLUSION_RENDER = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "run aa77worked · 2026-07-11 09:30 UTC · alpha-watch → WORKED (1 call)\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+_MUTATION_CHANGED_FIELDS_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "change · 2026-07-11 09:57 UTC · demo-watch created by user-run (run aa00run) — "
+    "changed cadence, expiry\n"
+    "change · 2026-07-11 09:56 UTC · demo-watch created by system — changed cadence, "
+    "expiry\n"
+    "change · 2026-07-11 09:55 UTC · demo-watch updated by user-run (run aa10run) — "
+    "changed cadence, expiry\n"
+    "change · 2026-07-11 09:54 UTC · demo-watch updated by system — changed cadence, "
+    "expiry\n"
+    "change · 2026-07-11 09:53 UTC · demo-watch archived by user-run (run aa20run) — "
+    "changed cadence, expiry\n"
+    "change · 2026-07-11 09:52 UTC · demo-watch archived by system — changed cadence, "
+    "expiry\n"
+    "change · 2026-07-11 09:51 UTC · demo-watch unarchived by user-run (run aa30run) — "
+    "changed cadence, expiry\n"
+    "change · 2026-07-11 09:50 UTC · demo-watch unarchived by system — changed cadence, "
+    "expiry\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+_MUTATION_NOTE_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "change · 2026-07-11 09:57 UTC · demo-watch created by user-run (run aa00run) — "
+    "max_runs reached (2 of 2)\n"
+    "change · 2026-07-11 09:56 UTC · demo-watch created by system — max_runs reached (2 "
+    "of 2)\n"
+    "change · 2026-07-11 09:55 UTC · demo-watch updated by user-run (run aa10run) — "
+    "max_runs reached (2 of 2)\n"
+    "change · 2026-07-11 09:54 UTC · demo-watch updated by system — max_runs reached (2 "
+    "of 2)\n"
+    "change · 2026-07-11 09:53 UTC · demo-watch archived by user-run (run aa20run) — "
+    "max_runs reached (2 of 2)\n"
+    "change · 2026-07-11 09:52 UTC · demo-watch archived by system — max_runs reached (2 "
+    "of 2)\n"
+    "change · 2026-07-11 09:51 UTC · demo-watch unarchived by user-run (run aa30run) — "
+    "max_runs reached (2 of 2)\n"
+    "change · 2026-07-11 09:50 UTC · demo-watch unarchived by system — max_runs reached "
+    "(2 of 2)\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+_MUTATION_BARE_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "change · 2026-07-11 09:57 UTC · demo-watch created by user-run (run aa00run)\n"
+    "change · 2026-07-11 09:56 UTC · demo-watch created by system\n"
+    "change · 2026-07-11 09:55 UTC · demo-watch updated by user-run (run aa10run)\n"
+    "change · 2026-07-11 09:54 UTC · demo-watch updated by system\n"
+    "change · 2026-07-11 09:53 UTC · demo-watch archived by user-run (run aa20run)\n"
+    "change · 2026-07-11 09:52 UTC · demo-watch archived by system\n"
+    "change · 2026-07-11 09:51 UTC · demo-watch unarchived by user-run (run aa30run)\n"
+    "change · 2026-07-11 09:50 UTC · demo-watch unarchived by system\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"
