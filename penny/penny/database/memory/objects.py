@@ -208,6 +208,19 @@ class Memory:
     def read_all(self) -> list[MemoryEntry]:
         return self._all_rows()
 
+    def entry_by_id(self, entry_id: int) -> MemoryEntry | None:
+        """The stored entry with this id iff it belongs to this memory.
+
+        The by-handle read behind a browse micro-context's fetch handle
+        (``<memory>#<id>``): the full page content stays in browse-results while
+        only the typed extracted value + handle return to the main loop, so the
+        handle must resolve back to the whole entry.  Scoped to this memory's own
+        ``memory_entry`` rows — a facade over another table has none, so it
+        honestly returns ``None`` rather than a foreign row."""
+        with self._session() as session:
+            row = session.get(MemoryEntry, entry_id)
+        return row if row is not None and row.memory_name == self.name else None
+
     def read_since(self, cursor: datetime, cap: int | None = None) -> list[MemoryEntry]:
         return self._rows_since(cursor, cap)
 
@@ -751,7 +764,11 @@ def render_tool_call(name: str, args: object) -> str:
     if name == "send_message":
         return f"send_message({fields.get('content', '')!r})"
     if name == "browse":
-        return f"browse({fields.get('queries', list(fields.values()))!r})"
+        queries = fields.get("queries", list(fields.values()))
+        extract = fields.get("extract")
+        if extract:
+            return f"browse(queries={queries!r}, extract={extract!r})"
+        return f"browse({queries!r})"
     rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())
     return f"{name}({rendered or repr(args)})"
 

@@ -87,9 +87,17 @@ class MockLlmClient:
         agent_name: str | None = None,
         prompt_type: str | None = None,
         run_id: str | None = None,
+        run_target: str | None = None,
     ) -> LlmResponse:
         """Mock chat() call."""
-        request_data = {"model": self.model, "messages": messages, "tools": tools}
+        request_data = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "agent_name": agent_name,
+            "prompt_type": prompt_type,
+            "run_target": run_target,
+        }
         self.requests.append(request_data)
         self._request_count += 1
 

@@ -287,6 +287,13 @@ class PennyConstants:
     # chat agent has no ``done`` tool, so failure envelopes that suggest calling
     # it gate that suggestion on the tool actually being registered.
     DONE_TOOL_NAME = "done"
+    # The ledger identity of a browse micro-context extraction — a fresh
+    # single-shot model call (content + instruction, no tools) that runs when a
+    # ``browse`` carries an ``extract`` argument.  It logs its own promptlog rows
+    # under this agent/prompt type so run traces attribute it honestly, while the
+    # bulk page content never enters the parent run's context.
+    BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
+    BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10
@@ -329,6 +336,11 @@ class PennyConstants:
     PUBLISHED_COLDSTART_LOOKBACK_SECONDS = 7 * 86400
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
+    # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse
+    # micro-context returns this handle to the main loop so the full stored page
+    # content stays retrievable (``Memory.entry_by_id``) without the bulk body
+    # ever entering the run context — the anchor discipline.
+    MEMORY_HANDLE_SEPARATOR = "#"
 
     # The system logs are populated exclusively by Python side-effects —
     # channel ingress/egress (``user-messages`` / ``penny-messages``), the

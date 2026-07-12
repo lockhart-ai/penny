@@ -23,11 +23,13 @@ from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.tools.base import Tool
 from penny.tools.content_cleaning import clean_browser_content
+from penny.tools.micro_context import MicroContext, MicroContextResult, MicroExtractOutcome
 from penny.tools.models import BrowseArgs, BrowsePage, ToolResult
 
 if TYPE_CHECKING:
     from penny.channels.permission_manager import PermissionManager
     from penny.database import Database
+    from penny.database.models import MemoryEntry
     from penny.llm import LlmClient
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,27 @@ _NARRATION_OPENED = "You opened {urls}"
 _NARRATION_ALSO_OPENED = "and opened {urls}"
 _NARRATION_LOOKED_UP = "You looked things up"
 _NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
+
+# ── Micro-context (extract) render forms ──────────────────────────────────────
+# When a browse call carries an ``extract`` instruction, the page body never
+# enters the main loop: only the typed extracted value (or an honest enumerated
+# failure) plus the fetch handle to the full content stored in browse-results.
+# One render per ``MicroExtractOutcome``, plus the no-model-wired degradation.
+_EXTRACT_HANDLE_CLAUSE = "Full page content saved to {handles} — read it there for anything more."
+_EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
+_EXTRACT_SUCCESS = "{value}\n\n{handle_clause}"
+_EXTRACT_FAILED = (
+    "Couldn't extract {instruction!r} from the page — the extractor returned nothing. "
+    "{handle_clause}"
+)
+_EXTRACT_POISON = (
+    "Couldn't extract {instruction!r} from the page — the extractor output was unusable "
+    "after {attempts} attempts. {handle_clause}"
+)
+_EXTRACT_UNAVAILABLE = (
+    "Couldn't extract {instruction!r} — no extraction model is configured for this browse. "
+    "{handle_clause}"
+)
 
 # Type alias for the browser request function
 RequestFn = Callable[[str, dict], Awaitable[tuple[str, str | None]]]
@@ -122,6 +145,7 @@ class BrowseTool(Tool):
         author: str = "unknown",
         *,
         embedding_client: LlmClient,
+        model_client: LlmClient | None = None,
         channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT,
     ):
         self._max_calls = max_calls
@@ -129,6 +153,12 @@ class BrowseTool(Tool):
         self._db = db
         self._embedding_client = embedding_client
         self._author = author
+        # The shared model client powers the ``extract`` micro-context (a
+        # single-shot extraction call).  Optional: chat's browse never sets
+        # ``extract``, and tests that don't exercise it leave this None; an
+        # ``extract`` requested without a client wired degrades visibly rather
+        # than silently returning the page body.
+        self._micro_context = MicroContext(model_client) if model_client is not None else None
         # The terminal move bound into a whole-channel outage error.  Defaults to
         # the chat clause; a collector passes its done()-binding clause so the
         # outage names the recovery its agent can actually perform.
@@ -160,6 +190,16 @@ class BrowseTool(Tool):
                     "description": f"Search queries and/or URLs to look up (max {n})",
                     "items": {"type": "string"},
                     "maxItems": n,
+                },
+                "extract": {
+                    "type": "string",
+                    "description": (
+                        "Optional. One instruction naming exactly what to pull out of the "
+                        'fetched pages (e.g. "the current bid amount"). When set, the full '
+                        "page content is read in a separate scoped context and only the "
+                        "extracted value is returned here — the page body never enters this "
+                        "conversation. Omit to receive the page content itself."
+                    ),
                 },
             },
             "required": ["queries"],
@@ -227,7 +267,12 @@ class BrowseTool(Tool):
         return " ".join(parts) if parts else _NARRATION_LOOKED_UP
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """Dispatch all lookups in parallel via the browser extension."""
+        """Dispatch all lookups in parallel via the browser extension.
+
+        With an ``extract`` micro-instruction (and at least one readable page),
+        the fetched content goes to a fresh micro-context and only the typed
+        result returns; otherwise the assembled sections return directly.
+        """
         args = BrowseArgs(**kwargs)
         cap = self._max_calls
         to_run, dropped = args.queries[:cap], args.queries[cap:]
@@ -236,7 +281,7 @@ class BrowseTool(Tool):
         results = await asyncio.gather(*[coro for _, _, coro in tasks], return_exceptions=True)
         sections, page_sections, captures = self._assemble_sections(tasks, results)
 
-        await self._append_pages_to_browse_results(page_sections)
+        stored = await self._append_pages_to_browse_results(page_sections)
         await self._store_media(captures)
 
         if dropped:
@@ -248,9 +293,88 @@ class BrowseTool(Tool):
         # ``tool_failures`` count → run-health), not just to the error text.  A
         # partial failure keeps ``success=True``: the model works from what succeeded.
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
+        if args.extract is not None and not all_failed:
+            return await self._extract_result(sections, args.extract, stored)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
+        )
+
+    # ── Micro-context (extract) path ──────────────────────────────────────────
+
+    async def _extract_result(
+        self, sections: list[str], instruction: str, stored: list[MemoryEntry]
+    ) -> ToolResult:
+        """Run the fetched content through the micro-context, returning the typed
+        value + fetch handle — never the page body — to the main loop.
+
+        The bulk content (page + search sections) feeds the micro-context; the
+        short signal sections (read errors, dropped-query notes) stay visible to
+        the main loop after the extracted value, so a read failure never hides
+        behind a clean extraction (visible degradation)."""
+        if self._micro_context is None:
+            return self._extract_unavailable_result(instruction, stored)
+        content = PennyConstants.SECTION_SEPARATOR.join(
+            s for s in sections if self._is_content_section(s)
+        )
+        signals = [s for s in sections if not self._is_content_section(s)]
+        micro = await self._micro_context.extract(content, instruction, run_target=self._author)
+        body = self._render_micro_result(micro, instruction, stored)
+        message = PennyConstants.SECTION_SEPARATOR.join([body, *signals])
+        return ToolResult(message=message, success=micro.outcome == MicroExtractOutcome.EXTRACTED)
+
+    def _render_micro_result(
+        self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
+    ) -> str:
+        """The main-loop body for one micro-context outcome — the extracted value
+        (byte-identical to the micro-context's return) or an honest enumerated
+        failure, each carrying the fetch handle to the stored full content."""
+        handle_clause = self._handle_clause(stored)
+        if micro.outcome == MicroExtractOutcome.EXTRACTED:
+            return _EXTRACT_SUCCESS.format(value=micro.value, handle_clause=handle_clause)
+        if micro.outcome == MicroExtractOutcome.EXTRACTION_FAILED:
+            return _EXTRACT_FAILED.format(instruction=instruction, handle_clause=handle_clause)
+        return _EXTRACT_POISON.format(
+            instruction=instruction,
+            attempts=PennyConstants.DEGENERATE_REROLL_ATTEMPTS,
+            handle_clause=handle_clause,
+        )
+
+    def _extract_unavailable_result(
+        self, instruction: str, stored: list[MemoryEntry]
+    ) -> ToolResult:
+        """Honest degradation when ``extract`` is requested but no model client is
+        wired for the micro-context — the page content is still stored and named
+        by its handle, so the request fails visibly rather than dumping the body."""
+        logger.error("browse(extract=...) requested but no model client is wired for extraction")
+        message = _EXTRACT_UNAVAILABLE.format(
+            instruction=instruction, handle_clause=self._handle_clause(stored)
+        )
+        return ToolResult(message=message, success=False)
+
+    def _handle_clause(self, stored: list[MemoryEntry]) -> str:
+        """The fetch-handle clause — the typed ``browse-results#<id>`` anchors for
+        the pages stored this call, or a note when nothing was stored (a pure
+        search has readable content but no stored page)."""
+        if not stored:
+            return _EXTRACT_NO_HANDLE_CLAUSE
+        handles = ", ".join(self._entry_handle(entry) for entry in stored)
+        return _EXTRACT_HANDLE_CLAUSE.format(handles=handles)
+
+    @staticmethod
+    def _entry_handle(entry: MemoryEntry) -> str:
+        """One typed entry handle: ``browse-results#<id>``."""
+        return (
+            f"{PennyConstants.MEMORY_BROWSE_RESULTS_LOG}"
+            f"{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.id}"
+        )
+
+    @staticmethod
+    def _is_content_section(section: str) -> bool:
+        """A readable page/search section (bulk content for the micro-context), vs.
+        a short signal section (error / dropped-query note) the main loop keeps."""
+        return section.startswith(
+            (PennyConstants.BROWSE_PAGE_HEADER, PennyConstants.BROWSE_SEARCH_HEADER)
         )
 
     def _build_tasks(self, queries: list[str]) -> list[tuple[str, str, Any]]:
@@ -341,8 +465,10 @@ class BrowseTool(Tool):
             f"Call browse(queries=[{dropped_list}]) again if you still need the results."
         )
 
-    async def _append_pages_to_browse_results(self, page_sections: list[str]) -> None:
-        """Side-effect-write each successful page as its own log entry.
+    async def _append_pages_to_browse_results(self, page_sections: list[str]) -> list[MemoryEntry]:
+        """Side-effect-write each successful page as its own log entry, returning
+        the created entries (their ids are the fetch handles a micro-context
+        anchors its extracted value to).
 
         Search-result and error sections are skipped — only full page
         reads carry knowledge worth indexing.  Embeds each entry at
@@ -350,14 +476,15 @@ class BrowseTool(Tool):
         can address pages individually.
         """
         if self._db is None or not page_sections:
-            return
+            return []
         entries: list[LogEntryInput] = []
         for section in page_sections:
             vec = await embed_text(self._embedding_client, section)
             entries.append(LogEntryInput(content=section, content_embedding=vec))
         browse_log = self._db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG)
-        if browse_log is not None:
-            browse_log.append(entries, author=self._author)
+        if browse_log is None:
+            return []
+        return browse_log.append(entries, author=self._author)
 
     async def _read_page(self, url: str) -> BrowsePage:
         """Read a single URL via the browser extension, retrying with backoff on disconnect.

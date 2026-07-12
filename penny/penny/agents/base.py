@@ -1026,6 +1026,7 @@ class Agent:
             search_url=search_url,
             db=self.db,
             embedding_client=self._embedding_model_client,
+            model_client=self._model_client,
             author=author,
             channel_outage_recovery=self.channel_outage_recovery,
         )

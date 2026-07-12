@@ -167,9 +167,16 @@ class BrowseArgs(ToolArgs):
     ``queries`` must carry at least one entry: an empty browse call did nothing
     silently, so it's rejected at the arg gate with an actionable message rather
     than reaching ``execute`` and no-op'ing.
+
+    ``extract`` is the optional micro-instruction: when set, the fetched page
+    content is read in a fresh scoped micro-context and only the extracted value
+    (plus a fetch handle) returns to the main loop — the page body never enters
+    the run context.  Absent (chat's usage today), the page content is returned
+    directly, unchanged.
     """
 
     queries: QueryList
+    extract: str | None = None
     reasoning: str | None = None
 
 
