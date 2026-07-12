@@ -69,15 +69,19 @@ _NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
 
 # ── Micro-context (extract) render forms ──────────────────────────────────────
 # When a browse call carries an ``extract`` instruction, the page body never
-# enters the main loop: only the typed extracted value (or an honest enumerated
-# failure) plus the fetch handle to the full content stored in browse-results.
-# One render per ``MicroExtractOutcome``, plus the no-model-wired degradation.
+# enters the main loop: only the typed result (or an honest enumerated failure)
+# plus the fetch handle to the full content stored in browse-results.  One
+# render per ``MicroExtractOutcome``, plus the no-model-wired degradation.
+# ``NOT_PRESENT`` is a successful read of an absent fact — rendered honestly,
+# with no infrastructure-failure framing — distinct from ``EXTRACTION_FAILED``
+# (the extractor never produced a usable tagged line).
 _EXTRACT_HANDLE_CLAUSE = "Full page content saved to {handles} — read it there for anything more."
 _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
 _EXTRACT_SUCCESS = "{value}\n\n{handle_clause}"
+_EXTRACT_NOT_PRESENT = "The page doesn't contain {instruction!r} — {reason} {handle_clause}"
 _EXTRACT_FAILED = (
-    "Couldn't extract {instruction!r} from the page — the extractor returned nothing. "
-    "{handle_clause}"
+    "Couldn't extract {instruction!r} from the page — the extractor returned nothing "
+    "usable. {handle_clause}"
 )
 _EXTRACT_POISON = (
     "Couldn't extract {instruction!r} from the page — the extractor output was unusable "
@@ -320,18 +324,30 @@ class BrowseTool(Tool):
         signals = [s for s in sections if not self._is_content_section(s)]
         micro = await self._micro_context.extract(content, instruction, run_target=self._author)
         body = self._render_micro_result(micro, instruction, stored)
+        # NOT_PRESENT is a *successful read of an absent fact* — the page was
+        # fetched and read; the fact isn't there.  Only the failure outcomes
+        # (no usable tagged output / poison) report success=False.
+        succeeded = micro.outcome in (
+            MicroExtractOutcome.EXTRACTED,
+            MicroExtractOutcome.NOT_PRESENT,
+        )
         message = PennyConstants.SECTION_SEPARATOR.join([body, *signals])
-        return ToolResult(message=message, success=micro.outcome == MicroExtractOutcome.EXTRACTED)
+        return ToolResult(message=message, success=succeeded)
 
     def _render_micro_result(
         self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
     ) -> str:
         """The main-loop body for one micro-context outcome — the extracted value
-        (byte-identical to the micro-context's return) or an honest enumerated
-        failure, each carrying the fetch handle to the stored full content."""
+        or not-present reason (each byte-identical to the micro-context's return)
+        or an honest enumerated failure, all carrying the fetch handle to the
+        stored full content."""
         handle_clause = self._handle_clause(stored)
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
             return _EXTRACT_SUCCESS.format(value=micro.value, handle_clause=handle_clause)
+        if micro.outcome == MicroExtractOutcome.NOT_PRESENT:
+            return _EXTRACT_NOT_PRESENT.format(
+                instruction=instruction, reason=micro.reason, handle_clause=handle_clause
+            )
         if micro.outcome == MicroExtractOutcome.EXTRACTION_FAILED:
             return _EXTRACT_FAILED.format(instruction=instruction, handle_clause=handle_clause)
         return _EXTRACT_POISON.format(

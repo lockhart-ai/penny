@@ -3,10 +3,16 @@ out of the main run context.
 
 When a browse carries an ``extract`` micro-instruction, the fetched page body
 goes into a FRESH single-shot micro-context (content + instruction, no tools) and
-only the typed extracted value + a fetch handle return to the main loop — the page
-body never enters the run context.  The full content is stored whole in
-browse-results and is retrievable by its handle (the anchor discipline).  Chat's
-browse (no ``extract``) is unchanged.
+only the typed result + a fetch handle return to the main loop — the page body
+never enters the run context.  The full content is stored whole in browse-results
+and is retrievable by its handle (the anchor discipline).  Chat's browse (no
+``extract``) is unchanged.
+
+The micro-context output contract is ENUMERATED on both sides of the interface
+(the review fix on PR #1594): the prompt names the two tagged forms
+(``EXTRACTED: <value>`` / ``NOT_PRESENT: <reason>``) and classification is a
+deterministic tag parse — untagged output is a contract violation that gets one
+reroll and then fails honestly, never a value.
 
 Fictional pages + deterministic mock model responses throughout.
 """
@@ -31,7 +37,13 @@ from penny.llm.models import LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
-from penny.tools.micro_context import MicroContext, MicroContextResult, MicroExtractOutcome
+from penny.tools.micro_context import (
+    EXTRACTED_TAG,
+    NOT_PRESENT_TAG,
+    MicroContext,
+    MicroContextResult,
+    MicroExtractOutcome,
+)
 
 # ── Fictional page + extraction fixtures ──────────────────────────────────────
 
@@ -41,6 +53,12 @@ _PAGE_TEXT = f"Title: Lot 42\n{_PAGE_BODY}"
 _BODY_PHRASE = "Antique Zephyr Compass"  # a distinctive body phrase that must NOT leak
 _INSTRUCTION = "the current bid amount"
 _EXTRACTED_VALUE = "The current bid is 275 zorkmids."
+_TAGGED_VALUE = f"{EXTRACTED_TAG} {_EXTRACTED_VALUE}"
+_NOT_PRESENT_REASON = "the page lists no bid amount."
+_TAGGED_NOT_PRESENT = f"{NOT_PRESENT_TAG} {_NOT_PRESENT_REASON}"
+# The confabulation-shaped leak the tag parse exists to stop: non-blank apology
+# prose that a blank-check classifier would have promoted to an extracted value.
+_UNTAGGED_APOLOGY = "The page doesn't list a price"
 _HANDLE_RE = re.compile(r"browse-results#(\d+)")
 
 
@@ -107,7 +125,7 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
     )
     mock_llm.set_response_handler(
         lambda request, count: LlmResponse(
-            message=LlmMessage(role="assistant", content=_EXTRACTED_VALUE)
+            message=LlmMessage(role="assistant", content=_TAGGED_VALUE)
         )
     )
     tool = _extract_tool(db, client)
@@ -190,7 +208,7 @@ async def test_extract_without_model_client_degrades_visibly(tmp_path):
     assert stored_log.read_all()  # content still stored
 
 
-# ── Whole-render literals: the three micro-result forms (via public execute) ───
+# ── Whole-render literals: the enumerated micro-result forms (via execute) ─────
 
 
 async def _execute_extract(tmp_path, name: str, model_content: str):
@@ -205,22 +223,33 @@ async def _execute_extract(tmp_path, name: str, model_content: str):
 
 @pytest.mark.asyncio
 async def test_micro_result_render_forms(tmp_path):
-    """The three enumerated main-loop render forms, whole-string, as the model
-    reads them — success, extraction-failed, and poison-rerolled-then-failed."""
-    result, handle_id = await _execute_extract(tmp_path, "ok", _EXTRACTED_VALUE)
+    """The enumerated main-loop render forms, whole-string, as the model reads
+    them — extracted, not-present, failed-after-reroll (untagged), and
+    poison-rerolled-then-failed."""
+    result, handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
     assert result.message == (
         f"{_EXTRACTED_VALUE}\n\n"
         f"Full page content saved to browse-results#{handle_id} — read it there for anything more."
     )
     assert result.success is True
 
-    result, handle_id = await _execute_extract(tmp_path, "blank", "   ")
+    result, handle_id = await _execute_extract(tmp_path, "absent", _TAGGED_NOT_PRESENT)
+    assert result.message == (
+        "The page doesn't contain 'the current bid amount' — the page lists no bid amount. "
+        f"Full page content saved to browse-results#{handle_id} — read it there for anything more."
+    )
+    # NOT_PRESENT is a successful read of an absent fact, not a failure.
+    assert result.success is True
+
+    result, handle_id = await _execute_extract(tmp_path, "untagged", _UNTAGGED_APOLOGY)
     assert result.message == (
         "Couldn't extract 'the current bid amount' from the page — the extractor returned "
-        f"nothing. Full page content saved to browse-results#{handle_id} — read it there for "
-        "anything more."
+        f"nothing usable. Full page content saved to browse-results#{handle_id} — read it "
+        "there for anything more."
     )
     assert result.success is False
+    # The apology prose was never promoted to a value (the confabulation leak).
+    assert _UNTAGGED_APOLOGY not in result.message
 
     result, handle_id = await _execute_extract(tmp_path, "poison", "...???...")
     assert result.message == (
@@ -243,14 +272,14 @@ def test_render_tool_call_names_the_micro_context_browse_step():
     )
 
 
-# ── MicroContext unit: classification, byte-identity, poison reroll ────────────
+# ── MicroContext unit: tag parse, byte-identity, untagged + poison rerolls ─────
 
 
 @pytest.mark.asyncio
 async def test_micro_context_returns_byte_identical_value_with_attribution():
-    """A clean draw is the extracted value, stripped once (byte-identical to the
-    stripped model output), and the call carries the ledger attribution."""
-    model = _responds(f"  {_EXTRACTED_VALUE}  ")
+    """A tagged draw is the extracted value — the payload after the tag, stripped
+    once — and the call carries the ledger attribution."""
+    model = _responds(f"  {_TAGGED_VALUE}  ")
     result = await MicroContext(cast(Any, model)).extract(
         _PAGE_BODY, _INSTRUCTION, run_target="widget-watch"
     )
@@ -262,14 +291,52 @@ async def test_micro_context_returns_byte_identical_value_with_attribution():
 
 
 @pytest.mark.asyncio
-async def test_micro_context_blank_is_honest_extraction_failure():
-    """A clean-but-blank draw is an honest enumerated failure, not a silent empty,
-    and is not re-rolled (a blank is not poison)."""
-    model = _responds("   ")
+async def test_micro_context_not_present_is_enumerated_not_a_value():
+    """A ``NOT_PRESENT:`` draw classifies as the enumerated not-present outcome
+    carrying the reason — never as an extracted value.  Not-present is a
+    successful read of an absent fact, distinct from EXTRACTION_FAILED."""
+    model = _responds(_TAGGED_NOT_PRESENT)
+    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.NOT_PRESENT
+    assert result.reason == _NOT_PRESENT_REASON
+    assert result.value == ""
+    assert len(model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_micro_context_untagged_is_rerolled_once_then_fails():
+    """Untagged (but clean) output is a contract violation: one reroll of the
+    unchanged context, then honest EXTRACTION_FAILED — the apology prose is never
+    promoted to a value.  A blank draw takes the same path (no tag to parse)."""
+    model = _responds(_UNTAGGED_APOLOGY)
     result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
-    assert len(model.requests) == 1
+    assert len(model.requests) == 2  # the draw + exactly one reroll
+
+    blank = _responds("   ")
+    result = await MicroContext(cast(Any, blank)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
+    assert len(blank.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_micro_context_untagged_reroll_can_recover():
+    """The one untagged reroll re-draws on the unchanged context — a tagged
+    second draw recovers the extraction."""
+    model = MockLlmClient()
+    model.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content=_UNTAGGED_APOLOGY if count == 1 else _TAGGED_VALUE,
+            )
+        )
+    )
+    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    assert result.value == _EXTRACTED_VALUE
+    assert len(model.requests) == 2
 
 
 @pytest.mark.asyncio
