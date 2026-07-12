@@ -302,6 +302,37 @@ collection_write(memory='games', entries='x')"""
     )
 
 
+def test_write_gate_stop_ended_run_shows_trace_and_reason():
+    """A write-gate STOP-ended run (#1587): a watch's unchanged re-observation ends
+    the collector run at the write chokepoint — a collection_write with NO closing
+    done(), a clean ``no_work`` outcome, and the declared stop reason stamped as
+    ``run_reason``.  Whole render: the ``[target] <stop reason>`` header, the counts
+    line, then the stop-point write trace — NO ⚠ flag (a clean stop is healthy), and
+    the reason is verifiable from the record alone."""
+    run = [
+        _prompt(
+            [
+                _call(
+                    "collection_write",
+                    {"memory": "games", "entries": [{"key": "price", "content": "$42"}]},
+                )
+            ],
+            outcome="no_work",
+            reason="the value was unchanged since the last observation",
+        )
+    ]
+    health = classify_run(run)
+    assert health.flags == []
+    assert health.regressive is False
+    assert (
+        render_run_record(run)
+        == """\
+[games] the value was unchanged since the last observation
+writes: 1
+collection_write(memory='games', entries='$42')"""
+    )
+
+
 def test_unfinished_fragment_predicate_is_narrow():
     """The half-formed fingerprint catches ellipsis+spam but spares real punctuation."""
     assert is_unfinished_fragment("Hi there! ......???") is True
@@ -500,6 +531,45 @@ run coll-fixed
     step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget
     step 2: collection_write(memory='games', entries='Pocket Go pick') => Wrote 1 entry: pocket-go.
 done: wrote one new find"""
+    )
+
+
+def test_render_run_calls_write_gate_stop_conclusion_full_literal():
+    """A write-gate STOP-ended run through the sequence lens, whole-output (#1587):
+    the run closed at the chokepoint with no ``done()``, so the conclusion renders
+    ``stopped: <reason>`` — never a fabricated ``done:`` — and the stop-point write
+    is the sole step."""
+    run = [
+        _prompt(
+            [
+                _call(
+                    "collection_write",
+                    {"memory": "games", "entries": [{"key": "price", "content": "$42"}]},
+                    call_id="w1",
+                )
+            ],
+            run_id="stop-fixed",
+            outcome="no_work",
+            reason="the value was unchanged since the last observation",
+            messages=json.dumps(
+                [
+                    _tool_result(
+                        "w1",
+                        "Unchanged: 'price' already holds the same value — "
+                        "no change since the last write (entry).",
+                    )
+                ]
+            ),
+        )
+    ]
+    assert (
+        render_run_calls(run)
+        == """\
+run stop-fixed
+[games]
+    step 1: collection_write(memory='games', entries='$42') => Unchanged: 'price' \
+already holds the same value — no change since the last write (entry).
+stopped: the value was unchanged since the last observation"""
     )
 
 

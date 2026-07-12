@@ -19,7 +19,13 @@ from sqlmodel import Session, select
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, RecallMode, WriteResult
+from penny.database.memory import (
+    EntryInput,
+    Inclusion,
+    RecallMode,
+    WriteGateOutcome,
+    WriteResult,
+)
 from penny.database.models import MemoryEntry
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError
@@ -617,11 +623,13 @@ class TestCollectionWritesAndReads:
         the keyless arm (no key to update) is honest about it and points at the real
         move (skip / write distinct content) — not a dangling refresh imperative."""
         keyed = _format_duplicate(
-            WriteResult(key="cold brew", outcome="duplicate", matched_key="cold brew")
+            WriteResult(
+                key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key="cold brew"
+            )
         )
         assert "update_entry(key='cold brew'" in keyed
         keyless = _format_duplicate(
-            WriteResult(key="cold brew", outcome="duplicate", matched_key=None)
+            WriteResult(key="cold brew", outcome=WriteGateOutcome.DUPLICATE, matched_key=None)
         )
         assert "no key to update" in keyless
         assert "update_entry(" not in keyless
@@ -692,13 +700,16 @@ class TestCollectionWritesAndReads:
         assert "Nothing new to add" in all_duplicates.message
         assert "done()" in all_duplicates.message
         assert "update_entry(key='dark roast', content=<richer info>)" in all_duplicates.message
-        # A re-write under the SAME key binds that key straight into update_entry —
-        # 'already exists' names the collision, then the exact refresh call.
+        # A re-write under the SAME key with the SAME value is the change-gate's
+        # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
+        # such (not a generic "duplicate") AND carrying a STOP the collector loop
+        # honors (this is a collector-scoped write).
         same_key = await write.execute(
             memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
-        assert "'dark roast' already exists" in same_key.message
-        assert "update_entry(key='dark roast', content=<richer info>)" in same_key.message
+        assert "Unchanged: 'dark roast' already holds the same value" in same_key.message
+        assert same_key.mutated is False
+        assert same_key.stop == WriteGateOutcome.KEY_EXISTS_UNCHANGED
         # A batch with a genuinely new entry alongside a duplicate gets the
         # per-entry bound refresh + the refresh-or-skip close, never "nothing new".
         partial = await write.execute(
@@ -728,6 +739,58 @@ class TestCollectionWritesAndReads:
         assert "update_entry(key='dark roast', content=<richer info>)" in multi.message
         assert "update_entry(key='cold brew', content=<richer info>)" in multi.message
         assert multi.mutated is False
+
+    @pytest.mark.asyncio
+    async def test_chat_scope_unchanged_write_has_no_stop(self, tmp_path, mock_llm):
+        """The chat surface (scope=None) gets the SAME enumerated UNCHANGED text but
+        NEVER a loop-stop — STOP applies to must-act cadence contexts only (#1587).
+        Contrast the collector-scope write above, which sets ``stop``."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="likes",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="a running list the user asked me to keep",
+        )
+        # No scope → chat surface.
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        unchanged = await write.execute(
+            memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
+        )
+        assert "Unchanged: 'dark roast' already holds the same value" in unchanged.message
+        assert unchanged.stop is None
+
+    @pytest.mark.asyncio
+    async def test_change_gate_changed_result_text_points_at_update_entry(self, tmp_path, mock_llm):
+        """The CHANGED result text (#1587): re-writing an EXACT key with a DIFFERENT
+        value reports the change and binds the exact ``update_entry`` refresh — an
+        actionable next move, since a collection is new-keys-only.  CHANGED is not
+        STOP-worthy, so no ``stop`` even for a collector-scoped write."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch",
+            description="x",
+            inclusion="never",
+            recall="recent",
+            extraction_prompt="test fixture extraction prompt",
+            collector_interval_seconds=3600,
+            intent="watch a page for a change",
+        )
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
+        await write.execute(memory="watch", entries=[{"key": "price", "content": "$42"}])
+        changed = await write.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
+        assert (
+            "Changed: 'price' changed — call update_entry(key='price', content=<the new value>) "
+            "to refresh the stored value." in changed.message
+        )
+        assert changed.mutated is False
+        assert changed.stop is None
 
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
@@ -1200,7 +1263,16 @@ class TestLogTools:
                                     "arguments": '{"memory": "espresso-gear", '
                                     '"entries": [{"content": "Niche grinder"}]}',
                                 }
-                            }
+                            },
+                            # A worked run closes with done() — without it the run
+                            # would (correctly) read as a write-gate STOP (#1587).
+                            {
+                                "function": {
+                                    "name": "done",
+                                    "arguments": '{"success": true, '
+                                    '"summary": "wrote a new grinder"}',
+                                }
+                            },
                         ]
                     }
                 }

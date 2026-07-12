@@ -45,6 +45,58 @@ class RunOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
+class WriteGateOutcome(StrEnum):
+    """The closed, deterministic outcome of one ``collection_write`` entry at the
+    write chokepoint — the change-gate (#1587, epic #1554 via mini-epic #1562).
+
+    Python computes it by comparing the written value against the stored baseline
+    per key; it is never a model judgment, and it supersedes the old ``WriteOutcome``
+    ("written"/"duplicate"/"rejected") three-way split.  The union is derived from
+    what the write path actually does, one member per reachable state:
+
+    ``NEW_KEY`` — the key did not exist; the entry was written (baseline set) ·
+    ``KEY_EXISTS_CHANGED`` — the exact key existed with *different* content: the
+    observed value changed since the baseline (nothing is written — a collection is
+    new-keys-only; the run refreshes the baseline via ``update_entry``) ·
+    ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
+    value has not changed, so there is nothing further to do — the watch's "no
+    change" signal, which carries STOP semantics (see ``WRITE_GATE_STOP_REASONS``) ·
+    ``DUPLICATE`` — the content (or a near key) collided with a *different* existing
+    key via the similarity dedup disjunction ·
+    ``DEGENERATE`` — the content was rejected as degenerate (blank, punctuation
+    collapse, bare URL, bail-out phrase).
+
+    ``UNEXPECTED`` is the honest escape label: a state the gate could not classify.
+    The write path is total, so it is never produced today; it exists so consumers
+    (the STOP table, the run-record render) match the union exhaustively and any
+    future unclassified state flags for review rather than being forced into a wrong
+    box (the visible-degradation principle).
+    """
+
+    NEW_KEY = "new_key"
+    KEY_EXISTS_CHANGED = "key_exists_changed"
+    KEY_EXISTS_UNCHANGED = "key_exists_unchanged"
+    DUPLICATE = "duplicate"
+    DEGENERATE = "degenerate"
+    UNEXPECTED = "unexpected"
+
+
+# The declared STOP table (#1587): which write-gate outcomes end a must-act
+# (collector) run at the write chokepoint, mapped to the run's stamped stop reason.
+#
+# STAGE ① (the conservative core): only the unambiguous "value unchanged" case
+# stops — the watch that looked and found nothing changed.  ``NEW_KEY`` /
+# ``KEY_EXISTS_CHANGED`` never stop (an accumulator keeps going mid-script), and
+# ``DUPLICATE`` / ``DEGENERATE`` are surfaced-but-recoverable, not clean stops.
+# Later stages add per-collection gate shape as DATA that extends THIS table (e.g.
+# an accumulator that stops when its whole batch is unchanged), never new loop
+# code; a collection whose gate shape isn't declared yet falls back to this
+# conservative default.  Membership here is what makes an outcome STOP-worthy.
+WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
+    WriteGateOutcome.KEY_EXISTS_UNCHANGED: "the value was unchanged since the last observation",
+}
+
+
 class MutationAction(StrEnum):
     """The kind of registry-entity lifecycle change a mutation event records
     (#1560).  Each create / update / archive / unarchive of a collection writes

@@ -43,9 +43,15 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from penny.agents.base import BackgroundAgent
-from penny.agents.models import ControllerResponse
+from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
-from penny.constants import MutationActor, PennyConstants, RunOutcome
+from penny.constants import (
+    WRITE_GATE_STOP_REASONS,
+    MutationActor,
+    PennyConstants,
+    RunOutcome,
+    WriteGateOutcome,
+)
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryRow
@@ -250,19 +256,38 @@ class Collector(BackgroundAgent):
             return False
         return any(record.mutated for record in response.tool_calls)
 
+    def should_stop_loop(self, step_records: list[ToolCallRecord]) -> bool:
+        """A collector cycle ends on a successful ``done()`` OR a write-gate STOP.
+
+        The base terminator is ``done()``; a collector additionally honors a STOP
+        carried by a tool result (``collection_write`` → ``KEY_EXISTS_UNCHANGED`` on
+        a scoped write, #1587) — a deliberate close at the write chokepoint, so no
+        trailing ``done()`` is required (a ``done()`` after a STOP would just be a
+        no-op the loop never reaches).  STOP is honored only here (must-act cadence);
+        the chat loop uses the base and never stops on a write outcome."""
+        return super().should_stop_loop(step_records) or any(
+            record.stop_reason is not None for record in step_records
+        )
+
     @classmethod
     def _cycle_result(cls, response: ControllerResponse | None) -> tuple[RunOutcome, str]:
         """The cycle's outcome + its summary — the single determination read by
         the audit log, the promptlog tag, and the throttle.
 
-        A successful ``done()`` is ``worked`` or ``no_work`` by whether a state-
-        changing tool actually fired (``_produced_work``).  Without a successful
-        ``done()`` the split is by work too: a cycle that still changed durable
-        state (the model hit max steps / trailed off after writing) is
-        ``incomplete`` — real work landed, it just never closed cleanly — while
-        one that changed nothing is a true ``failed`` bail.  (``cancelled`` is
-        handled separately — a preempted cycle never reaches here.)
+        A write-gate STOP (#1587) closes the cycle at the chokepoint with no
+        ``done()``: its stamped reason is the declared stop reason, and the outcome
+        is ``worked`` / ``no_work`` by whether any durable state changed this cycle
+        (an all-unchanged watch changed nothing → ``no_work``, a healthy quiet
+        cycle).  Otherwise a successful ``done()`` is ``worked`` or ``no_work`` by
+        ``_produced_work``; without a successful ``done()`` the split is by work too
+        — durable state changed but never closed cleanly → ``incomplete``, nothing
+        changed → a ``failed`` bail.  (``cancelled`` is handled separately — a
+        preempted cycle never reaches here.)
         """
+        stop = cls._stop_reason(response)
+        if stop is not None:
+            outcome = RunOutcome.WORKED if cls._produced_work(response) else RunOutcome.NO_WORK
+            return outcome, WRITE_GATE_STOP_REASONS[stop]
         success, summary = cls._extract_done_args(response)
         produced = cls._produced_work(response)
         if success:
@@ -270,6 +295,20 @@ class Collector(BackgroundAgent):
         if produced:
             return RunOutcome.INCOMPLETE, summary
         return RunOutcome.FAILED, summary
+
+    @staticmethod
+    def _stop_reason(response: ControllerResponse | None) -> WriteGateOutcome | None:
+        """The write-gate STOP outcome that ended this cycle, or ``None`` (#1587).
+
+        Reads the structural ``ToolCallRecord.stop_reason`` (set from the tool's
+        ``ToolResult.stop``) — the last stop-carrying call, since a STOP is the
+        cycle's final action."""
+        if response is None:
+            return None
+        for record in reversed(response.tool_calls):
+            if record.stop_reason is not None:
+                return record.stop_reason
+        return None
 
     def _apply_throttle(self, collection: MemoryRow, outcome: RunOutcome) -> None:
         """Auto-tune the collection's interval from this cycle's outcome.

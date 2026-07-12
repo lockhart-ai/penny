@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlmodel import Session, select
 
-from penny.constants import MutationAction, MutationActor, PennyConstants
+from penny.constants import MutationAction, MutationActor, PennyConstants, WriteGateOutcome
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -351,7 +351,7 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
-        assert [r.outcome for r in results] == ["written", "written"]
+        assert [r.outcome for r in results] == [WriteGateOutcome.NEW_KEY, WriteGateOutcome.NEW_KEY]
         assert all(r.entry_id is not None for r in results)
         assert {r.key for r in results} == {"dark roast coffee", "cold brew"}
 
@@ -384,7 +384,7 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
-        assert results[0].outcome == "duplicate"
+        assert results[0].outcome == WriteGateOutcome.DUPLICATE
         assert results[0].entry_id is None
         # ``matched_key`` is the *existing* entry's key — what the model
         # should pivot to when calling ``update_entry``, not the rejected
@@ -421,7 +421,7 @@ class TestCollectionWrites:
             ],
             author="preference-extractor",
         )
-        assert results[0].outcome == "duplicate"
+        assert results[0].outcome == WriteGateOutcome.DUPLICATE
 
     def test_write_without_embeddings_always_accepts(self, tmp_path):
         db = _make_db(tmp_path)
@@ -437,9 +437,46 @@ class TestCollectionWrites:
             [EntryInput(key="b", content="hello")],
             author="chat",
         )
-        assert first[0].outcome == "written"
-        assert second[0].outcome == "written"
+        assert first[0].outcome == WriteGateOutcome.NEW_KEY
+        assert second[0].outcome == WriteGateOutcome.NEW_KEY
         assert len(db.memories.memory("likes").read_all()) == 2
+
+    def test_change_gate_unchanged_on_exact_key_identical_content(self, tmp_path):
+        """The change-gate (#1587): re-writing an EXACT key with the SAME value is
+        KEY_EXISTS_UNCHANGED — the watch's "no change" signal — decided
+        deterministically by value, not an embedding threshold.  Nothing is written
+        (a collection is new-keys-only); ``matched_key`` binds the existing key.
+        Whitespace around the value doesn't count as a change."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("watch", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.memory("watch").write(
+            [EntryInput(key="price", content="$42")], author="collector"
+        )
+        again = db.memories.memory("watch").write(
+            [EntryInput(key="price", content="  $42 ")], author="collector"
+        )
+        assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
+        assert again[0].entry_id is None
+        assert again[0].matched_key == "price"
+        assert len(db.memories.memory("watch").get("price")) == 1
+
+    def test_change_gate_changed_on_exact_key_different_content(self, tmp_path):
+        """The change-gate (#1587): re-writing an EXACT key with a DIFFERENT value is
+        KEY_EXISTS_CHANGED — genuine news.  Still new-keys-only, so nothing is
+        written and the stored baseline is untouched (the run advances it via
+        ``update_entry``); ``matched_key`` binds the existing key."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("watch", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.memory("watch").write(
+            [EntryInput(key="price", content="$42")], author="collector"
+        )
+        changed = db.memories.memory("watch").write(
+            [EntryInput(key="price", content="$40")], author="collector"
+        )
+        assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
+        assert changed[0].matched_key == "price"
+        # New-keys-only: the write did not overwrite the baseline.
+        assert db.memories.memory("watch").get("price")[0].content == "$42"
 
     def test_update_replaces_content(self, tmp_path):
         db = _make_db(tmp_path)
@@ -568,7 +605,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="https://example.com", content="?")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
         assert results[0].entry_id is None
         assert len(db.memories.memory("knowledge").read_all()) == 0
 
@@ -578,7 +615,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="https://example.com", content="…")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
         assert len(db.memories.memory("knowledge").read_all()) == 0
 
     def test_bare_url_rejected(self, tmp_path):
@@ -587,7 +624,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="https://example.com", content="https://example.com/path/to/page")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
         assert len(db.memories.memory("knowledge").read_all()) == 0
 
     def test_bailout_phrase_rejected(self, tmp_path):
@@ -596,7 +633,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="https://example.com", content="Not sure")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
         assert results[0].reason is not None
         assert len(db.memories.memory("knowledge").read_all()) == 0
 
@@ -606,7 +643,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="url", content="NOT SURE")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
 
     def test_failed_browse_placeholder_rejected(self, tmp_path):
         """A failed/empty browse extraction ("No summary available") must not enter
@@ -618,7 +655,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="We can't find that page", content="No summary available")],
             author="collector",
         )
-        assert results[0].outcome == "rejected"
+        assert results[0].outcome == WriteGateOutcome.DEGENERATE
         assert results[0].reason is not None
         assert len(db.memories.memory("knowledge").read_all()) == 0
 
@@ -628,7 +665,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="anime", content="anime")],
             author="collector",
         )
-        assert results[0].outcome == "written"
+        assert results[0].outcome == WriteGateOutcome.NEW_KEY
 
     def test_substantive_content_accepted(self, tmp_path):
         db = self._make_collection(tmp_path)
@@ -641,7 +678,7 @@ class TestDegenerateContentRejection:
             ],
             author="collector",
         )
-        assert results[0].outcome == "written"
+        assert results[0].outcome == WriteGateOutcome.NEW_KEY
 
     def test_mixed_batch_partial_rejection(self, tmp_path):
         db = self._make_collection(tmp_path)
@@ -654,9 +691,9 @@ class TestDegenerateContentRejection:
             author="collector",
         )
         outcomes = {r.key: r.outcome for r in results}
-        assert outcomes["good"] == "written"
-        assert outcomes["bad"] == "rejected"
-        assert outcomes["also-bad"] == "rejected"
+        assert outcomes["good"] == WriteGateOutcome.NEW_KEY
+        assert outcomes["bad"] == WriteGateOutcome.DEGENERATE
+        assert outcomes["also-bad"] == WriteGateOutcome.DEGENERATE
         assert len(db.memories.memory("knowledge").read_all()) == 1
 
     def test_rejection_does_not_count_as_written_for_notify(self, tmp_path):
@@ -665,7 +702,7 @@ class TestDegenerateContentRejection:
             [EntryInput(key="url", content="…")],
             author="collector",
         )
-        assert not any(r.outcome == "written" for r in results)
+        assert not any(r.outcome == WriteGateOutcome.NEW_KEY for r in results)
 
 
 class TestLogAppend:
@@ -1161,7 +1198,7 @@ class TestWriteTypeEnforcement:
             author="chat",
             thresholds=strict,
         )
-        assert result[0].outcome == "written"
+        assert result[0].outcome == WriteGateOutcome.NEW_KEY
 
 
 class TestDedupSignals:
@@ -1179,7 +1216,7 @@ class TestDedupSignals:
             [EntryInput(key="dark roast coffee", content="second body")],
             author="chat",
         )
-        assert result[0].outcome == "duplicate"
+        assert result[0].outcome == WriteGateOutcome.DUPLICATE
 
     def test_tcr_relaxed_alone_does_not_fire(self, tmp_path):
         """TCR 2/3 with no other signal is not enough on its own."""
@@ -1193,7 +1230,7 @@ class TestDedupSignals:
             [EntryInput(key="applied ai conf", content="second")],
             author="chat",
         )
-        assert result[0].outcome == "written"
+        assert result[0].outcome == WriteGateOutcome.NEW_KEY
 
     def test_two_relaxed_signals_reject(self, tmp_path):
         """TCR 2/3 plus a relaxed content-cosine hit (~0.80) → duplicate."""
@@ -1222,7 +1259,7 @@ class TestDedupSignals:
             ],
             author="chat",
         )
-        assert result[0].outcome == "duplicate"
+        assert result[0].outcome == WriteGateOutcome.DUPLICATE
 
     def test_single_relaxed_signal_passes(self, tmp_path):
         """One signal at relaxed level only (no second signal) is not enough."""
@@ -1248,7 +1285,7 @@ class TestDedupSignals:
             ],
             author="chat",
         )
-        assert result[0].outcome == "written"
+        assert result[0].outcome == WriteGateOutcome.NEW_KEY
 
 
 class TestEmbeddingBackfill:
