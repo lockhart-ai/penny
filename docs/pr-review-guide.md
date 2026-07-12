@@ -250,6 +250,11 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 - [ ] Prefer adding assertions to an existing test that covers the relevant code path over creating a new test function
 - [ ] Only add a new test when no existing test covers the relevant code path
 
+### Whole-Render Assertions for Model-Facing Text
+- [ ] Any textual render that enters the model's context (a prompt section, a tool result, a catalog/metadata/trace rendering, the self-state header) is asserted as its **entire output in one equality assert** — `assert output == """<full literal>"""`, inline triple-quoted — never a scatter of substring asserts. Scattered fragments mask the whole picture; the literal IS the render contract, and the reviewer must be able to see exactly what the model sees by reading the test
+- [ ] One all-encompassing case per rendered surface: a fixture that folds **every input shape the surface can render** into a single scenario, asserted whole. Sub-cases worth isolating (empty state, degraded state, each variant) each assert their **own full render**, not fragments
+- [ ] Fixtures behind render literals are fully deterministic — fixed timestamps, fixed ids, fictional content — so the literal is exact and stable
+
 ### Deterministic Tests
 - [ ] All `random.random`, `random.choice`, and other random calls are monkeypatched in tests that assert on specific codepaths
 - [ ] Even if a test "usually" takes the right path, a 1-in-3 chance of hitting the wrong branch causes flaky CI
