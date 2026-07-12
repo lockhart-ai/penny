@@ -97,8 +97,10 @@ class MemoryNotFoundError(MemoryAccessError):
 
     def __init__(self, name: str) -> None:
         super().__init__(
-            f"Memory '{name}' not found. Check the name (it may be misspelled), or "
-            f"create it first with collection_create(name='{name}') / "
+            f"Memory '{name}' not found. Check the name (it may be misspelled), or find "
+            f"it by meaning with find_mine(query=<what it's about>) — it resolves your "
+            f"collections, logs, and skills (archived included) and names the exact tool "
+            f"for each. Or create it with collection_create(name='{name}') / "
             f"log_create(name='{name}') if it should exist."
         )
         self.name = name
@@ -206,6 +208,38 @@ class EntrySide(NamedTuple):
     key: str | None
     key_vec: list[float] | None
     content_vec: list[float] | None
+
+
+class ResolvedKind(StrEnum):
+    """The family of an addressable object ``find_mine`` resolves (#1558).
+
+    The axis that fixes the object's *finite action set*: the tool layer maps
+    ``kind`` (+ archived state) to the exact tool call that operates on it, so the
+    model never derives the type→addressing mapping itself.  ``skill`` is a keyed
+    entry in the ``skills`` collection today (a dedicated table comes later);
+    ``collection`` / ``log`` are registry rows.
+    """
+
+    COLLECTION = "collection"
+    LOG = "log"
+    SKILL = "skill"
+
+
+class ResolvedMatch(BaseModel):
+    """One resolve-by-meaning hit — identity fused with its affordances (#1558).
+
+    Carries the *exact* identity (``name`` — a collection/log name, or a skill
+    entry key), its ``kind``, whether it's ``archived`` (collections/logs; a skill
+    is always live), and a one-line ``label`` (the description for a collection or
+    log, empty for a skill) for disambiguation.  The tool renders identity + state
+    + the deterministic addressing from these fields; ranking (plain cosine) is
+    the store's, so no score is carried here.
+    """
+
+    name: str
+    kind: ResolvedKind
+    archived: bool
+    label: str
 
 
 def slug(name: str) -> str:
