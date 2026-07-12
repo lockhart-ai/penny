@@ -305,6 +305,11 @@ class PennyConstants:
     # bounded below ``COLLECTOR_RUN_HISTORY`` (10) because each record is heavy:
     # enough cycles to judge "one-off vs. persistent pattern" without flooding.
     RUN_HISTORY_RECORDS = 8
+    # How many resolve-by-meaning matches ``find_mine`` returns, best-first
+    # (#1558).  Bounded like every other read so an ambiguous query surfaces the
+    # top candidates without flooding the model; the model narrows further by
+    # exact name or type.  All candidates are ranked; only the head is shown.
+    FIND_MINE_MATCH_LIMIT = 5
     # Self-state header caps (#1555).  The chat agent's system prompt opens with a
     # deterministically-rendered header of Penny's own operational situation
     # (mechanisms · recent activity · the store map · durable user facts).  Each

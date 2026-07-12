@@ -24,9 +24,10 @@ from penny.database.memory import (
     MemoryNotFoundError,
     MemoryTypeError,
     RecallMode,
+    ResolvedKind,
 )
 from penny.database.memory._similarity import hybrid_rank_ids
-from penny.database.models import MemoryRow, MutationEvent
+from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
@@ -320,6 +321,10 @@ Recent changes (newest first):
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="nonexistent"))
         assert "not found" in result.message
+        # A wrong-name miss (incl. the entry-vs-collection footgun: a skill key
+        # addressed as a collection) names the resolve-by-meaning recovery, so the
+        # error is never a dead end (#1558).
+        assert "find_mine(query=" in result.message
 
 
 class TestCollectionWrites:
@@ -1349,3 +1354,116 @@ class TestEmbeddingBackfill:
             author="system",
         )
         assert db.memories.get_entries_without_embeddings(limit=100) == []
+
+
+def _norm(raw: list[float]) -> list[float]:
+    """L2-normalize a raw weight vector so its cosine to a unit axis is exact."""
+    magnitude = sum(value * value for value in raw) ** 0.5
+    return [value / magnitude for value in raw] if magnitude else raw
+
+
+class TestResolveObjects:
+    """``resolve_objects`` — the plain-cosine resolve-by-meaning search over the
+    whole registry (collections + logs, archived included) plus ``skills`` entries
+    (#1558).  Deterministic unit-vector embeddings pin exact scores."""
+
+    @staticmethod
+    def _add_skill(db, key: str, embedding: list[float]) -> None:
+        with Session(db.engine) as session:
+            session.add(
+                MemoryEntry(
+                    memory_name=PennyConstants.MEMORY_SKILLS_COLLECTION,
+                    key=key,
+                    content="skill body",
+                    author="skills",
+                    content_embedding=serialize_embedding(embedding),
+                )
+            )
+            session.commit()
+
+    def _seed_mixed(self, db) -> None:
+        """One of every family sharing axis 0, plus off-axis noise: an active and
+        an archived collection, a log, the ``skills`` container (off-axis) with one
+        on-axis skill entry."""
+        db.memories.create_collection(
+            "watch", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
+        )
+        db.memories.create_collection(
+            "old-watch",
+            "d",
+            Inclusion.RELEVANT,
+            RecallMode.RECENT,
+            archived=True,
+            description_embedding=_unit_vec(0),
+        )
+        db.memories.create_log(
+            "feed", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
+        )
+        # The skills CONTAINER sits off-axis (axis 3) — only its ENTRY is on-axis,
+        # so the container never surfaces while the skill does.
+        db.memories.create_collection(
+            PennyConstants.MEMORY_SKILLS_COLLECTION,
+            "d",
+            Inclusion.NEVER,
+            RecallMode.RECENT,
+            description_embedding=_unit_vec(3),
+        )
+        self._add_skill(db, "escalate", _unit_vec(0))
+
+    def test_spans_families_and_includes_archived(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_mixed(db)
+        found = {
+            (match.name, match.kind, match.archived)
+            for match in db.memories.resolve_objects(_unit_vec(0), None, 10)
+        }
+        assert ("watch", ResolvedKind.COLLECTION, False) in found
+        assert ("old-watch", ResolvedKind.COLLECTION, True) in found  # archived included
+        assert ("feed", ResolvedKind.LOG, False) in found
+        assert ("escalate", ResolvedKind.SKILL, False) in found
+        # The off-axis skills container never surfaces — only its entry does.
+        assert all(name != PennyConstants.MEMORY_SKILLS_COLLECTION for name, _, _ in found)
+
+    def test_kind_filter_narrows_to_one_family(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_mixed(db)
+        cols = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.COLLECTION, 10)
+        assert {match.name for match in cols} == {"watch", "old-watch"}
+        logs = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.LOG, 10)
+        assert {match.name for match in logs} == {"feed"}
+        skills = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.SKILL, 10)
+        assert {(match.name, match.kind) for match in skills} == {("escalate", ResolvedKind.SKILL)}
+
+    def test_orthogonal_query_returns_honest_empty(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_mixed(db)
+        # Axis 5 is orthogonal to every seeded object → nothing is a match.
+        assert db.memories.resolve_objects(_unit_vec(5), None, 10) == []
+
+    def test_ranks_best_first(self, tmp_path):
+        db = _make_db(tmp_path)
+        db.memories.create_collection(
+            "exact", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
+        )
+        db.memories.create_collection(
+            "partial",
+            "d",
+            Inclusion.RELEVANT,
+            RecallMode.RECENT,
+            description_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        )
+        matches = db.memories.resolve_objects(_unit_vec(0), None, 10)
+        # cos(axis0, exact)=1.0 > cos(axis0, partial)=0.707 → exact ranks first.
+        assert [match.name for match in matches] == ["exact", "partial"]
+
+    def test_limit_caps_the_head(self, tmp_path):
+        db = _make_db(tmp_path)
+        for index in range(6):
+            db.memories.create_collection(
+                f"c{index}",
+                "d",
+                Inclusion.RELEVANT,
+                RecallMode.RECENT,
+                description_embedding=_unit_vec(0),
+            )
+        assert len(db.memories.resolve_objects(_unit_vec(0), None, 3)) == 3

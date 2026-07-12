@@ -17,6 +17,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+import numpy as np
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
@@ -34,6 +35,8 @@ from penny.database.memory.types import (
     MemoryType,
     MemoryTypeError,
     RecallMode,
+    ResolvedKind,
+    ResolvedMatch,
     slug,
     wrong_shape_message,
 )
@@ -106,6 +109,7 @@ class MemoryStore:
           unarchive, update_collection_metadata, link_source_message,
           mark_collected, set_cadence
         * inventory: entry_counts, names_with_entry_match
+        * resolve by meaning: resolve_objects
         * dedup probe: exists
         * embedding backfill: get_entries_without_embeddings,
           get_memories_without_description_embedding, set_description_embedding,
@@ -629,6 +633,79 @@ class MemoryStore:
                 entry.content_embedding = sim.maybe_serialize(content_embedding)
             session.add(entry)
             session.commit()
+
+    # ── Resolve by meaning ────────────────────────────────────────────────────
+
+    def resolve_objects(
+        self, anchor: list[float], kind: ResolvedKind | None, limit: int
+    ) -> list[ResolvedMatch]:
+        """Rank Penny's own addressable objects by meaning, best-first (#1558).
+
+        Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
+        no ambient centrality/cluster gating) of ``anchor`` against every registry
+        row's description anchor (collections + logs, **archived included**) and
+        every ``skills`` entry's content vector.  ``kind`` narrows to one family;
+        ``None`` spans all three.  Only positively-correlated candidates survive
+        (cosine > 0 — an orthogonal/anti-correlated object isn't a match, so a
+        wholly-unrelated query returns an honest empty), capped at ``limit``.  The
+        tool layer turns each match into identity + state + the deterministic
+        addressing; ambiguity (several hits) is returned, never silently resolved.
+        """
+        candidates = self._resolution_candidates(kind)
+        if not candidates:
+            return []
+        scores = sim.cosine_scores([blob for _, blob in candidates], anchor)
+        order = list(np.argsort(-scores))
+        ranked = [candidates[i][0] for i in order if float(scores[i]) > 0.0]
+        return ranked[:limit]
+
+    def _resolution_candidates(
+        self, kind: ResolvedKind | None
+    ) -> list[tuple[ResolvedMatch, bytes]]:
+        """Every (match, embedding-blob) pair eligible for ``resolve_objects`` —
+        registry rows carrying a description anchor and, when ``kind`` allows,
+        ``skills`` entries carrying a content vector.  A row/entry without its
+        vector is silently absent (the backfill fills it) — never surfaced
+        unscored."""
+        candidates: list[tuple[ResolvedMatch, bytes]] = []
+        if kind is not ResolvedKind.SKILL:
+            for row in self.list_all():
+                if row.description_embedding is None:
+                    continue
+                row_kind = (
+                    ResolvedKind.COLLECTION
+                    if row.type == MemoryType.COLLECTION
+                    else ResolvedKind.LOG
+                )
+                if kind is not None and row_kind is not kind:
+                    continue
+                match = ResolvedMatch(
+                    name=row.name, kind=row_kind, archived=row.archived, label=row.description
+                )
+                candidates.append((match, row.description_embedding))
+        if kind in (None, ResolvedKind.SKILL):
+            candidates.extend(self._skill_candidates())
+        return candidates
+
+    def _skill_candidates(self) -> list[tuple[ResolvedMatch, bytes]]:
+        """The ``skills`` collection's keyed entries as resolvable skills — where
+        the entry-vs-collection confusion happens (skills are still entries
+        today).  Only entries carrying a content vector are eligible."""
+        with self._session() as session:
+            rows = session.exec(
+                select(MemoryEntry).where(
+                    MemoryEntry.memory_name == PennyConstants.MEMORY_SKILLS_COLLECTION,
+                    MemoryEntry.content_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                )
+            ).all()
+        return [
+            (
+                ResolvedMatch(name=row.key, kind=ResolvedKind.SKILL, archived=False, label=""),
+                row.content_embedding,
+            )
+            for row in rows
+            if row.key is not None and row.content_embedding is not None
+        ]
 
     # ── Dedup probe ───────────────────────────────────────────────────────────
 

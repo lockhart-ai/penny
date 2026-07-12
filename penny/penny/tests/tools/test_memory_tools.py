@@ -40,6 +40,7 @@ from penny.tools.memory_tools import (
     CollectorRunHistoryTool,
     DoneTool,
     ExistsTool,
+    FindMineTool,
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
@@ -1646,6 +1647,8 @@ class TestExistsAndDone:
         assert result.success is False
         assert "lieks" in result.message
         assert "not found" in result.message
+        # The wrong-name miss names find_mine as the guess-free recovery (#1558).
+        assert "find_mine(query=" in result.message
 
     @pytest.mark.asyncio
     async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
@@ -1962,6 +1965,7 @@ class TestFactory:
         "read_published_latest",
         "read_similar",
         "exists",
+        "find_mine",
         # Lifecycle (shape)
         "collection_create",
         "collection_update",
@@ -2355,3 +2359,202 @@ class TestRegistryProvenanceAndLifecycle:
         result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
         # A set end condition renders as its UTC datetime, not "never".
         assert "expires: 2026-12-25 09:00 UTC" in result.message
+
+
+# ── find_mine: resolve-by-meaning, identity fused with affordances (#1558) ────
+
+_FIND_MINE_VOCAB = {
+    "aurora": 0,
+    "beacon": 1,
+    "cascade": 2,
+    "gamma": 3,
+    "delta": 4,
+    "echo": 5,
+    "foxtrot": 6,
+    "reusable": 7,
+    "recipes": 8,
+    "orbit": 9,
+    "nebula": 10,
+}
+_FIND_MINE_DIM = 16
+
+
+def _axis_vec(text: str) -> list[float]:
+    """A collision-free, L2-normalised vector: each known word owns a fixed axis
+    (unknown words ignored), so cosine between two texts is exactly
+    (shared words) / (sqrt(len_a) * sqrt(len_b)) — deterministic scores for an
+    exact whole-render literal."""
+    vec = [0.0] * _FIND_MINE_DIM
+    for word in text.lower().split():
+        axis = _FIND_MINE_VOCAB.get(word)
+        if axis is not None:
+            vec[axis] += 1.0
+    norm = sum(value * value for value in vec) ** 0.5
+    return [value / norm for value in vec] if norm else vec
+
+
+def _axis_embed(model: str, text: str | list[str]) -> list[list[float]]:
+    inputs = text if isinstance(text, list) else [text]
+    return [_axis_vec(one) for one in inputs]
+
+
+def _axis_client(mock_llm) -> LlmClient:
+    """A client whose embeddings are the fixed-axis vectors above — so every
+    stored description/content anchor and the query share one exact geometry."""
+    mock_llm.set_embed_handler(_axis_embed)
+    return LlmClient(
+        api_url="http://localhost:11434", model="test-model", max_retries=1, retry_delay=0.0
+    )
+
+
+async def _create_collection(tool: CollectionCreateTool, name: str, description: str) -> None:
+    await tool.execute(
+        name=name,
+        description=description,
+        inclusion="relevant",
+        recall="recent",
+        extraction_prompt="test fixture extraction prompt",
+        collector_interval_seconds=3600,
+        intent="a running list the user asked me to keep",
+    )
+
+
+class TestFindMine:
+    """Resolve-by-meaning over the whole registry + skills entries, fusing exact
+    identity with how to address it (#1558).  The result is model-facing text, so
+    each mode is asserted as a whole render."""
+
+    _KITCHEN_SINK = (
+        'Found 4 things matching "aurora beacon cascade", best first:\n'
+        "1. aurora-watch — active collection: aurora beacon cascade\n"
+        "   how to use it: read it with collection_read_latest('aurora-watch'), "
+        "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+        "with collection_archive('aurora-watch')\n"
+        "2. escalate-aurora — live skill entry in `skills`\n"
+        "   how to use it: read it with collection_get(memory='skills', "
+        "key='escalate-aurora'), edit it with update_entry(memory='skills', "
+        "key='escalate-aurora', content=<the new steps>)\n"
+        "3. aurora-archive — archived collection: aurora beacon delta\n"
+        "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
+        "entries stay readable with collection_read_latest('aurora-archive')\n"
+        "4. aurora-log — active log: aurora echo foxtrot\n"
+        "   how to use it: read it with log_read('aurora-log')\n"
+        "Ranked by closeness — if one is what you meant, use its addressing above; "
+        "otherwise narrow by its exact name, or pass type=<collection|log|skill>."
+    )
+
+    @staticmethod
+    async def _seed_world(db, client: LlmClient) -> None:
+        """One object of every renderable family, all sharing the query's meaning:
+        an active collection, an archived collection, a log, and a skill entry —
+        plus the off-topic ``skills`` container (never a match)."""
+        creator = CollectionCreateTool(db, client)
+        await _create_collection(creator, "aurora-watch", "aurora beacon cascade")
+        await _create_collection(creator, "aurora-archive", "aurora beacon delta")
+        await CollectionArchiveTool(db).execute(memory="aurora-archive")
+        await LogCreateTool(db, client).execute(
+            name="aurora-log",
+            description="aurora echo foxtrot",
+            inclusion="relevant",
+            recall="recent",
+        )
+        await _create_collection(creator, "skills", "reusable recipes")
+        await CollectionWriteTool(db, client, author="skills").execute(
+            memory="skills",
+            entries=[{"key": "escalate-aurora", "content": "aurora beacon cascade gamma"}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_kitchen_sink_fuses_identity_and_affordances(self, tmp_path, mock_llm):
+        """A query matching a mixed set returns each hit's exact identity, family,
+        live/archived state, AND the deterministic addressing — best-first."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await self._seed_world(db, client)
+        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        assert result.success
+        assert result.message == self._KITCHEN_SINK
+
+    @pytest.mark.asyncio
+    async def test_type_filter_narrows_to_skills(self, tmp_path, mock_llm):
+        """``type=skill`` narrows the same world to the skill entry alone, with the
+        skill-specific addressing (the entry-vs-collection footgun answered in the
+        result)."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await self._seed_world(db, client)
+        result = await FindMineTool(db, client).execute(query="aurora beacon cascade", type="skill")
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. escalate-aurora — live skill entry in `skills`\n"
+            "   how to use it: read it with collection_get(memory='skills', "
+            "key='escalate-aurora'), edit it with update_entry(memory='skills', "
+            "key='escalate-aurora', content=<the new steps>)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_confident_match(self, tmp_path, mock_llm):
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await _create_collection(
+            CollectionCreateTool(db, client), "solo-watch", "aurora beacon cascade"
+        )
+        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. solo-watch — active collection: aurora beacon cascade\n"
+            "   how to use it: read it with collection_read_latest('solo-watch'), "
+            "reconfigure it with collection_update(name='solo-watch', ...), archive it "
+            "with collection_archive('solo-watch')"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_returns_all_candidates_ranked(self, tmp_path, mock_llm):
+        """Several matches come back ranked with how to narrow — never one silently
+        chosen."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        creator = CollectionCreateTool(db, client)
+        await _create_collection(creator, "watch-primary", "aurora beacon cascade")
+        await _create_collection(creator, "watch-secondary", "aurora beacon delta")
+        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        assert result.message == (
+            'Found 2 things matching "aurora beacon cascade", best first:\n'
+            "1. watch-primary — active collection: aurora beacon cascade\n"
+            "   how to use it: read it with collection_read_latest('watch-primary'), "
+            "reconfigure it with collection_update(name='watch-primary', ...), archive it "
+            "with collection_archive('watch-primary')\n"
+            "2. watch-secondary — active collection: aurora beacon delta\n"
+            "   how to use it: read it with collection_read_latest('watch-secondary'), "
+            "reconfigure it with collection_update(name='watch-secondary', ...), archive it "
+            "with collection_archive('watch-secondary')\n"
+            "Ranked by closeness — if one is what you meant, use its addressing above; "
+            "otherwise narrow by its exact name, or pass type=<collection|log|skill>."
+        )
+
+    @pytest.mark.asyncio
+    async def test_zero_matches_is_honest_empty(self, tmp_path, mock_llm):
+        """A query unrelated to everything returns an honest empty naming the wider
+        nets (catalog + self-state header) — not an error, no dead end."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await _create_collection(
+            CollectionCreateTool(db, client), "aurora-watch", "aurora beacon cascade"
+        )
+        result = await FindMineTool(db, client).execute(query="orbit nebula")
+        assert result.success
+        assert result.message == (
+            'Nothing of yours matched "orbit nebula". Widen the net: collection_catalog() '
+            "lists every collection (archived included), and your current-state header "
+            "names your active mechanisms, logs, and recent activity."
+        )
+
+    @pytest.mark.asyncio
+    async def test_transient_embed_failure_is_actionable(self, tmp_path):
+        """A transient query-embed failure returns an actionable retry, not a silent
+        empty — the miss is named, the fix bound."""
+        db = _make_db(tmp_path)
+        result = await FindMineTool(db, cast(Any, _FailingEmbedClient())).execute(query="anything")
+        assert result.success is False
+        assert "Couldn't embed your query" in result.message
+        assert "find_mine(query=" in result.message
