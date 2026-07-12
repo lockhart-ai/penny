@@ -311,6 +311,11 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 - A `[square-bracket]` placeholder standing in for "fill this in"
 - A new model-facing prompt string added outside its established home (`prompts.py`, a tool description, a migration's `extraction_prompt`, `constants.py`) with no justification
 
+### Enums Cross the Model Boundary as Explicit Output Contracts
+- [ ] Any Python-side enum that classifies **model output** (extraction outcomes, decision unions, gate results) is mirrored as an **explicit output contract in the prompt** — named cases the model is told to emit as tags (`EXTRACTED: <value>` / `NOT_PRESENT: <reason>`), parsed deterministically by prefix. The enum must exist on **both** sides of the interface; a union the model was never handed is a heuristic, not a contract
+- [ ] Classification is **never inferred from output-shape heuristics** (blankness, length, prose-vs-not) — those demote to backstops behind the tag parse. Untagged output gets one reroll of the unchanged context, then the honest escape outcome — never a value. (The failure this catches: a "the page doesn't list a price" apology classifying as a successful extraction and being written downstream as the watched field)
+- [ ] The union distinguishes **observed absence from failure** where both can occur (NOT_PRESENT ≠ EXTRACTION_FAILED): reading a page and finding the fact missing is a successful observation; the escape label is for the machinery breaking
+
 ### Reject and Teach — Never Absorb Hallucinated Shapes
 - [ ] A change that makes a tool **accept/normalise/coerce a wrong-shaped model input** (a bracket-wrapped key, an invented parameter, an alias for a real value) is a smell — the tool boundary stays strict; the fix is a **teaching rejection** naming the specific mistake and the exact corrected input ready to reuse (see `prompt-writing-guide.md` → "Reject and teach"). Every accepted hallucinated shape becomes de-facto API surface and the set is unbounded
 - [ ] If the wrong shape was taught by **our own rendering** (display formats the model copies verbatim), there should be a root-cause issue on the rendering, not just the guard
