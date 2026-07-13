@@ -80,7 +80,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 84
+        assert count == 85
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -121,7 +121,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 84
+        assert count1 == 85
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -159,8 +159,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0084 run = 83 migrations
-        assert count == 83
+        # 0001 is skipped; 0002 through 0085 run = 84 migrations
+        assert count == 84
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -186,7 +186,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 84  # all migrations applied
+        assert count == 85  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -233,6 +233,41 @@ class TestMigrate:
         prompt = row[0]
         assert "read_last(" not in prompt
         assert 'read_latest("user-messages")' in prompt
+        conn.close()
+
+    def test_0085_adds_notify_and_copies_published(self, tmp_path):
+        """Migration 0085 adds ``memory.notify`` and seeds it from ``published`` —
+        so a collection that already notified (published) keeps notifying, and a
+        silent one stays silent."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE memory (name TEXT PRIMARY KEY, published INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO memory (name, published) VALUES ('watched', 1)")
+        conn.execute("INSERT INTO memory (name, published) VALUES ('silent', 0)")
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0085_add_memory_notify.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0085", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()}
+        assert "notify" in columns
+        by_name = dict(conn.execute("SELECT name, notify FROM memory").fetchall())
+        assert by_name == {"watched": 1, "silent": 0}
         conn.close()
 
     def test_0069_regrounds_and_cleans_skills(self, tmp_path):

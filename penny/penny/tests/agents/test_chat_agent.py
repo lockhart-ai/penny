@@ -19,6 +19,7 @@ from sqlmodel import select
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import Media, MessageLog
+from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
@@ -235,15 +236,9 @@ async def test_collection_create_stamps_chat_provenance(
                             name="collection_create",
                             arguments={
                                 "name": "indie-platformers",
-                                "description": "new indie platformer games",
-                                "inclusion": "relevant",
-                                "recall": "relevant",
-                                "extraction_prompt": (
-                                    "1. browse for new indie platformers.\n"
-                                    "2. done(success=true, summary=<what happened>)."
-                                ),
-                                "collector_interval_seconds": 3600,
                                 "intent": "a running list of new indie platformers",
+                                "skill": "gather-platformers",
+                                "interval": 3600,
                             },
                         ),
                     )
@@ -255,6 +250,27 @@ async def test_collection_create_stamps_chat_provenance(
     mock_llm.set_response_handler(handler)
 
     async with running_penny(test_config) as penny:
+        # The front door instantiates a skill (#1591) — seed the hole-less skill the
+        # chat turn instantiates, so the create resolves and stamps its provenance.
+        penny.db.skills.upsert(
+            SkillDraft(
+                name="gather-platformers",
+                intent="gather new indie platformers",
+                description="gather new indie platformers",
+                steps=[
+                    SkillStep(
+                        ordinal=1,
+                        source_ordinal=1,
+                        tool="browse",
+                        arguments={"queries": ["new indie platformers"], "extract": "the newest"},
+                        substitutions=[],
+                    )
+                ],
+                holes=[],
+                source_run_id="run-teach",
+            ),
+            author="chat",
+        )
         await signal_server.push_message(sender=TEST_SENDER, content=ask)
         await wait_until(lambda: penny.db.memories.get("indie-platformers") is not None)
 

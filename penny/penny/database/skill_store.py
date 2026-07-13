@@ -13,6 +13,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+import numpy as np
 from sqlmodel import Session, select
 
 from penny.database.memory import _similarity as sim
@@ -98,3 +99,26 @@ class SkillStore:
         """Every skill, name order — the read surface's catalog listing."""
         with self._session() as session:
             return list(session.exec(select(Skill).order_by(Skill.name)).all())
+
+    def resolve_by_meaning(self, anchor: list[float], limit: int) -> list[Skill]:
+        """Skills ranked by description-anchor cosine to ``anchor``, best-first
+        (#1591's resolve-by-meaning leg — the 'or meaning' half of name-or-meaning).
+
+        Plain-cosine nearest-neighbour over each skill's ``description_embedding``
+        (populated at write), positively-correlated only (cosine > 0 — an
+        unrelated skill isn't a candidate, so an off-topic query returns empty →
+        NO_SKILL_FOUND), capped at ``limit``.  A skill missing its vector is absent
+        (never surfaced unscored).  The caller decides MATCHED vs. AMBIGUOUS vs.
+        NO_SKILL from the exact-name lookup + this ranking."""
+        scored: list[Skill] = []
+        blobs: list[bytes] = []
+        for skill in self.list_all():
+            if skill.description_embedding is None:
+                continue
+            scored.append(skill)
+            blobs.append(skill.description_embedding)
+        if not scored:
+            return []
+        scores = sim.cosine_scores(blobs, anchor)
+        order = list(np.argsort(-scores))
+        return [scored[i] for i in order if float(scores[i]) > 0.0][:limit]

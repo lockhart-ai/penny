@@ -200,6 +200,7 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         published: bool = False,
+        notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
         run_at: datetime | None = None,
@@ -217,6 +218,7 @@ class MemoryStore:
             description_embedding=description_embedding,
             intent=intent,
             published=published,
+            notify=notify,
             created_by_run_id=created_by_run_id,
             expires_at=expires_at,
             run_at=run_at,
@@ -257,6 +259,7 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         published: bool = False,
+        notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
         run_at: datetime | None = None,
@@ -275,6 +278,7 @@ class MemoryStore:
                 description_embedding=sim.maybe_serialize(description_embedding),
                 archived=archived,
                 published=published,
+                notify=notify,
                 extraction_prompt=extraction_prompt,
                 collector_interval_seconds=collector_interval_seconds,
                 # The create cadence is the user's intended cadence — the
@@ -706,6 +710,55 @@ class MemoryStore:
             for row in rows
             if row.key is not None and row.content_embedding is not None
         ]
+
+    # ── Idempotency at birth (#1567) ──────────────────────────────────────────
+
+    def find_duplicate_collection(
+        self,
+        name: str,
+        description_embedding: list[float] | None,
+        thresholds: DedupThresholds | None = None,
+    ) -> MemoryRow | None:
+        """The first EXISTING collection a proposed one is a semantic near-duplicate
+        of (#1567), or ``None`` when the target is genuinely distinct.
+
+        Compared name-vs-name (token containment) and description-vs-description
+        (content cosine — the intent/purpose anchor, since a skill-instantiated
+        collection's ``description`` is its intent) through the SAME three-signal
+        dedup rule the entry write uses (``sim.is_duplicate``) with the SAME runtime
+        thresholds — never a hand-rolled similarity rule.  Active rows are checked
+        before archived ones (a tombstone), so a live "already watching this" wins
+        over a retired one.  Framework collections (``SYSTEM_COLLECTIONS``) are
+        excluded — Penny's own machinery, not a mechanism a user re-creates — and a
+        merely-related topic clears the thresholds, so distinct targets are
+        unimpeded.
+        """
+        thresholds = thresholds or self._default_thresholds()
+        candidate = EntrySide(slug(name), None, description_embedding)
+        active, archived = self._duplicate_candidates()
+        for row in (*active, *archived):
+            if sim.is_duplicate(candidate, [self._collection_side(row)], thresholds):
+                return row
+        return None
+
+    def _duplicate_candidates(self) -> tuple[list[MemoryRow], list[MemoryRow]]:
+        """User collections eligible for the idempotency check, partitioned active
+        vs. archived — framework system collections and logs excluded."""
+        active: list[MemoryRow] = []
+        archived: list[MemoryRow] = []
+        for row in self.list_all():
+            if row.type != MemoryType.COLLECTION.value:
+                continue
+            if row.name in PennyConstants.SYSTEM_COLLECTIONS:
+                continue
+            (archived if row.archived else active).append(row)
+        return active, archived
+
+    @staticmethod
+    def _collection_side(row: MemoryRow) -> EntrySide:
+        """One existing collection as a dedup side: its name (token-containment
+        signal) and its description anchor (content-cosine signal)."""
+        return EntrySide(row.name, None, sim.maybe_deserialize(row.description_embedding))
 
     # ── Dedup probe ───────────────────────────────────────────────────────────
 

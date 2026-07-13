@@ -174,7 +174,6 @@ AppendableLogName = Annotated[
 ]
 
 NonBlankDescription = Annotated[str, AfterValidator(require_non_blank_description)]
-ExtractionPrompt = Annotated[str, AfterValidator(require_extraction_prompt)]
 InclusionValue = Annotated[str, AfterValidator(_require_inclusion)]
 RecallValue = Annotated[str, AfterValidator(_require_recall)]
 CollectionContent = Annotated[str, AfterValidator(require_non_degenerate_content)]
@@ -202,33 +201,46 @@ OptionalResolvedKind = Annotated[
 
 
 class CollectionCreateArgs(ToolArgs):
-    """Args for ``collection_create``.
+    """Args for ``collection_create`` — the skill-instantiation front door (#1591).
 
-    A collection without an ``extraction_prompt`` is passive (nothing
-    fills it) and a collection without ``collector_interval_seconds``
-    has no cadence (nothing schedules it).  Both are required at the
-    tool surface so every model-created collection gets a working
-    collector immediately, instead of silently sitting empty until the
-    user notices.
+    A collection is no longer authored with an inline procedure: it INSTANTIATES a
+    ``skill`` (resolved by name or meaning) whose steps render into the collection's
+    ``extraction_prompt``.  ``params`` binds the skill's parameter holes; an unbound
+    required hole is refused by the tool naming it.
 
-    ``intent`` is also required: capturing what the user asked for at
-    creation is part of creating a collection.  It is the spec a quality
-    collector later judges the prompt and behavior against, and it has no
-    field on ``collection_update`` — once set, it's immutable.
+    ``intent`` (required, non-blank) is what the user asked for in their own words —
+    the goal the collection serves, immutable after creation, and the collection's
+    routing/dedup anchor.  ``name`` is the unique slug.
+
+    The **trigger** is an exclusive union validated in the tool (``build_trigger``):
+    EITHER ``interval`` (seconds — a recurring cadence) OR ``run_at`` + ``max_runs``
+    (a delayed / one-shot schedule).  ``expires_at`` (optional) is the end condition
+    — the watch archives itself when it passes.  ``notify`` (default false) makes the
+    collection tell the user about new/changed entries; an omission stays silent, so
+    it can never accidentally notify.  ``create_anyway`` (default false) is the
+    deliberate override for the idempotency check — it must be set explicitly to
+    create a collection that resolves as a near-duplicate of an existing one.
     """
 
     name: MemoryName
-    description: NonBlankDescription
-    inclusion: InclusionValue  # "always" | "relevant" | "never"
-    recall: RecallValue  # "all" | "relevant" | "recent"
-    extraction_prompt: ExtractionPrompt
-    collector_interval_seconds: int
-    intent: str
-    # true when the user wants to be told about new entries (notify-on-new).
-    # Defaults to false (a silent collection) so an omission can't accidentally
-    # notify; the tool description + skills drive the model to set it, and the
-    # eval suite verifies it does when the user asked to be told.
-    published: bool = False
+    intent: NonBlankDescription
+    skill: MemoryName
+    # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
+    params: dict[str, str] = {}
+    # Trigger union — exactly one form, validated in the tool (build_trigger):
+    # ``interval`` (recurring) OR ``run_at`` + ``max_runs`` (scheduled/one-shot).
+    interval: int | None = None
+    run_at: str | None = None
+    max_runs: int | None = None
+    # End condition (optional) — an ISO-8601 datetime; the collection archives
+    # itself when it passes.  Parsed in the tool (actionable error on a bad value).
+    expires_at: str | None = None
+    # Notify-on-new (emission-as-property, #1557): true when the user asked to be
+    # told / kept posted / alerted about new entries.  Defaults false (silent).
+    notify: bool = False
+    # The deliberate idempotency override (#1567) — default false so an omission
+    # never silently creates a near-duplicate; set true to create anyway.
+    create_anyway: bool = False
 
 
 class LogCreateArgs(ToolArgs):

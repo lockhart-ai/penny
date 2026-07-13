@@ -25,6 +25,7 @@ from abc import abstractmethod
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from penny.config_params import RuntimeParams
 from penny.constants import WRITE_GATE_STOP_REASONS, PennyConstants, WriteGateOutcome
 from penny.database import Database
 from penny.database.memory import (
@@ -45,12 +46,31 @@ from penny.database.memory import (
     render_run_calls,
     strip_display_brackets,
 )
-from penny.database.models import MemoryEntry, MemoryRow
+from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.mutation_store import render_mutation
+from penny.database.skill_store import holes_from_json, steps_from_json
+from penny.database.skills import render_skill, unbound_required_holes
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.similarity import embed_text
-from penny.text_validity import check_extraction_prompt_tools
+from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
+from penny.tools.collection_instantiation import (
+    DEFAULT_INCLUSION,
+    DEFAULT_RECALL,
+    SkillResolution,
+    SkillResolutionKind,
+    Trigger,
+    TriggerError,
+    build_trigger,
+    humanize_interval,
+    parse_datetime,
+    render_active_duplicate,
+    render_ambiguous,
+    render_creation_echo,
+    render_no_skill_found,
+    render_tombstone_duplicate,
+    render_unbound_holes,
+)
 from penny.tools.memory_args import (
     CatalogArgs,
     CollectionCreateArgs,
@@ -240,22 +260,6 @@ class MemoryTool(Tool):
         propagate to :meth:`execute`."""
 
 
-def _humanize_interval(seconds: int | None) -> str:
-    """Render a collector interval as a human-readable cadence (e.g. '1h')."""
-    if not seconds:
-        return "unset"
-    if seconds % 86400 == 0:
-        days = seconds // 86400
-        return f"{days}d"
-    if seconds % 3600 == 0:
-        hours = seconds // 3600
-        return f"{hours}h"
-    if seconds % 60 == 0:
-        minutes = seconds // 60
-        return f"{minutes}m"
-    return f"{seconds}s"
-
-
 def _format_collection_echo(memory: Any, verb: str) -> str:
     """Render a created or updated collection as a structured echo.
 
@@ -268,7 +272,7 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     return (
         f"{verb} collection '{memory.name}':\n"
         f"  interval: {memory.collector_interval_seconds}s "
-        f"({_humanize_interval(memory.collector_interval_seconds)})\n"
+        f"({humanize_interval(memory.collector_interval_seconds)})\n"
         f"  inclusion: {memory.inclusion}\n"
         f"  recall: {memory.recall}\n"
         f"  published: {memory.published}\n"
@@ -400,81 +404,65 @@ def _recent_changes_block(db: Database, name: str) -> list[str]:
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
-class CollectionCreateTool(MemoryTool):
-    """Create a new keyed collection.
+# A skill query whose embedding failed transiently — resolution couldn't run, so
+# the create is refused with a retry (never a silent proceed to NO_SKILL_FOUND).
+_SKILL_RESOLVE_EMBED_FAILURE = (
+    "Couldn't resolve the skill '{query}' just now — a transient embedding error, so I "
+    "can't tell whether a matching skill exists. Retry collection_create in a moment."
+)
 
-    Description doubles as the chat-agent's guide to writing good
-    extraction_prompts for new collections.  Dry-run-tuned against
-    gpt-oss:20b to land the structural elements the per-collection
-    Collector subagent needs (numbered tool calls, quiet-cycle escape,
-    correction step, opt-in send_message for notify-on-new) consistently
-    across both extract-and-notify and pure-extract user requests.
+
+class CollectionCreateTool(MemoryTool):
+    """Instantiate a collection from a skill — the front door of collector creation
+    (#1591, stage ⑤ of #1562).
+
+    A collection is never authored with an inline procedure any more: it names a
+    ``skill`` (resolved by name or meaning against the skill registry), binds the
+    skill's parameter holes from ``params``, and the skill's steps RENDER into the
+    collection's ``extraction_prompt`` at creation (a deterministic snapshot).  The
+    resolution is an enumerated union — a clean name match instantiates; a fuzzy
+    match returns ranked candidates to choose from; no match returns the teach-me
+    elicitation.  Idempotency at birth (#1567) refuses a near-duplicate of an
+    existing collection unless creation is made deliberate (``create_anyway``).
     """
 
     name = "collection_create"
     description = (
-        "Create a keyed collection memory with a background collector.\n"
+        "Set up a background collection by INSTANTIATING one of your skills — you no "
+        "longer write the steps here; a skill supplies them.\n"
         "\n"
-        "A collection is a long-lived task: every "
-        "`collector_interval_seconds` the Collector subagent runs the "
-        "`extraction_prompt` you supply here against the bound collection, "
-        "browsing or reading logs, writing structured entries, and "
-        "(optionally) calling `send_message(<message>)` to ping the user.\n"
+        "How it works: you name a `skill`, bind its fill-in-the-blank parameters in "
+        "`params`, and its recipe becomes the collection's routine, run every "
+        "`interval` (or on a `run_at` schedule).\n"
         "\n"
         "Fields:\n"
-        "- `name` — unique slug (lowercase, hyphens).\n"
-        "- `description` — a content-reflective one-line summary of what "
-        "this collection holds.  This IS the routing anchor: a "
-        "relevant-inclusion collection is only surfaced when the conversation "
-        'matches this text, so describe the actual subject matter ("heavy '
-        'euro-style strategy board games"), not the mechanism ("a collection '
-        'that stores games").\n'
-        f"- `inclusion` ({_INCLUSION_MODES}) — stage-1 routing.  `always`: "
-        "always in recall (identity, conventions).  `relevant`: in only when "
-        "the conversation matches the description — the default for research "
-        "collections.  `never`: silent — never surfaced in chat, only its "
-        "collector runs in the background.\n"
-        f"- `recall` ({_RECALL_MODES}) — stage-2 entry rendering once a "
-        "collection is included.  `relevant` ranks entries against the "
-        "conversation (default), `recent` shows newest, `all` shows every "
-        "entry.\n"
-        "- `extraction_prompt` — REQUIRED.  The system prompt the "
-        "collector subagent runs each cycle.  Write it as a NUMBERED list of "
-        "explicit steps and tool calls (1., 2., 3.) — never flowing prose: a "
-        "numbered recipe is followed far more reliably, while a prose prompt "
-        "makes the collector bail without doing the work.  The runtime "
-        "appends invariants (quiet-cycle escape, batched writes, "
-        "`send_message(<message>)` gating, structured "
-        "`done(success=<true|false>, summary=<summary>)`); you "
-        "supply only the workflow.\n"
-        "- `collector_interval_seconds` — REQUIRED.  How often the "
-        "collector runs.\n"
-        "- `intent` — REQUIRED.  What the user asked for, in their own "
-        "words — the goal the collection serves, captured once at creation "
-        "and immutable thereafter.  Describe their request, not the "
-        "mechanism.\n"
-        "- `published` — Set `true` when the user wants to be **told "
-        "about / kept posted on / alerted to** new entries as they're found — "
-        "a notifier delivers each new entry to them once.  Leave it `false` "
-        "(the default) for a silent collection that just gathers in the "
-        "background for the user to ask about later.  Do NOT add a "
-        "`send_message(<message>)` step to the extraction_prompt for this — the "
-        "collector only gathers; `published=true` is how new finds reach the "
-        "user.\n"
+        "- `name` — unique slug for the collection (lowercase, hyphens).\n"
+        "- `intent` — REQUIRED. What the user asked for, in their own words — the "
+        'goal this collection serves ("keep an eye on the price of that jacket"). '
+        "Immutable after creation and the collection's routing anchor, so get it "
+        "right and confirm it back.\n"
+        "- `skill` — REQUIRED. The skill to instantiate, by exact name or a "
+        'paraphrase of what it does ("watch a page for a change"). If your paraphrase '
+        "matches several skills I'll list them to choose from; if it matches none I'll "
+        "ask you to teach me the process once (then save it with skill_create).\n"
+        "- `params` — a map binding the skill's holes to values "
+        '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED hole '
+        "must be bound or the call is refused naming what's missing.\n"
+        "- Trigger — set EXACTLY ONE: `interval` (seconds — a recurring cadence, e.g. "
+        "3600 for hourly), OR `run_at` + `max_runs` (an ISO datetime to start at plus "
+        "how many times to run — `max_runs`=1 is a one-time reminder that archives "
+        "itself after firing).\n"
+        "- `expires_at` — OPTIONAL. An ISO datetime end condition; the collection "
+        "archives itself once it passes, so a bounded watch needs no teardown.\n"
+        "- `notify` — Set `true` when the user wants to be told about / kept posted "
+        "on / alerted to new or changed entries as they're found. Leave `false` (the "
+        "default) for a silent collection they'll ask about later.\n"
+        "- `create_anyway` — Leave unset. Only set `true` to deliberately create a "
+        "collection I flagged as a near-duplicate of one you already have.\n"
         "\n"
-        "Returns a structured echo of the stored fields (name, interval, "
-        "recall, published, description, full extraction_prompt).  Use the echo to "
-        "confirm back to the user — don't invent fields it didn't return.\n"
-        "\n"
-        "For workflow guidance — when to call this vs "
-        "`collection_update(name=<collection>)` or just "
-        '`browse(queries=["<topic>"])`, and how to shape the extraction_prompt for '
-        "common intents (research+notify, digest, silent research, etc.) — read "
-        "the recipes in your `skills` collection.\n"
-        "\n"
-        "IMPORTANT: the `extraction_prompt` MUST be a numbered list of "
-        "tool-call steps (1., 2., 3.), never flowing prose — a prose prompt "
-        "makes the collector bail without doing the work.\n"
+        "Returns a structured echo of what landed (skill, bound params, trigger, "
+        "notify, expiry, and the rendered routine). Confirm it back — don't invent "
+        "fields it didn't return."
     )
     parameters = {
         "type": "object",
@@ -483,79 +471,72 @@ class CollectionCreateTool(MemoryTool):
                 "type": "string",
                 "description": "Unique collection name (slug-style: lowercase, hyphens)",
             },
-            "description": {
-                "type": "string",
-                "description": (
-                    "Content-reflective one-line summary of what this "
-                    "collection holds — the stage-1 routing anchor. Describe "
-                    "the subject matter, not the mechanism."
-                ),
-            },
-            "inclusion": {
-                "type": "string",
-                "enum": [m.value for m in Inclusion],
-                "description": (
-                    "Stage-1 routing: 'always' (always in recall), 'relevant' "
-                    "(in only when the conversation matches the description — "
-                    "the usual choice), 'never' (silent background collector)."
-                ),
-            },
-            "recall": {
-                "type": "string",
-                "enum": [m.value for m in RecallMode],
-                "description": (
-                    "Stage-2 entry rendering once included: 'relevant' ranks "
-                    "entries to the conversation, 'recent' newest, 'all' every "
-                    "entry."
-                ),
-            },
-            "extraction_prompt": {
-                "type": "string",
-                "description": (
-                    "REQUIRED. The system prompt the Collector subagent runs "
-                    "each cycle. Numbered list of explicit tool calls — see "
-                    "tool description for worked examples."
-                ),
-            },
-            "collector_interval_seconds": {
-                "type": "integer",
-                "description": (
-                    "REQUIRED. How often the collector runs. Common values: "
-                    "1800 (30m), 3600 (1h, default for active research), "
-                    "21600 (6h), 86400 (daily)."
-                ),
-            },
             "intent": {
                 "type": "string",
                 "description": (
-                    "REQUIRED. What the user asked for, in their words — the "
-                    "goal this collection serves. Capture their actual request "
-                    '("a running list of good retro JRPGs to play"), not the '
-                    "mechanism. This is the spec the collection is later judged "
-                    "against and can't be changed after creation, so get it "
-                    "right; confirm it back to the user."
+                    "REQUIRED. What the user asked for, in their words — the goal this "
+                    'collection serves ("a running list of good retro JRPGs to play"), not '
+                    "the mechanism. Immutable after creation; confirm it back."
                 ),
             },
-            "published": {
+            "skill": {
+                "type": "string",
+                "description": (
+                    "REQUIRED. The skill to instantiate — its exact name, or a paraphrase "
+                    "of what it does (resolved by meaning). A fuzzy match returns candidates "
+                    "to choose from; no match asks you to teach it."
+                ),
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "Bindings for the skill's fill-in-the-blank holes: {hole: value}. Every "
+                    "required hole must be bound."
+                ),
+            },
+            "interval": {
+                "type": "integer",
+                "description": (
+                    "Recurring cadence in seconds (e.g. 1800=30m, 3600=1h, 86400=daily). "
+                    "Set this OR run_at+max_runs, not both."
+                ),
+            },
+            "run_at": {
+                "type": "string",
+                "description": (
+                    "ISO-8601 datetime to first run at (a delayed / one-shot start). Requires "
+                    "max_runs; don't also set interval."
+                ),
+            },
+            "max_runs": {
+                "type": "integer",
+                "description": (
+                    "With run_at: retire the collection after this many runs (1 = a one-time "
+                    "reminder)."
+                ),
+            },
+            "expires_at": {
+                "type": "string",
+                "description": (
+                    "OPTIONAL ISO-8601 datetime end condition — the collection archives itself "
+                    "when it passes."
+                ),
+            },
+            "notify": {
                 "type": "boolean",
                 "description": (
-                    "true = notify the user about new entries (they asked to be "
-                    "told / kept posted / alerted as new ones are found); false "
-                    "(default) = silent background collection they'll ask about "
-                    "later. Don't add a send_message(<message>) step to the prompt — "
-                    "published=true is how new finds reach the user."
+                    "true = tell the user about new/changed entries (they asked to be told / "
+                    "kept posted / alerted); false (default) = silent."
+                ),
+            },
+            "create_anyway": {
+                "type": "boolean",
+                "description": (
+                    "Leave unset. true = deliberately create despite a near-duplicate flag."
                 ),
             },
         },
-        "required": [
-            "name",
-            "description",
-            "inclusion",
-            "recall",
-            "extraction_prompt",
-            "collector_interval_seconds",
-            "intent",
-        ],
+        "required": ["name", "intent", "skill"],
     }
     args_model = CollectionCreateArgs
 
@@ -584,27 +565,132 @@ class CollectionCreateTool(MemoryTool):
         self._created_by_run_id = created_by_run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
+        """Instantiate a collection from a skill: parse the trigger, resolve the
+        skill, bind + render its steps, refuse a near-duplicate, then create and
+        echo.  Reads as a table of contents; each step is one short method."""
         args = CollectionCreateArgs(**kwargs)
-        if rejection := _reject_unknown_extraction_tools(
-            self._db, self._llm_client, args.extraction_prompt
-        ):
-            return rejection
-        description_embedding = await embed_text(self._llm_client, args.description)
+        parsed = self._parse_trigger(args)
+        if isinstance(parsed, ToolResult):
+            return parsed
+        trigger, expires_at = parsed
+        resolution = await self._resolve_skill(args.skill)
+        skill = resolution.skill
+        if skill is None:
+            # AMBIGUOUS / NO_SKILL_FOUND / EMBED_FAILED — nothing created.
+            return self._unresolved_result(args.skill, resolution)
+        prompt, render_error = self._render_prompt(skill, args.params)
+        if render_error is not None:
+            return render_error
+        return await self._instantiate(args, skill, prompt, trigger, expires_at)
+
+    def _parse_trigger(
+        self, args: CollectionCreateArgs
+    ) -> ToolResult | tuple[Trigger, datetime | None]:
+        """The exclusive trigger union + optional end condition, parsed before any
+        skill work so a bad schedule fails fast.  Returns the failed ``ToolResult``
+        on a ``TriggerError``, else the ``(trigger, expires_at)`` pair.  The once
+        form is paced at the dispatcher tick."""
+        try:
+            trigger = build_trigger(
+                args.interval, args.run_at, args.max_runs, self._once_interval()
+            )
+            expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
+        except TriggerError as exc:
+            return ToolResult(message=str(exc), success=False)
+        return trigger, expires_at
+
+    @staticmethod
+    def _once_interval() -> int:
+        """The cadence a once-shaped (``run_at``) trigger is paced at — the
+        dispatcher tick from runtime config (eligible each tick after ``run_at``
+        until ``max_runs``), reused rather than a new invented default."""
+        return int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
+
+    async def _resolve_skill(self, query: str) -> SkillResolution:
+        """Resolve the ``skill`` arg by name-or-meaning (#1591): an exact name is a
+        clean MATCHED; otherwise rank the registry by meaning — any positive
+        candidate is AMBIGUOUS (never silently pick a fuzzy match), none is
+        NO_SKILL_FOUND, a transient embed miss is EMBED_FAILED."""
+        exact = self._db.skills.get(query)
+        if exact is not None:
+            return SkillResolution(kind=SkillResolutionKind.MATCHED, skill=exact)
+        vec = await embed_text(self._llm_client, query)
+        if vec is None:
+            return SkillResolution(kind=SkillResolutionKind.EMBED_FAILED)
+        candidates = self._db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MINE_MATCH_LIMIT)
+        if not candidates:
+            return SkillResolution(kind=SkillResolutionKind.NO_SKILL_FOUND)
+        return SkillResolution(kind=SkillResolutionKind.AMBIGUOUS, candidates=candidates)
+
+    def _unresolved_result(self, query: str, resolution: SkillResolution) -> ToolResult:
+        """The enumerated result for a resolution that produced no skill: the
+        AMBIGUOUS candidates, the NO_SKILL_FOUND elicitation, or the transient
+        EMBED_FAILED retry — nothing is created in any case."""
+        if resolution.kind == SkillResolutionKind.AMBIGUOUS:
+            return ToolResult(message=render_ambiguous(query, resolution.candidates), success=False)
+        if resolution.kind == SkillResolutionKind.NO_SKILL_FOUND:
+            return ToolResult(message=render_no_skill_found(query), success=False)
+        return ToolResult(message=_SKILL_RESOLVE_EMBED_FAILURE.format(query=query), success=False)
+
+    def _render_prompt(self, skill: Skill, params: dict[str, str]) -> tuple[str, ToolResult | None]:
+        """Validate the bound params against the skill's holes, then render steps +
+        params into the numbered TEXT ``extraction_prompt``.  An unbound required
+        hole → the actionable naming error; a rendered prompt naming an unrunnable
+        tool → the same authoring-time rejection ``collection_update`` uses."""
+        missing = unbound_required_holes(holes_from_json(skill.holes), params)
+        if missing:
+            return "", ToolResult(message=render_unbound_holes(skill.name, missing), success=False)
+        prompt = render_skill(steps_from_json(skill.steps), params)
+        if (too_short := check_extraction_prompt(prompt)) is not None:
+            return "", ToolResult(message=too_short, success=False)
+        rejection = _reject_unknown_extraction_tools(self._db, self._llm_client, prompt)
+        return prompt, rejection
+
+    async def _instantiate(
+        self,
+        args: CollectionCreateArgs,
+        skill: Skill,
+        extraction_prompt: str,
+        trigger: Trigger,
+        expires_at: datetime | None,
+    ) -> ToolResult:
+        """Idempotency at birth (#1567), then create the collection and echo it.
+
+        ``intent`` doubles as the routing/dedup ``description``; ``notify`` mirrors
+        into ``published`` for the interim delivery path (the live notifier drains
+        published collections until #1557 retires it)."""
+        description_embedding = await embed_text(self._llm_client, args.intent)
+        if not args.create_anyway:
+            dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
+            if dup is not None:
+                return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
-            args.description,
-            Inclusion(args.inclusion),
-            RecallMode(args.recall),
-            extraction_prompt=args.extraction_prompt,
-            collector_interval_seconds=args.collector_interval_seconds,
+            args.intent,
+            DEFAULT_INCLUSION,
+            DEFAULT_RECALL,
+            extraction_prompt=extraction_prompt,
+            collector_interval_seconds=trigger.collector_interval_seconds,
             description_embedding=description_embedding,
             intent=args.intent,
-            published=args.published,
+            published=args.notify,
+            notify=args.notify,
             created_by_run_id=self._created_by_run_id,
+            expires_at=expires_at,
+            run_at=trigger.run_at,
+            max_runs=trigger.max_runs,
         )
-        suffix = _description_degraded_suffix(args.description, description_embedding)
-        message = f"{_format_collection_echo(memory, 'Created')}{suffix}"
-        return ToolResult(message=message, mutated=True)
+        suffix = _description_degraded_suffix(args.intent, description_embedding)
+        echo = render_creation_echo(memory, skill.name, args.params)
+        return ToolResult(message=f"{echo}{suffix}", mutated=True)
+
+    @staticmethod
+    def _duplicate_result(dup: MemoryRow) -> ToolResult:
+        """The idempotency refusal — the tombstone confirm-shape for an archived
+        near-duplicate, the active-collection reuse refusal otherwise (#1567)."""
+        if dup.archived:
+            return ToolResult(message=render_tombstone_duplicate(dup), success=False)
+        return ToolResult(message=render_active_duplicate(dup), success=False)
 
 
 class LogCreateTool(MemoryTool):

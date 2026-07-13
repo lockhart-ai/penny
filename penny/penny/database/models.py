@@ -258,6 +258,14 @@ class MemoryRow(SQLModel, table=True):
     # each consumer keeping its own cursor.  Opt-in (default false).
     # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     published: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
+    # Emission-as-property (#1557, exposed by #1591's ``collection_create``): when
+    # true the collection notifies the user of new/changed entries.  Set once at
+    # creation from the ``notify`` arg.  ``published`` mirrors it for the interim
+    # delivery path (the live notifier consumer drains ``published`` collections)
+    # until #1557 retires that machinery and wires the run-time notify suffix off
+    # this column.  Migration 0085 seeds it from ``published``.  ``server_default``
+    # so raw-SQL inserts predating the column satisfy NOT NULL.
+    notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)
     collector_interval_seconds: int | None = Field(default=None)
     # The user's intended cadence — the value the collector snaps back to when a

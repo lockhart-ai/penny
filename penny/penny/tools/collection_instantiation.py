@@ -1,0 +1,272 @@
+"""The front door of collector creation (#1591, stage ⑤ of #1562 / epic #1554).
+
+A collection is never authored with an inline procedure any more — it is an
+*instantiation of a skill*: ``collection_create`` takes a ``skill`` (resolved by
+name or meaning), binds its parameter holes from ``params``, renders the skill's
+steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
+it at creation.  This module holds the pure, DB-free pieces of that flow so they
+are whole-render tested in isolation:
+
+* the **skill-resolution union** (``SkillResolutionKind`` — MATCHED / AMBIGUOUS /
+  NO_SKILL_FOUND / EMBED_FAILED) and its enumerated tool-result renders, including
+  the #1471 "walk me through it once" elicitation;
+* the **idempotency-at-birth** results (#1567) — the active-duplicate refusal and
+  the tombstone-duplicate confirm-shaped result, each naming the existing row and
+  the deliberate override;
+* the **trigger union** parse (``interval`` | ``run_at`` + ``max_runs``) and the
+  ``expires_at`` end condition;
+* the **creation echo** (skill · params · trigger · notify · expiry · the rendered
+  prompt), so the chat agent confirms back exactly what landed.
+
+The orchestration (embed, resolve, validate holes, dedup, create) lives on
+``CollectionCreateTool`` in :mod:`penny.tools.memory_tools`.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from enum import StrEnum
+
+from pydantic import BaseModel
+
+from penny.database.memory.types import Inclusion, RecallMode
+from penny.database.models import MemoryRow, Skill
+from penny.datetime_utils import format_log_timestamp
+
+# The collection's routing/recall policy is no longer model-facing (the ambient
+# inversion, #1555, left recall dark); a skill-instantiated watch is a user
+# research collection, so it takes the prior research-collection defaults —
+# surfaced in chat when the conversation matches, entries ranked by relevance.
+# Fixed here (the enum members, not bare literals), not guessed per call.
+DEFAULT_INCLUSION = Inclusion.RELEVANT
+DEFAULT_RECALL = RecallMode.RELEVANT
+
+
+# ── Skill resolution union ────────────────────────────────────────────────────
+
+
+class SkillResolutionKind(StrEnum):
+    """The closed set of outcomes when resolving the ``skill`` arg to a stored
+    skill (classify-then-act, the enumerated-cases doctrine).  MATCHED proceeds to
+    instantiation; AMBIGUOUS and NO_SKILL_FOUND are returned as tool results, never
+    silently resolved; EMBED_FAILED is the transient-embedding escape."""
+
+    MATCHED = "matched"
+    AMBIGUOUS = "ambiguous"
+    NO_SKILL_FOUND = "no_skill_found"
+    EMBED_FAILED = "embed_failed"
+
+
+class SkillResolution(BaseModel):
+    """One resolution outcome: the kind plus whichever payload it carries — the
+    matched ``skill`` (MATCHED) or the ranked ``candidates`` (AMBIGUOUS)."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    kind: SkillResolutionKind
+    skill: Skill | None = None
+    candidates: list[Skill] = []
+
+
+_AMBIGUOUS_HEADER = 'I know a few skills close to "{query}" — I won\'t guess which you mean:'
+_AMBIGUOUS_TAIL = (
+    "To use one, call collection_create again with skill='<its exact name>'. If none of "
+    "these is the process you mean, walk me through it once and I'll learn it as a new skill."
+)
+
+_NO_SKILL_FOUND = (
+    "I don't know how to \"{query}\" yet — there's no skill for it. Walk me through it once "
+    "and I'll learn it, then call skill_create(name=<title>, from_run=<that run's id>, "
+    "steps=<range>) to save it. After that, instantiating a collection from it is one call."
+)
+
+
+def render_ambiguous(query: str, candidates: list[Skill]) -> str:
+    """SKILL_AMBIGUOUS: the ranked candidates plus how to narrow (pass the exact
+    name) or teach a new one — never a silent pick."""
+    lines = [_AMBIGUOUS_HEADER.format(query=query)]
+    lines.extend(f"{i}. {skill.name} — {skill.intent}" for i, skill in enumerate(candidates, 1))
+    lines.append(_AMBIGUOUS_TAIL)
+    return "\n".join(lines)
+
+
+def render_no_skill_found(query: str) -> str:
+    """NO_SKILL_FOUND: the #1471 elicitation — ignorance becomes the trigger to
+    demonstrate-and-promote, with the exact next call named."""
+    return _NO_SKILL_FOUND.format(query=query)
+
+
+# ── Hole validation ───────────────────────────────────────────────────────────
+
+_UNBOUND_HOLES = (
+    "Can't instantiate '{skill}': the required parameter(s) {missing} aren't bound. Pass "
+    "them in params (e.g. params={{{example}}}), then call collection_create again."
+)
+
+
+def render_unbound_holes(skill_name: str, missing: list[str]) -> str:
+    """The hole-validation error: name every unbound required parameter and show
+    the exact ``params`` shape to supply (actionable-error contract)."""
+    named = ", ".join(missing)
+    example = ", ".join(f"'{name}': <value>" for name in missing)
+    return _UNBOUND_HOLES.format(skill=skill_name, missing=named, example=example)
+
+
+# ── Idempotency at birth (#1567) ──────────────────────────────────────────────
+
+_ACTIVE_DUPLICATE = (
+    "Already have a collection for this: '{name}' (active) — it covers the same thing, so I "
+    "didn't create a second one. Reuse it: read it with collection_read_latest('{name}'), or "
+    "adjust it with collection_update(name='{name}', ...). If this really is a distinct task, "
+    "create it deliberately with collection_create(..., create_anyway=true)."
+)
+
+_TOMBSTONE_DUPLICATE = (
+    "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
+    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, or "
+    "start a fresh one deliberately with collection_create(..., create_anyway=true)."
+)
+
+
+def render_active_duplicate(row: MemoryRow) -> str:
+    """The active-duplicate refusal (#1567): name the live collection and make
+    reuse the easy path, deliberate re-creation the explicit one."""
+    return _ACTIVE_DUPLICATE.format(name=row.name)
+
+
+def render_tombstone_duplicate(row: MemoryRow) -> str:
+    """The tombstone-duplicate confirm-shaped result (#1567): surface the archived
+    row and its archive time; unarchive or a deliberate override, never a silent
+    proceed.  The archive timestamp is ``updated_at`` (stamped at archive)."""
+    return _TOMBSTONE_DUPLICATE.format(
+        name=row.name, archived_at=format_log_timestamp(row.updated_at)
+    )
+
+
+# ── Trigger union (interval | run_at + max_runs) + end condition ──────────────
+
+
+class TriggerError(Exception):
+    """An actionable trigger/end-condition parse or validation failure — the tool
+    surfaces ``str(self)`` as the failed result."""
+
+
+class Trigger(BaseModel):
+    """The parsed, store-ready trigger: the cadence the collector paces on plus the
+    optional once-shaped overlay (``run_at`` + ``max_runs``)."""
+
+    collector_interval_seconds: int
+    run_at: datetime | None = None
+    max_runs: int | None = None
+
+
+def parse_datetime(value: str, field: str) -> datetime:
+    """Parse an ISO-8601 datetime arg (``run_at`` / ``expires_at``) into a
+    UTC-aware datetime; a naive value is assumed UTC.  Raises an actionable
+    ``TriggerError`` naming the field and the accepted shape."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise TriggerError(
+            f"Couldn't read {field}={value!r} — write it as an ISO-8601 datetime like "
+            "'2026-07-20T14:00:00Z' (or 'YYYY-MM-DD HH:MM')."
+        ) from None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def build_trigger(
+    interval: int | None,
+    run_at: str | None,
+    max_runs: int | None,
+    once_form_interval_seconds: int,
+) -> Trigger:
+    """Resolve the exclusive trigger union into a store-ready ``Trigger``.
+
+    Exactly one form: ``interval`` (recurring — paces every ``interval`` seconds),
+    OR ``run_at`` + ``max_runs`` (a delayed/one-shot schedule that starts at
+    ``run_at`` and retires after ``max_runs`` runs).  The once form has no cadence
+    arg, so it is paced at ``once_form_interval_seconds`` (the dispatcher tick —
+    eligible each tick after ``run_at`` until the quota, so a ``max_runs=1``
+    reminder fires once then archives).  The collector requires a non-null cadence
+    to ever run, so a never-firing trigger is refused here, not created silently
+    (visible degradation)."""
+    if interval is not None and run_at is not None:
+        raise TriggerError(
+            "Pick one trigger: either interval (a recurring cadence) OR run_at + max_runs "
+            "(a scheduled/one-shot run) — not both."
+        )
+    if interval is not None:
+        if interval < 1:
+            raise TriggerError("interval must be at least 1 second.")
+        return Trigger(collector_interval_seconds=interval)
+    if run_at is not None:
+        if max_runs is None or max_runs < 1:
+            raise TriggerError(
+                "A run_at schedule needs max_runs (how many times to run, at least 1) — "
+                "e.g. run_at='2026-07-20T09:00:00Z', max_runs=1 for a one-time reminder."
+            )
+        return Trigger(
+            collector_interval_seconds=once_form_interval_seconds,
+            run_at=parse_datetime(run_at, "run_at"),
+            max_runs=max_runs,
+        )
+    raise TriggerError(
+        "This collection has no trigger — set interval (seconds) for a recurring collector, "
+        "or run_at + max_runs for a scheduled/one-shot run."
+    )
+
+
+# ── Creation echo ─────────────────────────────────────────────────────────────
+
+
+def humanize_interval(seconds: int | None) -> str:
+    """Render a collector interval as a human cadence (e.g. '1h', '30m', '1d',
+    'unset').  The single implementation, shared with the collection_update echo in
+    ``memory_tools``."""
+    if not seconds:
+        return "unset"
+    for unit_seconds, suffix in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds % unit_seconds == 0:
+            return f"{seconds // unit_seconds}{suffix}"
+    return f"{seconds}s"
+
+
+def _trigger_line(row: MemoryRow) -> str:
+    """The echo's one-line trigger summary — recurring cadence, or the once-shaped
+    ``runs at <run_at>, <n> time(s)`` schedule."""
+    if row.run_at is not None:
+        times = "once" if row.max_runs == 1 else f"{row.max_runs} times"
+        return f"  trigger: runs at {format_log_timestamp(row.run_at)}, {times}"
+    return f"  trigger: every {humanize_interval(row.collector_interval_seconds)}"
+
+
+def _params_line(params: dict[str, str]) -> str:
+    if not params:
+        return "  params: none"
+    rendered = ", ".join(f"{key}={value}" for key, value in params.items())
+    return f"  params: {rendered}"
+
+
+def _expires_line(row: MemoryRow) -> str:
+    if row.expires_at is None:
+        return "  expires: never"
+    return f"  expires: {format_log_timestamp(row.expires_at)}"
+
+
+def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
+    """The structured creation echo — skill, bound params, trigger, notify, expiry,
+    and the full rendered ``extraction_prompt`` — so the chat agent confirms back
+    exactly what landed without confabulating a field."""
+    prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
+    lines = [
+        f"Created collection '{row.name}' from skill '{skill_name}':",
+        f"  intent: {row.intent}",
+        f"  skill: {skill_name}",
+        _params_line(params),
+        _trigger_line(row),
+        f"  notify: {row.notify}",
+        _expires_line(row),
+        "  extraction_prompt: |",
+        f"    {prompt}",
+    ]
+    return "\n".join(lines)
