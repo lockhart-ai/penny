@@ -22,14 +22,18 @@ from penny.database.skills import (
     SkillSubstitution,
     distill_steps,
     render_skill,
+    unbound_required_holes,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.tools.skill_tools import (
-    _FAILURE_MARKERS,
-    SkillCreateTool,
-    SkillReadTool,
-    _failure_clause,
+from penny.tools.base import (
+    FRAMEWORK_NARRATION_EXCEPTION,
+    FRAMEWORK_NARRATION_INVALID_ARGS,
+    FRAMEWORK_NARRATION_NOT_FOUND,
+    FRAMEWORK_NARRATION_TIMEOUT,
+    RESULT_NARRATION_FAILURE,
 )
+from penny.tools.browse import NARRATION_FAILURE_SUFFIX
+from penny.tools.skill_tools import SkillCreateTool, SkillReadTool, _is_failure_frame
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -66,8 +70,8 @@ def _make_db(tmp_path) -> Database:
 
 
 def _migrated_db(tmp_path) -> Database:
-    """A DB built exactly like prod (create_tables then migrate) so the seed
-    library is the one migration 0084 ships."""
+    """A DB built exactly like prod (create_tables then migrate) — what a fresh
+    install's skill registry actually contains (migration 0084: table, no rows)."""
     db = Database(str(tmp_path / "seeded.db"))
     db.create_tables()
     migrate(db.db_path)
@@ -145,6 +149,17 @@ _MONEY_LITERAL = (
     "entries=[{'key': 'Cinder Peak elevation', 'content': the value from step 1}])"
 )
 
+# The WHOLE skill_create result — what the user sees of what was learned: the
+# lead, the identity/intent/holes lines, and the with-holes recipe.
+_CREATE_RESULT_LITERAL = (
+    "Learned skill 'Watch elevation'.\n"
+    "skill 'Watch elevation'\n"
+    f"intent: {_UTTERANCE}\n"
+    "holes: queries (required)\n"
+    "steps:\n"
+    f"{_WITH_HOLES}"
+)
+
 
 def test_render_skill_with_holes_is_the_template():
     """An unbound skill renders holes as ``{name}`` placeholders and the binding as
@@ -175,6 +190,10 @@ def test_distill_classifies_all_three_provenance_classes():
 
     # One parameter, deduped across the two places the utterance value appears.
     assert holes == [SkillHole(name="queries", required=True)]
+    # The #1591 instantiation rule lives with the holes: an unbound required hole
+    # is named; a bound one isn't.
+    assert unbound_required_holes(holes, {}) == ["queries"]
+    assert unbound_required_holes(holes, {"queries": "Cinder Peak elevation"}) == []
 
     # Step 1: the query is a HOLE (verbatim in the utterance); the extract
     # instruction is a CONSTANT (never seen, so no substitution).
@@ -215,8 +234,7 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
     result = await tool.execute(name="Watch elevation", from_run="run-A", steps="1-2")
 
     assert result.success and result.mutated
-    assert "Learned skill 'Watch elevation'." in result.message
-    assert "holes: queries (required)" in result.message
+    assert result.message == _CREATE_RESULT_LITERAL
 
     stored = db.skills.get("Watch elevation")
     assert stored is not None
@@ -344,47 +362,48 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
     assert not missing.success and "No skill named 'nope'" in missing.message
 
 
-# ── The seed library: pinned renders ──────────────────────────────────────────
+# ── The empty registry: honest empty state, no seeds ──────────────────────────
 
-_SEED_RENDERS = {
-    "Watch a page field": (
-        "1. browse(queries=[{url}], extract={field})\n"
-        "2. collection_write(memory={collection}, "
-        "entries=[{'key': {field}, 'content': the value from step 1}])"
-    ),
-    "Feed or news digest": (
-        "1. browse(queries=[{topic}], extract='the notable new items and their sources')\n"
-        "2. collection_write(memory={collection}, "
-        "entries=[{'key': {topic}, 'content': the value from step 1}])"
-    ),
-    "Research and notify": (
-        "1. browse(queries=[{topic}], "
-        "extract='a notable new finding worth sharing, with its source')\n"
-        "2. collection_write(memory={collection}, "
-        "entries=[{'key': {topic}, 'content': the value from step 1}])"
-    ),
-}
+# Pinned literal: the honest empty-registry listing.  Migration 0084 ships the
+# skill table EMPTY (no seed library — every skill enters through skill_create),
+# so this is what a fresh install's skill_read() returns.
+_EMPTY_LISTING = (
+    "No skills yet — teach one by demonstrating a flow, then "
+    "skill_create(name=<title>, from_run=<run id>, steps=<range>)."
+)
 
 
-def test_seed_library_renders_are_pinned(tmp_path):
-    """The hand-authored seeds (migration 0084) render to their exact recipes —
-    the sanctioned certified-by-execution exception, shipped as universal data."""
+@pytest.mark.asyncio
+async def test_fresh_migrated_registry_is_empty_and_reads_honestly(tmp_path):
+    """A prod-identical DB (create_tables + migrate) has the skill table and ZERO
+    rows — no seeds — and skill_read() renders the honest empty state verbatim."""
     db = _migrated_db(tmp_path)
-    for name, expected in _SEED_RENDERS.items():
-        skill = db.skills.get(name)
-        assert skill is not None and skill.author == "system"
-        assert render_skill(steps_from_json(skill.steps)) == expected
+    assert db.skills.list_all() == []
+    listing = await SkillReadTool(db).execute()
+    assert listing.success
+    assert listing.message == _EMPTY_LISTING
 
 
 # ── Certified-by-execution: markers track the shared templates ────────────────
 
 
 def test_failure_markers_track_templates():
-    """The certified check reads failure from the shared narration clauses; this
-    guards them against silent drift."""
-    from penny.tools.base import RESULT_NARRATION_FAILURE
-
-    assert _failure_clause(RESULT_NARRATION_FAILURE) in _FAILURE_MARKERS
-    # A generic tool failure frame is detected; a success frame is not.
-    assert any(m in "You tried to use `browse` but it didn't work:" for m in _FAILURE_MARKERS)
-    assert not any(m in _BROWSE_OK for m in _FAILURE_MARKERS)
+    """The certified check derives its markers from the SHARED narration templates
+    (never hand-copied strings), so a frame from EVERY failure source is detected —
+    a wording change moves the marker with the template instead of silently
+    defeating the gate — and a success frame (or the raw extracted value) never is.
+    A missing result also reads as uncertified (the call never confirmed execution)."""
+    failure_frames = [
+        RESULT_NARRATION_FAILURE.format(tool_name="browse"),
+        FRAMEWORK_NARRATION_NOT_FOUND.format(tool_name="browze"),
+        FRAMEWORK_NARRATION_TIMEOUT.format(tool_name="browse"),
+        FRAMEWORK_NARRATION_EXCEPTION.format(tool_name="browse", error="boom"),
+        FRAMEWORK_NARRATION_INVALID_ARGS.format(tool_name="browse"),
+        f"You searched for 'x' {NARRATION_FAILURE_SUFFIX} (browse result)",
+    ]
+    for frame in failure_frames:
+        assert _is_failure_frame(frame), frame
+    assert _is_failure_frame(None)
+    assert _is_failure_frame("")
+    assert not _is_failure_frame(_BROWSE_OK)
+    assert not _is_failure_frame(_WRITE_OK)

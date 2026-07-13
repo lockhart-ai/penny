@@ -65,7 +65,7 @@ _NARRATION_SEARCHED = "You searched for {queries}"
 _NARRATION_OPENED = "You opened {urls}"
 _NARRATION_ALSO_OPENED = "and opened {urls}"
 _NARRATION_LOOKED_UP = "You looked things up"
-_NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
+NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
 
 # ── Micro-context (extract) render forms ──────────────────────────────────────
 # When a browse call carries an ``extract`` instruction, the page body never
@@ -255,7 +255,7 @@ class BrowseTool(Tool):
         action = cls._browse_action_clause(searches, reads)
         if result.success:
             return action
-        return f"{action} {_NARRATION_FAILURE_SUFFIX}"
+        return f"{action} {NARRATION_FAILURE_SUFFIX}"
 
     @staticmethod
     def _browse_action_clause(searches: list[str], reads: list[str]) -> str:

@@ -30,12 +30,14 @@ from penny.database.skills import (
 )
 from penny.llm.similarity import embed_text
 from penny.tools.base import (
+    FRAMEWORK_NARRATION_EXCEPTION,
     FRAMEWORK_NARRATION_INVALID_ARGS,
     FRAMEWORK_NARRATION_NOT_FOUND,
     FRAMEWORK_NARRATION_TIMEOUT,
     RESULT_NARRATION_FAILURE,
     Tool,
 )
+from penny.tools.browse import NARRATION_FAILURE_SUFFIX
 from penny.tools.models import ToolResult
 from penny.tools.skill_args import SkillCreateArgs, SkillReadArgs
 
@@ -49,30 +51,42 @@ logger = logging.getLogger(__name__)
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 
 
+class SkillCreateError(Exception):
+    """An actionable ``skill_create`` refusal — ``str(self)`` is the model-readable
+    message, returned verbatim as the failed ``ToolResult``.
+
+    The ``MemoryAccessError`` pattern: the selection/certification helpers raise,
+    ``execute`` catches once — no string-typed sentinel returns in the success
+    channel."""
+
+
 # ── Certified-by-execution: read each selected step's result frame ────────────
 #
 # The ledger stores only the framed tool-result TEXT (#1578 gave persisted
 # ordinals + the canonical projection, not a per-call success bit), so "did this
 # call succeed?" is read from the failure clauses the shared narration templates
 # emit — every ``to_result_narration`` failure branch ends "…but it didn't work:",
-# and the framework/browse failures have their own fixed clauses.  Sourced from
-# the templates so a wording change can't silently defeat the check (guarded by
-# ``test_skill_failure_markers_track_templates``).
+# and the framework/browse failures have their own fixed clauses.  Every marker is
+# DERIVED from the imported template/constant it tracks (never hand-copied), so a
+# wording change moves the marker with it (behaviour pinned by
+# ``test_failure_markers_track_templates``).
 
 
 def _failure_clause(template: str) -> str:
     """The fixed clause a failure frame appends after the backticked tool name —
-    the drift-proof marker (the tool name is the only variable part)."""
-    return template.format(tool_name="x").split("`")[-1].strip()
+    the drift-proof marker.  The variable parts (tool name, error detail) and the
+    trailing punctuation are stripped, leaving the invariant middle."""
+    rendered = template.format(tool_name="x", error="")
+    return rendered.split("`")[-1].strip().rstrip(" .:")
 
 
 _FAILURE_MARKERS = (
     _failure_clause(RESULT_NARRATION_FAILURE),  # every to_result_narration failure branch
     _failure_clause(FRAMEWORK_NARRATION_NOT_FOUND),
     _failure_clause(FRAMEWORK_NARRATION_TIMEOUT),
+    _failure_clause(FRAMEWORK_NARRATION_EXCEPTION),
     _failure_clause(FRAMEWORK_NARRATION_INVALID_ARGS),
-    "but it errored",  # FRAMEWORK_NARRATION_EXCEPTION (carries an {error} tail)
-    "but couldn't read anything",  # BrowseTool total-failure (browse.py)
+    NARRATION_FAILURE_SUFFIX,  # BrowseTool's total-failure clause
 )
 
 
@@ -89,23 +103,26 @@ def _is_failure_frame(result: str | None) -> bool:
 _RANGE_HELP = 'write it as a range like "2-5" (steps 2 through 5) or a single step like "3".'
 
 
-def _parse_range(raw: str) -> tuple[int, int] | str:
-    """Parse a ``steps`` argument into ``(start, end)``, or return an actionable
-    error string.  Accepts ``"N"``, ``"N-M"``, and ``"N..M"``."""
+def _parse_range(raw: str) -> tuple[int, int]:
+    """Parse a ``steps`` argument into ``(start, end)``; raises an actionable
+    ``SkillCreateError`` on a malformed range.  Accepts ``"N"``, ``"N-M"``,
+    and ``"N..M"``."""
     text = raw.strip().replace("..", "-")
     parts = text.split("-")
     try:
         bounds = [int(part.strip()) for part in parts]
     except ValueError:
-        return f"Couldn't read steps={raw!r} — {_RANGE_HELP}"
+        raise SkillCreateError(f"Couldn't read steps={raw!r} — {_RANGE_HELP}") from None
     if len(bounds) == 1:
         start = end = bounds[0]
     elif len(bounds) == 2:
         start, end = bounds
     else:
-        return f"Couldn't read steps={raw!r} — {_RANGE_HELP}"
+        raise SkillCreateError(f"Couldn't read steps={raw!r} — {_RANGE_HELP}")
     if start < 1 or end < start:
-        return f"steps={raw!r} isn't a valid range (start≥1, end≥start) — {_RANGE_HELP}"
+        raise SkillCreateError(
+            f"steps={raw!r} isn't a valid range (start≥1, end≥start) — {_RANGE_HELP}"
+        )
     return start, end
 
 
@@ -141,7 +158,11 @@ def _render_skill_full(skill: Skill) -> str:
 
 
 class SkillCreateTool(Tool):
-    """Author a skill by reference to one verified run's ledger."""
+    """Author a skill by reference to one verified run's ledger.
+
+    A skill's step count is bounded by the shared step budget of the run that
+    demonstrates it (``MAX_STEPS`` == ``BACKGROUND_MAX_STEPS`` by default —
+    teaching happens in chat, so teachable == executable)."""
 
     name = "skill_create"
     description = (
@@ -200,27 +221,28 @@ class SkillCreateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = SkillCreateArgs(**kwargs)
-        parsed = _parse_range(args.steps)
-        if isinstance(parsed, str):
-            return ToolResult(message=parsed, success=False)
-        start, end = parsed
+        try:
+            return await self._create_from_ledger(args)
+        except SkillCreateError as exc:
+            return ToolResult(message=str(exc), success=False)
+
+    async def _create_from_ledger(self, args: SkillCreateArgs) -> ToolResult:
+        """The whole authoring flow, reading like a table of contents: parse the
+        range, load + project the run, select the slice, certify it, distill and
+        persist.  Every refusal is a ``SkillCreateError`` caught once above."""
+        start, end = _parse_range(args.steps)
         prompts = self._db.messages.get_run_prompts(args.from_run)
         if not prompts:
-            return ToolResult(message=self._no_run_message(args.from_run), success=False)
+            raise SkillCreateError(self._no_run_message(args.from_run))
         projection = project_run(prompts)
         selected = self._select(projection, start, end)
-        if isinstance(selected, str):
-            return ToolResult(message=selected, success=False)
-        if failure := self._uncertified(selected, projection, args.from_run):
-            return ToolResult(message=failure, success=False)
+        self._require_certified(selected, projection, args.from_run)
         return await self._create(args.name, args.from_run, projection, selected)
 
-    def _select(
-        self, projection: RunProjection, start: int, end: int
-    ) -> list[RunProjectionStep] | str:
+    def _select(self, projection: RunProjection, start: int, end: int) -> list[RunProjectionStep]:
         """The run's non-``done`` steps whose ordinal is in ``[start, end]`` — a
         contiguous slice of surviving ordinals (a ``done`` in the range is a gap,
-        never renumbered).  An error string when the range names no runnable step."""
+        never renumbered).  Raises when the range names no runnable step."""
         chosen = [
             step
             for step in projection.steps
@@ -231,32 +253,30 @@ class SkillCreateTool(Tool):
         available = ", ".join(
             str(step.ordinal) for step in projection.steps if step.call.name != _DONE_TOOL
         )
-        return (
+        raise SkillCreateError(
             f"No tool-call steps in range {start}-{end} for this run. Its steps are: "
             f"{available or '(none)'}. Pick a range that covers the steps you want."
         )
 
-    def _uncertified(
+    def _require_certified(
         self, selected: list[RunProjectionStep], projection: RunProjection, from_run: str
-    ) -> str | None:
-        """The certified-by-execution gate: an error naming the first selected step
-        whose call did NOT succeed in the source run, or ``None`` when every
-        selected call succeeded (a skill only contains calls that worked).
+    ) -> None:
+        """The certified-by-execution gate: raises naming the first selected step
+        whose call did NOT succeed in the source run (a skill only contains calls
+        that worked).
 
-        This invariant governs the ``skill_create`` path only.  The hand-authored
-        seed library (migration 0084) is the sanctioned exception — it is inserted
-        directly, its demonstration being its authoring — and so never passes
-        through this gate."""
+        The invariant holds universally: ``skill_create`` is the ONLY write path
+        into a skill (there is no seed library — migration 0084 ships the table
+        empty), so every stored step passed this gate."""
         for step in selected:
             result = projection.results.get(step.call_id) if step.call_id else None
             if _is_failure_frame(result):
-                return (
+                raise SkillCreateError(
                     f"Can't save this skill: step {step.ordinal} "
                     f"({step.call.name}) didn't succeed in run {from_run}, and a skill "
                     "may only contain calls that worked. Re-demonstrate the flow so "
                     "every step succeeds, then save that run's range."
                 )
-        return None
 
     async def _create(
         self,

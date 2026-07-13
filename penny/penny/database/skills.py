@@ -89,7 +89,8 @@ class SkillHole(BaseModel):
     """A declared parameter of a skill — its ``name`` and whether it is
     ``required`` (an unbound required hole is a validation error at instantiation,
     #1591).  Holes inferred from a demonstration are required by construction (the
-    user supplied a concrete value); optional holes are hand-authored (seeds)."""
+    user supplied a concrete value); ``required`` stays declared per the #1590
+    shape so a future authoring path can mark a hole optional."""
 
     name: str
     required: bool = True

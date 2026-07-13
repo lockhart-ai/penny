@@ -389,12 +389,11 @@ class Skill(SQLModel, table=True):
     unique key.
 
     ``description`` doubles as the resolution anchor (``description_embedding``,
-    populated at write; NULL for migration-seeded rows, to be backfilled by
-    #1591's resolution wiring).  ``source_run_id`` is the demonstrated run — the
-    triggering user message is reachable *through* the run.  ``author`` is
-    ``'system'`` for the hand-authored seed library (the sanctioned exception to
-    certified-by-execution — the invariant governs the ``skill_create`` path, and
-    a seed's demonstration is its authoring), otherwise the teaching agent.
+    populated at write).  ``source_run_id`` is the demonstrated run — the
+    triggering user message is reachable *through* the run.  ``author`` is the
+    teaching agent.  There is no seed library (migration 0084 ships the table
+    empty), so the certified-by-execution invariant holds universally — every
+    stored step succeeded in its source run.
     """
 
     __tablename__ = "skill"
