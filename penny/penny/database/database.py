@@ -16,6 +16,7 @@ from penny.database.message_store import MessageStore
 from penny.database.mutation_store import MutationStore
 from penny.database.preference_store import PreferenceStore
 from penny.database.send_queue_store import SendQueueStore
+from penny.database.skill_store import SkillStore
 from penny.database.thought_store import ThoughtStore
 from penny.database.user_store import UserStore
 
@@ -35,6 +36,7 @@ class Database:
         mutations: Registry-mutation event ledger (create/update/archive provenance)
         preferences: User preference CRUD and dedup
         send_queue: Durable outbound message queue, drained on the send cooldown
+        skills: Versionless skill registry (certified-by-execution tool-call scripts)
         thoughts: Inner monologue persistence (append-only thought log)
         users: UserInfo, sender queries, mute state
     """
@@ -56,6 +58,7 @@ class Database:
         self.messages = MessageStore(self.engine)
         self.preferences = PreferenceStore(self.engine)
         self.send_queue = SendQueueStore(self.engine)
+        self.skills = SkillStore(self.engine)
         self.thoughts = ThoughtStore(self.engine)
         self.users = UserStore(self.engine)
 

@@ -137,9 +137,16 @@ def _validate_unit_float(value: str) -> float:
 
 ConfigParam(
     key="MAX_STEPS",
-    description="Max agent loop steps per chat message cycle",
+    description=(
+        "Max agent loop steps per chat message cycle. Equal to "
+        "BACKGROUND_MAX_STEPS by default: teaching (the consolidation pass "
+        "skill_create selects from) runs in a chat turn, so any sequence "
+        "longer than chat's budget would be unteachable while a collector "
+        "could still execute it — equal budgets give both entry points the "
+        "same power."
+    ),
     type=int,
-    default=8,
+    default=20,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
 )
@@ -158,9 +165,9 @@ ConfigParam(
 ConfigParam(
     key="BACKGROUND_MAX_STEPS",
     description=(
-        "Max agent loop steps per background-agent cycle. Higher than chat "
-        "since background agents navigate the unified tool surface to "
-        "complete their flow."
+        "Max agent loop steps per background-agent cycle. Equal to the chat "
+        "MAX_STEPS by default — teaching happens in chat, so the two entry "
+        "points share one step budget (teachable == executable)."
     ),
     type=int,
     default=20,

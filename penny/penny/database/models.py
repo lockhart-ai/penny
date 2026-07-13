@@ -369,6 +369,50 @@ class MutationEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
 
 
+class Skill(SQLModel, table=True):
+    """A named, immutable skill — a certified-by-execution script of tool-call
+    steps distilled from ONE demonstrated run (#1590, stage ④ of #1562).
+
+    A skill is authored only by reference to the ledger
+    (``skill_create(name, from_run, steps=<range>)``): the system copies a
+    contiguous, every-step-succeeded slice of a verified run's tool calls into
+    ``steps`` (the ``LoggedToolCall`` shape as JSON) and factors each argument by
+    provenance into declared ``holes`` (JSON) — a value from the user's utterance
+    becomes a parameter, a value from a prior step's result a binding, everything
+    else a constant.  #1591's ``collection_create`` renders ``steps`` + bound
+    params into the collection's numbered TEXT ``extraction_prompt`` at creation.
+
+    **One row per name — no versioning.**  Collections carry the rendered text
+    snapshotted at creation, so a re-teach never retroactively changes an
+    instantiation; the version pin had no remaining job.  ``skill_create`` with an
+    existing name REPLACES the row (steps/holes/provenance), so ``name`` is the
+    unique key.
+
+    ``description`` doubles as the resolution anchor (``description_embedding``,
+    populated at write).  ``source_run_id`` is the demonstrated run — the
+    triggering user message is reachable *through* the run.  ``author`` is the
+    teaching agent.  There is no seed library (migration 0084 ships the table
+    empty), so the certified-by-execution invariant holds universally — every
+    stored step succeeded in its source run.
+    """
+
+    __tablename__ = "skill"
+
+    name: str = Field(primary_key=True)
+    steps: str  # JSON-serialized list[SkillStep]
+    holes: str  # JSON-serialized list[SkillHole]
+    intent: str
+    description: str
+    description_embedding: bytes | None = None
+    source_run_id: str | None = Field(default=None, index=True)
+    author: str = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"server_default": "1970-01-01 00:00:00"},
+    )
+
+
 class AgentCursor(SQLModel, table=True):
     """Per-agent read cursor into a log-shaped memory.
 

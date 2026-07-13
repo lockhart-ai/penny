@@ -2045,6 +2045,8 @@ class TestFactory:
         "collection_archive",
         "collection_unarchive",
         "log_create",
+        "skill_create",
+        "skill_read",
         # Entry mutations (contents)
         "collection_write",
         "update_entry",

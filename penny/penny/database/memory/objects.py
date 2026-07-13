@@ -1421,6 +1421,50 @@ def render_run_calls(prompts: list[PromptLog]) -> str:
     return "\n".join(line for line in lines if line)
 
 
+class RunProjectionStep(BaseModel):
+    """One tool call of a run, with its absolute ordinal — the selection
+    coordinate ``skill_create`` addresses (#1590).  ``ordinal`` is the run's FULL
+    tool-call position (``done`` consumes one, matching ``render_run_calls``); a
+    filtered view shows gaps, never renumbers."""
+
+    ordinal: int
+    call_id: str | None
+    call: LoggedToolCall
+
+
+class RunProjection(BaseModel):
+    """A run decomposed for skill authoring — its triggering user message, every
+    tool call with its absolute ordinal, and each call's framed result text
+    (#1590).  The structural decomposition only: it makes NO success judgment (the
+    certified-by-execution check reads the result frames in the tool layer, which
+    owns the narration templates)."""
+
+    origin_message: str
+    steps: list[RunProjectionStep]
+    results: dict[str, str]
+
+
+def project_run(prompts: list[PromptLog]) -> RunProjection:
+    """Project a run into ``(origin_message, ordinaled steps, results-by-call-id)``
+    — the raw material ``skill_create`` selects a contiguous range from (#1590).
+
+    The step ordinals are the run's FULL tool-call ordinals (composed from the same
+    ``_run_logged_steps`` ``render_run_calls`` numbers against), so a range the
+    model reads there names the same steps here.  Results are the accumulated
+    tool-turn contents keyed by call id (the ``_tool_results_by_id`` view)."""
+    if not prompts:
+        return RunProjection(origin_message="", steps=[], results={})
+    steps = [
+        RunProjectionStep(ordinal=index, call_id=call_id, call=call)
+        for index, (call_id, call) in enumerate(_run_logged_steps(prompts), start=1)
+    ]
+    return RunProjection(
+        origin_message=_opening_user_message(prompts),
+        steps=steps,
+        results=_tool_results_by_id(prompts),
+    )
+
+
 class RunLog(Log):
     """Read facade over ``promptlog`` for the ``collector-runs`` log.
 
@@ -1558,4 +1602,7 @@ __all__ = [
     "LoggedToolCall",
     "MessageLogMemory",
     "RunLog",
+    "RunProjection",
+    "RunProjectionStep",
+    "project_run",
 ]

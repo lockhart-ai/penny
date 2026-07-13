@@ -76,6 +76,7 @@ from penny.tools.memory_args import (
     UpdateEntryArgs,
 )
 from penny.tools.models import ToolResult
+from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
@@ -2688,6 +2689,11 @@ def build_memory_tools(
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),
+        # Skill authoring / inspection rides the chat (lifecycle) surface — the user
+        # teaches skills by demonstration; a cadence collector follows the rendered
+        # text prompt and never touches the skill registry (#1590).
+        SkillCreateTool(db, llm_client, author=agent_name),
+        SkillReadTool(db),
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
