@@ -844,6 +844,19 @@ class MessageStore:
             grouped = self._group_runs(session, run_ids)
         return [grouped[run_id] for run_id in run_ids if run_id in grouped]
 
+    def get_run_prompts(self, run_id: str) -> list[PromptLog]:
+        """Every prompt of one run, ascending time order — the raw material
+        ``skill_create`` projects into ordinaled tool calls (#1590).  Empty when
+        the run id is unknown, so the tool surfaces an actionable 'no such run'."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(PromptLog)
+                    .where(PromptLog.run_id == run_id)
+                    .order_by(PromptLog.timestamp.asc())
+                ).all()
+            )
+
     def recent_collector_runs(self, limit: int) -> list[RunActivity]:
         """The most recent completed collector runs across ALL collections, newest
         first — the run half of the self-state header's activity block (#1555).

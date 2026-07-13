@@ -1,0 +1,390 @@
+"""Skill substrate tests (#1590) — the render, provenance inference, certified-by
+-execution, and the seed library, driven through the tool entry points with
+deterministic fixtures and fictional content only.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, cast
+
+import pytest
+
+from penny.constants import PennyConstants
+from penny.database import Database
+from penny.database.migrate import migrate
+from penny.database.skill_store import steps_from_json
+from penny.database.skills import (
+    DistillInput,
+    SkillHole,
+    SkillStep,
+    SkillSubKind,
+    SkillSubstitution,
+    distill_steps,
+    render_skill,
+)
+from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tools.skill_tools import (
+    _FAILURE_MARKERS,
+    SkillCreateTool,
+    SkillReadTool,
+    _failure_clause,
+)
+
+# ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
+#
+# The one utterance phrase the model reused ("Zephyr Ridge elevation") is a HOLE;
+# the extracted reading ("1,842 m") flows step 1 → step 2 as a BINDING; the fixed
+# instruction and target collection are CONSTANTS.  All fictional.
+
+_UTTERANCE = "Save the Zephyr Ridge elevation to my notes"
+_EXTRACTED_VALUE = "1,842 m"
+
+_BROWSE_ARGS = {"queries": ["Zephyr Ridge elevation"], "extract": "the elevation above sea level"}
+_WRITE_ARGS = {
+    "memory": "elevations",
+    "entries": [{"key": "Zephyr Ridge elevation", "content": _EXTRACTED_VALUE}],
+}
+
+_BROWSE_OK = (
+    f"You used `browse` and here's the result: (browse result)\nEXTRACTED: {_EXTRACTED_VALUE}"
+)
+_WRITE_OK = (
+    "You saved an entry to elevations: (collection_write result)\n"
+    "Wrote 1 entry to 'elevations': Zephyr Ridge elevation."
+)
+_BROWSE_FAILED = (
+    "You searched for 'Zephyr Ridge elevation' but couldn't read anything "
+    "(browse result)\n## browse error: unreachable"
+)
+
+
+def _make_db(tmp_path) -> Database:
+    db = Database(str(tmp_path / "test.db"))
+    db.create_tables()
+    return db
+
+
+def _migrated_db(tmp_path) -> Database:
+    """A DB built exactly like prod (create_tables then migrate) so the seed
+    library is the one migration 0084 ships."""
+    db = Database(str(tmp_path / "seeded.db"))
+    db.create_tables()
+    migrate(db.db_path)
+    return db
+
+
+def _log_run(db: Database, run_id: str, utterance: str, calls: list[tuple[str, dict, str]]) -> None:
+    """Log one chat run as a single promptlog row: the triggering user turn, the
+    batched tool calls (in order → ordinals), and each call's framed result."""
+    tool_calls = []
+    tool_turns = []
+    for index, (name, args, result) in enumerate(calls, start=1):
+        call_id = f"c{index}"
+        tool_calls.append(
+            {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
+        )
+        tool_turns.append({"role": "tool", "tool_call_id": call_id, "content": result})
+    user_turn = {
+        "role": "user",
+        "content": f"live context{PennyConstants.SECTION_SEPARATOR}{utterance}",
+    }
+    db.messages.log_prompt(
+        model="m",
+        messages=[user_turn, *tool_turns],
+        response={"choices": [{"message": {"tool_calls": tool_calls}}]},
+        run_id=run_id,
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+    )
+
+
+def _elevation_steps() -> list[SkillStep]:
+    """The distilled steps for the fixture, built directly (independent of the
+    inference path) so the render is pinned in isolation."""
+    return [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments=dict(_BROWSE_ARGS),
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="queries")
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments=json.loads(json.dumps(_WRITE_ARGS)),
+            substitutions=[
+                SkillSubstitution(
+                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, hole="queries"
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
+                ),
+            ],
+        ),
+    ]
+
+
+# ── The render: with-holes and the money literal ──────────────────────────────
+
+_WITH_HOLES = (
+    "1. browse(queries=[{queries}], extract='the elevation above sea level')\n"
+    "2. collection_write(memory='elevations', "
+    "entries=[{'key': {queries}, 'content': the value from step 1}])"
+)
+
+# THE money literal — steps + bound params → the numbered TEXT extraction_prompt a
+# future collection actually runs.  Holes substituted verbatim; the binding reads
+# as a legible instruction.
+_MONEY_LITERAL = (
+    "1. browse(queries=['Cinder Peak elevation'], extract='the elevation above sea level')\n"
+    "2. collection_write(memory='elevations', "
+    "entries=[{'key': 'Cinder Peak elevation', 'content': the value from step 1}])"
+)
+
+
+def test_render_skill_with_holes_is_the_template():
+    """An unbound skill renders holes as ``{name}`` placeholders and the binding as
+    a legible instruction — the with-holes recipe the read surface shows."""
+    assert render_skill(_elevation_steps()) == _WITH_HOLES
+
+
+def test_render_skill_bound_is_the_money_literal():
+    """steps + bound params → the numbered text prompt a collection will run: holes
+    substituted with the param value verbatim, the binding kept legible."""
+    rendered = render_skill(_elevation_steps(), {"queries": "Cinder Peak elevation"})
+    assert rendered == _MONEY_LITERAL
+
+
+# ── Provenance inference: hole / binding / constant in one run ─────────────────
+
+
+def test_distill_classifies_all_three_provenance_classes():
+    """The fixture exercises hole (utterance), binding (prior result), and constant
+    (neither) in one run — the inference is deterministic and tested against it."""
+    inputs = [
+        DistillInput(source_ordinal=1, tool="browse", arguments=_BROWSE_ARGS, result=_BROWSE_OK),
+        DistillInput(
+            source_ordinal=2, tool="collection_write", arguments=_WRITE_ARGS, result=_WRITE_OK
+        ),
+    ]
+    steps, holes = distill_steps(inputs, _UTTERANCE)
+
+    # One parameter, deduped across the two places the utterance value appears.
+    assert holes == [SkillHole(name="queries", required=True)]
+
+    # Step 1: the query is a HOLE (verbatim in the utterance); the extract
+    # instruction is a CONSTANT (never seen, so no substitution).
+    step1 = {tuple(s.path): s for s in steps[0].substitutions}
+    assert step1[("queries", 0)].kind == SkillSubKind.HOLE
+    assert step1[("queries", 0)].hole == "queries"
+    assert ("extract",) not in step1  # constant → baked in, not substituted
+
+    # Step 2: the key is the same HOLE; the content is a BINDING to step 1's result;
+    # the target collection is a CONSTANT.
+    step2 = {tuple(s.path): s for s in steps[1].substitutions}
+    assert step2[("entries", 0, "key")].kind == SkillSubKind.HOLE
+    assert step2[("entries", 0, "content")].kind == SkillSubKind.BINDING
+    assert step2[("entries", 0, "content")].step == 1
+    assert ("memory",) not in step2  # constant → baked in
+
+
+# ── skill_create: end-to-end through the tool ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
+    """A clean demonstration → skill_create → the stored skill renders (with the
+    same param) to the money literal, and the result echoes the learned skill."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-A",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK),
+            ("done", {"success": True, "summary": "saved the elevation"}, "Cycle complete"),
+        ],
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    result = await tool.execute(name="Watch elevation", from_run="run-A", steps="1-2")
+
+    assert result.success and result.mutated
+    assert "Learned skill 'Watch elevation'." in result.message
+    assert "holes: queries (required)" in result.message
+
+    stored = db.skills.get("Watch elevation")
+    assert stored is not None
+    assert stored.source_run_id == "run-A" and stored.author == "chat"
+    rendered = render_skill(steps_from_json(stored.steps), {"queries": "Cinder Peak elevation"})
+    assert rendered == _MONEY_LITERAL
+
+
+@pytest.mark.asyncio
+async def test_skill_create_excludes_done_and_honours_the_range(tmp_path):
+    """``done`` consumes an ordinal but is never a skill step, and a range that
+    trims a leading incidental lookup keeps only the selected calls."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-B",
+        _UTTERANCE,
+        [
+            ("collection_read_latest", {"memory": "elevations"}, "You looked up your elevations:"),
+            ("browse", _BROWSE_ARGS, _BROWSE_OK),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK),
+            ("done", {"success": True, "summary": "done"}, "Cycle complete"),
+        ],
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    # Trim the leading read (step 1); keep the browse+write (steps 2-3).
+    result = await tool.execute(name="Trimmed", from_run="run-B", steps="2-3")
+    assert result.success
+    trimmed = db.skills.get("Trimmed")
+    assert trimmed is not None
+    steps = steps_from_json(trimmed.steps)
+    assert [s.tool for s in steps] == ["browse", "collection_write"]
+    # The binding still points at the skill's own step 1 (renumbered).
+    assert steps[1].substitutions[-1].step == 1
+
+
+@pytest.mark.asyncio
+async def test_skill_create_rejects_an_uncertified_step(tmp_path):
+    """Certified-by-execution: a selected step that FAILED in the source run is
+    rejected with an error naming the failed step — enforced, not documented."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-C",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_FAILED),  # total browse failure
+            ("collection_write", _WRITE_ARGS, _WRITE_OK),
+        ],
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    result = await tool.execute(name="Broken", from_run="run-C", steps="1-2")
+    assert not result.success
+    assert "step 1 (browse) didn't succeed" in result.message
+    assert db.skills.get("Broken") is None  # nothing persisted
+
+
+@pytest.mark.asyncio
+async def test_skill_create_replaces_by_name(tmp_path):
+    """No versioning: re-teaching an existing name REPLACES the row and says so."""
+    db = _make_db(tmp_path)
+    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK)])
+    _log_run(
+        db,
+        "run-D",
+        _UTTERANCE,
+        [("browse", _BROWSE_ARGS, _BROWSE_OK), ("collection_write", _WRITE_ARGS, _WRITE_OK)],
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    first = await tool.execute(name="Watch elevation", from_run="run-A", steps="1")
+    assert "Learned skill" in first.message
+
+    second = await tool.execute(name="Watch elevation", from_run="run-D", steps="1-2")
+    assert "Replaced the previous version of 'Watch elevation'." in second.message
+    # One row, now the two-step demonstration.
+    assert len(db.skills.list_all()) == 1
+    replaced = db.skills.get("Watch elevation")
+    assert replaced is not None
+    assert len(steps_from_json(replaced.steps)) == 2
+
+
+@pytest.mark.asyncio
+async def test_skill_create_actionable_on_bad_input(tmp_path):
+    """A malformed range and an unknown run get actionable, guess-free errors."""
+    db = _make_db(tmp_path)
+    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    bad_range = await tool.execute(name="X", from_run="run-A", steps="oops")
+    assert not bad_range.success and "steps='oops'" in bad_range.message
+
+    unknown = await tool.execute(name="X", from_run="nope", steps="1")
+    assert not unknown.success and "No run found with id 'nope'" in unknown.message
+
+
+# ── skill_read: render one / list all ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_skill_read_renders_one_and_lists_all(tmp_path):
+    """``skill_read(name)`` renders one full recipe; bare ``skill_read()`` lists
+    every skill; an unknown name is an actionable miss."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-A",
+        _UTTERANCE,
+        [("browse", _BROWSE_ARGS, _BROWSE_OK), ("collection_write", _WRITE_ARGS, _WRITE_OK)],
+    )
+    await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat").execute(
+        name="Watch elevation", from_run="run-A", steps="1-2"
+    )
+    read = SkillReadTool(db)
+
+    one = await read.execute(name="Watch elevation")
+    assert one.success and "skill 'Watch elevation'" in one.message and _WITH_HOLES in one.message
+
+    listing = await read.execute()
+    assert listing.success and "- Watch elevation:" in listing.message
+
+    missing = await read.execute(name="nope")
+    assert not missing.success and "No skill named 'nope'" in missing.message
+
+
+# ── The seed library: pinned renders ──────────────────────────────────────────
+
+_SEED_RENDERS = {
+    "Watch a page field": (
+        "1. browse(queries=[{url}], extract={field})\n"
+        "2. collection_write(memory={collection}, "
+        "entries=[{'key': {field}, 'content': the value from step 1}])"
+    ),
+    "Feed or news digest": (
+        "1. browse(queries=[{topic}], extract='the notable new items and their sources')\n"
+        "2. collection_write(memory={collection}, "
+        "entries=[{'key': {topic}, 'content': the value from step 1}])"
+    ),
+    "Research and notify": (
+        "1. browse(queries=[{topic}], "
+        "extract='a notable new finding worth sharing, with its source')\n"
+        "2. collection_write(memory={collection}, "
+        "entries=[{'key': {topic}, 'content': the value from step 1}])"
+    ),
+}
+
+
+def test_seed_library_renders_are_pinned(tmp_path):
+    """The hand-authored seeds (migration 0084) render to their exact recipes —
+    the sanctioned certified-by-execution exception, shipped as universal data."""
+    db = _migrated_db(tmp_path)
+    for name, expected in _SEED_RENDERS.items():
+        skill = db.skills.get(name)
+        assert skill is not None and skill.author == "system"
+        assert render_skill(steps_from_json(skill.steps)) == expected
+
+
+# ── Certified-by-execution: markers track the shared templates ────────────────
+
+
+def test_failure_markers_track_templates():
+    """The certified check reads failure from the shared narration clauses; this
+    guards them against silent drift."""
+    from penny.tools.base import RESULT_NARRATION_FAILURE
+
+    assert _failure_clause(RESULT_NARRATION_FAILURE) in _FAILURE_MARKERS
+    # A generic tool failure frame is detected; a success frame is not.
+    assert any(m in "You tried to use `browse` but it didn't work:" for m in _FAILURE_MARKERS)
+    assert not any(m in _BROWSE_OK for m in _FAILURE_MARKERS)
