@@ -38,8 +38,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from penny.agents.base import BackgroundAgent
@@ -48,7 +49,6 @@ from penny.config import Config
 from penny.constants import (
     WRITE_GATE_STOP_REASONS,
     MutationActor,
-    PennyConstants,
     RunOutcome,
     WriteGateOutcome,
 )
@@ -57,6 +57,7 @@ from penny.database.memory.types import MemoryNotFoundError
 from penny.database.models import MemoryRow
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
+from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.memory_tools import DoneTool
@@ -335,11 +336,6 @@ class Collector(BackgroundAgent):
         current = collection.collector_interval_seconds
         if threshold <= 0 or base is None or current is None:
             return
-        if self._is_consumer(collection):
-            # A consumer is gate-controlled like a log-driven collection: it only
-            # wakes when a published source has unseen entries, so it never idles
-            # its way into a wider interval.  Pinned at base.
-            return
         if outcome in (RunOutcome.WORKED, RunOutcome.INCOMPLETE):
             interval, idle = base, 0
         elif self._live_cursors(collection):
@@ -490,7 +486,8 @@ class Collector(BackgroundAgent):
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:
-        """Frame the user-authored extraction_prompt with target identity + runtime rules.
+        """Frame the extraction_prompt with target identity + the assembly-owned
+        step tail + runtime rules — one continuous numbered program (#1557).
 
         The runtime-rules tail is appended structurally — not relayed through
         Penny when she authors the extraction_prompt.  This guarantees the
@@ -498,13 +495,43 @@ class Collector(BackgroundAgent):
         (or whether Penny remembered to include them).  The chat-facing
         ``collection_create`` description only carries authoring-shape
         guidance; the runtime invariants live here.
+
+        The stored prompt is steps ``1..A`` with NO ``done()`` — a skill render
+        cannot produce one (the chat ledger has no ``done`` tool; a chat turn ends
+        in text), and migration 0087 stripped the legacy seeds' trailing done
+        steps.  Assembly appends the tail (:meth:`_injected_steps`): the notify
+        steps when the collection notifies, then the terminal ``done()`` — always,
+        exactly once, numbered continuing from ``A``.  A write-gate STOP on a
+        no-change cycle ends the run at the chokepoint before the later steps, so
+        no-news never notifies — structurally.  Uniform for skill-backed and
+        legacy hand-authored collections; nothing here is ever written into the
+        stored ``extraction_prompt``.
         """
         return (
             f"You are the collector for the `{target.name}` collection.\n"
             f"Description: {target.description}\n\n"
-            f"{target.extraction_prompt}\n\n"
+            f"{target.extraction_prompt}\n"
+            f"{cls._injected_steps(target)}\n\n"
             f"{cls._RUNTIME_RULES}"
         )
+
+    @classmethod
+    def _injected_steps(cls, target: MemoryRow) -> str:
+        """The assembly-owned step tail: notify steps (``notify=true`` only), then
+        the terminal ``done()`` — numbered continuing from the stored prompt's
+        highest step, so the whole prompt reads as one program (#1557)."""
+        base = cls._max_step_number(target.extraction_prompt or "")
+        steps: list[str] = list(Prompt.COLLECTOR_NOTIFY_STEPS) if target.notify else []
+        steps.append(Prompt.COLLECTOR_DONE_STEP)
+        return "\n".join(f"{base + n}. {step}" for n, step in enumerate(steps, start=1))
+
+    @staticmethod
+    def _max_step_number(prompt: str) -> int:
+        """``A`` — the highest leading step number in the stored prompt (a
+        ``^\\d+.`` scan), 0 for an unnumbered prose prompt so injected steps
+        start at 1."""
+        numbers = re.findall(r"^(\d+)\.", prompt, re.MULTILINE)
+        return max((int(number) for number in numbers), default=0)
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""
@@ -586,55 +613,11 @@ class Collector(BackgroundAgent):
         The cursors a collection already holds *are* its declared inputs — no
         separate spec.  ``commit_pending`` advances a cursor to the newest entry
         actually consumed, so ``head > last_read_at`` means unread input exists.
-
-        A *consumer* (its prompt calls ``read_published_latest``) is the pub/sub
-        analogue: its inputs aren't prompt-named logs but every ``published``
-        collection.  It's always gate-eligible — it wakes only when some
-        published source has entries past this consumer's cursor, never on a
-        blind interval.
         """
-        if self._is_consumer(memory):
-            return self._published_pending(memory)
         live = self._live_cursors(memory)
         if not live:
             return None
         return any(self._log_has_new(log_name, position) for log_name, position in live)
-
-    @staticmethod
-    def _is_consumer(memory: MemoryRow) -> bool:
-        """A collection whose prompt drains the published stream via
-        ``read_published_latest`` — identified by the call, exactly as a
-        log-reader is identified by naming a log in ``log_read``."""
-        return (
-            memory.extraction_prompt is not None
-            and "read_published_latest" in memory.extraction_prompt
-        )
-
-    def _published_pending(self, memory: MemoryRow) -> bool:
-        """Does any published collection have an entry this consumer hasn't seen?
-
-        The pub/sub gate: the consumer's inputs are every ``published`` (non-
-        archived) collection other than itself, each read against this consumer's
-        own cursor.  Returns ``False`` (skip) when nothing publishes yet or every
-        source is caught up — a consumer never enters the model with nothing to do.
-        """
-        return any(
-            self._source_has_new(memory.name, source.name)
-            for source in self.db.memories.list_all()
-            if source.published and not source.archived and source.name != memory.name
-        )
-
-    def _source_has_new(self, consumer_name: str, source_name: str) -> bool:
-        """Is there ≥1 entry in published ``source_name`` past ``consumer_name``'s
-        cursor?  A source this consumer has never read starts at the cold-start
-        window, matching ``read_published_latest`` so the gate and the read agree."""
-        cursor = self.db.cursors.get(consumer_name, source_name)
-        if cursor is None:
-            cursor = datetime.now(UTC) - timedelta(
-                seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS
-            )
-        source = self.db.memory(source_name)
-        return bool(source and source.read_since(cursor, 1))
 
     def _live_cursors(self, memory: MemoryRow) -> list[tuple[str, datetime]]:
         """The collection's cursors for logs it *still* reads, with positions.
@@ -643,14 +626,7 @@ class Collector(BackgroundAgent):
         was left behind by a since-dropped read (e.g. a migration that removed a
         ``log_read``); it would lie about what the collection consumes, so it's
         pruned here — an exact identifier match, deterministic, self-healing.
-
-        A consumer is excluded: its cursors are ``(consumer, published-source)``
-        pairs whose source names are deliberately absent from its prompt, so the
-        log-name pruning heuristic would wrongly wipe them.  Consumers gate via
-        :meth:`_published_pending`, never here.
         """
-        if self._is_consumer(memory):
-            return []
         live: list[tuple[str, datetime]] = []
         for log_name, position in self.db.cursors.list_for(memory.name):
             if memory.extraction_prompt is not None and log_name in memory.extraction_prompt:

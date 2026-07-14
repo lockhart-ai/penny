@@ -64,7 +64,7 @@ class _MetadataUpdate(BaseModel):
     description_embedding: list[float] | None = None
     inclusion: Inclusion | None = None
     recall: RecallMode | None = None
-    published: bool | None = None
+    notify: bool | None = None
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
     intent: str | None = None
@@ -81,9 +81,9 @@ class _MetadataUpdate(BaseModel):
         if self.recall is not None:
             memory.recall = self.recall.value
             changed.append("recall")
-        if self.published is not None:
-            memory.published = self.published
-            changed.append("published")
+        if self.notify is not None:
+            memory.notify = self.notify
+            changed.append("notify")
         if self.extraction_prompt is not None:
             memory.extraction_prompt = self.extraction_prompt
             changed.append("extraction_prompt")
@@ -199,7 +199,6 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
-        published: bool = False,
         notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
@@ -217,7 +216,6 @@ class MemoryStore:
             collector_interval_seconds=collector_interval_seconds,
             description_embedding=description_embedding,
             intent=intent,
-            published=published,
             notify=notify,
             created_by_run_id=created_by_run_id,
             expires_at=expires_at,
@@ -258,7 +256,6 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
-        published: bool = False,
         notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
@@ -277,7 +274,6 @@ class MemoryStore:
                 recall=recall.value,
                 description_embedding=sim.maybe_serialize(description_embedding),
                 archived=archived,
-                published=published,
                 notify=notify,
                 extraction_prompt=extraction_prompt,
                 collector_interval_seconds=collector_interval_seconds,
@@ -444,7 +440,7 @@ class MemoryStore:
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
         intent: str | None = None,
-        published: bool | None = None,
+        notify: bool | None = None,
         run_id: str | None = None,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
@@ -468,7 +464,7 @@ class MemoryStore:
             description_embedding=description_embedding,
             inclusion=inclusion,
             recall=recall,
-            published=published,
+            notify=notify,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
             intent=intent,

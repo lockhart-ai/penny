@@ -261,8 +261,8 @@ def render_key(key: str) -> str:
 
     The displayed form IS the form a key-taking tool accepts, so the model
     copies what it reads straight into a valid ``key=`` argument.  The single
-    source of the convention: the entry-list renders, the published-stream
-    render, and the chat recall headers all call this, so the form can't
+    source of the convention: the entry-list renders and the chat recall
+    headers all call this, so the form can't
     partially revert to the old copy-hostile ``[key]`` display (whose brackets
     the model pasted verbatim into key args — the eval contract in
     ``tests/eval/test_key_render.py`` guards the behaviour).

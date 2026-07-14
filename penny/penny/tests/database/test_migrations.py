@@ -1,6 +1,7 @@
 """Tests for the database migration system."""
 
 import importlib.util
+import re
 import sqlite3
 from pathlib import Path
 
@@ -80,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 85
+        assert count == 87
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -121,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 85
+        assert count1 == 87
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -159,8 +160,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0085 run = 84 migrations
-        assert count == 84
+        # 0001 is skipped; 0002 through 0087 run = 86 migrations
+        assert count == 86
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -186,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 85  # all migrations applied
+        assert count == 87  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -667,9 +668,11 @@ class TestMigrate:
         )
         conn.close()
 
-    def test_0067_seeds_notifier_consumer(self, tmp_path):
-        """Migration 0067 seeds the notifier consumer: a published-stream drainer
-        (prompt calls read_published_latest), silent in chat, not itself a source."""
+    def test_0067_seeds_notifier_consumer_then_0086_retires_it(self, tmp_path):
+        """Migration 0067 seeds the notifier consumer (a published-stream drainer,
+        silent in chat); across the full chain, 0086 archives it — emission is now
+        the ``notify`` flag + the run-time notify suffix, so the consumer is
+        retired.  The seeded row survives as an archived tombstone."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -680,22 +683,24 @@ class TestMigrate:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT type, inclusion, published, extraction_prompt "
+            "SELECT type, inclusion, archived, extraction_prompt "
             "FROM memory WHERE name = 'notifier'"
         ).fetchone()
         conn.close()
         assert row is not None
-        type_, inclusion, published, prompt = row
+        type_, inclusion, archived, prompt = row
         assert type_ == "collection"
         assert inclusion == "never"  # internal — never surfaces in chat
-        assert published == 0  # a consumer, not a source
-        assert "read_published_latest" in prompt  # identified as a consumer by this call
-        assert "send_message" in prompt
+        assert archived == 1  # retired by 0086 (emission is now the notify suffix)
+        assert "read_published_latest" in prompt  # the 0067-seeded body survives (0087
+        # strips only its terminal bare-done step line)
 
     def test_0068_unifies_thoughts_onto_pubsub(self, tmp_path):
-        """Migration 0068 collapses unnotified-/notified-thoughts into one published
+        """Migration 0068 collapses unnotified-/notified-thoughts into one
         `thoughts` producer (no send_message in its body), moves their entries in,
-        seeds the notifier cursor to the head, and archives the old collections."""
+        seeds the notifier cursor to the head, and archives the old collections.
+        Across the full chain, 0085 copies its ``published`` into ``notify`` and
+        0086 drops ``published`` — so ``thoughts`` now notifies via the flag."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -706,7 +711,7 @@ class TestMigrate:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT inclusion, published, extraction_prompt FROM memory WHERE name = 'thoughts'"
+            "SELECT inclusion, notify, extraction_prompt FROM memory WHERE name = 'thoughts'"
         ).fetchone()
         archived = dict(
             conn.execute(
@@ -716,13 +721,101 @@ class TestMigrate:
         )
         conn.close()
         assert row is not None
-        inclusion, published, prompt = row
+        inclusion, notify, prompt = row
         assert inclusion == "relevant"  # past thoughts still surface in chat
-        assert published == 1  # the notifier drains it
+        assert notify == 1  # 0085 seeded notify from published=1 — it tells the user
         assert 'collection_write("thoughts"' in prompt  # producer writes to itself
-        assert "send_message" not in prompt  # producer gathers only; notifier delivers
+        assert "send_message" not in prompt  # gathers only; the notify suffix does the sending
         # The old move-drain pair is retired (archived), not dispatched.
         assert archived == {"unnotified-thoughts": 1, "notified-thoughts": 1}
+
+    def test_0086_retires_notifier_and_drops_published(self, tmp_path):
+        """Migration 0086 retires the pub/sub layer over the full chain: archives the
+        notifier consumer, drops the ``published`` column, and rewrites the seeded
+        skills that taught ``published`` to teach ``notify`` — the sole emission
+        flag now (emission is a collection property + the run-time notify suffix)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()]
+        notifier = conn.execute("SELECT archived FROM memory WHERE name = 'notifier'").fetchone()
+        skills_prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'skills'"
+        ).fetchone()[0]
+        skill_bodies = dict(
+            conn.execute(
+                "SELECT key, content FROM memory_entry WHERE memory_name = 'skills' "
+                "AND key IN (?, ?, ?)",
+                (
+                    "Research collection — notify on new finds",
+                    "Research collection — silent",
+                    "Flip silent ↔ notify",
+                ),
+            ).fetchall()
+        )
+        conn.close()
+
+        # The retired pub/sub column is gone; ``notify`` is the sole emission flag.
+        assert "published" not in columns
+        assert "notify" in columns
+        # The notifier consumer is archived (a visible tombstone), not deleted.
+        assert notifier is not None and notifier[0] == 1
+        # The seeded skills teach ``notify`` now — no dropped flag in a re-homable recipe.
+        assert "notify: true" in skill_bodies["Research collection — notify on new finds"]
+        assert "notify: false" in skill_bodies["Research collection — silent"]
+        assert "notify=true" in skill_bodies["Flip silent ↔ notify"]
+        for body in skill_bodies.values():
+            assert "published" not in body
+        assert "notify: true" in skills_prompt
+        assert "published" not in skills_prompt
+
+    def test_0087_strips_terminal_done_steps_from_stored_prompts(self, tmp_path):
+        """Migration 0087 (over the full chain): the terminal ``done()`` is assembly's
+        now, so the seeded prompts' bare terminal done-step lines are stripped —
+        ``likes``/``dislikes`` (``6. Call done().``), ``knowledge`` (``4. Call
+        done().``), ``quality`` (``5. done().``), ``thoughts`` (``8. done().``), and
+        the archived ``notifier``/``unnotified-thoughts`` shells — while compound
+        terminal steps (``skills`` step 8, ``notified-thoughts`` step 4) and prose
+        *descriptions* of done behaviour survive verbatim (zero-false-positive)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        prompts = dict(
+            conn.execute(
+                "SELECT name, extraction_prompt FROM memory WHERE extraction_prompt IS NOT NULL"
+            ).fetchall()
+        )
+        conn.close()
+
+        # No stored prompt retains a numbered step line that is just a done call.
+        bare_done = re.compile(r"^\d+\.[ \t]*(?:Call[ \t]+)?done\([^()]*\)\.?[ \t]*$", re.MULTILINE)
+        for name, prompt in prompts.items():
+            assert not bare_done.search(prompt), f"{name} still has a bare done step line"
+        # The compound terminal steps and prose done-descriptions survive verbatim.
+        assert (
+            'If nothing changed, done(success=true, summary="skills already match the '
+            'collections").' in prompts["skills"]
+        )
+        assert "If there's nothing fresh to share, just done()." in prompts["notified-thoughts"]
+        assert "call done() without writing anything" in prompts["knowledge"]
+        assert "call done() without writing" in prompts["thoughts"]
+        # The stripped prompts keep their remaining steps + trailing prose untouched:
+        # only the one done-step line was removed.
+        assert "5. If a recent message indicates an existing like" in prompts["likes"]
+        assert prompts["quality"].rstrip().endswith("never apply a change yourself.")
+        assert prompts["notifier"].rstrip().endswith("— deliver it.")
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
         """Migration 0074 deletes entries whose key or content carries a

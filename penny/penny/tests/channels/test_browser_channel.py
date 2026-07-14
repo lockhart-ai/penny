@@ -1703,7 +1703,7 @@ class TestBrowserMemoryHandlers:
         assert memory.type == "collection"
         assert memory.inclusion == "relevant"
         assert memory.recall == "relevant"
-        assert memory.published is True  # pub/sub flag persisted from the addon
+        assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "extract games"
         assert memory.collector_interval_seconds == 600
 
@@ -1760,7 +1760,7 @@ class TestBrowserMemoryHandlers:
         assert memory.description == "new description"
         assert memory.intent == "track only co-op games now"
         assert memory.recall == "recent"
-        assert memory.published is True  # supplied flag applied
+        assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
         assert memory.collector_interval_seconds == 300
 

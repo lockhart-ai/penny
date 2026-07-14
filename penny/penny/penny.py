@@ -257,8 +257,9 @@ class Penny:
         )
         self.chat_agent.set_channel(self.channel)
         self.send_queue_drainer.set_channel(self.channel)
-        # Collector needs the channel so consumer cycles (e.g. the ``notifier``,
-        # which drains published collections) can call send_message.
+        # Collector needs the channel so a notify-shaped cycle (a collection whose
+        # ``notify`` flag drives the run-time notify suffix, #1557) can call
+        # send_message to tell the user about a new find.
         self.collector.set_channel(self.channel)
         if isinstance(self.channel, IosChannel):
             self.collector._progress_factory = self.channel.make_background_progress_callback

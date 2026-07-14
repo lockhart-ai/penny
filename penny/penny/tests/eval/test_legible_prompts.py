@@ -27,7 +27,7 @@ persisted recipe + which action families the NL reflects, never wording.  This i
 with margin below their N=5 baselines (legibility/edit/round-trip 0.80, discuss 0.75).
 
 The seeded recipe is guideline-compliant: EVERY step is a canonical ``tool(args)`` call, and
-notification is pub/sub (the ``published`` flag + the ``notifier`` consumer), NOT a
+notification is the ``notify`` flag (the run-time notify suffix, #1557), NOT a
 ``send_message`` step.  Calls, in order: browse (search) -> log_read (the removable one) ->
 collection_write (save) -> done.
 """
@@ -68,7 +68,7 @@ def _seed(db: Database) -> None:
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
         intent=BOARD_GAMES_INTENT,
         interval=3600,
-        published=True,  # pub/sub notify is ON — "don't notify me" flips this to False
+        notify=True,  # notify is ON — "don't notify me" flips this to False
     )
 
 
@@ -235,7 +235,7 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
 # Every recipe step is a tool call, so every edit operates on a CALL, in one conversation,
 # each building on the last edited state: MODIFY a call (collection_write's entry content +=
 # designer), ADD a call (a browse for Amazon prices), REMOVE a call (the log_read of the
-# user's messages), turn NOTIFICATIONS OFF (flip the pub/sub `published` flag — notify is a
+# user's messages), turn NOTIFICATIONS OFF (flip the `notify` flag — notify is a
 # flag, not a step), then STOP.  Each must land with the spine intact — this is where
 # multi-turn state-carrying holds or unravels.
 
@@ -243,9 +243,9 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
 def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
-    print(f"\n[EDIT-OPS stored] {stored!r}  published={row.published if row is not None else None}")
+    print(f"\n[EDIT-OPS stored] {stored!r}  notify={row.notify if row is not None else None}")
     # REMOVE: the log_read call is gone iff neither its name nor its target survive.
-    # NOTIFY-OFF: the pub/sub published flag flips false.
+    # NOTIFY-OFF: the notify flag flips false.
     log_read_gone = "log_read" not in stored and "user-messages" not in stored
     checks = [
         Check(
@@ -274,9 +274,9 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
         ),
         Check('remove: log_read("user-messages") gone', log_read_gone),
         Check(
-            "notify-off: published set false",
-            row is not None and not row.published,
-            anchor='"published": false',
+            "notify-off: notify set false",
+            row is not None and not row.notify,
+            anchor='"notify": false',
         ),
         Check("closer spawned no collection", not new_collections(db, before)),
     ]
@@ -289,7 +289,7 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
 
 async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
     """Deeper multi-turn: MODIFY a call, ADD a call, REMOVE a call, turn notifications OFF
-    (the published flag), stop — every edit is on a tool call, each builds on the last."""
+    (the notify flag), stop — every edit is on a tool call, each builds on the last."""
     await chat_eval(
         case_id="legible-edit-operations",
         messages=[

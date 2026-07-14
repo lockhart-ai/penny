@@ -225,10 +225,9 @@ class MemoryRow(SQLModel, table=True):
     at all (collection routing), and ``recall`` decides which of its entries
     surface once included (entry rendering).
 
-    A third, independent flag — ``published`` — marks the memory as a consumable
-    stream (pub/sub), unrelated to recall: a downstream consumer (the notifier,
-    later others) drains its new entries via ``read_published_latest``, each
-    consumer tracking its own cursor.
+    An independent flag — ``notify`` — is emission-as-property (#1557): when set,
+    the collector tells the user about new/changed entries in the same cycle that
+    produced them, via the run-time notify suffix appended to its system prompt.
     """
 
     __tablename__ = "memory"
@@ -252,19 +251,14 @@ class MemoryRow(SQLModel, table=True):
     # once on create/description-edit (NULL until backfilled at startup).
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
-    # Pub/sub, orthogonal to inclusion/recall (which govern chat recall): when
-    # true, this collection is a consumable stream — a downstream consumer (the
-    # notifier, later others) drains its new entries via ``read_published_latest``,
-    # each consumer keeping its own cursor.  Opt-in (default false).
-    # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
-    published: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     # Emission-as-property (#1557, exposed by #1591's ``collection_create``): when
-    # true the collection notifies the user of new/changed entries.  Set once at
-    # creation from the ``notify`` arg.  ``published`` mirrors it for the interim
-    # delivery path (the live notifier consumer drains ``published`` collections)
-    # until #1557 retires that machinery and wires the run-time notify suffix off
-    # this column.  Migration 0085 seeds it from ``published``.  ``server_default``
-    # so raw-SQL inserts predating the column satisfy NOT NULL.
+    # true the collection notifies the user of new/changed entries — assembly
+    # appends the run-time notify steps (``Prompt.COLLECTOR_NOTIFY_STEPS``) to the
+    # collector's composed prompt, numbered continuously before the injected
+    # terminal ``done()``.  Orthogonal to inclusion/recall (which govern chat
+    # recall).  Opt-in (default false); the sole emission flag since #1557 retired
+    # the ``published`` pub/sub side-channel + the notifier consumer.
+    # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)
     collector_interval_seconds: int | None = Field(default=None)

@@ -182,7 +182,7 @@ extraction prompt: 1. browse for hedgehog news. 2. done().
 Operational settings (routing + cadence — secondary):
 inclusion: never
 recall: recent
-published: False
+notify: False
 interval: 3600s
 status: archived 2026-03-05 08:10 UTC
 expires: never
@@ -272,7 +272,7 @@ Recent changes (newest first):
             RecallMode.RECENT,
             collector_interval_seconds=300,
             extraction_prompt="Browse for new board games and write entries.",
-            published=True,
+            notify=True,
         )
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="board-games"))
@@ -281,8 +281,8 @@ Recent changes (newest first):
         assert "strategy board games" in result.message
         assert "inclusion: never" in result.message
         assert "recall: recent" in result.message
-        # published surfaces in metadata so the chat agent + quality can read notify-on-new.
-        assert "published: True" in result.message
+        # notify surfaces in metadata so the chat agent + quality can read notify-on-new.
+        assert "notify: True" in result.message
         assert "300s" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
@@ -305,8 +305,8 @@ Recent changes (newest first):
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
         assert "extraction prompt: none" in result.message
-        # published is opt-in: a collection created without it defaults to silent.
-        assert "published: False" in result.message
+        # notify is opt-in: a collection created without it defaults to silent.
+        assert "notify: False" in result.message
 
     def test_updated_at_advances_on_metadata_update(self, tmp_path):
         db = _make_db(tmp_path)

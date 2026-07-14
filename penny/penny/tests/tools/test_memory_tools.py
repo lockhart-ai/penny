@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -19,7 +19,6 @@ from sqlmodel import Session, select
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
-    EntryInput,
     Inclusion,
     RecallMode,
     WriteGateOutcome,
@@ -57,7 +56,6 @@ from penny.tools.memory_tools import (
     LogCreateTool,
     LogReadTool,
     MemoryMetadataTool,
-    ReadPublishedLatestTool,
     ReadRunCallsTool,
     ReadSimilarTool,
     TestExtractionPromptTool,
@@ -182,7 +180,6 @@ def _seed_collection(
     extraction_prompt: str = "test fixture extraction prompt",
     collector_interval_seconds: int = 3600,
     intent: str = "test intent",
-    published: bool = False,
     notify: bool = False,
     archived: bool = False,
 ) -> MemoryRow:
@@ -198,7 +195,6 @@ def _seed_collection(
         collector_interval_seconds=collector_interval_seconds,
         description_embedding=_single_hash_vec(description),
         intent=intent,
-        published=published,
         notify=notify,
     )
 
@@ -310,9 +306,8 @@ class TestCollectionCreateFrontDoor:
         stored = db.memories.get("cinder-elevation")
         assert stored.extraction_prompt == _MONEY_LITERAL
         assert stored.intent == "watch Cinder Peak's elevation"
-        # notify persists AND mirrors into published for the interim delivery path.
+        # notify persists — the sole emission flag now (#1557 retired ``published``).
         assert stored.notify is True
-        assert stored.published is True
 
     @pytest.mark.asyncio
     async def test_unbound_required_hole_is_refused_naming_it(self, tmp_path):
@@ -662,15 +657,15 @@ class TestCreateAndList:
             recall="relevant",
             extraction_prompt="",
             description="   ",
-            published=True,
+            notify=True,
         )
         assert "Updated" in result.message
         updated = db.memories.get("notes")
         assert updated.recall == "relevant"  # the real change landed
         assert updated.extraction_prompt == original_prompt  # blank skipped, not blanked
         assert updated.description == "real description"  # blank skipped, not blanked
-        # published flips on the update path (created silent by default → notify-on-new).
-        assert updated.published is True
+        # notify flips on the update path (created silent by default → notify-on-new).
+        assert updated.notify is True
 
     @pytest.mark.asyncio
     async def test_update_accepts_but_ignores_intent(self, tmp_path, mock_llm):
@@ -2268,7 +2263,6 @@ class TestFactory:
         "log_read",
         "read_run_calls",
         "collector_run_history",
-        "read_published_latest",
         "read_similar",
         "exists",
         "find_mine",
@@ -2383,167 +2377,6 @@ class TestScopedFactory:
         delete = CollectionDeleteEntryTool(db, scope="likes")
         result = await delete.execute(memory="dislikes", key="k")
         assert "Refused" in result.message
-
-
-class TestReadPublishedLatest:
-    """The consumer side of the pub/sub layer: each call picks one published
-    collection at random among those with unseen entries and returns its oldest n,
-    advancing only the returned entry's cursor so nothing repeats and nothing is
-    skipped.  Random rotation (not a global oldest-first pool) keeps one
-    collection's burst from monopolizing delivery."""
-
-    def _publish(self, db: Database, name: str, *, published: bool = True) -> None:
-        db.memories.create_collection(
-            name, f"{name} desc", Inclusion.NEVER, RecallMode.RECENT, published=published
-        )
-
-    def _write(self, db: Database, name: str, key: str, content: str) -> None:
-        db.memory(name).write([EntryInput(key=key, content=content)], author="producer")
-
-    def _backdate(self, db: Database, name: str, key: str, when: datetime) -> None:
-        with Session(db.engine) as session:
-            row = session.exec(
-                select(MemoryEntry).where(MemoryEntry.memory_name == name, MemoryEntry.key == key)
-            ).first()
-            assert row is not None
-            row.created_at = when
-            session.add(row)
-            session.commit()
-
-    def _pin_choice(self, monkeypatch, name: str) -> list[set[str]]:
-        """Force the random pick to a named source; return a list that records the
-        candidate pool seen on each call (so a test can assert what was eligible)."""
-        pools: list[set[str]] = []
-
-        def pick(sources):
-            pools.append({source.name for source in sources})
-            return next(source for source in sources if source.name == name)
-
-        monkeypatch.setattr("penny.tools.memory_tools.random.choice", pick)
-        return pools
-
-    @pytest.mark.asyncio
-    async def test_picks_a_random_published_source_never_an_unpublished_one(
-        self, tmp_path, monkeypatch
-    ):
-        db = _make_db(tmp_path)
-        self._publish(db, "silent", published=False)
-        self._publish(db, "games")
-        self._publish(db, "jobs")
-        # The unpublished entry is the oldest of all — under the old global
-        # oldest-first pool it would have won; it must never even be a candidate.
-        self._write(db, "silent", "old", "oldest but unpublished")
-        self._write(db, "games", "stardrift", "Stardrift Saga")
-        self._write(db, "jobs", "role", "New engineering role")
-        pools = self._pin_choice(monkeypatch, "jobs")
-        result = await ReadPublishedLatestTool(db, "notifier").execute(n=1)
-        # The randomly-picked source is delivered (not the globally-oldest entry),
-        # and the candidate pool is exactly the eligible published collections.
-        assert "New engineering role" in result.message
-        assert "from `jobs`" in result.message
-        # The key renders in invocation form — the copyable key='...' shape,
-        # matching every other model-facing entry render (never `[key]`).
-        assert "key='role'" in result.message
-        assert pools == [{"games", "jobs"}]
-        assert "unpublished" not in result.message
-        assert "Stardrift Saga" not in result.message
-
-    @pytest.mark.asyncio
-    async def test_advances_only_returned_source_and_never_repeats(self, tmp_path, monkeypatch):
-        db = _make_db(tmp_path)
-        self._publish(db, "games")
-        self._publish(db, "jobs")
-        self._write(db, "games", "g1", "game one")
-        self._write(db, "jobs", "j1", "job one")
-        tool = ReadPublishedLatestTool(db, "notifier")
-        self._pin_choice(monkeypatch, "games")
-        first = await tool.execute(n=1)
-        assert "game one" in first.message
-        tool.commit_pending()
-        # Only the returned source's cursor advanced; the scanned-but-unpicked
-        # source is left untouched so its entry isn't skipped.
-        assert db.cursors.get("notifier", "games") is not None
-        assert db.cursors.get("notifier", "jobs") is None
-        # games is drained; the only eligible source left is jobs.
-        self._pin_choice(monkeypatch, "jobs")
-        second = await tool.execute(n=1)
-        assert "job one" in second.message
-        assert "game one" not in second.message
-        tool.commit_pending()
-        # Both caught up now.
-        third = await tool.execute(n=1)
-        assert third.message == "(no new published entries)"
-        # Durable library: entries stay put — drained by cursor, never moved.
-        assert len(db.memory("games").read_all()) == 1
-        assert len(db.memory("jobs").read_all()) == 1
-
-    @pytest.mark.asyncio
-    async def test_random_rotation_offers_every_collection_not_just_the_oldest_burst(
-        self, tmp_path, monkeypatch
-    ):
-        """The starvation fix: a single collector run stamps many entries at once.
-        Under the old global oldest-first pool that whole burst drained before a
-        newer, smaller collection got a turn.  Random rotation offers every
-        eligible collection each cycle, so a newer collection delivers even while
-        an older burst still has unsent entries."""
-        db = _make_db(tmp_path)
-        self._publish(db, "warhammer")
-        self._publish(db, "emulator")
-        base = datetime.now(UTC) - timedelta(hours=1)
-        # A burst of 3 warhammer entries, all OLDER than the single emulator one.
-        for index in range(3):
-            self._write(db, "warhammer", f"w{index}", f"warhammer {index}")
-            self._backdate(db, "warhammer", f"w{index}", base + timedelta(seconds=index))
-        self._write(db, "emulator", "e0", "emulator zero")
-        self._backdate(db, "emulator", "e0", base + timedelta(minutes=30))
-        # emulator is eligible despite the older, unsent warhammer burst sitting
-        # ahead of it in time — it is not stuck behind the burst.
-        pools = self._pin_choice(monkeypatch, "emulator")
-        result = await ReadPublishedLatestTool(db, "notifier").execute(n=1)
-        assert "emulator zero" in result.message
-        assert pools == [{"warhammer", "emulator"}]
-
-    @pytest.mark.asyncio
-    async def test_discard_pending_does_not_advance(self, tmp_path):
-        db = _make_db(tmp_path)
-        self._publish(db, "games")
-        self._write(db, "games", "g1", "game one")
-        tool = ReadPublishedLatestTool(db, "notifier")
-        await tool.execute(n=1)
-        tool.discard_pending()  # a failed cycle drops the advance
-        assert db.cursors.get("notifier", "games") is None
-        # So the entry is offered again on the next cycle.
-        again = await tool.execute(n=1)
-        assert "game one" in again.message
-
-    @pytest.mark.asyncio
-    async def test_skips_archived_published_collection(self, tmp_path):
-        db = _make_db(tmp_path)
-        self._publish(db, "games")
-        self._write(db, "games", "g1", "game one")
-        db.memories.archive("games")
-        result = await ReadPublishedLatestTool(db, "notifier").execute(n=1)
-        assert result.message == "(no new published entries)"
-
-    @pytest.mark.asyncio
-    async def test_cold_start_ignores_backlog_older_than_window(self, tmp_path):
-        db = _make_db(tmp_path)
-        self._publish(db, "games")
-        self._write(db, "games", "old", "ancient game")
-        # A brand-new consumer must not replay a long-standing backlog the day it
-        # subscribes: an entry older than the cold-start window is treated as seen.
-        self._backdate(
-            db,
-            "games",
-            "old",
-            datetime.now(UTC)
-            - timedelta(seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS + 86400),
-        )
-        tool = ReadPublishedLatestTool(db, "notifier")
-        assert (await tool.execute(n=1)).message == "(no new published entries)"
-        # But a fresh entry (within the window) is surfaced.
-        self._write(db, "games", "new", "fresh game")
-        assert "fresh game" in (await tool.execute(n=1)).message
 
 
 class TestRegistryProvenanceAndLifecycle:

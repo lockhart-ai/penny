@@ -606,7 +606,6 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "memory_metadata" in names
         assert "collection_catalog" in names
         assert "collector_run_history" in names
-        assert "read_published_latest" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
         assert "find_mine" in names
 
@@ -936,7 +935,7 @@ _BASIC_FLOW_EXPECTED = (
     "- knowledge — active · every 5m · no runs yet\n"
     "- likes — active · every 5m · no runs yet\n"
     "- notified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- notifier — active · every 10m · no runs yet\n"
+    "- notifier — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "- quality — active · every 1h · no runs yet\n"
     "- skills — active · every 6h · no runs yet\n"
     "- thoughts — active · every 90m · no runs yet\n"
@@ -958,8 +957,6 @@ _BASIC_FLOW_EXPECTED = (
     "- knowledge (collection, 0 entries) — Summarized facts from web pages Penny has read\n"
     "- likes (collection, 0 entries) — Topics the user has expressed positive sentiment "
     "about\n"
-    "- notifier (collection, 0 entries) — Delivers new finds from published collections "
-    "to the user.\n"
     "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
     "- playlists (collection, 1 entries) — favorite playlists\n"
     "- quality (collection, 0 entries) — Reviews Penny's own runs and messages and "

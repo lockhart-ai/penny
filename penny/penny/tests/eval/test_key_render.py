@@ -55,7 +55,7 @@ def _seed_board_games(db: Database) -> None:
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
         intent=BOARD_GAMES_INTENT,
         interval=3600,
-        published=True,
+        notify=True,
     )
 
 
