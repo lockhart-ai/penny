@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct MessageSearchView: View {
     @Environment(\.dismiss) private var dismiss
@@ -8,7 +9,10 @@ struct MessageSearchView: View {
     @State private var searchService: SearchService
     @State private var searchTask: Task<Void, Never>?
 
-    init(client: PennyService) {
+    private let onReply: (ChatMessage) -> Void
+
+    init(client: PennyService, onReply: @escaping (ChatMessage) -> Void) {
+        self.onReply = onReply
         _searchService = State(initialValue: SearchService(client: client))
     }
 
@@ -55,21 +59,7 @@ struct MessageSearchView: View {
                     ScrollView {
                         LazyVGrid(columns: searchResultColumns, spacing: MessageView.MessageLayout.compact.itemSpacing) {
                             ForEach(searchService.results) { result in
-                                Button {
-                                    selectedMessage = result.message
-                                } label: {
-                                    ChatMessageView(message: result.message, layout: .compact)
-                                        .overlay(alignment: .bottomTrailing) {
-                                            Text("\(Int(result.similarity * 100))%")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(.secondary)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(.regularMaterial, in: Capsule())
-                                                .padding(8)
-                                        }
-                                }
-                                .buttonStyle(.plain)
+                                searchResultCard(result)
                             }
                         }
                         .padding(.horizontal, MessageView.MessageLayout.compact.horizontalPadding)
@@ -106,6 +96,42 @@ struct MessageSearchView: View {
                 MessageCardDetailSheet(message: message)
             }
         }
+    }
+
+    private func searchResultCard(_ result: MessageSearchResult) -> some View {
+        Button {
+            selectedMessage = result.message
+        } label: {
+            ChatMessageView(message: result.message, layout: .compact)
+                .overlay(alignment: .bottomTrailing) {
+                    Text("\(Int(result.similarity * 100))%")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(8)
+                }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                reply(to: result.message)
+            } label: {
+                Label("Reply", systemImage: "arrowshape.turn.up.left")
+            }
+
+            Button {
+                UIPasteboard.general.string = result.message.content
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    private func reply(to message: ChatMessage) {
+        onReply(message)
+        dismiss()
     }
 
     private func startSearch() {

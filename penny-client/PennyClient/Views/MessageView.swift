@@ -9,6 +9,7 @@ struct MessageView: View {
     @State private var presentedCardMessage: ChatMessage?
     @State private var activeMessageContext: MessageActionContext?
     @State private var messageFrames: [Int: CGRect] = [:]
+    @State private var messageScrollFrames: [Int: CGRect] = [:]
     @State private var messageActionProxyHeights: [Int: CGFloat] = [:]
     @State private var messageContextScale: CGFloat = 1
     @State private var shouldUseFastComposerScroll = false
@@ -19,7 +20,9 @@ struct MessageView: View {
     @State private var typingIndicatorFadeTask: Task<Void, Never>?
     @State private var arrivalAnimatedMessageIDs: Set<Int> = []
     @State private var pendingIncomingAutoScrollMessageID: Int?
-    @State private var chatViewportHeight: CGFloat = 0
+    @State private var lastTopScrolledMessageID: Int?
+    @State private var chatViewportFrame: CGRect = .zero
+    @State private var messageLayoutSwitcherHeight: CGFloat = 0
     @State private var selectedPennyNavigation: PennyNavigationDestination?
     @FocusState private var isComposerFocused: Bool
 
@@ -41,6 +44,14 @@ struct MessageView: View {
                 if isMessageLayoutSwitcherEnabled {
                     messageLayoutSelector
                         .padding(.top, 10)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: MessageLayoutSwitcherHeightPreferenceKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        }
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -83,6 +94,7 @@ struct MessageView: View {
                                 Image(systemName: "info.circle")
                                     .frame(width: 28, height: 28)
                                     .contentShape(Circle())
+                                    .foregroundStyle(.red)
                             }
                             .buttonStyle(.borderless)
                             .foregroundStyle(.primary)
@@ -115,7 +127,15 @@ struct MessageView: View {
                 SettingsView(client: viewModel.client)
             }
             .sheet(isPresented: $viewModel.isShowingSearch) {
-                MessageSearchView(client: viewModel.client)
+                MessageSearchView(client: viewModel.client) { message in
+                    withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
+                        viewModel.startReply(to: message)
+                    }
+                    Task { @MainActor in
+                        await Task.yield()
+                        isComposerFocused = true
+                    }
+                }
             }
             .sheet(isPresented: $isShowingActivity) {
                 AgentActivityView(client: viewModel.client)
@@ -128,7 +148,14 @@ struct MessageView: View {
             }
             .coordinateSpace(name: messageRootCoordinateSpace)
             .onPreferenceChange(MessageFramePreferenceKey.self) { frames in
-                messageFrames = frames
+                messageFrames = frames.mapValues(\.root)
+                messageScrollFrames = frames.mapValues(\.scroll)
+            }
+            .onPreferenceChange(ChatViewportFramePreferenceKey.self) { frame in
+                chatViewportFrame = frame
+            }
+            .onPreferenceChange(MessageLayoutSwitcherHeightPreferenceKey.self) { height in
+                messageLayoutSwitcherHeight = height
             }
             .overlay {
                 messageActionOverlay
@@ -146,9 +173,6 @@ struct MessageView: View {
                 isComposerFocused = false
             }
             viewModel.handleScenePhaseChange(newPhase)
-        }
-        .onChange(of: isComposerFocused) { _, isFocused in
-            handleComposerFocusChanged(isFocused)
         }
         .onDisappear {
             keyboardSettledScrollTask?.cancel()
@@ -168,7 +192,9 @@ struct MessageView: View {
                     if viewModel.displayedMessages.isEmpty {
                         EmptyMessageFilterView(filter: viewModel.selectedMessageFilter)
                     } else {
-                        messageGrid(layout: .message)
+                        messageGrid(layout: .message) { message in
+                            scrollToMessageTopIfNeeded(message.id, with: proxy)
+                        }
                     }
 
                     if isTypingIndicatorVisible && viewModel.shouldShowTypingIndicator {
@@ -178,16 +204,16 @@ struct MessageView: View {
                     bottomSpacer
                 }
                 .padding(.horizontal, MessageLayout.message.horizontalPadding)
-                .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
+                .padding(.top, messageListTopPadding)
             }
             .background {
-                Color(.systemGroupedBackground)
                 GeometryReader { geometry in
-                    Color.clear.preference(key: ChatViewportHeightPreferenceKey.self, value: geometry.size.height)
+                    Color(.systemGroupedBackground)
+                        .preference(
+                            key: ChatViewportFramePreferenceKey.self,
+                            value: CGRect(origin: .zero, size: geometry.size)
+                        )
                 }
-            }
-            .onPreferenceChange(ChatViewportHeightPreferenceKey.self) { height in
-                chatViewportHeight = height
             }
             .coordinateSpace(name: messageScrollCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
@@ -288,7 +314,7 @@ struct MessageView: View {
                     bottomSpacer
                 }
                 .padding(.horizontal, layout.horizontalPadding)
-                .padding(.top, isMessageLayoutSwitcherEnabled ? 58 : 12)
+                .padding(.top, messageListTopPadding)
             }
             .background(Color(.systemGroupedBackground))
             .coordinateSpace(name: messageScrollCoordinateSpace)
@@ -546,12 +572,15 @@ private extension MessageView {
     }
 
     @ViewBuilder
-    func messageGrid(layout: MessageLayout) -> some View {
+    func messageGrid(
+        layout: MessageLayout,
+        onMessageTap: ((ChatMessage) -> Void)? = nil
+    ) -> some View {
         Grid(horizontalSpacing: layout.itemSpacing, verticalSpacing: layout.itemSpacing) {
             ForEach(messageGridRows(for: layout)) { row in
                 GridRow {
                     ForEach(row.messages) { message in
-                        messageGridCell(message, layout: layout)
+                        messageGridCell(message, layout: layout, onTap: onMessageTap)
                     }
 
                     ForEach(row.messages.count..<layout.columnCount, id: \.self) { _ in
@@ -565,7 +594,11 @@ private extension MessageView {
         .frame(maxWidth: .infinity)
     }
 
-    func messageGridCell(_ message: ChatMessage, layout: MessageLayout) -> some View {
+    func messageGridCell(
+        _ message: ChatMessage,
+        layout: MessageLayout,
+        onTap: ((ChatMessage) -> Void)?
+    ) -> some View {
         VStack(spacing: 0) {
             Color.clear
                 .frame(height: 0)
@@ -580,7 +613,10 @@ private extension MessageView {
                     GeometryReader { geometry in
                         Color.clear.preference(
                             key: MessageFramePreferenceKey.self,
-                            value: [message.id: geometry.frame(in: .named(messageRootCoordinateSpace))]
+                            value: [message.id: MessageFrameGeometry(
+                                root: geometry.frame(in: .named(messageRootCoordinateSpace)),
+                                scroll: geometry.frame(in: .named(messageScrollCoordinateSpace))
+                            )]
                         )
                     }
                 }
@@ -590,7 +626,10 @@ private extension MessageView {
                         dismissMessageActions()
                         return
                     }
-                    guard layout != .message else { return }
+                    if layout == .message {
+                        onTap?(message)
+                        return
+                    }
                     presentedCardMessage = message
                 }
                 .onLongPressGesture(minimumDuration: 0.35) {
@@ -643,26 +682,6 @@ private extension MessageView {
         isMessageLayoutSwitcherEnabled = Prefs.shared.isMessageLayoutSwitcherEnabled
     }
 
-    func handleComposerFocusChanged(_ isFocused: Bool) {
-        guard isFocused else {
-            shouldUseFastComposerScroll = false
-            keyboardSettledScrollTask?.cancel()
-            return
-        }
-        let didChangeMessageLayout = isMessageLayoutSwitcherEnabled && viewModel.prepareComposerFocus()
-        scheduleScrollAfterKeyboardSettles(fast: shouldUseFastComposerScroll && !didChangeMessageLayout)
-        shouldUseFastComposerScroll = false
-    }
-
-    func scheduleScrollAfterKeyboardSettles(fast: Bool = false) {
-        keyboardSettledScrollTask?.cancel()
-        keyboardSettledScrollTask = Task { @MainActor in
-            try? await Task.sleep(for: fast ? .milliseconds(120) : .milliseconds(350))
-            guard !Task.isCancelled && isComposerFocused else { return }
-            viewModel.requestScrollToBottom(shouldSettleLayout: !fast)
-        }
-    }
-
     func changeMessageLayout(to layout: MessageLayout) {
         guard viewModel.selectedMessageLayout != layout else { return }
         if layout != .message {
@@ -702,19 +721,18 @@ private extension MessageView {
         enableOlderPaging: Bool = true
     ) {
         if let pendingIncomingAutoScrollMessageID {
-            guard let target = oversizedIncomingMessageAutoScrollTarget(for: pendingIncomingAutoScrollMessageID) else {
-                if messageFrames[pendingIncomingAutoScrollMessageID] == nil && !enableOlderPaging {
-                    return
-                }
-                scrollToBottomAnchor(with: proxy, animated: animated)
-                if enableOlderPaging {
-                    self.pendingIncomingAutoScrollMessageID = nil
-                }
+            guard let destination = incomingMessageAutoScrollDestination(for: pendingIncomingAutoScrollMessageID) else {
                 finishBottomScrollIfNeeded(enableOlderPaging: enableOlderPaging)
                 return
             }
 
-            scrollToMessageTop(target, with: proxy, animated: animated)
+            switch destination {
+            case .messageTop(let target):
+                scrollToMessageTop(target, with: proxy, animated: animated)
+            case .bottomAnchor:
+                scrollToBottomAnchor(with: proxy, animated: animated)
+            }
+
             if enableOlderPaging {
                 self.pendingIncomingAutoScrollMessageID = nil
             }
@@ -736,30 +754,68 @@ private extension MessageView {
         }
     }
 
+    func scrollToMessageTopIfNeeded(_ id: Int, with proxy: ScrollViewProxy) {
+        guard lastTopScrolledMessageID != id, shouldScrollToMessage(id) else { return }
+
+        lastTopScrolledMessageID = id
+        scrollToMessageTop(
+            OversizedIncomingMessageScrollTarget(id: id),
+            with: proxy,
+            animated: true
+        )
+    }
+
     func scrollToMessageTop(_ target: OversizedIncomingMessageScrollTarget, with proxy: ScrollViewProxy, animated: Bool) {
+        let anchor = messageTopScrollAnchor
+
         if animated {
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(target.topAnchorID, anchor: .top)
+                proxy.scrollTo(target.topAnchorID, anchor: anchor)
             }
         } else {
-            proxy.scrollTo(target.topAnchorID, anchor: .top)
+            proxy.scrollTo(target.topAnchorID, anchor: anchor)
         }
     }
 
-    func oversizedIncomingMessageAutoScrollTarget(for id: Int) -> OversizedIncomingMessageScrollTarget? {
-        guard effectiveMessageLayout == .message,
-              let message = viewModel.displayedMessages.last(where: { $0.id == id }),
-              !message.isOutgoing,
-              let frame = messageFrames[id],
-              chatViewportHeight > 0 else {
-            return nil
-        }
+    var messageTopScrollAnchor: UnitPoint {
+        guard chatViewportFrame.height > 0 && chatViewportTopOcclusion > 0 else { return .top }
+        return UnitPoint(x: 0.5, y: min(1, chatViewportTopOcclusion / chatViewportFrame.height))
+    }
 
-        let topOffset = isMessageLayoutSwitcherEnabled ? 58.0 : 12.0
-        let availableHeight = max(44, chatViewportHeight - topOffset - 12)
-        guard frame.height > availableHeight else { return nil }
+    var visibleChatViewportFrame: CGRect {
+        guard chatViewportFrame.height > 0 else { return .zero }
 
-        return OversizedIncomingMessageScrollTarget(id: id)
+        var frame = chatViewportFrame
+        frame.origin.y += chatViewportTopOcclusion
+        frame.size.height = max(0, frame.height - chatViewportTopOcclusion)
+        return frame
+    }
+
+    var chatViewportTopOcclusion: CGFloat {
+        isMessageLayoutSwitcherEnabled ? messageListTopPadding : 0
+    }
+
+    var messageListTopPadding: CGFloat {
+        guard isMessageLayoutSwitcherEnabled else { return 12 }
+        let measuredSwitcherHeight = messageLayoutSwitcherHeight > 0 ? messageLayoutSwitcherHeight : 50
+        return measuredSwitcherHeight + 8
+    }
+
+    func shouldScrollToMessage(_ id: Int) -> Bool {
+        guard let frame = messageScrollFrames[id], visibleChatViewportFrame.height > 0 else { return false }
+        return frame.minY < visibleChatViewportFrame.minY || frame.maxY > visibleChatViewportFrame.maxY
+    }
+
+    func incomingMessageAutoScrollDestination(for id: Int) -> IncomingMessageAutoScrollDestination? {
+        guard effectiveMessageLayout == .message else { return .bottomAnchor }
+        guard let message = viewModel.displayedMessages.last(where: { $0.id == id }) else { return nil }
+        guard !message.isOutgoing else { return .bottomAnchor }
+        guard let frame = messageFrames[id], visibleChatViewportFrame.height > 0 else { return nil }
+
+        let availableHeight = max(44, visibleChatViewportFrame.height - 12)
+        guard frame.height > availableHeight else { return .bottomAnchor }
+
+        return .messageTop(OversizedIncomingMessageScrollTarget(id: id))
     }
 
     func finishBottomScrollIfNeeded(enableOlderPaging: Bool) {
@@ -1000,6 +1056,11 @@ private struct MessageActionProxyLayout {
     let alignment: Alignment
 }
 
+private enum IncomingMessageAutoScrollDestination {
+    case messageTop(OversizedIncomingMessageScrollTarget)
+    case bottomAnchor
+}
+
 private struct OversizedIncomingMessageScrollTarget {
     let id: Int
 
@@ -1012,10 +1073,15 @@ private struct MessageTopAnchorID: Hashable {
     let messageID: Int
 }
 
-private struct MessageFramePreferenceKey: PreferenceKey {
-    static let defaultValue: [Int: CGRect] = [:]
+private struct MessageFrameGeometry: Equatable {
+    let root: CGRect
+    let scroll: CGRect
+}
 
-    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+private struct MessageFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [Int: MessageFrameGeometry] = [:]
+
+    static func reduce(value: inout [Int: MessageFrameGeometry], nextValue: () -> [Int: MessageFrameGeometry]) {
         value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
     }
 }
@@ -1036,11 +1102,21 @@ private struct MessageGridRow: Identifiable {
     }
 }
 
-private struct ChatViewportHeightPreferenceKey: PreferenceKey {
+private struct ChatViewportFramePreferenceKey: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        value = next.height > 0 ? next : value
+    }
+}
+
+private struct MessageLayoutSwitcherHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        let next = nextValue()
+        value = next > 0 ? next : value
     }
 }
 
@@ -1169,16 +1245,20 @@ private struct TypingRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 6) {
-            TypingDots()
             Text(status)
+                .id(status)
                 .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.leading)
+                .transition(.opacity)
+            Spacer(minLength: 8)
+            TypingDots()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .opacity(isFadingOut ? 0 : 1)
+        .animation(.easeInOut(duration: 0.14), value: status)
         .accessibilityLabel("Penny is typing")
     }
 }
