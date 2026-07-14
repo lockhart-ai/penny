@@ -16,10 +16,12 @@ one guess-free tool call from the detail). Sections:
 
 - **Active mechanisms** — the collectors, archived-inclusive: name, status,
   cadence, end condition, last-run outcome. "what's running right now?"
-- **Recent activity** — background runs and configuration mutations, interleaved
-  in one time-ordered block at rollup altitude (one line each; per-call detail is
-  one ``read_run_calls`` hop away). The *complement* of the conversation — chat
-  turns are already in context, so they're never duplicated here.
+- **Recent activity** — background runs, configuration mutations, and autonomous
+  sends, interleaved in one time-ordered block at rollup altitude (one line each;
+  per-call detail is one ``read_run_calls`` / ``why_did_i_send_that`` hop away).
+  The *complement* of the conversation — chat turns (direct replies) are already
+  in context, so they're never duplicated here; only mechanism-authored sends
+  (``mechanism`` non-NULL, #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
 - **About the user** — the durable user-fact core (name, timezone, location):
@@ -27,9 +29,11 @@ one guess-free tool call from the detail). Sections:
   lookup.
 - A pointers line naming the fetch tools for anything deeper.
 
-Emission/autonomous-send rows are deliberately absent: #1568 adds them to this
-same block and the same whole-render test literal, so this renderer is structured
-so that extension is additive.
+Autonomous-send (emission) rows join the recent-activity block (#1568): each
+delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
+line, interleaved by time with the runs and mutations, so Penny sees her own
+background emissions ambiently and can answer "why did I message you at <time>?"
+with a ``why_did_i_send_that`` hop.
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from penny.database.database import Database
-    from penny.database.message_store import RunActivity, RunOutcomeStamp
+    from penny.database.message_store import EmissionActivity, RunActivity, RunOutcomeStamp
     from penny.database.models import MemoryRow, MutationEvent
 
 
@@ -170,9 +174,10 @@ class SelfStateHeader:
     # ── Recent activity ──────────────────────────────────────────────────────
 
     def _activity_section(self) -> str:
-        """Background runs and config mutations, interleaved newest-first at rollup
-        altitude (one line each). Chat turns are excluded by construction — they're
-        already the conversation; this is its complement (ledger, #1560)."""
+        """Background runs, config mutations, and autonomous sends, interleaved
+        newest-first at rollup altitude (one line each). Chat turns (direct replies)
+        are excluded by construction — they're already the conversation; this is its
+        complement (ledger, #1560; emissions, #1568)."""
         events = self._activity_events()
         limit = PennyConstants.SELF_STATE_ACTIVITY_LIMIT
         shown = events[:limit]
@@ -185,12 +190,13 @@ class SelfStateHeader:
         return "\n".join(lines)
 
     def _activity_events(self) -> list[tuple[datetime, str]]:
-        """(timestamp, rendered line) for recent runs + mutations, newest first.
+        """(timestamp, rendered line) for recent runs + mutations + emissions,
+        newest first.
 
         Each source is fetched at ``cap + 1`` (so the section can tell that a
         ``cap + 1``-th event exists and show the overflow tail), merged, and
         sorted by time — so the block stays flat as activity grows and the newest
-        events of either kind win a slot."""
+        events of any kind win a slot."""
         fetch = PennyConstants.SELF_STATE_ACTIVITY_LIMIT + 1
         events: list[tuple[datetime, str]] = [
             (run.finished_at, self._run_line(run))
@@ -200,8 +206,22 @@ class SelfStateHeader:
             (event.created_at, self._mutation_line(event))
             for event in self.db.mutations.recent(fetch)
         )
+        events.extend(
+            (emission.sent_at, self._emission_line(emission))
+            for emission in self.db.messages.recent_emissions(fetch)
+        )
         events.sort(key=lambda event: event[0], reverse=True)
         return events
+
+    @staticmethod
+    def _emission_line(emission: EmissionActivity) -> str:
+        """``sent · <when> · <mechanism> — "<snippet>"`` — a delivered autonomous
+        send (#1568). The mechanism is the ``why_did_i_send_that`` anchor; the
+        snippet is what Penny autonomously said, at rollup altitude."""
+        return (
+            f"sent · {format_log_timestamp(emission.sent_at)} · "
+            f'{emission.mechanism} — "{emission.snippet}"'
+        )
 
     @staticmethod
     def _run_line(run: RunActivity) -> str:

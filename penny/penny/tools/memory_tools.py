@@ -49,7 +49,7 @@ from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.mutation_store import render_mutation
 from penny.database.skill_store import holes_from_json, steps_from_json
 from penny.database.skills import render_skill, unbound_required_holes
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_interval, format_log_timestamp
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
@@ -92,6 +92,7 @@ from penny.tools.memory_args import (
     ReadRunCallsArgs,
     ReadSimilarArgs,
     UpdateEntryArgs,
+    WhyDidISendThatArgs,
 )
 from penny.tools.models import ToolResult
 from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
@@ -2127,6 +2128,89 @@ class CollectorRunHistoryTool(MemoryTool):
         )
 
 
+# ── Emission provenance (why_did_i_send_that) ───────────────────────────────
+
+
+class WhyDidISendThatTool(MemoryTool):
+    """Explain one delivered message: was it a direct reply or an autonomous send,
+    and if autonomous, which mechanism sent it and from which request (#1568)?
+
+    The reverse index over emission provenance — from a delivered ``messagelog``
+    row's ``mechanism`` back to the registry row that sent it (its cadence + when
+    it was created) and the user message that created that mechanism.  Read-only,
+    chat-only.  Kept deliberately THIN: #1580's get_event / find reconciliation
+    will likely absorb it as get_event's send case; noted on the PR."""
+
+    name = "why_did_i_send_that"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message_id": {
+                "type": "integer",
+                "description": "The id of the delivered message to explain.",
+            }
+        },
+        "required": ["message_id"],
+    }
+    args_model = WhyDidISendThatArgs
+    description = (
+        "Explain why a message was sent: whether it was a direct reply in "
+        "conversation or an autonomous send, and if autonomous, which mechanism "
+        "sent it, on what cadence, and from which of your requests it was created. "
+        "Pass the message's id."
+    )
+
+    _DIRECT_REPLY = "Direct reply in conversation."
+    _NO_SUCH_MESSAGE = (
+        "No message with id {message_id} was found.  Pass the id of a message that "
+        "exists (from the self-state activity block or a prior read)."
+    )
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        if not result.success:
+            return "You tried to look up why a message was sent but it didn't work:"
+        return "You looked up why a message was sent:"
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = WhyDidISendThatArgs(**kwargs)
+        message = self._db.messages.get_by_id(args.message_id)
+        if message is None:
+            return ToolResult(
+                message=self._NO_SUCH_MESSAGE.format(message_id=args.message_id), success=False
+            )
+        if message.mechanism is None:
+            return ToolResult(message=self._DIRECT_REPLY)
+        return ToolResult(message=self._explain_autonomous(message.mechanism))
+
+    def _explain_autonomous(self, mechanism: str) -> str:
+        """Render an autonomous send's provenance — mechanism, cadence, when it was
+        created, and the request that created it — joining the delivered row to the
+        registry row (#1566 provenance columns) and its spawning message."""
+        row = self._db.memories.get(mechanism)
+        if row is None:
+            return f"Sent by '{mechanism}' (a background mechanism)."
+        head = (
+            f"Sent by '{mechanism}'{self._cadence_clause(row)}, "
+            f"created {format_log_timestamp(row.created_at)}"
+        )
+        ask = _ask_excerpt(self._db, row.source_message_id)
+        if ask is not None:
+            return f'{head} from your message: "{ask}"'
+        return f"{head}."
+
+    @staticmethod
+    def _cadence_clause(row: MemoryRow) -> str:
+        """`` (every <cadence>)`` when the mechanism runs on an interval, else empty
+        (a retired or run-quota-exhausted mechanism no longer on a cadence)."""
+        if row.collector_interval_seconds is None:
+            return ""
+        return f" (every {format_interval(row.collector_interval_seconds)})"
+
+
 # ── Log writes ──────────────────────────────────────────────────────────────
 
 
@@ -2659,6 +2743,10 @@ def build_memory_tools(
         # text prompt and never touches the skill registry (#1590).
         SkillCreateTool(db, llm_client, author=agent_name),
         SkillReadTool(db),
+        # Emission provenance introspection (#1568): a chat-surface read that
+        # explains why a message was sent — a cadence collector has no business
+        # asking, so it rides the chat-only tier, not the uniform read set.
+        WhyDidISendThatTool(db),
     ]
     mutations: list[Tool] = [
         CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),

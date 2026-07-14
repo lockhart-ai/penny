@@ -81,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 87
+        assert count == 88
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -122,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 87
+        assert count1 == 88
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -160,8 +160,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0087 run = 86 migrations
-        assert count == 86
+        # 0001 is skipped; 0002 through 0088 run = 87 migrations
+        assert count == 87
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -187,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 87  # all migrations applied
+        assert count == 88  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -816,6 +816,63 @@ class TestMigrate:
         assert "5. If a recent message indicates an existing like" in prompts["likes"]
         assert prompts["quality"].rstrip().endswith("never apply a change yourself.")
         assert prompts["notifier"].rstrip().endswith("— deliver it.")
+
+    def test_0088_adds_emission_provenance_and_novelty_columns(self, tmp_path):
+        """Migration 0088 adds ``mechanism`` + ``novelty_key`` to ``messagelog`` and
+        ``novelty_key`` + ``suppressed_reason`` to ``send_queue`` (#1568) — schema
+        only, idempotent, on a DB that predates them."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE messagelog (id INTEGER PRIMARY KEY, direction TEXT, "
+            "content TEXT, timestamp TIMESTAMP)"
+        )
+        conn.execute(
+            "CREATE TABLE send_queue (id INTEGER PRIMARY KEY, content TEXT, collection TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0088_emission_provenance_novelty.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0088", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        conn = sqlite3.connect(db_path)
+        mod.up(conn)
+        # Re-running is a no-op (idempotent) — the guards skip existing columns.
+        mod.up(conn)
+        message_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messagelog)").fetchall()
+        }
+        queue_columns = {row[1] for row in conn.execute("PRAGMA table_info(send_queue)").fetchall()}
+        # The recent-emissions scan (self-state hot path) is served by the partial
+        # index — mechanism-bearing rows are sparse in messagelog, so the filter+sort
+        # must not walk the whole timestamp order.  EXPLAIN QUERY PLAN proves the
+        # planner actually picks it for the exact query recent_emissions runs.
+        plan = " ".join(
+            str(step)
+            for step in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM messagelog "
+                "WHERE direction = 'outgoing' AND mechanism IS NOT NULL "
+                "ORDER BY timestamp DESC, id DESC LIMIT 8"
+            ).fetchall()
+        )
+        conn.close()
+
+        assert "mechanism" in message_columns
+        assert "novelty_key" in message_columns
+        assert "novelty_key" in queue_columns
+        assert "suppressed_reason" in queue_columns
+        assert "ix_messagelog_emission_time" in plan, plan
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
         """Migration 0074 deletes entries whose key or content carries a

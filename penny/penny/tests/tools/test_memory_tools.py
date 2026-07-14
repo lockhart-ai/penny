@@ -2275,6 +2275,8 @@ class TestFactory:
         "log_create",
         "skill_create",
         "skill_read",
+        # Emission provenance introspection (chat-only, rides the lifecycle tier).
+        "why_did_i_send_that",
         # Entry mutations (contents)
         "collection_write",
         "update_entry",

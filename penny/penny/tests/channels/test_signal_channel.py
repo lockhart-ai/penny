@@ -703,6 +703,68 @@ def test_reaction_without_callback_returns_normal_message():
 
 
 @pytest.mark.asyncio
+async def test_send_response_stamps_emission_provenance(signal_server, test_config):
+    """Emission provenance end-to-end (#1568): an autonomous send (the drainer's
+    delivery path) stamps ``mechanism`` + ``novelty_key`` onto the delivered
+    ``messagelog`` row; a direct reply passes neither, so it stamps NULL and is
+    never novelty-gated."""
+    from typing import Any, cast
+
+    from penny.agents import ChatAgent
+    from penny.database.migrate import migrate
+    from penny.prompts import Prompt
+    from penny.tests.mocks.llm_patches import MockLlmClient
+
+    db = Database(test_config.db_path)
+    db.create_tables()
+    migrate(test_config.db_path)
+    client = LlmClient(
+        api_url=test_config.llm_api_url,
+        model=test_config.llm_model,
+        db=db,
+        max_retries=test_config.llm_max_retries,
+        retry_delay=test_config.llm_retry_delay,
+    )
+    message_agent = ChatAgent(
+        system_prompt=Prompt.CONVERSATION_PROMPT,
+        model_client=client,
+        embedding_model_client=client,
+        tools=[],
+        db=db,
+        config=test_config,
+    )
+    channel = SignalChannel(
+        api_url=test_config.signal_api_url,
+        phone_number=test_config.signal_number or "+15551234567",
+        message_agent=message_agent,
+        db=db,
+    )
+    channel._embedding_model_client = cast(Any, MockLlmClient())
+
+    # Autonomous send (as the drainer delivers a queued mechanism message).
+    await channel.send_response(
+        TEST_SENDER,
+        "the price dropped to $399!",
+        parent_id=None,
+        author="price-watch",
+        mechanism="price-watch",
+        novelty_key="price-watch:abc123",
+    )
+    # Direct reply (a chat turn's answer) — no mechanism, never gated.
+    await channel.send_response(TEST_SENDER, "sure, happy to help!", parent_id=None, author="penny")
+
+    autonomous = db.messages.find_outgoing_by_content("the price dropped to $399!")
+    direct = db.messages.find_outgoing_by_content("sure, happy to help!")
+    assert autonomous is not None
+    assert autonomous.mechanism == "price-watch"
+    assert autonomous.novelty_key == "price-watch:abc123"
+    assert direct is not None
+    assert direct.mechanism is None
+    assert direct.novelty_key is None
+    await channel.close()
+
+
+@pytest.mark.asyncio
 async def test_send_response_attaches_matching_media(signal_server, test_config, mock_llm):
     """The browsed image whose metadata is closest to the outgoing text is
     attached at egress (the single nearest image always wins); and a generated

@@ -94,6 +94,36 @@ class RunOutcomeStamp(BaseModel):
     finished_at: datetime
 
 
+class EmissionActivity(BaseModel):
+    """One delivered autonomous send at rollup altitude, for the self-state
+    header's recent-activity block (#1568).
+
+    ``mechanism`` is the bound collection whose cycle produced it (the ``why_did_
+    i_send_that`` anchor); ``sent_at`` is when it went out; ``snippet`` is a short,
+    whitespace-collapsed excerpt of the content so the model sees *what* it
+    autonomously said, not only that it did.  Direct replies (``mechanism`` NULL)
+    are excluded \u2014 they are the conversation, not its complement."""
+
+    mechanism: str
+    sent_at: datetime
+    snippet: str
+
+
+# First N characters of a delivered autonomous send, rendered as the
+# activity-block emission snippet (#1568).  A short, whitespace-collapsed excerpt
+# — enough to recognise what Penny said, not the whole message.
+_EMISSION_SNIPPET_CHARS = 50
+
+
+def _emission_snippet(content: str) -> str:
+    """A one-line excerpt (first ``_EMISSION_SNIPPET_CHARS`` chars) of an outgoing
+    autonomous send, whitespace collapsed so a multi-line body reads as one line."""
+    collapsed = " ".join(content.split())
+    if len(collapsed) <= _EMISSION_SNIPPET_CHARS:
+        return collapsed
+    return f"{collapsed[:_EMISSION_SNIPPET_CHARS].rstrip()}…"
+
+
 def _count_run_tool_calls(prompts: list[PromptLog]) -> int:
     """Total tool calls a run made, across its prompt rows \u2014 the rollup count the
     self-state activity block shows in place of the per-call trace."""
@@ -145,13 +175,19 @@ class MessageStore:
         thought_id: int | None = None,
         device_id: int | None = None,
         embedding: bytes | None = None,
+        mechanism: str | None = None,
+        novelty_key: str | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
         ``embedding`` (serialized float32) is stored at write time so the message
         is immediately searchable via the ``user-messages``/``penny-messages``
         facades' ``read_similar``/relevant-recall path — the startup backfill only
-        catches rows logged without one."""
+        catches rows logged without one.
+
+        ``mechanism`` / ``novelty_key`` (#1568) name the autonomous cycle that
+        produced an outgoing send and the novelty it was gated on — NULL for a
+        direct reply, which is never novelty-gated."""
         if direction == PennyConstants.MessageDirection.OUTGOING:
             content = self.strip_formatting(content)
         try:
@@ -168,6 +204,8 @@ class MessageStore:
                     thought_id=thought_id,
                     device_id=device_id,
                     embedding=embedding,
+                    mechanism=mechanism,
+                    novelty_key=novelty_key,
                 )
                 session.add(log)
                 session.commit()
@@ -901,6 +939,37 @@ class MessageStore:
             )
             for run_id, target, outcome, finished in rows
             if run_id is not None and target is not None and outcome is not None
+        ]
+
+    def recent_emissions(self, limit: int) -> list[EmissionActivity]:
+        """The most recent delivered autonomous sends across ALL mechanisms, newest
+        first — the emission half of the self-state header's activity block (#1568).
+
+        Only outgoing rows carrying a ``mechanism`` (an autonomous send that named
+        its cause) qualify; a direct reply stamps NULL and is excluded (it is the
+        conversation, already in context).  ``id`` breaks same-timestamp ties so
+        the render is stable.  The snippet is the whitespace-collapsed head of the
+        content."""
+        if limit <= 0:
+            return []
+        with self._session() as session:
+            rows = session.exec(
+                select(MessageLog)
+                .where(
+                    MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
+                    MessageLog.mechanism.isnot(None),  # ty: ignore[unresolved-attribute]
+                )
+                .order_by(MessageLog.timestamp.desc(), MessageLog.id.desc())  # ty: ignore[unresolved-attribute]
+                .limit(limit)
+            ).all()
+        return [
+            EmissionActivity(
+                mechanism=row.mechanism,  # ty: ignore[invalid-argument-type]
+                sent_at=row.timestamp,
+                snippet=_emission_snippet(row.content),
+            )
+            for row in rows
+            if row.mechanism is not None
         ]
 
     def latest_run_outcomes(self) -> dict[str, RunOutcomeStamp]:

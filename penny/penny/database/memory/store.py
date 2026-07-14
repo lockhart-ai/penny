@@ -371,6 +371,30 @@ class MemoryStore:
             ).all()
             return set(rows)
 
+    def entries_written_by_run(self, name: str, run_id: str) -> list[MemoryEntry]:
+        """The entries in ``name`` this run created OR rewrote — the run's new/
+        changed writes, read structurally from the ``last_written_by_run_id`` stamp
+        (#1560, #1568).
+
+        A NEW_KEY write inserts a row stamped with ``run_id``; a KEY_EXISTS_CHANGED
+        write refreshes the baseline via ``update_entry``, which advances the same
+        stamp — so both surface here, while a dedup-rejected DUPLICATE (nothing
+        stored) and a KEY_EXISTS_UNCHANGED re-observation (nothing changed) do not.
+        This is the structural basis the send surface derives a mechanism's novelty
+        key from at enqueue time — never model-authored, never parsed from prose.
+        Ordered by ``created_at`` for a stable digest input."""
+        with self._session() as session:
+            return list(
+                session.exec(
+                    select(MemoryEntry)
+                    .where(
+                        MemoryEntry.memory_name == slug(name),
+                        MemoryEntry.last_written_by_run_id == run_id,
+                    )
+                    .order_by(MemoryEntry.created_at.asc())  # ty: ignore[unresolved-attribute]
+                )
+            )
+
     def _notify_changed(self, name: str | None) -> None:
         if self._on_memory_changed is not None:
             self._on_memory_changed(name)

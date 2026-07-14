@@ -3,7 +3,7 @@
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Index
+from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel
 
 
@@ -63,11 +63,38 @@ class MessageLog(SQLModel, table=True):
         default=None, foreign_key="device.id", index=True
     )  # FK to device that sent/received this message
     embedding: bytes | None = None  # Serialized float32 embedding vector
+    # Emission provenance (#1568): the mechanism (bound collection) whose
+    # autonomous cycle produced this send, and the novelty key that emission was
+    # gated on.  Both NULL for a direct reply — a chat turn with a live triggering
+    # user message is never novelty-gated and names no mechanism.  Stamped by the
+    # drainer at delivery time from the queued row (the collection is known at
+    # enqueue), so "which mechanism sent this?" is a read, not a diagnosis.
+    # A by-name reference to ``memory.name`` (the FK-by-name discipline the memory
+    # layer uses), a plain column rather than a DB-level FK — like
+    # ``mutation_event.entity_name`` — so it doesn't close a circular foreign-key
+    # cycle with ``memory.source_message_id`` (→ ``messagelog.id``).  Served by the
+    # partial ``ix_messagelog_emission_time`` index below, not a single-column one
+    # (no query filters on mechanism equality; the hot read is the newest-emissions
+    # scan).
+    mechanism: str | None = Field(default=None)
+    novelty_key: str | None = Field(default=None)
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
         Index("ix_messagelog_sender_timestamp_id", "sender", "timestamp", "id"),
         Index("ix_messagelog_recipient_timestamp_id", "recipient", "timestamp", "id"),
+        # Partial index over emission rows only (#1568): ``recent_emissions`` runs on
+        # the self-state render hot path (every chat prompt build) filtering
+        # ``mechanism IS NOT NULL`` and ordering ``timestamp DESC, id DESC`` over the
+        # unbounded messagelog — mechanism-bearing rows are sparse, so without this a
+        # timestamp-index walk tests mechanism on many rows before the small LIMIT
+        # fills.  A backward scan of this index fills it immediately.
+        Index(
+            "ix_messagelog_emission_time",
+            "timestamp",
+            "id",
+            sqlite_where=text("mechanism IS NOT NULL"),
+        ),
     )
 
 
@@ -437,9 +464,19 @@ class SendQueueItem(SQLModel, table=True):
     ``send_message`` enqueues here instead of dropping a message when the
     autonomous-send cooldown hasn't elapsed; a background drain schedule
     delivers the oldest pending row once the cooldown clears, then stamps
-    ``sent_at``.  ``sent_at IS NULL`` is the single source of truth for
-    "still pending".  ``collection`` is the collector that queued it (the
-    bound target name), so delivery is attributable.
+    ``sent_at``.  ``sent_at IS NULL`` (and ``suppressed_reason IS NULL``) is the
+    single source of truth for "still pending".  ``collection`` is the collector
+    that queued it (the bound target name), so delivery is attributable.
+
+    **Novelty-keyed suppression (#1568)**: ``novelty_key`` is the emission's
+    novelty identity, computed in Python from the cycle's write-gate outcomes at
+    enqueue time.  Before enqueueing, ``send_message`` reads the most recent
+    non-suppressed row for the same ``collection``; an identical ``novelty_key``
+    means the mechanism is about to re-send unchanged news, so the row is recorded
+    with a ``suppressed_reason`` instead of being delivered.  A suppressed row
+    stays ``sent_at IS NULL`` but is excluded from the pending drain by its
+    non-NULL ``suppressed_reason`` — a durable, datetime-ordered record of "we
+    chose not to re-send this, and why".
     """
 
     __tablename__ = "send_queue"
@@ -449,6 +486,8 @@ class SendQueueItem(SQLModel, table=True):
     content: str
     collection: str
     sent_at: datetime | None = None
+    novelty_key: str | None = None
+    suppressed_reason: str | None = None
 
 
 class IosOutboxItem(SQLModel, table=True):

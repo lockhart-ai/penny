@@ -358,6 +358,15 @@ class ReadRunCallsArgs(ToolArgs):
     target: MemoryName
 
 
+class WhyDidISendThatArgs(ToolArgs):
+    """Explain one delivered message by its id — was it a direct reply or an
+    autonomous send, and if autonomous, which mechanism sent it and from which
+    request (#1568).  The id comes from a message the model already has (the
+    self-state activity block, a prior read)."""
+
+    message_id: int
+
+
 # ── Collection writes ───────────────────────────────────────────────────────
 
 
