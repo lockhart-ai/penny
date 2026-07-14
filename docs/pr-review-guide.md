@@ -316,6 +316,21 @@ Every model-facing string that names a tool call — agent system prompts, tool 
 - [ ] Classification is **never inferred from output-shape heuristics** (blankness, length, prose-vs-not) — those demote to backstops behind the tag parse. Untagged output gets one reroll of the unchanged context, then the honest escape outcome — never a value. (The failure this catches: a "the page doesn't list a price" apology classifying as a successful extraction and being written downstream as the watched field)
 - [ ] The union distinguishes **observed absence from failure** where both can occur (NOT_PRESENT ≠ EXTRACTION_FAILED): reading a page and finding the fact missing is a successful observation; the escape label is for the machinery breaking
 
+### The Reachability Sketch: Ambient State + One-Call Paths
+
+The standing invariants: **Penny's internal store, state, and logs are present in her ambient space, and no piece of information is more than one general tool call away.** Any PR that adds or changes a model-facing surface — a tool, a render, a prompt block — must demonstrate it preserves them by sketching, in the PR body:
+
+1. **The originating state** — what is ambiently in the prompt at the moment the new information matters (which header lines, which turns, which renders).
+2. **The one-call paths** — for each fact the change makes available, the concrete path from something *in that ambient state* to the fact, in at most one general tool call: name the **anchor** the model copies (a name, a typed id, a key — rendered verbatim on some surface it reads) and the **verb** that consumes it.
+
+Walking this sketch is what catches unreachable designs before they ship. The motivating failure: a `message_source(message_id)` resolver tool whose required id was rendered on *no surface the model reads* (unreachable input), resolving a fact that sat in a column *on the very rows the existing reads already returned* — two principle violations that one sketch exposes in a minute.
+
+- [ ] The PR body carries the reachability sketch (originating state → per-fact one-call paths) for every model-facing surface change
+- [ ] Every **required tool argument** is consumable verbatim from a surface the model reads (a header line, an entry render, a tool result). A required argument no render emits makes the tool unreachable — that's a reachability bug, not a prompt-guidance gap
+- [ ] **Metadata renders where the data renders**: a fact carried by a row the model already reads (provenance, status, origin) appears inline in that row's render — never behind a bespoke resolver verb. A resolver tool for a join the returned row already carries is a rendering bug wearing a tool costume; enrich the render instead
+- [ ] A **new tool** justifies why no enriched render or existing general verb can carry the fact — the verb set stays small and general (`read_similar`, `log_read`, `memory_metadata`, `find_mine`, …); bespoke single-fact verbs are the smell
+- [ ] The unmarked render case stays the quiet default — annotate the exceptional row (`(sent by <mechanism>)` on an autonomous send), never the common one (no `(direct reply)` noise on every chat message)
+
 ### Reject and Teach — Never Absorb Hallucinated Shapes
 - [ ] A change that makes a tool **accept/normalise/coerce a wrong-shaped model input** (a bracket-wrapped key, an invented parameter, an alias for a real value) is a smell — the tool boundary stays strict; the fix is a **teaching rejection** naming the specific mistake and the exact corrected input ready to reuse (see `prompt-writing-guide.md` → "Reject and teach"). Every accepted hallucinated shape becomes de-facto API surface and the set is unbounded
 - [ ] If the wrong shape was taught by **our own rendering** (display formats the model copies verbatim), there should be a root-cause issue on the rendering, not just the guard
@@ -468,6 +483,7 @@ If you see any of these in a PR, flag immediately:
 | `if len(x) > N: x = x[:N]` guard clause | Preemptive truncation that masks real issues |
 | `asyncio.sleep(N)` in tests | Fragile timing, use `wait_until()` |
 | `from foo import bar` inside a function | Hidden dependency, reorganize modules instead |
+| A new tool resolving a fact its input rows already carry | Rendering bug wearing a tool costume — enrich the render |
 | Raw dict passed through system | Must use Pydantic model |
 | `ORDER BY id DESC` for recency | Must use datetime column |
 | `self.db.do_thing(...)` bypassing store | Must go through `self.db.store.do_thing(...)` |
