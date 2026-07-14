@@ -1,10 +1,19 @@
 # Self-Improvement Loop — Goals, Eval, and Dry-Run
 
-> **Status:** Phase 1 is **done** — the eval isolation core lives in
-> `penny/penny/tests/eval/`, all suites are migrated onto the real agents, and
-> the old `scripts/prompt_validation/` harness is removed. Phases 2–3 (dry-run
-> sandbox + model tool) follow. The "drift problem" section below is written in
-> the present tense for the record — it describes what the migration eliminated.
+> **Status (superseded in part, #1569):** the model-judgment **`quality`
+> self-correction collector this document centers on is RETIRED** — it existed to
+> correct drift in `extraction_prompt`s *generated from prose*, and that authoring
+> channel is gone (a collector's prompt is now a deterministic render of a taught
+> skill, #1590/#1591; a wrong prompt is fixed by the user re-teaching the skill).
+> The correction channel moved from model judgment to the structural teach loop,
+> so the reviewer retired with the failure mode. Its eval (`test_quality_correction.py`)
+> was deleted. The rest of this document — the eval isolation core, intent-as-spec,
+> the log→test→fix loop — stands; the `quality`-specific sections are a historical
+> record.
+>
+> Phase 1 (eval isolation) is **done** — the core lives in `penny/penny/tests/eval/`,
+> all suites are migrated onto the real agents, and the old
+> `scripts/prompt_validation/` harness is removed.
 
 ## The north star
 
@@ -141,7 +150,7 @@ correct next call from what came back). The suite spans that matrix:
 | **chat** (`test_chat_response.py`) | chitchat; recall-grounded answer | browse→answer; multi-hop browse chain |
 | **chat authoring** (`test_collection_lifecycle.py`) | create / update / archive / abstain | — |
 | **collector** (`test_extractors.py`) | likes / dislikes / knowledge / notify send+move | research-watcher; inner-monologue |
-| **meta-collector** | skills (`test_skills_extractor.py`); quality (`test_quality_correction.py`) | — |
+| **meta-collector** | skills (`test_skills_extractor.py`) — the `quality` reviewer was retired (#1569) | — |
 | **routing** (`test_retrieval.py`) | two-stage recall | — |
 | **peripheral** (`test_peripheral.py`) | startup announcement | schedule NL→cron dispatch (`test_schedule_dispatch.py`) |
 

@@ -81,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 88
+        assert count == 89
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -122,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 88
+        assert count1 == 89
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -160,8 +160,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0088 run = 87 migrations
-        assert count == 87
+        # 0001 is skipped; 0002 through 0089 run = 88 migrations
+        assert count == 88
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -187,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 88  # all migrations applied
+        assert count == 89  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -803,11 +803,10 @@ class TestMigrate:
         bare_done = re.compile(r"^\d+\.[ \t]*(?:Call[ \t]+)?done\([^()]*\)\.?[ \t]*$", re.MULTILINE)
         for name, prompt in prompts.items():
             assert not bare_done.search(prompt), f"{name} still has a bare done step line"
-        # The compound terminal steps and prose done-descriptions survive verbatim.
-        assert (
-            'If nothing changed, done(success=true, summary="skills already match the '
-            'collections").' in prompts["skills"]
-        )
+        # The compound terminal steps survive 0087's strip; 0089 then rewrites the
+        # ``skills`` prompt's ``done(success=…, summary=…)`` conditionals to the
+        # argless ``done()`` (#1569), so the compound step is present but argless.
+        assert "If nothing changed, done()." in prompts["skills"]
         assert "If there's nothing fresh to share, just done()." in prompts["notified-thoughts"]
         assert "call done() without writing anything" in prompts["knowledge"]
         assert "call done() without writing" in prompts["thoughts"]
@@ -866,6 +865,35 @@ class TestMigrate:
 
         assert "mechanism" in message_columns
         assert "ix_messagelog_emission_time" in plan, plan
+
+    def test_0089_argless_done_and_retire_quality(self, tmp_path):
+        """Migration 0089 (over the full chain, #1569): the ``skills`` collector
+        prompt's two ``done(success=…, summary=…)`` conditionals are rewritten to
+        the argless ``done()``, and the ``quality`` collection is archived (a
+        visible tombstone) with its extraction_prompt left intact."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        skills_prompt = conn.execute(
+            "SELECT extraction_prompt FROM memory WHERE name = 'skills'"
+        ).fetchone()[0]
+        archived, quality_prompt = conn.execute(
+            "SELECT archived, extraction_prompt FROM memory WHERE name = 'quality'"
+        ).fetchone()
+        conn.close()
+
+        # The skills prompt teaches only the argless done() — no forbidden args.
+        assert "done(success" not in skills_prompt
+        assert "If nothing changed, done()." in skills_prompt
+        # Quality is archived (tombstone); its prompt is untouched (never dispatched).
+        assert archived == 1
+        assert quality_prompt is not None
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
         """Migration 0074 deletes entries whose key or content carries a

@@ -226,7 +226,7 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
         [
             ("browse", _BROWSE_ARGS, _BROWSE_OK),
             ("collection_write", _WRITE_ARGS, _WRITE_OK),
-            ("done", {"success": True, "summary": "saved the elevation"}, "Cycle complete"),
+            ("done", {}, "Cycle complete."),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
@@ -256,7 +256,7 @@ async def test_skill_create_excludes_done_and_honours_the_range(tmp_path):
             ("collection_read_latest", {"memory": "elevations"}, "You looked up your elevations:"),
             ("browse", _BROWSE_ARGS, _BROWSE_OK),
             ("collection_write", _WRITE_ARGS, _WRITE_OK),
-            ("done", {"success": True, "summary": "done"}, "Cycle complete"),
+            ("done", {}, "Cycle complete."),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")

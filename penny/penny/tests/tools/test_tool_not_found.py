@@ -7,7 +7,6 @@ from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
-from penny.tools.memory_args import DoneArgs
 from penny.tools.memory_tools import UpdateEntryTool
 from penny.tools.models import ToolArgs
 
@@ -236,6 +235,14 @@ class TestToolNotFoundSuggestion:
         assert "Did you mean" not in result.message
 
 
+class _StubDoneArgs(ToolArgs):
+    """Two required typed fields — the shape the missing-required-parameter tests
+    validate against (independent of the real, now-argless ``done`` tool)."""
+
+    success: bool
+    summary: str
+
+
 class StubDoneTool(Tool):
     """Stub tool with two required typed+described parameters."""
 
@@ -255,7 +262,7 @@ class StubDoneTool(Tool):
         },
         "required": ["success", "summary"],
     }
-    args_model = DoneArgs
+    args_model = _StubDoneArgs
 
     async def execute(self, **kwargs):
         return "done"

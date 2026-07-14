@@ -94,13 +94,13 @@ class TestToolReasoningSchema:
 
     def test_done_injected_like_every_tool(self):
         """The terminal done tool gets the injected reasoning param too — the
-        schema is uniform; its misuse is taught (description + envelope), not
-        restructured.  ``reasoning`` stays optional: required is unchanged."""
+        schema is uniform.  ``done()`` is argless (#1569), so it has NO required
+        fields and only the injected optional ``reasoning`` in its properties."""
         tool = DoneTool()
         schema = tool.to_ollama_tool()
         params = schema["function"]["parameters"]
         assert "reasoning" in params["properties"]
-        assert set(params["required"]) == {"success", "summary"}
+        assert params.get("required", []) == []
 
     def test_tool_declared_reasoning_not_overwritten(self):
         """A tool that declares reasoning in its OWN parameters (browse) keeps
@@ -113,24 +113,10 @@ class TestToolReasoningSchema:
         assert "inner monologue" not in props["reasoning"]["description"]
 
 
-class TestDoneOnlyReasoningEnvelope:
-    """The observed displacement failure gets an actionable invalid-args envelope."""
-
-    async def test_done_with_only_reasoning_names_both_required_fields(self):
-        """A done call carrying ONLY reasoning (the observed invalid-args
-        failure — reasoning is stripped before validation, leaving no required
-        args) is refused with the shared envelope naming BOTH missing required
-        fields plus their type + description hints, and telling the model to
-        call done again."""
-        result = await DoneTool().run(reasoning="all sources failed, wrapping up")
-        assert result.success is False
-        # The first-person frame is carried on ``narration`` (#1482); the per-field
-        # remedy stays the body verbatim.
-        assert result.narration == "You tried to use `done` but the arguments were wrong:"
-        message = result.message
-        assert "success" in message and "boolean" in message
-        assert "summary" in message and "string" in message
-        assert "Call done(<valid arguments>) again." in message
+# Note (#1569): the old "done with ONLY reasoning is an invalid-args displacement
+# failure" contract is gone — ``done()`` is argless, so once the loop strips the
+# framework-injected ``reasoning`` the remaining call is the valid argless sentinel.
+# Argless behaviour + extra-arg rejection is covered in ``tests/tools/test_memory_tools.py``.
 
 
 class TestBrowseResultNarration:
@@ -496,18 +482,13 @@ class TestMemoryLifecycleNarration:
             == "You reviewed `likes`'s run history:"
         )
 
-    def test_done_reflects_cycle_outcome(self):
+    def test_done_narration_is_fixed(self):
+        """``done()`` is argless (#1569): its narration is a single fixed line — no
+        ``success`` branch, since the run's outcome is derived structurally from the
+        ledger, not from the terminator call."""
         assert (
-            DoneTool.to_result_narration(
-                {"success": True, "summary": "s"}, ToolResult(message="ok")
-            )
+            DoneTool.to_result_narration({}, ToolResult(message="ok"))
             == "You wrapped up the cycle:"
-        )
-        assert (
-            DoneTool.to_result_narration(
-                {"success": False, "summary": "s"}, ToolResult(message="ok")
-            )
-            == "You wrapped up the cycle, marking it unfinished:"
         )
 
     def test_test_extraction_prompt(self):

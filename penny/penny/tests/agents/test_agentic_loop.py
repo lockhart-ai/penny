@@ -59,7 +59,7 @@ from penny.validation.response_validators import (
     XmlTagValidator,
     build_strong_nudge,
     is_call_as_text_bail,
-    parse_done_json_bail,
+    is_done_json_bail,
 )
 
 
@@ -2108,9 +2108,7 @@ class TestCollectorTextNudge:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
                 return mock_llm._make_text_response(request, "**Done. Summary: wrote the entry.**")
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2139,9 +2137,7 @@ class TestCollectorTextNudge:
                 )
             if count == 2:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "more"})
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "done after more work"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2194,9 +2190,7 @@ class TestCollectorEmptyNudge:
             if count == 2:
                 # Empty mid-loop: no text, no tool call.
                 return mock_llm._make_text_response(request, "")
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2232,14 +2226,10 @@ class TestCollectorPrematureDone:
         def handler(request, count):
             if count == 1:
                 # The production flavor: "no new matches" without reading anything.
-                return mock_llm._make_tool_call_response(
-                    request, "done", {"success": True, "summary": "no new matches this cycle"}
-                )
+                return mock_llm._make_tool_call_response(request, "done", {})
             if count == 2:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2275,9 +2265,7 @@ class TestCollectorPrematureDone:
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2302,7 +2290,7 @@ class TestCollectorPrematureDone:
                 request,
                 [
                     ("search", {"query": "inputs"}),
-                    ("done", {"success": True, "summary": "wrote the entry"}),
+                    ("done", {}),
                 ],
             )
 
@@ -2326,9 +2314,7 @@ class TestCollectorPrematureDone:
         agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
 
         mock_llm.set_response_handler(
-            lambda request, count: mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "no new matches this cycle"}
-            )
+            lambda request, count: mock_llm._make_tool_call_response(request, "done", {})
         )
 
         response = await agent.run("", max_steps=max_steps)
@@ -2342,30 +2328,29 @@ class TestCollectorPrematureDone:
 
 
 class TestCollectorDoneJsonBailNudge:
-    """A collector that emits the ``done()`` terminator's *arguments* as a bare JSON
-    text object (gpt-oss's native Harmony-backend fallback) is REJECTED AND TAUGHT:
-    the loop appends the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` — naming what
-    the model did and the exact ``done(...)`` tool call to make — and the model
+    """A collector that emits the argless ``done()`` call as a JSON text envelope
+    (gpt-oss's native Harmony-backend fallback, #1569) is REJECTED AND TAUGHT: the
+    loop appends the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` — naming what the
+    model did and the exact argless ``done()`` tool call to make — and the model
     itself re-emits the real call.  Never repaired: fabricating a tool call the
     model didn't make would coerce a malformed emission into a healthy one."""
 
     @pytest.mark.asyncio
-    async def test_bare_args_json_bail_gets_teaching_nudge_and_recovers(self, test_db, mock_llm):
-        """Work (search), then ``{"success": true, "summary": "…"}`` as plain text →
-        the shape-specific teaching nudge (not the generic one) → the MODEL makes
-        the real done() call and the cycle closes."""
+    async def test_done_envelope_json_bail_gets_teaching_nudge_and_recovers(
+        self, test_db, mock_llm
+    ):
+        """Work (search), then the argless done envelope ``{"name": "done",
+        "arguments": {}}`` as plain text → the shape-specific teaching nudge (not
+        the generic one) → the MODEL makes the real done() call and the cycle
+        closes."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
             if count == 1:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
-                return mock_llm._make_text_response(
-                    request, '{"success": true, "summary": "wrote the entry"}'
-                )
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2374,15 +2359,15 @@ class TestCollectorDoneJsonBailNudge:
         # One teaching round-trip: the model was re-called after the JSON bail.
         assert len(mock_llm.requests) == 3
         # The nudge is the SHAPE-SPECIFIC teaching, not the generic text-bail nudge:
-        # it names what happened and shows the exact call to make.
+        # it names what happened and shows the exact argless call to make.
         last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
         assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        assert "done's arguments as plain text" in last_user["content"]
-        assert "done(success=" in last_user["content"]
-        # The cycle closed via the MODEL's own real done() call.
+        assert "done` call as plain text" in last_user["content"]
+        assert "done()" in last_user["content"]
+        # The cycle closed via the MODEL's own real argless done() call.
         done_records = [r for r in response.tool_calls if r.tool == "done"]
         assert len(done_records) == 1
-        assert done_records[0].arguments == {"success": True, "summary": "wrote the entry"}
+        assert done_records[0].arguments == {}
 
         await agent.close()
 
@@ -2402,9 +2387,7 @@ class TestCollectorDoneJsonBailNudge:
                     '{"name": "done", "arguments": {"reasoning": "all handled", '
                     '"success": true, "summary": "closed up"}}',
                 )
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "closed up"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2428,9 +2411,7 @@ class TestCollectorDoneJsonBailNudge:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
             if count == 2:
                 return mock_llm._make_text_response(request, '{"note": "not a done call"}')
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2444,9 +2425,10 @@ class TestCollectorDoneJsonBailNudge:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_extra_keys_fall_through_to_generic_nudge(self, test_db, mock_llm):
-        """The done schema plus an EXTRA key (beyond the tolerated ``reasoning``) is
-        ambiguous — generic nudge, not the done-specific teaching."""
+    async def test_bare_args_fall_through_to_generic_nudge(self, test_db, mock_llm):
+        """Bare ``{success, summary}`` args (no ``done`` envelope) are NOT a done
+        bail now that done is argless (#1569) — they fall through to the GENERIC
+        text-bail nudge, never the done-specific teaching (which would mis-teach)."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -2455,11 +2437,9 @@ class TestCollectorDoneJsonBailNudge:
             if count == 2:
                 return mock_llm._make_text_response(
                     request,
-                    '{"success": true, "summary": "wrote it", "extra": "nope"}',
+                    '{"success": true, "summary": "wrote it"}',
                 )
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2482,19 +2462,13 @@ class TestCollectorDoneJsonBailNudge:
 
         def handler(request, count):
             if count == 1:
-                return mock_llm._make_text_response(
-                    request, '{"success": true, "summary": "no new matches this cycle"}'
-                )
+                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
             if count == 2:
                 # The taught recovery — but as a first-move done(), still premature.
-                return mock_llm._make_tool_call_response(
-                    request, "done", {"success": True, "summary": "no new matches this cycle"}
-                )
+                return mock_llm._make_tool_call_response(request, "done", {})
             if count == 3:
                 return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(
-                request, "done", {"success": True, "summary": "wrote the entry"}
-            )
+            return mock_llm._make_tool_call_response(request, "done", {})
 
         mock_llm.set_response_handler(handler)
 
@@ -2688,33 +2662,32 @@ class TestResponseValidators:
         )
 
     def test_done_json_bail_validator(self):
-        # Bare args JSON → the shape-specific teaching nudge (a NudgeContinue, so
-        # the model itself must re-emit the real call — never a fabricated repair).
-        bare = _text_response('{"success": true, "summary": "wrote it"}')
-        taught = DoneJsonBailValidator().check(bare, _ctx())
+        # The argless done envelope {"name": "done", "arguments": {}} → the
+        # shape-specific teaching nudge (a NudgeContinue, so the model itself must
+        # re-emit the real call — never a fabricated repair).
+        envelope = _text_response('{"name": "done", "arguments": {}}')
+        taught = DoneJsonBailValidator().check(envelope, _ctx())
         assert isinstance(taught, NudgeContinue)
         assert taught.message == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        assert "done's arguments as plain text" in taught.message
-        assert "done(success=" in taught.message
-        # Full envelope → the same teaching.
-        envelope = _text_response(
-            '{"name": "done", "arguments": {"success": false, "summary": "no-op"}}'
-        )
-        assert isinstance(DoneJsonBailValidator().check(envelope, _ctx()), NudgeContinue)
-        # A tolerated reasoning key still matches; extras / non-done JSON / prose /
-        # non-bool success fall through (Proceed → the generic text-bail guard next
-        # in the chain owns them).
+        assert "done` call as plain text" in taught.message
+        assert "done()" in taught.message
+        # A hallucinated argument inside the envelope still reads as a done bail
+        # (done is argless; the arguments are ignored).
         assert isinstance(
             DoneJsonBailValidator().check(
-                _text_response('{"reasoning": "x", "success": true, "summary": "s"}'), _ctx()
+                _text_response('{"name": "done", "arguments": {"success": false}}'), _ctx()
             ),
             NudgeContinue,
         )
+        # Bare {success, summary} (no envelope), wrong name, non-dict arguments,
+        # non-done JSON, and prose all fall through (Proceed → the generic text-bail
+        # guard next in the chain owns them; done is argless, so there is no bare
+        # payload to detect).
         for untouched in (
-            '{"success": true, "summary": "s", "extra": "y"}',  # extra key
-            '{"name": "search", "arguments": {"success": true, "summary": "s"}}',  # wrong name
-            '{"note": "not a done"}',  # not the done schema
-            '{"success": "yes", "summary": "s"}',  # success not a bool
+            '{"success": true, "summary": "wrote it"}',  # bare args, no name
+            '{"name": "search", "arguments": {}}',  # wrong name
+            '{"name": "done", "arguments": "oops"}',  # arguments not a dict
+            '{"note": "not a done"}',  # not a done envelope
             "Done. I wrote the entry.",  # plain prose
         ):
             assert isinstance(
@@ -2725,18 +2698,20 @@ class TestResponseValidators:
         assert isinstance(
             DoneJsonBailValidator().check(_tool_response("search", {}), _ctx()), Proceed
         )
-        assert isinstance(DoneJsonBailValidator().check(bare, _ctx(is_final_step=True)), Proceed)
+        assert isinstance(
+            DoneJsonBailValidator().check(envelope, _ctx(is_final_step=True)), Proceed
+        )
 
-    def test_parse_done_json_bail_returns_only_success_and_summary(self):
-        # The parse helper strips a tolerated reasoning key down to the done args.
-        assert parse_done_json_bail('{"reasoning": "why", "success": true, "summary": "s"}') == {
-            "success": True,
-            "summary": "s",
-        }
-        # Non-JSON, missing required keys, and malformed envelopes yield None.
-        assert parse_done_json_bail("not json") is None
-        assert parse_done_json_bail('{"summary": "s"}') is None
-        assert parse_done_json_bail('{"name": "done", "arguments": "oops"}') is None
+    def test_is_done_json_bail(self):
+        # Detects only the argless done envelope; anything else is not a done bail.
+        assert is_done_json_bail('{"name": "done", "arguments": {}}') is True
+        assert is_done_json_bail('{"name": "done"}') is True
+        assert is_done_json_bail('{"name": "done", "arguments": {"success": false}}') is True
+        # Non-JSON, bare args (no name), wrong name, and a non-dict arguments → False.
+        assert is_done_json_bail("not json") is False
+        assert is_done_json_bail('{"success": true, "summary": "s"}') is False
+        assert is_done_json_bail('{"name": "search", "arguments": {}}') is False
+        assert is_done_json_bail('{"name": "done", "arguments": "oops"}') is False
 
     def test_call_as_text_validator(self):
         # A bare-args call (identified by the injected reasoning field) → teaching
@@ -2777,7 +2752,7 @@ class TestResponseValidators:
             assert not is_call_as_text_bail(prose), prose
 
     def test_premature_done_validator(self):
-        done = _tool_response("done", {"success": True, "summary": "no matches"})
+        done = _tool_response("done", {})
         # First-move done() with no prior records → reject.
         reject = PrematureDoneValidator().check(done, _ctx(records=[]))
         assert isinstance(reject, RejectToolCall)

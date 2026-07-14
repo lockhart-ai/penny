@@ -7,9 +7,9 @@ once, with where it is enforced made explicit:
 - ``live``  — caught while the run is happening (a ``ResponseValidator``
   disposition in the agentic loop, or the ``send_message`` arg-validation gate),
   so the model gets a chance to recover.
-- ``run_flag`` — surfaces after the fact as a ``⚠`` line on the run record that
-  Penny's ``quality`` collector reads and the addon badges, derived structurally
-  from the persisted ``promptlog`` rows.
+- ``run_flag`` — surfaces after the fact as a ``⚠`` line on the run record the
+  self-state header + ``collector-runs`` read facade render and the addon badges,
+  derived structurally from the persisted ``promptlog`` rows.
 
 A condition can be both (``HALF_FORMED_SEND`` is gated live *and* flagged
 post-hoc; ``NO_WORK_DONE`` is refused live as a premature ``done()`` *and*
@@ -22,8 +22,8 @@ This module is a dependency-light leaf — only ``constants`` + pydantic, like
 the addon-serving code all import it without an import cycle.
 
 The ``marker`` / ``detail`` strings are the canonical run-record text.  They are
-frozen: the seeded ``quality`` prompt (migration 0072) and the addon's TS type
-mirror them, so changing a value is a coordinated migration, not an edit here.
+frozen: the addon's TS type mirrors them, so changing a value is a coordinated
+change across surfaces, not an edit here.
 """
 
 from __future__ import annotations
@@ -81,8 +81,8 @@ class BehaviorCondition(BaseModel):
     detail: str | None = None
 
 
-# The shared ``⚠`` marker prefix (the addon colours by it; the quality prompt
-# names it).  One definition so a render never spells it inline.
+# The shared ``⚠`` marker prefix (the addon colours by it; the run record leads a
+# health line with it).  One definition so a render never spells it inline.
 HEALTH_MARKER = "⚠"
 
 

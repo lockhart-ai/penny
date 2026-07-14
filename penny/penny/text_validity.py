@@ -77,8 +77,8 @@ _WRITE_BAILOUT_PHRASES: frozenset[str] = frozenset(
 # modulo a closing quote/paren and trailing whitespace), because "unfinished" is a
 # whole-message property.  An identical run EMBEDDED mid-message (`she sent "Hi
 # there! ......???" then the real one`) is NOT an unfinished send — it's a
-# substantive message that quotes the fragment (a `quality`-collector suggestion
-# reporting a bad send is the canonical case).  Catching an embedded collapse run
+# substantive message that quotes the fragment (a message reporting or quoting a
+# bad send it observed is the canonical case).  Catching an embedded collapse run
 # in the model's OWN output is the agent-loop reroll guard's job (`is_degenerate_run`
 # on raw output, in `agents/base.py`); this predicate only judges whether the
 # OUTGOING message is itself a complete one.
@@ -259,8 +259,8 @@ def _empty_send_reason(stripped: str) -> str | None:
     This is the send gate's content-shape check.  It deliberately does NOT include
     the SUBSTRING degenerate-run check that :func:`degenerate_reason` (the corpus
     write gate) carries: an embedded '…'/'.'/'?' collapse run inside an otherwise
-    substantive, deliberate message (a `quality` suggestion quoting the bad send it
-    observed) is a real message the user should receive — catching a genuine
+    substantive, deliberate message (a message quoting a bad send it observed) is a
+    real message the user should receive — catching a genuine
     in-flight collapse in the model's OWN output is the agent-loop reroll guard's
     job (`is_degenerate_run`).  Only a WHOLE-message half-formed shape (blank /
     bare-URL / bail-out here, plus the tail checks in the caller) is refused.
@@ -295,8 +295,8 @@ def half_formed_send_reason(content: str) -> str | None:
     (via :func:`_empty_send_reason`), an unfinished ellipsis+?/! TAIL
     (``"Hi there! ......???"``, via :func:`is_unfinished_fragment`), or an
     ellipsis-truncated TAIL (``"...the original …"``, via :func:`is_truncated`).  A
-    substantive message that merely EMBEDS such a fragment mid-text (a `quality`
-    suggestion quoting the degenerate send it observed) is a complete message and
+    substantive message that merely EMBEDS such a fragment mid-text (a message
+    quoting a degenerate send it observed) is a complete message and
     passes — the substring poison check stays the corpus write gate's
     (:func:`degenerate_reason`) and the agent-loop reroll guard's concern.  Each
     reason is actionable: it names the specific defect and the next move.

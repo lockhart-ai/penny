@@ -130,8 +130,8 @@ class Agent:
 
     # Recovery move bound into a browse channel-outage error (no browser
     # connected).  Chat answers from memory or tells the user; ``BackgroundAgent``
-    # overrides this to bind ``done(success=false, ...)`` — the terminator it
-    # actually has (chat has none).
+    # overrides this to bind the argless ``done()`` — the terminator it actually
+    # has (chat has none).
     channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
 
     # The composable response-validation chain — one validator per live
