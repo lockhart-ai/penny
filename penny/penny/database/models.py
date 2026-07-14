@@ -252,11 +252,12 @@ class MemoryRow(SQLModel, table=True):
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
     # Emission-as-property (#1557, exposed by #1591's ``collection_create``): when
-    # true the collection notifies the user of new/changed entries, via the
-    # run-time ``# Notify steps`` suffix appended to the collector's system prompt
-    # (``Prompt.COLLECTOR_NOTIFY_STEPS``).  Orthogonal to inclusion/recall (which
-    # govern chat recall).  Opt-in (default false); the sole emission flag since
-    # #1557 retired the ``published`` pub/sub side-channel + the notifier consumer.
+    # true the collection notifies the user of new/changed entries — assembly
+    # appends the run-time notify steps (``Prompt.COLLECTOR_NOTIFY_STEPS``) to the
+    # collector's composed prompt, numbered continuously before the injected
+    # terminal ``done()``.  Orthogonal to inclusion/recall (which govern chat
+    # recall).  Opt-in (default false); the sole emission flag since #1557 retired
+    # the ``published`` pub/sub side-channel + the notifier consumer.
     # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)

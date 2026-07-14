@@ -3,9 +3,9 @@
 Type: schema + data
 
 Emission is now a collection PROPERTY (#1557): a collection's ``notify`` flag
-(migration 0085) drives a run-time ``# Notify steps`` suffix appended to its
-collector's system prompt, so the collector tells the user about a new/changed
-find in the same cycle that produced it.  That replaces the whole pub/sub layer —
+(migration 0085) drives run-time notify steps appended to its collector's
+composed prompt, so the collector tells the user about a new/changed find in
+the same cycle that produced it.  That replaces the whole pub/sub layer —
 the ``notifier`` consumer that drained ``published`` collections via
 ``read_published_latest`` is gone, and so is the ``published`` column it keyed on
 (#1583 assigned that column's death here).

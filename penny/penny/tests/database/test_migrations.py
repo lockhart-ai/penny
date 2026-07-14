@@ -1,6 +1,7 @@
 """Tests for the database migration system."""
 
 import importlib.util
+import re
 import sqlite3
 from pathlib import Path
 
@@ -80,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 86
+        assert count == 87
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -121,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 86
+        assert count1 == 87
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -159,8 +160,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0086 run = 85 migrations
-        assert count == 85
+        # 0001 is skipped; 0002 through 0087 run = 86 migrations
+        assert count == 86
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -186,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 86  # all migrations applied
+        assert count == 87  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -691,7 +692,8 @@ class TestMigrate:
         assert type_ == "collection"
         assert inclusion == "never"  # internal — never surfaces in chat
         assert archived == 1  # retired by 0086 (emission is now the notify suffix)
-        assert "read_published_latest" in prompt  # the 0067-seeded prompt is preserved verbatim
+        assert "read_published_latest" in prompt  # the 0067-seeded body survives (0087
+        # strips only its terminal bare-done step line)
 
     def test_0068_unifies_thoughts_onto_pubsub(self, tmp_path):
         """Migration 0068 collapses unnotified-/notified-thoughts into one
@@ -772,6 +774,48 @@ class TestMigrate:
             assert "published" not in body
         assert "notify: true" in skills_prompt
         assert "published" not in skills_prompt
+
+    def test_0087_strips_terminal_done_steps_from_stored_prompts(self, tmp_path):
+        """Migration 0087 (over the full chain): the terminal ``done()`` is assembly's
+        now, so the seeded prompts' bare terminal done-step lines are stripped —
+        ``likes``/``dislikes`` (``6. Call done().``), ``knowledge`` (``4. Call
+        done().``), ``quality`` (``5. done().``), ``thoughts`` (``8. done().``), and
+        the archived ``notifier``/``unnotified-thoughts`` shells — while compound
+        terminal steps (``skills`` step 8, ``notified-thoughts`` step 4) and prose
+        *descriptions* of done behaviour survive verbatim (zero-false-positive)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        prompts = dict(
+            conn.execute(
+                "SELECT name, extraction_prompt FROM memory WHERE extraction_prompt IS NOT NULL"
+            ).fetchall()
+        )
+        conn.close()
+
+        # No stored prompt retains a numbered step line that is just a done call.
+        bare_done = re.compile(r"^\d+\.[ \t]*(?:Call[ \t]+)?done\([^()]*\)\.?[ \t]*$", re.MULTILINE)
+        for name, prompt in prompts.items():
+            assert not bare_done.search(prompt), f"{name} still has a bare done step line"
+        # The compound terminal steps and prose done-descriptions survive verbatim.
+        assert (
+            'If nothing changed, done(success=true, summary="skills already match the '
+            'collections").' in prompts["skills"]
+        )
+        assert "If there's nothing fresh to share, just done()." in prompts["notified-thoughts"]
+        assert "call done() without writing anything" in prompts["knowledge"]
+        assert "call done() without writing" in prompts["thoughts"]
+        # The stripped prompts keep their remaining steps + trailing prose untouched:
+        # only the one done-step line was removed.
+        assert "5. If a recent message indicates an existing like" in prompts["likes"]
+        assert prompts["quality"].rstrip().endswith("never apply a change yourself.")
+        assert prompts["notifier"].rstrip().endswith("— deliver it.")
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
         """Migration 0074 deletes entries whose key or content carries a

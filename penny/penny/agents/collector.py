@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -485,8 +486,8 @@ class Collector(BackgroundAgent):
 
     @classmethod
     def _compose_prompt(cls, target: MemoryRow) -> str:
-        """Frame the user-authored extraction_prompt with target identity + runtime
-        rules, plus the run-time notify suffix when the collection notifies.
+        """Frame the extraction_prompt with target identity + the assembly-owned
+        step tail + runtime rules — one continuous numbered program (#1557).
 
         The runtime-rules tail is appended structurally — not relayed through
         Penny when she authors the extraction_prompt.  This guarantees the
@@ -495,44 +496,42 @@ class Collector(BackgroundAgent):
         ``collection_create`` description only carries authoring-shape
         guidance; the runtime invariants live here.
 
-        Emission is a collection PROPERTY (#1557): when ``target.notify`` is set,
-        the stored steps are framed under a ``# Run steps`` header and the
-        ``# Notify steps`` suffix (``Prompt.COLLECTOR_NOTIFY_STEPS``) is appended as
-        its own numbered section, so the model tells the user about a new/changed
-        find in the same cycle that produced it.  A write-gate STOP ends a
-        no-change cycle before the suffix, so no-news never notifies — structurally.
-        The suffix is never written into the stored ``extraction_prompt`` — uniform
-        for skill-backed and legacy hand-authored collections.  A non-notifying
-        collection's prompt is unchanged (no header, no suffix).
+        The stored prompt is steps ``1..A`` with NO ``done()`` — a skill render
+        cannot produce one (the chat ledger has no ``done`` tool; a chat turn ends
+        in text), and migration 0087 stripped the legacy seeds' trailing done
+        steps.  Assembly appends the tail (:meth:`_injected_steps`): the notify
+        steps when the collection notifies, then the terminal ``done()`` — always,
+        exactly once, numbered continuing from ``A``.  A write-gate STOP on a
+        no-change cycle ends the run at the chokepoint before the later steps, so
+        no-news never notifies — structurally.  Uniform for skill-backed and
+        legacy hand-authored collections; nothing here is ever written into the
+        stored ``extraction_prompt``.
         """
-        identity = (
-            f"You are the collector for the `{target.name}` collection.\n"
-            f"Description: {target.description}"
-        )
-        if not target.notify:
-            return f"{identity}\n\n{target.extraction_prompt}\n\n{cls._RUNTIME_RULES}"
         return (
-            f"{identity}\n\n"
-            f"# Run steps\n{target.extraction_prompt}\n\n"
-            f"{cls._notify_section()}\n\n"
+            f"You are the collector for the `{target.name}` collection.\n"
+            f"Description: {target.description}\n\n"
+            f"{target.extraction_prompt}\n"
+            f"{cls._injected_steps(target)}\n\n"
             f"{cls._RUNTIME_RULES}"
         )
 
     @classmethod
-    def _notify_section(cls) -> str:
-        """The run-time notify suffix with the lead-in that resolves its interplay
-        with the run steps' own ``done()`` (#1557).
+    def _injected_steps(cls, target: MemoryRow) -> str:
+        """The assembly-owned step tail: notify steps (``notify=true`` only), then
+        the terminal ``done()`` — numbered continuing from the stored prompt's
+        highest step, so the whole prompt reads as one program (#1557)."""
+        base = cls._max_step_number(target.extraction_prompt or "")
+        steps: list[str] = list(Prompt.COLLECTOR_NOTIFY_STEPS) if target.notify else []
+        steps.append(Prompt.COLLECTOR_DONE_STEP)
+        return "\n".join(f"{base + n}. {step}" for n, step in enumerate(steps, start=1))
 
-        When the run wrote a new or changed entry it continues into these steps
-        instead of stopping at the run's ``done()``; a quiet cycle that wrote
-        nothing — or a write-gate STOP on an unchanged watch — never reaches them,
-        so no-news never notifies."""
-        return (
-            "When the run above wrote a new or changed entry, tell the user about it "
-            "before you finish — do these steps instead of stopping at the run's "
-            "`done()`.  A quiet cycle that wrote nothing new notifies no one.\n\n"
-            f"{Prompt.COLLECTOR_NOTIFY_STEPS}"
-        )
+    @staticmethod
+    def _max_step_number(prompt: str) -> int:
+        """``A`` — the highest leading step number in the stored prompt (a
+        ``^\\d+.`` scan), 0 for an unnumbered prose prompt so injected steps
+        start at 1."""
+        numbers = re.findall(r"^(\d+)\.", prompt, re.MULTILINE)
+        return max((int(number) for number in numbers), default=0)
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

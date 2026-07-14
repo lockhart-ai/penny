@@ -15,8 +15,9 @@ Every collector is one of two shapes, both covered here:
 
 These cases seed ``notify=False`` collections — pure gather-and-write, no
 emission.  Emission is now a collection PROPERTY (#1557): a ``notify=True``
-collection appends the run-time ``# Notify steps`` suffix and sends in the same
-cycle; that STOP/send mechanic is pinned in ``tests/agents/test_collector.py``.
+collection gets the run-time notify steps appended before its injected terminal
+``done()`` and sends in the same cycle; that STOP/send mechanic is pinned in
+``tests/agents/test_collector.py``.
 
 Browse-driven cases inject query-aware canned pages (``browse=``) so the
 *subsequent* call (the write, the send) is what gets scored.  Sends are read off

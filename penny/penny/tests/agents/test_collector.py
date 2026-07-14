@@ -447,7 +447,8 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     structural drift in the framing OR the runtime-rules tail.  The runtime
     rules are load-bearing (provenance, batched writes, gated send_message,
     structured done) — chat doesn't relay them, the collector base attaches
-    them on every cycle."""
+    them on every cycle.  notify=false: the injected tail is the terminal
+    ``done()`` alone, numbered continuing from the stored prompt (#1557)."""
     target = MemoryRow(
         name="board-games",
         type="collection",
@@ -458,8 +459,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
             "Collect board games from chat and browse logs.\n"
             '1. log_read("user-messages")\n'
             "2. browse for new games\n"
-            '3. collection_write("board-games", entries=[...])\n'
-            "4. done()."
+            '3. collection_write("board-games", entries=[...])'
         ),
     )
 
@@ -473,7 +473,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         '1. log_read("user-messages")\n'
         "2. browse for new games\n"
         '3. collection_write("board-games", entries=[...])\n'
-        "4. done().\n"
+        "4. done(success=<true|false>, summary=<recap of what you did>)\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
@@ -508,34 +508,26 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     )
 
 
-# ── Notify suffix (emission-as-property, #1557) ──────────────────────────────
+# ── Notify steps + injected terminal (emission-as-property, #1557) ────────────
 
-# A skill-rendered extraction_prompt (every step one canonical tool call) — the
-# kitchen-sink case the two-section render is asserted against.
+# A skill-rendered extraction_prompt (every step one canonical tool call, NO
+# done() — the chat ledger has no done tool, so a render cannot produce one) —
+# the kitchen-sink case the continuous-script render is asserted against.
 _NOTIFY_RENDERED_PROMPT = (
     "Collect indie metroidvania releases and keep me posted on the good ones.\n"
     '1. browse(queries=["new indie metroidvania releases"], extract="pull out the '
     'release name, a one-line hook, and the URL")\n'
     '2. collection_write("indie-metroidvanias", entries=[{key: <release name>, '
-    "content: <name + hook + URL>}])\n"
-    "3. done()."
-)
-
-# The two-section lead-in that resolves the notify steps' interplay with the run
-# steps' own done() — authored in Collector._notify_section, pinned here.
-_NOTIFY_LEAD_IN = (
-    "When the run above wrote a new or changed entry, tell the user about it "
-    "before you finish — do these steps instead of stopping at the run's "
-    "`done()`.  A quiet cycle that wrote nothing new notifies no one."
+    "content: <name + hook + URL>}])"
 )
 
 
-def test_compose_prompt_appends_notify_suffix_when_notify_true():
-    """A notify=true collection gains the two-section shape (#1557): the stored steps
-    under ``# Run steps``, the interplay lead-in, the run-time ``# Notify steps``
-    suffix, then the runtime-rules tail — asserted char-for-char (kitchen-sink: a
-    skill-rendered extraction_prompt + the suffix).  The suffix is NEVER written into
-    the stored prompt; it is appended at assembly time only."""
+def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true():
+    """A notify=true collection composes ONE continuous numbered program (#1557):
+    the stored steps 1..A, the notify steps A+1..A+4, then the injected terminal
+    ``done()`` — no headers, no lead-in, asserted char-for-char (kitchen-sink: a
+    skill-rendered extraction_prompt).  Nothing here is ever written into the
+    stored prompt; it is appended at assembly time only."""
     target = MemoryRow(
         name="indie-metroidvanias",
         type="collection",
@@ -552,12 +544,16 @@ def test_compose_prompt_appends_notify_suffix_when_notify_true():
         "You are the collector for the `indie-metroidvanias` collection.\n"
         "Description: Indie metroidvania releases the user tracks\n"
         "\n"
-        "# Run steps\n"
         f"{_NOTIFY_RENDERED_PROMPT}\n"
-        "\n"
-        f"{_NOTIFY_LEAD_IN}\n"
-        "\n"
-        f"{Prompt.COLLECTOR_NOTIFY_STEPS}\n"
+        '3. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
+        "the user's past messages closest to this find.\n"
+        '4. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
+        "your own past replies about it.\n"
+        "5. Compose one short, friendly message: a quick greeting, what you just found "
+        "(the key detail in plain words), the source URL if there is one, and — only if "
+        "one of those past messages is genuinely related — a one-line callback to it.\n"
+        "6. send_message(content=<the message>)\n"
+        "7. done(success=<true|false>, summary=<recap of what you did>)\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
@@ -566,15 +562,14 @@ def test_compose_prompt_appends_notify_suffix_when_notify_true():
     )
 
 
-def test_compose_prompt_appends_notify_suffix_to_legacy_hand_authored_prompt():
-    """The suffix is uniform for skill-backed AND legacy hand-authored collections
-    (#1557): a legacy prose-numbered prompt with notify=true gets the same
-    two-section wrap, byte-for-byte."""
+def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
+    """Uniform for legacy hand-authored collections (#1557), including the
+    unnumbered-prose shape: with no leading step numbers in the stored prompt,
+    A = 0, so the injected notify steps number 1..4 and the terminal done() is 5
+    — byte-for-byte."""
     legacy_prompt = (
-        "Watch the summit webcam page and note the current trail status.\n"
-        "1. browse the webcam page and read the status banner\n"
-        '2. collection_write("summit-status", entries=[{key: "trail", content: <status>}])\n'
-        "3. done()."
+        "Watch the summit webcam page, read the status banner, and record the "
+        "current trail status in the collection under the key `trail`."
     )
     target = MemoryRow(
         name="summit-status",
@@ -592,26 +587,7 @@ def test_compose_prompt_appends_notify_suffix_to_legacy_hand_authored_prompt():
         "You are the collector for the `summit-status` collection.\n"
         "Description: Summit trail status\n"
         "\n"
-        "# Run steps\n"
         f"{legacy_prompt}\n"
-        "\n"
-        f"{_NOTIFY_LEAD_IN}\n"
-        "\n"
-        f"{Prompt.COLLECTOR_NOTIFY_STEPS}\n"
-        "\n"
-        f"{Collector._RUNTIME_RULES}"
-    )
-    assert composed == expected, (
-        f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
-    )
-
-
-def test_collector_notify_steps_constant_pinned():
-    """The run-time notify suffix constant, pinned verbatim (#1557).  ``read_similar``'s
-    signature is (memory, anchor, k) — a drift here changes what every notify=true
-    collector is told to do."""
-    assert Prompt.COLLECTOR_NOTIFY_STEPS == (
-        "# Notify steps\n"
         '1. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
         "the user's past messages closest to this find.\n"
         '2. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
@@ -620,7 +596,33 @@ def test_collector_notify_steps_constant_pinned():
         "(the key detail in plain words), the source URL if there is one, and — only if "
         "one of those past messages is genuinely related — a one-line callback to it.\n"
         "4. send_message(content=<the message>)\n"
-        "5. done(success=true, summary=<one line naming what you delivered>)"
+        "5. done(success=<true|false>, summary=<recap of what you did>)\n"
+        "\n"
+        f"{Collector._RUNTIME_RULES}"
+    )
+    assert composed == expected, (
+        f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+def test_collector_notify_steps_constants_pinned():
+    """The notify-step template + the injected terminal, pinned verbatim (#1557).
+    The template carries no numbers (assembly numbers it, continuing from the
+    stored prompt) and no done() (the terminal is assembly's).  ``read_similar``'s
+    signature is (memory, anchor, k) — a drift here changes what every notify=true
+    collector is told to do."""
+    assert Prompt.COLLECTOR_NOTIFY_STEPS == (
+        'read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
+        "the user's past messages closest to this find.",
+        'read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
+        "your own past replies about it.",
+        "Compose one short, friendly message: a quick greeting, what you just found "
+        "(the key detail in plain words), the source URL if there is one, and — only if "
+        "one of those past messages is genuinely related — a one-line callback to it.",
+        "send_message(content=<the message>)",
+    )
+    assert (
+        Prompt.COLLECTOR_DONE_STEP == "done(success=<true|false>, summary=<recap of what you did>)"
     )
 
 
@@ -795,7 +797,8 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "Strategy board games worth buying",
         Inclusion.RELEVANT,
         RecallMode.RECENT,
-        extraction_prompt='Collect board games.\n1. log_read("user-messages")\n2. done().',
+        # Post-0087 stored shape: steps 1..A, no done() — assembly injects the terminal.
+        extraction_prompt='Collect board games.\n1. log_read("user-messages")',
     )
     for run_id, summary in [
         ("run-a", "wrote 2 new strategy games"),
@@ -830,7 +833,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
-        "2. done().\n"
+        "2. done(success=<true|false>, summary=<recap of what you did>)\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
