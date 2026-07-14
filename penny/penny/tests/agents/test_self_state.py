@@ -26,7 +26,14 @@ from penny.agents.chat import ChatAgent
 from penny.agents.self_state import SelfStateHeader
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.database.database import Database
-from penny.database.models import MemoryEntry, MemoryRow, MutationEvent, PromptLog, UserInfo
+from penny.database.models import (
+    MemoryEntry,
+    MemoryRow,
+    MessageLog,
+    MutationEvent,
+    PromptLog,
+    UserInfo,
+)
 from penny.database.mutation_store import MutationDetail
 from penny.prompts import Prompt
 
@@ -120,6 +127,36 @@ def _add_run(
             run_reason=reason,
             run_target=target,
             timestamp=finished_at,
+        )
+    )
+
+
+def _add_emission(session: Session, *, mechanism: str, content: str, sent_at: datetime) -> None:
+    """A delivered autonomous send: an OUTGOING messagelog row stamped with the
+    mechanism that produced it (#1568) — the shape the activity block renders as a
+    ``sent · …`` line.  A direct reply (``mechanism=None``) is excluded, so these
+    seed a non-NULL mechanism."""
+    session.add(
+        MessageLog(
+            direction=PennyConstants.MessageDirection.OUTGOING,
+            sender="penny",
+            content=content,
+            mechanism=mechanism,
+            timestamp=sent_at,
+        )
+    )
+
+
+def _add_direct_reply(session: Session, *, content: str, when: datetime) -> None:
+    """An OUTGOING messagelog row with NO mechanism — a direct reply, which the
+    activity block excludes by construction (it is the conversation, already in
+    context)."""
+    session.add(
+        MessageLog(
+            direction=PennyConstants.MessageDirection.OUTGOING,
+            sender="penny",
+            content=content,
+            timestamp=when,
         )
     )
 
@@ -269,6 +306,15 @@ def _seed_kitchen_sink(db: Database) -> None:
             created_at=_t(8, 30),
             detail=MutationDetail(note="max_runs reached (1 of 1)"),
         )
+        # A delivered autonomous send (#1568) interleaves into the activity block;
+        # a direct reply (no mechanism) seeded alongside must NOT appear.
+        _add_emission(
+            session,
+            mechanism="price-watch",
+            content="Heads up: the price dropped to $42!",
+            sent_at=_t(9, 5),
+        )
+        _add_direct_reply(session, content="sure, happy to help!", when=_t(9, 18))
         session.commit()
     _add_user(db)
 
@@ -479,6 +525,39 @@ def test_activity_mutation_lines_no_detail_matrix(tmp_path):
     assert actual == _MUTATION_BARE_MATRIX
 
 
+def test_activity_emission_lines_and_exclusions(tmp_path):
+    """Delivered autonomous sends (#1568) render as ``sent · …`` lines, interleaved
+    by time with a run: a short body renders whole, a long one is snippet-truncated
+    with an ellipsis, and a direct reply (no mechanism) seeded NEWER than an
+    emission is excluded (it is the conversation, not its complement)."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_run(
+            session,
+            run_id="rr11worked",
+            target="alpha-watch",
+            outcome="worked",
+            calls=2,
+            finished_at=_t(9, 50),
+        )
+        _add_emission(session, mechanism="alpha-watch", content="A short ping.", sent_at=_t(9, 40))
+        # A direct reply NEWER than the beta emission below — must NOT appear.
+        _add_direct_reply(session, content="you got it!", when=_t(9, 35))
+        _add_emission(
+            session,
+            mechanism="beta-watch",
+            content=(
+                "The morning digest is ready with today's five top headlines "
+                "for you to skim over coffee"
+            ),
+            sent_at=_t(9, 20),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert "you got it!" not in actual
+    assert actual == _EMISSION_MATRIX
+
+
 _MATRIX_ACTIONS = [
     MutationAction.CREATED,
     MutationAction.UPDATED,
@@ -565,6 +644,7 @@ _KITCHEN_SINK = (
     "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
     "changed collector_interval_seconds\n"
     "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls)\n"
+    'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
     "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 "
     "of 1)\n"
     "run 88d14e5f · 2026-07-11 08:00 UTC · news-digest → FAILED (2 calls)\n"
@@ -769,6 +849,30 @@ _MUTATION_NOTE_MATRIX = (
     "max_runs reached (2 of 2)\n"
     "change · 2026-07-11 09:50 UTC · demo-watch unarchived by system — max_runs reached "
     "(2 of 2)\n"
+    "\n"
+    "### Your memory\n"
+    "(no stores yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, read_run_calls(<target>) for a run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_catalog() for every collection."
+)
+
+_EMISSION_MATRIX = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "run rr11worked · 2026-07-11 09:50 UTC · alpha-watch → WORKED (2 calls)\n"
+    'sent · 2026-07-11 09:40 UTC · alpha-watch — "A short ping."\n'
+    'sent · 2026-07-11 09:20 UTC · beta-watch — "The morning digest is ready with '
+    "today's five top…\"\n"
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"

@@ -715,7 +715,20 @@ class MessageLogMemory(Log):
     are excluded (not conversation).  ``content_embedding`` is the messagelog
     embedding (same serialized-bytes format), written at ingress/egress and
     backfilled at startup.  Read-only — the channel owns the canonical writes.
+
+    **Emission provenance renders inline (#1568)**: an outgoing row stamped with
+    the ``mechanism`` that sent it (an autonomous collector send, carried onto the
+    row by the drainer) renders ``(sent by <mechanism>) <content>`` — so pulling a
+    message by relevance or recency IS resolving its source, on every read path
+    (they all synthesize entries through ``_to_entry``).  A NULL-mechanism row (a
+    direct reply; every incoming row) renders the bare content, byte-identical to
+    the pre-provenance render — the unmarked case stays the quiet default.
     """
+
+    # The inline provenance marker, rendered between the timestamp stamp (added by
+    # the tool layer's ``_format_entries``) and the message content:
+    # ``3. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: …``.
+    SENT_BY_MARKER = "(sent by {mechanism}) "
 
     def __init__(self, row: MemoryRow, engine, *, direction: str, on_changed=None) -> None:
         super().__init__(row, engine, on_changed=on_changed)
@@ -739,12 +752,21 @@ class MessageLogMemory(Log):
             id=row.id,
             memory_name=self.name,
             key=None,
-            content=row.content,
+            content=self._render_content(row),
             author=self._author,
             key_embedding=None,
             content_embedding=row.embedding,
             created_at=row.timestamp,
         )
+
+    def _render_content(self, row: MessageLog) -> str:
+        """The entry content with inline emission provenance (#1568): a
+        mechanism-stamped send leads with the ``(sent by <mechanism>)`` marker; a
+        NULL-mechanism row is the bare content, byte-identical to the
+        pre-provenance render."""
+        if row.mechanism is None:
+            return row.content
+        return f"{self.SENT_BY_MARKER.format(mechanism=row.mechanism)}{row.content}"
 
     def _select(self):
         return select(MessageLog).where(

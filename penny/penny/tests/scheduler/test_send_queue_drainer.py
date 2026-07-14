@@ -100,6 +100,10 @@ async def test_drain_delivers_when_no_prior_send(tmp_path):
     assert kwargs["recipient"] != _PENNY_NUMBER
     assert kwargs["content"] == "hey there!"
     assert kwargs["author"] == _COLLECTION
+    # Emission provenance (#1568): the queued row's collection is carried onto
+    # send_response as the mechanism, so the delivered messagelog row names its
+    # cause (NULL = direct reply).
+    assert kwargs["mechanism"] == _COLLECTION
     # Row is stamped delivered — never re-sent.
     assert db.send_queue.next_pending() is None
 

@@ -24,7 +24,7 @@ from penny.database.memory import (
     WriteGateOutcome,
     WriteResult,
 )
-from penny.database.models import MemoryEntry, MemoryRow
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog
 from penny.database.skills import (
     SkillDraft,
     SkillHole,
@@ -33,6 +33,7 @@ from penny.database.skills import (
     SkillSubstitution,
 )
 from penny.llm.client import LlmClient
+from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.memory_tools import (
@@ -1873,6 +1874,75 @@ class TestLogTools:
         agent_b = LogReadTool(db, agent_name="b", scope="b")
         rendered = await agent_b.execute(memory="events")
         assert "hello" in rendered.message
+
+
+class TestEmissionProvenanceRender:
+    """The messagelog facade renders emission provenance inline (#1568).
+
+    An outgoing row stamped with the mechanism that sent it reads
+    ``(sent by <mechanism>) <content>`` between the timestamp and content on
+    every read path (all facade reads synthesize entries through ``_to_entry``)
+    — so pulling a message by recency or relevance IS resolving its source.  A
+    NULL-mechanism row (a direct reply) renders byte-identical to the
+    pre-provenance shape — the unmarked case stays the quiet default."""
+
+    def _seed(self, db: Database) -> None:
+        db.memories.create_log(
+            PennyConstants.MEMORY_PENNY_MESSAGES_LOG,
+            "outbound messages",
+            Inclusion.NEVER,
+            RecallMode.RECENT,
+        )
+        with Session(db.engine) as session:
+            session.add(
+                MessageLog(
+                    direction=PennyConstants.MessageDirection.OUTGOING,
+                    sender="penny",
+                    content="sure, happy to help!",
+                    embedding=serialize_embedding([0.0, 1.0, 0.0]),
+                    timestamp=datetime(2026, 7, 2, 9, 10, tzinfo=UTC),
+                )
+            )
+            session.add(
+                MessageLog(
+                    direction=PennyConstants.MessageDirection.OUTGOING,
+                    sender="penny",
+                    content="Heads up: the price dropped to $42!",
+                    mechanism="price-watch",
+                    embedding=serialize_embedding([1.0, 0.0, 0.0]),
+                    timestamp=datetime(2026, 7, 2, 9, 14, tzinfo=UTC),
+                )
+            )
+            session.commit()
+
+    @pytest.mark.asyncio
+    async def test_log_read_renders_provenance_whole(self, tmp_path):
+        """The whole log_read render, both shapes pinned: the direct reply line is
+        byte-identical to the pre-provenance shape (``N. [stamp] content``); the
+        mechanism-stamped line carries the inline marker."""
+        db = _make_db(tmp_path)
+        self._seed(db)
+        result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
+            memory=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
+        )
+        assert result.message == (
+            "2 entries from `penny-messages` (oldest first):\n"
+            "1. [2026-07-02 09:10 UTC] sure, happy to help!\n"
+            "2. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: the price dropped to $42!"
+        )
+
+    def test_read_similar_carries_provenance_too(self, tmp_path):
+        """The similarity path returns the same synthesized entries, so a
+        relevance hit on an autonomous send carries its mechanism inline — one
+        call resolves both the message and its source."""
+        db = _make_db(tmp_path)
+        self._seed(db)
+        facade = db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG)
+        assert facade is not None
+        hits = facade.read_similar([1.0, 0.0, 0.0], k=1)
+        assert [hit.content for hit in hits] == [
+            "(sent by price-watch) Heads up: the price dropped to $42!"
+        ]
 
 
 class TestExistsAndDone:

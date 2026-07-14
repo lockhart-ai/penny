@@ -3,7 +3,7 @@
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Index
+from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel
 
 
@@ -63,11 +63,36 @@ class MessageLog(SQLModel, table=True):
         default=None, foreign_key="device.id", index=True
     )  # FK to device that sent/received this message
     embedding: bytes | None = None  # Serialized float32 embedding vector
+    # Emission provenance (#1568): the mechanism (bound collection) whose
+    # autonomous cycle produced this send.  NULL for a direct reply — a chat turn
+    # with a live triggering user message names no mechanism.  Stamped by the
+    # drainer at delivery time from the queued row (the collection is known at
+    # enqueue), so "which mechanism sent this?" is a read, not a diagnosis.
+    # A by-name reference to ``memory.name`` (the FK-by-name discipline the memory
+    # layer uses), a plain column rather than a DB-level FK — like
+    # ``mutation_event.entity_name`` — so it doesn't close a circular foreign-key
+    # cycle with ``memory.source_message_id`` (→ ``messagelog.id``).  Served by the
+    # partial ``ix_messagelog_emission_time`` index below, not a single-column one
+    # (no query filters on mechanism equality; the hot read is the newest-emissions
+    # scan).
+    mechanism: str | None = Field(default=None)
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
         Index("ix_messagelog_sender_timestamp_id", "sender", "timestamp", "id"),
         Index("ix_messagelog_recipient_timestamp_id", "recipient", "timestamp", "id"),
+        # Partial index over emission rows only (#1568): ``recent_emissions`` runs on
+        # the self-state render hot path (every chat prompt build) filtering
+        # ``mechanism IS NOT NULL`` and ordering ``timestamp DESC, id DESC`` over the
+        # unbounded messagelog — mechanism-bearing rows are sparse, so without this a
+        # timestamp-index walk tests mechanism on many rows before the small LIMIT
+        # fills.  A backward scan of this index fills it immediately.
+        Index(
+            "ix_messagelog_emission_time",
+            "timestamp",
+            "id",
+            sqlite_where=text("mechanism IS NOT NULL"),
+        ),
     )
 
 

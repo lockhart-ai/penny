@@ -70,6 +70,11 @@ class SendQueueDrainer:
             parent_id=None,
             author=item.collection,
             quote_message=None,
+            # Emission provenance (#1568): the queued row already names the
+            # mechanism (the collector that queued it) — carry it onto the
+            # delivered messagelog row so the send names its cause and "which
+            # mechanism sent this?" is a read, not a diagnosis.
+            mechanism=item.collection,
         )
         if item.id is not None:
             self._db.send_queue.mark_sent(item.id)
