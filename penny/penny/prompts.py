@@ -270,3 +270,28 @@ class Prompt:
         "Make a tool call now: call `done()` if the cycle is complete, otherwise call "
         "the appropriate tool to continue the cycle."
     )
+
+    # Emission-as-property (#1557): the run-time notify suffix.  Appended to a
+    # collector's system prompt — under its own ``# Notify steps`` header, with its
+    # own numbering — only when the bound collection's ``notify`` flag is set, and
+    # never written into the stored ``extraction_prompt`` (uniform for skill-backed
+    # and legacy hand-authored collections).  It is the retired ``notifier``
+    # consumer's prompt distilled to today's conventions: the drain step + entry
+    # variable are gone (the suffix runs in the same loop that just made the find —
+    # full context, no handoff), the nothing-new guard is gone (a write-gate STOP
+    # ends the cycle before the suffix on a no-change cycle, so no-news never
+    # notifies, structurally), the variable-storage dialect is gone (results are
+    # referenced naturally), and the mandatory snippet references became conditional
+    # on genuine relevance.  ``read_similar``'s signature is ``(memory, anchor, k)``.
+    COLLECTOR_NOTIFY_STEPS = (
+        "# Notify steps\n"
+        '1. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
+        "the user's past messages closest to this find.\n"
+        '2. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
+        "your own past replies about it.\n"
+        "3. Compose one short, friendly message: a quick greeting, what you just found "
+        "(the key detail in plain words), the source URL if there is one, and — only if "
+        "one of those past messages is genuinely related — a one-line callback to it.\n"
+        "4. send_message(content=<the message>)\n"
+        "5. done(success=true, summary=<one line naming what you delivered>)"
+    )

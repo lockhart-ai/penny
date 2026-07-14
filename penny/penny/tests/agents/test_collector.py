@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -29,6 +30,8 @@ from penny.database import Database
 from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
+from penny.llm.models import LlmResponse
+from penny.prompts import Prompt
 from penny.tools.memory_tools import LogReadTool, build_memory_tools
 
 
@@ -503,6 +506,223 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     assert composed == expected, (
         f"Composed prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
     )
+
+
+# ── Notify suffix (emission-as-property, #1557) ──────────────────────────────
+
+# A skill-rendered extraction_prompt (every step one canonical tool call) — the
+# kitchen-sink case the two-section render is asserted against.
+_NOTIFY_RENDERED_PROMPT = (
+    "Collect indie metroidvania releases and keep me posted on the good ones.\n"
+    '1. browse(queries=["new indie metroidvania releases"], extract="pull out the '
+    'release name, a one-line hook, and the URL")\n'
+    '2. collection_write("indie-metroidvanias", entries=[{key: <release name>, '
+    "content: <name + hook + URL>}])\n"
+    "3. done()."
+)
+
+# The two-section lead-in that resolves the notify steps' interplay with the run
+# steps' own done() — authored in Collector._notify_section, pinned here.
+_NOTIFY_LEAD_IN = (
+    "When the run above wrote a new or changed entry, tell the user about it "
+    "before you finish — do these steps instead of stopping at the run's "
+    "`done()`.  A quiet cycle that wrote nothing new notifies no one."
+)
+
+
+def test_compose_prompt_appends_notify_suffix_when_notify_true():
+    """A notify=true collection gains the two-section shape (#1557): the stored steps
+    under ``# Run steps``, the interplay lead-in, the run-time ``# Notify steps``
+    suffix, then the runtime-rules tail — asserted char-for-char (kitchen-sink: a
+    skill-rendered extraction_prompt + the suffix).  The suffix is NEVER written into
+    the stored prompt; it is appended at assembly time only."""
+    target = MemoryRow(
+        name="indie-metroidvanias",
+        type="collection",
+        description="Indie metroidvania releases the user tracks",
+        recall=RecallMode.RELEVANT.value,
+        archived=False,
+        notify=True,
+        extraction_prompt=_NOTIFY_RENDERED_PROMPT,
+    )
+
+    composed = Collector._compose_prompt(target)
+
+    expected = (
+        "You are the collector for the `indie-metroidvanias` collection.\n"
+        "Description: Indie metroidvania releases the user tracks\n"
+        "\n"
+        "# Run steps\n"
+        f"{_NOTIFY_RENDERED_PROMPT}\n"
+        "\n"
+        f"{_NOTIFY_LEAD_IN}\n"
+        "\n"
+        f"{Prompt.COLLECTOR_NOTIFY_STEPS}\n"
+        "\n"
+        f"{Collector._RUNTIME_RULES}"
+    )
+    assert composed == expected, (
+        f"Composed notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+def test_compose_prompt_appends_notify_suffix_to_legacy_hand_authored_prompt():
+    """The suffix is uniform for skill-backed AND legacy hand-authored collections
+    (#1557): a legacy prose-numbered prompt with notify=true gets the same
+    two-section wrap, byte-for-byte."""
+    legacy_prompt = (
+        "Watch the summit webcam page and note the current trail status.\n"
+        "1. browse the webcam page and read the status banner\n"
+        '2. collection_write("summit-status", entries=[{key: "trail", content: <status>}])\n'
+        "3. done()."
+    )
+    target = MemoryRow(
+        name="summit-status",
+        type="collection",
+        description="Summit trail status",
+        recall=RecallMode.RECENT.value,
+        archived=False,
+        notify=True,
+        extraction_prompt=legacy_prompt,
+    )
+
+    composed = Collector._compose_prompt(target)
+
+    expected = (
+        "You are the collector for the `summit-status` collection.\n"
+        "Description: Summit trail status\n"
+        "\n"
+        "# Run steps\n"
+        f"{legacy_prompt}\n"
+        "\n"
+        f"{_NOTIFY_LEAD_IN}\n"
+        "\n"
+        f"{Prompt.COLLECTOR_NOTIFY_STEPS}\n"
+        "\n"
+        f"{Collector._RUNTIME_RULES}"
+    )
+    assert composed == expected, (
+        f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+def test_collector_notify_steps_constant_pinned():
+    """The run-time notify suffix constant, pinned verbatim (#1557).  ``read_similar``'s
+    signature is (memory, anchor, k) — a drift here changes what every notify=true
+    collector is told to do."""
+    assert Prompt.COLLECTOR_NOTIFY_STEPS == (
+        "# Notify steps\n"
+        '1. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
+        "the user's past messages closest to this find.\n"
+        '2. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
+        "your own past replies about it.\n"
+        "3. Compose one short, friendly message: a quick greeting, what you just found "
+        "(the key detail in plain words), the source URL if there is one, and — only if "
+        "one of those past messages is genuinely related — a one-line callback to it.\n"
+        "4. send_message(content=<the message>)\n"
+        "5. done(success=true, summary=<one line naming what you delivered>)"
+    )
+
+
+_NOTIFY_SEED_KEY = "Hollow Verge"
+_NOTIFY_SEED_CONTENT = "Hollow Verge — a hand-drawn metroidvania. https://ex.example/hv"
+
+
+def _seed_notify_collection(db: Database) -> None:
+    """A notify=true collection holding one existing entry, plus a primary user so a
+    notify-step send_message can enqueue."""
+    db.users.save_info(
+        sender="+15551230000",
+        name="Test User",
+        location="Seattle, WA",
+        timezone="America/Los_Angeles",
+        date_of_birth="1990-01-01",
+    )
+    db.memories.create_collection(
+        "indie-metroidvanias",
+        "Indie metroidvania releases",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt=_NOTIFY_RENDERED_PROMPT,
+        collector_interval_seconds=3600,
+        notify=True,
+    )
+    db.memory("indie-metroidvanias").write(
+        [EntryInput(key=_NOTIFY_SEED_KEY, content=_NOTIFY_SEED_CONTENT)], author="producer"
+    )
+
+
+@pytest.mark.asyncio
+async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_config, tmp_path):
+    """STOP interplay (#1557): a notify=true run that re-observes the watched key with
+    an UNCHANGED value STOPs at the write gate and never reaches the notify suffix — so
+    a no-change cycle emits NOTHING.  Drives the real loop with a mocked model."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    collector.set_channel(cast(Any, object()))  # presence flag: enables send_message
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        # The only step the model gets to make: the write STOPs the loop before send.
+        return mock_llm._make_tool_call_response(
+            request,
+            "collection_write",
+            {
+                "memory": "indie-metroidvanias",
+                "entries": [{"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}],
+            },
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("indie-metroidvanias")
+
+    # The write-gate STOP closed the cycle at the chokepoint — the model was asked
+    # exactly once (the write), and nothing was queued to the user.
+    assert len(mock_llm.requests) == 1
+    assert db.send_queue.next_pending() is None
+
+
+@pytest.mark.asyncio
+async def test_notify_cycle_composes_and_sends_on_a_productive_write(
+    mock_llm, test_config, tmp_path
+):
+    """The productive path (#1557): a notify=true run that writes a NEW entry does not
+    STOP, so it runs the notify suffix in the same cycle — reaching send_message and
+    queuing one message to the user."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    collector.set_channel(cast(Any, object()))
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:  # a productive write — a genuinely new find, no STOP
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "memory": "indie-metroidvanias",
+                    "entries": [
+                        {
+                            "key": "Cinder Drift",
+                            "content": "Cinder Drift — a new metroidvania. https://ex.example/cd",
+                        }
+                    ],
+                },
+            )
+        if count == 2:  # the notify suffix's send step
+            return mock_llm._make_tool_call_response(
+                request, "send_message", {"content": "Found a new one: Cinder Drift! 🎮"}
+            )
+        return mock_llm._make_tool_call_response(
+            request, "done", {"success": True, "summary": "delivered Cinder Drift"}
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("indie-metroidvanias")
+
+    pending = db.send_queue.next_pending()
+    assert pending is not None
+    assert "Cinder Drift" in pending.content
 
 
 @pytest.mark.asyncio
@@ -1360,100 +1580,3 @@ def test_input_pending_tristate(test_config, tmp_path):
         [LogEntryInput(content="new", content_embedding=None)], author="user"
     )
     assert collector._input_pending(_get(db, "watcher")) is True
-
-
-# ── Consumer gate (pub/sub fan-in) ────────────────────────────────────────────
-
-
-_NOTIFIER_PROMPT = (
-    "Notifier: call read_published_latest(n=1), ground it in past messages, "
-    "send_message, then done."
-)
-
-
-def _make_consumer(db: Database) -> None:
-    """A consumer collection whose prompt drains the published stream."""
-    db.memories.create_collection(
-        "notifier",
-        "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
-        extraction_prompt=_NOTIFIER_PROMPT,
-        collector_interval_seconds=60,
-    )
-
-
-def _publish_source(db: Database, name: str, key: str, content: str) -> None:
-    db.memories.create_collection(name, "d", Inclusion.NEVER, RecallMode.RECENT, published=True)
-    _memory(db, name).write([EntryInput(key=key, content=content)], author="producer")
-
-
-def _backdate_entry(db: Database, name: str, key: str, *, days: int) -> None:
-    with db.engine.connect() as conn:
-        conn.execute(
-            text("UPDATE memory_entry SET created_at = :ts WHERE memory_name = :n AND key = :k"),
-            {"ts": (datetime.now(UTC) - timedelta(days=days)).isoformat(), "n": name, "k": key},
-        )
-        conn.commit()
-
-
-def test_consumer_skipped_until_a_published_source_advances(test_config, tmp_path):
-    """A consumer (its prompt calls read_published_latest) is gated on the
-    published stream: it runs when a source has an unseen entry, is skipped when
-    caught up on its own cursor, and runs again when a new entry lands."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _publish_source(db, "games", "g1", "game one")
-    _make_consumer(db)
-    # A published source has an unseen entry → the consumer is ready.
-    ready = collector._next_ready_collection()
-    assert ready is not None and ready.name == "notifier"
-
-    # Simulate the consumer having drained it: its cursor sits at the source head.
-    head = _memory(db, "games").read_all()[-1].created_at
-    db.cursors.advance_committed("notifier", "games", head)
-    db.memories.mark_collected("notifier")
-    _backdate_collected(db, "notifier", minutes=10)  # clear the interval floor
-    # Caught up across every published source → the gate skips it.
-    assert collector._next_ready_collection() is None
-
-    # A new published entry past the cursor → ready again.
-    _memory(db, "games").write([EntryInput(key="g2", content="game two")], author="producer")
-    ready2 = collector._next_ready_collection()
-    assert ready2 is not None and ready2.name == "notifier"
-
-
-def test_consumer_not_woken_by_unpublished_source(test_config, tmp_path):
-    """An unpublished collection with fresh entries does not wake a consumer —
-    only published collections feed the stream."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("silent", "d", Inclusion.NEVER, RecallMode.RECENT)
-    _memory(db, "silent").write([EntryInput(key="s1", content="secret")], author="user")
-    _make_consumer(db)
-    # No published source has anything → the consumer is skipped, never run blind.
-    assert collector._next_ready_collection() is None
-
-
-def test_consumer_cold_start_ignores_old_published_backlog(test_config, tmp_path):
-    """A consumer subscribing for the first time ignores a long-standing backlog
-    (entries older than the cold-start window) so it doesn't flood on day one."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _publish_source(db, "games", "old", "ancient game")
-    _backdate_entry(db, "games", "old", days=8)  # beyond the 7-day cold-start window
-    _make_consumer(db)
-    assert collector._next_ready_collection() is None
-    # A fresh entry inside the window wakes it.
-    _memory(db, "games").write([EntryInput(key="new", content="fresh game")], author="producer")
-    ready = collector._next_ready_collection()
-    assert ready is not None and ready.name == "notifier"
-
-
-def test_consumer_is_exempt_from_throttle(test_config, tmp_path):
-    """A consumer is gate-controlled like a log-driven collection: no-work cycles
-    never widen its interval (it only wakes when the stream has something)."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _make_consumer(db)
-    for _ in range(10):
-        collector._apply_throttle(_get(db, "notifier"), RunOutcome.NO_WORK)
-    m = _get(db, "notifier")
-    assert m.collector_interval_seconds == 60
-    assert m.consecutive_idle_runs == 0

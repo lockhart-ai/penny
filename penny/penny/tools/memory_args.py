@@ -288,7 +288,7 @@ class CollectionUpdateArgs(ToolArgs):
     recall: OptionalRecall = None  # "all" | "relevant" | "recent"
     extraction_prompt: OptionalExtractionPrompt = None
     collector_interval_seconds: int | None = None
-    published: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
+    notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     intent: OptionalText = None  # accepted but NOT applied — immutable; the tool explains
 
 
@@ -333,19 +333,6 @@ class ReadSimilarArgs(ToolArgs):
 
 
 # ── Log-specific reads ──────────────────────────────────────────────────────
-
-
-class ReadPublishedLatestArgs(ToolArgs):
-    """A consumer's fan-in read across every ``published`` collection.
-
-    Returns the ``n`` oldest entries not yet seen by this consumer (across all
-    published sources, merged oldest-first), each tagged with its source.  The
-    consumer names no source — Python picks from whichever published collections
-    have unseen entries, advancing a per-(consumer, source) cursor only for the
-    entries actually returned.
-    """
-
-    n: Annotated[int, AfterValidator(_reject_nonpositive_count)] = 1
 
 
 class ReadLogArgs(ToolArgs):

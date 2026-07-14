@@ -195,7 +195,7 @@ def seed_collection(
     extraction_prompt: str | None = None,
     intent: str | None = None,
     interval: int | None = None,
-    published: bool = False,
+    notify: bool = False,
 ) -> None:
     """Create a synthetic collection + its entries (key = text before ' — ')."""
     db.memories.create_collection(
@@ -206,7 +206,7 @@ def seed_collection(
         extraction_prompt=extraction_prompt,
         collector_interval_seconds=interval,
         intent=intent,
-        published=published,
+        notify=notify,
     )
     db.memory(synth.name).write(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],

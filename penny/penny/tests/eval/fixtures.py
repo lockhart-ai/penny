@@ -103,8 +103,8 @@ BOARD_GAMES_INTENT = (
 # steps, no reasoning/filter lines (a prose step trains the model to emit its own calls as
 # prose — the notation drift the eval surfaced; a reasoning step it tries to "perform" as
 # text).  The entry shape lives INSIDE ``collection_write``'s args, not a separate line.
-# Notification is pub/sub: seeded ``published=true``, the ``notifier`` consumer delivers —
-# NO ``send_message`` step (that is the deprecated direct-send pattern).  ``log_read`` is the
+# Notification is the ``notify`` flag (the run-time notify suffix, #1557) — NO ``send_message``
+# step in the stored prompt (that is the deprecated direct-send pattern).  ``log_read`` is the
 # removable call the edit-operations case drops.
 BOARD_GAMES_EXTRACTION_PROMPT = (
     "Collect heavier euro-style strategy board games and modern tabletop classics.\n"
@@ -289,8 +289,7 @@ RESEARCH_WATCHER_EXTRACTION_PROMPT = (
 )
 
 
-# The notifier (pub/sub consumer) is migration-seeded (0067), so the eval drives the
-# SHIPPED prompt directly (a fresh eval DB runs migrations) — no duplicated copy here.
+# Canned pages injected for the browse-driven research-watcher case below.
 RESEARCH_PAGES = (
     CannedPage(
         match="metroidvania",

@@ -995,8 +995,8 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
       ``success=False`` (and so does add to ``tool_failures``); the header count still
       captures it, so ``no_writes`` is unaffected either way.
     - **reads** — internal collection/log reads (``log_read``,
-      ``collection_read_*``, ``read_published_latest``, ``read_similar``,
-      ``collection_catalog``, …): every tool call that isn't a browse, write, send,
+      ``collection_read_*``, ``read_similar``, ``collection_catalog``, …): every
+      tool call that isn't a browse, write, send,
       or ``done()``.  These don't meaningfully fail, so they're a plain call count.
 
     Writes and sends count the model's own tool *calls* (each appears once across

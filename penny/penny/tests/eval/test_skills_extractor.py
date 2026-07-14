@@ -47,8 +47,8 @@ pytestmark = pytest.mark.eval
 
 _SKILLS = "skills"
 
-# ── Case-specific collection recipes (pub/sub-correct: notify = published flag,
-#    never a send_message step in a collector body) ────────────────────────────
+# ── Case-specific collection recipes (emission = the notify flag, never a
+#    send_message step in a stored collector body) ───────────────────────────────
 
 # Healthy research+notify recipe — matches the seeded "Research — notify" skill.
 _RESEARCH_HEALTHY = RESEARCH_WATCHER_EXTRACTION_PROMPT
@@ -115,7 +115,7 @@ def _seed_research(prompt: str):
             extraction_prompt=prompt,
             intent=RESEARCH_WATCHER_INTENT,
             interval=3600,
-            published=True,
+            notify=True,
         )
 
     return _apply
@@ -183,7 +183,7 @@ async def test_new_pattern(collector_eval) -> None:
             extraction_prompt=_PAGE_WATCH_PROMPT,
             intent=_PAGE_WATCH_INTENT,
             interval=86400,
-            published=True,
+            notify=True,
         )
 
     await collector_eval(
@@ -275,7 +275,7 @@ async def test_consolidate(collector_eval) -> None:
             extraction_prompt=_RESEARCH_HEALTHY,
             intent=RESEARCH_WATCHER_INTENT,
             interval=3600,
-            published=True,
+            notify=True,
         )
         seed_collection(
             db,
@@ -283,7 +283,7 @@ async def test_consolidate(collector_eval) -> None:
             extraction_prompt=_BOARDGAMES_NOTIFY,
             intent="Tell me when a good new strategy board game shows up.",
             interval=3600,
-            published=True,
+            notify=True,
         )
 
     await collector_eval(

@@ -216,7 +216,10 @@ class MemoryRecord(BaseModel):
     intent: str | None  # the user's stated goal at creation (editable only here)
     inclusion: str  # "always" | "relevant" | "never" — stage-1 routing
     recall: str  # "all" | "relevant" | "recent" — stage-2 entry rendering
-    published: bool  # pub/sub: when true the notifier delivers new entries — orthogonal to recall
+    # Notify-on-new. Wire field kept as ``published`` (the addon/iOS clients still send
+    # and read that key); server-side it maps to the ``memory.notify`` column — the
+    # ``published`` pub/sub side-channel was retired in #1557.
+    published: bool
     archived: bool
     extraction_prompt: str | None
     collector_interval_seconds: int | None
@@ -317,7 +320,9 @@ class BrowserMemoryCreate(BaseModel):
     intent: str | None = None  # the user's goal for this collection
     inclusion: str | None = None  # "always" | "relevant" | "never" (default relevant)
     recall: str  # "all" | "relevant" | "recent" (legacy "off" → inclusion=never)
-    published: bool = False  # notify-on-new: a consumer delivers new entries (default silent)
+    # Notify-on-new (default silent). Wire field kept as ``published``; maps to the
+    # ``memory.notify`` column server-side (#1557 retired the pub/sub side-channel).
+    published: bool = False
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
 
@@ -334,7 +339,9 @@ class BrowserMemoryUpdate(BaseModel):
     intent: str | None = None
     inclusion: str | None = None  # "always" | "relevant" | "never"
     recall: str | None = None  # "all" | "relevant" | "recent"
-    published: bool | None = None  # flip notify-on-new; None = leave unchanged
+    # Flip notify-on-new; None = leave unchanged. Wire field kept as ``published``;
+    # maps to the ``memory.notify`` column server-side (#1557).
+    published: bool | None = None
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
 

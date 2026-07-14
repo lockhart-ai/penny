@@ -381,11 +381,6 @@ class PennyConstants:
     SELF_STATE_MECHANISMS_LIMIT = 12
     SELF_STATE_ACTIVITY_LIMIT = 8
     SELF_STATE_MAP_LIMIT = 20
-    # Cold-start window for a consumer draining a published collection it has no
-    # cursor for yet.  Rather than replay the whole backlog (a flood) or skip it
-    # entirely, the consumer starts one week back — the user-chosen window: the
-    # last week's finds get delivered once, anything older counts as already-seen.
-    PUBLISHED_COLDSTART_LOOKBACK_SECONDS = 7 * 86400
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse
@@ -418,8 +413,12 @@ class PennyConstants:
     # The skills collector (seeded by migration 0043): distils reusable workflow
     # patterns from the real collections that exist, surfaced to chat via recall.
     MEMORY_SKILLS_COLLECTION = "skills"
-    # The pub/sub notifier consumer (seeded by migration 0067): drains every
-    # ``published`` collection's new entries and delivers them to the user.
+    # The retired pub/sub notifier consumer (seeded by migration 0067, archived by
+    # #1557): it drained every ``published`` collection's new entries and delivered
+    # them to the user.  #1557 replaced it with emission-as-property (the ``notify``
+    # flag + the run-time notify suffix), archiving the row.  Retained here to keep
+    # the archived shell hidden from the catalog (via ``SYSTEM_COLLECTIONS``) and to
+    # classify historical notifier-sent messages on the iOS surface.
     MEMORY_NOTIFIER_COLLECTION = "notifier"
     # Built-in preference / knowledge / inner-monologue extractors, seeded by
     # migration (0027/0031/0068) — Penny's own machinery, not collections the

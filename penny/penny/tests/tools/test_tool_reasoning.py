@@ -40,7 +40,6 @@ from penny.tools.memory_tools import (
     LogCreateTool,
     LogReadTool,
     MemoryMetadataTool,
-    ReadPublishedLatestTool,
     ReadRunCallsTool,
     ReadSimilarTool,
     TestExtractionPromptTool,
@@ -495,12 +494,6 @@ class TestMemoryLifecycleNarration:
                 {"collector": "likes"}, ToolResult(message="ok")
             )
             == "You reviewed `likes`'s run history:"
-        )
-
-    def test_read_published_latest(self):
-        assert (
-            ReadPublishedLatestTool.to_result_narration({}, ToolResult(message="ok"))
-            == "You checked for new entries to share:"
         )
 
     def test_done_reflects_cycle_outcome(self):

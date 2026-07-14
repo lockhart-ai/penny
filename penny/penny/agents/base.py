@@ -263,8 +263,8 @@ class Agent:
         section reads correctly.  Reads ``self.name`` (class attr — also
         the prompt type identifier in promptlog) and ``self.terminator_tool``
         (class attr) to drive the cycle.  Every cursored read in the surface
-        (``CursorReadTool`` — ``log_read`` and ``read_published_latest``) has
-        its pending cursor committed on success and discarded on failure.
+        (``CursorReadTool`` — ``log_read``) has its pending cursor committed on
+        success and discarded on failure.
 
         ``run_id`` is supplied by the caller — the same UUID stamps every
         promptlog row this cycle produces, threads to the tool surface as the
@@ -301,8 +301,8 @@ class Agent:
         )
 
         # Commit every cursored read's pending advance on a productive cycle,
-        # discard on a failed one — uniform across log_read and the published
-        # fan-in read, so a cursor only moves over input actually processed.
+        # discard on a failed one, so a cursor only moves over input actually
+        # processed.
         committed = self._consumed_input(success, response)
         for cursor_tool in cursor_tools:
             if committed:

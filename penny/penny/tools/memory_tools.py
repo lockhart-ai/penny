@@ -20,10 +20,9 @@ same transient failure.
 from __future__ import annotations
 
 import logging
-import random
 from abc import abstractmethod
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, NamedTuple
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 from penny.config_params import RuntimeParams
 from penny.constants import WRITE_GATE_STOP_REASONS, PennyConstants, WriteGateOutcome
@@ -89,7 +88,6 @@ from penny.tools.memory_args import (
     MemoryNameArgs,
     ReadLatestArgs,
     ReadLogArgs,
-    ReadPublishedLatestArgs,
     ReadRandomArgs,
     ReadRunCallsArgs,
     ReadSimilarArgs,
@@ -275,7 +273,7 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
         f"({humanize_interval(memory.collector_interval_seconds)})\n"
         f"  inclusion: {memory.inclusion}\n"
         f"  recall: {memory.recall}\n"
-        f"  published: {memory.published}\n"
+        f"  notify: {memory.notify}\n"
         f"{intent_line}"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
@@ -656,9 +654,9 @@ class CollectionCreateTool(MemoryTool):
     ) -> ToolResult:
         """Idempotency at birth (#1567), then create the collection and echo it.
 
-        ``intent`` doubles as the routing/dedup ``description``; ``notify`` mirrors
-        into ``published`` for the interim delivery path (the live notifier drains
-        published collections until #1557 retires it)."""
+        ``intent`` doubles as the routing/dedup ``description``; ``notify`` drives
+        the run-time notify suffix on the collector (#1557 — the sole emission
+        path since the notifier consumer was retired)."""
         description_embedding = await embed_text(self._llm_client, args.intent)
         if not args.create_anyway:
             dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
@@ -673,7 +671,6 @@ class CollectionCreateTool(MemoryTool):
             collector_interval_seconds=trigger.collector_interval_seconds,
             description_embedding=description_embedding,
             intent=args.intent,
-            published=args.notify,
             notify=args.notify,
             created_by_run_id=self._created_by_run_id,
             expires_at=expires_at,
@@ -1452,7 +1449,7 @@ class CollectionUpdateTool(MemoryTool):
         "to always surface it; 'relevant' to gate on the description.\n"
         f"- `recall` ({_RECALL_MODES}) — stage-2 entry rendering once "
         "included.\n"
-        "- `published` — flip notify-on-new. `true` starts telling the "
+        "- `notify` — flip notify-on-new. `true` starts telling the "
         "user about new entries (they asked to be kept posted / alerted); "
         "`false` silences it (the collector keeps gathering). Omit to leave "
         "unchanged.\n"
@@ -1504,7 +1501,7 @@ class CollectionUpdateTool(MemoryTool):
                     "Stage-2 entry rendering once included: 'relevant', 'recent', or 'all'."
                 ),
             },
-            "published": {
+            "notify": {
                 "type": "boolean",
                 "description": (
                     "Flip notify-on-new: true = start telling the user about "
@@ -1569,7 +1566,7 @@ class CollectionUpdateTool(MemoryTool):
             extraction_prompt=args.extraction_prompt,
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
-            published=args.published,
+            notify=args.notify,
             run_id=self._run_id,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
@@ -1659,7 +1656,7 @@ class MemoryMetadataTool(MemoryTool):
             "Operational settings (routing + cadence — secondary):",
             f"inclusion: {memory.inclusion}",
             f"recall: {memory.recall}",
-            f"published: {memory.published}",
+            f"notify: {memory.notify}",
             f"interval: {interval}",
             *lifecycle,
             f"updated: {updated}",
@@ -1679,7 +1676,7 @@ class CollectionCatalogTool(MemoryTool):
     The inventory surface, and the skills collector's window onto real use: each
     user collection (logs and framework collectors excluded) with its lifecycle
     block (status / expires / created-from-message), description, intent,
-    ``published`` flag, and full ``extraction_prompt`` — the prompts that
+    ``notify`` flag, and full ``extraction_prompt`` — the prompts that
     actually run.  **Archived-inclusive** (#1566): archiving a mechanism changes
     its status, never its visibility, so a just-archived collection still
     renders (clearly marked ``status: archived <when>``) and a count over the
@@ -1694,7 +1691,7 @@ class CollectionCatalogTool(MemoryTool):
         "recipe and lifecycle: name, status (active / archived with when), end "
         "condition, when and from which message it was created, description, "
         "intent (the user's goal in their words), whether it notifies the user "
-        "(published), and its extraction_prompt.  Use it to see what Penny "
+        "(notify), and its extraction_prompt.  Use it to see what Penny "
         "collects, how each collection is built, and which have been retired.  "
         "Logs and framework collectors are omitted."
     )
@@ -1738,7 +1735,7 @@ class CollectionCatalogTool(MemoryTool):
             f"{lifecycle}\n"
             f"description: {row.description}\n"
             f"intent: {row.intent or '(none)'}\n"
-            f"published: {row.published}\n"
+            f"notify: {row.notify}\n"
             f"extraction_prompt:\n{row.extraction_prompt}"
         )
 
@@ -2128,123 +2125,6 @@ class CollectorRunHistoryTool(MemoryTool):
         return ToolResult(
             message=_format_entries(records, source=args.collector, ordering="most recent first")
         )
-
-
-class _PublishedItem(NamedTuple):
-    """One candidate from a published collection: the source name + its intent
-    (for framing) and the entry itself."""
-
-    memory_name: str
-    intent: str | None
-    entry: MemoryEntry
-
-
-class ReadPublishedLatestTool(CursorReadTool):
-    """Fan-in cursored read across every ``published`` collection — the consumer
-    side of the pub/sub layer.
-
-    Each call picks **one** published (non-archived) collection *at random* among
-    those with an entry this consumer hasn't seen, and returns its ``n`` oldest
-    unseen entries, each tagged with its source collection and that collection's
-    intent so a generic consumer prompt can frame a message without naming
-    sources.  Random rotation — rather than a global oldest-first pool — is what
-    keeps any one collection's burst from monopolizing delivery: a single
-    collector run stamps many entries with near-identical timestamps, so a global
-    oldest-first drain delivered a whole burst back-to-back (hours of one topic)
-    and starved low-volume collections for days.  Picking a random eligible
-    collection each cycle gives every collection with something new an equal shot,
-    so they drain evenly and no burst blocks the rest.
-
-    A per-``(consumer, source)`` cursor tracks progress (pending until the cycle
-    commits) and advances **only for the entries actually returned** — never for
-    a source merely scanned — so nothing is skipped.  A source this consumer has
-    no cursor for yet starts ``PUBLISHED_COLDSTART_LOOKBACK_SECONDS`` back, so a
-    freshly published backlog isn't replayed in full.
-
-    Mirrors ``LogReadTool``'s pending/commit lifecycle: the orchestration layer
-    calls ``commit_pending`` after a successful cycle, ``discard_pending`` after
-    a failed one.
-    """
-
-    name = "read_published_latest"
-    description = (
-        "Return the oldest entries you haven't seen yet across every collection "
-        "that publishes to you, each tagged with its source collection and that "
-        "collection's intent.  A cursor tracks where you left off per source, so "
-        "the next call returns the next ones and nothing repeats.  You never name "
-        "a source — this spans all of them.  Use it to find the next new thing "
-        "worth telling the user about."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "n": {
-                "type": "integer",
-                "description": "Max entries to return (default 1 — the single oldest unseen).",
-            },
-        },
-    }
-    args_model = ReadPublishedLatestArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        if not result.success:
-            return "You tried to check for new entries to share but it didn't work:"
-        return "You checked for new entries to share:"
-
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = ReadPublishedLatestArgs(**kwargs)
-        selected = self._select(args.n)
-        for item in selected:
-            self._advance_pending(item.memory_name, [item.entry.created_at])
-        return ToolResult(message=self._format(selected))
-
-    def _select(self, n: int) -> list[_PublishedItem]:
-        """Pick one published source at random among those with unseen entries and
-        return its oldest n — random rotation so no one collection's burst
-        monopolizes delivery (see the class docstring)."""
-        sources = self._sources_with_unseen()
-        if not sources:
-            return []
-        source = random.choice(sources)
-        cursor = self._cursor_for(source.name)
-        entries = self._db.memory(source.name).read_since(cursor, n)
-        return [_PublishedItem(source.name, source.intent, entry) for entry in entries]
-
-    def _sources_with_unseen(self) -> list[MemoryRow]:
-        """Published, non-archived collections (this consumer aside) holding at
-        least one entry past this consumer's cursor."""
-        sources: list[MemoryRow] = []
-        for row in self._db.memories.list_all():
-            if not row.published or row.archived or row.name == self._agent_name:
-                continue
-            if self._db.memory(row.name).read_since(self._cursor_for(row.name), 1):
-                sources.append(row)
-        return sources
-
-    def _cursor_for(self, memory_name: str) -> datetime:
-        """This consumer's committed cursor for ``memory_name``, or the cold-start
-        window when it has never read this source."""
-        committed = self._db.cursors.get(self._agent_name, memory_name)
-        if committed is not None:
-            return committed
-        return datetime.now(UTC) - timedelta(
-            seconds=PennyConstants.PUBLISHED_COLDSTART_LOOKBACK_SECONDS
-        )
-
-    def _format(self, items: list[_PublishedItem]) -> str:
-        if not items:
-            return "(no new published entries)"
-        lines = []
-        for index, item in enumerate(items, start=1):
-            intent = f" (intent: {item.intent})" if item.intent else ""
-            key = f"{render_key(item.entry.key)} " if item.entry.key else ""
-            stamp = f"[{format_log_timestamp(item.entry.created_at)}] "
-            lines.append(
-                f"{index}. {stamp}from `{item.memory_name}`{intent}: {key}{item.entry.content}"
-            )
-        noun = "entry" if len(items) == 1 else "entries"
-        return f"{len(items)} new published {noun} (oldest first):\n" + "\n".join(lines)
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────
@@ -2764,7 +2644,6 @@ def build_memory_tools(
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),
         CollectorRunHistoryTool(db),
-        ReadPublishedLatestTool(db, agent_name),
         ExistsTool(db, llm_client),
         FindMineTool(db, llm_client),
     ]
