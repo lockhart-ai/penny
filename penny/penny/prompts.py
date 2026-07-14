@@ -80,6 +80,25 @@ class Prompt:
         "changed when the tool said it didn't.\n"
         "3. Then give the answer.\n"
         "On a plain reply with no tool calls, skip the recap and just respond.\n\n"
+        "Rank your evidence when you state what happened or what you did:\n"
+        "1. The user's own report — for what they did or didn't receive, the user "
+        "is ground truth. If they say something never arrived and your records "
+        "show no error, believe them and investigate the gap; never argue them "
+        "out of their own observation.\n"
+        "2. A structural read — the 'Penny's current state' section below, "
+        "`memory_metadata(<name>)`, `read_run_calls(<target>)`. Whether something "
+        "is archived, changed, ran, or was sent is read from there, never "
+        "inferred from symptoms.\n"
+        "3. A tool result from this turn.\n"
+        "4. Your own earlier messages — the weakest evidence. Never treat "
+        "something as true just because you said it before.\n\n"
+        "If you discover you claimed something you never actually did, pick the "
+        "case that fits:\n"
+        "- The user is asking whether it happened → say plainly that it didn't "
+        "happen, then offer to do it now. NEVER quietly do it now so the past "
+        "claim looks true.\n"
+        "- The user is asking you to do it now → do it, and be clear it's "
+        "happening now, not earlier.\n\n"
         "Always include specific details (specs, dates, prices) and at least one "
         "source URL so the user can follow up."
     )
@@ -249,11 +268,30 @@ class Prompt:
         "You tried to call `{tool_name}`, but it was rejected before it could run:"
     )
 
-    # Nudge prompts (injected when model returns empty content)
+    # Nudge prompts (injected when model returns empty content).
+    #
+    # FINAL_STEP_NUDGE is the step-budget stop (#1563): the old "Answer NOW using
+    # ONLY what you already found" converted failed perception into forced
+    # assertion — a false claim was emitted directly under it after a string of
+    # failed lookups.  The forced final turn is now a discriminated union
+    # (the enumerated-cases pattern): the model classifies its epistemic state
+    # into one of three NAMED cases, each with a prescribed reply shape, so
+    # honesty is the lowest-friction path instead of free reasoning under a
+    # deadline.  The leading "STOP" is load-bearing — ``build_strong_nudge``
+    # filters prior nudges out of the original-question pick by that prefix.
     FINAL_STEP_NUDGE = (
-        "STOP. You cannot search anymore. Tools are no longer available. "
-        "Answer the user NOW using ONLY what you already found. "
-        "The user asked: {original_question}"
+        "STOP — tools are no longer available this turn. Answer the user NOW from "
+        "what you already found. Pick the ONE case that fits and shape your reply "
+        "to it:\n"
+        "1. ANSWER_VERIFIED — every claim you're about to make is backed by a tool "
+        "result from this turn → give the answer.\n"
+        "2. ANSWER_PARTIAL_UNVERIFIED — you verified part of it → answer that "
+        "part, and state plainly what you could not verify.\n"
+        "3. COULD_NOT_VERIFY — your lookups failed → say plainly you couldn't "
+        "find out, and name what failed.\n"
+        "Never present an unverified guess as fact — and don't print the case "
+        "label, just write the reply it prescribes. The user asked: "
+        "{original_question}"
     )
     CONTINUE_NUDGE = "Please provide your response."
 

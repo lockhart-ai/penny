@@ -230,7 +230,7 @@ class TestLastStepToolRemoval:
         nudge_messages = mock_llm.requests[2]["messages"]
         last_user_message = [m for m in nudge_messages if m["role"] == "user"][-1]
         assert "STOP" in last_user_message["content"]
-        assert "Tools are no longer available" in last_user_message["content"]
+        assert "tools are no longer available" in last_user_message["content"]
         assert "test query" in last_user_message["content"]
 
         await agent.close()
@@ -2817,11 +2817,28 @@ class TestResponseValidators:
         assert isinstance(outcome, Retry) and outcome.condition == ConditionKey.EMPTY
 
     def test_build_strong_nudge_uses_last_non_stop_question(self):
+        """The step-budget stop, whole-render (#1563): the forced final turn is a
+        discriminated union — three NAMED epistemic cases, each with a prescribed
+        reply shape — so honesty is the lowest-friction path, not free reasoning
+        under a deadline.  The leading "STOP" is load-bearing (it's how
+        ``build_strong_nudge`` filters prior nudges out of the question pick)."""
         messages = [
             {"role": "user", "content": "first question"},
             {"role": "user", "content": "STOP. tools gone."},
             {"role": "user", "content": "the real last question"},
         ]
         nudge = build_strong_nudge(messages)
-        assert "the real last question" in nudge
-        assert "STOP" in nudge  # the FINAL_STEP_NUDGE template leads with STOP
+        assert (
+            nudge
+            == """\
+STOP — tools are no longer available this turn. Answer the user NOW from what \
+you already found. Pick the ONE case that fits and shape your reply to it:
+1. ANSWER_VERIFIED — every claim you're about to make is backed by a tool result \
+from this turn → give the answer.
+2. ANSWER_PARTIAL_UNVERIFIED — you verified part of it → answer that part, and \
+state plainly what you could not verify.
+3. COULD_NOT_VERIFY — your lookups failed → say plainly you couldn't find out, \
+and name what failed.
+Never present an unverified guess as fact — and don't print the case label, \
+just write the reply it prescribes. The user asked: the real last question"""
+        )
