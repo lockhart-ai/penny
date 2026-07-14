@@ -728,48 +728,6 @@ async def test_notify_cycle_composes_and_sends_on_a_productive_write(
 
 
 @pytest.mark.asyncio
-async def test_notify_cycle_suppresses_repeat_emission_across_cycles(
-    mock_llm, test_config, tmp_path
-):
-    """Novelty-keyed suppression at the channel layer (#1568): two consecutive
-    cycles that reach send without writing anything new (no-change news) produce
-    exactly ONE delivery — the first enqueues, the second is durably recorded as
-    suppressed with its reason.  Drives the real collector loop + send tool twice.
-
-    This exercises YOUR novelty layer, not the STOP gate: no ``collection_write``
-    happens, so the write gate never fires; both cycles key to the collection's
-    ``no-change`` novelty, and the send surface catches the repeat."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _seed_notify_collection(db)
-    collector.set_channel(cast(Any, object()))  # presence flag: enables send_message
-
-    def handler(request: dict, count: int) -> LlmResponse:
-        # Each cycle: send a "nothing changed" message, then close — no write, so
-        # the run has no new/changed entries and keys to <collection>:no-change.
-        if count % 2 == 1:
-            return mock_llm._make_tool_call_response(
-                request, "send_message", {"content": "still tracking — nothing new to report"}
-            )
-        return mock_llm._make_tool_call_response(
-            request, "done", {"success": True, "summary": "checked; no change"}
-        )
-
-    mock_llm.set_response_handler(handler)
-
-    await collector.run_for("indie-metroidvanias")
-    await collector.run_for("indie-metroidvanias")
-
-    # Exactly one message queued for delivery; the second emission is a durable
-    # suppressed record with its reason, never delivered.
-    assert len(db.send_queue.pending_items()) == 1
-    suppressed = db.send_queue.suppressed_items("indie-metroidvanias")
-    assert len(suppressed) == 1
-    assert suppressed[0].novelty_key == "indie-metroidvanias:no-change"
-    assert "novelty unchanged" in (suppressed[0].suppressed_reason or "")
-    assert suppressed[0].sent_at is None
-
-
-@pytest.mark.asyncio
 async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_path):
     """Each cycle's system prompt carries this collector's own recent run
     summaries — newest first, each stamped with when it ran — so the model knows

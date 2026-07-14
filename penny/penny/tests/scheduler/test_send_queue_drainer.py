@@ -34,7 +34,6 @@ _RECIPIENT = "+15551234567"  # the user's primary sender identity
 _PENNY_NUMBER = "+15559998888"
 _IOS_IDENTIFIER = "ios-keychain-id"
 _COLLECTION = "notified-thoughts"
-_NOVELTY = f"{_COLLECTION}:abc123"  # the emission's novelty key, carried to messagelog
 
 
 def _make_db(tmp_path) -> Database:
@@ -88,7 +87,7 @@ async def test_drain_delivers_when_no_prior_send(tmp_path):
     db = _make_db(tmp_path)
     channel = _make_channel()
     drainer = _make_drainer(db, channel)
-    db.send_queue.enqueue(content="hey there!", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="hey there!", collection=_COLLECTION)
 
     did_work = await drainer.execute()
 
@@ -101,10 +100,10 @@ async def test_drain_delivers_when_no_prior_send(tmp_path):
     assert kwargs["recipient"] != _PENNY_NUMBER
     assert kwargs["content"] == "hey there!"
     assert kwargs["author"] == _COLLECTION
-    # Emission provenance (#1568): the queued row's mechanism + novelty key are
-    # carried onto send_response so the delivered messagelog row names its cause.
+    # Emission provenance (#1568): the queued row's collection is carried onto
+    # send_response as the mechanism, so the delivered messagelog row names its
+    # cause (NULL = direct reply).
     assert kwargs["mechanism"] == _COLLECTION
-    assert kwargs["novelty_key"] == _NOVELTY
     # Row is stamped delivered — never re-sent.
     assert db.send_queue.next_pending() is None
 
@@ -116,7 +115,7 @@ async def test_drain_holds_when_cooldown_not_elapsed(tmp_path):
     _penny_sent(db, "prior")  # count = 1, no user reply since
     channel = _make_channel()
     drainer = _make_drainer(db, channel, cooldown_seconds=3600.0)
-    db.send_queue.enqueue(content="hey again!", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="hey again!", collection=_COLLECTION)
 
     did_work = await drainer.execute()
 
@@ -135,7 +134,7 @@ async def test_drain_delivers_when_user_replied_since_last_send(tmp_path):
     _user_said(db, "actually, follow-up")
     channel = _make_channel()
     drainer = _make_drainer(db, channel, cooldown_seconds=3600.0)
-    db.send_queue.enqueue(content="responding", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="responding", collection=_COLLECTION)
 
     did_work = await drainer.execute()
 
@@ -162,8 +161,8 @@ async def test_drain_delivers_one_per_tick_in_fifo_order(tmp_path):
     db = _make_db(tmp_path)
     channel = _make_channel()
     drainer = _make_drainer(db, channel)
-    db.send_queue.enqueue(content="first", collection=_COLLECTION, novelty_key=_NOVELTY)
-    db.send_queue.enqueue(content="second", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="first", collection=_COLLECTION)
+    db.send_queue.enqueue(content="second", collection=_COLLECTION)
 
     did_work = await drainer.execute()
 
@@ -188,7 +187,7 @@ async def test_drain_routes_to_ios_default_device_identifier(tmp_path):
     db.devices.register(ChannelType.IOS, _IOS_IDENTIFIER, "iPhone", is_default=True)
     channel = _make_channel()
     drainer = _make_drainer(db, channel)
-    db.send_queue.enqueue(content="ping", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="ping", collection=_COLLECTION)
 
     did_work = await drainer.execute()
 
@@ -202,7 +201,7 @@ async def test_drain_no_channel_is_noop(tmp_path):
     """No channel wired → drainer reports no work rather than crashing."""
     db = _make_db(tmp_path)
     drainer = SendQueueDrainer(db=db, config=_make_config())
-    db.send_queue.enqueue(content="queued", collection=_COLLECTION, novelty_key=_NOVELTY)
+    db.send_queue.enqueue(content="queued", collection=_COLLECTION)
 
     assert await drainer.execute() is False
     # Message remains pending for when a channel is available.

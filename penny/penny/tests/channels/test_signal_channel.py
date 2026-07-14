@@ -705,9 +705,8 @@ def test_reaction_without_callback_returns_normal_message():
 @pytest.mark.asyncio
 async def test_send_response_stamps_emission_provenance(signal_server, test_config):
     """Emission provenance end-to-end (#1568): an autonomous send (the drainer's
-    delivery path) stamps ``mechanism`` + ``novelty_key`` onto the delivered
-    ``messagelog`` row; a direct reply passes neither, so it stamps NULL and is
-    never novelty-gated."""
+    delivery path) stamps ``mechanism`` onto the delivered ``messagelog`` row; a
+    direct reply passes none, so it stamps NULL."""
     from typing import Any, cast
 
     from penny.agents import ChatAgent
@@ -748,19 +747,16 @@ async def test_send_response_stamps_emission_provenance(signal_server, test_conf
         parent_id=None,
         author="price-watch",
         mechanism="price-watch",
-        novelty_key="price-watch:abc123",
     )
-    # Direct reply (a chat turn's answer) — no mechanism, never gated.
+    # Direct reply (a chat turn's answer) — no mechanism.
     await channel.send_response(TEST_SENDER, "sure, happy to help!", parent_id=None, author="penny")
 
     autonomous = db.messages.find_outgoing_by_content("the price dropped to $399!")
     direct = db.messages.find_outgoing_by_content("sure, happy to help!")
     assert autonomous is not None
     assert autonomous.mechanism == "price-watch"
-    assert autonomous.novelty_key == "price-watch:abc123"
     assert direct is not None
     assert direct.mechanism is None
-    assert direct.novelty_key is None
     await channel.close()
 
 

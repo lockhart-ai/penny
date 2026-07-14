@@ -211,8 +211,8 @@ def test_send_message_args_rejects_half_formed_bodies():
 def test_send_queue_store_round_trip(tmp_path):
     """Enqueue → next_pending (FIFO) → mark_sent removes it from the pending tail."""
     db = _make_db(tmp_path)
-    first = db.send_queue.enqueue(content="one", collection="likes", novelty_key="likes:1")
-    db.send_queue.enqueue(content="two", collection="notified-thoughts", novelty_key="nt:2")
+    first = db.send_queue.enqueue(content="one", collection="likes")
+    db.send_queue.enqueue(content="two", collection="notified-thoughts")
 
     # FIFO: oldest pending first.
     pending = db.send_queue.next_pending()
@@ -227,92 +227,3 @@ def test_send_queue_store_round_trip(tmp_path):
     nxt = db.send_queue.next_pending()
     assert nxt is not None and nxt.content == "two"
     assert [item.content for item in db.send_queue.pending_items()] == ["two"]
-
-
-# ── Novelty-keyed suppression (#1568) ────────────────────────────────────────
-
-
-def _write_entry(db: Database, collection: str, key: str, content: str, run_id: str) -> None:
-    """Write one entry to ``collection`` stamped with ``run_id`` — the structural
-    basis the novelty key is derived from (the entries this run wrote)."""
-    from penny.database.memory import EntryInput, Inclusion, RecallMode
-
-    if db.memories.get(collection) is None:
-        db.memories.create_collection(
-            collection, f"{collection} watch", Inclusion.NEVER, RecallMode.RECENT
-        )
-    db.memory(collection).write([EntryInput(key=key, content=content)], author="c", run_id=run_id)
-
-
-@pytest.mark.asyncio
-async def test_send_message_suppresses_repeat_unchanged_novelty(tmp_path):
-    """Two emissions whose runs wrote no NEW/changed entry (a dedup-rejected
-    re-observation the STOP gate didn't catch) share the collection's ``no-change``
-    novelty key: the first enqueues, the second is recorded as suppressed with a
-    reason and NOT enqueued (#1568) — mutated=False, success=True."""
-    db = _make_db(tmp_path)
-    db.users.save_info(
-        sender=_RECIPIENT,
-        name="user",
-        location="Toronto",
-        timezone="America/Toronto",
-        date_of_birth="1990-01-01",
-    )
-    # No run wrote anything, so both cycles key to "<collection>:no-change".
-    tool1 = SendMessageTool(agent_name="watch", db=db, run_id="run-a")
-    first = await tool1.execute(content="nothing has changed since last time")
-    assert first.message == "Message sent." and first.mutated is True
-
-    tool2 = SendMessageTool(agent_name="watch", db=db, run_id="run-b")
-    second = await tool2.execute(content="still nothing has changed since last time")
-
-    # The repeat is a correct no-op decline, not a failure — the whole model-facing
-    # receipt pinned char-for-char (names the mechanism, the unchanged key, the
-    # durable record, and the terminal move).
-    assert second.mutated is False
-    assert second.success is True
-    assert second.message == (
-        "Message NOT sent: this repeats what you already told the user about "
-        "`watch` — nothing has changed since (novelty key unchanged: "
-        "watch:no-change).  The emission is recorded as suppressed.  "
-        'Call ``done(success=true, summary="no change — nothing new to '
-        'send")`` to exit — do not retry.  This is normal cycle behaviour, not a failure.'
-    )
-    # Exactly one message is queued for delivery; the second is a durable
-    # suppressed record with its reason.
-    assert len(db.send_queue.pending_items()) == 1
-    suppressed = db.send_queue.suppressed_items("watch")
-    assert len(suppressed) == 1
-    assert suppressed[0].novelty_key == "watch:no-change"
-    assert "novelty unchanged" in (suppressed[0].suppressed_reason or "")
-    assert suppressed[0].sent_at is None
-
-
-@pytest.mark.asyncio
-async def test_send_message_delivers_on_changed_novelty(tmp_path):
-    """When the second cycle wrote a genuinely different value, its novelty key
-    differs from the first, so it is delivered — not suppressed (#1568)."""
-    db = _make_db(tmp_path)
-    db.users.save_info(
-        sender=_RECIPIENT,
-        name="user",
-        location="Toronto",
-        timezone="America/Toronto",
-        date_of_birth="1990-01-01",
-    )
-    _write_entry(db, "watch", "product-x", "price: $50", run_id="run-a")
-    first = await SendMessageTool(agent_name="watch", db=db, run_id="run-a").execute(
-        content="the price is $50"
-    )
-    assert first.mutated is True
-
-    _write_entry(db, "watch", "product-y", "price: $99", run_id="run-b")
-    second = await SendMessageTool(agent_name="watch", db=db, run_id="run-b").execute(
-        content="a different find at $99"
-    )
-
-    # A changed value → a new novelty key → delivered again, not suppressed.
-    assert second.mutated is True
-    assert second.message == "Message sent."
-    assert len(db.send_queue.pending_items()) == 2
-    assert db.send_queue.suppressed_items("watch") == []

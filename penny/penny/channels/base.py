@@ -344,7 +344,6 @@ class MessageChannel(ABC):
         thought_id: int | None = None,
         media_ids: list[int] | None = None,
         mechanism: str | None = None,
-        novelty_key: str | None = None,
     ) -> int | None:
         """
         Log and deliver a conversational reply with embedding + side-channel media.
@@ -366,10 +365,8 @@ class MessageChannel(ABC):
             mechanism: The bound collection whose autonomous cycle produced this
                 send (#1568) — stamped on the delivered ``messagelog`` row so it
                 names its cause.  ``None`` for a direct reply (a chat turn with a
-                live triggering user message), which is never novelty-gated.  Only
-                the ``SendQueueDrainer`` passes it, from the queued row.
-            novelty_key: The emission's novelty identity, stamped alongside
-                ``mechanism`` for an autonomous send.  ``None`` for a direct reply.
+                live triggering user message).  Only the ``SendQueueDrainer``
+                passes it, from the queued row.
 
         Returns:
             Database message ID if send was successful, None otherwise
@@ -389,7 +386,6 @@ class MessageChannel(ABC):
             embedding=embedding,
             source_name=author,
             mechanism=mechanism,
-            novelty_key=novelty_key,
         )
         logger.info("Sent response to %s (%d chars)", recipient, len(content))
         return message_id if external_id is not None else None
@@ -406,16 +402,15 @@ class MessageChannel(ABC):
         embedding: list[float] | None = None,
         source_name: str | None = None,
         mechanism: str | None = None,
-        novelty_key: str | None = None,
     ) -> tuple[int | None, int | None]:
         """Log an ``OUTGOING`` message to messagelog, deliver it, stamp external_id.
 
         The single funnel both ``send_message`` and ``send_response`` pass
         through, so logging happens exactly once immediately before the raw
         platform send and no outgoing message can bypass the record. We log the
-        prepared content so quote matching works correctly. ``mechanism`` /
-        ``novelty_key`` (#1568) are stamped for an autonomous send and NULL for a
-        direct reply. Returns ``(message_id, external_id)``.
+        prepared content so quote matching works correctly. ``mechanism`` (#1568)
+        is stamped for an autonomous send and NULL for a direct reply. Returns
+        ``(message_id, external_id)``.
         """
         if (not prepared or not prepared.strip()) and not attachments:
             logger.error("Attempted to send empty message to %s", recipient)
@@ -432,7 +427,6 @@ class MessageChannel(ABC):
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             mechanism=mechanism,
-            novelty_key=novelty_key,
         )
         external_id = await self._send_raw(
             recipient,

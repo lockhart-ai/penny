@@ -64,9 +64,8 @@ class MessageLog(SQLModel, table=True):
     )  # FK to device that sent/received this message
     embedding: bytes | None = None  # Serialized float32 embedding vector
     # Emission provenance (#1568): the mechanism (bound collection) whose
-    # autonomous cycle produced this send, and the novelty key that emission was
-    # gated on.  Both NULL for a direct reply — a chat turn with a live triggering
-    # user message is never novelty-gated and names no mechanism.  Stamped by the
+    # autonomous cycle produced this send.  NULL for a direct reply — a chat turn
+    # with a live triggering user message names no mechanism.  Stamped by the
     # drainer at delivery time from the queued row (the collection is known at
     # enqueue), so "which mechanism sent this?" is a read, not a diagnosis.
     # A by-name reference to ``memory.name`` (the FK-by-name discipline the memory
@@ -77,7 +76,6 @@ class MessageLog(SQLModel, table=True):
     # (no query filters on mechanism equality; the hot read is the newest-emissions
     # scan).
     mechanism: str | None = Field(default=None)
-    novelty_key: str | None = Field(default=None)
 
     __table_args__ = (
         Index("ix_messagelog_device_timestamp_id", "device_id", "timestamp", "id"),
@@ -464,19 +462,9 @@ class SendQueueItem(SQLModel, table=True):
     ``send_message`` enqueues here instead of dropping a message when the
     autonomous-send cooldown hasn't elapsed; a background drain schedule
     delivers the oldest pending row once the cooldown clears, then stamps
-    ``sent_at``.  ``sent_at IS NULL`` (and ``suppressed_reason IS NULL``) is the
-    single source of truth for "still pending".  ``collection`` is the collector
-    that queued it (the bound target name), so delivery is attributable.
-
-    **Novelty-keyed suppression (#1568)**: ``novelty_key`` is the emission's
-    novelty identity, computed in Python from the cycle's write-gate outcomes at
-    enqueue time.  Before enqueueing, ``send_message`` reads the most recent
-    non-suppressed row for the same ``collection``; an identical ``novelty_key``
-    means the mechanism is about to re-send unchanged news, so the row is recorded
-    with a ``suppressed_reason`` instead of being delivered.  A suppressed row
-    stays ``sent_at IS NULL`` but is excluded from the pending drain by its
-    non-NULL ``suppressed_reason`` — a durable, datetime-ordered record of "we
-    chose not to re-send this, and why".
+    ``sent_at``.  ``sent_at IS NULL`` is the single source of truth for
+    "still pending".  ``collection`` is the collector that queued it (the
+    bound target name), so delivery is attributable.
     """
 
     __tablename__ = "send_queue"
@@ -486,8 +474,6 @@ class SendQueueItem(SQLModel, table=True):
     content: str
     collection: str
     sent_at: datetime | None = None
-    novelty_key: str | None = None
-    suppressed_reason: str | None = None
 
 
 class IosOutboxItem(SQLModel, table=True):

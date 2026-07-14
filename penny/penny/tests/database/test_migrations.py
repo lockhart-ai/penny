@@ -817,18 +817,15 @@ class TestMigrate:
         assert prompts["quality"].rstrip().endswith("never apply a change yourself.")
         assert prompts["notifier"].rstrip().endswith("— deliver it.")
 
-    def test_0088_adds_emission_provenance_and_novelty_columns(self, tmp_path):
-        """Migration 0088 adds ``mechanism`` + ``novelty_key`` to ``messagelog`` and
-        ``novelty_key`` + ``suppressed_reason`` to ``send_queue`` (#1568) — schema
-        only, idempotent, on a DB that predates them."""
+    def test_0088_adds_emission_provenance_column(self, tmp_path):
+        """Migration 0088 adds ``mechanism`` to ``messagelog`` (#1568) — schema
+        only, idempotent, on a DB that predates it — plus the partial emission
+        index the self-state hot-path scan needs."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute(
             "CREATE TABLE messagelog (id INTEGER PRIMARY KEY, direction TEXT, "
             "content TEXT, timestamp TIMESTAMP)"
-        )
-        conn.execute(
-            "CREATE TABLE send_queue (id INTEGER PRIMARY KEY, content TEXT, collection TEXT)"
         )
         conn.commit()
         conn.close()
@@ -838,7 +835,7 @@ class TestMigrate:
             / "penny"
             / "database"
             / "migrations"
-            / "0088_emission_provenance_novelty.py"
+            / "0088_emission_provenance.py"
         )
         spec = importlib.util.spec_from_file_location("m0088", migration_path)
         assert spec is not None
@@ -853,7 +850,6 @@ class TestMigrate:
         message_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(messagelog)").fetchall()
         }
-        queue_columns = {row[1] for row in conn.execute("PRAGMA table_info(send_queue)").fetchall()}
         # The recent-emissions scan (self-state hot path) is served by the partial
         # index — mechanism-bearing rows are sparse in messagelog, so the filter+sort
         # must not walk the whole timestamp order.  EXPLAIN QUERY PLAN proves the
@@ -869,9 +865,6 @@ class TestMigrate:
         conn.close()
 
         assert "mechanism" in message_columns
-        assert "novelty_key" in message_columns
-        assert "novelty_key" in queue_columns
-        assert "suppressed_reason" in queue_columns
         assert "ix_messagelog_emission_time" in plan, plan
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):

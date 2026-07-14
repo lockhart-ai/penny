@@ -97,27 +97,6 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 }
 
 
-class EmissionOutcome(StrEnum):
-    """The closed outcome of one autonomous (mechanism) send at the enqueue
-    chokepoint — the novelty gate's decision (#1568).
-
-    Computed in Python at ``send_message`` execute time by comparing the cycle's
-    novelty key against the mechanism's most recent emission; never a model
-    judgment.  An explicit closed union so the send tool branches on a typed
-    outcome (its honest receipt is keyed off it) rather than ad-hoc strings, and
-    a future gate state slots in as a new member, not a new branch:
-
-    ``ENQUEUED`` — novelty changed since the last emission (or there was none): the
-    message is queued for delivery ·
-    ``SUPPRESSED`` — the novelty key is unchanged since the last emission for this
-    mechanism: the message repeats already-delivered news, so it is recorded (with
-    its reason) but never delivered.
-    """
-
-    ENQUEUED = "enqueued"
-    SUPPRESSED = "suppressed"
-
-
 class MutationAction(StrEnum):
     """The kind of registry-entity lifecycle change a mutation event records
     (#1560).  Each create / update / archive / unarchive of a collection writes

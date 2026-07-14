@@ -71,11 +71,10 @@ class SendQueueDrainer:
             author=item.collection,
             quote_message=None,
             # Emission provenance (#1568): the queued row already names the
-            # mechanism (the collector that queued it) and the novelty key it was
-            # gated on — carry both onto the delivered messagelog row so the send
-            # names its cause and its novelty is a read, not a diagnosis.
+            # mechanism (the collector that queued it) — carry it onto the
+            # delivered messagelog row so the send names its cause and "which
+            # mechanism sent this?" is a read, not a diagnosis.
             mechanism=item.collection,
-            novelty_key=item.novelty_key,
         )
         if item.id is not None:
             self._db.send_queue.mark_sent(item.id)

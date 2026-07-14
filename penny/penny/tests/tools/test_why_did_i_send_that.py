@@ -64,7 +64,6 @@ def _add_send(db: Database, *, content: str, mechanism: str | None) -> int:
             sender="penny",
             content=content,
             mechanism=mechanism,
-            novelty_key=f"{mechanism}:abc" if mechanism else None,
         )
         session.add(row)
         session.commit()

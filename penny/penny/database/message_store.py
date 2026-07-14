@@ -176,7 +176,6 @@ class MessageStore:
         device_id: int | None = None,
         embedding: bytes | None = None,
         mechanism: str | None = None,
-        novelty_key: str | None = None,
     ) -> int | None:
         """Log a user message or agent response. Returns the message ID or None.
 
@@ -185,9 +184,8 @@ class MessageStore:
         facades' ``read_similar``/relevant-recall path — the startup backfill only
         catches rows logged without one.
 
-        ``mechanism`` / ``novelty_key`` (#1568) name the autonomous cycle that
-        produced an outgoing send and the novelty it was gated on — NULL for a
-        direct reply, which is never novelty-gated."""
+        ``mechanism`` (#1568) names the autonomous cycle that produced an outgoing
+        send — NULL for a direct reply."""
         if direction == PennyConstants.MessageDirection.OUTGOING:
             content = self.strip_formatting(content)
         try:
@@ -205,7 +203,6 @@ class MessageStore:
                     device_id=device_id,
                     embedding=embedding,
                     mechanism=mechanism,
-                    novelty_key=novelty_key,
                 )
                 session.add(log)
                 session.commit()

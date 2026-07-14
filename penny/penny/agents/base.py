@@ -1477,14 +1477,11 @@ class BackgroundAgent(Agent):
         # drain schedule needs one to deliver.  The tool itself only enqueues, so
         # it takes no channel — it's attributed to the bound collection
         # (``_memory_scope()``) so the queue records which collector queued it.
-        # ``run_id`` threads the building run so the novelty gate can read the
-        # entries this cycle wrote/changed (#1568) — a parameter, not ambient state.
         if self._channel is not None:
             tools.append(
                 SendMessageTool(
                     agent_name=self._memory_scope() or self.name,
                     db=self.db,
-                    run_id=run_id,
                 )
             )
         return tools

@@ -142,7 +142,6 @@ def _add_emission(session: Session, *, mechanism: str, content: str, sent_at: da
             sender="penny",
             content=content,
             mechanism=mechanism,
-            novelty_key=f"{mechanism}:abc123",
             timestamp=sent_at,
         )
     )
