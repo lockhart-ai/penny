@@ -79,16 +79,19 @@ def _prompt(
     )
 
 
-_DONE_OK = _call("done", {"success": True, "summary": "done"})
+# The argless ``done()`` sentinel (#1569): no ``success``/``summary`` — the run
+# record is generated from the ledger, so the header shows the structural outcome.
+_DONE_OK = _call("done", {})
 
 
 def test_bailed_run_is_flagged():
     """A no_work/failed run whose only call is done() did no work — bailed.
 
-    Full verbatim render: the ``[target] summary`` line, the NO-WORK-DONE flag
-    line, then the single tool call.  No ``#``/timestamp — each
-    consumer supplies its own (see ``render_run_record``)."""
-    run = [_prompt([_DONE_OK], outcome="no_work", reason="nothing new")]
+    Full verbatim render (#1569): the ``[target] <outcome>`` line (the structural
+    outcome enum, since a clean ``done()`` close stamps no reason), the
+    NO-WORK-DONE flag line, then the single argless ``done()`` call.  No
+    ``#``/timestamp — each consumer supplies its own (see ``render_run_record``)."""
+    run = [_prompt([_DONE_OK], outcome="no_work")]
     health = classify_run(run)
     assert health.bailed is True
     assert health.flags == ["no_work_done"]
@@ -96,10 +99,10 @@ def test_bailed_run_is_flagged():
     assert (
         render_run_record(run)
         == """\
-[games] nothing new
+[games] no_work
 ⚠ NO WORK DONE — reached done() (or made no tool call) without any \
 read/write/browse step first; the collector is not following its instructions
-done(success=True, summary='done')"""
+done()"""
     )
 
 
@@ -146,14 +149,14 @@ def test_tool_failure_count_is_flagged():
     """A run that hit tool failures and kept going is flagged with the count."""
     run = [
         _prompt([_call("collection_write", {"memory": "games", "entries": [{"content": "x"}]})]),
-        _prompt([_DONE_OK], outcome="worked", reason="wrote one", tool_failures=2),
+        _prompt([_DONE_OK], outcome="worked", tool_failures=2),
     ]
     health = classify_run(run)
     assert health.tool_failures == 2
     assert (
         render_run_record(run)
         == """\
-[games] wrote one
+[games] worked
 writes: 1
 ⚠ TOOL FAILURES (2) — a tool call returned an error and the run kept going
 collection_write(memory='games', entries='x')"""
@@ -174,7 +177,6 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
                 _DONE_OK,
             ],
             outcome="worked",
-            reason="delivered a notification",
         )
     ]
     health = classify_run(run)
@@ -182,7 +184,7 @@ def test_half_formed_send_is_flagged_on_a_worked_run():
     assert (
         render_run_record(run)
         == """\
-[games] delivered a notification
+[games] worked
 writes: 0 · sends: 2
 ⚠ HALF-FORMED SEND — a message went out with no real content (empty, \
 punctuation-only, or an unfinished fragment)
@@ -194,7 +196,7 @@ send_message('Heads up — a new title dropped, details inside.')"""
 def test_healthy_worked_run_has_no_flags():
     run = [
         _prompt([_call("collection_write", {"memory": "games", "entries": [{"content": "x"}]})]),
-        _prompt([_DONE_OK], outcome="worked", reason="wrote one", tool_failures=0),
+        _prompt([_DONE_OK], outcome="worked", tool_failures=0),
     ]
     health = classify_run(run)
     assert health.flags == []
@@ -202,7 +204,7 @@ def test_healthy_worked_run_has_no_flags():
     assert (
         render_run_record(run)
         == """\
-[games] wrote one
+[games] worked
 writes: 1
 collection_write(memory='games', entries='x')"""
     )
@@ -215,25 +217,25 @@ def test_healthy_quiet_read_is_not_a_bail():
         _prompt(
             [_call("log_read", {"memory": "user-messages"}), _DONE_OK],
             outcome="no_work",
-            reason="nothing new",
         )
     ]
     health = classify_run(run)
     assert health.flags == []
-    assert render_run_record(run) == "[games] nothing new"
+    assert render_run_record(run) == "[games] no_work"
 
 
 def test_no_writes_flagged_when_browses_fail_and_nothing_written():
-    """The ai-news shape: the run browsed, browses failed, and it wrote nothing —
-    yet its done() summary claims otherwise.  ``no_writes`` is the two bare facts (a
-    browse failed AND zero writes); the counts line under the summary makes the
-    contradiction with the prose plain.  What it means is the model's to reason
-    about — the flag asserts nothing about cause or remedy."""
+    """The ai-news shape: the run browsed, browses failed, and it wrote nothing.
+    Before #1569 the model's ``done(summary=...)`` could CLAIM "wrote 3 new entries"
+    and that lie rendered as the header; now the record is GENERATED from the ledger
+    — the header is the structural ``no_work`` outcome, and the counts line +
+    ``no_writes`` flag are the two bare facts (a browse failed AND zero writes).
+    What it means is the model's to reason about — the flag asserts nothing about
+    cause or remedy."""
     run = [
         _prompt(
             [_call("browse", {"queries": ["a", "b"]}), _DONE_OK],
             outcome="no_work",
-            reason="wrote 3 new entries",
             messages=_browse_messages(pages=1, errors=2),
         )
     ]
@@ -243,7 +245,7 @@ def test_no_writes_flagged_when_browses_fail_and_nothing_written():
     assert (
         render_run_record(run)
         == """\
-[games] wrote 3 new entries
+[games] no_work
 browses: 1 ok, 2 failed · writes: 0
 ⚠ NO WRITES — one or more browses failed this cycle and the run wrote nothing
 browse(['a', 'b'])"""
@@ -258,7 +260,6 @@ def test_clean_browse_quiet_cycle_is_not_no_writes():
         _prompt(
             [_call("browse", {"queries": ["a"]}), _DONE_OK],
             outcome="no_work",
-            reason="no new matches this cycle",
             messages=_browse_messages(pages=1),
         )
     ]
@@ -268,7 +269,7 @@ def test_clean_browse_quiet_cycle_is_not_no_writes():
     assert (
         render_run_record(run)
         == """\
-[games] no new matches this cycle
+[games] no_work
 browses: 1 ok, 0 failed · writes: 0"""
     )
 
@@ -285,7 +286,6 @@ def test_browse_failures_but_wrote_is_not_no_writes():
                 _DONE_OK,
             ],
             outcome="worked",
-            reason="wrote one despite a dead source",
             messages=_browse_messages(pages=1, errors=1),
         )
     ]
@@ -295,7 +295,7 @@ def test_browse_failures_but_wrote_is_not_no_writes():
     assert (
         render_run_record(run)
         == """\
-[games] wrote one despite a dead source
+[games] worked
 browses: 1 ok, 1 failed · writes: 1
 browse(['a', 'b'])
 collection_write(memory='games', entries='x')"""
@@ -414,7 +414,7 @@ def _chat_kitchen_sink_run() -> list[PromptLog]:
                 {"memory": "shows", "entries": [{"key": "fox-tales", "content": "Fox Tales S2"}]},
                 call_id="w1",
             ),
-            _call("done", {"success": True, "summary": "premature"}, call_id="d1"),
+            _call("done", {}, call_id="d1"),
         ],
         run_id="run-fixed",
         target=None,
@@ -494,7 +494,8 @@ penny: Done — logged the new season and drew your fox!
 def test_render_run_calls_collector_run_full_literal():
     """A collector run through the same lens, whole-output: origin is the bound
     target (no user message), steps are the canonical projection, and the
-    conclusion is the ``done()`` summary — no egress line (nothing attached)."""
+    conclusion is the run's STRUCTURAL outcome — ``done: <outcome>`` (#1569), never
+    a model-authored summary — no egress line (nothing attached)."""
     run = [
         _prompt(
             [_call("browse", {"queries": ["budget handhelds"]})],
@@ -514,7 +515,6 @@ def test_render_run_calls_collector_run_full_literal():
             ],
             run_id="coll-fixed",
             outcome="worked",
-            reason="wrote one new find",
             messages=json.dumps(
                 [
                     _tool_result("browse", "## browse: https://example.com/budget\nBudget picks."),
@@ -530,7 +530,7 @@ run coll-fixed
 [games]
     step 1: browse(['budget handhelds']) => ## browse: https://example.com/budget
     step 2: collection_write(memory='games', entries='Pocket Go pick') => Wrote 1 entry: pocket-go.
-done: wrote one new find"""
+done: worked"""
     )
 
 

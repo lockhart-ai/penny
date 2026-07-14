@@ -100,8 +100,8 @@ class Prompt:
         "Answer the user from what you already know, or tell them the browser is offline."
     )
     BROWSE_OUTAGE_RECOVERY_COLLECTOR = (
-        "Work from what you already have, or close the cycle with "
-        'done(success=false, summary="browsing unavailable this cycle — browser disconnected").'
+        "Work from what you already have, or close the cycle with done() — "
+        "the browser is disconnected, so nothing can be browsed this cycle."
     )
 
     # Email prompts — the search → read → answer surface now lives on the chat
@@ -153,10 +153,9 @@ class Prompt:
     # tool call in canonical notation (never a JSON payload snippet, which would
     # model the very shape being corrected).
     COLLECTOR_DONE_JSON_NUDGE = (
-        "You wrote done's arguments as plain text instead of calling the `done` tool — "
+        "You wrote a `done` call as plain text instead of calling the `done` tool — "
         "text output is not a tool call, so nothing was recorded. Make the real tool "
-        'call now: `done(success=<true|false>, summary="<one sentence on what this '
-        'cycle actually did>")`.'
+        "call now: `done()` (it takes no arguments)."
     )
 
     # The chat-surface sibling of COLLECTOR_DONE_JSON_NUDGE, injected when a chat
@@ -191,9 +190,8 @@ class Prompt:
         "prior tool call is a no-op bail, not a real quiet cycle.  Make at least "
         "one real tool call first (read the log / collection the prompt names, e.g. "
         "`log_read(<log>)` or `collection_read_latest(<collection>)`), THEN decide: "
-        "write what you found, or call "
-        '`done(success=true, summary="no new matches this cycle")` only after a read '
-        "confirms there is genuinely nothing new."
+        "write what you found, or call `done()` only after a read confirms there is "
+        "genuinely nothing new."
     )
 
     # Returned (framed as this call's tool result, via Tool.format_result) when a
@@ -302,6 +300,6 @@ class Prompt:
     # one — the chat ledger has no ``done`` tool, a chat turn ends in text; and
     # migration 0087 stripped the legacy seeds' trailing done steps): assembly
     # injects it as the final numbered step, after the notify steps when the
-    # collection notifies.  The honest-summary shapes live in the runtime-rules
-    # tail; this is the one-line step that invokes them.
-    COLLECTOR_DONE_STEP = "done(success=<true|false>, summary=<recap of what you did>)"
+    # collection notifies.  ``done()`` is argless (#1569) — the run record is
+    # generated from the ledger, so there is nothing to summarise here.
+    COLLECTOR_DONE_STEP = "done()"

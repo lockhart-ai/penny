@@ -1479,13 +1479,13 @@ class TestLogTools:
                                     '"entries": [{"content": "Niche grinder"}]}',
                                 }
                             },
-                            # A worked run closes with done() — without it the run
-                            # would (correctly) read as a write-gate STOP (#1587).
+                            # A worked run closes with the argless done() (#1569) —
+                            # without it the run would (correctly) read as a
+                            # write-gate STOP (#1587).
                             {
                                 "function": {
                                     "name": "done",
-                                    "arguments": '{"success": true, '
-                                    '"summary": "wrote a new grinder"}',
+                                    "arguments": "{}",
                                 }
                             },
                         ]
@@ -1542,7 +1542,9 @@ class TestLogTools:
         collector = await tool.run(target="espresso-gear")
         assert "[espresso-gear]" in collector.message
         assert "collection_write(memory='espresso-gear'" in collector.message
-        assert "done: wrote a new grinder" in collector.message
+        # Argless done() → the conclusion is the run's STRUCTURAL outcome (#1569),
+        # never a model summary.
+        assert "done: worked" in collector.message
 
         chat = await tool.run(target="chat")
         assert "user: find me a grinder" in chat.message
@@ -2117,21 +2119,23 @@ class TestExistsAndDone:
         assert result.message == "yes"
 
     @pytest.mark.asyncio
-    async def test_done_returns_structured_summary(self):
-        result = await DoneTool().execute(success=True, summary="wrote 3 entries")
-        assert "wrote 3 entries" in result.message
-        assert "success" in result.message
+    async def test_done_is_argless_sentinel(self):
+        """done() is argless (#1569): it just marks the cycle finished and returns a
+        fixed marker.  The run record is generated from the ledger, so there is no
+        model-authored success/summary to report."""
+        result = await DoneTool().execute()
+        assert result.message == "Cycle complete."
+        assert result.success is True
+        assert DoneTool.args_model.__name__ == "NoArgs"
+        assert DoneTool.parameters == {"type": "object", "properties": {}}
 
     @pytest.mark.asyncio
-    async def test_done_no_op_marker(self):
-        result = await DoneTool().execute(success=False, summary="no new matches")
-        assert "no new matches" in result.message
-        assert "no-op" in result.message
-
-    @pytest.mark.asyncio
-    async def test_done_requires_success_and_summary(self):
-        with pytest.raises(Exception):  # noqa: B017,PT011 — Pydantic ValidationError
-            await DoneTool().execute()
+    async def test_done_rejects_arguments(self):
+        """Argless via NoArgs (extra='forbid'): any argument passed through the
+        validation gate (``Tool.run``) is rejected as an actionable error, not
+        silently dropped."""
+        result = await DoneTool().run(success=True, summary="x")
+        assert result.success is False
 
 
 class TestAuthorAttribution:
@@ -2576,9 +2580,7 @@ class TestRegistryProvenanceAndLifecycle:
             "seasonal watch subject matter",
             Inclusion.RELEVANT,
             RecallMode.RECENT,
-            extraction_prompt=(
-                "1. gather holiday deals.\n2. done(success=true, summary=<what happened>)."
-            ),
+            extraction_prompt=("1. gather holiday deals.\n2. done()."),
             collector_interval_seconds=3600,
             expires_at=expiry,
         )

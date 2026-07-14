@@ -32,6 +32,7 @@ from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
 from penny.prompts import Prompt
+from penny.responses import PennyResponse
 from penny.tools.memory_tools import LogReadTool, build_memory_tools
 
 
@@ -473,28 +474,17 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         '1. log_read("user-messages")\n'
         "2. browse for new games\n"
         '3. collection_write("board-games", entries=[...])\n'
-        "4. done(success=<true|false>, summary=<recap of what you did>)\n"
+        "4. done()\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- End every cycle with `done(success=<true|false>, summary=<recap of what you "
-        "did>)`.  Each tool result this cycle opened with a first-person line naming what "
-        'that call actually did — "You read the new messages", "You searched for X", "You '
-        'saved Y to `<collection>`", "You didn\'t add anything new — it was already there", '
-        '"You couldn\'t read any source".  The `summary` TRANSCRIBES those lines: weave '
-        "EVERY one together into one honest sentence, in order, mirroring each call's "
-        "OUTCOME — never compose it fresh from what you set out to do, and never claim a "
-        "write the tool didn't confirm.  Three shapes:\n"
-        "  - Wrote something → name the reads AND the write, e.g. `done(success=true, "
-        'summary="read the new messages, browsed two pages, and saved one entry to '
-        '<collection>")`.\n'
-        "  - Nothing new matched → this is a QUIET cycle: do NOT force a "
-        '`collection_write` just to have one; close `done(success=true, summary="checked '
-        'the sources; no new matches this cycle")`.  Quiet cycles are normal and expected.\n'
-        "  - Couldn't read your sources (every browse failed) → `done(success=false, "
-        'summary="tried the sources but every browse failed, so nothing was written")`.\n'
-        "  `success` is true only if the cycle did what the prompt asked, false on failure.\n"
+        "- End every cycle with `done()` — it takes NO arguments.  It just marks the cycle "
+        "finished; the run record is generated automatically from the tool calls you actually "
+        "made, so there is nothing to summarise or report.\n"
+        "- If nothing new matched, this is a QUIET cycle: do NOT force a `collection_write` "
+        "just to have one — read your sources, then call `done()`.  Quiet cycles are normal "
+        "and expected.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
@@ -553,7 +543,7 @@ def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true(
         "(the key detail in plain words), the source URL if there is one, and — only if "
         "one of those past messages is genuinely related — a one-line callback to it.\n"
         "6. send_message(content=<the message>)\n"
-        "7. done(success=<true|false>, summary=<recap of what you did>)\n"
+        "7. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
@@ -596,7 +586,7 @@ def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
         "(the key detail in plain words), the source URL if there is one, and — only if "
         "one of those past messages is genuinely related — a one-line callback to it.\n"
         "4. send_message(content=<the message>)\n"
-        "5. done(success=<true|false>, summary=<recap of what you did>)\n"
+        "5. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
@@ -621,9 +611,7 @@ def test_collector_notify_steps_constants_pinned():
         "one of those past messages is genuinely related — a one-line callback to it.",
         "send_message(content=<the message>)",
     )
-    assert (
-        Prompt.COLLECTOR_DONE_STEP == "done(success=<true|false>, summary=<recap of what you did>)"
-    )
+    assert Prompt.COLLECTOR_DONE_STEP == "done()"
 
 
 _NOTIFY_SEED_KEY = "Hollow Verge"
@@ -714,9 +702,7 @@ async def test_notify_cycle_composes_and_sends_on_a_productive_write(
             return mock_llm._make_tool_call_response(
                 request, "send_message", {"content": "Found a new one: Cinder Drift! 🎮"}
             )
-        return mock_llm._make_tool_call_response(
-            request, "done", {"success": True, "summary": "delivered Cinder Drift"}
-        )
+        return mock_llm._make_tool_call_response(request, "done", {})
 
     mock_llm.set_response_handler(handler)
 
@@ -728,18 +714,22 @@ async def test_notify_cycle_composes_and_sends_on_a_productive_write(
 
 
 @pytest.mark.asyncio
-async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_path):
+async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_path):
     """Each cycle's system prompt carries this collector's own recent run
-    summaries — newest first, each stamped with when it ran — so the model knows
+    outcomes — newest first, each stamped with when it ran — so the model knows
     what its prior invocations did and when (without timestamps it mistakes the
-    timing of past events)."""
+    timing of past events).  The line is STRUCTURAL (#1569): the run's stamped
+    reason when it carries one (a write-gate stop reason), else the outcome enum —
+    never a model-authored ``done()`` summary (there is none)."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games", "games", Inclusion.RELEVANT, RecallMode.RECENT, extraction_prompt="x" * 30
     )
-    for run_id, summary in [
-        ("run-a", "wrote 2 new strategy games"),
-        ("run-b", "no new matches this cycle"),
+    # run-a: a clean done() close stamps no reason → the outcome enum shows.
+    # run-b: a write-gate STOP stamps its declared structural reason → that shows.
+    for run_id, outcome, reason in [
+        ("run-a", RunOutcome.WORKED, ""),
+        ("run-b", RunOutcome.NO_WORK, "the value was unchanged since the last observation"),
     ]:
         db.messages.log_prompt(
             model="t",
@@ -749,12 +739,12 @@ async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_
             run_id=run_id,
             run_target="board-games",
         )
-        collector._tag_promptlog_run(run_id, RunOutcome.WORKED, summary, 0)
+        collector._tag_promptlog_run(run_id, outcome, reason, 0)
     collector._current_target = db.memories.get("board-games")
 
     section = collector._run_history_section("board-games")
 
-    # Verbatim: newest-first (run-b ran after run-a), each summary stamped with an
+    # Verbatim: newest-first (run-b ran after run-a), each outcome stamped with an
     # absolute UTC timestamp the model can compare against the "Current date and
     # time: … UTC" line (timestamps normalised to a placeholder for stability).
     section = re.sub(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", "[YYYY-MM-DD HH:MM UTC]", section)
@@ -762,8 +752,8 @@ async def test_run_history_section_shows_timestamped_summaries(test_config, tmp_
         "\n\n## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
         "work or re-sending, not an instruction to repeat.\n"
-        "1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle\n"
-        "2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"
+        "1. [YYYY-MM-DD HH:MM UTC] the value was unchanged since the last observation\n"
+        "2. [YYYY-MM-DD HH:MM UTC] worked"
     ), f"Run-history section mismatch:\n{section!r}"
 
 
@@ -800,9 +790,9 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         # Post-0087 stored shape: steps 1..A, no done() — assembly injects the terminal.
         extraction_prompt='Collect board games.\n1. log_read("user-messages")',
     )
-    for run_id, summary in [
-        ("run-a", "wrote 2 new strategy games"),
-        ("run-b", "no new matches this cycle"),
+    for run_id, outcome, reason in [
+        ("run-a", RunOutcome.WORKED, ""),
+        ("run-b", RunOutcome.NO_WORK, ""),
     ]:
         db.messages.log_prompt(
             model="t",
@@ -812,7 +802,7 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
             run_id=run_id,
             run_target="board-games",
         )
-        collector._tag_promptlog_run(run_id, RunOutcome.WORKED, summary, 0)
+        collector._tag_promptlog_run(run_id, outcome, reason, 0)
     collector._current_target = db.memories.get("board-games")
 
     system_prompt = await collector._build_system_prompt(None)
@@ -833,28 +823,17 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
-        "2. done(success=<true|false>, summary=<recap of what you did>)\n"
+        "2. done()\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- End every cycle with `done(success=<true|false>, summary=<recap of what you "
-        "did>)`.  Each tool result this cycle opened with a first-person line naming what "
-        'that call actually did — "You read the new messages", "You searched for X", "You '
-        'saved Y to `<collection>`", "You didn\'t add anything new — it was already there", '
-        '"You couldn\'t read any source".  The `summary` TRANSCRIBES those lines: weave '
-        "EVERY one together into one honest sentence, in order, mirroring each call's "
-        "OUTCOME — never compose it fresh from what you set out to do, and never claim a "
-        "write the tool didn't confirm.  Three shapes:\n"
-        "  - Wrote something → name the reads AND the write, e.g. `done(success=true, "
-        'summary="read the new messages, browsed two pages, and saved one entry to '
-        '<collection>")`.\n'
-        "  - Nothing new matched → this is a QUIET cycle: do NOT force a "
-        '`collection_write` just to have one; close `done(success=true, summary="checked '
-        'the sources; no new matches this cycle")`.  Quiet cycles are normal and expected.\n'
-        "  - Couldn't read your sources (every browse failed) → `done(success=false, "
-        'summary="tried the sources but every browse failed, so nothing was written")`.\n'
-        "  `success` is true only if the cycle did what the prompt asked, false on failure.\n"
+        "- End every cycle with `done()` — it takes NO arguments.  It just marks the cycle "
+        "finished; the run record is generated automatically from the tool calls you actually "
+        "made, so there is nothing to summarise or report.\n"
+        "- If nothing new matched, this is a QUIET cycle: do NOT force a `collection_write` "
+        "just to have one — read your sources, then call `done()`.  Quiet cycles are normal "
+        "and expected.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
@@ -865,8 +844,8 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
         "work or re-sending, not an instruction to repeat.\n"
-        "1. [YYYY-MM-DD HH:MM UTC] no new matches this cycle\n"
-        "2. [YYYY-MM-DD HH:MM UTC] wrote 2 new strategy games"
+        "1. [YYYY-MM-DD HH:MM UTC] no_work\n"
+        "2. [YYYY-MM-DD HH:MM UTC] worked"
     )
     assert system_text == expected_system, (
         f"System mismatch:\n{system_text!r}\n\nvs expected:\n{expected_system!r}"
@@ -940,59 +919,55 @@ def _target() -> MemoryRow:
     )
 
 
-def test_cycle_result_classifies_worked_no_work_failed():
-    """One determination, split by clean-close AND by whether real work landed:
-    successful ``done()`` → ``worked``/``no_work``; no successful ``done()`` but
-    durable work changed → ``incomplete`` (the work is real, it just never closed
-    cleanly); no successful ``done()`` and nothing changed → ``failed`` bail."""
+def test_cycle_result_classifies_worked_no_work_incomplete_failed():
+    """Structural outcome from the tool trace ALONE (#1569) — ``done()`` is an
+    argless sentinel, so there is no ``success``/``summary`` to read.  A ``done()``
+    close is ``worked``/``no_work`` by whether real work landed; without a ``done()``
+    the run never closed cleanly → ``incomplete`` (work landed) / ``failed`` (a
+    bail).  The reason is structural: EMPTY on a clean ``done()`` close (the run
+    record's header falls back to the outcome enum), the no-``done()`` reason
+    otherwise."""
+    # done() + work → worked, empty reason.
     worked = ControllerResponse(
         answer="",
         tool_calls=[
             ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
-            ToolCallRecord(tool="done", arguments={"success": True, "summary": "wrote 2"}),
+            ToolCallRecord(tool="done", arguments={}),
         ],
     )
-    assert Collector._cycle_result(worked) == (RunOutcome.WORKED, "wrote 2")
+    assert Collector._cycle_result(worked) == (RunOutcome.WORKED, "")
 
+    # done() + read only (nothing produced) → no_work, empty reason (a quiet cycle).
     no_work = ControllerResponse(
         answer="",
         tool_calls=[
             ToolCallRecord(tool="collection_read_latest", arguments={}),
-            ToolCallRecord(tool="done", arguments={"success": True, "summary": "no new matches"}),
+            ToolCallRecord(tool="done", arguments={}),
         ],
     )
-    assert Collector._cycle_result(no_work) == (RunOutcome.NO_WORK, "no new matches")
+    assert Collector._cycle_result(no_work) == (RunOutcome.NO_WORK, "")
 
-    # Wrote durable state but never closed with a successful done() (hit max
-    # steps / trailed off) → incomplete, NOT failed: the work landed.
+    # Wrote durable state but never closed with done() (trailed off) → incomplete
+    # (the work is real), stamped with the structural no-done() reason.
     incomplete = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, mutated=True)],
     )
-    assert Collector._cycle_result(incomplete)[0] == RunOutcome.INCOMPLETE
-
-    # done(success=False) but real work still landed → incomplete (work is real).
-    failed_done_but_wrote = ControllerResponse(
-        answer="",
-        tool_calls=[
-            ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
-            ToolCallRecord(tool="done", arguments={"success": False, "summary": "partial"}),
-        ],
+    assert Collector._cycle_result(incomplete) == (
+        RunOutcome.INCOMPLETE,
+        "cycle ended without a done() call",
     )
-    assert Collector._cycle_result(failed_done_but_wrote)[0] == RunOutcome.INCOMPLETE
 
-    # done(success=False) with nothing changed → a real failure.
-    failed = ControllerResponse(
-        answer="",
-        tool_calls=[ToolCallRecord(tool="done", arguments={"success": False, "summary": "no URL"})],
+    # No done() and nothing changed (only a read/browse) → a real bail, and hitting
+    # the step cap is distinguished from trailing off (the AGENT_MAX_STEPS sentinel).
+    maxed = ControllerResponse(
+        answer=PennyResponse.AGENT_MAX_STEPS,
+        tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})],
     )
-    assert Collector._cycle_result(failed)[0] == RunOutcome.FAILED
-
-    # No done() and nothing changed (only a read/browse) → a real bail.
-    no_done = ControllerResponse(
-        answer="", tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})]
+    assert Collector._cycle_result(maxed) == (
+        RunOutcome.FAILED,
+        "max steps exceeded — no done() call",
     )
-    assert Collector._cycle_result(no_done)[0] == RunOutcome.FAILED
 
 
 def test_cycle_result_write_gate_stop_closes_cleanly():
@@ -1000,7 +975,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly():
     a watch's unchanged re-observation carries ``stop_reason`` on the write record —
     the outcome is a clean ``no_work`` (nothing changed) stamped with the declared
     stop reason, NOT a ``failed`` bail (the mislabel that would fire if the missing
-    done() fell through to ``_extract_done_args``).  A STOP that also changed durable
+    done() fell through to the no-``done()`` path).  A STOP that also changed durable
     state stays ``worked``."""
     reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
@@ -1037,7 +1012,7 @@ def test_should_stop_loop_honors_write_gate_stop(test_config, tmp_path):
     """The collector loop exits on a successful done() OR a write-gate STOP record
     (#1587); a plain write record (no done, no stop) does not stop it."""
     collector, _ = _make_collector(test_config, tmp_path)
-    done = ToolCallRecord(tool="done", arguments={"success": True, "summary": "s"})
+    done = ToolCallRecord(tool="done", arguments={})
     stop = ToolCallRecord(
         tool="collection_write", arguments={}, stop_reason=WriteGateOutcome.KEY_EXISTS_UNCHANGED
     )
@@ -1057,7 +1032,7 @@ def test_tool_failures_counts_failed_calls():
             ToolCallRecord(tool="browse", arguments={}, failed=True),
             ToolCallRecord(tool="collection_write", arguments={}, mutated=True),
             ToolCallRecord(tool="log_read", arguments={}, failed=True),
-            ToolCallRecord(tool="done", arguments={"success": True, "summary": "ok"}),
+            ToolCallRecord(tool="done", arguments={}),
         ],
     )
     assert Collector._tool_failures(response) == 2
@@ -1109,7 +1084,7 @@ def test_should_stop_loop_ignores_failed_done(test_config, tmp_path):
     failed_done.failed = True
     assert collector.should_stop_loop([failed_done]) is False
 
-    valid_done = ToolCallRecord(tool="done", arguments={"success": True, "summary": "wrote 2"})
+    valid_done = ToolCallRecord(tool="done", arguments={})
     assert collector.should_stop_loop([valid_done]) is True
 
 
@@ -1169,7 +1144,10 @@ async def test_run_for_rejects_too_short_extraction_prompt(test_config, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_run_for_runs_cycle_and_returns_done_summary(test_config, tmp_path):
+async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tmp_path):
+    """``run_for``'s on-demand message is STRUCTURAL (#1569): the run's outcome (or
+    its write-gate stop reason) plus the tool trace — never a model ``done()``
+    summary.  A done()-only cycle (nothing produced) reads as ``no_work``."""
     from penny.agents.base import CycleResult
 
     collector, db = _make_collector(test_config, tmp_path)
@@ -1187,12 +1165,7 @@ async def test_run_for_runs_cycle_and_returns_done_summary(test_config, tmp_path
             success=True,
             response=ControllerResponse(
                 answer="",
-                tool_calls=[
-                    ToolCallRecord(
-                        tool="done",
-                        arguments={"success": True, "summary": "wrote 2 entries"},
-                    )
-                ],
+                tool_calls=[ToolCallRecord(tool="done", arguments={})],
             ),
         )
 
@@ -1200,9 +1173,8 @@ async def test_run_for_runs_cycle_and_returns_done_summary(test_config, tmp_path
 
     success, message = await collector.run_for("test-col")
     assert success is True
-    assert "Collector cycle complete" in message
-    assert "wrote 2 entries" in message
-    assert "1. done(" in message
+    assert message.startswith("Collector cycle complete: no_work")
+    assert "1. done()" in message
 
 
 def test_format_tool_trace_numbers_calls_and_truncates_args():
@@ -1211,7 +1183,7 @@ def test_format_tool_trace_numbers_calls_and_truncates_args():
         tool_calls=[
             ToolCallRecord(tool="log_read", arguments={"memory": "user-messages"}),
             ToolCallRecord(tool="browse", arguments={"queries": ["board game " * 10]}),
-            ToolCallRecord(tool="done", arguments={"success": True, "summary": "wrote 2 entries"}),
+            ToolCallRecord(tool="done", arguments={}),
         ],
     )
     trace = Collector._format_tool_trace(response)

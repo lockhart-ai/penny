@@ -80,7 +80,6 @@ from penny.tools.memory_args import (
     CollectionUpdateArgs,
     CollectionWriteArgs,
     CollectorRunHistoryArgs,
-    DoneArgs,
     ExistsArgs,
     FindMineArgs,
     LogAppendArgs,
@@ -93,7 +92,7 @@ from penny.tools.memory_args import (
     ReadSimilarArgs,
     UpdateEntryArgs,
 )
-from penny.tools.models import ToolResult
+from penny.tools.models import NoArgs, ToolResult
 from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
 
 if TYPE_CHECKING:
@@ -1980,7 +1979,7 @@ class ReadRunCallsTool(CursorReadTool):
     calls → conclusion`` (``render_run_calls``), the sequence-lens view of what a run
     *did*.  Orthogonal to the target: ``"chat"`` renders conversational runs
     (``user: <message>`` → tools → ``penny: <reply>``); a collector's name renders
-    that collector's runs (``[target]`` → tools → ``done: <summary>``).  Lets a
+    that collector's runs (``[target]`` → tools → ``done: <outcome>``).  Lets a
     reader see the tool sequence a request drove — for authoring skills, or for
     inspecting what a collector actually did.  The runs come from ``promptlog``; the
     cursor is per-target.
@@ -2432,48 +2431,30 @@ class ExistsTool(MemoryTool):
 
 
 class DoneTool(Tool):
-    """Signal the cycle is finished, with a structured success + summary report."""
+    """Signal the cycle is finished — an argless sentinel (#1569).
+
+    ``done()`` takes no arguments: it just marks the cycle finished.  The run
+    record is GENERATED from the run's canonical ledger rows (its tool calls +
+    write-gate outcomes + structural counts), so there is no model-authored
+    ``success``/``summary`` to confabulate — what is generated cannot lie."""
 
     name = PennyConstants.DONE_TOOL_NAME
     description = (
-        "Call this when the cycle is finished.  REQUIRED: `success` (true if "
-        "you did what the prompt asked, false on no-op or failure) and "
-        "`summary` (one-sentence prose describing what the cycle actually "
-        "did — entries written, messages sent, why no-op).  Both are logged "
-        "to `collector-runs` for auditing; `reasoning` alone is never a "
-        "valid done call."
+        "Call this — with NO arguments — when the cycle is finished.  It just marks "
+        "the cycle done; the run record is generated automatically from the tool "
+        "calls you actually made, so there is nothing to summarise."
     )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "success": {
-                "type": "boolean",
-                "description": "True if the cycle did what the prompt asked.",
-            },
-            "summary": {
-                "type": "string",
-                "description": "One-sentence description of what was done.",
-            },
-        },
-        "required": ["success", "summary"],
-    }
-    args_model = DoneArgs
+    parameters = {"type": "object", "properties": {}}
+    args_model = NoArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        # The done call itself always succeeds; its ``success`` argument reports
-        # the *cycle's* outcome, so the narration reflects that.
-        if arguments.get("success") is False:
-            return "You wrapped up the cycle, marking it unfinished:"
         return "You wrapped up the cycle:"
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        args = DoneArgs(**kwargs)
-        marker = "success" if args.success else "no-op/fail"
-        # The ``success`` arg reports the *cycle's* outcome (read from the call's
-        # arguments by the collector); the done call itself always succeeds and
-        # never mutates state.
-        return ToolResult(message=f"Cycle complete ({marker}): {args.summary}")
+        # The done call itself always succeeds and never mutates state; the run's
+        # outcome is derived structurally from the ledger, not from this call.
+        return ToolResult(message="Cycle complete.")
 
 
 # ── On-demand collector trigger ─────────────────────────────────────────────
@@ -2488,7 +2469,7 @@ class TestExtractionPromptTool(Tool):
         "Immediately trigger one collector cycle for the named collection, bypassing "
         "the normal idle-gated schedule.  Use this while authoring or refining an "
         "extraction_prompt to verify the collector reads the right sources and writes "
-        "the expected entries.  Returns the cycle's success flag and done() summary."
+        "the expected entries.  Returns the cycle's structural outcome and tool trace."
     )
     parameters = {
         "type": "object",

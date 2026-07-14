@@ -764,22 +764,27 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
-    def recent_run_summaries(self, run_target: str, limit: int) -> list[tuple[datetime, str]]:
-        """A collector's own most recent completed runs as ``(timestamp, summary)``,
-        newest first — what its previous invocations did, and when.
+    def recent_run_outcomes(self, run_target: str, limit: int) -> list[tuple[datetime, str]]:
+        """A collector's own most recent completed runs as ``(timestamp, outcome)``,
+        newest first — what its previous invocations did, and when (#1569).
 
-        Each run stamps ``run_outcome`` + ``run_reason`` (the ``done()`` summary)
-        on exactly one prompt row, so the completion rows ARE the run index — one
-        row per run, served by ``ix_promptlog_target_runs`` (a bounded
-        ``ORDER BY ... LIMIT``, not a scan).  Cancelled runs (preempted by a
-        foreground message — not a real cycle outcome) are excluded.  The
-        completion-row timestamp is the run's finish time.
+        The outcome line is STRUCTURAL, generated from the ledger: the run's
+        ``run_reason`` when it carries one (a write-gate stop reason, or the
+        no-``done()`` close reason), else the ``run_outcome`` enum.  Never a
+        model-authored ``done()`` summary — ``done()`` is argless, so
+        ``run_reason`` is empty on a clean close and the outcome enum shows
+        instead.  Each run stamps ``run_outcome`` on exactly one prompt row, so the
+        completion rows ARE the run index — one row per run, served by
+        ``ix_promptlog_target_runs`` (a bounded ``ORDER BY ... LIMIT``, not a scan).
+        Cancelled runs (preempted by a foreground message — not a real cycle
+        outcome) are excluded.  The completion-row timestamp is the run's finish
+        time.
         """
         if limit <= 0:
             return []
         with self._session() as session:
             rows = session.exec(
-                select(PromptLog.timestamp, PromptLog.run_reason)
+                select(PromptLog.timestamp, PromptLog.run_outcome, PromptLog.run_reason)
                 .where(
                     PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
                     PromptLog.run_target == run_target,
@@ -788,7 +793,7 @@ class MessageStore:
                 .order_by(PromptLog.timestamp.desc())
                 .limit(limit)
             ).all()
-        return [(timestamp, reason) for timestamp, reason in rows if reason]
+        return [(timestamp, reason or outcome) for timestamp, outcome, reason in rows if outcome]
 
     def count_completed_runs(self, run_target: str) -> int:
         """How many completed (non-cancelled) cycles this collector has run.
@@ -817,8 +822,8 @@ class MessageStore:
         ``log_read("collector-runs")``, but scoped to a single ``run_target`` so
         it can judge "is this a one-off or a persistent pattern across cycles?".
 
-        Heavier than ``recent_run_summaries`` (which is the one-line ``done``
-        prose): each record carries the structural counts line + health flags +
+        Heavier than ``recent_run_outcomes`` (which is the one-line structural
+        outcome): each record carries the structural counts line + health flags +
         the run's tool trace.  Returns ``MemoryEntry`` (content = the record,
         ``created_at`` = the run's end time) so the tool formats it through the
         same ``_format_entries`` as every other read.  Served by
@@ -1327,11 +1332,12 @@ class MessageStore:
         # rendered the bare agent identity ("collector") instead of the name.
         run_target = prompts[0].run_target
 
-        # Run health + concise record: the SAME representation Penny's quality
-        # collector reads of her own runs (render_run_record / classify_run), so
-        # the addon's badges + "flagged only" filter and Penny's self-review draw
-        # from one classifier.  ``record`` is copy-pasteable straight back to a
-        # deeper analysis.
+        # Run health + concise record: the SAME representation the self-state
+        # header and the ``collector-runs`` read facade render of a run
+        # (render_run_record / classify_run), so the addon's badges + "flagged
+        # only" filter and Penny's ambient view of her own runs draw from one
+        # classifier.  ``record`` is copy-pasteable straight back to a deeper
+        # analysis.
         return {
             "run_id": run_id,
             "agent_name": prompts[0].agent_name or "unknown",

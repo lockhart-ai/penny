@@ -303,9 +303,10 @@ def gave_up_mid_run(db: Database) -> bool:
 def last_tool_args(db: Database, tool_name: str) -> dict | None:
     """Parsed ``arguments`` of the most recent ``tool_name`` call this run (``None``
     if never called).  Like ``tool_was_called`` but returns the call's args — e.g.
-    read ``done(success=...)`` to check a collector closed honestly.  Sourced from
-    the persisted promptlog (newest-first), so it's the real record of what the
-    model emitted, not a harness spy."""
+    read a write call's ``entries``.  Sourced from the persisted promptlog
+    (newest-first), so it's the real record of what the model emitted, not a
+    harness spy.  (Note: ``done`` is argless since #1569, so ``last_tool_args(db,
+    "done")`` is ``{}`` when it closed.)"""
     for row in db.messages.recent_prompts(limit=200):
         for call in _response_tool_calls(row):
             if call.get("function", {}).get("name") == tool_name:
@@ -1084,10 +1085,10 @@ class _InjectDoneBail(_InjectingClient):
     bail the premature-done guard must refuse.
 
     Reproduces, deterministically against the live model, a collector that opens
-    with ``done(success=true, "no new matches")`` before reading anything.  Pre-fix
-    that bail closes the cycle; post-fix the guard returns an error tool response
-    and the real model must recover (read its inputs, then do the work).
-    ``bail_injected`` records the scenario actually fired."""
+    with the argless ``done()`` before reading anything.  Pre-fix that bail closes
+    the cycle; post-fix the guard returns an error tool response and the real model
+    must recover (read its inputs, then do the work).  ``bail_injected`` records
+    the scenario actually fired."""
 
     async def chat(self, messages, tools=None, *args, **kwargs):
         if not self.bail_injected:
@@ -1098,13 +1099,7 @@ class _InjectDoneBail(_InjectingClient):
                     tool_calls=[
                         LlmToolCall(
                             id="bail-done",
-                            function=LlmToolCallFunction(
-                                name="done",
-                                arguments={
-                                    "success": True,
-                                    "summary": "no new matches this cycle",
-                                },
-                            ),
+                            function=LlmToolCallFunction(name="done", arguments={}),
                         )
                     ],
                 )

@@ -850,8 +850,13 @@ def render_tool_call(name: str, args: object) -> str:
         if extract:
             return f"browse(queries={queries!r}, extract={extract!r})"
         return f"browse({queries!r})"
-    rendered = ", ".join(f"{key}={value!r}" for key, value in fields.items())
-    return f"{name}({rendered or repr(args)})"
+    # A dict (incl. the empty dict of an argless call, e.g. ``done()``, #1569)
+    # renders its fields; a non-dict / malformed args string shows its repr so the
+    # trace still names what the model tried.
+    if isinstance(args, dict):
+        rendered = ", ".join(f"{key}={value!r}" for key, value in args.items())
+        return f"{name}({rendered})"
+    return f"{name}({args!r})"
 
 
 def _parse_tool_args(function: dict) -> object:
@@ -1054,9 +1059,10 @@ def _io_tally_line(prompts: list[PromptLog]) -> str | None:
     quiet cycle (nothing notable to tally).
 
     Shown whenever the run browsed, wrote, or sent — the cases where the tally is
-    informative.  ``writes`` is always part of the line (so ``writes: 0`` against a
-    ``done()`` summary that claims otherwise is plain to see); browses, reads, and
-    sends appear only when nonzero, so the line stays as short as the run was."""
+    informative.  ``writes`` is always part of the line (so ``writes: 0`` is a
+    plain structural fact — the record is generated from the ledger, #1569);
+    browses, reads, and sends appear only when nonzero, so the line stays as short
+    as the run was."""
     browses_ok, browses_failed, reads, writes, sends = _run_io_tally(prompts)
     if not (browses_ok or browses_failed or writes or sends):
         return None
@@ -1081,10 +1087,11 @@ def _is_degenerate_send(content: str) -> bool:
 
 class RunHealth(BaseModel):
     """Structural failure signals for one collector run, derived from its
-    ``promptlog`` rows.  One classifier feeds both Penny's own self-review (the
-    run record her ``quality`` collector reads) and the addon's prompts tab
-    (badges + the "flagged only" filter) — what we use to judge whether a run
-    regressed is exactly what Penny sees of it.
+    ``promptlog`` rows.  One classifier feeds both Penny's ambient view of her own
+    runs (the run record the self-state header and the ``collector-runs`` read
+    facade render) and the addon's prompts tab (badges + the "flagged only"
+    filter) — what we use to judge whether a run regressed is exactly what Penny
+    sees of it.
 
     All signals are deterministic and read from stored data — no model judgment:
     ``bailed`` (did no real work — recorded a terminating ``done()`` without any
@@ -1195,9 +1202,10 @@ def _flag_line(health: RunHealth, condition_key: ConditionKey, marker: str, deta
 def _health_lines(health: RunHealth) -> list[str]:
     """The ⚠ explanation lines for a run record, one per set flag, in order.
 
-    The verbose form Penny's ``quality`` collector reads; the addon derives its
-    compact badges from the same ``RunHealth.flags``.  Marker + detail come from
-    the shared catalog so the run record and the quality prompt name one text."""
+    The verbose form the run record shows (in the self-state header and the
+    ``collector-runs`` read facade); the addon derives its compact badges from the
+    same ``RunHealth.flags``.  Marker + detail come from the shared catalog so the
+    run record and the addon's TS type name one text."""
     return [
         _flag_line(health, entry.key, entry.marker, entry.detail)
         for entry in run_flag_conditions()
@@ -1206,9 +1214,12 @@ def _health_lines(health: RunHealth) -> list[str]:
 
 
 def render_run_record(prompts: list[PromptLog]) -> str:
-    """One run: a ``[target] summary`` line, any ⚠ health-flag lines, then the
+    """One run: a ``[target] <outcome>`` line, any ⚠ health-flag lines, then the
     run's tool calls, one per line.
 
+    GENERATED from the run's canonical ledger rows (#1569) — the header shows the
+    run's structural outcome (its ``RunOutcome`` enum, or the write-gate stop
+    reason), never a model-authored ``done()`` summary (``done()`` is argless).
     Carries NO timestamp — each consumer supplies its own (the model via the
     ``log_read`` entry stamp, the addon via the run's ``created_at`` field), so
     embedding one here just duplicated it.  Kept deliberately flat: a format
@@ -1216,9 +1227,9 @@ def render_run_record(prompts: list[PromptLog]) -> str:
     gave gpt-oss no reading-comprehension gain over plain text on these records
     (numbering slightly hurt), so the simplest rendering wins.  ``classify_run``
     determines health; ``_health_lines`` renders the ⚠ flags.  A descriptive
-    ``_io_tally_line`` (reads ok/failed · writes · sends) sits under the summary
-    when the run did any browse/write/send — the bare structural facts, against
-    which a ``done()`` summary's claims can be read.
+    ``_io_tally_line`` (reads ok/failed · writes · sends) sits under the outcome
+    when the run did any browse/write/send — the bare structural facts of what the
+    run actually did.
 
     The trace shows:
 
@@ -1228,7 +1239,7 @@ def render_run_record(prompts: list[PromptLog]) -> str:
       non-``done()`` trace, so the work (or the failing/degenerate call) can be
       judged in context;
     - **everything else** (a quiet cycle that DID read, a failed/cancelled run that
-      DID call real tools with no new flag) — summary-line only, no trace to tempt
+      DID call real tools with no new flag) — outcome-line only, no trace to tempt
       an over-correction.
 
     Content is never truncated."""
@@ -1312,14 +1323,21 @@ def _run_origin(prompts: list[PromptLog]) -> str:
 
 
 def _run_conclusion(prompts: list[PromptLog]) -> str:
-    """How the run ended: ``penny: <reply>`` (chat), ``done: <summary>`` (a
-    collector that closed via ``done()``), or ``stopped: <reason>`` (a run a
-    write-gate STOP ended at the chokepoint, #1587) — so the trace reads honestly
-    as a stop, not a fabricated ``done()``."""
-    _, reason, _ = _run_outcome(prompts)
-    if reason:
-        verb = "stopped" if _ended_via_write_gate_stop(prompts) else "done"
-        return f"{verb}: {reason}"
+    """How the run ended, STRUCTURALLY (#1569): ``penny: <reply>`` (chat — the
+    user-facing reply stays model-authored), ``done: <outcome>`` (a collector that
+    closed via the argless ``done()`` — its structural outcome enum, never a
+    model-authored summary), ``stopped: <reason>`` (a write-gate STOP at the
+    chokepoint, #1587), or ``ended: <reason>`` (a collector that never closed
+    cleanly — its structural no-``done()`` reason).  Chat vs. collector is read off
+    ``run_target`` (collectors stamp it, chat doesn't)."""
+    outcome, reason, target = _run_outcome(prompts)
+    if _ended_via_write_gate_stop(prompts):
+        return f"stopped: {reason}"
+    if target is not None:  # a collector run
+        if any(name == "done" for name, _ in _run_tool_calls(prompts)):
+            return f"done: {outcome}" if outcome else ""
+        detail = reason or outcome
+        return f"ended: {detail}" if detail else ""
     reply = _final_assistant_text(prompts)
     return f"penny: {reply}" if reply else ""
 
@@ -1497,7 +1515,7 @@ class RunLog(Log):
     per run, its timestamp the completion time, served by the
     ``ix_promptlog_completed_runs`` partial index (a bounded ``ORDER BY ... LIMIT``,
     not a ``GROUP BY`` scan).  Each run renders to a model-readable record: a
-    ``[target] summary`` header plus, for a run that did something, its compact
+    ``[target] <outcome>`` header plus, for a run that did something, its compact
     tool-call trace.  Read-only; has no embeddings (so ``read_similar`` is empty
     and it never enters relevant recall — ``collector-runs`` is inclusion=never).
 

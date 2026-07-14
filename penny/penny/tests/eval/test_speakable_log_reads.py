@@ -339,7 +339,7 @@ def _seed_collector_activity(db: Database) -> None:
                     ],
                 },
             ),
-            ("done", {"success": True, "summary": "Recorded the 2.3 balance patch."}),
+            ("done", {}),
         ],
     )
     _seed_run(
@@ -350,7 +350,7 @@ def _seed_collector_activity(db: Database) -> None:
         summary="No new patch notes this cycle.",
         calls=[
             ("browse", {"queries": ["mistforge tactics patch notes"]}),
-            ("done", {"success": True, "summary": "No new patch notes this cycle."}),
+            ("done", {}),
         ],
     )
     _seed_run(
@@ -368,7 +368,7 @@ def _seed_collector_activity(db: Database) -> None:
                     "entries": [{"key": "today", "content": "Verdant Hollow — muddy after rain."}],
                 },
             ),
-            ("done", {"success": True, "summary": "Logged today's trail status."}),
+            ("done", {}),
         ],
     )
 

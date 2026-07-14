@@ -285,12 +285,12 @@ def _score_taught_real_done(db: Database, before: object, sent: list[str]) -> li
 
 
 async def test_collector_taught_out_of_args_only_json_bail(nudge_eval) -> None:
-    """Contract: a collector that emits the done() terminator's ARGUMENTS as a bare
-    JSON text object (``{"success": true, "summary": "…"}``) — gpt-oss's native
+    """Contract: a collector that emits the argless done() call as a JSON text
+    envelope (``{"name": "done", "arguments": {}}``) — gpt-oss's native
     Harmony-backend fallback and the dominant call-shaped text bail in production —
     receives the shape-specific TEACHING nudge (``COLLECTOR_DONE_JSON_NUDGE``: what
-    it did, and the exact ``done(...)`` call to make) and recovers by MAKING the
-    real done() tool call; the cycle completes.  One extra round-trip versus a
+    it did, and the exact argless ``done()`` call to make) and recovers by MAKING
+    the real done() tool call; the cycle completes.  One extra round-trip versus a
     repair is accepted and expected — the model, not the system, must emit the call
     (reject-and-teach: repairs are reserved for transport-mangled calls, not
     model-authored malformations).

@@ -26,7 +26,7 @@ class PromptLog(SQLModel, table=True):
     # Run outcome is set on the last prompt of a collector cycle.  All three
     # are NULL for non-collector agents (chat, schedule executor).
     run_outcome: str | None = None  # RunOutcome: failed|no_work|worked|incomplete|cancelled
-    run_reason: str | None = None  # Free-text reason from done(summary=...)
+    run_reason: str | None = None  # Structural reason (write-gate stop / no-done() close); #1569
     run_target: str | None = None  # Collection name the cycle was bound to
     # Count of failed tool calls in the run (ToolCallRecord.failed), stamped on
     # the last prompt alongside run_outcome.  NULL = not measured (old rows,
@@ -295,10 +295,10 @@ class MemoryRow(SQLModel, table=True):
     # collector doubles its interval and resets this to 0.  See agents/collector.
     consecutive_idle_runs: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
     # The user's expressed goal when this collection was created, in their
-    # own words — the spec a quality collector judges the ``extraction_prompt``
-    # and observed behavior against.  Set once at creation, immutable
-    # thereafter (no field on ``collection_update``); NULL for system /
-    # migration-seeded collections.
+    # own words — the spec the collection's ``extraction_prompt`` and observed
+    # behavior are judged against (rendered into ``collection_catalog`` /
+    # ``memory_metadata``).  Set once at creation, immutable thereafter (no field
+    # on ``collection_update``); NULL for system / migration-seeded collections.
     intent: str | None = Field(default=None)
     # Provenance + lifecycle (operational registry, #1566) — every mechanism
     # created from a chat request can answer *who* asked for it, *what* run

@@ -5,7 +5,7 @@ Three modules:
 - ``conditions`` — the single behaviour taxonomy: every condition we classify
   Penny's model behaviour through, defined once.  A dependency-light leaf (only
   ``constants`` + pydantic), imported by the live loop, the post-hoc run-health
-  classifier, the addon, and Penny's own ``quality`` self-review.
+  classifier, the self-state header, and the addon.
 - ``outcomes`` — the ``ValidationOutcome`` disposition union a
   ``ResponseValidator`` returns, the ``LoopContext`` it reads, and the
   ``run_validators`` dispatcher.

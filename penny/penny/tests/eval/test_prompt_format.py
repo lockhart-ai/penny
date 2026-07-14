@@ -16,9 +16,11 @@ regression guard, not just a one-off replay:
                        concluding no-work (the production bailout was the model
                        assuming "the user said nothing" and never checking).
 
-The enforcement side — that the quality collector REWRITES a prose extraction_prompt
-into a numbered one — lives with the other quality-rewrite contracts in
-``test_quality_correction.py``.
+Collector prompts are now deterministic renders of taught skills (#1590/#1591), so
+the numbered shape is produced by the render itself — there is no longer a
+model-judgment reviewer that rewrites prose into numbered steps (the ``quality``
+collector was retired by #1569).  These cases guard that the render's numbered
+recipe keeps engaging the model.
 """
 
 from __future__ import annotations

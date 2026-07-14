@@ -20,12 +20,12 @@ send directly:
   I can't..."), don't enqueue — that's not a real reply.  A correct no-op
   decline (``success=True``); tells the model to call ``done`` instead.
 - **No recipient**: if there's no primary user, decline as a no-op naming the
-  real condition — an environment/config state, not a content problem — and
-  bind ``done(success=false, ...)`` since this cycle cannot deliver.  This is a
-  distinct decline from Refusal: rewriting the message would be pointless when
-  the fault is that no recipient exists.
+  real condition — an environment/config state, not a content problem — and tell
+  the model to ``done()`` since this cycle cannot deliver.  This is a distinct
+  decline from Refusal: rewriting the message would be pointless when the fault
+  is that no recipient exists.
 - **Mute**: if the user has muted autonomous messages, decline as a no-op —
-  normal cycle behaviour, not a failure — and bind ``done(success=true, ...)``.
+  normal cycle behaviour, not a failure — and tell the model to ``done()``.
 
 If those pass, the message is appended to ``db.send_queue`` and the
 tool returns ``"Message sent."`` (``mutated=True``).  Enqueue **is** the
@@ -90,13 +90,12 @@ class SendMessageTool(Tool):
         "Message NOT sent: no user is registered to receive messages, so this "
         "cycle cannot deliver.  This is an environment/config state, not a problem "
         "with your content.  "
-        f'Call ``{DoneTool.name}(success=false, summary="no recipient — cannot deliver")`` '
-        "to exit — do not rewrite the message."
+        f"Call ``{DoneTool.name}()`` to exit — do not rewrite the message."
     )
     _MUTED_RESPONSE = (
         "Message NOT sent: the user has muted autonomous messages.  "
-        f'Call ``{DoneTool.name}(success=true, summary="muted — skipped")`` '
-        "to exit — do not retry.  This is normal cycle behaviour, not a failure."
+        f"Call ``{DoneTool.name}()`` to exit — do not retry.  This is normal cycle "
+        "behaviour, not a failure."
     )
 
     @classmethod
@@ -122,10 +121,9 @@ class SendMessageTool(Tool):
         # ToolExecutor before we got here).  What's left are delivery decisions —
         # no-op declines (success=True, mutated=False) that need runtime state,
         # not content failures: a refusal body, no recipient, or a muted user.
-        # Each names its own condition and binds the right terminal move — a
-        # refusal/mute is normal cycle behaviour (done(success=true)), while no
-        # recipient is an environment/config fault this cycle can't deliver into
-        # (done(success=false)).  All three stay out of the tool-failure budget.
+        # Each names its own condition and tells the model to close with the
+        # argless ``done()`` (the run's outcome is derived structurally, #1569).
+        # All three stay out of the tool-failure budget.
         if is_refusal(args.content):
             logger.info("send_message refused (refusal content): %s", self._agent_name)
             return ToolResult(message=self._REFUSAL_RESPONSE)

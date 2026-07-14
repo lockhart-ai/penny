@@ -89,23 +89,12 @@ class Collector(BackgroundAgent):
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- End every cycle with `done(success=<true|false>, summary=<recap of what you "
-        "did>)`.  Each tool result this cycle opened with a first-person line naming what "
-        'that call actually did — "You read the new messages", "You searched for X", "You '
-        'saved Y to `<collection>`", "You didn\'t add anything new — it was already there", '
-        '"You couldn\'t read any source".  The `summary` TRANSCRIBES those lines: weave '
-        "EVERY one together into one honest sentence, in order, mirroring each call's "
-        "OUTCOME — never compose it fresh from what you set out to do, and never claim a "
-        "write the tool didn't confirm.  Three shapes:\n"
-        "  - Wrote something → name the reads AND the write, e.g. `done(success=true, "
-        'summary="read the new messages, browsed two pages, and saved one entry to '
-        '<collection>")`.\n'
-        "  - Nothing new matched → this is a QUIET cycle: do NOT force a "
-        '`collection_write` just to have one; close `done(success=true, summary="checked '
-        'the sources; no new matches this cycle")`.  Quiet cycles are normal and expected.\n'
-        "  - Couldn't read your sources (every browse failed) → `done(success=false, "
-        'summary="tried the sources but every browse failed, so nothing was written")`.\n'
-        "  `success` is true only if the cycle did what the prompt asked, false on failure.\n"
+        "- End every cycle with `done()` — it takes NO arguments.  It just marks the cycle "
+        "finished; the run record is generated automatically from the tool calls you actually "
+        "made, so there is nothing to summarise or report.\n"
+        "- If nothing new matched, this is a QUIET cycle: do NOT force a `collection_write` "
+        "just to have one — read your sources, then call `done()`.  Quiet cycles are normal "
+        "and expected.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
@@ -204,8 +193,8 @@ class Collector(BackgroundAgent):
                 else:
                     # One determination of this cycle's outcome, used for the
                     # audit log, the promptlog tag, and the throttle alike.
-                    outcome, summary = self._cycle_result(response)
-                    self._tag_promptlog_run(run_id, outcome, summary, self._tool_failures(response))
+                    outcome, reason = self._cycle_result(response)
+                    self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
                     self._apply_throttle(collection, outcome)
                     # Once-shaped trigger: retire the collection after it has run
                     # its allotted number of times (a one-shot reminder archives
@@ -215,9 +204,13 @@ class Collector(BackgroundAgent):
                     # system archive's cause in the mutation ledger (#1560).
                     self._archive_if_run_limit_reached(collection, run_id)
                 self._current_target = None
-        _, summary = self._extract_done_args(response)
+        # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or
+        # its write-gate stop reason) plus the actual tool trace — never a
+        # model-authored ``done()`` summary, which no longer exists.
+        outcome, reason = self._cycle_result(response)
+        detail = reason or outcome.value
+        message = f"Collector cycle complete: {detail}"
         tool_trace = self._format_tool_trace(response)
-        message = f"Collector cycle complete. {summary}"
         if tool_trace:
             message = f"{message}\n\n{tool_trace}"
         return success, message
@@ -272,30 +265,30 @@ class Collector(BackgroundAgent):
 
     @classmethod
     def _cycle_result(cls, response: ControllerResponse | None) -> tuple[RunOutcome, str]:
-        """The cycle's outcome + its summary — the single determination read by
-        the audit log, the promptlog tag, and the throttle.
+        """The cycle's outcome + a STRUCTURAL reason — the single determination read
+        by the audit log, the promptlog tag, and the throttle (#1569).
 
-        A write-gate STOP (#1587) closes the cycle at the chokepoint with no
-        ``done()``: its stamped reason is the declared stop reason, and the outcome
-        is ``worked`` / ``no_work`` by whether any durable state changed this cycle
-        (an all-unchanged watch changed nothing → ``no_work``, a healthy quiet
-        cycle).  Otherwise a successful ``done()`` is ``worked`` or ``no_work`` by
-        ``_produced_work``; without a successful ``done()`` the split is by work too
-        — durable state changed but never closed cleanly → ``incomplete``, nothing
-        changed → a ``failed`` bail.  (``cancelled`` is handled separately — a
-        preempted cycle never reaches here.)
+        Derived from the run's tool calls alone, never a model-authored judgment:
+        ``done()`` is an argless sentinel, so there is no ``success``/``summary`` to
+        read.  A write-gate STOP (#1587) closes the cycle at the chokepoint with no
+        ``done()`` — its stamped reason is the declared stop reason, and the outcome
+        is ``worked``/``no_work`` by whether any durable state changed.  A clean
+        ``done()`` close is ``worked``/``no_work`` the same way (an empty reason —
+        the run record's header falls back to the outcome enum).  Without a
+        ``done()`` the run never closed cleanly: durable state changed →
+        ``incomplete``, nothing changed → a ``failed`` bail, both with a structural
+        no-``done()`` reason.  (``cancelled`` is handled separately — a preempted
+        cycle never reaches here.)
         """
+        produced = cls._produced_work(response)
         stop = cls._stop_reason(response)
         if stop is not None:
-            outcome = RunOutcome.WORKED if cls._produced_work(response) else RunOutcome.NO_WORK
+            outcome = RunOutcome.WORKED if produced else RunOutcome.NO_WORK
             return outcome, WRITE_GATE_STOP_REASONS[stop]
-        success, summary = cls._extract_done_args(response)
-        produced = cls._produced_work(response)
-        if success:
-            return (RunOutcome.WORKED if produced else RunOutcome.NO_WORK), summary
-        if produced:
-            return RunOutcome.INCOMPLETE, summary
-        return RunOutcome.FAILED, summary
+        if cls._has_done_call(response):
+            return (RunOutcome.WORKED if produced else RunOutcome.NO_WORK), ""
+        reason = cls._no_done_reason(response)
+        return (RunOutcome.INCOMPLETE if produced else RunOutcome.FAILED), reason
 
     @staticmethod
     def _stop_reason(response: ControllerResponse | None) -> WriteGateOutcome | None:
@@ -387,20 +380,22 @@ class Collector(BackgroundAgent):
     # ── Per-cycle audit (on the promptlog run itself) ─────────────────────
 
     def _tag_promptlog_run(
-        self, run_id: str, outcome: RunOutcome, summary: str, tool_failures: int
+        self, run_id: str, outcome: RunOutcome, reason: str, tool_failures: int
     ) -> None:
-        """Stamp the cycle outcome onto the matching promptlog run.
+        """Stamp the cycle outcome + its STRUCTURAL reason onto the matching
+        promptlog run (#1569 — ``reason`` is a write-gate stop reason or the
+        no-``done()`` close reason, empty for a clean ``done()`` close; never a
+        model summary).
 
-        Drives the outcome badge in the addon's prompts tab — the same
-        ``(outcome, summary)`` the audit log gets — plus ``tool_failures`` (the
-        count of failed tool calls), which the run-health classifier reads to
+        Drives the outcome badge in the addon's prompts tab plus ``tool_failures``
+        (the count of failed tool calls), which the run-health classifier reads to
         flag a tool-failure spiral.  (The run's collection is already on every
         prompt via the write-time ``run_target`` stamp.)  ``run_id`` is the
         caller's UUID for this cycle; ``set_run_outcome`` is a no-op if no
         promptlog rows exist for it (the cycle raised before the loop ever logged
         a prompt).
         """
-        self.db.messages.set_run_outcome(run_id, outcome.value, summary, tool_failures)
+        self.db.messages.set_run_outcome(run_id, outcome.value, reason, tool_failures)
 
     @staticmethod
     def _tool_failures(response: ControllerResponse | None) -> int:
@@ -430,22 +425,25 @@ class Collector(BackgroundAgent):
         )
 
     @staticmethod
-    def _extract_done_args(response: ControllerResponse | None) -> tuple[bool, str]:
+    def _has_done_call(response: ControllerResponse | None) -> bool:
+        """True when the cycle closed via the argless ``done()`` sentinel (#1569) —
+        a structural read of the tool trace, not a model judgment."""
         if response is None:
-            return (False, "no response from cycle")
-        for record in reversed(response.tool_calls):
-            if record.tool == DoneTool.name:
-                return (
-                    bool(record.arguments.get("success", False)),
-                    str(record.arguments.get("summary", "")),
-                )
-        # No done() — distinguish actually hitting the step cap from the model
-        # trailing off with a text answer (both are failures, but only one is
-        # "max steps").  The loop returns the AGENT_MAX_STEPS sentinel only on the
-        # real cap; anything else is an early give-up without reporting an outcome.
+            return False
+        return any(record.tool == DoneTool.name for record in response.tool_calls)
+
+    @staticmethod
+    def _no_done_reason(response: ControllerResponse | None) -> str:
+        """The structural reason a cycle ended without a ``done()`` — distinguish
+        actually hitting the step cap from the model trailing off with a text answer
+        (both are failures, but only one is "max steps").  The loop returns the
+        ``AGENT_MAX_STEPS`` sentinel only on the real cap; anything else is an early
+        give-up without reporting an outcome."""
+        if response is None:
+            return "no response from cycle"
         if response.answer == PennyResponse.AGENT_MAX_STEPS:
-            return (False, "max steps exceeded — no done() call")
-        return (False, "cycle ended without a done() call")
+            return "max steps exceeded — no done() call"
+        return "cycle ended without a done() call"
 
     # ── Per-cycle prompt + tool scope ─────────────────────────────────────
 
@@ -461,21 +459,23 @@ class Collector(BackgroundAgent):
         return self._compose_prompt(fresh) + self._run_history_section(fresh.name)
 
     def _run_history_section(self, target_name: str) -> str:
-        """A trailing block of this collector's own recent ``done`` summaries
-        (newest first) so each cycle knows what its prior invocations did.
+        """A trailing block of this collector's own recent run outcomes (newest
+        first) so each cycle knows what its prior invocations did.
 
         Empty when disabled (``COLLECTOR_RUN_HISTORY`` = 0) or there's no history
-        yet.  Framed as reference, not instruction — the summaries are the model's
-        own past outputs, so the heading tells it to use them to avoid repeating
-        work, not to replicate them (guards against fixation on its own output).
+        yet.  Each line is the run's STRUCTURAL outcome — its outcome enum, or the
+        write-gate stop reason — generated from the ledger (#1569), never a
+        model-authored ``done()`` summary (there is none).  Framed as reference,
+        not instruction: it tells the collector what it did, to avoid repeating
+        work, without feeding its own past prose back into the next cycle.
         """
         limit = int(self.config.runtime.COLLECTOR_RUN_HISTORY)
-        summaries = self.db.messages.recent_run_summaries(target_name, limit)
-        if not summaries:
+        outcomes = self.db.messages.recent_run_outcomes(target_name, limit)
+        if not outcomes:
             return ""
         lines = "\n".join(
-            f"{index}. [{format_log_timestamp(when)}] {summary}"
-            for index, (when, summary) in enumerate(summaries, start=1)
+            f"{index}. [{format_log_timestamp(when)}] {outcome}"
+            for index, (when, outcome) in enumerate(outcomes, start=1)
         )
         return (
             "\n\n## Your recent runs (newest first)\n"

@@ -468,15 +468,8 @@ class FindMineArgs(ToolArgs):
     type: OptionalResolvedKind = None
 
 
-class DoneArgs(ToolArgs):
-    """Cycle terminator — pair the exit with a success flag and a summary.
-
-    ``success`` is true if the cycle accomplished what the prompt asked,
-    false on no-op or partial failure.  ``summary`` is a one-sentence
-    prose description of what the cycle actually did (entries written,
-    messages sent, why no-op).  Both are logged to ``collector-runs`` so
-    Penny can audit collector behaviour from chat.
-    """
-
-    success: bool
-    summary: str
+# ``done`` is an argless sentinel (#1569): it just marks the cycle finished.  The
+# run record is GENERATED from the run's canonical ledger rows (the stored tool
+# calls + write-gate outcomes + structural counts), never from a model-authored
+# ``success``/``summary``, so the terminator carries no arguments to confabulate.
+# ``DoneTool`` binds :class:`~penny.tools.models.NoArgs`.

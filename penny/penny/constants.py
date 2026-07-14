@@ -405,9 +405,16 @@ class PennyConstants:
         }
     )
 
-    # The self-correcting collector (seeded by migration 0055): reviews Penny's
-    # own runs/messages against each collection's intent and rewrites drifted
-    # extraction_prompts directly.
+    # The RETIRED self-correcting collector (seeded by migration 0055, archived by
+    # #1569/migration 0089): it reviewed Penny's own runs against each collection's
+    # intent and proposed prompt fixes.  It existed to correct drift in prompts
+    # GENERATED FROM PROSE — the model improvising an extraction_prompt from a
+    # description.  That authoring channel is gone (#1590/#1591): a collector's
+    # prompt is now a deterministic render of a taught skill, and a wrong prompt is
+    # fixed by the USER re-teaching the skill (re-teach REPLACES it; the collection
+    # re-renders) — no prose-generation step left to review, so the reviewer
+    # retired with the failure mode.  Retained here to keep the archived shell
+    # hidden from the catalog (via ``SYSTEM_COLLECTIONS``).
     MEMORY_QUALITY_COLLECTION = "quality"
 
     # The skills collector (seeded by migration 0043): distils reusable workflow

@@ -153,10 +153,9 @@ async def test_send_message_refuses_when_no_primary_user(tmp_path):
     assert result.mutated is False
     assert db.send_queue.next_pending() is None
     # Names the real condition and binds the correct terminal move — this cycle
-    # cannot deliver, so done(success=false), not a content rewrite.
-    assert "recipient" in result.message.lower()
-    assert "done" in result.message.lower()
-    assert "success=false" in result.message.lower()
+    # cannot deliver, so close with the argless done() (#1569), not a content rewrite.
+    assert "no user is registered" in result.message.lower()
+    assert "done()" in result.message.lower()
     # The two declines are DISTINCT strings — the no-recipient response must not
     # reuse the refusal-content message (the bug this fixes).
     assert result.message != SendMessageTool._REFUSAL_RESPONSE
