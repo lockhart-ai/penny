@@ -10,8 +10,8 @@ universal (no deployment-specific rows):
 produced this send; NULL = a direct reply (a chat turn with a live triggering
 user message names no mechanism).  Stamped by the ``SendQueueDrainer`` at
 delivery time from the queued row's ``collection``, so "which mechanism sent
-this, and from which request?" is a read (``why_did_i_send_that``), not an
-80-minute diagnosis.
+this?" is a read — the ``penny-messages`` facade renders it inline on every
+message read, not an 80-minute diagnosis.
 
 Plus the partial ``ix_messagelog_emission_time`` index: ``recent_emissions``
 (the self-state activity block's autonomous-send lines) runs on the chat prompt

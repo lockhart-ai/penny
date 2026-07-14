@@ -608,8 +608,6 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collector_run_history" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
         assert "find_mine" in names
-        # Emission provenance introspection — why a message was sent (#1568).
-        assert "why_did_i_send_that" in names
 
         # Notification mute/unmute — chat-surface tools over the MuteState row
         # (the retired /mute + /unmute commands), dispatched from natural language.

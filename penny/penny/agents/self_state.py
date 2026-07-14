@@ -18,10 +18,10 @@ one guess-free tool call from the detail). Sections:
   cadence, end condition, last-run outcome. "what's running right now?"
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
-  per-call detail is one ``read_run_calls`` / ``why_did_i_send_that`` hop away).
-  The *complement* of the conversation — chat turns (direct replies) are already
-  in context, so they're never duplicated here; only mechanism-authored sends
-  (``mechanism`` non-NULL, #1568) appear.
+  per-call detail is one ``read_run_calls`` hop away). The *complement* of the
+  conversation — chat turns (direct replies) are already in context, so they're
+  never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
+  #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
 - **About the user** — the durable user-fact core (name, timezone, location):
@@ -32,8 +32,9 @@ one guess-free tool call from the detail). Sections:
 Autonomous-send (emission) rows join the recent-activity block (#1568): each
 delivered mechanism send renders one ``sent · <when> · <mechanism> — "<snippet>"``
 line, interleaved by time with the runs and mutations, so Penny sees her own
-background emissions ambiently and can answer "why did I message you at <time>?"
-with a ``why_did_i_send_that`` hop.
+background emissions ambiently; older sends carry the same provenance inline on
+every ``penny-messages`` read, and ``memory_metadata(<mechanism>)`` is the hop to
+the creating request (#1566).
 """
 
 from __future__ import annotations
@@ -216,8 +217,9 @@ class SelfStateHeader:
     @staticmethod
     def _emission_line(emission: EmissionActivity) -> str:
         """``sent · <when> · <mechanism> — "<snippet>"`` — a delivered autonomous
-        send (#1568). The mechanism is the ``why_did_i_send_that`` anchor; the
-        snippet is what Penny autonomously said, at rollup altitude."""
+        send (#1568). The mechanism is the ``memory_metadata`` anchor (its #1566
+        block names the creating request); the snippet is what Penny autonomously
+        said, at rollup altitude."""
         return (
             f"sent · {format_log_timestamp(emission.sent_at)} · "
             f'{emission.mechanism} — "{emission.snippet}"'
