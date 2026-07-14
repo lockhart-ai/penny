@@ -663,7 +663,8 @@ _KITCHEN_SINK = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -684,7 +685,8 @@ _EMPTY = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -713,7 +715,8 @@ _OVERFLOW = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -737,7 +740,8 @@ _ARCHIVED_HEAVY = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -765,7 +769,8 @@ _RUN_OUTCOME_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -786,7 +791,8 @@ _EXCLUSION_RENDER = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -822,7 +828,8 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -858,7 +865,8 @@ _MUTATION_NOTE_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -882,7 +890,8 @@ _EMISSION_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
 
@@ -910,6 +919,7 @@ _MUTATION_BARE_MATRIX = (
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, read_run_calls(<target>) for a run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(query=<text>) for stored entries, and "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."
 )
