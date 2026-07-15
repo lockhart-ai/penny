@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,10 @@ class ConfigParam:
     default: int | float | str  # Default value (single source of truth)
     validator: Callable[[str], int | float | str]  # Parses and validates value from string
     group: str = GROUP_CHAT  # Display group for /config listing
+    # Old documented env-var names this param no longer reads. The env-override tier
+    # keys on ``key`` (``os.getenv(key)``), so a value set under a deprecated alias is
+    # silently ignored — startup warns (see ``deprecated_env_overrides_in_use``).
+    deprecated_env_aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         RUNTIME_CONFIG_PARAMS[self.key] = self
@@ -58,6 +63,26 @@ def get_params_by_group() -> list[tuple[str, list[ConfigParam]]]:
     for param in RUNTIME_CONFIG_PARAMS.values():
         groups[param.group].append(param)
     return [(g, sorted(groups[g], key=lambda p: p.key)) for g in CONFIG_GROUPS if groups[g]]
+
+
+def deprecated_env_overrides_in_use() -> list[str]:
+    """Actionable warnings for deprecated runtime-config env names set in the environment.
+
+    A param's canonical env-override name is its ``key`` (the env tier reads
+    ``os.getenv(key)``); a ``deprecated_env_aliases`` name is an older documented name
+    the tier no longer reads. Setting one silently does nothing, so the startup preflight
+    surfaces it as a visible warning naming the canonical key to rename to, rather than
+    letting the value be swallowed.
+    """
+    warnings: list[str] = []
+    for key, param in RUNTIME_CONFIG_PARAMS.items():
+        for alias in param.deprecated_env_aliases:
+            if os.getenv(alias) is not None:
+                warnings.append(
+                    f"{alias} is set but ignored — this setting is named {key}. "
+                    f"Rename it to {key} in your .env."
+                )
+    return warnings
 
 
 def _validate_positive_int(value: str) -> int:
@@ -149,6 +174,11 @@ ConfigParam(
     default=20,
     validator=_validate_positive_int,
     group=GROUP_CHAT,
+    # Docs/.env.example named this MESSAGE_MAX_STEPS, but the env tier reads the key
+    # (MAX_STEPS) — so MESSAGE_MAX_STEPS silently did nothing. MAX_STEPS is canonical
+    # (attribute access, /config, browser config UI, RuntimeConfig rows); the old name
+    # now warns at startup instead of being silently ignored (#1601).
+    deprecated_env_aliases=("MESSAGE_MAX_STEPS",),
 )
 
 ConfigParam(

@@ -21,6 +21,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from penny.config import Config
+from penny.config_params import deprecated_env_overrides_in_use
 from penny.llm.client import LlmClient
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmConnectionError, LlmError
@@ -49,6 +50,7 @@ class PreflightCheck(StrEnum):
     IMAGE_MODEL = "image-model"
     BROWSER_ADDON = "browser-addon"
     PRIMARY_CHANNEL = "primary-channel"
+    CONFIG_ENV_NAMES = "config-env-names"
 
 
 _STATUS_ICON: dict[CheckStatus, str] = {
@@ -152,6 +154,7 @@ class Preflight:
             await self._check_image_model(),
             self._check_browser_addon(),
             self._check_primary_channel(),
+            self._check_deprecated_env_names(),
         ]
         return PreflightReport(results=[result for result in candidates if result is not None])
 
@@ -315,6 +318,18 @@ class Preflight:
                 f"primary is {configured!r} — notifications may be misrouted.",
             )
         return self._ok(name, f"proactive sends route to the configured {configured!r} channel.")
+
+    def _check_deprecated_env_names(self) -> CheckResult | None:
+        """A deprecated runtime-config env name is set but silently ignored (soft warn).
+
+        The env-override tier keys on each param's ``key``, so a value set under an old
+        documented name (e.g. ``MESSAGE_MAX_STEPS`` for ``MAX_STEPS``) does nothing. Surface
+        it here so the misconfiguration is visible and actionable rather than swallowed.
+        """
+        warnings = deprecated_env_overrides_in_use()
+        if not warnings:
+            return None
+        return self._warn(PreflightCheck.CONFIG_ENV_NAMES, " ".join(warnings))
 
     # ── Result builders ──────────────────────────────────────────────────
 

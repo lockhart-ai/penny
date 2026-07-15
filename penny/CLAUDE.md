@@ -50,7 +50,7 @@ penny/
   prompts.py          — LLM prompt templates (chat conversation, vision, email-summarize).  Collector prompts live on memory rows (extraction_prompt) instead
   responses.py        — All user-facing response strings (PennyResponse class)
   startup.py          — Startup announcement message generation (git commit info)
-  preflight.py        — Setup-health / preflight checks: one legible startup summary (Preflight → PreflightReport). Hard-fails (PreflightError, caught in main → exit 1) on an unreachable LLM endpoint or an unresolvable chat/embedding model; soft-warns on a missing vision/image model, a disconnected browser addon, or a mis-routed primary channel (routing-bug guard). Runs in Penny.run() after channel connectivity, before backfills
+  preflight.py        — Setup-health / preflight checks: one legible startup summary (Preflight → PreflightReport). Hard-fails (PreflightError, caught in main → exit 1) on an unreachable LLM endpoint or an unresolvable chat/embedding model; soft-warns on a missing vision/image model, a disconnected browser addon, a mis-routed primary channel (routing-bug guard), or a deprecated runtime-config env-var name set but silently ignored (`config-env-names`, via `config_params.deprecated_env_overrides_in_use` — e.g. the retired `MESSAGE_MAX_STEPS` for `MAX_STEPS`, #1601). Runs in Penny.run() after channel connectivity, before backfills
   datetime_utils.py   — Timezone derivation from location (geopy + timezonefinder)
   agents/
     base.py           — Agent base class: agentic loop, tool execution, Ollama integration

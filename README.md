@@ -350,7 +350,7 @@ Penny auto-detects which channel to use based on configured credentials:
 
 **Behavior:**
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 120)
-- `MESSAGE_MAX_STEPS` / `IDLE_SECONDS`: also accepted as env vars, but these are runtime-configurable via `/config` so DB overrides win
+- `MAX_STEPS` / `IDLE_SECONDS`: also accepted as env vars, but these are runtime-configurable via `/config` so DB overrides win
 - 30+ parameters are runtime-configurable via `/config` — scheduling intervals, notification cooldowns/candidates, preference dedup thresholds, history context limits, email body/search/list pagination limits, related-message retrieval thresholds, and more
 
 **Logging:**

@@ -197,7 +197,7 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `GITHUB_APP_INSTALLATION_ID`: GitHub App installation ID for the repository
 
 **Behavior**:
-- `MESSAGE_MAX_STEPS`: Max agent loop steps per message (default: 20 — equal to the background budget, so a flow taught in chat is never longer than a collector could run; runtime-configurable via `/config`)
+- `MAX_STEPS`: Max agent loop steps per message (default: 20 — equal to the background budget, so a flow taught in chat is never longer than a collector could run; runtime-configurable via `/config`)
 - `IDLE_SECONDS`: Global idle threshold for all background tasks (default: 60, runtime-configurable via `/config`)
 - `TOOL_TIMEOUT`: Tool execution timeout in seconds (default: 60)
 
