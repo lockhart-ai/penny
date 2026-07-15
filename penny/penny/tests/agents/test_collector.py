@@ -1555,3 +1555,67 @@ def test_input_pending_tristate(test_config, tmp_path):
         [LogEntryInput(content="new", content_embedding=None)], author="user"
     )
     assert collector._input_pending(_get(db, "watcher")) is True
+
+
+def _make_on_advance_collection(db: Database, *, source: str) -> None:
+    """A collection whose trigger is a declared on_advance ``source_log`` — its
+    prompt does NOT name the source, so only the declaration keeps it a live input
+    (proving the trigger, not an inferred cursor)."""
+    db.memories.create_log(source, "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_collection(
+        "chained",
+        "digest the upstream events",
+        Inclusion.NEVER,
+        RecallMode.RECENT,
+        extraction_prompt="1. digest the new events into entries.",
+        collector_interval_seconds=60,
+        source_log=source,
+    )
+
+
+async def test_on_advance_collection_fires_on_source_advance(test_config, tmp_path):
+    """The on_advance trigger (#1604): a declared source LOG gates the collection —
+    it runs first to establish the cursor, then skips while caught up and wakes the
+    moment the source advances, all via the frontier read, no model judgment."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _make_on_advance_collection(db, source="events-log")
+
+    # Cold-start: no cursor for the declared source yet → pending → runs (the first
+    # cycle establishes the cursor the frontier check then reads).
+    assert collector._input_pending(_get(db, "chained")) is True
+    assert collector._next_ready_collection() is not None
+
+    # Seed the source, simulate a completed read: cursor sits at the head.
+    _memory(db, "events-log").append(
+        [LogEntryInput(content="first", content_embedding=None)], author="user"
+    )
+    head = _memory(db, "events-log").read_batch(None, 10)[-1].created_at
+    db.cursors.advance_committed("chained", "events-log", head)
+    db.memories.mark_collected("chained")
+    _backdate_collected(db, "chained", minutes=10)  # clear the interval floor
+
+    # Caught up on its declared source → the gate skips it.
+    assert collector._input_pending(_get(db, "chained")) is False
+    assert collector._next_ready_collection() is None
+
+    # The source advances → the gate wakes the collection.
+    _memory(db, "events-log").append(
+        [LogEntryInput(content="second", content_embedding=None)], author="user"
+    )
+    assert collector._input_pending(_get(db, "chained")) is True
+    ready = collector._next_ready_collection()
+    assert ready is not None and ready.name == "chained"
+
+
+def test_on_advance_source_cursor_is_never_pruned(test_config, tmp_path):
+    """The declared on_advance ``source_log`` is a live input even though the prompt
+    doesn't name it — unlike a stale inferred cursor, it is NOT pruned, so the
+    trigger can't be silently swept away (#1604)."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _make_on_advance_collection(db, source="events-log")
+    db.cursors.advance_committed("chained", "events-log", datetime.now(UTC))
+
+    live = collector._live_cursors(_get(db, "chained"))
+    assert [name for name, _ in live] == ["events-log"]
+    # The cursor survives the pruning pass because it is the declared source.
+    assert db.cursors.get("chained", "events-log") is not None

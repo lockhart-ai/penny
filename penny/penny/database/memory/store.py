@@ -223,6 +223,7 @@ class MemoryStore:
         max_runs: int | None = None,
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
+        source_log: str | None = None,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -242,6 +243,7 @@ class MemoryStore:
             max_runs=max_runs,
             skill_name=skill_name,
             skill_params=skill_params,
+            source_log=source_log,
         )
 
     def create_log(
@@ -284,6 +286,7 @@ class MemoryStore:
         max_runs: int | None = None,
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
+        source_log: str | None = None,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -310,7 +313,6 @@ class MemoryStore:
                 created_by_run_id=created_by_run_id,
                 expires_at=expires_at,
                 # Once-shaped trigger (#1556): delayed/one-shot start + run quota.
-                # Store-level only — no model-facing create args yet (#1562).
                 run_at=run_at,
                 max_runs=max_runs,
                 # Skill provenance (#1603): the instantiating skill + the params
@@ -319,6 +321,9 @@ class MemoryStore:
                 # hand-authored / seeded row — no skill origin.
                 skill_name=skill_name,
                 skill_params=json.dumps(skill_params) if skill_params is not None else None,
+                # On_advance trigger (#1604): the declared source log whose advance
+                # wakes this collection.  NULL for the interval / once forms.
+                source_log=source_log,
                 created_at=datetime.now(UTC),
             )
             session.add(memory)

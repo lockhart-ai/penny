@@ -170,7 +170,12 @@ class SelfStateHeader:
 
     @staticmethod
     def _cadence(row: MemoryRow) -> str:
-        """``every <interval>`` from the collector's current cadence, or empty."""
+        """The mechanism's trigger clause: ``on advance of <log>`` for a source-
+        driven (on_advance) collection (#1604), else ``every <interval>`` from its
+        current cadence, or empty.  A source-driven collection's cadence is only its
+        min floor, so the trigger — not the floor — is what renders at a glance."""
+        if row.source_log is not None:
+            return f"on advance of {row.source_log}"
         if row.collector_interval_seconds is None:
             return ""
         return f"every {format_interval(row.collector_interval_seconds)}"

@@ -525,7 +525,10 @@ class CollectionCreateTool(MemoryTool):
         "- Trigger — set EXACTLY ONE: `interval` (seconds — a recurring cadence, e.g. "
         "3600 for hourly), OR `run_at` + `max_runs` (an ISO datetime to start at plus "
         "how many times to run — `max_runs`=1 is a one-time reminder that archives "
-        "itself after firing).\n"
+        "itself after firing), OR `on_advance` (the name of a source LOG — the "
+        "collection wakes as soon as that log gets a new entry, ideal for chaining one "
+        "collector off another's output; add `min_interval` seconds to cap how often it "
+        "fires on a busy source).\n"
         "- `expires_at` — OPTIONAL. An ISO datetime end condition; the collection "
         "archives itself once it passes, so a bounded watch needs no teardown.\n"
         "- `notify` — Set `true` when the user wants to be told about / kept posted "
@@ -589,6 +592,21 @@ class CollectionCreateTool(MemoryTool):
                     "reminder)."
                 ),
             },
+            "on_advance": {
+                "type": "string",
+                "description": (
+                    "Trigger form: the name of a source LOG (copy it from your store map). The "
+                    "collection wakes when that log advances past its cursor. Set this alone — "
+                    "not with interval or run_at."
+                ),
+            },
+            "min_interval": {
+                "type": "integer",
+                "description": (
+                    "With on_advance: an optional floor in seconds between fires (throttle a "
+                    "chatty source). Omit to fire as soon as the source advances."
+                ),
+            },
             "expires_at": {
                 "type": "string",
                 "description": (
@@ -647,6 +665,8 @@ class CollectionCreateTool(MemoryTool):
         if isinstance(parsed, ToolResult):
             return parsed
         trigger, expires_at = parsed
+        if source_error := self._validate_source_log(trigger.source_log):
+            return source_error
         resolution = await resolve_skill(self._db, self._llm_client, args.skill)
         skill = resolution.skill
         if skill is None:
@@ -666,12 +686,45 @@ class CollectionCreateTool(MemoryTool):
         form is paced at the dispatcher tick."""
         try:
             trigger = build_trigger(
-                args.interval, args.run_at, args.max_runs, self._once_interval()
+                args.interval,
+                args.run_at,
+                args.max_runs,
+                args.on_advance,
+                args.min_interval,
+                self._once_interval(),
             )
             expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
         except TriggerError as exc:
             return ToolResult(message=str(exc), success=False)
         return trigger, expires_at
+
+    def _validate_source_log(self, source_log: str | None) -> ToolResult | None:
+        """For an on_advance trigger, the ``source_log`` must name an existing LOG
+        (#1604) — a collection can't be a frontier source, and a missing name would
+        never advance.  Returns an actionable ``ToolResult`` naming the problem +
+        the fix, or ``None`` when the source is valid (or there's no on_advance)."""
+        if source_log is None:
+            return None
+        source = self._db.memories.get(source_log)
+        if source is None:
+            return ToolResult(
+                message=(
+                    f"on_advance source '{source_log}' isn't a memory I have — copy an exact log "
+                    "name from your store map (collection_catalog / find_mine resolves one), then "
+                    "call collection_create again."
+                ),
+                success=False,
+            )
+        if source.type != MemoryType.LOG.value:
+            return ToolResult(
+                message=(
+                    f"on_advance source '{source_log}' is a {source.type}, not a log — the "
+                    "trigger fires on a LOG advancing (an event stream). Name a log, or use "
+                    "interval for a recurring cadence."
+                ),
+                success=False,
+            )
+        return None
 
     @staticmethod
     def _once_interval() -> int:
@@ -717,6 +770,7 @@ class CollectionCreateTool(MemoryTool):
             # future rebind/re-render reads its current bindings from.
             skill_name=skill.name,
             skill_params=args.params,
+            source_log=trigger.source_log,
         )
         suffix = _description_degraded_suffix(args.intent, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
@@ -1841,6 +1895,7 @@ class MemoryMetadataTool(MemoryTool):
             f"recall: {memory.recall}",
             f"notify: {memory.notify}",
             f"interval: {interval}",
+            *self._trigger_lines(memory),
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
@@ -1850,6 +1905,16 @@ class MemoryMetadataTool(MemoryTool):
             *_recent_changes_block(self._db, memory.name),
         ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _trigger_lines(memory: Any) -> list[str]:
+        """The on_advance trigger clause (#1604) — ``trigger: on advance of <log>`` —
+        when the collection wakes on a source log advancing; empty otherwise so an
+        interval / once-shaped collection's render is byte-identical.  The ``interval``
+        line above is the min floor a source-driven collection is paced at."""
+        if memory.source_log is None:
+            return []
+        return [f"trigger: on advance of {memory.source_log}"]
 
 
 class CollectionCatalogTool(MemoryTool):

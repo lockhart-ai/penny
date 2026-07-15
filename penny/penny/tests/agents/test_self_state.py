@@ -58,6 +58,7 @@ def _add_collection(
     expires_at: datetime | None = None,
     run_at: datetime | None = None,
     max_runs: int | None = None,
+    source_log: str | None = None,
     archived: bool = False,
     created_at: datetime,
     updated_at: datetime,
@@ -75,6 +76,7 @@ def _add_collection(
             expires_at=expires_at,
             run_at=run_at,
             max_runs=max_runs,
+            source_log=source_log,
             archived=archived,
             created_at=created_at,
             updated_at=updated_at,
@@ -391,6 +393,31 @@ def test_self_state_kitchen_sink_render(tmp_path):
     _seed_kitchen_sink(db)
     actual = SelfStateHeader(db, USER).render()
     assert actual == _KITCHEN_SINK
+
+
+# ── 1b. on_advance trigger — the mechanisms line reads the source clause ───
+
+
+def test_self_state_on_advance_mechanism_render(tmp_path):
+    """A source-driven (on_advance) collection renders ``on advance of <log>`` in
+    place of a cadence clause on the mechanisms line (#1604), so the trigger reads
+    at a glance without a memory_metadata hop."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_log(session, "events-log", "an event stream", when=_t(6))
+        _add_collection(
+            session,
+            "chained-watch",
+            description="digest upstream events",
+            extraction_prompt="1. digest the events.",
+            interval=30,  # only the min floor — the trigger clause wins the render
+            source_log="events-log",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    _add_user(db)
+    assert SelfStateHeader(db, USER).render() == _ON_ADVANCE
 
 
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────
@@ -790,6 +817,34 @@ _KITCHEN_SINK = (
     'Standing rules you follow — collection_read_latest("skills") for the steps:\n'
     "- Archive a collection\n"
     "- Research collection — notify on new finds\n"
+    "\n"
+    "### About the user\n"
+    "- name: Alex\n"
+    "- timezone: America/Toronto\n"
+    "- location: Toronto, Canada\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
+    "collection_catalog() for every collection."
+)
+
+_ON_ADVANCE = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "- chained-watch — active · on advance of events-log · no runs yet\n"
+    "\n"
+    "### Recent activity\n"
+    "(no recent activity)\n"
+    "\n"
+    "### Your memory\n"
+    "- chained-watch (collection, 0 entries) — digest upstream events\n"
+    "- events-log (log, 0 entries) — an event stream\n"
+    "\n"
+    "### Skills and rules\n"
+    "(no skills or rules yet)\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"

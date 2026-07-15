@@ -331,6 +331,15 @@ class MemoryRow(SQLModel, table=True):
     # reminder (``run_at`` + ``max_runs=1``) retires itself.  NULL = unlimited.
     run_at: datetime | None = Field(default=None)
     max_runs: int | None = Field(default=None)
+    # On_advance trigger (#1604, model-facing via #1591's ``collection_create``):
+    # the declared source LOG whose advance wakes this collection.  When set, the
+    # collector gates readiness on the source's high-water mark passing this
+    # collection's read cursor (source head > cursor) — the declared-input variant
+    # of the inferred cursor gate, reusing the same ``AgentCursor``.  NULL for a
+    # recurring (``interval``) or once-shaped (``run_at``) collection — the trigger
+    # union is exclusive.  The collection is paced at ``collector_interval_seconds``
+    # (the optional ``min_interval`` floor, or the dispatcher tick).
+    source_log: str | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(

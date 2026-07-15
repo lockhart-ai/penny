@@ -29,7 +29,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from penny.database.memory.types import Inclusion, RecallMode
+from penny.database.memory.types import Inclusion, RecallMode, slug
 from penny.database.models import MemoryRow, Skill
 from penny.datetime_utils import format_log_timestamp
 
@@ -153,11 +153,13 @@ class TriggerError(Exception):
 
 class Trigger(BaseModel):
     """The parsed, store-ready trigger: the cadence the collector paces on plus the
-    optional once-shaped overlay (``run_at`` + ``max_runs``)."""
+    optional once-shaped overlay (``run_at`` + ``max_runs``) or on_advance overlay
+    (``source_log``)."""
 
     collector_interval_seconds: int
     run_at: datetime | None = None
     max_runs: int | None = None
+    source_log: str | None = None
 
 
 def parse_datetime(value: str, field: str) -> datetime:
@@ -178,22 +180,34 @@ def build_trigger(
     interval: int | None,
     run_at: str | None,
     max_runs: int | None,
+    on_advance: str | None,
+    min_interval: int | None,
     once_form_interval_seconds: int,
 ) -> Trigger:
     """Resolve the exclusive trigger union into a store-ready ``Trigger``.
 
     Exactly one form: ``interval`` (recurring — paces every ``interval`` seconds),
     OR ``run_at`` + ``max_runs`` (a delayed/one-shot schedule that starts at
-    ``run_at`` and retires after ``max_runs`` runs).  The once form has no cadence
-    arg, so it is paced at ``once_form_interval_seconds`` (the dispatcher tick —
-    eligible each tick after ``run_at`` until the quota, so a ``max_runs=1``
-    reminder fires once then archives).  The collector requires a non-null cadence
-    to ever run, so a never-firing trigger is refused here, not created silently
-    (visible degradation)."""
-    if interval is not None and run_at is not None:
+    ``run_at`` and retires after ``max_runs`` runs), OR ``on_advance`` (wake when
+    the named source LOG advances past this collection's cursor — the source-driven
+    trigger, #1604).  Forms without a cadence arg (once, on_advance) are paced at
+    ``once_form_interval_seconds`` (the dispatcher tick) so they are eligible each
+    tick, their real gate (``run_at`` / the source frontier) deciding when they
+    actually run; ``on_advance`` accepts an optional ``min_interval`` floor to cap a
+    chatty source.  The collector requires a non-null cadence to ever run, so a
+    never-firing trigger is refused here, not created silently (visible
+    degradation)."""
+    forms = [interval is not None, run_at is not None, on_advance is not None]
+    if sum(forms) > 1:
         raise TriggerError(
-            "Pick one trigger: either interval (a recurring cadence) OR run_at + max_runs "
-            "(a scheduled/one-shot run) — not both."
+            "Pick one trigger: interval (a recurring cadence), OR run_at + max_runs "
+            "(a scheduled/one-shot run), OR on_advance (wake when a source log advances) "
+            "— not more than one."
+        )
+    if min_interval is not None and on_advance is None:
+        raise TriggerError(
+            "min_interval only applies to an on_advance trigger — set on_advance=<source log> "
+            "to use it, or use interval for a plain recurring cadence."
         )
     if interval is not None:
         if interval < 1:
@@ -210,9 +224,20 @@ def build_trigger(
             run_at=parse_datetime(run_at, "run_at"),
             max_runs=max_runs,
         )
+    if on_advance is not None:
+        if min_interval is not None and min_interval < 1:
+            raise TriggerError("min_interval must be at least 1 second.")
+        # Slug the source to the canonical log name the store + cursor key use, so
+        # the gate's ``log_name == source_log`` frontier check can never mismatch on
+        # a raw-cased arg (``get`` slugs; the cursor is keyed on the slugged name).
+        return Trigger(
+            collector_interval_seconds=min_interval or once_form_interval_seconds,
+            source_log=slug(on_advance),
+        )
     raise TriggerError(
         "This collection has no trigger — set interval (seconds) for a recurring collector, "
-        "or run_at + max_runs for a scheduled/one-shot run."
+        "run_at + max_runs for a scheduled/one-shot run, or on_advance=<source log> to wake "
+        "when a source log advances."
     )
 
 
@@ -232,8 +257,11 @@ def humanize_interval(seconds: int | None) -> str:
 
 
 def _trigger_line(row: MemoryRow) -> str:
-    """The echo's one-line trigger summary — recurring cadence, or the once-shaped
-    ``runs at <run_at>, <n> time(s)`` schedule."""
+    """The echo's one-line trigger summary — recurring cadence, the once-shaped
+    ``runs at <run_at>, <n> time(s)`` schedule, or the ``on advance of <log>``
+    source-driven trigger (#1604)."""
+    if row.source_log is not None:
+        return f"  trigger: on advance of {row.source_log}"
     if row.run_at is not None:
         times = "once" if row.max_runs == 1 else f"{row.max_runs} times"
         return f"  trigger: runs at {format_log_timestamp(row.run_at)}, {times}"

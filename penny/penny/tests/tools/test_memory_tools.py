@@ -16,6 +16,7 @@ from typing import Any, cast
 import pytest
 from sqlmodel import Session, select
 
+from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
@@ -268,6 +269,22 @@ def _seed_watch_skill(
 _MONEY_LITERAL = (
     "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
     "2. collection_write(memory='elevations', "
+    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+)
+
+# The on_advance creation echo — the trigger line reads back the source-driven
+# form (#1604), everything else identical to the recurring echo shape.
+_ON_ADVANCE_ECHO_LITERAL = (
+    "Created collection 'chained-watch' from skill 'Watch elevation':\n"
+    "  intent: digest events as they land\n"
+    "  skill: Watch elevation\n"
+    "  params: peak=Cinder Peak\n"
+    "  trigger: on advance of events-log\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+    "    2. collection_write(memory='elevations', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -573,6 +590,121 @@ class TestCollectionCreateFrontDoor:
         assert "Couldn't resolve the skill" in result.message
         assert "Retry" in result.message
         assert db.memories.get("fuzzy") is None
+
+    @pytest.mark.asyncio
+    async def test_on_advance_trigger_persists_source_log(self, tmp_path):
+        """The on_advance trigger (#1604) names a source LOG; it persists on the row,
+        the collection is paced at the tick (no cadence arg), and the echo reads the
+        trigger back as ``on advance of <log>``."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="chained-watch",
+            intent="digest events as they land",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            on_advance="events-log",
+        )
+        assert result.success and result.mutated
+        assert result.message == _ON_ADVANCE_ECHO_LITERAL
+        row = db.memories.get("chained-watch")
+        assert row.source_log == "events-log"
+        assert row.run_at is None and row.max_runs is None
+        # Paced at the dispatcher tick when no min_interval is given.
+        assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
+
+    @pytest.mark.asyncio
+    async def test_on_advance_min_interval_sets_the_floor(self, tmp_path):
+        """``min_interval`` becomes the collection's cadence floor (the throttle for a
+        chatty source), while the trigger stays the source advance."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="throttled-watch",
+            intent="digest events at most hourly",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            on_advance="events-log",
+            min_interval=3600,
+        )
+        assert result.success
+        row = db.memories.get("throttled-watch")
+        assert row.source_log == "events-log"
+        assert row.collector_interval_seconds == 3600
+
+    @pytest.mark.asyncio
+    async def test_on_advance_source_must_exist(self, tmp_path):
+        """A source name that isn't a memory is refused with the fix (copy an exact log
+        name), nothing created — a missing source would never advance."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="dangling",
+            intent="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            on_advance="no-such-log",
+        )
+        assert result.success is False
+        assert "on_advance source 'no-such-log' isn't a memory" in result.message
+        assert db.memories.get("dangling") is None
+
+    @pytest.mark.asyncio
+    async def test_on_advance_source_must_be_a_log_not_a_collection(self, tmp_path):
+        """The frontier trigger fires on a LOG advancing; naming a collection is refused
+        naming the shape mismatch — nothing created."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        _seed_collection(db, name="elevations")  # a collection, not a log
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="wrong-shape",
+            intent="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            on_advance="elevations",
+        )
+        assert result.success is False
+        assert "is a collection, not a log" in result.message
+        assert db.memories.get("wrong-shape") is None
+
+    @pytest.mark.asyncio
+    async def test_on_advance_with_interval_is_refused(self, tmp_path):
+        """The trigger union is exclusive — on_advance alongside a recurring interval is
+        refused, nothing created."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="two-forms",
+            intent="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=3600,
+            on_advance="events-log",
+        )
+        assert result.success is False
+        assert "Pick one trigger" in result.message
+        assert db.memories.get("two-forms") is None
+
+    @pytest.mark.asyncio
+    async def test_min_interval_without_on_advance_is_refused(self, tmp_path):
+        """``min_interval`` is only meaningful as an on_advance floor — passing it with
+        a recurring interval is refused with the fix, nothing created."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="misused",
+            intent="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=3600,
+            min_interval=60,
+        )
+        assert result.success is False
+        assert "min_interval only applies to an on_advance trigger" in result.message
+        assert db.memories.get("misused") is None
 
 
 class TestCreateAndList:
@@ -2922,6 +3054,35 @@ class TestRegistryProvenanceAndLifecycle:
         result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
         # A set end condition renders as its UTC datetime, not "never".
         assert "expires: 2026-12-25 09:00 UTC" in result.message
+
+    @pytest.mark.asyncio
+    async def test_on_advance_trigger_renders_in_metadata(self, tmp_path):
+        """An on_advance collection's metadata carries the source-driven trigger line
+        (#1604); an interval collection carries none (byte-identical to before)."""
+        db = _make_db(tmp_path)
+        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_collection(
+            "chained-watch",
+            "digest events subject matter",
+            Inclusion.RELEVANT,
+            RecallMode.RECENT,
+            extraction_prompt=('1. log_read("events-log").\n2. digest.'),
+            collector_interval_seconds=30,
+            source_log="events-log",
+        )
+        db.memories.create_collection(
+            "plain-watch",
+            "recurring watch subject matter",
+            Inclusion.RELEVANT,
+            RecallMode.RECENT,
+            extraction_prompt=("1. gather deals.\n2. save."),
+            collector_interval_seconds=3600,
+        )
+        on_advance = await MemoryMetadataTool(db).execute(memory="chained-watch")
+        assert "trigger: on advance of events-log" in on_advance.message
+        # The plain recurring collection renders no trigger line — unchanged shape.
+        plain = await MemoryMetadataTool(db).execute(memory="plain-watch")
+        assert "trigger:" not in plain.message
 
 
 class TestCollectionSkillProvenanceRender:

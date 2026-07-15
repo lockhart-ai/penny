@@ -613,11 +613,28 @@ class Collector(BackgroundAgent):
         The cursors a collection already holds *are* its declared inputs — no
         separate spec.  ``commit_pending`` advances a cursor to the newest entry
         actually consumed, so ``head > last_read_at`` means unread input exists.
+
+        The on_advance trigger (#1604) is the *declared*-input variant of this
+        inferred gate: a ``source_log`` names its input explicitly, so it is a live
+        cursor here (protected from prompt-name pruning, see ``_live_cursors``) and
+        the SAME frontier check gates it — no parallel machinery.  Before the first
+        read there is no cursor to compare against, so the collection is pending
+        (run to establish it), after which the cursor decides.
         """
+        source = memory.source_log
+        if source is not None and not self._source_read_yet(memory.name, source):
+            return True
         live = self._live_cursors(memory)
         if not live:
             return None
         return any(self._log_has_new(log_name, position) for log_name, position in live)
+
+    def _source_read_yet(self, collection_name: str, source_log: str) -> bool:
+        """Has this collection ever consumed its declared on_advance ``source_log``?
+        (#1604) — a cursor exists once the first read committed.  Before that the
+        gate treats the source as pending, so the first cycle establishes the cursor
+        the frontier check then reads."""
+        return self.db.cursors.get(collection_name, source_log) is not None
 
     def _live_cursors(self, memory: MemoryRow) -> list[tuple[str, datetime]]:
         """The collection's cursors for logs it *still* reads, with positions.
@@ -626,10 +643,16 @@ class Collector(BackgroundAgent):
         was left behind by a since-dropped read (e.g. a migration that removed a
         ``log_read``); it would lie about what the collection consumes, so it's
         pruned here — an exact identifier match, deterministic, self-healing.
+
+        The declared on_advance ``source_log`` (#1604) is always a live input — its
+        cursor is kept regardless of whether the prompt names the log, so the trigger
+        can't be silently pruned away, and it feeds the same frontier check as an
+        inferred cursor.
         """
         live: list[tuple[str, datetime]] = []
         for log_name, position in self.db.cursors.list_for(memory.name):
-            if memory.extraction_prompt is not None and log_name in memory.extraction_prompt:
+            named = memory.extraction_prompt is not None and log_name in memory.extraction_prompt
+            if named or log_name == memory.source_log:
                 live.append((log_name, position))
             else:
                 self.db.cursors.clear(memory.name, log_name)

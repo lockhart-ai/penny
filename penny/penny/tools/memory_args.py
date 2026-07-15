@@ -220,9 +220,11 @@ class CollectionCreateArgs(ToolArgs):
     routing/dedup anchor.  ``name`` is the unique slug.
 
     The **trigger** is an exclusive union validated in the tool (``build_trigger``):
-    EITHER ``interval`` (seconds — a recurring cadence) OR ``run_at`` + ``max_runs``
-    (a delayed / one-shot schedule).  ``expires_at`` (optional) is the end condition
-    — the watch archives itself when it passes.  ``notify`` (default false) makes the
+    EITHER ``interval`` (seconds — a recurring cadence), OR ``run_at`` + ``max_runs``
+    (a delayed / one-shot schedule), OR ``on_advance`` (the name of a source LOG —
+    the collection wakes when that log advances past its cursor, with an optional
+    ``min_interval`` floor).  ``expires_at`` (optional) is the end condition — the
+    watch archives itself when it passes.  ``notify`` (default false) makes the
     collection tell the user about new/changed entries; an omission stays silent, so
     it can never accidentally notify.  ``create_anyway`` (default false) is the
     deliberate override for the idempotency check — it must be set explicitly to
@@ -235,10 +237,17 @@ class CollectionCreateArgs(ToolArgs):
     # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
     params: dict[str, str] = {}
     # Trigger union — exactly one form, validated in the tool (build_trigger):
-    # ``interval`` (recurring) OR ``run_at`` + ``max_runs`` (scheduled/one-shot).
+    # ``interval`` (recurring) OR ``run_at`` + ``max_runs`` (scheduled/one-shot) OR
+    # ``on_advance`` (wake when the named source log advances — #1604).
     interval: int | None = None
     run_at: str | None = None
     max_runs: int | None = None
+    # On_advance trigger (#1604): the source LOG whose advance wakes this collection.
+    # ``min_interval`` is an optional floor (seconds) between fires for a chatty
+    # source; omitted → paced at the dispatcher tick.  Both refused unless the
+    # on_advance form is chosen (build_trigger).
+    on_advance: str | None = None
+    min_interval: int | None = None
     # End condition (optional) — an ISO-8601 datetime; the collection archives
     # itself when it passes.  Parsed in the tool (actionable error on a bad value).
     expires_at: str | None = None
