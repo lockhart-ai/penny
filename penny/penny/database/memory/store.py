@@ -69,6 +69,12 @@ class _MetadataUpdate(BaseModel):
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
     intent: str | None = None
+    # Skill provenance re-stamp (#1620): on a re-render both move together — the
+    # instantiating skill and the params bound into its render.  Applied as one unit
+    # (``skill_name`` set ⇒ set both), so a re-render always re-stamps the pair the
+    # collection's catalog / metadata render reads.
+    skill_name: str | None = None
+    skill_params: dict[str, str] | None = None
 
     def apply_to(self, memory: MemoryRow) -> list[str]:
         changed: list[str] = []
@@ -98,6 +104,16 @@ class _MetadataUpdate(BaseModel):
         if self.intent is not None:
             memory.intent = self.intent
             changed.append("intent")
+        if self.skill_name is not None:
+            # A re-render re-homes the collection on a skill: stamp the origin skill
+            # and its bound params (JSON, as at creation), so provenance stays a read
+            # off the row.  ``skill_params`` is serialized even when empty — a
+            # hole-less skill binds nothing but is still a skill instantiation.
+            memory.skill_name = self.skill_name
+            memory.skill_params = (
+                json.dumps(self.skill_params) if self.skill_params is not None else None
+            )
+            changed.append("skill")
         return changed
 
 
@@ -454,6 +470,8 @@ class MemoryStore:
         description_embedding: list[float] | None = None,
         intent: str | None = None,
         notify: bool | None = None,
+        skill_name: str | None = None,
+        skill_params: dict[str, str] | None = None,
         run_id: str | None = None,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
@@ -468,7 +486,10 @@ class MemoryStore:
         non-``NULL`` one it could never detect.  ``intent`` is editable here (the
         user-authored update path) even though it is NOT a field on the
         ``collection_update`` tool: the user owns the spec, the agent cannot
-        rewrite it.
+        rewrite it.  ``skill_name`` / ``skill_params`` re-stamp the collection's
+        skill provenance on a re-render (#1620) — the caller renders the new
+        ``extraction_prompt`` from the skill's current steps and passes it alongside
+        the pair, so the recorded origin always matches the rendered snapshot.
         """
         name = slug(name)
         self._require_collection(name)
@@ -481,6 +502,8 @@ class MemoryStore:
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
             intent=intent,
+            skill_name=skill_name,
+            skill_params=skill_params,
         )
         with self._session() as session:
             memory = session.get(MemoryRow, name)

@@ -24,20 +24,27 @@ from penny.database.memory import (
     WriteGateOutcome,
     WriteResult,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill
+from penny.database.mutation_store import mutation_change_summary
+from penny.database.skill_store import steps_from_json
 from penny.database.skills import (
     SkillDraft,
     SkillHole,
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
+    render_skill,
 )
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tools.collection_instantiation import render_unbound_holes
 from penny.tools.memory_tools import (
+    _REBIND_NO_SKILL,
+    _REINSTANTIATE_CONFLICT,
+    _SKILL_GONE,
     CollectionArchiveTool,
     CollectionCatalogTool,
     CollectionCreateTool,
@@ -758,6 +765,327 @@ class TestCreateAndList:
         row = db.memories.get("notes")
         assert row.description == "a completely different subject"  # new text landed
         assert row.description_embedding is None  # stale anchor cleared, not kept
+
+
+# ── Re-render fixtures (#1620) ────────────────────────────────────────────────
+#
+# The watch skill re-taught (its extract instruction changed) — a refresh renders a
+# DIFFERENT prompt than the original, which is what the byte-identity acceptance
+# check keys on.  ``_RIVER_SKILL`` is a distinct skill with a different hole, for the
+# swap case.
+_RIVER_SKILL = "Track river flow"
+_RIVER_HOLE = "river"
+
+
+def _watch_skill_steps_reteught() -> list[SkillStep]:
+    """The watch skill re-taught: the same {peak} hole + step-1→2 binding, but the
+    extract instruction is reworded, so a refresh re-renders to different text."""
+    steps = _watch_skill_steps()
+    steps[0].arguments["extract"] = "the summit elevation in metres"
+    return steps
+
+
+def _river_skill_steps() -> list[SkillStep]:
+    """A distinct skill: a {river} hole in the browse query and write key, step 1's
+    reading flowing into step 2 — the swap target."""
+    return [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": [_RIVER_HOLE], "extract": "the current flow rate"},
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole=_RIVER_HOLE)
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={"memory": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
+            substitutions=[
+                SkillSubstitution(
+                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, hole=_RIVER_HOLE
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
+                ),
+            ],
+        ),
+    ]
+
+
+async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> None:
+    """Instantiate a collection from the watch skill through the real front door —
+    the honest starting point for the refresh/rebind/swap cases (skill provenance
+    stamped)."""
+    _seed_watch_skill(db)
+    result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+        name=name,
+        intent="watch Cinder Peak's elevation",
+        skill=_SKILL_NAME,
+        params={"peak": "Cinder Peak"},
+        interval=3600,
+    )
+    assert result.success
+
+
+# The refresh echo — the SAME skill re-taught, re-rendered from its CURRENT steps with
+# the CURRENT bindings; render-at-update mirrors the creation echo.
+_REFRESH_ECHO_LITERAL = (
+    "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
+    "  intent: watch Cinder Peak's elevation\n"
+    "  skill: Watch elevation\n"
+    "  params: peak=Cinder Peak\n"
+    "  trigger: every 1h\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Cinder Peak'], extract='the summit elevation in metres')\n"
+    "    2. collection_write(memory='elevations', "
+    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+)
+
+# The rebind echo — SAME skill (original steps), NEW params bound and re-rendered.
+_REBIND_ECHO_LITERAL = (
+    "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
+    "  intent: watch Cinder Peak's elevation\n"
+    "  skill: Watch elevation\n"
+    "  params: peak=Ashfall Ridge\n"
+    "  trigger: every 1h\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Ashfall Ridge'], extract='the elevation above sea level')\n"
+    "    2. collection_write(memory='elevations', "
+    "entries=[{'key': 'Ashfall Ridge', 'content': the value from step 1}])"
+)
+
+# The swap echo — a DIFFERENT skill rendered into the same collection.
+_SWAP_ECHO_LITERAL = (
+    "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
+    "  intent: watch Cinder Peak's elevation\n"
+    "  skill: Track river flow\n"
+    "  params: river=Silt River\n"
+    "  trigger: every 1h\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Silt River'], extract='the current flow rate')\n"
+    "    2. collection_write(memory='flows', "
+    "entries=[{'key': 'Silt River', 'content': the value from step 1}])"
+)
+
+# The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
+# hand-authored text is replaced by the render.
+_ADOPT_ECHO_LITERAL = (
+    "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
+    "  intent: a running list the user asked me to keep\n"
+    "  skill: Watch elevation\n"
+    "  params: peak=Cinder Peak\n"
+    "  trigger: every 1h\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+    "    2. collection_write(memory='elevations', "
+    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+)
+
+
+class TestCollectionUpdateReinstantiation:
+    """Re-render a collection from a new/updated skill (#1620): refresh · rebind ·
+    swap · adopt, plus the untouched-prompt invariant.  Every re-render re-stamps the
+    skill provenance, records a mutation event with the run id, and echoes the newly
+    rendered program (render-at-update mirrors render-at-creation)."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_rerenders_from_the_reteught_skill_byte_identical(self, tmp_path):
+        """Acceptance (#1620): create → re-teach (upsert REPLACES) → refresh → the
+        stored prompt equals render(current skill, current params) byte-for-byte, the
+        provenance is re-stamped, and the mutation event names the run + fields."""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        # Re-teach the SAME skill with reworded steps (upsert replaces the row).
+        _seed_watch_skill(db, steps=_watch_skill_steps_reteught())
+        result = await CollectionUpdateTool(
+            db, cast(Any, MockLlmClient()), run_id="run-refresh"
+        ).execute(name="cinder-elevation", skill=_SKILL_NAME)
+        assert result.success and result.mutated
+        assert result.message == _REFRESH_ECHO_LITERAL
+        # Byte-identity: the stored prompt IS the fresh render of the current skill.
+        current = db.skills.get(_SKILL_NAME)
+        expected = render_skill(steps_from_json(current.steps), {"peak": "Cinder Peak"})
+        stored = db.memories.get("cinder-elevation")
+        assert stored.extraction_prompt == expected
+        # Provenance re-stamped (same skill, same bindings).
+        assert stored.skill_name == _SKILL_NAME
+        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
+        # The re-render is recorded as a mutation with the run id + the changed fields.
+        rerender = next(
+            e for e in db.mutations.history("cinder-elevation", 5) if e.run_id == "run-refresh"
+        )
+        summary = mutation_change_summary(rerender)
+        assert "skill" in summary and "extraction_prompt" in summary
+
+    @pytest.mark.asyncio
+    async def test_rebind_rerenders_with_new_params_same_skill(self, tmp_path):
+        """New params, same skill: the prompt re-renders with the new bindings and the
+        stored params advance, while the skill name stays put."""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation", params={"peak": "Ashfall Ridge"}
+        )
+        assert result.success and result.mutated
+        assert result.message == _REBIND_ECHO_LITERAL
+        stored = db.memories.get("cinder-elevation")
+        assert stored.skill_name == _SKILL_NAME  # same skill
+        assert stored.skill_params == json.dumps({"peak": "Ashfall Ridge"})  # rebound
+
+    @pytest.mark.asyncio
+    async def test_swap_rerenders_from_a_different_skill(self, tmp_path):
+        """A different skill name renders that skill's steps into the collection and
+        re-homes its provenance onto the new skill."""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        _seed_watch_skill(
+            db,
+            name=_RIVER_SKILL,
+            intent="track a river's flow",
+            description="track a river's flow rate over time",
+            steps=_river_skill_steps(),
+            holes=[SkillHole(name=_RIVER_HOLE, required=True)],
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation", skill=_RIVER_SKILL, params={"river": "Silt River"}
+        )
+        assert result.success and result.mutated
+        assert result.message == _SWAP_ECHO_LITERAL
+        stored = db.memories.get("cinder-elevation")
+        assert stored.skill_name == _RIVER_SKILL
+        assert stored.skill_params == json.dumps({"river": "Silt River"})
+
+    @pytest.mark.asyncio
+    async def test_swap_without_binding_the_new_hole_is_refused_unchanged(self, tmp_path):
+        """Swapping to a skill whose required hole the (reused) params don't bind is
+        refused naming the hole — and nothing is mutated (prompt + provenance intact)."""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        _seed_watch_skill(
+            db,
+            name=_RIVER_SKILL,
+            intent="track a river's flow",
+            description="track a river's flow rate over time",
+            steps=_river_skill_steps(),
+            holes=[SkillHole(name=_RIVER_HOLE, required=True)],
+        )
+        before = db.memories.get("cinder-elevation").extraction_prompt
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation",
+            skill=_RIVER_SKILL,  # no params → 'river' unbound
+        )
+        assert result.success is False
+        # The whole refusal names the missing hole + the params shape to supply.
+        assert result.message == render_unbound_holes(_RIVER_SKILL, [_RIVER_HOLE])
+        stored = db.memories.get("cinder-elevation")
+        assert stored.extraction_prompt == before  # nothing rendered
+        assert stored.skill_name == _SKILL_NAME  # provenance unchanged
+
+    @pytest.mark.asyncio
+    async def test_rebind_when_pinned_skill_is_gone_is_refused_unchanged(self, tmp_path):
+        """A params-only rebind whose pinned skill has since been deleted can't
+        re-render — refused actionably (re-teach it, or point at another skill via
+        skill=), nothing mutated.  (A skill= arg on a missing skill routes to the
+        NO_SKILL_FOUND elicitation instead; this is the current-skill branch.)"""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        with Session(db.engine) as session:  # the pinned skill vanishes under it
+            session.delete(session.get(Skill, _SKILL_NAME))
+            session.commit()
+        before = db.memories.get("cinder-elevation").extraction_prompt
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation",
+            params={"peak": "Ashfall Ridge"},  # no skill= → reuse current
+        )
+        assert result.success is False
+        assert result.message == _SKILL_GONE.format(skill=_SKILL_NAME)  # whole refusal
+        stored = db.memories.get("cinder-elevation")
+        assert stored.extraction_prompt == before  # unchanged
+        assert stored.skill_name == _SKILL_NAME  # provenance intact
+
+    @pytest.mark.asyncio
+    async def test_adopt_replaces_hand_authored_text_and_stamps_provenance(self, tmp_path):
+        """A legacy skill=NULL collection given a skill for the first time: its
+        hand-authored prompt is replaced by the render and its provenance is stamped."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        hand_authored = "1. hand-written prose the user typed themselves, long enough to pass"
+        _seed_collection(
+            db,
+            name="legacy-notes",
+            extraction_prompt=hand_authored,
+            intent="a running list the user asked me to keep",
+            collector_interval_seconds=3600,
+        )
+        assert db.memories.get("legacy-notes").skill_name is None  # legacy: no skill
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="legacy-notes", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
+        )
+        assert result.success and result.mutated
+        assert result.message == _ADOPT_ECHO_LITERAL
+        stored = db.memories.get("legacy-notes")
+        assert stored.extraction_prompt != hand_authored  # text replaced by the render
+        assert stored.skill_name == _SKILL_NAME  # provenance stamped
+        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
+
+    @pytest.mark.asyncio
+    async def test_plain_update_never_touches_the_prompt_or_provenance(self, tmp_path):
+        """The pinned invariant: a plain collection_update (no skill/params/prompt)
+        changes only the metadata it names — the routine and skill provenance are
+        untouched."""
+        db = _make_db(tmp_path)
+        original = "test fixture extraction prompt that is long enough"
+        _seed_collection(db, name="notes", extraction_prompt=original, notify=False)
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="notes", notify=True
+        )
+        assert result.success
+        stored = db.memories.get("notes")
+        assert stored.extraction_prompt == original  # untouched
+        assert stored.skill_name is None  # untouched
+        assert stored.skill_params is None  # untouched
+        assert stored.notify is True  # the named change landed
+
+    @pytest.mark.asyncio
+    async def test_extraction_prompt_alongside_skill_is_a_conflict(self, tmp_path):
+        """A raw extraction_prompt AND skill/params in one call is refused — the render
+        owns the prompt, so the two can't both win; nothing changes."""
+        db = _make_db(tmp_path)
+        await _create_watch_collection(db)
+        before = db.memories.get("cinder-elevation").extraction_prompt
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation",
+            skill=_SKILL_NAME,
+            extraction_prompt="a full replacement body long enough to pass the length gate",
+        )
+        assert result.success is False
+        assert result.message == _REINSTANTIATE_CONFLICT  # whole refusal
+        assert db.memories.get("cinder-elevation").extraction_prompt == before
+
+    @pytest.mark.asyncio
+    async def test_rebind_on_a_skill_less_collection_is_refused(self, tmp_path):
+        """params-only on a hand-authored (skill=NULL) collection has no holes to bind —
+        refused, pointing at skill= to adopt one; the prompt is untouched."""
+        db = _make_db(tmp_path)
+        original = "test fixture extraction prompt that is long enough"
+        _seed_collection(db, name="legacy", extraction_prompt=original)
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="legacy", params={"peak": "Cinder Peak"}
+        )
+        assert result.success is False
+        assert result.message == _REBIND_NO_SKILL.format(name="legacy")  # whole refusal
+        assert db.memories.get("legacy").extraction_prompt == original
 
 
 class TestCollectionWritesAndReads:

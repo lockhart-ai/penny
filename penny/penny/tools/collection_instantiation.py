@@ -253,13 +253,16 @@ def _expires_line(row: MemoryRow) -> str:
     return f"  expires: {format_log_timestamp(row.expires_at)}"
 
 
-def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
-    """The structured creation echo — skill, bound params, trigger, notify, expiry,
-    and the full rendered ``extraction_prompt`` — so the chat agent confirms back
-    exactly what landed without confabulating a field."""
+def _instantiation_echo(
+    row: MemoryRow, skill_name: str, params: dict[str, str], headline: str
+) -> str:
+    """The shared instantiation confirm-shape — a ``headline`` over skill · bound
+    params · trigger · notify · expiry · the full rendered ``extraction_prompt``.
+    Both the creation echo (#1591) and the re-render echo (#1620) compose it, so a
+    freshly created collection and a re-rendered one confirm back the same fields."""
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
-        f"Created collection '{row.name}' from skill '{skill_name}':",
+        headline,
         f"  intent: {row.intent}",
         f"  skill: {skill_name}",
         _params_line(params),
@@ -270,3 +273,22 @@ def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]
         f"    {prompt}",
     ]
     return "\n".join(lines)
+
+
+def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
+    """The structured creation echo — skill, bound params, trigger, notify, expiry,
+    and the full rendered ``extraction_prompt`` — so the chat agent confirms back
+    exactly what landed without confabulating a field."""
+    return _instantiation_echo(
+        row, skill_name, params, f"Created collection '{row.name}' from skill '{skill_name}':"
+    )
+
+
+def render_reinstantiation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
+    """The re-render confirm-shape (#1620) — render-at-update mirrors
+    render-at-creation, so a refreshed / rebound / swapped / adopted collection
+    confirms back its NEW program: the skill it now runs, the bound params, and the
+    freshly rendered routine, in the same shape the creation echo uses."""
+    return _instantiation_echo(
+        row, skill_name, params, f"Re-rendered collection '{row.name}' from skill '{skill_name}':"
+    )

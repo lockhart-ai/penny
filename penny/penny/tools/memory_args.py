@@ -109,6 +109,13 @@ def _blank_to_none(value: object) -> object:
 # rather than written through, so it can never clobber the existing value.
 OptionalText = Annotated[str | None, BeforeValidator(_blank_to_none)]
 
+# An optional skill name/paraphrase on an update (#1620): dashes normalised (a
+# skill name may be slug-ish) then a blank coerced to ``None`` (omitted), so a
+# model leaving it empty means "don't re-render", never "resolve the empty skill".
+OptionalSkill = Annotated[
+    str | None, BeforeValidator(_blank_to_none), BeforeValidator(_normalize_dashes)
+]
+
 
 # ── Annotated validator types ─────────────────────────────────────────────────
 # One Annotated type per validation concern, wrapping a shared predicate, so a
@@ -280,6 +287,13 @@ class CollectionUpdateArgs(ToolArgs):
     model reads, so it naturally passes it back on an edit; rather than reject the
     whole call over an immutable field, the tool ignores it and says so (the model
     kept getting the whole update rejected + then gave up).  See ``CollectionUpdateTool``.
+
+    ``skill`` / ``params`` are the re-render axis (#1620): supplying either RE-RENDERS
+    the ``extraction_prompt`` from a skill's current steps and re-stamps the
+    collection's skill provenance — ``skill`` names a skill (by name or meaning, the
+    #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its holes.
+    Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
+    ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
     """
 
     name: MemoryName
@@ -290,6 +304,9 @@ class CollectionUpdateArgs(ToolArgs):
     collector_interval_seconds: int | None = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     intent: OptionalText = None  # accepted but NOT applied — immutable; the tool explains
+    # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
+    skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
+    params: dict[str, str] | None = None  # rebind the skill's holes; None = reuse current
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
