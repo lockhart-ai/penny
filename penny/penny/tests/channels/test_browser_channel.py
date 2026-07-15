@@ -1718,7 +1718,6 @@ class TestBrowserMemoryHandlers:
             "old description",
             extraction_prompt="old prompt",
             collector_interval_seconds=300,
-            intent="track heavy euro strategy games",
         )
         asyncio.run(
             channel._handle_memory_update(
@@ -1726,8 +1725,8 @@ class TestBrowserMemoryHandlers:
                     "type": "memory_update",
                     "name": "board-games",
                     "description": "new description",
-                    # intent is user-editable via this path (unlike the agent's
-                    # collection_update tool, which has no intent field).
+                    # A stale `intent` key from an older client is ignored — the field
+                    # was dropped with the surface collapse (#1631).
                     "intent": "track only co-op games now",
                     "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
@@ -1738,7 +1737,6 @@ class TestBrowserMemoryHandlers:
         memory = db.memories.get("board-games")
         assert memory is not None
         assert memory.description == "new description"
-        assert memory.intent == "track only co-op games now"
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
         assert memory.collector_interval_seconds == 300

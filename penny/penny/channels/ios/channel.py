@@ -463,7 +463,6 @@ class IosChannel(MessageChannel):
             return (
                 needle in memory.name.lower()
                 or needle in memory.description.lower()
-                or (memory.intent is not None and needle in memory.intent.lower())
                 or memory.name in entry_matches
             )
 
@@ -608,7 +607,6 @@ class IosChannel(MessageChannel):
             name=memory.name,
             type=memory.type,
             description=memory.description,
-            intent=memory.intent,
             published=memory.notify,  # wire field `published` ← the `notify` column (#1557)
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
@@ -646,7 +644,6 @@ class IosChannel(MessageChannel):
                 extraction_prompt=req.extraction_prompt,
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,
-                intent=req.intent,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
         except MemoryAlreadyExistsError:
@@ -668,7 +665,6 @@ class IosChannel(MessageChannel):
             self._db.memories.update_collection_metadata(
                 req.name,
                 description=req.description,
-                intent=req.intent,
                 extraction_prompt=req.extraction_prompt,
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,

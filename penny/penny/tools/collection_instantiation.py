@@ -13,8 +13,10 @@ are whole-render tested in isolation:
 * the **idempotency-at-birth** results (#1567) — the active-duplicate refusal and
   the tombstone-duplicate confirm-shaped result, each naming the existing row and
   the deliberate override;
-* the **trigger union** parse (``interval`` | ``run_at`` + ``max_runs``) and the
-  ``expires_at`` end condition;
+* the **trigger** parse (one ``trigger`` arg, three enumerated forms: ``every
+  <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>``, #1631) and the
+  ``expires_at`` end condition, with ``render_trigger_clause`` rendering the stored
+  trigger back AS its copyable input form;
 * the **creation echo** (skill · params · trigger · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
@@ -68,14 +70,16 @@ _AMBIGUOUS_TAIL = (
 _NO_SKILL_FOUND = (
     "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
     "instantiate. Here's how we teach one:\n"
-    '1. Set up the container first: collection_create(name=<slug>, intent="{query}") with '
-    "NO skill — a storage-only collection nothing runs against yet.\n"
-    "2. Walk me through getting the data ONCE, here in chat, so I actually do it (browse, "
-    "extract, and collection_write the result into that collection).\n"
+    '1. Set up the container first: collection_create(name=<slug>, description="{query}") '
+    "with NO skill — a storage-only collection nothing runs against yet.\n"
+    "2. Walk me through getting the data ONCE, here in chat, so I actually do it: browse, "
+    "extract just the ONE value you want watched (pull out only the price, not a whole "
+    "name+hook+price blob — a multi-field blob changes whenever any part does and would "
+    "false-alarm every cycle), and collection_write that value into the collection.\n"
     "3. Save that run as a skill: skill_create(name=<title>, from_run=<that run's id>, "
     "steps=<range>).\n"
     "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
-    "skill=<title>, params={{…}}, interval=<seconds>, notify=<true/false>)."
+    'skill=<title>, params={{…}}, trigger="every <seconds>", notify=<true/false>).'
 )
 
 
@@ -141,7 +145,7 @@ def render_tombstone_duplicate(row: MemoryRow) -> str:
     )
 
 
-# ── Trigger union (interval | run_at + max_runs) + end condition ──────────────
+# ── Trigger: one arg, three enumerated forms (#1631) ─────────────────────────
 
 
 class TriggerError(Exception):
@@ -161,7 +165,7 @@ class Trigger(BaseModel):
 
 
 def parse_datetime(value: str, field: str) -> datetime:
-    """Parse an ISO-8601 datetime arg (``run_at`` / ``expires_at``) into a
+    """Parse an ISO-8601 datetime arg (a trigger time / ``expires_at``) into a
     UTC-aware datetime; a naive value is assumed UTC.  Raises an actionable
     ``TriggerError`` naming the field and the accepted shape."""
     try:
@@ -174,96 +178,120 @@ def parse_datetime(value: str, field: str) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def build_trigger(
-    interval: int | None,
-    run_at: str | None,
-    max_runs: int | None,
-    on_advance: str | None,
-    min_interval: int | None,
-    once_form_interval_seconds: int,
-) -> Trigger:
-    """Resolve the exclusive trigger union into a store-ready ``Trigger``.
+_EVERY_PREFIX = "every "
+_ONCE_PREFIX = "once at "
+_ON_ADVANCE_PREFIX = "on advance of "
 
-    Exactly one form: ``interval`` (recurring — paces every ``interval`` seconds),
-    OR ``run_at`` + ``max_runs`` (a delayed/one-shot schedule that starts at
-    ``run_at`` and retires after ``max_runs`` runs), OR ``on_advance`` (wake when
-    the named source LOG advances past this collection's cursor — the source-driven
-    trigger, #1604).  Forms without a cadence arg (once, on_advance) are paced at
-    ``once_form_interval_seconds`` (the dispatcher tick) so they are eligible each
-    tick, their real gate (``run_at`` / the source frontier) deciding when they
-    actually run; ``on_advance`` accepts an optional ``min_interval`` floor to cap a
-    chatty source.  The collector requires a non-null cadence to ever run, so a
-    never-firing trigger is refused here, not created silently (visible
-    degradation)."""
-    forms = [interval is not None, run_at is not None, on_advance is not None]
-    if sum(forms) > 1:
+# The reject-and-teach failure for an unrecognised trigger shape (#1631): name the
+# three enumerated forms so the model rewrites to one of them instead of inventing a
+# fourth.  Each example is a copyable input (display form == invocation form).
+_TRIGGER_TEACHING = (
+    "I couldn't read the trigger '{trigger}'. Set it to one of these three forms "
+    "(copy the shape exactly):\n"
+    "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
+    "- once at <ISO datetime> [xN] — run at a time, optionally N times "
+    "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
+    "- on advance of <log> — wake when a source log gets a new entry "
+    "(e.g. on advance of browse-results)"
+)
+
+
+def parse_trigger(trigger: str, once_form_interval_seconds: int) -> Trigger:
+    """Parse the single ``trigger`` arg into a store-ready ``Trigger`` — classify by
+    prefix, then validate the form (the enumerated-cases doctrine).  Three forms:
+    ``every <seconds>`` (a recurring cadence), ``once at <ISO> [xN]`` (a delayed /
+    one-shot schedule, N defaulting to 1), ``on advance of <log>`` (wake when the named
+    source LOG advances).  The rendered clause IS this input (``render_trigger_clause``),
+    so a displayed trigger copies straight back as the arg and round-trips.  An
+    unrecognised shape raises the teaching ``TriggerError`` naming all three."""
+    text = trigger.strip()
+    lowered = text.lower()
+    if lowered.startswith(_EVERY_PREFIX):
+        return _parse_every(text[len(_EVERY_PREFIX) :].strip())
+    if lowered.startswith(_ONCE_PREFIX):
+        return _parse_once(text[len(_ONCE_PREFIX) :].strip(), once_form_interval_seconds)
+    if lowered.startswith(_ON_ADVANCE_PREFIX):
+        return _parse_on_advance(
+            text[len(_ON_ADVANCE_PREFIX) :].strip(), once_form_interval_seconds
+        )
+    raise TriggerError(_TRIGGER_TEACHING.format(trigger=trigger))
+
+
+def _parse_every(rest: str) -> Trigger:
+    """``every <seconds>`` — a recurring cadence.  A non-integer or non-positive value
+    is an actionable refusal naming the shape."""
+    if not rest.isdigit():
         raise TriggerError(
-            "Pick one trigger: interval (a recurring cadence), OR run_at + max_runs "
-            "(a scheduled/one-shot run), OR on_advance (wake when a source log advances) "
-            "— not more than one."
+            f"'every {rest}' needs a whole number of seconds — e.g. every 3600 for hourly."
         )
-    if min_interval is not None and on_advance is None:
-        raise TriggerError(
-            "min_interval only applies to an on_advance trigger — set on_advance=<source log> "
-            "to use it, or use interval for a plain recurring cadence."
-        )
-    if interval is not None:
-        if interval < 1:
-            raise TriggerError("interval must be at least 1 second.")
-        return Trigger(collector_interval_seconds=interval)
-    if run_at is not None:
-        if max_runs is None or max_runs < 1:
-            raise TriggerError(
-                "A run_at schedule needs max_runs (how many times to run, at least 1) — "
-                "e.g. run_at='2026-07-20T09:00:00Z', max_runs=1 for a one-time reminder."
-            )
-        return Trigger(
-            collector_interval_seconds=once_form_interval_seconds,
-            run_at=parse_datetime(run_at, "run_at"),
-            max_runs=max_runs,
-        )
-    if on_advance is not None:
-        if min_interval is not None and min_interval < 1:
-            raise TriggerError("min_interval must be at least 1 second.")
-        # Slug the source to the canonical log name the store + cursor key use, so
-        # the gate's ``log_name == source_log`` frontier check can never mismatch on
-        # a raw-cased arg (``get`` slugs; the cursor is keyed on the slugged name).
-        return Trigger(
-            collector_interval_seconds=min_interval or once_form_interval_seconds,
-            source_log=slug(on_advance),
-        )
-    raise TriggerError(
-        "This collection has no trigger — set interval (seconds) for a recurring collector, "
-        "run_at + max_runs for a scheduled/one-shot run, or on_advance=<source log> to wake "
-        "when a source log advances."
+    seconds = int(rest)
+    if seconds < 1:
+        raise TriggerError("A recurring cadence must be at least 1 second (every <seconds>).")
+    return Trigger(collector_interval_seconds=seconds)
+
+
+def _parse_once(rest: str, once_form_interval_seconds: int) -> Trigger:
+    """``once at <ISO> [xN]`` — a delayed / one-shot schedule that starts at the ISO
+    time and retires after N runs (N defaults to 1).  Paced at the dispatcher tick so
+    it is eligible each tick; its real gate is ``run_at``, not the clock."""
+    iso, max_runs = _split_run_count(rest)
+    return Trigger(
+        collector_interval_seconds=once_form_interval_seconds,
+        run_at=parse_datetime(iso, "the time in 'once at <time>'"),
+        max_runs=max_runs,
     )
+
+
+def _split_run_count(rest: str) -> tuple[str, int]:
+    """Split an optional ``xN`` repeat suffix off a ``once at`` body (``N`` defaults to
+    1 — a one-shot).  A non-positive N is refused."""
+    head, sep, tail = rest.rpartition(" x")
+    if sep and tail.isdigit():
+        count = int(tail)
+        if count < 1:
+            raise TriggerError("The run count in 'once at <time> xN' must be at least 1.")
+        return head.strip(), count
+    return rest, 1
+
+
+def _parse_on_advance(rest: str, once_form_interval_seconds: int) -> Trigger:
+    """``on advance of <log>`` — wake when the named source LOG advances past this
+    collection's cursor (#1604).  Paced at the dispatcher tick (the source frontier is
+    the real gate); the name is slugged to the canonical store/cursor key so the
+    gate's frontier check can't mismatch on raw casing.  The tool validates the name
+    is an existing log (``validate_source_log``)."""
+    if not rest:
+        raise TriggerError(
+            "'on advance of <log>' needs a source log name — e.g. on advance of browse-results."
+        )
+    return Trigger(collector_interval_seconds=once_form_interval_seconds, source_log=slug(rest))
+
+
+def render_trigger_clause(row: MemoryRow) -> str:
+    """The mechanism's trigger rendered AS the copyable ``trigger`` input — display
+    form == invocation form (#1631), the render-teaches-the-call property: the clause a
+    surface shows (the self-state mechanisms line, ``memory_metadata``, the creation
+    echo) is exactly what ``parse_trigger`` accepts, so it copies straight back and
+    round-trips to the same stored config.  ``on advance of <log>`` · ``once at <ISO>
+    [xN]`` (the ``xN`` suffix only when it repeats more than once) · ``every
+    <seconds>``.  Built off the SAME prefix constants ``parse_trigger`` classifies on, so
+    display and invocation can't structurally diverge."""
+    if row.source_log is not None:
+        return f"{_ON_ADVANCE_PREFIX}{row.source_log}"
+    if row.run_at is not None:
+        when = row.run_at if row.run_at.tzinfo is not None else row.run_at.replace(tzinfo=UTC)
+        suffix = f" x{row.max_runs}" if row.max_runs not in (None, 1) else ""
+        return f"{_ONCE_PREFIX}{when.isoformat()}{suffix}"
+    return f"{_EVERY_PREFIX}{row.collector_interval_seconds}"
 
 
 # ── Creation echo ─────────────────────────────────────────────────────────────
 
 
-def humanize_interval(seconds: int | None) -> str:
-    """Render a collector interval as a human cadence (e.g. '1h', '30m', '1d',
-    'unset').  The single implementation, shared with the collection_update echo in
-    ``memory_tools``."""
-    if not seconds:
-        return "unset"
-    for unit_seconds, suffix in ((86400, "d"), (3600, "h"), (60, "m")):
-        if seconds % unit_seconds == 0:
-            return f"{seconds // unit_seconds}{suffix}"
-    return f"{seconds}s"
-
-
 def _trigger_line(row: MemoryRow) -> str:
-    """The echo's one-line trigger summary — recurring cadence, the once-shaped
-    ``runs at <run_at>, <n> time(s)`` schedule, or the ``on advance of <log>``
-    source-driven trigger (#1604)."""
-    if row.source_log is not None:
-        return f"  trigger: on advance of {row.source_log}"
-    if row.run_at is not None:
-        times = "once" if row.max_runs == 1 else f"{row.max_runs} times"
-        return f"  trigger: runs at {format_log_timestamp(row.run_at)}, {times}"
-    return f"  trigger: every {humanize_interval(row.collector_interval_seconds)}"
+    """The echo's one-line trigger summary — the copyable ``trigger`` clause (#1631,
+    display form == invocation form)."""
+    return f"  trigger: {render_trigger_clause(row)}"
 
 
 def _params_line(params: dict[str, str]) -> str:
@@ -289,7 +317,7 @@ def _instantiation_echo(
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
         headline,
-        f"  intent: {row.intent}",
+        f"  description: {row.description}",
         f"  skill: {skill_name}",
         _params_line(params),
         _trigger_line(row),
@@ -324,12 +352,12 @@ def render_reinstantiation_echo(row: MemoryRow, skill_name: str, params: dict[st
 
 _INERT_ECHO = (
     "Set up collection '{name}' — storage only, no job yet:\n"
-    "  intent: {intent}\n"
+    "  description: {description}\n"
     "  status: inert (no skill attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until you give it "
     "a skill. Teach me the routine once, save it with skill_create, then attach it with "
-    "collection_update(name='{name}', skill=<title>, interval=<seconds>) to make it do "
-    "something."
+    "collection_update(name='{name}', skill=<title>, trigger=\"every <seconds>\") to make "
+    "it do something."
 )
 
 
@@ -340,4 +368,4 @@ def render_inert_echo(row: MemoryRow) -> str:
     bootstrap that gives it a job (teach a skill, then adopt it via ``collection_update``)
     — never claiming a routine that doesn't exist (visible degradation over silent
     success)."""
-    return _INERT_ECHO.format(name=row.name, intent=row.intent)
+    return _INERT_ECHO.format(name=row.name, description=row.description)

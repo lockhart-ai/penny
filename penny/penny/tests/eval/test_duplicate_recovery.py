@@ -43,7 +43,6 @@ from penny.tests.eval.fixtures import (
     RECIPE_BOX_DUP_KEY,
     RECIPE_BOX_DUP_KEY_2,
     RECIPE_BOX_EXTRACTION_PROMPT,
-    RECIPE_BOX_INTENT,
     RECIPE_BOX_SEED_KEYS,
 )
 
@@ -55,7 +54,6 @@ def _seed_recipe_box(db: Database) -> None:
         db,
         RECIPE_BOX,
         extraction_prompt=RECIPE_BOX_EXTRACTION_PROMPT,
-        intent=RECIPE_BOX_INTENT,
         interval=3600,
     )
 

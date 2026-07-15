@@ -303,14 +303,12 @@ def _seed_collector_activity(db: Database) -> None:
         _PATCH_NOTES,
         "New Mistforge Tactics patch notes worth knowing about.",
         extraction_prompt=_PATCH_NOTES_PROMPT,
-        intent="Keep me posted on new Mistforge Tactics patch notes.",
         collector_interval_seconds=3600,
     )
     db.memories.create_collection(
         _TRAIL_CONDITIONS,
         "Current conditions for the Verdant Hollow hiking trail.",
         extraction_prompt=_TRAIL_CONDITIONS_PROMPT,
-        intent="Keep me posted on the Verdant Hollow trail conditions.",
         collector_interval_seconds=3600,
     )
     _seed_run(

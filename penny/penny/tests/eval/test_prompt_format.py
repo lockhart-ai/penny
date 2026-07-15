@@ -34,13 +34,11 @@ from penny.database import Database
 from penny.tests.eval.conftest import CollectorScorer, collection_entries, tool_was_called
 from penny.tests.eval.fixtures import (
     WATCHLIST,
-    WATCHLIST_INTENT,
     WATCHLIST_MESSAGES,
     WATCHLIST_NUMBERED_PROMPT,
     WATCHLIST_PROSE_PROMPT,
     WEEKLY_DIGEST,
     WEEKLY_DIGEST_EXTRACTION_PROMPT,
-    WEEKLY_DIGEST_INTENT,
 )
 
 pytestmark = pytest.mark.eval
@@ -63,7 +61,6 @@ def _seed_watchlist(prompt: str):
             WATCHLIST.name,
             WATCHLIST.description,
             extraction_prompt=prompt,
-            intent=WATCHLIST_INTENT,
             collector_interval_seconds=300,
         )
         for message in WATCHLIST_MESSAGES:
@@ -83,7 +80,6 @@ def _seed_digest_empty(db: Database) -> None:
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
-        intent=WEEKLY_DIGEST_INTENT,
         collector_interval_seconds=1200,
     )
 

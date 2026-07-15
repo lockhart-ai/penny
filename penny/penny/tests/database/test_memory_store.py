@@ -140,7 +140,6 @@ class TestMemoryMetadata:
             "neighbourhood hedgehog sightings",
             extraction_prompt="1. browse for hedgehog news. 2. done().",
             collector_interval_seconds=3600,
-            intent="keep a log of hedgehog sightings",
             created_by_run_id="run-t1",
         )
         db.memories.archive("hedgehog-sightings", run_id="run-t9")
@@ -157,7 +156,6 @@ class TestMemoryMetadata:
 name: hedgehog-sightings
 type: collection
 description: neighbourhood hedgehog sightings
-intent: keep a log of hedgehog sightings
 
 What it does each cycle — the recipe below is the collection's actual behaviour.  \
 When explaining the collection, walk through THESE steps, not the operational settings.
@@ -165,7 +163,7 @@ extraction prompt: 1. browse for hedgehog news. 2. done().
 
 Operational settings (cadence — secondary):
 notify: False
-interval: 3600s
+trigger: every 3600
 status: archived 2026-03-05 08:10 UTC
 expires: never
 created: 2026-03-05 08:00 UTC by run run-t1
@@ -261,7 +259,8 @@ Recent changes (newest first):
         assert "strategy board games" in result.message
         # notify surfaces in metadata so the chat agent + quality can read notify-on-new.
         assert "notify: True" in result.message
-        assert "300s" in result.message
+        # The cadence renders as the copyable trigger clause (#1631), not a raw interval.
+        assert "trigger: every 300" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
         # Timestamps render through the shared log-timestamp format (compact UTC),

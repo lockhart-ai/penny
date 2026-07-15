@@ -90,7 +90,6 @@ def _seed_roundup(db: Database) -> None:
         db,
         ROUNDUP,
         extraction_prompt=ROUNDUP_PROMPT,
-        intent=ROUNDUP_INTENT,
         interval=3600,
     )
 

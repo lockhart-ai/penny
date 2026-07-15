@@ -225,9 +225,9 @@ async def test_collection_create_stamps_chat_provenance(
                             name="collection_create",
                             arguments={
                                 "name": "indie-platformers",
-                                "intent": "a running list of new indie platformers",
+                                "description": "a running list of new indie platformers",
                                 "skill": "gather-platformers",
-                                "interval": 3600,
+                                "trigger": "every 3600",
                             },
                         ),
                     )
@@ -914,14 +914,14 @@ _BASIC_FLOW_EXPECTED = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- dislikes — active · every 5m · no runs yet\n"
-    "- knowledge — active · every 5m · no runs yet\n"
-    "- likes — active · every 5m · no runs yet\n"
+    "- dislikes — active · every 300 · no runs yet\n"
+    "- knowledge — active · every 300 · no runs yet\n"
+    "- likes — active · every 300 · no runs yet\n"
     "- notified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "- notifier — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "- quality — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "- skills — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- thoughts — active · every 90m · no runs yet\n"
+    "- thoughts — active · every 5400 · no runs yet\n"
     "- unnotified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "\n"
     "### Recent activity\n"

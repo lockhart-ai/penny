@@ -103,10 +103,6 @@ class Memory:
         return self.row.description
 
     @property
-    def intent(self) -> str | None:
-        return self.row.intent
-
-    @property
     def archived(self) -> bool:
         return self.row.archived
 

@@ -76,7 +76,6 @@ def _seed(db: Database) -> None:
         db,
         _SYNTH,
         extraction_prompt=_SEED_PROMPT,
-        intent="keep a running list of strategy board games worth buying",
         interval=3600,
     )
 

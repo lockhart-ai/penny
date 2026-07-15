@@ -240,7 +240,7 @@ class MemoryRow(SQLModel, table=True):
     append-only log.
 
     The stored row behind a :class:`penny.database.memory.Memory` object: its
-    name, shape (``type``), routing flags, collector cadence, and intent.  The
+    name, shape (``type``), description, and collector cadence.  The
     polymorphic ``Memory`` wraps one of these and adds the read/write behaviour;
     the facades (messages, collector-runs) wrap a marker row but read their
     canonical tables.
@@ -277,12 +277,6 @@ class MemoryRow(SQLModel, table=True):
     # Consecutive cycles that produced no work; at COLLECTOR_THROTTLE_AFTER the
     # collector doubles its interval and resets this to 0.  See agents/collector.
     consecutive_idle_runs: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
-    # The user's expressed goal when this collection was created, in their
-    # own words — the spec the collection's ``extraction_prompt`` and observed
-    # behavior are judged against (rendered into ``collection_catalog`` /
-    # ``memory_metadata``).  Set once at creation, immutable thereafter (no field
-    # on ``collection_update``); NULL for system / migration-seeded collections.
-    intent: str | None = Field(default=None)
     # Skill provenance (#1603): the skill this collection was instantiated from
     # (#1591's front door) and the params bound into its render — so "which skill
     # made this, and with what?" is a read off the collection's own row, and a

@@ -63,9 +63,8 @@ from penny.tools.collection_instantiation import (
     SkillResolutionKind,
     Trigger,
     TriggerError,
-    build_trigger,
-    humanize_interval,
     parse_datetime,
+    parse_trigger,
     render_active_duplicate,
     render_ambiguous,
     render_creation_echo,
@@ -73,6 +72,7 @@ from penny.tools.collection_instantiation import (
     render_no_skill_found,
     render_reinstantiation_echo,
     render_tombstone_duplicate,
+    render_trigger_clause,
     render_unbound_holes,
 )
 from penny.tools.memory_args import (
@@ -266,13 +266,10 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     so the model's reply can summarize accurately (the model previously
     confabulated this because the create/update returns were one-liners).
     """
-    intent_line = f"  intent: {memory.intent}\n" if memory.intent else ""
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  interval: {memory.collector_interval_seconds}s "
-        f"({humanize_interval(memory.collector_interval_seconds)})\n"
+        f"  trigger: {render_trigger_clause(memory)}\n"
         f"  notify: {memory.notify}\n"
-        f"{intent_line}"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
         f"{(memory.extraction_prompt or '').replace(chr(10), chr(10) + '    ')}"
@@ -532,8 +529,17 @@ def validate_source_log(db: Database, source_log: str | None) -> ToolResult | No
 _INERT_JOB_ARGS_REFUSAL = (
     "Can't set a trigger, notify, or expiry on '{name}' without a skill — those describe a "
     "JOB, and a skill-less collection is inert storage with no job to run. Create it as "
-    "storage now (name + intent only), then once you've taught the skill attach it with "
-    "collection_update(name='{name}', skill=<title>, interval=<seconds>, notify=<true/false>)."
+    "storage now (name + description only), then once you've taught the skill attach it with "
+    "collection_update(name='{name}', skill=<title>, trigger=\"every <seconds>\", "
+    "notify=<true/false>)."
+)
+
+# A skill create with no trigger: the collection wouldn't know when to run, so it's
+# refused naming the three forms (a skill collection must be scheduled, #1631).
+_MISSING_TRIGGER = (
+    "A skill collection needs a trigger so it knows when to run. Set trigger to one of: "
+    '"every <seconds>" (recurring), "once at <ISO> [xN]" (scheduled / one-shot), or '
+    '"on advance of <log>" (wake when a source log advances).'
 )
 
 
@@ -557,21 +563,20 @@ class CollectionCreateTool(MemoryTool):
         "\n"
         "TWO ways to call it:\n"
         "- WITH a `skill`: instantiate that skill — its recipe becomes the collection's "
-        "routine, run every `interval` (or on a `run_at` schedule). You don't write "
-        "steps here; the skill supplies them.\n"
+        "routine, run on the `trigger` you set. You don't write steps here; the skill "
+        "supplies them.\n"
         "- WITHOUT a `skill`: an INERT storage collection — it holds entries but nothing "
         "runs against it yet. Use this to set up the container first when you're about "
-        "to TEACH a skill: create it (name + intent only), demonstrate the routine once "
-        "so you can save it with skill_create, then attach the skill with "
+        "to TEACH a skill: create it (name + description only), demonstrate the routine "
+        "once so you can save it with skill_create, then attach the skill with "
         "collection_update to make it do the job. Don't pass a trigger / notify / expiry "
         "with a skill-less create — an inert collection has no job to schedule.\n"
         "\n"
         "Fields:\n"
         "- `name` — unique slug for the collection (lowercase, hyphens).\n"
-        "- `intent` — REQUIRED. What the user asked for, in their own words — the "
-        'goal this collection serves ("keep an eye on the price of that jacket"). '
-        "Immutable after creation and the collection's meaning anchor (how "
-        "find_mine resolves it), so get it right and confirm it back.\n"
+        "- `description` — REQUIRED. What this collection is for, in the user's own words "
+        '("keep an eye on the price of that jacket"). It is the collection\'s meaning '
+        "anchor (how find_mine resolves it), so get it right and confirm it back.\n"
         "- `skill` — OPTIONAL. The skill to instantiate, by exact name or a "
         'paraphrase of what it does ("watch a page for a change"). Omit it for an inert '
         "storage collection. If your paraphrase matches several skills I'll list them to "
@@ -579,24 +584,22 @@ class CollectionCreateTool(MemoryTool):
         "- `params` — a map binding the skill's holes to values "
         '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED hole '
         "must be bound or the call is refused naming what's missing.\n"
-        "- Trigger — set EXACTLY ONE: `interval` (seconds — a recurring cadence, e.g. "
-        "3600 for hourly), OR `run_at` + `max_runs` (an ISO datetime to start at plus "
-        "how many times to run — `max_runs`=1 is a one-time reminder that archives "
-        "itself after firing), OR `on_advance` (the name of a source LOG — the "
-        "collection wakes as soon as that log gets a new entry, ideal for chaining one "
-        "collector off another's output; add `min_interval` seconds to cap how often it "
-        "fires on a busy source).\n"
+        '- `trigger` — ONE string, in one of three forms: "every <seconds>" (a recurring '
+        'cadence, e.g. "every 3600" for hourly), "once at <ISO datetime> [xN]" (run at a '
+        'time, N times — "once at 2026-07-20T09:00:00Z" is a one-time reminder that '
+        'archives itself, "... x3" runs three times), or "on advance of <log>" (the '
+        "collection wakes as soon as that source LOG gets a new entry — chain one "
+        "collector off another's output). An unreadable trigger is refused naming the "
+        "three forms.\n"
         "- `expires_at` — OPTIONAL. An ISO datetime end condition; the collection "
         "archives itself once it passes, so a bounded watch needs no teardown.\n"
         "- `notify` — Set `true` when the user wants to be told about / kept posted "
         "on / alerted to new or changed entries as they're found. Leave `false` (the "
         "default) for a silent collection they'll ask about later.\n"
-        "- `create_anyway` — Leave unset. Only set `true` to deliberately create a "
-        "collection I flagged as a near-duplicate of one you already have.\n"
         "\n"
-        "Returns a structured echo of what landed (skill, bound params, trigger, "
-        "notify, expiry, and the rendered routine). Confirm it back — don't invent "
-        "fields it didn't return."
+        "Returns a structured echo of what landed (description, skill, bound params, "
+        "trigger, notify, expiry, and the rendered routine). Confirm it back — don't "
+        "invent fields it didn't return."
     )
     parameters = {
         "type": "object",
@@ -605,12 +608,12 @@ class CollectionCreateTool(MemoryTool):
                 "type": "string",
                 "description": "Unique collection name (slug-style: lowercase, hyphens)",
             },
-            "intent": {
+            "description": {
                 "type": "string",
                 "description": (
-                    "REQUIRED. What the user asked for, in their words — the goal this "
-                    'collection serves ("a running list of good retro JRPGs to play"), not '
-                    "the mechanism. Immutable after creation; confirm it back."
+                    "REQUIRED. What this collection is for, in the user's words — the goal "
+                    'it serves ("a running list of good retro JRPGs to play"), not the '
+                    "mechanism. The meaning anchor; confirm it back."
                 ),
             },
             "skill": {
@@ -629,40 +632,13 @@ class CollectionCreateTool(MemoryTool):
                     "required hole must be bound."
                 ),
             },
-            "interval": {
-                "type": "integer",
-                "description": (
-                    "Recurring cadence in seconds (e.g. 1800=30m, 3600=1h, 86400=daily). "
-                    "Set this OR run_at+max_runs, not both."
-                ),
-            },
-            "run_at": {
+            "trigger": {
                 "type": "string",
                 "description": (
-                    "ISO-8601 datetime to first run at (a delayed / one-shot start). Requires "
-                    "max_runs; don't also set interval."
-                ),
-            },
-            "max_runs": {
-                "type": "integer",
-                "description": (
-                    "With run_at: retire the collection after this many runs (1 = a one-time "
-                    "reminder)."
-                ),
-            },
-            "on_advance": {
-                "type": "string",
-                "description": (
-                    "Trigger form: the name of a source LOG (copy it from your store map). The "
-                    "collection wakes when that log advances past its cursor. Set this alone — "
-                    "not with interval or run_at."
-                ),
-            },
-            "min_interval": {
-                "type": "integer",
-                "description": (
-                    "With on_advance: an optional floor in seconds between fires (throttle a "
-                    "chatty source). Omit to fire as soon as the source advances."
+                    "One of three forms: 'every <seconds>' (recurring cadence, e.g. "
+                    "'every 3600' hourly), 'once at <ISO datetime> [xN]' (run at a time, N "
+                    "times — 'once at 2026-07-20T09:00:00Z' is a one-shot, '... x3' three "
+                    "times), or 'on advance of <log>' (wake when a source log advances)."
                 ),
             },
             "expires_at": {
@@ -682,11 +658,11 @@ class CollectionCreateTool(MemoryTool):
             "create_anyway": {
                 "type": "boolean",
                 "description": (
-                    "Leave unset. true = deliberately create despite a near-duplicate flag."
+                    "Reactive override — set only when a near-duplicate refusal says to."
                 ),
             },
         },
-        "required": ["name", "intent"],
+        "required": ["name", "description"],
     }
     args_model = CollectionCreateArgs
 
@@ -753,19 +729,18 @@ class CollectionCreateTool(MemoryTool):
         still applies; the echo is honest about being storage-only."""
         if job_error := self._reject_job_args(args):
             return job_error
-        description_embedding = await embed_text(self._llm_client, args.intent)
+        description_embedding = await embed_text(self._llm_client, args.description)
         if not args.create_anyway:
             dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
             if dup is not None:
                 return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
-            args.intent,
+            args.description,
             description_embedding=description_embedding,
-            intent=args.intent,
             created_by_run_id=self._created_by_run_id,
         )
-        suffix = _description_degraded_suffix(args.intent, description_embedding)
+        suffix = _description_degraded_suffix(args.description, description_embedding)
         return ToolResult(message=f"{render_inert_echo(memory)}{suffix}", mutated=True)
 
     @staticmethod
@@ -774,17 +749,7 @@ class CollectionCreateTool(MemoryTool):
         notify / expiry passed alongside has nothing to attach to, so it's refused
         naming the fix (attach a skill via collection_update once one's taught) rather
         than silently dropped (visible degradation over silent success)."""
-        has_job = any(
-            (
-                args.interval is not None,
-                args.run_at is not None,
-                args.max_runs is not None,
-                args.on_advance is not None,
-                args.min_interval is not None,
-                args.expires_at is not None,
-                args.notify,
-            )
-        )
+        has_job = any((args.trigger is not None, args.expires_at is not None, args.notify))
         if not has_job:
             return None
         return ToolResult(message=_INERT_JOB_ARGS_REFUSAL.format(name=args.name), success=False)
@@ -792,19 +757,14 @@ class CollectionCreateTool(MemoryTool):
     def _parse_trigger(
         self, args: CollectionCreateArgs
     ) -> ToolResult | tuple[Trigger, datetime | None]:
-        """The exclusive trigger union + optional end condition, parsed before any
-        skill work so a bad schedule fails fast.  Returns the failed ``ToolResult``
-        on a ``TriggerError``, else the ``(trigger, expires_at)`` pair.  The once
-        form is paced at the dispatcher tick."""
+        """Parse the single ``trigger`` arg + optional end condition before any skill
+        work, so a bad schedule fails fast.  A skill collection needs a trigger (it must
+        know when to run), so a missing one is refused naming the three forms; an
+        unparseable one surfaces ``parse_trigger``'s teaching rejection verbatim."""
+        if args.trigger is None:
+            return ToolResult(message=_MISSING_TRIGGER, success=False)
         try:
-            trigger = build_trigger(
-                args.interval,
-                args.run_at,
-                args.max_runs,
-                args.on_advance,
-                args.min_interval,
-                _once_form_interval(),
-            )
+            trigger = parse_trigger(args.trigger, _once_form_interval())
             expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
         except TriggerError as exc:
             return ToolResult(message=str(exc), success=False)
@@ -820,21 +780,20 @@ class CollectionCreateTool(MemoryTool):
     ) -> ToolResult:
         """Idempotency at birth (#1567), then create the collection and echo it.
 
-        ``intent`` doubles as the routing/dedup ``description``; ``notify`` drives
-        the run-time notify suffix on the collector (#1557 — the sole emission
-        path since the notifier consumer was retired)."""
-        description_embedding = await embed_text(self._llm_client, args.intent)
+        ``description`` is the routing/dedup meaning anchor; ``notify`` drives the
+        run-time notify suffix on the collector (#1557 — the sole emission path since
+        the notifier consumer was retired)."""
+        description_embedding = await embed_text(self._llm_client, args.description)
         if not args.create_anyway:
             dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
             if dup is not None:
                 return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
-            args.intent,
+            args.description,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=trigger.collector_interval_seconds,
             description_embedding=description_embedding,
-            intent=args.intent,
             notify=args.notify,
             created_by_run_id=self._created_by_run_id,
             expires_at=expires_at,
@@ -847,7 +806,7 @@ class CollectionCreateTool(MemoryTool):
             skill_params=args.params,
             source_log=trigger.source_log,
         )
-        suffix = _description_degraded_suffix(args.intent, description_embedding)
+        suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
         return ToolResult(message=f"{echo}{suffix}", mutated=True)
 
@@ -1610,8 +1569,8 @@ _SKILL_GONE = (
 # cadence, so it won't dispatch until one is set (#1629 — visible over silent).
 _NO_TRIGGER_NOTE = (
     "\n\nHeads up: this collection now has a routine but no trigger, so it won't run yet. "
-    "Set one with collection_update(name='{name}', interval=<seconds>) (or run_at + "
-    "max_runs, or on_advance)."
+    "Set one with collection_update(name='{name}', trigger=\"every <seconds>\") (or "
+    '"once at <ISO> [xN]", or "on advance of <log>").'
 )
 
 
@@ -1663,12 +1622,11 @@ class CollectionUpdateTool(MemoryTool):
         "- `params` — rebind the skill's fill-in-the-blank holes to new values and "
         "re-render, keeping the same skill. Omit to keep the current bindings. Every "
         "required hole must be bound or the call is refused naming what's missing.\n"
-        "- Trigger — the job's schedule (set EXACTLY ONE to change it, else omit to "
-        "leave it): `interval` (recurring seconds, e.g. 3600 for hourly), OR `run_at` + "
-        "`max_runs` (an ISO datetime to start at plus how many times to run), OR "
-        "`on_advance` (a source LOG name + optional `min_interval` floor). Setting a "
-        "trigger REPLACES the whole schedule. This is how you give an INERT collection "
-        "its cadence when you adopt a skill onto it.\n"
+        "- `trigger` — the job's schedule as ONE string (set it to change the schedule, "
+        'else omit to leave it): "every <seconds>" (recurring, e.g. "every 3600"), '
+        '"once at <ISO datetime> [xN]" (run at a time, N times), or "on advance of <log>" '
+        "(wake when a source log advances). Setting it REPLACES the whole schedule. This "
+        "is how you give an INERT collection its cadence when you adopt a skill onto it.\n"
         "- `expires_at` — OPTIONAL ISO datetime end condition; the collection archives "
         "itself once it passes.\n"
         "\n"
@@ -1725,35 +1683,14 @@ class CollectionUpdateTool(MemoryTool):
                     "Omit to keep current bindings. Every required hole must be bound."
                 ),
             },
-            "interval": {
-                "type": "integer",
-                "description": (
-                    "Trigger form: recurring cadence in seconds (1800=30m, 3600=1h, "
-                    "86400=daily). Replaces the whole trigger. Set this OR run_at+max_runs "
-                    "OR on_advance, not more than one."
-                ),
-            },
-            "run_at": {
+            "trigger": {
                 "type": "string",
                 "description": (
-                    "Trigger form: ISO-8601 datetime to first run at (delayed / one-shot). "
-                    "Requires max_runs; don't also set interval or on_advance."
+                    "The job's schedule, ONE string in one of three forms — setting it "
+                    "REPLACES the whole schedule: 'every <seconds>' (recurring), 'once at "
+                    "<ISO datetime> [xN]' (run at a time, N times), or 'on advance of <log>' "
+                    "(wake when a source log advances). Omit to leave the schedule unchanged."
                 ),
-            },
-            "max_runs": {
-                "type": "integer",
-                "description": "With run_at: retire after this many runs (1 = one-shot).",
-            },
-            "on_advance": {
-                "type": "string",
-                "description": (
-                    "Trigger form: the name of a source LOG — the collection wakes when that "
-                    "log advances. Optional min_interval floor; set this alone."
-                ),
-            },
-            "min_interval": {
-                "type": "integer",
-                "description": "With on_advance: an optional floor in seconds between fires.",
             },
             "expires_at": {
                 "type": "string",
@@ -1801,33 +1738,16 @@ class CollectionUpdateTool(MemoryTool):
     def _parse_trigger(
         self, args: CollectionUpdateArgs
     ) -> ToolResult | tuple[Trigger | None, datetime | None]:
-        """Parse the optional trigger union + end condition at apply time (#1629, the
-        same exclusive union collection_create uses).  Returns ``(None, expires)`` when
-        no trigger field is set (cadence untouched) or the parsed ``(Trigger, expires)``;
-        a bad union / orphaned ``max_runs`` / ``min_interval`` is a ``build_trigger``
-        refusal surfaced verbatim."""
-        has_trigger = any(
-            value is not None
-            for value in (
-                args.interval,
-                args.run_at,
-                args.max_runs,
-                args.on_advance,
-                args.min_interval,
-            )
-        )
+        """Parse the optional ``trigger`` arg + end condition at apply time (#1631, the
+        same one-arg three-form trigger collection_create uses).  Returns
+        ``(None, expires)`` when no trigger is set (cadence untouched) or the parsed
+        ``(Trigger, expires)``; an unparseable trigger surfaces ``parse_trigger``'s
+        teaching rejection verbatim."""
         try:
             expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
             trigger = (
-                build_trigger(
-                    args.interval,
-                    args.run_at,
-                    args.max_runs,
-                    args.on_advance,
-                    args.min_interval,
-                    _once_form_interval(),
-                )
-                if has_trigger
+                parse_trigger(args.trigger, _once_form_interval())
+                if args.trigger is not None
                 else None
             )
         except TriggerError as exc:
@@ -1850,7 +1770,7 @@ class CollectionUpdateTool(MemoryTool):
             args, args.extraction_prompt, None, None, embedding, trigger, expires_at
         )
         suffix = _description_degraded_suffix(args.description, embedding)
-        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}{self._intent_note(args)}"
+        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
         return ToolResult(message=message, mutated=True)
 
     async def _reinstantiate(
@@ -1881,7 +1801,7 @@ class CollectionUpdateTool(MemoryTool):
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(memory, skill.name, params)
         return ToolResult(
-            message=f"{echo}{suffix}{self._no_trigger_note(memory)}{self._intent_note(args)}",
+            message=f"{echo}{suffix}{self._no_trigger_note(memory)}",
             mutated=True,
         )
 
@@ -1925,10 +1845,10 @@ class CollectionUpdateTool(MemoryTool):
         expires_at: datetime | None,
     ) -> MemoryRow:
         """Thread the update through the store — the metadata fields, the computed
-        prompt / skill provenance / anchor, and the apply-time trigger (#1629).
-        ``intent`` is never applied (immutable).  A ``trigger`` REPLACES the whole
-        trigger (``replace_trigger``); ``expires_at`` sets the end condition.  Records
-        the mutation event with the run id + changed fields (trigger / expires_at)."""
+        prompt / skill provenance / anchor, and the apply-time trigger (#1629).  A
+        ``trigger`` REPLACES the whole trigger (``replace_trigger``); ``expires_at`` sets
+        the end condition.  Records the mutation event with the run id + changed fields
+        (trigger / expires_at)."""
         return self._db.memories.update_collection_metadata(
             args.name,
             description=args.description,
@@ -1961,18 +1881,6 @@ class CollectionUpdateTool(MemoryTool):
             return ""
         return _NO_TRIGGER_NOTE.format(name=memory.name)
 
-    @staticmethod
-    def _intent_note(args: CollectionUpdateArgs) -> str:
-        """The immutable-intent accommodation (migration 0050): if the model passed
-        ``intent`` back on an edit, apply everything else and say intent stayed fixed —
-        rather than reject the whole call and watch the model give up."""
-        if args.intent is None:
-            return ""
-        return (
-            "\n\n`intent` was not changed — it's fixed at creation and can't be edited via "
-            "collection_update (everything else above was applied)."
-        )
-
 
 class MemoryMetadataTool(MemoryTool):
     """Return the metadata fields for a single memory (collection or log).
@@ -1983,9 +1891,8 @@ class MemoryMetadataTool(MemoryTool):
 
     name = "memory_metadata"
     description = (
-        "Return metadata for a memory: description, intent (the user's "
-        "original goal), notify flag, collector interval, last collected "
-        "timestamp, archived state, and extraction prompt.  Works for both "
+        "Return metadata for a memory: description, notify flag, trigger, last "
+        "collected timestamp, archived state, and extraction prompt.  Works for both "
         "collections and logs."
     )
     parameters = {
@@ -2012,11 +1919,6 @@ class MemoryMetadataTool(MemoryTool):
         return ToolResult(message=self._format(_resolve(self._db, args.memory).row))
 
     def _format(self, memory: Any) -> str:
-        interval = (
-            f"{memory.collector_interval_seconds}s"
-            if memory.collector_interval_seconds is not None
-            else "not set"
-        )
         last_collected = (
             format_log_timestamp(memory.last_collected_at)
             if memory.last_collected_at is not None
@@ -2029,21 +1931,20 @@ class MemoryMetadataTool(MemoryTool):
         # it's live, and when it ends (#1566).
         lifecycle = _lifecycle_block(self._db, memory)
         # The skill-provenance line (#1603) — which skill rendered this collection's
-        # recipe, and the params bound into it — sits with the intent, ahead of the
+        # recipe, and the params bound into it — sits with the description, ahead of the
         # extraction prompt it produced.  Absent for a hand-authored / seeded
         # collection (skill_name NULL), so that render is unchanged.
         skill = _skill_provenance_line(memory)
-        # Lead with what the collection is FOR (intent) and what it DOES (the recipe),
-        # because that is the substance a description should convey; the operational
-        # settings (cadence/timestamps) are secondary and go last.  Ordered this
-        # way — and with the nudge below — so a model asked "what does this do?" walks
-        # through the recipe's steps instead of reciting the cadence/notify trivia (the
-        # failure the #1530 legibility baseline surfaced).
+        # Lead with what the collection is FOR (description) and what it DOES (the
+        # recipe), because that is the substance; the operational settings
+        # (cadence/timestamps) are secondary and go last.  Ordered this way — and with
+        # the nudge below — so a model asked "what does this do?" walks through the
+        # recipe's steps instead of reciting the cadence/notify trivia (the failure the
+        # #1530 legibility baseline surfaced).
         lines = [
             f"name: {memory.name}",
             f"type: {memory.type}",
             f"description: {memory.description}",
-            f"intent: {memory.intent or 'none'}",
             *([skill] if skill is not None else []),
             "",
             "What it does each cycle — the recipe below is the collection's actual "
@@ -2053,8 +1954,7 @@ class MemoryMetadataTool(MemoryTool):
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
-            f"interval: {interval}",
-            *self._trigger_lines(memory),
+            self._trigger_line(memory),
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
@@ -2066,14 +1966,17 @@ class MemoryMetadataTool(MemoryTool):
         return "\n".join(lines)
 
     @staticmethod
-    def _trigger_lines(memory: Any) -> list[str]:
-        """The on_advance trigger clause (#1604) — ``trigger: on advance of <log>`` —
-        when the collection wakes on a source log advancing; empty otherwise so an
-        interval / once-shaped collection's render is byte-identical.  The ``interval``
-        line above is the min floor a source-driven collection is paced at."""
-        if memory.source_log is None:
-            return []
-        return [f"trigger: on advance of {memory.source_log}"]
+    def _trigger_line(memory: Any) -> str:
+        """The copyable ``trigger`` clause (#1631, display form == invocation form):
+        ``trigger: every <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>``
+        for a collection with a trigger, or ``trigger: none`` for a log / an inert
+        collection with no cadence yet — so the render never emits a half-formed clause."""
+        has_trigger = (
+            memory.collector_interval_seconds is not None
+            or memory.run_at is not None
+            or memory.source_log is not None
+        )
+        return f"trigger: {render_trigger_clause(memory) if has_trigger else 'none'}"
 
 
 class CollectionCatalogTool(MemoryTool):
@@ -2082,7 +1985,7 @@ class CollectionCatalogTool(MemoryTool):
 
     The inventory surface: each user collection (logs and framework collectors
     excluded) with its lifecycle block (status / expires / created-from-message),
-    description, intent, ``notify`` flag, and full ``extraction_prompt`` — the
+    description, ``notify`` flag, and full ``extraction_prompt`` — the
     prompts that actually run.  **Archived-inclusive** (#1566): archiving a
     mechanism changes its status, never its visibility, so a just-archived
     collection still renders (clearly marked ``status: archived <when>``) and a
@@ -2097,7 +2000,7 @@ class CollectionCatalogTool(MemoryTool):
         "List every collection — live and archived — with its full gather "
         "recipe and lifecycle: name, status (active / archived with when), end "
         "condition, when and from which message it was created, description, "
-        "intent (the user's goal in their words), whether it notifies the user "
+        "whether it notifies the user "
         "(notify), and its extraction_prompt.  Use it to see what Penny "
         "collects, how each collection is built, and which have been retired.  "
         "Logs and framework collectors are omitted."
@@ -2144,7 +2047,6 @@ class CollectionCatalogTool(MemoryTool):
             f"## {row.name}",
             *_lifecycle_block(self._db, row),
             f"description: {row.description}",
-            f"intent: {row.intent or '(none)'}",
             f"notify: {row.notify}",
         ]
         if (skill := _skill_provenance_line(row)) is not None:

@@ -33,7 +33,7 @@ from penny.tests.eval.conftest import (
     collection_entries,
     seed_collection,
 )
-from penny.tests.eval.fixtures import BOARD_GAMES, BOARD_GAMES_EXTRACTION_PROMPT, BOARD_GAMES_INTENT
+from penny.tests.eval.fixtures import BOARD_GAMES, BOARD_GAMES_EXTRACTION_PROMPT
 
 pytestmark = pytest.mark.eval
 
@@ -53,7 +53,6 @@ def _seed_board_games(db: Database) -> None:
         db,
         BOARD_GAMES,
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
-        intent=BOARD_GAMES_INTENT,
         interval=3600,
         notify=True,
     )

@@ -193,7 +193,6 @@ def seed_collection(
     synth: SynthCollection,
     *,
     extraction_prompt: str | None = None,
-    intent: str | None = None,
     interval: int | None = None,
     notify: bool = False,
 ) -> None:
@@ -203,7 +202,6 @@ def seed_collection(
         synth.description,
         extraction_prompt=extraction_prompt,
         collector_interval_seconds=interval,
-        intent=intent,
         notify=notify,
     )
     db.memory(synth.name).write(

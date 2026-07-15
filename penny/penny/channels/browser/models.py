@@ -211,7 +211,8 @@ class MemoryRecord(BaseModel):
     """One memory's metadata for the addon's Memories tab list view.
 
     The legacy ``inclusion`` / ``recall`` routing fields were dropped when the
-    dead recall substrate was removed (#1583); the addon TS may still read those
+    dead recall substrate was removed (#1583), and ``intent`` with the surface
+    collapse (#1631 — ``description`` absorbs it); the addon TS may still read those
     keys (a client-surface change, out of scope per #1606) — the server simply
     no longer sends them.
     """
@@ -219,7 +220,6 @@ class MemoryRecord(BaseModel):
     name: str
     type: str  # "collection" | "log"
     description: str
-    intent: str | None  # the user's stated goal at creation (editable only here)
     # Notify-on-new. Wire field kept as ``published`` (the addon/iOS clients still send
     # and read that key); server-side it maps to the ``memory.notify`` column — the
     # ``published`` pub/sub side-channel was retired in #1557.
@@ -319,13 +319,13 @@ class BrowserMemoryCreate(BaseModel):
     creatable; logs are seeded by migrations.
 
     The legacy ``inclusion`` / ``recall`` routing fields were dropped with the
-    dead recall substrate (#1583); an addon that still sends them is fine — the
-    extra keys are ignored (a client-surface change is out of scope per #1606)."""
+    dead recall substrate (#1583), and ``intent`` with the surface collapse (#1631 —
+    ``description`` absorbs it); an addon that still sends them is fine — the extra keys
+    are ignored (a client-surface change is out of scope per #1606)."""
 
     type: str
     name: str
     description: str
-    intent: str | None = None  # the user's goal for this collection
     # Notify-on-new (default silent). Wire field kept as ``published``; maps to the
     # ``memory.notify`` column server-side (#1557 retired the pub/sub side-channel).
     published: bool = False
@@ -335,18 +335,16 @@ class BrowserMemoryCreate(BaseModel):
 
 class BrowserMemoryUpdate(BaseModel):
     """Edit metadata on an existing collection.  Only collections are user-
-    editable; logs are read-only by design.  ``intent`` is editable here (the
-    user owns the spec) even though the agent's ``collection_update`` tool
-    cannot touch it.
+    editable; logs are read-only by design.
 
     The legacy ``inclusion`` / ``recall`` routing fields were dropped with the
-    dead recall substrate (#1583); an addon that still sends them is fine — the
-    extra keys are ignored (a client-surface change is out of scope per #1606)."""
+    dead recall substrate (#1583), and ``intent`` with the surface collapse (#1631 —
+    ``description`` absorbs it); an addon that still sends them is fine — the extra keys
+    are ignored (a client-surface change is out of scope per #1606)."""
 
     type: str
     name: str
     description: str | None = None
-    intent: str | None = None
     # Flip notify-on-new; None = leave unchanged. Wire field kept as ``published``;
     # maps to the ``memory.notify`` column server-side (#1557).
     published: bool | None = None

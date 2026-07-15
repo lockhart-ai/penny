@@ -47,10 +47,8 @@ from penny.tests.eval.fixtures import (
     RESEARCH_PAGES,
     RESEARCH_WATCHER,
     RESEARCH_WATCHER_EXTRACTION_PROMPT,
-    RESEARCH_WATCHER_INTENT,
     THINKING_PAGES,
     WATCHLIST,
-    WATCHLIST_INTENT,
     WATCHLIST_MESSAGES,
     WATCHLIST_NUMBERED_PROMPT,
 )
@@ -91,7 +89,6 @@ def _seed_research_watcher(db: Database) -> None:
         RESEARCH_WATCHER.name,
         RESEARCH_WATCHER.description,
         extraction_prompt=RESEARCH_WATCHER_EXTRACTION_PROMPT,
-        intent=RESEARCH_WATCHER_INTENT,
         collector_interval_seconds=3600,
         notify=False,
     )
@@ -243,7 +240,6 @@ def _seed_watchlist(db: Database) -> None:
         db,
         WATCHLIST,
         extraction_prompt=WATCHLIST_NUMBERED_PROMPT,
-        intent=WATCHLIST_INTENT,
         interval=3600,
     )
     for message in WATCHLIST_MESSAGES:

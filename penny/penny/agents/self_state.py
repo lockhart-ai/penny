@@ -50,7 +50,8 @@ from typing import TYPE_CHECKING
 
 from penny.constants import PennyConstants
 from penny.database.mutation_store import mutation_change_summary
-from penny.datetime_utils import format_interval, format_log_timestamp
+from penny.datetime_utils import format_log_timestamp
+from penny.tools.collection_instantiation import render_trigger_clause
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -165,15 +166,16 @@ class SelfStateHeader:
 
     @staticmethod
     def _cadence(row: MemoryRow) -> str:
-        """The mechanism's trigger clause: ``on advance of <log>`` for a source-
-        driven (on_advance) collection (#1604), else ``every <interval>`` from its
-        current cadence, or empty.  A source-driven collection's cadence is only its
-        min floor, so the trigger — not the floor — is what renders at a glance."""
-        if row.source_log is not None:
-            return f"on advance of {row.source_log}"
-        if row.collector_interval_seconds is None:
-            return ""
-        return f"every {format_interval(row.collector_interval_seconds)}"
+        """The mechanism's trigger clause rendered AS the copyable ``trigger`` input
+        (#1631, display form == invocation form): ``on advance of <log>`` · ``once at
+        <ISO> [xN]`` · ``every <seconds>``.  Empty when the collection has no trigger yet
+        (an adopted skill awaiting a cadence), so the mechanism line drops the clause."""
+        has_trigger = (
+            row.source_log is not None
+            or row.run_at is not None
+            or row.collector_interval_seconds is not None
+        )
+        return render_trigger_clause(row) if has_trigger else ""
 
     @staticmethod
     def _end_condition(row: MemoryRow) -> str:

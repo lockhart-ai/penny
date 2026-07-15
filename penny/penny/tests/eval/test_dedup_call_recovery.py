@@ -41,7 +41,6 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.fixtures import (
     WEEKLY_DIGEST,
     WEEKLY_DIGEST_EXTRACTION_PROMPT,
-    WEEKLY_DIGEST_INTENT,
     WEEKLY_DIGEST_MESSAGES,
 )
 
@@ -60,7 +59,6 @@ def _seed_digest_with_messages(db: Database) -> None:
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
-        intent=WEEKLY_DIGEST_INTENT,
         collector_interval_seconds=1200,
     )
     for message in WEEKLY_DIGEST_MESSAGES:

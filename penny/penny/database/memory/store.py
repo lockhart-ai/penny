@@ -65,7 +65,6 @@ class _MetadataUpdate(BaseModel):
     notify: bool | None = None
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
-    intent: str | None = None
     # Trigger union (#1629): the apply-time job axis.  ``replace_trigger`` swaps the
     # WHOLE trigger atomically from these four values (cadence + the once-shaped
     # run_at/max_runs overlay + the on_advance source_log), so switching forms clears
@@ -98,9 +97,6 @@ class _MetadataUpdate(BaseModel):
             memory.extraction_prompt = self.extraction_prompt
             changed.append("extraction_prompt")
         changed.extend(self._apply_trigger(memory))
-        if self.intent is not None:
-            memory.intent = self.intent
-            changed.append("intent")
         if self.skill_name is not None:
             # A re-render re-homes the collection on a skill: stamp the origin skill
             # and its bound params (JSON, as at creation), so provenance stays a read
@@ -235,7 +231,6 @@ class MemoryStore:
         extraction_prompt: str | None = None,
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
-        intent: str | None = None,
         notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
@@ -253,7 +248,6 @@ class MemoryStore:
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
             description_embedding=description_embedding,
-            intent=intent,
             notify=notify,
             created_by_run_id=created_by_run_id,
             expires_at=expires_at,
@@ -290,7 +284,6 @@ class MemoryStore:
         extraction_prompt: str | None = None,
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
-        intent: str | None = None,
         notify: bool = False,
         created_by_run_id: str | None = None,
         expires_at: datetime | None = None,
@@ -316,7 +309,6 @@ class MemoryStore:
                 # The create cadence is the user's intended cadence — the
                 # snap-back target for auto-throttle.
                 base_interval_seconds=collector_interval_seconds,
-                intent=intent,
                 # Provenance + lifecycle (#1566): the creating run and the end
                 # condition.  Both None for seeded / system rows; the spawning
                 # message is linked post-run via ``link_source_message``.
@@ -500,7 +492,6 @@ class MemoryStore:
         extraction_prompt: str | None = None,
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
-        intent: str | None = None,
         notify: bool | None = None,
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
@@ -520,13 +511,10 @@ class MemoryStore:
         ``None`` (a transient embed failure at the caller) the anchor is cleared
         to ``NULL`` rather than left pointing at the old, now-mismatched text.  A
         ``NULL`` anchor is what the startup description backfill re-heals; a stale
-        non-``NULL`` one it could never detect.  ``intent`` is editable here (the
-        user-authored update path) even though it is NOT a field on the
-        ``collection_update`` tool: the user owns the spec, the agent cannot
-        rewrite it.  ``skill_name`` / ``skill_params`` re-stamp the collection's
-        skill provenance on a re-render (#1620) — the caller renders the new
-        ``extraction_prompt`` from the skill's current steps and passes it alongside
-        the pair, so the recorded origin always matches the rendered snapshot.
+        non-``NULL`` one it could never detect.  ``skill_name`` / ``skill_params``
+        re-stamp the collection's skill provenance on a re-render (#1620) — the caller
+        renders the new ``extraction_prompt`` from the skill's current steps and passes
+        it alongside the pair, so the recorded origin always matches the rendered snapshot.
         """
         name = slug(name)
         self._require_collection(name)
@@ -536,7 +524,6 @@ class MemoryStore:
             notify=notify,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
-            intent=intent,
             run_at=run_at,
             max_runs=max_runs,
             source_log=source_log,
@@ -796,8 +783,8 @@ class MemoryStore:
         of (#1567), or ``None`` when the target is genuinely distinct.
 
         Compared name-vs-name (token containment) and description-vs-description
-        (content cosine — the intent/purpose anchor, since a skill-instantiated
-        collection's ``description`` is its intent) through the SAME three-signal
+        (content cosine — the collection's ``description`` is its purpose/meaning
+        anchor) through the SAME three-signal
         dedup rule the entry write uses (``sim.is_duplicate``) with the SAME runtime
         thresholds — never a hand-rolled similarity rule.  Active rows are checked
         before archived ones (a tombstone), so a live "already watching this" wins

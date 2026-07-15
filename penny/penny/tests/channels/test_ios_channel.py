@@ -319,7 +319,6 @@ async def test_admin_memories_request_returns_memory_records(tmp_path):
     db.memories.create_collection(
         "recipes",
         "Meal notes",
-        intent="Remember food preferences",
     )
 
     response = await _ios_admin_request(channel, {"type": "memories_request"})

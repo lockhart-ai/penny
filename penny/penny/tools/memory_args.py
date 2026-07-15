@@ -189,56 +189,49 @@ class CollectionCreateArgs(ToolArgs):
 
     A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
     that skill (resolved by name or meaning) — its steps render into the collection's
-    ``extraction_prompt``, ``params`` binds the skill's parameter holes, and a trigger
-    schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only — no
-    ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it until
-    a skill is attached later via ``collection_update`` (the two-step teach bootstrap).
-    A job-shaped arg (a trigger / ``notify`` / ``expires_at``) alongside a skill-less
-    create is refused, since an inert container has no job to describe.
+    ``extraction_prompt``, ``params`` binds the skill's parameter holes, and a
+    ``trigger`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
+    — no ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it
+    until a skill is attached later via ``collection_update`` (the two-step teach
+    bootstrap).  A job-shaped arg (a ``trigger`` / ``notify`` / ``expires_at``) alongside
+    a skill-less create is refused, since an inert container has no job to describe.
 
-    ``intent`` (required, non-blank) is what the user asked for in their own words —
-    the goal the collection serves, immutable after creation, and the collection's
-    routing/dedup anchor.  ``name`` is the unique slug.
+    ``description`` (required, non-blank) is what the collection is for, in the user's
+    own words — the goal it serves and the collection's routing/dedup meaning anchor.
+    ``name`` is the unique slug.
 
-    The **trigger** (skill path only) is an exclusive union validated in the tool
-    (``build_trigger``): EITHER ``interval`` (seconds — a recurring cadence), OR
-    ``run_at`` + ``max_runs`` (a delayed / one-shot schedule), OR ``on_advance`` (the
-    name of a source LOG — the collection wakes when that log advances past its cursor,
-    with an optional ``min_interval`` floor).  ``expires_at`` (optional) is the end
-    condition — the watch archives itself when it passes.  ``notify`` (default false)
-    makes the collection tell the user about new/changed entries; an omission stays
-    silent, so it can never accidentally notify.  ``create_anyway`` (default false) is
-    the deliberate override for the idempotency check — it must be set explicitly to
-    create a collection that resolves as a near-duplicate of an existing one.
+    The **trigger** (skill path only) is ONE argument with three enumerated forms,
+    parsed by prefix in the tool (``parse_trigger``): ``"every <seconds>"`` (a recurring
+    cadence), ``"once at <ISO time> [xN]"`` (a delayed / one-shot schedule, N runs
+    defaulting to 1), or ``"on advance of <log>"`` (the collection wakes when that source
+    LOG advances past its cursor).  An unparseable trigger is refused with a teaching
+    error naming the three forms.  ``expires_at`` (optional) is the end condition — the
+    watch archives itself when it passes.  ``notify`` (default false) makes the collection
+    tell the user about new/changed entries; an omission stays silent, so it can never
+    accidentally notify.  ``create_anyway`` (default false) is the reactive idempotency
+    override — set only when a near-duplicate refusal tells you to.
     """
 
     name: MemoryName
-    intent: NonBlankDescription
+    description: NonBlankDescription
     # The skill to instantiate; omitted (``None``) yields an INERT storage-only
     # collection — the first half of the two-step teach bootstrap (#1629).
     skill: MemoryName | None = None
     # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
     params: dict[str, str] = {}
-    # Trigger union — exactly one form, validated in the tool (build_trigger):
-    # ``interval`` (recurring) OR ``run_at`` + ``max_runs`` (scheduled/one-shot) OR
-    # ``on_advance`` (wake when the named source log advances — #1604).
-    interval: int | None = None
-    run_at: str | None = None
-    max_runs: int | None = None
-    # On_advance trigger (#1604): the source LOG whose advance wakes this collection.
-    # ``min_interval`` is an optional floor (seconds) between fires for a chatty
-    # source; omitted → paced at the dispatcher tick.  Both refused unless the
-    # on_advance form is chosen (build_trigger).
-    on_advance: str | None = None
-    min_interval: int | None = None
+    # Trigger — one arg, three enumerated forms, parsed by prefix in the tool
+    # (parse_trigger, #1631): "every <seconds>" | "once at <ISO> [xN]" |
+    # "on advance of <log>".  Its render (render_trigger_clause) IS this input form.
+    trigger: str | None = None
     # End condition (optional) — an ISO-8601 datetime; the collection archives
     # itself when it passes.  Parsed in the tool (actionable error on a bad value).
     expires_at: str | None = None
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
     notify: bool = False
-    # The deliberate idempotency override (#1567) — default false so an omission
-    # never silently creates a near-duplicate; set true to create anyway.
+    # The reactive idempotency override (#1567) — default false so an omission never
+    # silently creates a near-duplicate; set true ONLY in response to a near-duplicate
+    # refusal (that refusal is the sole place it's explained).
     create_anyway: bool = False
 
 
@@ -273,44 +266,36 @@ class CollectionUpdateArgs(ToolArgs):
     mean "leave it alone") is skipped rather than overwriting the existing
     value.
 
-    ``intent`` is ACCEPTED but not applied — we serialize it in the metadata the
-    model reads, so it naturally passes it back on an edit; rather than reject the
-    whole call over an immutable field, the tool ignores it and says so (the model
-    kept getting the whole update rejected + then gave up).  See ``CollectionUpdateTool``.
-
     ``skill`` / ``params`` are the re-render axis (#1620): supplying either RE-RENDERS
     the ``extraction_prompt`` from a skill's current steps and re-stamps the
     collection's skill provenance — ``skill`` names a skill (by name or meaning, the
     #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its holes.
     Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
     ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
+    ``extraction_prompt`` is the raw-edit escape hatch — a FULL replacement body when
+    editing the prompt directly rather than re-rendering from a skill (mutually
+    exclusive with ``skill`` / ``params``).
 
-    The **trigger** is the apply-time job axis (#1629, absorbing #1604) — the SAME
-    exclusive union ``collection_create`` accepts, so a collection's schedule is
-    updatable post-create and an inert collection's job is set when a skill is adopted:
-    EITHER ``interval`` (recurring seconds), OR ``run_at`` + ``max_runs`` (a
-    delayed / one-shot schedule), OR ``on_advance`` (a source LOG + optional
-    ``min_interval`` floor); ``expires_at`` is the end condition.  Setting any trigger
-    field REPLACES the whole trigger (the unset members clear, so switching forms is
-    clean); omitting them all leaves the cadence untouched.
+    The **trigger** is the apply-time job axis — the SAME one-arg, three-form trigger
+    ``collection_create`` accepts (``parse_trigger``, #1631): ``"every <seconds>"`` |
+    ``"once at <ISO> [xN]"`` | ``"on advance of <log>"``.  Present → the whole trigger
+    is replaced atomically (the members the new form doesn't use clear); absent → the
+    cadence is left untouched.  So a collection's schedule is updatable post-create and
+    an inert collection's job is set when a skill is adopted.  ``expires_at`` is the end
+    condition.
     """
 
     name: MemoryName
     description: OptionalText = None
     extraction_prompt: OptionalExtractionPrompt = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
-    intent: OptionalText = None  # accepted but NOT applied — immutable; the tool explains
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
     params: dict[str, str] | None = None  # rebind the skill's holes; None = reuse current
-    # Trigger union (#1629) — the apply-time job axis, mirroring collection_create.
-    # Setting any field replaces the whole trigger; omitting them all leaves cadence
-    # untouched.  Exactly one form: interval OR run_at+max_runs OR on_advance.
-    interval: int | None = None
-    run_at: str | None = None
-    max_runs: int | None = None
-    on_advance: str | None = None
-    min_interval: int | None = None
+    # Trigger — one arg, three enumerated forms (parse_trigger, #1631), mirroring
+    # collection_create.  Present → replaces the whole trigger atomically; a blank/omit
+    # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of <log>".
+    trigger: OptionalText = None
     expires_at: str | None = None
 
 
