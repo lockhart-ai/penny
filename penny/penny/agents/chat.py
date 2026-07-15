@@ -281,16 +281,19 @@ class ChatAgent(Agent):
         The chat prompt opens with Penny's persona/instructions and closes with a
         deterministic **self-state header** — the dynamic tail — rendering her own
         operational situation (active mechanisms · recent activity · the store map
-        · durable user facts) purely from the registry (#1566) + ledger (#1560),
-        never a relevance guess.
+        · skills and standing rules · durable user facts) purely from the registry
+        (#1566) + ledger (#1560), never a relevance guess.
 
         The ambient inversion (#1555): the chat prompt no longer injects
         **speculative user-content recall** at all.  User content is fetched on
         demand via the tools the header's pointers name (anchored by the user's
-        message), and taught-behavior firing via ambient ``skills`` recall is
-        **dark until #1471** re-homes it onto a dedicated channel.  Background
-        agents keep the base envelope (profile + inventory) and never see this
-        header — it is the chat entry point's opening state.
+        message).  Taught-behavior firing — dark while #1555 removed ambient
+        ``skills`` recall — is re-homed by #1471 onto the header's **Skills and
+        rules** section: taught skills + the legacy ``skills`` collection's
+        standing rules render deterministically, so a rule fires ambiently (0
+        calls) with its full detail one guess-free hop away.  Background agents
+        keep the base envelope (profile + inventory) and never see this header —
+        it is the chat entry point's opening state.
         """
         return "\n\n".join(
             section

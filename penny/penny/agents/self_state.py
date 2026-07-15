@@ -24,6 +24,14 @@ one guess-free tool call from the detail). Sections:
   #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
+- **Skills and rules** — the pinned firing channel for taught skills and
+  standing behavior rules (#1471). Rendered deterministically (all of them,
+  never a relevance guess) so a standing rule fires *ambiently* — the rule is in
+  the prompt, so firing costs **0 calls**. Two feeds: the taught-skill registry
+  (``db.skills``, #1590) whose full recipe is one ``skill_read(<name>)`` hop
+  away, and the legacy ``skills`` collection's standing-rule entries — behavior
+  rules that went dark when #1555 removed ambient recall, resurfaced here —
+  whose steps are one ``collection_read_latest("skills")`` hop away.
 - **About the user** — the durable user-fact core (name, timezone, location):
   deterministic facts, not a relevance guess, so personality survives without a
   lookup.
@@ -50,7 +58,7 @@ if TYPE_CHECKING:
 
     from penny.database.database import Database
     from penny.database.message_store import EmissionActivity, RunActivity, RunOutcomeStamp
-    from penny.database.models import MemoryRow, MutationEvent
+    from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
 
 
 class SelfStateHeader:
@@ -65,12 +73,25 @@ class SelfStateHeader:
     MECHANISMS_HEADER = "### Active mechanisms"
     ACTIVITY_HEADER = "### Recent activity"
     MAP_HEADER = "### Your memory"
+    SKILLS_HEADER = "### Skills and rules"
     DURABLE_HEADER = "### About the user"
 
     EMPTY_MECHANISMS = "(no mechanisms yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
+    EMPTY_SKILLS = "(no skills or rules yet)"
     NO_PROFILE = "(no profile set yet)"
+
+    # The two feeds' group labels — each names its OWN guess-free drill-down (a
+    # taught skill resolves through ``skill_read``; a standing rule's steps live
+    # in the ``skills`` collection), so a rendered name is never a failed
+    # ``skill_read`` guess.  ``skill_read`` is named here, not in POINTERS, so the
+    # section addition stays surgical (POINTERS is shared, #1580 territory).
+    TAUGHT_SKILLS_LABEL = "Skills you've been taught — skill_read(<name>) for the full recipe:"
+    STANDING_RULES_LABEL = (
+        "Standing rules you follow — "
+        f'collection_read_latest("{PennyConstants.MEMORY_SKILLS_COLLECTION}") for the steps:'
+    )
 
     # The overflow tail each bounded section shows when it has more rows than its
     # cap — the fetch tool named so the remainder is one guess-free call away
@@ -101,6 +122,7 @@ class SelfStateHeader:
             self._mechanisms_section(),
             self._activity_section(),
             self._memory_map_section(),
+            self._skills_section(),
             self._durable_core_section(),
             self.POINTERS,
         ]
@@ -271,6 +293,65 @@ class SelfStateHeader:
         if overflow > 0:
             lines.append(self.MORE_MAP.format(count=overflow))
         return "\n".join(lines)
+
+    # ── Skills and standing rules ────────────────────────────────────────────
+
+    def _skills_section(self) -> str:
+        """The pinned firing channel for taught skills + standing rules (#1471).
+
+        Renders ALL of each feed (no relevance gating, no budget cap —
+        wholesale; trimming is a later tuning knob) so a standing rule fires
+        ambiently: it is *in the prompt*, so firing costs 0 calls. Each feed is a
+        labeled group naming its own guess-free drill-down; the whole section
+        collapses to one honest placeholder only when both feeds are empty."""
+        taught = self._taught_skill_lines()
+        rules = self._standing_rule_lines()
+        lines = [self.SKILLS_HEADER, *taught, *rules]
+        if not taught and not rules:
+            lines.append(self.EMPTY_SKILLS)
+        return "\n".join(lines)
+
+    def _taught_skill_lines(self) -> list[str]:
+        """``- <name> — <intent>`` per taught skill (the ``skill`` registry,
+        #1590, name order), under a label naming ``skill_read(<name>)`` as the
+        drill-down — the rendered name IS that call's argument (n≤1). Empty when
+        nothing has been taught yet (a fresh install ships the table empty)."""
+        skills = self.db.skills.list_all()
+        if not skills:
+            return []
+        lines = [self.TAUGHT_SKILLS_LABEL]
+        lines.extend(f"- {skill.name} — {self._one_line(skill.intent)}" for skill in skills)
+        return lines
+
+    def _standing_rule_lines(self) -> list[str]:
+        """``- <title>`` per standing rule — the legacy ``skills`` collection's
+        entries (title order), under a label naming ``collection_read_latest``
+        as the drill-down to the steps. These behavior rules went dark when #1555
+        removed ambient recall; resurfacing them here is this ticket's purpose."""
+        entries = self._standing_rules()
+        if not entries:
+            return []
+        lines = [self.STANDING_RULES_LABEL]
+        lines.extend(f"- {entry.key}" for entry in entries)
+        return lines
+
+    def _standing_rules(self) -> list[MemoryEntry]:
+        """The ``skills`` collection's keyed entries, title-sorted for a stable
+        render (deterministic regardless of seed timing, the inventory
+        convention). Empty list when the collection is absent (a schema-only DB
+        before the seed migrations) — a read, never a raise."""
+        skills = self.db.memory(PennyConstants.MEMORY_SKILLS_COLLECTION)
+        if skills is None:
+            return []
+        entries = [entry for entry in skills.read_all() if entry.key]
+        entries.sort(key=lambda entry: entry.key or "")
+        return entries
+
+    @staticmethod
+    def _one_line(text: str) -> str:
+        """Collapse whitespace/newlines to a single line so a taught skill's
+        intent (a user utterance, possibly multi-line) stays one bullet."""
+        return " ".join(text.split())
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 
