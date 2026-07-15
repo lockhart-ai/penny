@@ -32,6 +32,7 @@ from penny.database.skills import (
     SkillSubKind,
     SkillSubstitution,
 )
+from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
@@ -2587,6 +2588,131 @@ class TestRegistryProvenanceAndLifecycle:
         result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
         # A set end condition renders as its UTC datetime, not "never".
         assert "expires: 2026-12-25 09:00 UTC" in result.message
+
+
+class TestCollectionSkillProvenanceRender:
+    """Collection→skill provenance (#1603): a skill-instantiated collection records
+    the skill it was rendered from + the params bound into its render, and the
+    catalog / metadata surfaces name them — ``from skill: <name> (<param>=<value>)``.
+    The skill name is a live anchor (one ``skill_read`` hop reaches its steps/holes),
+    and the bound params are the reachable input a rebind/re-render consumes.  A
+    hand-authored / seeded collection (``skill_name`` NULL) renders EXACTLY as before
+    — the unmarked case is the quiet default, pinned byte-for-byte."""
+
+    @pytest.mark.asyncio
+    async def test_catalog_names_instantiating_skill_and_params_whole(self, tmp_path):
+        """The catalog render names the instantiating skill + its bound params on a
+        ``from skill:`` line right before the recipe it produced — asserted as a whole
+        render so the line's position and the unchanged rest are both pinned."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        create = await CollectionCreateTool(
+            db, cast(Any, MockLlmClient()), created_by_run_id="run-cinder-01"
+        ).execute(
+            name="cinder-elevation",
+            intent="watch Cinder Peak's elevation",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=3600,
+        )
+        assert create.success
+        row = db.memories.get("cinder-elevation")
+        result = await CollectionCatalogTool(db).execute()
+        expected = (
+            "## cinder-elevation\n"
+            "status: active\n"
+            "expires: never\n"
+            f"created: {format_log_timestamp(row.created_at)} by run run-cinder-01\n"
+            "description: watch Cinder Peak's elevation\n"
+            "intent: watch Cinder Peak's elevation\n"
+            "notify: False\n"
+            "from skill: Watch elevation (peak=Cinder Peak)\n"
+            f"extraction_prompt:\n{_MONEY_LITERAL}"
+        )
+        assert result.message == expected
+
+    @pytest.mark.asyncio
+    async def test_metadata_names_instantiating_skill_and_params(self, tmp_path):
+        """``memory_metadata`` names the skill + bound params, positioned ahead of the
+        extraction prompt it produced — so "which skill made this, and with what?" is
+        the same call that reads the collection."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation",
+            intent="watch Cinder Peak's elevation",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=3600,
+        )
+        result = await MemoryMetadataTool(db).execute(memory="cinder-elevation")
+        assert "from skill: Watch elevation (peak=Cinder Peak)" in result.message
+        # The provenance names the recipe's origin, ahead of the recipe itself.
+        assert result.message.index("from skill:") < result.message.index("extraction prompt:")
+
+    @pytest.mark.asyncio
+    async def test_hand_authored_collection_renders_byte_identical(self, tmp_path):
+        """A collection with no skill origin (``skill_name`` NULL — the seeded /
+        hand-authored case) renders with NO ``from skill:`` line, byte-for-byte the
+        unmarked pre-provenance shape, on both surfaces."""
+        db = _make_db(tmp_path)
+        _seed_collection(
+            db,
+            name="plain-watch",
+            description="plain subject",
+            intent="plain intent",
+            extraction_prompt="1. browse(queries=['peaks']).\n2. collection_write(memory='peaks').",
+        )
+        row = db.memories.get("plain-watch")
+        assert row.skill_name is None and row.skill_params is None
+        catalog = await CollectionCatalogTool(db).execute()
+        expected = (
+            "## plain-watch\n"
+            "status: active\n"
+            "expires: never\n"
+            f"created: {format_log_timestamp(row.created_at)}\n"
+            "description: plain subject\n"
+            "intent: plain intent\n"
+            "notify: False\n"
+            "extraction_prompt:\n1. browse(queries=['peaks']).\n"
+            "2. collection_write(memory='peaks')."
+        )
+        assert catalog.message == expected
+        assert "from skill:" not in catalog.message
+        metadata = await MemoryMetadataTool(db).execute(memory="plain-watch")
+        assert "from skill:" not in metadata.message
+
+    @pytest.mark.asyncio
+    async def test_holeless_skill_renders_skill_name_only(self, tmp_path):
+        """A skill with no holes binds no params, so the render names just the skill —
+        ``from skill: <name>`` with no parenthesised params."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(
+            db,
+            name="daily-digest",
+            intent="gather the day's fresh items",
+            description="gather the day's fresh items",
+            holes=[],
+            steps=[
+                SkillStep(
+                    ordinal=1,
+                    source_ordinal=1,
+                    tool="browse",
+                    arguments={"queries": ["fresh items"], "extract": "the newest items"},
+                    substitutions=[],
+                )
+            ],
+        )
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="morning-digest",
+            intent="the day's fresh items",
+            skill="daily-digest",
+            interval=3600,
+        )
+        result = await CollectionCatalogTool(db).execute()
+        assert "from skill: daily-digest\n" in result.message
+        # No holes bound → no parenthesised params.
+        assert "from skill: daily-digest (" not in result.message
 
 
 # ── find_mine: resolve-by-meaning, identity fused with affordances (#1558) ────

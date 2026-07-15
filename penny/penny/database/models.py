@@ -300,6 +300,19 @@ class MemoryRow(SQLModel, table=True):
     # ``memory_metadata``).  Set once at creation, immutable thereafter (no field
     # on ``collection_update``); NULL for system / migration-seeded collections.
     intent: str | None = Field(default=None)
+    # Skill provenance (#1603): the skill this collection was instantiated from
+    # (#1591's front door) and the params bound into its render — so "which skill
+    # made this, and with what?" is a read off the collection's own row, and a
+    # future rebind/re-render has the current bindings as reachable input.
+    # ``skill_name`` is a by-name reference to ``skill.name`` (a plain column, not a
+    # DB FK — a skill is re-teachable / REPLACE-able, so the reference must survive a
+    # re-teach); ``skill_params`` is the bound params as a JSON object.  Both NULL for
+    # a hand-authored / seeded / migration collection (no skill origin), so its
+    # catalog / metadata render is byte-identical to the pre-provenance shape.  The
+    # rendered ``extraction_prompt`` is the snapshot that actually runs — these name
+    # the recipe it came from, they don't drive it.
+    skill_name: str | None = Field(default=None)
+    skill_params: str | None = Field(default=None)
     # Provenance + lifecycle (operational registry, #1566) — every mechanism
     # created from a chat request can answer *who* asked for it, *what* run
     # created it, and *when* it ends, by a read.  All nullable: seeded / system

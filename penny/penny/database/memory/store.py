@@ -13,6 +13,7 @@ branch on a name or shape themselves.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -204,6 +205,8 @@ class MemoryStore:
         expires_at: datetime | None = None,
         run_at: datetime | None = None,
         max_runs: int | None = None,
+        skill_name: str | None = None,
+        skill_params: dict[str, str] | None = None,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -221,6 +224,8 @@ class MemoryStore:
             expires_at=expires_at,
             run_at=run_at,
             max_runs=max_runs,
+            skill_name=skill_name,
+            skill_params=skill_params,
         )
 
     def create_log(
@@ -261,6 +266,8 @@ class MemoryStore:
         expires_at: datetime | None = None,
         run_at: datetime | None = None,
         max_runs: int | None = None,
+        skill_name: str | None = None,
+        skill_params: dict[str, str] | None = None,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -290,6 +297,12 @@ class MemoryStore:
                 # Store-level only — no model-facing create args yet (#1562).
                 run_at=run_at,
                 max_runs=max_runs,
+                # Skill provenance (#1603): the instantiating skill + the params
+                # bound into its render, serialized here at the store boundary (the
+                # same place the description embedding is serialized).  None for a
+                # hand-authored / seeded row — no skill origin.
+                skill_name=skill_name,
+                skill_params=json.dumps(skill_params) if skill_params is not None else None,
                 created_at=datetime.now(UTC),
             )
             session.add(memory)

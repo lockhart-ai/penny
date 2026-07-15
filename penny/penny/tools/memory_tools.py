@@ -19,6 +19,7 @@ same transient failure.
 
 from __future__ import annotations
 
+import json
 import logging
 from abc import abstractmethod
 from datetime import datetime
@@ -384,6 +385,25 @@ def _lifecycle_block(db: Database, row: MemoryRow) -> list[str]:
     ]
 
 
+def _skill_provenance_line(row: MemoryRow) -> str | None:
+    """``from skill: <name> (<param>=<value>, …)`` — the skill this collection was
+    instantiated from (#1591's front door) and the params bound into its render, so
+    the render names the recipe's origin.  The skill name is a live anchor: one
+    ``skill_read(<name>)`` / ``find_mine`` hop reaches its steps + holes (n≤1), and
+    the bound params are the reachable input a future rebind/re-render consumes.
+    Params are omitted when the skill had no holes (``from skill: <name>``).
+    Returns ``None`` for a hand-authored / seeded collection (``skill_name`` NULL),
+    so its render stays byte-identical to the unmarked pre-provenance shape — the
+    unmarked case is the quiet default."""
+    if row.skill_name is None:
+        return None
+    params: dict[str, str] = json.loads(row.skill_params) if row.skill_params else {}
+    if not params:
+        return f"from skill: {row.skill_name}"
+    bound = ", ".join(f"{key}={value}" for key, value in params.items())
+    return f"from skill: {row.skill_name} ({bound})"
+
+
 def _recent_changes_block(db: Database, name: str) -> list[str]:
     """The collection's recent config-change history from the mutation ledger
     (#1560) — each line naming its run id, so "when was this archived, and by
@@ -675,6 +695,11 @@ class CollectionCreateTool(MemoryTool):
             expires_at=expires_at,
             run_at=trigger.run_at,
             max_runs=trigger.max_runs,
+            # Record which skill rendered this collection and with what bindings, so
+            # the catalog / metadata render can name it (#1603) — the substrate a
+            # future rebind/re-render reads its current bindings from.
+            skill_name=skill.name,
+            skill_params=args.params,
         )
         suffix = _description_degraded_suffix(args.intent, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
@@ -1635,6 +1660,11 @@ class MemoryMetadataTool(MemoryTool):
         # the full lifecycle question — who asked for it, what run created it, whether
         # it's live, and when it ends (#1566).
         lifecycle = _lifecycle_block(self._db, memory)
+        # The skill-provenance line (#1603) — which skill rendered this collection's
+        # recipe, and the params bound into it — sits with the intent, ahead of the
+        # extraction prompt it produced.  Absent for a hand-authored / seeded
+        # collection (skill_name NULL), so that render is unchanged.
+        skill = _skill_provenance_line(memory)
         # Lead with what the collection is FOR (intent) and what it DOES (the recipe),
         # because that is the substance a description should convey; the operational
         # settings (routing/cadence/timestamps) are secondary and go last.  Ordered this
@@ -1646,6 +1676,7 @@ class MemoryMetadataTool(MemoryTool):
             f"type: {memory.type}",
             f"description: {memory.description}",
             f"intent: {memory.intent or 'none'}",
+            *([skill] if skill is not None else []),
             "",
             "What it does each cycle — the recipe below is the collection's actual "
             "behaviour.  When explaining the collection, walk through THESE steps, not the "
@@ -1728,15 +1759,21 @@ class CollectionCatalogTool(MemoryTool):
         )
 
     def _format(self, row: MemoryRow) -> str:
-        lifecycle = "\n".join(_lifecycle_block(self._db, row))
-        return (
-            f"## {row.name}\n"
-            f"{lifecycle}\n"
-            f"description: {row.description}\n"
-            f"intent: {row.intent or '(none)'}\n"
-            f"notify: {row.notify}\n"
-            f"extraction_prompt:\n{row.extraction_prompt}"
-        )
+        # The skill-provenance line (#1603) sits right before the recipe it produced,
+        # naming which skill rendered this collection's extraction_prompt.  It's
+        # absent for a hand-authored / seeded collection (skill_name NULL), so that
+        # render stays byte-identical to the unmarked pre-provenance shape.
+        lines = [
+            f"## {row.name}",
+            *_lifecycle_block(self._db, row),
+            f"description: {row.description}",
+            f"intent: {row.intent or '(none)'}",
+            f"notify: {row.notify}",
+        ]
+        if (skill := _skill_provenance_line(row)) is not None:
+            lines.append(skill)
+        lines.append(f"extraction_prompt:\n{row.extraction_prompt}")
+        return "\n".join(lines)
 
 
 class CollectionMergeTool(MemoryTool):
