@@ -81,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 92
+        assert count == 93
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -122,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 92
+        assert count1 == 93
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -187,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 92  # all migrations applied
+        assert count == 93  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
