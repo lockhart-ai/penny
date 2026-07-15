@@ -128,11 +128,24 @@ class Collector(BackgroundAgent):
         self._cycle_lock = asyncio.Lock()
 
     async def execute(self) -> bool:
+        self._retire_expired()
         target = self._next_ready_collection()
         if target is None:
             return False
         success, _ = await self._execute_cycle(target)
         return success
+
+    def _retire_expired(self) -> None:
+        """Pre-dispatch sweep: system-archive every collection whose ``expires_at``
+        passed while it wasn't running (e.g. Penny was down past the expiry, so no
+        cycle's post-cycle check ever fired, #1562).  Keeps ``_is_ready`` a pure
+        predicate — readiness only *skips* an expired collection; this pass turns
+        that skip into a visible tombstone rather than silent inertia.  The
+        post-cycle ``_archive_if_expired`` handles an expiry that passes mid-cycle;
+        this handles one that passed while nothing dispatched it.  ``run_id=None``
+        — a while-down retire has no run to attribute."""
+        for memory in self.db.memories.list_all():
+            self._archive_if_expired(memory, run_id=None)
 
     async def run_for(self, collection_name: str) -> tuple[bool, str]:
         """Run one extraction cycle for the named collection, bypassing readiness checks.
@@ -196,13 +209,17 @@ class Collector(BackgroundAgent):
                     outcome, reason = self._cycle_result(response)
                     self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
                     self._apply_throttle(collection, outcome)
-                    # Once-shaped trigger: retire the collection after it has run
-                    # its allotted number of times (a one-shot reminder archives
-                    # itself).  Runs after the outcome is tagged so this cycle is
-                    # counted; a cancelled cycle never reaches here, so it doesn't
-                    # burn a run.  ``run_id`` is this cycle's run — recorded as the
-                    # system archive's cause in the mutation ledger (#1560).
-                    self._archive_if_run_limit_reached(collection, run_id)
+                    # Post-cycle retirement — at most one archive.  The
+                    # once-shaped trigger retires a collection after its allotted
+                    # runs (a one-shot reminder archives itself, #1556); failing
+                    # that, the ``expires_at`` end condition retires one whose
+                    # expiry passed mid-life (#1562).  Both run after the outcome
+                    # is tagged so this cycle is counted; a cancelled cycle never
+                    # reaches here, so it doesn't burn a run.  ``run_id`` is this
+                    # cycle's run — recorded as the system archive's cause in the
+                    # mutation ledger (#1560).
+                    if not self._archive_if_run_limit_reached(collection, run_id):
+                        self._archive_if_expired(collection, run_id)
                 self._current_target = None
         # The on-demand test message is STRUCTURAL (#1569): the run's outcome (or
         # its write-gate stop reason) plus the actual tool trace — never a
@@ -348,7 +365,7 @@ class Collector(BackgroundAgent):
         if interval != current or idle != collection.consecutive_idle_runs:
             self.db.memories.set_cadence(collection.name, interval, idle)
 
-    def _archive_if_run_limit_reached(self, collection: MemoryRow, run_id: str) -> None:
+    def _archive_if_run_limit_reached(self, collection: MemoryRow, run_id: str) -> bool:
         """Archive a ``max_runs``-bounded collection once it has run its quota.
 
         The once-shaped trigger (#1556): after ``max_runs`` completed (non-
@@ -367,15 +384,43 @@ class Collector(BackgroundAgent):
         even though no run prompt records this system action (#1560).
         """
         if collection.max_runs is None:
-            return
+            return False
         completed = self.db.messages.count_completed_runs(collection.name)
         if completed < collection.max_runs:
-            return
+            return False
         note = f"reached run limit ({completed} of {collection.max_runs} completed runs)"
         logger.info("Archiving '%s': %s", collection.name, note)
         self.db.memories.archive(
             collection.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note
         )
+        return True
+
+    def _archive_if_expired(self, collection: MemoryRow, run_id: str | None) -> bool:
+        """Archive a collection whose ``expires_at`` end condition has passed (#1562).
+
+        Mirrors ``_archive_if_run_limit_reached`` exactly: the same system-actor
+        archive path (tombstone in the archived-inclusive catalog #1566, a durable
+        mutation event whose ``note`` names the cause), the same "read, never
+        re-decided by the model" discipline — the clock, not a judgment, ends the
+        watch.  ``None`` ``expires_at`` = no end condition, the ordinary case; an
+        already-archived row is left alone (the sweep passes every row).
+
+        ``run_id`` is the cycle that was active when the expiry was noticed
+        (post-cycle mid-life retire) or ``None`` when the sweep retires one that
+        expired while nothing dispatched it (Penny was down past the expiry — no
+        run to attribute).  Returns whether it archived.
+        """
+        if collection.expires_at is None or collection.archived:
+            return False
+        expiry = _aware(collection.expires_at)
+        if datetime.now(UTC) < expiry:
+            return False
+        note = f"reached expiry ({expiry.isoformat()})"
+        logger.info("Archiving '%s': %s", collection.name, note)
+        self.db.memories.archive(
+            collection.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note
+        )
+        return True
 
     # ── Per-cycle audit (on the promptlog run itself) ─────────────────────
 
@@ -589,6 +634,13 @@ class Collector(BackgroundAgent):
         # recurring cadence.  ``max_runs`` retires it after firing (handled in the
         # cycle-completion path), so the interval never re-triggers a one-shot.
         if memory.run_at is not None and now < _aware(memory.run_at):
+            return False
+        # End condition (#1562): once ``expires_at`` has passed, the watch is
+        # over — it never starts another cycle.  A PURE skip here keeps
+        # readiness side-effect-free (like the ``run_at`` gate above); the
+        # dispatcher's ``_retire_expired`` sweep turns the skip into a visible
+        # system archive (the codebase separates readiness from archival).
+        if memory.expires_at is not None and now >= _aware(memory.expires_at):
             return False
         if memory.last_collected_at is not None:
             elapsed = (now - _aware(memory.last_collected_at)).total_seconds()

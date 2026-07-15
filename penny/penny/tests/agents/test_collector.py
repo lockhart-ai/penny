@@ -438,6 +438,120 @@ def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
     assert _get(db, "recurring").archived is False
 
 
+# ── End condition: expires_at ends the watch (#1562) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_and_retires_expired_collection(test_config, tmp_path):
+    """A past ``expires_at`` ends the watch: the collection never starts another
+    cycle (``_is_ready`` skips it — a pure gate) and the next dispatcher pass
+    system-archives it (the ``_retire_expired`` sweep), so an expiry that passed
+    while Penny was down retires the collection rather than running it.  Proven
+    through the real dispatcher."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "fortnight-watch",
+        "x",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    # Pure readiness gate: an expired collection is never dispatched — even before
+    # the sweep archives it (the skip is the predicate's, not a side effect).
+    assert collector._next_ready_collection() is None
+    assert _get(db, "fortnight-watch").archived is False
+
+    # The dispatcher pass retires it, and no cycle runs (the model is never entered).
+    ran = await collector.execute()
+    assert ran is False
+
+    archived = _get(db, "fortnight-watch")
+    assert archived.archived is True
+    assert collector._next_ready_collection() is None
+    # A durable, attributable system archive (#1560): the scheduler is the actor,
+    # there is no run to attribute (Penny was down past the expiry), and the cause
+    # (the expiry) is carried in the note.
+    events = db.mutations.history("fortnight-watch", limit=10)
+    archive_events = [e for e in events if e.action == MutationAction.ARCHIVED.value]
+    assert len(archive_events) == 1
+    assert archive_events[0].actor == MutationActor.SYSTEM.value
+    assert archive_events[0].run_id is None
+    assert "reached expiry" in (archive_events[0].detail or "")
+
+
+@pytest.mark.asyncio
+async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_config, tmp_path):
+    """A watch whose ``expires_at`` has passed by the time a cycle finishes is
+    system-archived post-cycle (beside the ``max_runs`` retire) — the mid-life end
+    condition.  Driven through a real cycle (``run_for`` → ``_execute_cycle``): the
+    model writes one entry, then the post-cycle check retires the collection, and
+    the archive is attributed to that cycle's own run (unlike the while-down sweep,
+    which has none)."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "expiring-watch",
+        "x",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:  # one real write so the cycle isn't a premature-done bail
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {"memory": "expiring-watch", "entries": [{"key": "today", "content": "a fact"}]},
+            )
+        return mock_llm._make_tool_call_response(request, "done", {})
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("expiring-watch")
+
+    archived = _get(db, "expiring-watch")
+    assert archived.archived is True
+    events = db.mutations.history("expiring-watch", limit=10)
+    archive_events = [e for e in events if e.action == MutationAction.ARCHIVED.value]
+    assert len(archive_events) == 1
+    assert archive_events[0].actor == MutationActor.SYSTEM.value
+    assert archive_events[0].run_id is not None
+    assert "reached expiry" in (archive_events[0].detail or "")
+
+
+@pytest.mark.asyncio
+async def test_unexpired_collection_is_not_retired(test_config, tmp_path):
+    """The expiry retire fires only once the end condition has passed: a future
+    ``expires_at`` dispatches normally and the sweep leaves it alone, and a NULL
+    ``expires_at`` (no end condition) is never retired."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "future-watch",
+        "x",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.memories.create_collection(
+        "eternal-watch",
+        "x",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=3600,
+    )
+
+    now = datetime.now(UTC)
+    ready = {m.name for m in db.memories.list_all() if collector._is_ready(m, now)}
+    assert "future-watch" in ready and "eternal-watch" in ready
+
+    collector._retire_expired()
+    assert _get(db, "future-watch").archived is False
+    assert _get(db, "eternal-watch").archived is False
+    # Direct guard: the post-cycle check also declines both.
+    assert collector._archive_if_expired(_get(db, "future-watch"), "r") is False
+    assert collector._archive_if_expired(_get(db, "eternal-watch"), "r") is False
+
+
 # ── Composed system prompt (target identity + extraction_prompt + runtime tail) ──
 
 
