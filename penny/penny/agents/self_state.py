@@ -18,7 +18,7 @@ one guess-free tool call from the detail). Sections:
   cadence, end condition, last-run outcome. "what's running right now?"
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
-  per-call detail is one ``read_run_calls`` hop away). The *complement* of the
+  one run's per-call detail is one ``get_event(run <id>)`` hop away). The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
   #1568) appear.
@@ -102,7 +102,7 @@ class SelfStateHeader:
 
     POINTERS = (
         "To look deeper: memory_metadata(<name>) for a collection's full config and "
-        "change history, read_run_calls(<target>) for a run's tool calls, "
+        "change history, get_event(run <id>) for one run's tool calls, "
         "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) "
         "for stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
         "collection_catalog() for every collection."
@@ -250,25 +250,31 @@ class SelfStateHeader:
 
     @staticmethod
     def _run_line(run: RunActivity) -> str:
-        """``run <run_id> · <when> · <target> → <OUTCOME> (<n> calls)`` — the run
-        id is the typed anchor; ``read_run_calls(<target>)`` is the drill-down."""
+        """``run <run_id> · <when> · <target> → <OUTCOME> (<n> calls)`` — the run id
+        is the typed anchor, consumed verbatim by ``get_event(run <id>)`` (its
+        drill-down); the ``run `` tag is single-sourced with that tool's parse
+        (``RUN_EVENT_PREFIX``) so the rendered token IS the argument."""
         plural = "" if run.call_count == 1 else "s"
         return (
-            f"run {run.run_id} · {format_log_timestamp(run.finished_at)} · "
+            f"{PennyConstants.RUN_EVENT_PREFIX}{run.run_id} · "
+            f"{format_log_timestamp(run.finished_at)} · "
             f"{run.target} → {run.outcome.upper()} ({run.call_count} call{plural})"
         )
 
     @staticmethod
     def _mutation_line(event: MutationEvent) -> str:
         """``change · <when> · <entity> <action> by <actor> (run <id>) — <detail>``
-        — the run id (present for a user-run mutation, absent for a system one) is
-        the anchor; the detail carries the cause or the changed fields."""
+        — the causing run id (present for a user-run mutation, absent for a system
+        one) is a ``get_event(run <id>)`` anchor, single-sourced with that tool's
+        parse (``RUN_EVENT_PREFIX``); the entity name resolves via
+        ``memory_metadata``/``find_mine``, and the detail carries the changed
+        fields."""
         parts = [
             f"change · {format_log_timestamp(event.created_at)} · "
             f"{event.entity_name} {event.action} by {event.actor}"
         ]
         if event.run_id is not None:
-            parts.append(f"(run {event.run_id})")
+            parts.append(f"({PennyConstants.RUN_EVENT_PREFIX}{event.run_id})")
         line = " ".join(parts)
         summary = mutation_change_summary(event)
         return f"{line} — {summary}" if summary else line

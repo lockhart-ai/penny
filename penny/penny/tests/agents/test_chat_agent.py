@@ -605,7 +605,10 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "collection_keys" in names
         assert "memory_metadata" in names
         assert "collection_catalog" in names
-        assert "collector_run_history" in names
+        # Ledger reads: read_run_calls browses a source's runs; get_event resolves
+        # one run by the typed id the activity block renders (#1580).
+        assert "read_run_calls" in names
+        assert "get_event" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
         assert "find_mine" in names
 
@@ -990,7 +993,7 @@ _BASIC_FLOW_EXPECTED = (
     "- location: Seattle, WA\n"
     "\n"
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, read_run_calls(<target>) for a run's tool calls, "
+    "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
     "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
     "collection_catalog() for every collection."

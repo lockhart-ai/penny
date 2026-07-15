@@ -360,19 +360,24 @@ class ReadLogArgs(ToolArgs):
     memory: MemoryName
 
 
-class CollectorRunHistoryArgs(ToolArgs):
-    """Read one collector's recent runs.  The caller names only the collector
-    (collection) — the count is fixed in Python (``RUN_HISTORY_RECORDS``), never
-    by the model, like every other read tool."""
-
-    collector: MemoryName
-
-
 class ReadRunCallsArgs(ToolArgs):
     """One ``read_run_calls`` over a run source — ``"chat"`` for conversational runs,
     or a collector's name for that collector's runs.  Batch size is fixed in Python."""
 
     target: MemoryName
+
+
+class GetEventArgs(ToolArgs):
+    """Resolve ONE ledger event by the typed id the activity block renders (#1580).
+
+    ``event_id`` is the whole typed token as it appears on a self-state activity
+    line — today the only addressable event is a run (``run <id>``), rendered on
+    both the run lines and each mutation line's ``(run <id>)`` cause.  The tool
+    parses the type tag and routes; the model copies the rendered token verbatim
+    (the n≤1 anchor discipline), so no field here validates the tag — that's the
+    tool's enumerated-cases dispatch, which names what IS addressable on a miss."""
+
+    event_id: str
 
 
 # ── Collection writes ───────────────────────────────────────────────────────

@@ -18,7 +18,6 @@ from penny.database.models import (
     CommandLog,
     Device,
     IosOutboxItem,
-    MemoryEntry,
     MessageLog,
     PromptLog,
 )
@@ -816,28 +815,6 @@ class MessageStore:
                 )
             ).one()
 
-    def target_run_records(self, run_target: str, limit: int) -> list[MemoryEntry]:
-        """One collector's recent runs as rendered RECORDS (newest first) — the
-        same ``render_run_record`` representation the model reads from
-        ``log_read("collector-runs")``, but scoped to a single ``run_target`` so
-        it can judge "is this a one-off or a persistent pattern across cycles?".
-
-        Heavier than ``recent_run_outcomes`` (which is the one-line structural
-        outcome): each record carries the structural counts line + health flags +
-        the run's tool trace.  Returns ``MemoryEntry`` (content = the record,
-        ``created_at`` = the run's end time) so the tool formats it through the
-        same ``_format_entries`` as every other read.  Served by
-        ``ix_promptlog_target_runs`` (a bounded ``LIMIT``, not a scan).
-        """
-        if limit <= 0:
-            return []
-        with self._session() as session:
-            run_ids = self._page_of_target_run_ids(session, run_target, limit, 0)
-            if not run_ids:
-                return []
-            grouped = self._group_runs(session, run_ids)
-        return [self._run_record_entry(run_target, run_id, grouped[run_id]) for run_id in run_ids]
-
     def run_call_groups(
         self, target: str, cursor: datetime | None, limit: int
     ) -> list[list[PromptLog]]:
@@ -1018,18 +995,6 @@ class MessageStore:
             if prompt.run_id is not None:
                 grouped.setdefault(prompt.run_id, []).append(prompt)
         return grouped
-
-    @staticmethod
-    def _run_record_entry(run_target: str, run_id: str, prompts: list[PromptLog]) -> MemoryEntry:
-        """One run rendered as a record-bearing ``MemoryEntry`` (``created_at`` =
-        the run's last prompt = its completion time)."""
-        return MemoryEntry(
-            memory_name=PennyConstants.MEMORY_COLLECTOR_RUNS_LOG,
-            key=None,
-            content=render_run_record(prompts),
-            author=PennyConstants.MessageAuthor.COLLECTOR,
-            created_at=prompts[-1].timestamp,
-        )
 
     def get_prompt_log_runs(
         self,

@@ -23,6 +23,7 @@ from penny.database.memory import (
     RecallMode,
     WriteGateOutcome,
     WriteResult,
+    render_run_calls,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill
 from penny.database.mutation_store import mutation_change_summary
@@ -57,10 +58,10 @@ from penny.tools.memory_tools import (
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    CollectorRunHistoryTool,
     DoneTool,
     ExistsTool,
     FindMineTool,
+    GetEventTool,
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
@@ -1885,7 +1886,7 @@ class TestLogTools:
 
         # An unknown/typo'd target resolves to a failed, actionable refusal that
         # names the offending value — not a silent empty batch that reads as "this
-        # collector has no runs" (mirrors collector_run_history's resolve-first).
+        # collector has no runs".
         unknown = await tool.run(target="esspreso-gear")
         assert unknown.success is False
         assert "esspreso-gear" in unknown.message
@@ -1893,9 +1894,9 @@ class TestLogTools:
     @staticmethod
     def _log_run(db, *, run_id: str, target: str, summary: str, write_key: str) -> None:
         """Persist one completed collector run for ``target`` (a write + its
-        ``done`` summary) — the promptlog rows ``collector_run_history`` renders.
-        ``response`` is a dict (``log_prompt`` serializes it); the inner tool-call
-        ``arguments`` is itself a JSON string, as the model emits it."""
+        ``done`` summary) — the promptlog rows ``get_event`` / ``read_run_calls``
+        render.  ``response`` is a dict (``log_prompt`` serializes it); the inner
+        tool-call ``arguments`` is itself a JSON string, as the model emits it."""
         response = {
             "choices": [
                 {
@@ -1945,54 +1946,59 @@ class TestLogTools:
         )
 
     @pytest.mark.asyncio
-    async def test_collector_run_history_scopes_to_one_collector_newest_first(self, tmp_path):
-        """``collector_run_history`` returns ONE named collector's recent runs as
-        records, newest-first — so a reviewer judges a pattern across that
-        collector's cycles, not the cross-collector index ``log_read`` gives.
-        Other collectors' runs are excluded."""
+    async def test_get_event_resolves_a_run_id_to_its_canonical_projection(self, tmp_path):
+        """``get_event(event_id='run <id>')`` consumes the header's typed run anchor
+        VERBATIM and returns exactly the run's canonical tool-call projection — the
+        same ``render_run_calls`` view ``read_run_calls`` renders, but for the single
+        run the id names (#1580, the run-id ↔ target anchor unification).  The result
+        leads with the run's own id, so the rendered anchor and the argument are one."""
         db = _make_db(tmp_path)
         await self._create_collection(db, "ai-news")
-        await self._create_collection(db, "espresso")
-        self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="older")
-        self._log_run(db, run_id="news-2", target="ai-news", summary="wrote 2", write_key="newer")
-        self._log_run(db, run_id="gear-1", target="espresso", summary="wrote g", write_key="grind")
+        self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
-        result = await CollectorRunHistoryTool(db).execute(collector="ai-news")
+        result = await GetEventTool(db).run(event_id="run news-1")
 
-        assert "from `ai-news`" in result.message and "most recent first" in result.message
-        # Both of this collector's runs, newest first; the other collector absent.
-        assert result.message.index("wrote 2") < result.message.index("wrote 1")
-        assert "[ai-news]" in result.message and "[espresso]" not in result.message
-        assert "wrote g" not in result.message
+        # Whole-render: the tool returns the canonical projection byte-for-byte.
+        expected = render_run_calls(db.messages.get_run_prompts("news-1"))
+        assert result.message == expected
+        assert result.message.startswith("run news-1")
+        assert "collection_write(memory='ai-news'" in result.message
 
     @pytest.mark.asyncio
-    async def test_collector_run_history_unknown_collector_is_actionable_error(self, tmp_path):
-        """An unknown collector name returns a failed, actionable refusal (not a
-        silent empty history that would read as 'this collector is healthy')."""
+    async def test_get_event_tolerates_the_paren_framed_mutation_anchor(self, tmp_path):
+        """The mutation activity line renders its causing run as ``(run <id>)``; the
+        parse strips the framing so BOTH rendered forms resolve to the same run — the
+        rendered token is consumable verbatim whichever line it came from (#1580)."""
         db = _make_db(tmp_path)
-        result = await CollectorRunHistoryTool(db).execute(collector="does-not-exist")
+        await self._create_collection(db, "ai-news")
+        self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
+
+        bare = await GetEventTool(db).run(event_id="run news-1")
+        framed = await GetEventTool(db).run(event_id="(run news-1)")
+        assert framed.message == bare.message
+        assert framed.success is True
+
+    @pytest.mark.asyncio
+    async def test_get_event_untyped_id_is_actionable(self, tmp_path):
+        """An id with no recognised type tag is refused, not silently emptied — the
+        message names what IS addressable and the guess-free fallbacks (find_mine +
+        the activity block), never a bare 'not found' (#1580)."""
+        db = _make_db(tmp_path)
+        result = await GetEventTool(db).run(event_id="news-1")
+        assert result.success is False
+        assert "news-1" in result.message
+        assert "find_mine" in result.message
+
+    @pytest.mark.asyncio
+    async def test_get_event_unknown_run_is_actionable(self, tmp_path):
+        """A well-formed run token that matched no recorded run gets a failed,
+        actionable refusal naming the id + where valid ids are listed — never an
+        empty read that reads as a clean, call-less run (#1580)."""
+        db = _make_db(tmp_path)
+        result = await GetEventTool(db).run(event_id="run does-not-exist")
         assert result.success is False
         assert "does-not-exist" in result.message
-
-    @pytest.mark.asyncio
-    async def test_collector_run_history_no_runs_yet_is_clear(self, tmp_path):
-        """A real collector with no completed runs gets a clear 'no runs yet'
-        sentinel — distinct from the unknown-name error, so the model judges it
-        from its current run rather than reading absence as health."""
-        db = _make_db(tmp_path)
-        _seed_collection(
-            db,
-            name="fresh-feed",
-            description="x",
-            inclusion="never",
-            recall="recent",
-            extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
-            intent="a running list the user asked me to keep",
-        )
-        result = await CollectorRunHistoryTool(db).execute(collector="fresh-feed")
-        assert result.success is True
-        assert "No completed runs" in result.message and "fresh-feed" in result.message
+        assert "read_run_calls" in result.message
 
     @pytest.mark.asyncio
     async def test_append_to_system_log_is_refused(self, tmp_path, mock_llm):
@@ -2665,7 +2671,7 @@ class TestFactory:
         "collection_catalog",
         "log_read",
         "read_run_calls",
-        "collector_run_history",
+        "get_event",
         "read_similar",
         "exists",
         "find_mine",

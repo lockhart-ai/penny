@@ -81,9 +81,9 @@ from penny.tools.memory_args import (
     CollectionMergeArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
-    CollectorRunHistoryArgs,
     ExistsArgs,
     FindMineArgs,
+    GetEventArgs,
     LogAppendArgs,
     LogCreateArgs,
     MemoryNameArgs,
@@ -2225,8 +2225,7 @@ class ReadRunCallsTool(CursorReadTool):
         # Resolve the target against the valid set FIRST — 'chat' plus every live
         # collector, exactly what the description enumerates — so a typo'd/unknown
         # target gets the actionable memory-not-found refusal instead of a silent
-        # empty batch that reads as "this collector has no runs" (the sibling
-        # collector_run_history resolves first for the same reason).
+        # empty batch that reads as "this collector has no runs".
         if args.target not in self._available_targets():
             raise MemoryNotFoundError(args.target)
         key = self._cursor_key(args.target)
@@ -2251,69 +2250,114 @@ class ReadRunCallsTool(CursorReadTool):
         )
 
 
-class CollectorRunHistoryTool(MemoryTool):
-    """Read ONE collector's recent runs as full records, newest first.
+# An id with no recognised type tag: name what IS addressable + the guess-free
+# fallbacks (find_mine for names, the activity block for events), never a silent
+# empty (the anchor discipline — a rendered id resolves in one call, a malformed
+# one recovers).
+_GET_EVENT_UNTYPED = (
+    "'{event_id}' isn't a typed event id.  Pass a run token exactly as your "
+    "current-state activity block renders it — get_event(event_id='run <id>'), "
+    "copying the whole `run <id>` token.  (Runs are the addressable events right "
+    "now; to resolve a collection or log by meaning use find_mine(query=<text>), "
+    "and your activity block names every recent event.)"
+)
 
-    ``log_read("collector-runs")`` gives the cross-collector run index — one
-    record per recent run across every collector.  This zooms into a single
-    collector: the model passes a collection name (a candidate it spotted in that
-    index) and gets that collector's last several runs as the same rendered
-    records (counts line + health flags + tool trace).  That's what lets a
-    reviewer judge whether a problem is a one-off or a **persistent pattern across
-    cycles** before acting on it.  The count is fixed in Python
-    (``RUN_HISTORY_RECORDS``) — the model never chooses a size, same as every
-    other read.  Stateless (no cursor): re-reading returns the same window.
+# A well-formed run token that matched no recorded run — say so and point at the
+# lists that carry valid ids, rather than an empty read that reads as "clean run".
+_GET_EVENT_NO_RUN = (
+    "No run found with id '{run_id}'.  It must be an id your current-state activity "
+    "block rendered (a `run <id>` line, or a change's `(run <id>)` cause); "
+    "read_run_calls(target='chat') — or a collector's name — lists recent run ids "
+    "if you need to find a valid one."
+)
+
+
+class GetEventTool(Tool):
+    """Resolve ONE ledger event by the typed id the activity block renders (#1580).
+
+    The self-state activity block renders each background run as ``run <id>`` (and
+    each config change names its ``(run <id>)`` cause) — typed anchors meant to be
+    consumed VERBATIM.  ``get_event`` is the verb that consumes them: it parses the
+    type tag and returns that event's detail.  Today the one addressable event kind
+    is a run, so ``get_event(event_id='run <id>')`` returns that run's tool-call
+    SEQUENCE — the same canonical projection ``read_run_calls`` renders, but for the
+    single run the id names (a point lookup, where ``read_run_calls`` browses a
+    source's run history).  An id with no recognised tag, or a run nothing recorded,
+    gets an actionable refusal naming what IS addressable and how to find a valid id
+    (a rendered id resolves in one call; a bad one recovers, never silently empties).
+
+    Deliberately run-only (the smaller conforming shape, #1580): the send case is a
+    *render* — an autonomous send's provenance appears inline wherever the message
+    renders (``penny-messages`` reads, the header's sent lines), so it's a read, not
+    an event lookup (#1568/#1608); and a mutation carries its detail inline in
+    ``memory_metadata``'s change history and names its causing ``run <id>`` here, so
+    no ``mut``-tagged arm is built until a surface actually renders that anchor (a
+    verb needs a rendered id to consume — machinery follows a customer, not before).
     """
 
-    name = "collector_run_history"
+    name = "get_event"
+    description = (
+        "Look up ONE event from your activity log by the typed id it rendered — a "
+        "`run <id>` line, or a change's `(run <id>)` cause.  Pass the whole token, "
+        "get_event(event_id='run <id>'), copying the id exactly as rendered, and "
+        "get that run's tool-call sequence: what it did, step by step.  Use it to "
+        "inspect a specific run you saw in your current state; to browse a source's "
+        "run history instead use read_run_calls(target=<'chat' or a collector name>)."
+    )
     parameters = {
         "type": "object",
         "properties": {
-            "collector": {
+            "event_id": {
                 "type": "string",
-                "description": "The collection name whose collector run history to read.",
+                "description": (
+                    "The typed event id, verbatim as your activity block rendered "
+                    "it — the whole `run <id>` token."
+                ),
             }
         },
-        "required": ["collector"],
+        "required": ["event_id"],
     }
-    args_model = CollectorRunHistoryArgs
-    description = (
-        "Read one collector's recent runs (full records: counts, health flags, "
-        "tool trace), newest first — to judge whether a problem is a one-off or a "
-        "persistent pattern across cycles.  Pass the collection name; the count is "
-        "fixed."
-    )
+    args_model = GetEventArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        collector = _named(arguments, "collector", "a collector")
+        event = _named(arguments, "event_id", "an event")
         if not result.success:
-            return f"You tried to review {collector}'s run history but it didn't work:"
-        return f"You reviewed {collector}'s run history:"
+            return f"You tried to look up {event} but it didn't work:"
+        return f"You looked up {event}:"
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def _run(self, **kwargs: Any) -> ToolResult:
-        args = CollectorRunHistoryArgs(**kwargs)
-        # Resolve first so an unknown collector returns the actionable
-        # "memory not found" refusal (a MemoryAccessError caught by execute),
-        # not a silent empty history that reads as "this collector is healthy".
-        _resolve(self._db, args.collector)
-        records = self._db.messages.target_run_records(
-            args.collector, PennyConstants.RUN_HISTORY_RECORDS
-        )
-        if not records:
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        # Plain ``Tool``, not ``MemoryTool``: this reads the ledger by id, resolves
+        # no memory, and raises no MemoryAccessError — both misses are enumerated
+        # refusals below, so the base's except template would be inert here.
+        args = GetEventArgs(**kwargs)
+        run_id = self._parse_run_id(args.event_id)
+        if run_id is None:
             return ToolResult(
-                message=(
-                    f"No completed runs recorded yet for `{args.collector}` — it may be "
-                    "newly created or never have run.  Judge it from its current run in "
-                    "the index, not its history."
-                )
+                message=_GET_EVENT_UNTYPED.format(event_id=args.event_id), success=False
             )
-        return ToolResult(
-            message=_format_entries(records, source=args.collector, ordering="most recent first")
-        )
+        prompts = self._db.messages.get_run_prompts(run_id)
+        if not prompts:
+            return ToolResult(message=_GET_EVENT_NO_RUN.format(run_id=run_id), success=False)
+        return ToolResult(message=render_run_calls(prompts))
+
+    @staticmethod
+    def _parse_run_id(event_id: str) -> str | None:
+        """The run id from a rendered ``run <id>`` token, or ``None`` when the token
+        carries no recognised type tag.
+
+        Tolerates the paren framing the mutation line renders (``(run <id>)``) so
+        both rendered forms resolve verbatim; ``RUN_EVENT_PREFIX`` is the one shared
+        constant the render emits and this parse strips, so they can't drift."""
+        token = event_id.strip().strip("()").strip()
+        prefix = PennyConstants.RUN_EVENT_PREFIX
+        if not token.lower().startswith(prefix):
+            return None
+        run_id = token[len(prefix) :].strip()
+        return run_id or None
 
 
 # ── Log writes ──────────────────────────────────────────────────────────────
@@ -2814,7 +2858,7 @@ def build_memory_tools(
         CollectionCatalogTool(db),
         LogReadTool(db, agent_name, scope),
         ReadRunCallsTool(db, agent_name),
-        CollectorRunHistoryTool(db),
+        GetEventTool(db),
         ExistsTool(db, llm_client),
         FindMineTool(db, llm_client),
     ]

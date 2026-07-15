@@ -33,9 +33,9 @@ from penny.tools.memory_tools import (
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
-    CollectorRunHistoryTool,
     DoneTool,
     ExistsTool,
+    GetEventTool,
     LogAppendTool,
     LogCreateTool,
     LogReadTool,
@@ -470,16 +470,18 @@ class TestMemoryLifecycleNarration:
             == "You checked whether that entry already exists:"
         )
 
-    def test_read_run_calls_and_history(self):
+    def test_read_run_calls_and_get_event(self):
         assert (
             ReadRunCallsTool.to_result_narration({"target": "chat"}, ToolResult(message="ok"))
             == "You reviewed `chat`'s recent runs:"
         )
         assert (
-            CollectorRunHistoryTool.to_result_narration(
-                {"collector": "likes"}, ToolResult(message="ok")
-            )
-            == "You reviewed `likes`'s run history:"
+            GetEventTool.to_result_narration({"event_id": "run 7f3a1b2c"}, ToolResult(message="ok"))
+            == "You looked up `run 7f3a1b2c`:"
+        )
+        assert (
+            GetEventTool.to_result_narration({}, ToolResult(message="x", success=False))
+            == "You tried to look up an event but it didn't work:"
         )
 
     def test_done_narration_is_fixed(self):

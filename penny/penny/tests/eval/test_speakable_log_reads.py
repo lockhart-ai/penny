@@ -6,7 +6,6 @@ the *read-a-log* half of the speakable surface — a family of phrasings that ma
 by MEANING, onto one of the log-read tools:
 
   log_read("user-messages" | "penny-messages" | "browse-results" | "collector-runs")
-  collector_run_history(collector=<collection>)
 
 Every case is scored on the persisted tool CALL (the log the model named) + DB
 state, never on wording.  Synthetic topics only (the repo is public): invented
@@ -59,7 +58,6 @@ pytestmark = pytest.mark.eval
 
 # ── Tool + log names (constants, never magic strings) ────────────────────────
 _LOG_READ = "log_read"
-_COLLECTOR_RUN_HISTORY = "collector_run_history"
 _READ_RUN_CALLS = "read_run_calls"
 _BROWSE = "browse"
 _WRITE = "collection_write"
@@ -73,7 +71,7 @@ _BROWSE_RESULTS = PennyConstants.MEMORY_BROWSE_RESULTS_LOG
 _COLLECTOR_RUNS = PennyConstants.MEMORY_COLLECTOR_RUNS_LOG
 
 # Every read/mutation tool a no-fire guard must see stay quiet.
-_READ_TOOLS = (_LOG_READ, _COLLECTOR_RUN_HISTORY, _READ_RUN_CALLS)
+_READ_TOOLS = (_LOG_READ, _READ_RUN_CALLS)
 _ACTION_TOOLS = (_BROWSE, _WRITE, _UPDATE, _DELETE)
 
 # Directions/authors for seeding the conversation logs.
@@ -83,10 +81,10 @@ _PENNY = PennyConstants.MessageAuthor.PENNY
 
 _LIKES = "likes"
 
-# Collector collections (cases 4–6).  Both carry an extraction_prompt (so they're
-# valid read_run_calls targets and resolvable by collector_run_history); the
-# scheduler never ticks in the eval (COLLECTOR_TICK_INTERVAL is bumped past any
-# timeout), so they stay inert during the chat turn.
+# Collector collections (the cross-collector run index case).  Both carry an
+# extraction_prompt (so they're valid read_run_calls targets); the scheduler never
+# ticks in the eval (COLLECTOR_TICK_INTERVAL is bumped past any timeout), so they
+# stay inert during the chat turn.
 _PATCH_NOTES = "patch-notes"
 _TRAIL_CONDITIONS = "trail-conditions"
 
@@ -267,10 +265,9 @@ def _seed_run(
 ) -> None:
     """Seed one completed collector run as a ``promptlog`` row (+ its outcome).
 
-    That row IS the ``collector-runs`` / ``collector_run_history`` /
-    ``read_run_calls`` content — a run renders once ``set_run_outcome`` stamps
-    ``run_outcome`` on it, and the response carries the tool calls the run made
-    (so ``read_run_calls`` has a sequence to render)."""
+    That row IS the ``collector-runs`` / ``read_run_calls`` content — a run renders
+    once ``set_run_outcome`` stamps ``run_outcome`` on it, and the response carries
+    the tool calls the run made (so ``read_run_calls`` has a sequence to render)."""
     response = {
         "choices": [
             {
@@ -303,7 +300,7 @@ def _seed_run(
 
 def _seed_collector_activity(db: Database) -> None:
     """Two synthetic collector collections + a few completed runs each — the
-    cross-collector run index (case 4) and the per-collector history (cases 5–6)."""
+    cross-collector run index (``test_collector_runs``)."""
     db.memories.create_collection(
         _PATCH_NOTES,
         "New Mistforge Tactics patch notes worth knowing about.",
@@ -416,17 +413,6 @@ def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[s
     return []
 
 
-def _score_collector_run_history(db: Database, _before: set[str], reply: str) -> list[str]:
-    """ "How's the patch-notes collector been doing over its last few runs" must
-    call collector_run_history scoped to that collector."""
-    if not _dispatched(db, _COLLECTOR_RUN_HISTORY, "collector", _PATCH_NOTES):
-        return [
-            f"did not call collector_run_history(collector='{_PATCH_NOTES}') for that "
-            "collector's recent runs"
-        ]
-    return []
-
-
 def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[str]:
     """A wistful aside about rereading old chats must fire NO log read, browse, or
     mutation — the false-positive guard for speakable log reads."""
@@ -440,12 +426,15 @@ def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[str]:
 # ── Cases ─────────────────────────────────────────────────────────────────────
 # Gated at 0.6 (the NL-dispatch convention) are the two capabilities that dispatch
 # reliably at N=5 — reading a SYSTEM log and summarizing it: browse-results (5/5)
-# and collector-runs (5/5).  The other four are report-only with the gap/confound
+# and collector-runs (5/5).  The other two are report-only with the gap/confound
 # documented in each case docstring and handed to #1522/#1524: user-messages-act
-# (ambient recall substitutes for the log_read), penny-messages-recall (browses
-# instead of recalling what Penny said), and collector_run_history (browses the
-# named collection).  The no-fire log guard now gates at 0.6 — its over-firing is
-# closed by the imperative-gating clause in CONVERSATION_PROMPT.
+# (ambient recall substitutes for the log_read) and penny-messages-recall (browses
+# instead of recalling what Penny said).  The no-fire log guard now gates at 0.6 —
+# its over-firing is closed by the imperative-gating clause in CONVERSATION_PROMPT.
+# Per-collector run introspection is no longer a dispatchable case: the ambient
+# self-state header already carries each mechanism's last-run outcome, and the
+# per-collection scoped verb (collector_run_history) retired with the read-surface
+# reconciliation (#1580).
 
 
 async def test_user_messages_act(chat_eval: ChatEval) -> None:
@@ -500,22 +489,6 @@ async def test_collector_runs(chat_eval: ChatEval) -> None:
         seed=_seed_collector_activity,
         score=_score_collector_runs,
         min_pass_rate=0.6,
-    )
-
-
-async def test_collector_run_history(chat_eval: ChatEval) -> None:
-    """Report-only — a #1524 gap.  Asked how a NAMED collector's been doing, the
-    model browses the collection name ("patch-notes" reads like a web topic) or
-    reaches for read_run_calls, only picking collector_run_history ~2/5.  The
-    cross-collector "how are your collectors doing" → log_read("collector-runs")
-    IS reliable (test_collector_runs, 5/5); the per-collector scoped introspection
-    isn't.  Handed to #1524."""
-    await chat_eval(
-        case_id="speak-collector-run-history",
-        message="how's the patch-notes collector been doing over its last few runs?",
-        seed=_seed_collector_activity,
-        score=_score_collector_run_history,
-        min_pass_rate=None,
     )
 
 

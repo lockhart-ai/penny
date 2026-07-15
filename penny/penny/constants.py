@@ -359,6 +359,12 @@ class PennyConstants:
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10
+    # The type tag a rendered activity-log run anchor carries — ``run <id>`` (the
+    # self-state header's run/mutation lines and ``render_run_calls``'s header emit
+    # it verbatim).  ``get_event`` strips it to route the typed id to the run case,
+    # so the token a surface renders IS the argument the tool takes (the n≤1 anchor
+    # discipline: format and parse share this one constant, never a magic string).
+    RUN_EVENT_PREFIX = "run "
 
     # ``log_read`` cursor-mode batch bound — entries returned per call for a
     # collector.  Applies to every call: the first read (no cursor → most-recent
@@ -367,12 +373,9 @@ class PennyConstants:
     # bounded batches across cycles instead of flooding one agentic loop with
     # hundreds of entries it can't reason over.
     LOG_READ_LIMIT = 10
-    # How many of ONE collector's recent runs the ``collector_run_history`` tool
-    # returns — full rendered run records (counts line + flags + tool trace), not
-    # the one-line ``done`` summaries the cycle-start own-history block shows.
-    # Fixed in Python (the model passes the collector name, never the count) and
-    # bounded below ``COLLECTOR_RUN_HISTORY`` (10) because each record is heavy:
-    # enough cycles to judge "one-off vs. persistent pattern" without flooding.
+    # How many recent registry-change events ``memory_metadata`` renders in its
+    # "Recent changes" block (``db.mutations.history``) — bounded like every other
+    # history read so a config-change trail stays readable without flooding.
     RUN_HISTORY_RECORDS = 8
     # How many resolve-by-meaning matches ``find_mine`` returns, best-first
     # (#1558).  Bounded like every other read so an ambiguous query surfaces the
