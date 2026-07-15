@@ -24,7 +24,7 @@ from penny.database.memory import (
     MemoryTypeError,
     ResolvedKind,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MutationEvent, Skill
+from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
