@@ -150,15 +150,16 @@ correct next call from what came back). The suite spans that matrix:
 | **chat** (`test_chat_response.py`) | chitchat; recall-grounded answer | browse→answer; multi-hop browse chain |
 | **chat authoring** (`test_collection_lifecycle.py`) | create / update / archive / abstain | — |
 | **collector** (`test_extractors.py`) | likes / dislikes / knowledge / notify send+move | research-watcher; inner-monologue |
-| **meta-collector** | skills (`test_skills_extractor.py`) — the `quality` reviewer was retired (#1569) | — |
+| **meta-collector** | *retired* — the `skills` reconcile collector (#1624) and the `quality` reviewer (#1569) both retired: skills are now structural (taught/instantiated/re-rendered) | — |
 | **routing** (`test_retrieval.py`) | two-stage recall | — |
 | **peripheral** (`test_peripheral.py`) | startup announcement | schedule NL→cron dispatch (`test_schedule_dispatch.py`) |
 
-The built-in collectors (`likes`, `dislikes`, `knowledge`, `unnotified-thoughts`,
-`notified-thoughts`, `skills`, `quality`) already exist with their **canonical
-migration-seeded extraction prompts** in a fresh eval DB, so an extractor case
-only seeds the collector's *input* (the `user-messages` / `browse-results` logs)
-and runs the real prompt.
+The built-in collectors (`likes`, `dislikes`, `knowledge`, `thoughts`) already
+exist with their **canonical migration-seeded extraction prompts** in a fresh eval
+DB, so an extractor case only seeds the collector's *input* (the `user-messages` /
+`browse-results` logs) and runs the real prompt. (The `skills` reconcile collector
+and the `quality` reviewer no longer dispatch — retired by #1624 / #1569; the
+`notifier` and the `unnotified-/notified-thoughts` pair are archived shells.)
 
 **Query-aware mock browser.** The isolation core stubs browse with one fixed
 string — enough to check *whether* the model browsed, not *how it reasoned over

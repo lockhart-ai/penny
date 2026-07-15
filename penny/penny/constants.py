@@ -430,8 +430,13 @@ class PennyConstants:
     # hidden from the catalog (via ``SYSTEM_COLLECTIONS``).
     MEMORY_QUALITY_COLLECTION = "quality"
 
-    # The skills collector (seeded by migration 0043): distils reusable workflow
-    # patterns from the real collections that exist, surfaced to chat via recall.
+    # The skills collection (seeded by migration 0043).  Its reconcile COLLECTOR —
+    # a model-judgment loop that folded recipe improvements into prose entries
+    # (regrounded on real collections by 0069) — was RETIRED by migration 0091
+    # (#1624): skills are now structural (taught #1590, instantiated #1591, fired
+    # ambiently #1621, re-rendered #1620), so there is no prose-generation step
+    # left to review.  The COLLECTION stays active as the standing-rules store —
+    # its entries render in the self-state ``### Skills and rules`` section (#1471).
     MEMORY_SKILLS_COLLECTION = "skills"
     # The retired pub/sub notifier consumer (seeded by migration 0067, archived by
     # #1557): it drained every ``published`` collection's new entries and delivered
@@ -449,11 +454,11 @@ class PennyConstants:
     MEMORY_THOUGHTS_COLLECTION = "thoughts"
 
     # Built-in framework collections, seeded by migration rather than created by
-    # the user.  ``collection_catalog`` hides them: the skills collector distils
-    # reusable patterns from the collections the *user* builds, and these are
-    # Penny's own machinery (the skills/self-correction/notification loops and
-    # the preference/knowledge/thought extractors) — distilling skills from them
-    # would only mint meta-noise.  Parallels ``SYSTEM_LOGS``.
+    # the user.  ``collection_catalog`` hides them: these are Penny's own machinery
+    # (the standing-rules store + the preference/knowledge/thought extractors and
+    # the retired notification/self-correction shells), not collections the *user*
+    # built, so the catalog — which surfaces user-built collections — leaves them
+    # out.  Parallels ``SYSTEM_LOGS``.
     SYSTEM_COLLECTIONS = frozenset(
         {
             MEMORY_SKILLS_COLLECTION,

@@ -730,7 +730,13 @@ class TestMigrate:
         """Migration 0086 retires the pub/sub layer over the full chain: archives the
         notifier consumer, drops the ``published`` column, and rewrites the seeded
         skills that taught ``published`` to teach ``notify`` — the sole emission
-        flag now (emission is a collection property + the run-time notify suffix)."""
+        flag now (emission is a collection property + the run-time notify suffix).
+
+        0086's ``published`` → ``notify`` rewrite is asserted here through the
+        surviving ``Flip silent ↔ notify`` operate-the-system rule.  Its two research
+        build-recipe siblings and the ``skills`` collector prompt (which 0086 also
+        rewrote) are cleared DOWNSTREAM by 0091 (the skills-collector retirement,
+        #1624), so they no longer exist at end-of-chain to assert on."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -742,20 +748,10 @@ class TestMigrate:
         conn = sqlite3.connect(db_path)
         columns = [row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()]
         notifier = conn.execute("SELECT archived FROM memory WHERE name = 'notifier'").fetchone()
-        skills_prompt = conn.execute(
-            "SELECT extraction_prompt FROM memory WHERE name = 'skills'"
-        ).fetchone()[0]
-        skill_bodies = dict(
-            conn.execute(
-                "SELECT key, content FROM memory_entry WHERE memory_name = 'skills' "
-                "AND key IN (?, ?, ?)",
-                (
-                    "Research collection — notify on new finds",
-                    "Research collection — silent",
-                    "Flip silent ↔ notify",
-                ),
-            ).fetchall()
-        )
+        flip = conn.execute(
+            "SELECT content FROM memory_entry WHERE memory_name = 'skills' AND key = ?",
+            ("Flip silent ↔ notify",),
+        ).fetchone()
         conn.close()
 
         # The retired pub/sub column is gone; ``notify`` is the sole emission flag.
@@ -763,14 +759,11 @@ class TestMigrate:
         assert "notify" in columns
         # The notifier consumer is archived (a visible tombstone), not deleted.
         assert notifier is not None and notifier[0] == 1
-        # The seeded skills teach ``notify`` now — no dropped flag in a re-homable recipe.
-        assert "notify: true" in skill_bodies["Research collection — notify on new finds"]
-        assert "notify: false" in skill_bodies["Research collection — silent"]
-        assert "notify=true" in skill_bodies["Flip silent ↔ notify"]
-        for body in skill_bodies.values():
-            assert "published" not in body
-        assert "notify: true" in skills_prompt
-        assert "published" not in skills_prompt
+        # The surviving operate-the-system rule teaches ``notify`` now — 0086's
+        # rewrite, no dropped flag left in a re-homable recipe.
+        assert flip is not None
+        assert "notify=true" in flip[0]
+        assert "published" not in flip[0]
 
     def test_0087_strips_terminal_done_steps_from_stored_prompts(self, tmp_path):
         """Migration 0087 (over the full chain): the terminal ``done()`` is assembly's
@@ -778,8 +771,13 @@ class TestMigrate:
         ``likes``/``dislikes`` (``6. Call done().``), ``knowledge`` (``4. Call
         done().``), ``quality`` (``5. done().``), ``thoughts`` (``8. done().``), and
         the archived ``notifier``/``unnotified-thoughts`` shells — while compound
-        terminal steps (``skills`` step 8, ``notified-thoughts`` step 4) and prose
-        *descriptions* of done behaviour survive verbatim (zero-false-positive)."""
+        terminal steps (``notified-thoughts`` step 4) and prose *descriptions* of
+        done behaviour survive verbatim (zero-false-positive).
+
+        The ``skills`` compound terminal step 0087 preserved is no longer asserted
+        here: 0091 (the skills-collector retirement, #1624) clears the ``skills``
+        collector prompt downstream, so it is absent from the end-of-chain
+        ``extraction_prompt``-bearing rows."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -800,11 +798,11 @@ class TestMigrate:
         bare_done = re.compile(r"^\d+\.[ \t]*(?:Call[ \t]+)?done\([^()]*\)\.?[ \t]*$", re.MULTILINE)
         for name, prompt in prompts.items():
             assert not bare_done.search(prompt), f"{name} still has a bare done step line"
-        # The compound terminal steps survive 0087's strip; 0089 then rewrites the
-        # ``skills`` prompt's ``done(success=…, summary=…)`` conditionals to the
-        # argless ``done()`` (#1569), so the compound step is present but argless.
-        assert "If nothing changed, done()." in prompts["skills"]
+        # A compound terminal step survives 0087's strip (only bare done-step lines
+        # were removed).  The ``skills`` prompt is cleared downstream (0091), so
+        # ``notified-thoughts`` is the standing witness.
         assert "If there's nothing fresh to share, just done()." in prompts["notified-thoughts"]
+        assert "skills" not in prompts
         assert "call done() without writing anything" in prompts["knowledge"]
         assert "call done() without writing" in prompts["thoughts"]
         # The stripped prompts keep their remaining steps + trailing prose untouched:
@@ -864,10 +862,13 @@ class TestMigrate:
         assert "ix_messagelog_emission_time" in plan, plan
 
     def test_0089_argless_done_and_retire_quality(self, tmp_path):
-        """Migration 0089 (over the full chain, #1569): the ``skills`` collector
-        prompt's two ``done(success=…, summary=…)`` conditionals are rewritten to
-        the argless ``done()``, and the ``quality`` collection is archived (a
-        visible tombstone) with its extraction_prompt left intact."""
+        """Migration 0089 (over the full chain, #1569): the ``quality`` collection is
+        archived (a visible tombstone) with its extraction_prompt left intact.
+
+        0089 also rewrote the ``skills`` collector prompt's
+        ``done(success=…, summary=…)`` conditionals to the argless ``done()``, but
+        that prompt is cleared DOWNSTREAM by 0091 (the skills-collector retirement,
+        #1624), so at end-of-chain ``skills.extraction_prompt`` is NULL."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -885,12 +886,63 @@ class TestMigrate:
         ).fetchone()
         conn.close()
 
-        # The skills prompt teaches only the argless done() — no forbidden args.
-        assert "done(success" not in skills_prompt
-        assert "If nothing changed, done()." in skills_prompt
+        # The skills collector is retired (0091): its prompt is cleared, so it never
+        # dispatches — the down-stream witness that 0089's done-rewrite target is gone.
+        assert skills_prompt is None
         # Quality is archived (tombstone); its prompt is untouched (never dispatched).
         assert archived == 1
         assert quality_prompt is not None
+
+    def test_0091_retires_skills_collector_keeps_collection(self, tmp_path):
+        """Migration 0091 (over the full chain, #1624) retires the ``skills``
+        reconcile COLLECTOR while keeping the COLLECTION active: it clears the
+        collector's dispatch fields (``extraction_prompt`` + cadence) so it never
+        runs, prunes the two superseded build-recipe entries (research-notify /
+        research-silent), and leaves the operate-the-system standing rules — which
+        still render ambiently in the self-state ``### Skills and rules`` section."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        prompt, interval, base, idle, archived = conn.execute(
+            "SELECT extraction_prompt, collector_interval_seconds, base_interval_seconds, "
+            "consecutive_idle_runs, archived FROM memory WHERE name = 'skills'"
+        ).fetchone()
+        keys = {
+            row[0]
+            for row in conn.execute(
+                "SELECT key FROM memory_entry WHERE memory_name = 'skills'"
+            ).fetchall()
+        }
+        conn.close()
+
+        # The COLLECTOR is retired: no prompt, no cadence → never dispatches
+        # (``Collector._is_ready`` gates on ``extraction_prompt IS NOT NULL``).
+        assert prompt is None
+        assert interval is None
+        assert base is None
+        assert idle == 0
+        # The COLLECTION stays active — its entries still render ambiently.
+        assert archived == 0
+        # The superseded build-recipes are pruned from a fresh install...
+        assert "Research collection — notify on new finds" not in keys
+        assert "Research collection — silent" not in keys
+        # ...while the operate-the-system standing rules survive.
+        for surviving in (
+            "Flip silent ↔ notify",
+            "Change collection cadence",
+            "Archive a collection",
+            "Update collection scope",
+            "Browse for a one-shot question",
+        ):
+            assert surviving in keys, surviving
+        # The collection still has standing rules to render.
+        assert keys
 
     def test_0074_deletes_degenerate_memory_entries(self, tmp_path):
         """Migration 0074 deletes entries whose key or content carries a

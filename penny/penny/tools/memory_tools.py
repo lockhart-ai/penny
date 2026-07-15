@@ -1871,16 +1871,16 @@ class CollectionCatalogTool(MemoryTool):
     """List every user collection — live AND archived — with its full recipe and
     lifecycle.
 
-    The inventory surface, and the skills collector's window onto real use: each
-    user collection (logs and framework collectors excluded) with its lifecycle
-    block (status / expires / created-from-message), description, intent,
-    ``notify`` flag, and full ``extraction_prompt`` — the prompts that
-    actually run.  **Archived-inclusive** (#1566): archiving a mechanism changes
-    its status, never its visibility, so a just-archived collection still
-    renders (clearly marked ``status: archived <when>``) and a count over the
-    catalog is correct with respect to the database.  The skills loop distils
-    reusable workflow patterns from these and reconciles them against the
-    existing skills, so skills stay grounded in the collections that exist.
+    The inventory surface: each user collection (logs and framework collectors
+    excluded) with its lifecycle block (status / expires / created-from-message),
+    description, intent, ``notify`` flag, and full ``extraction_prompt`` — the
+    prompts that actually run.  **Archived-inclusive** (#1566): archiving a
+    mechanism changes its status, never its visibility, so a just-archived
+    collection still renders (clearly marked ``status: archived <when>``) and a
+    count over the catalog is correct with respect to the database.  (The
+    ``skills`` reconcile collector that once read this to reground on real
+    collections was retired by #1624 — skills are structural now; the catalog
+    remains the chat agent's read-only window onto what Penny collects.)
     """
 
     name = "collection_catalog"
