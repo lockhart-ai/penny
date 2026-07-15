@@ -29,15 +29,7 @@ from penny.database.skills import (
     slug_skill_name,
 )
 from penny.llm.similarity import embed_text
-from penny.tools.base import (
-    FRAMEWORK_NARRATION_EXCEPTION,
-    FRAMEWORK_NARRATION_INVALID_ARGS,
-    FRAMEWORK_NARRATION_NOT_FOUND,
-    FRAMEWORK_NARRATION_TIMEOUT,
-    RESULT_NARRATION_FAILURE,
-    Tool,
-)
-from penny.tools.browse import NARRATION_FAILURE_SUFFIX
+from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 from penny.tools.skill_args import SkillCreateArgs, SkillReadArgs
 
@@ -60,42 +52,12 @@ class SkillCreateError(Exception):
     channel."""
 
 
-# ── Certified-by-execution: read each selected step's result frame ────────────
+# ── Certified-by-execution: read each selected step's structural success stamp ─
 #
-# The ledger stores only the framed tool-result TEXT (#1578 gave persisted
-# ordinals + the canonical projection, not a per-call success bit), so "did this
-# call succeed?" is read from the failure clauses the shared narration templates
-# emit — every ``to_result_narration`` failure branch ends "…but it didn't work:",
-# and the framework/browse failures have their own fixed clauses.  Every marker is
-# DERIVED from the imported template/constant it tracks (never hand-copied), so a
-# wording change moves the marker with it (behaviour pinned by
-# ``test_failure_markers_track_templates``).
-
-
-def _failure_clause(template: str) -> str:
-    """The fixed clause a failure frame appends after the backticked tool name —
-    the drift-proof marker.  The variable parts (tool name, error detail) and the
-    trailing punctuation are stripped, leaving the invariant middle."""
-    rendered = template.format(tool_name="x", error="")
-    return rendered.split("`")[-1].strip().rstrip(" .:")
-
-
-_FAILURE_MARKERS = (
-    _failure_clause(RESULT_NARRATION_FAILURE),  # every to_result_narration failure branch
-    _failure_clause(FRAMEWORK_NARRATION_NOT_FOUND),
-    _failure_clause(FRAMEWORK_NARRATION_TIMEOUT),
-    _failure_clause(FRAMEWORK_NARRATION_EXCEPTION),
-    _failure_clause(FRAMEWORK_NARRATION_INVALID_ARGS),
-    NARRATION_FAILURE_SUFFIX,  # BrowseTool's total-failure clause
-)
-
-
-def _is_failure_frame(result: str | None) -> bool:
-    """True when a step's framed result is a failure frame (or is missing — a call
-    with no recorded result never confirmed execution)."""
-    if not result:
-        return True
-    return any(marker in result for marker in _FAILURE_MARKERS)
+# The ledger now persists a per-call success bit beside each tool-result frame
+# (#1600 — ``RunProjectionStep.success``, hydrated from the ``tool_success`` stamp
+# the framework wrote at execution time), so "did this call succeed?" is a boolean
+# read, not a narration parse.  The gate itself lives in ``_require_certified``.
 
 
 # ── Range parsing (``"2-5"`` / ``"2..5"`` / ``"3"``) ──────────────────────────
@@ -236,7 +198,7 @@ class SkillCreateTool(Tool):
             raise SkillCreateError(self._no_run_message(args.from_run))
         projection = project_run(prompts)
         selected = self._select(projection, start, end)
-        self._require_certified(selected, projection, args.from_run)
+        self._require_certified(selected, args.from_run)
         return await self._create(args.name, args.from_run, projection, selected)
 
     def _select(self, projection: RunProjection, start: int, end: int) -> list[RunProjectionStep]:
@@ -258,19 +220,24 @@ class SkillCreateTool(Tool):
             f"{available or '(none)'}. Pick a range that covers the steps you want."
         )
 
-    def _require_certified(
-        self, selected: list[RunProjectionStep], projection: RunProjection, from_run: str
-    ) -> None:
+    def _require_certified(self, selected: list[RunProjectionStep], from_run: str) -> None:
         """The certified-by-execution gate: raises naming the first selected step
         whose call did NOT succeed in the source run (a skill only contains calls
         that worked).
+
+        Reads the STRUCTURAL per-call success stamp (``RunProjectionStep.success``,
+        #1600) — a boolean the framework wrote at execution time from the tool's
+        ``ToolResult.success``, not the framed result prose.  A step certifies only
+        when its stamp is exactly ``True``; a recorded failure (``False``) or a
+        missing stamp (``None`` — a run logged before #1600 carries none) refuses, so
+        an uncertain call never optimistically passes (refuse-to-certify-uncertain:
+        visible degradation over silent success).
 
         The invariant holds universally: ``skill_create`` is the ONLY write path
         into a skill (there is no seed library — migration 0084 ships the table
         empty), so every stored step passed this gate."""
         for step in selected:
-            result = projection.results.get(step.call_id) if step.call_id else None
-            if _is_failure_frame(result):
+            if step.success is not True:
                 raise SkillCreateError(
                     f"Can't save this skill: step {step.ordinal} "
                     f"({step.call.name}) didn't succeed in run {from_run}, and a skill "

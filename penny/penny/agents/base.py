@@ -1132,6 +1132,10 @@ class Agent:
                             repeat_message,
                         ),
                         "tool_call_id": tool_call_id,
+                        # A dedup'd repeat never executed — it's a rejection, not a
+                        # successful call — so its structural stamp is False (#1600):
+                        # a range that selects it can't certify.
+                        PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
                     }
                 )
                 continue
@@ -1189,6 +1193,12 @@ class Agent:
                     "role": MessageRole.TOOL,
                     "content": Tool.format_result(tool_name, arguments, result),
                     "tool_call_id": tool_call_id,
+                    # The STRUCTURAL per-call execution stamp (#1600): the tool's
+                    # own ``success`` bit, beside the framed prose, so a reader of
+                    # this run (skill_create's certification) reads a boolean, not
+                    # narration.  Stripped from the wire in
+                    # ``LlmClient._translate_messages``.
+                    PennyConstants.TOOL_RESULT_SUCCESS_KEY: result.success,
                 }
             )
 

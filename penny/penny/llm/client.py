@@ -390,11 +390,25 @@ class LlmClient:
 
     @staticmethod
     def _translate_messages(messages: list[dict]) -> list[dict]:
-        """Translate messages to OpenAI format, handling vision images."""
+        """Translate messages to OpenAI format, handling vision images.
+
+        Also drops the framework-internal per-call success stamp (#1600) from
+        tool-result messages before the wire: it's logged (it stays on the
+        ``messages_snapshot`` the caller keeps) but is not a wire message field,
+        so it never reaches the model — a copy-drop, so the logged dict keeps it.
+        """
         translated = []
         for message in messages:
             if "images" in message:
                 translated.append(_translate_vision_message(message))
+            elif PennyConstants.TOOL_RESULT_SUCCESS_KEY in message:
+                translated.append(
+                    {
+                        key: value
+                        for key, value in message.items()
+                        if key != PennyConstants.TOOL_RESULT_SUCCESS_KEY
+                    }
+                )
             else:
                 translated.append(message)
         return translated

@@ -25,15 +25,7 @@ from penny.database.skills import (
     unbound_required_holes,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.tools.base import (
-    FRAMEWORK_NARRATION_EXCEPTION,
-    FRAMEWORK_NARRATION_INVALID_ARGS,
-    FRAMEWORK_NARRATION_NOT_FOUND,
-    FRAMEWORK_NARRATION_TIMEOUT,
-    RESULT_NARRATION_FAILURE,
-)
-from penny.tools.browse import NARRATION_FAILURE_SUFFIX
-from penny.tools.skill_tools import SkillCreateTool, SkillReadTool, _is_failure_frame
+from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -78,17 +70,32 @@ def _migrated_db(tmp_path) -> Database:
     return db
 
 
-def _log_run(db: Database, run_id: str, utterance: str, calls: list[tuple[str, dict, str]]) -> None:
+def _log_run(
+    db: Database,
+    run_id: str,
+    utterance: str,
+    calls: list[tuple[str, dict, str, bool]],
+    *,
+    stamp_success: bool = True,
+) -> None:
     """Log one chat run as a single promptlog row: the triggering user turn, the
-    batched tool calls (in order → ordinals), and each call's framed result."""
+    batched tool calls (in order → ordinals), and each call's framed result plus its
+    STRUCTURAL success stamp (``tool_success``, #1600 — what the framework writes at
+    execution time and skill_create's certification reads).
+
+    ``stamp_success=False`` omits the stamp entirely — a run as logged BEFORE #1600,
+    used to exercise the honest absent-stamp refusal."""
     tool_calls = []
     tool_turns = []
-    for index, (name, args, result) in enumerate(calls, start=1):
+    for index, (name, args, result, success) in enumerate(calls, start=1):
         call_id = f"c{index}"
         tool_calls.append(
             {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
         )
-        tool_turns.append({"role": "tool", "tool_call_id": call_id, "content": result})
+        turn = {"role": "tool", "tool_call_id": call_id, "content": result}
+        if stamp_success:
+            turn[PennyConstants.TOOL_RESULT_SUCCESS_KEY] = success
+        tool_turns.append(turn)
     user_turn = {
         "role": "user",
         "content": f"live context{PennyConstants.SECTION_SEPARATOR}{utterance}",
@@ -224,9 +231,9 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
         "run-A",
         _UTTERANCE,
         [
-            ("browse", _BROWSE_ARGS, _BROWSE_OK),
-            ("collection_write", _WRITE_ARGS, _WRITE_OK),
-            ("done", {}, "Cycle complete."),
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+            ("done", {}, "Cycle complete.", True),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
@@ -253,10 +260,15 @@ async def test_skill_create_excludes_done_and_honours_the_range(tmp_path):
         "run-B",
         _UTTERANCE,
         [
-            ("collection_read_latest", {"memory": "elevations"}, "You looked up your elevations:"),
-            ("browse", _BROWSE_ARGS, _BROWSE_OK),
-            ("collection_write", _WRITE_ARGS, _WRITE_OK),
-            ("done", {}, "Cycle complete."),
+            (
+                "collection_read_latest",
+                {"memory": "elevations"},
+                "You looked up your elevations:",
+                True,
+            ),
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+            ("done", {}, "Cycle complete.", True),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
@@ -282,8 +294,8 @@ async def test_skill_create_rejects_an_uncertified_step(tmp_path):
         "run-C",
         _UTTERANCE,
         [
-            ("browse", _BROWSE_ARGS, _BROWSE_FAILED),  # total browse failure
-            ("collection_write", _WRITE_ARGS, _WRITE_OK),
+            ("browse", _BROWSE_ARGS, _BROWSE_FAILED, False),  # total browse failure
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
@@ -298,12 +310,15 @@ async def test_skill_create_rejects_an_uncertified_step(tmp_path):
 async def test_skill_create_replaces_by_name(tmp_path):
     """No versioning: re-teaching an existing name REPLACES the row and says so."""
     db = _make_db(tmp_path)
-    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK)])
+    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK, True)])
     _log_run(
         db,
         "run-D",
         _UTTERANCE,
-        [("browse", _BROWSE_ARGS, _BROWSE_OK), ("collection_write", _WRITE_ARGS, _WRITE_OK)],
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+        ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
 
@@ -323,7 +338,7 @@ async def test_skill_create_replaces_by_name(tmp_path):
 async def test_skill_create_actionable_on_bad_input(tmp_path):
     """A malformed range and an unknown run get actionable, guess-free errors."""
     db = _make_db(tmp_path)
-    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK)])
+    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK, True)])
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
 
     bad_range = await tool.execute(name="X", from_run="run-A", steps="oops")
@@ -345,7 +360,10 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
         db,
         "run-A",
         _UTTERANCE,
-        [("browse", _BROWSE_ARGS, _BROWSE_OK), ("collection_write", _WRITE_ARGS, _WRITE_OK)],
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+        ],
     )
     await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat").execute(
         name="Watch elevation", from_run="run-A", steps="1-2"
@@ -384,26 +402,30 @@ async def test_fresh_migrated_registry_is_empty_and_reads_honestly(tmp_path):
     assert listing.message == _EMPTY_LISTING
 
 
-# ── Certified-by-execution: markers track the shared templates ────────────────
+# ── Certified-by-execution: absent stamp is an HONEST refusal (#1600) ──────────
 
 
-def test_failure_markers_track_templates():
-    """The certified check derives its markers from the SHARED narration templates
-    (never hand-copied strings), so a frame from EVERY failure source is detected —
-    a wording change moves the marker with the template instead of silently
-    defeating the gate — and a success frame (or the raw extracted value) never is.
-    A missing result also reads as uncertified (the call never confirmed execution)."""
-    failure_frames = [
-        RESULT_NARRATION_FAILURE.format(tool_name="browse"),
-        FRAMEWORK_NARRATION_NOT_FOUND.format(tool_name="browze"),
-        FRAMEWORK_NARRATION_TIMEOUT.format(tool_name="browse"),
-        FRAMEWORK_NARRATION_EXCEPTION.format(tool_name="browse", error="boom"),
-        FRAMEWORK_NARRATION_INVALID_ARGS.format(tool_name="browse"),
-        f"You searched for 'x' {NARRATION_FAILURE_SUFFIX} (browse result)",
-    ]
-    for frame in failure_frames:
-        assert _is_failure_frame(frame), frame
-    assert _is_failure_frame(None)
-    assert _is_failure_frame("")
-    assert not _is_failure_frame(_BROWSE_OK)
-    assert not _is_failure_frame(_WRITE_OK)
+@pytest.mark.asyncio
+async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
+    """A run logged BEFORE #1600 carries no per-call success stamp.  The
+    certification reads the STRUCTURAL bit, not the framed prose — so an absent
+    stamp is uncertain, and refuse-to-certify-uncertain beats optimistic-pass
+    (visible degradation over silent success): every step refuses, nothing is
+    persisted, even though the framed results read like clean successes."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-legacy",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+        ],
+        stamp_success=False,  # a pre-#1600 run: framed results, no structural stamp
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+
+    result = await tool.execute(name="Legacy", from_run="run-legacy", steps="1-2")
+    assert not result.success
+    assert "step 1 (browse) didn't succeed" in result.message
+    assert db.skills.get("Legacy") is None  # nothing persisted from an uncertain run
