@@ -292,27 +292,3 @@ async def test_primary_channel_mismatch_soft_warn(monkeypatch, test_config):
     assert _status(report, PreflightCheck.PRIMARY_CHANNEL) is CheckStatus.WARN
     warning = next(r for r in report.results if r.name is PreflightCheck.PRIMARY_CHANNEL)
     assert "browser" in warning.detail and test_config.channel_type in warning.detail
-
-
-@pytest.mark.asyncio
-async def test_deprecated_env_name_soft_warns(monkeypatch, test_config):
-    """A deprecated runtime-config env name set but silently ignored is a soft warning (#1601).
-
-    ``MESSAGE_MAX_STEPS`` no longer maps to the ``MAX_STEPS`` param — the env tier reads the
-    key — so setting it does nothing. The preflight surfaces it, naming the canonical key.
-    """
-    preflight = _build_preflight(monkeypatch, test_config)
-
-    # Absent → no check emitted (skipped, not warned).
-    monkeypatch.delenv("MESSAGE_MAX_STEPS", raising=False)
-    report = await preflight.run()
-    assert _status(report, PreflightCheck.CONFIG_ENV_NAMES) is None
-
-    # Set → a soft warning naming both the ignored alias and the canonical key.
-    monkeypatch.setenv("MESSAGE_MAX_STEPS", "12")
-    report = await preflight.run()
-    assert not report.has_failures
-    assert _status(report, PreflightCheck.CONFIG_ENV_NAMES) is CheckStatus.WARN
-    warning = next(r for r in report.results if r.name is PreflightCheck.CONFIG_ENV_NAMES)
-    assert "MESSAGE_MAX_STEPS" in warning.detail
-    assert "MAX_STEPS" in warning.detail

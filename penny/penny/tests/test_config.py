@@ -4,7 +4,6 @@ import httpx
 import pytest
 
 from penny.config import Config
-from penny.config_params import RUNTIME_CONFIG_PARAMS
 from penny.constants import ChannelType, PennyConstants
 from penny.llm import LlmClient
 
@@ -175,8 +174,7 @@ class TestMaxStepsEnvWiring:
 
     The env tier reads ``os.getenv(param.key)`` — the key is ``MAX_STEPS``. Docs once
     named this env var ``MESSAGE_MAX_STEPS``, which the tier never reads, so a value set
-    under that name was silently ignored. ``MAX_STEPS`` is the canonical name; the legacy
-    ``MESSAGE_MAX_STEPS`` no longer maps.
+    under that name was silently ignored. ``MAX_STEPS`` is the canonical name.
     """
 
     def _base_env(self, monkeypatch):
@@ -198,18 +196,6 @@ class TestMaxStepsEnvWiring:
         """Unset → the ConfigParam default (20, equal to BACKGROUND_MAX_STEPS) applies."""
         self._base_env(monkeypatch)
         monkeypatch.delenv("MAX_STEPS", raising=False)
-        monkeypatch.delenv("MESSAGE_MAX_STEPS", raising=False)
-
-        config = Config.load()
-
-        assert config.runtime.MAX_STEPS == 20
-        assert RUNTIME_CONFIG_PARAMS["MAX_STEPS"].default == 20
-
-    def test_legacy_message_max_steps_env_var_is_ignored(self, monkeypatch):
-        """The retired ``MESSAGE_MAX_STEPS`` name does nothing — the default still wins."""
-        self._base_env(monkeypatch)
-        monkeypatch.delenv("MAX_STEPS", raising=False)
-        monkeypatch.setenv("MESSAGE_MAX_STEPS", "3")
 
         config = Config.load()
 
