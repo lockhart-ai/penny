@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import UIKit
 
@@ -5,152 +6,368 @@ struct MessageSearchView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var selectedMessage: ChatMessage?
-    @State private var selectedFilter: MessageView.MessageFilter = .all
-    @State private var searchService: SearchService
-    @State private var searchTask: Task<Void, Never>?
+    @State private var viewModel: MessageSearchViewModel
 
     private let onReply: (ChatMessage) -> Void
 
     init(client: PennyService, onReply: @escaping (ChatMessage) -> Void) {
         self.onReply = onReply
-        _searchService = State(initialValue: SearchService(client: client))
+        _viewModel = State(initialValue: MessageSearchViewModel(client: client))
     }
 
-    private var searchResultColumns: [GridItem] {
-        Array(
-            repeating: GridItem(.flexible(), spacing: MessageView.MessageLayout.compact.itemSpacing, alignment: .top),
-            count: MessageView.MessageLayout.compact.columnCount
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Search Messages")
+                .navigationBarTitleDisplayMode(.inline)
+                .searchable(
+                    text: $query,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search by meaning"
+                )
+                .onChange(of: query) { _, _ in
+                    resetSearchAndLoadHistory()
+                }
+                .onChange(of: viewModel.selectedFilter) { _, _ in
+                    filterChanged()
+                }
+                .onChange(of: viewModel.selectedLayout) { _, _ in
+                    viewModel.resetHistoryPaging()
+                }
+                .onSubmit(of: .search) {
+                    startSearch()
+                }
+                .onDisappear {
+                    viewModel.cancelTasks()
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        filterMenu
+                    }
+                    ToolbarItem(placement: .principal) {
+                        layoutPicker
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+                .sheet(item: $selectedMessage) { message in
+                    MessageCardDetailSheet(message: message)
+                }
+        }
+        .task {
+            await viewModel.loadInitialHistory()
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if viewModel.searchService.isSearching {
+            ProgressView("Searching...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !trimmedQuery.isEmpty && viewModel.searchService.hasSearched {
+            semanticResults
+        } else {
+            history
+        }
+    }
+
+    private var history: some View {
+        MessageCardGrid(
+            messages: viewModel.displayedMessages,
+            layout: viewModel.selectedLayout,
+            onMessageTap: { selectedMessage = $0 },
+            onReply: reply,
+            onLastMessageAppear: loadMoreHistory
         )
+        .overlay {
+            if let errorMessage = viewModel.historyErrorMessage {
+                ContentUnavailableView(
+                    "History Unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
+            } else if viewModel.displayedMessages.isEmpty && !viewModel.isLoadingHistory {
+                ContentUnavailableView(
+                    "No Messages",
+                    systemImage: viewModel.selectedFilter.systemImage,
+                    description: Text("No messages match the selected filter.")
+                )
+            } else if viewModel.isLoadingHistory {
+                ProgressView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var semanticResults: some View {
+        if let errorMessage = viewModel.searchService.errorMessage {
+            ContentUnavailableView(
+                "Search Unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text(errorMessage)
+            )
+        } else if viewModel.searchService.results.isEmpty {
+            ContentUnavailableView(
+                "No Matches",
+                systemImage: "magnifyingglass",
+                description: Text("Try a different phrase.")
+            )
+        } else {
+            MessageCardGrid(
+                messages: viewModel.searchService.results.map(\.message),
+                layout: viewModel.selectedLayout,
+                onMessageTap: { selectedMessage = $0 },
+                onReply: reply,
+                badge: { message in
+                    guard let result = viewModel.searchService.results.first(where: { $0.message.id == message.id }) else {
+                        return nil
+                    }
+                    return "\(Int(result.similarity * 100))%"
+                }
+            )
+        }
     }
 
     private var filterMenu: some View {
         Menu {
-            Picker("Filter Messages", selection: $selectedFilter) {
+            Picker("Filter Messages", selection: $viewModel.selectedFilter) {
                 ForEach(MessageView.MessageFilter.allCases) { filter in
                     Label(filter.title, systemImage: filter.systemImage)
                         .tag(filter)
                 }
             }
         } label: {
-            Image(systemName: selectedFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            Image(systemName: viewModel.selectedFilter == .all
+                ? "line.3.horizontal.decrease.circle"
+                : "line.3.horizontal.decrease.circle.fill")
                 .frame(width: 28, height: 28)
                 .contentShape(Circle())
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.primary)
         .accessibilityLabel("Filter messages")
-        .accessibilityValue(selectedFilter.title)
+        .accessibilityValue(viewModel.selectedFilter.title)
     }
 
-    var body: some View {
-        NavigationStack {
-            Group {
-                if searchService.isSearching {
-                    ProgressView("Searching...")
-                } else if let errorMessage = searchService.errorMessage {
-                    ContentUnavailableView("Search Unavailable", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-                } else if searchService.results.isEmpty {
-                    ContentUnavailableView(
-                        searchService.hasSearched ? "No Matches" : "Search Messages",
-                        systemImage: "magnifyingglass",
-                        description: Text(searchService.hasSearched ? "Try a different phrase." : "Search your conversation history by meaning.")
-                    )
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: searchResultColumns, spacing: MessageView.MessageLayout.compact.itemSpacing) {
-                            ForEach(searchService.results) { result in
-                                searchResultCard(result)
-                            }
-                        }
-                        .padding(.horizontal, MessageView.MessageLayout.compact.horizontalPadding)
-                        .padding(.vertical, 12)
-                    }
-                    .background(Color(.systemGroupedBackground))
-                }
-            }
-            .navigationTitle("Search Messages")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search by meaning")
-            .onChange(of: query) { _, _ in
-                cancelSearch()
-                searchService.clear()
-            }
-            .onChange(of: selectedFilter) { _, _ in
-                handleFilterChanged()
-            }
-            .onSubmit(of: .search) {
-                startSearch()
-            }
-            .onDisappear {
-                cancelSearch()
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    filterMenu
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-            .sheet(item: $selectedMessage) { message in
-                MessageCardDetailSheet(message: message)
-            }
+    private var layoutPicker: some View {
+        Picker("Card layout", selection: $viewModel.selectedLayout) {
+            Text("2").tag(MessageView.MessageLayout.compact)
+            Text("3").tag(MessageView.MessageLayout.media)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 96)
+        .accessibilityLabel("Card layout")
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func startSearch() {
+        guard !trimmedQuery.isEmpty else {
+            resetSearchAndLoadHistory()
+            return
+        }
+        viewModel.cancelHistoryTask()
+        Task {
+            await viewModel.searchService.search(trimmedQuery, filter: viewModel.selectedFilter.pageFilter)
         }
     }
 
-    private func searchResultCard(_ result: MessageSearchResult) -> some View {
-        Button {
-            selectedMessage = result.message
-        } label: {
-            ChatMessageView(message: result.message, layout: .compact)
-                .overlay(alignment: .bottomTrailing) {
-                    Text("\(Int(result.similarity * 100))%")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(8)
-                }
+    private func resetSearchAndLoadHistory() {
+        viewModel.searchService.clear()
+        guard trimmedQuery.isEmpty else { return }
+        Task {
+            await viewModel.loadInitialHistory()
         }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button {
-                reply(to: result.message)
-            } label: {
-                Label("Reply", systemImage: "arrowshape.turn.up.left")
-            }
+    }
 
-            Button {
-                UIPasteboard.general.string = result.message.content
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
+    private func filterChanged() {
+        if trimmedQuery.isEmpty {
+            Task { await viewModel.loadInitialHistory() }
+        } else if viewModel.searchService.hasSearched {
+            startSearch()
         }
+    }
+
+    private func loadMoreHistory() {
+        guard trimmedQuery.isEmpty else { return }
+        Task { await viewModel.loadMoreHistory() }
     }
 
     private func reply(to message: ChatMessage) {
         onReply(message)
         dismiss()
     }
+}
 
-    private func startSearch() {
-        cancelSearch()
-        searchTask = Task { await searchService.search(query, filter: selectedFilter.pageFilter) }
+@MainActor
+@Observable
+final class MessageSearchViewModel {
+    let client: PennyService
+    let searchService: SearchService
+    var selectedFilter: MessageView.MessageFilter = .all
+    var selectedLayout: MessageView.MessageLayout = .compact
+    var displayedMessages: [ChatMessage] = []
+    var isLoadingHistory = false
+    var historyErrorMessage: String?
+
+    @ObservationIgnored private let pageSize: Int
+    @ObservationIgnored private var nextCursor: MessagePageCursor?
+    @ObservationIgnored private var hasMoreHistory = false
+    @ObservationIgnored private var historyTask: Task<Void, Never>?
+
+    init(client: PennyService, pageSize: Int = 30, searchService: SearchService? = nil) {
+        self.client = client
+        self.pageSize = max(1, pageSize)
+        self.searchService = searchService ?? SearchService(client: client)
     }
 
-    private func handleFilterChanged() {
-        cancelSearch()
-        guard searchService.hasSearched,
-              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            searchService.clear()
-            return
+    var canLoadMoreHistory: Bool {
+        hasMoreHistory && !isLoadingHistory
+    }
+
+    func loadInitialHistory() async {
+        historyTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.loadInitialHistoryPage()
         }
-        startSearch()
+        historyTask = task
+        await task.value
     }
 
-    private func cancelSearch() {
-        searchTask?.cancel()
-        searchTask = nil
+    func loadMoreHistory() async {
+        guard canLoadMoreHistory, let nextCursor else { return }
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
+
+        let page = await client.requestMessagePage(
+            MessagePageRequest(limit: pageSize, before: nextCursor, filter: selectedFilter.pageFilter)
+        )
+        let existingIDs = Set(displayedMessages.map(\.id))
+        displayedMessages.insert(contentsOf: page.messages.filter { !existingIDs.contains($0.id) }, at: 0)
+        self.nextCursor = page.nextCursor
+        hasMoreHistory = page.hasMore
+    }
+
+    func resetHistoryPaging() {
+        nextCursor = nil
+        hasMoreHistory = false
+    }
+
+    func cancelHistoryTask() {
+        historyTask?.cancel()
+        historyTask = nil
+    }
+
+    func cancelTasks() {
+        cancelHistoryTask()
+        searchService.clear()
+    }
+
+    private func loadInitialHistoryPage() async {
+        isLoadingHistory = true
+        historyErrorMessage = nil
+        resetHistoryPaging()
+        defer { isLoadingHistory = false }
+
+        let page = await client.requestMessagePage(
+            MessagePageRequest(limit: pageSize, filter: selectedFilter.pageFilter)
+        )
+        guard !Task.isCancelled else { return }
+        displayedMessages = page.messages
+        nextCursor = page.nextCursor
+        hasMoreHistory = page.hasMore
+    }
+}
+
+private struct MessageCardGrid: View {
+    let messages: [ChatMessage]
+    let layout: MessageView.MessageLayout
+    let onMessageTap: (ChatMessage) -> Void
+    let onReply: (ChatMessage) -> Void
+    let badge: ((ChatMessage) -> String?)?
+    let onLastMessageAppear: (() -> Void)?
+
+    init(
+        messages: [ChatMessage],
+        layout: MessageView.MessageLayout,
+        onMessageTap: @escaping (ChatMessage) -> Void,
+        onReply: @escaping (ChatMessage) -> Void,
+        badge: ((ChatMessage) -> String?)? = nil,
+        onLastMessageAppear: (() -> Void)? = nil
+    ) {
+        self.messages = messages
+        self.layout = layout
+        self.onMessageTap = onMessageTap
+        self.onReply = onReply
+        self.badge = badge
+        self.onLastMessageAppear = onLastMessageAppear
+    }
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: layout.itemSpacing, alignment: .top), count: layout.columnCount)
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: layout.itemSpacing) {
+                ForEach(messages) { message in
+                    MessageCardCell(
+                        message: message,
+                        layout: layout,
+                        badge: badge?(message),
+                        onTap: { onMessageTap(message) },
+                        onReply: { onReply(message) }
+                    )
+                    .onAppear {
+                        guard message.id == messages.last?.id else { return }
+                        onLastMessageAppear?()
+                    }
+                }
+            }
+            .padding(.horizontal, layout.horizontalPadding)
+            .padding(.vertical, 12)
+        }
+        .background(Color(.systemGroupedBackground))
+    }
+}
+
+private struct MessageCardCell: View {
+    let message: ChatMessage
+    let layout: MessageView.MessageLayout
+    let badge: String?
+    let onTap: () -> Void
+    let onReply: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            ChatMessageView(message: message, layout: layout)
+                .overlay(alignment: .bottomTrailing) {
+                    if let badge {
+                        Text(badge)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(8)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onReply) {
+                Label("Reply", systemImage: "arrowshape.turn.up.left")
+            }
+
+            Button {
+                UIPasteboard.general.string = message.content
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
     }
 }

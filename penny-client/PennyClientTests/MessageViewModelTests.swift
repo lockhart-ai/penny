@@ -311,6 +311,35 @@ struct MessageViewModelTests {
         #expect(viewModel.shouldShowTypingIndicator == false)
     }
 
+    @Test func searchHistoryDefaultsToCompactAndLoadsSelectedFilter() async {
+        let database = configuredDatabase()
+        saveFilterFixture(in: database)
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())
+        let viewModel = MessageSearchViewModel(client: client, pageSize: 2)
+
+        viewModel.selectedFilter = .penny
+        await viewModel.loadInitialHistory()
+
+        #expect(viewModel.selectedLayout == .compact)
+        #expect(viewModel.displayedMessages.map(\.id) == [2, 5])
+
+        viewModel.selectedLayout = .media
+        #expect(viewModel.selectedLayout == .media)
+    }
+
+    @Test func searchHistoryLoadsOlderPagesForTheSelectedFilter() async {
+        let database = configuredDatabase()
+        saveFilterFixture(in: database)
+        let client = PennyWebSocketClient(databaseService: database, prefs: configuredPrefs())
+        let viewModel = MessageSearchViewModel(client: client, pageSize: 2)
+
+        viewModel.selectedFilter = .penny
+        await viewModel.loadInitialHistory()
+        await viewModel.loadMoreHistory()
+
+        #expect(viewModel.displayedMessages.map(\.id) == [1, 2, 5])
+    }
+
 }
 
 @MainActor

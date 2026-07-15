@@ -42,10 +42,6 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                 }
 
-                Section("Features") {
-                    Toggle("1-2-3 layout", isOn: $viewModel.isMessageLayoutSwitcherEnabled)
-                }
-
                 Section("History") {
                     ForEach(HistoryChannel.allCases) { channel in
                         Toggle(channel.title, isOn: Binding(

@@ -108,11 +108,6 @@ extension Prefs {
         set { setSecureString(newValue, forKey: .password) }
     }
 
-    var isMessageLayoutSwitcherEnabled: Bool {
-        get { bool(forKey: .isMessageLayoutSwitcherEnabled) }
-        set { set(newValue, forKey: .isMessageLayoutSwitcherEnabled) }
-    }
-
     struct Key: RawRepresentable, Hashable, ExpressibleByStringLiteral {
         let rawValue: String
 
@@ -134,7 +129,6 @@ extension Prefs.Key {
     static let webSocketURL = Self("connection.webSocketURL")
     static let username = Self("connection.username")
     static let password = Self("connection.password")
-    static let isMessageLayoutSwitcherEnabled = Self("features.messageLayoutSwitcherEnabled")
     static let historySyncState = Self("history.syncState")
 }
 

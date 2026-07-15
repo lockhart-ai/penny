@@ -69,19 +69,6 @@ struct PrefsTests {
         #expect(prefs.password == nil)
     }
 
-    @Test func messageLayoutSwitcherFeatureDefaultsToDisabled() {
-        let prefs = Prefs(userDefaults: makeUserDefaults(), keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
-
-        #expect(prefs.isMessageLayoutSwitcherEnabled == false)
-    }
-
-    @Test func storesMessageLayoutSwitcherFeatureFlag() {
-        let prefs = Prefs(userDefaults: makeUserDefaults(), keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
-
-        prefs.isMessageLayoutSwitcherEnabled = true
-
-        #expect(prefs.isMessageLayoutSwitcherEnabled)
-    }
 }
 
 private struct SamplePreference: Codable, Equatable {

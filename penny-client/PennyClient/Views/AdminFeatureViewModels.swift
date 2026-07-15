@@ -206,7 +206,6 @@ final class SettingsViewModel {
     var webSocketURL: String
     var username: String
     var password: String
-    var isMessageLayoutSwitcherEnabled: Bool
     var editedConfigValues: [String: String] = [:]
     var domainDraft = ""
     var domainPermission: DomainPermission = .allowed
@@ -217,7 +216,6 @@ final class SettingsViewModel {
         webSocketURL = prefs.webSocketURL ?? ""
         username = prefs.username ?? ""
         password = prefs.password ?? ""
-        isMessageLayoutSwitcherEnabled = prefs.isMessageLayoutSwitcherEnabled
     }
 
     var canSaveConnection: Bool {
@@ -268,7 +266,6 @@ final class SettingsViewModel {
         prefs.webSocketURL = webSocketURL.trimmingCharacters(in: .whitespacesAndNewlines)
         prefs.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         prefs.password = password
-        prefs.isMessageLayoutSwitcherEnabled = isMessageLayoutSwitcherEnabled
         client.reconnect()
     }
 

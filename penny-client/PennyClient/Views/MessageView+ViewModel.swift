@@ -85,9 +85,7 @@ extension MessageView {
     final class ViewModel {
         var client = PennyWebSocketClient()
         var draftMessage = ""
-        var isShowingConnectionError = false
         var isShowingSettings = false
-        var isShowingSearch = false
         var hasHiddenNewMessages = false
         var replyMessage: ChatMessage?
         var selectedMessageLayout: MessageLayout = .message

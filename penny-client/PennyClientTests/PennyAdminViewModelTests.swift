@@ -180,7 +180,6 @@ struct PennyAdminViewModelTests {
         viewModel.webSocketURL = " wss://new.example/penny/ "
         viewModel.username = " bob "
         viewModel.password = "new-secret"
-        viewModel.isMessageLayoutSwitcherEnabled = true
         viewModel.saveConnection()
 
         let payloads = await sentPayloads(transport, count: 5)
@@ -201,7 +200,6 @@ struct PennyAdminViewModelTests {
         #expect(prefs.webSocketURL == "wss://new.example/penny/")
         #expect(prefs.username == "bob")
         #expect(prefs.password == "new-secret")
-        #expect(prefs.isMessageLayoutSwitcherEnabled)
         client.disconnect()
     }
 }
