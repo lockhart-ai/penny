@@ -40,7 +40,8 @@ from penny.database.memory.types import (
     wrong_shape_message,
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, Skill
-from penny.database.mutation_store import MutationDetail, MutationStore
+from penny.database.mutation_store import MutationDetail, MutationStore, cancelled_sends_note
+from penny.database.send_queue_store import SendQueueStore
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ class MemoryStore:
         engine,
         runtime: RuntimeParams | None = None,
         mutations: MutationStore | None = None,
+        send_queue: SendQueueStore | None = None,
     ):
         self.engine = engine
         # /config-tunable dedup thresholds; tests get vanilla defaults.
@@ -171,6 +173,12 @@ class MemoryStore:
         # engine when the facade doesn't inject it (isolated tests), so the
         # recording is never silently skipped.
         self._mutations = mutations if mutations is not None else MutationStore(engine)
+        # Archiving a collection cancels its still-pending queued sends (#1634):
+        # ``_set_archived`` is the chokepoint every archive path funnels through
+        # (user, system max_runs/expiry), so cancelling here means teardown is
+        # silent through the send queue for all of them.  Defaults like the
+        # ledger so isolated tests still get the cancellation.
+        self._send_queue = send_queue if send_queue is not None else SendQueueStore(engine)
         # Fired after any mutation so observers (the browser channel) can refresh.
         # The factory injects it into each Memory object it builds.
         self._on_memory_changed: Callable[[str | None], None] | None = None
@@ -455,6 +463,14 @@ class MemoryStore:
             memory.updated_at = datetime.now(UTC)
             session.add(memory)
             session.commit()
+        # Teardown means silence through the queue (#1634): archiving cancels this
+        # collection's still-pending queued sends so the drainer never delivers a
+        # message from a mechanism that no longer exists.  Unarchive does NOT
+        # resurrect them — they belong to the dead epoch — so this runs on archive
+        # only.  The count folds into the mutation note so the cancellation is
+        # visible wherever the archive renders.
+        cancelled = self._send_queue.cancel_pending(name) if archived else 0
+        note = self._archive_note(note, cancelled)
         self._mutations.record(
             entity_type=MutationEntityType.COLLECTION,
             entity_name=name,
@@ -464,6 +480,17 @@ class MemoryStore:
             detail=MutationDetail(note=note) if note else None,
         )
         self._notify_changed(name)
+
+    @staticmethod
+    def _archive_note(note: str | None, cancelled: int) -> str | None:
+        """Fold the cancelled-pending-sends count into the archive event's note
+        (#1634), after any policy cause a system archive already carries — so a
+        ``max_runs`` retire that also cancelled sends reads
+        "<policy reason>; cancelled N pending sends"."""
+        if cancelled <= 0:
+            return note
+        clause = cancelled_sends_note(cancelled)
+        return f"{note}; {clause}" if note else clause
 
     def update_collection_metadata(
         self,

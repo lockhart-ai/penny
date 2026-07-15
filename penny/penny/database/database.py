@@ -51,13 +51,21 @@ class Database:
         self.domain_permissions = DomainPermissionStore(self.engine)
         self.ios = IosStore(self.engine)
         self.media = MediaStore(self.engine)
-        # The registry-mutation ledger (#1560).  Constructed before ``memories``
-        # so the memory store records create/update/archive events through it.
+        # The registry-mutation ledger (#1560) and the send queue (#1634) are both
+        # constructed before ``memories`` so the memory store can record
+        # create/update/archive events through the ledger AND cancel a collection's
+        # pending queued sends when it's archived (the chokepoint that makes
+        # teardown silent through the queue).
         self.mutations = MutationStore(self.engine)
-        self.memories = MemoryStore(self.engine, runtime=runtime, mutations=self.mutations)
+        self.send_queue = SendQueueStore(self.engine)
+        self.memories = MemoryStore(
+            self.engine,
+            runtime=runtime,
+            mutations=self.mutations,
+            send_queue=self.send_queue,
+        )
         self.messages = MessageStore(self.engine)
         self.preferences = PreferenceStore(self.engine)
-        self.send_queue = SendQueueStore(self.engine)
         self.skills = SkillStore(self.engine)
         self.thoughts = ThoughtStore(self.engine)
         self.users = UserStore(self.engine)

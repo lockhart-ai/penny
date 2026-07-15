@@ -467,9 +467,13 @@ class SendQueueItem(SQLModel, table=True):
     ``send_message`` enqueues here instead of dropping a message when the
     autonomous-send cooldown hasn't elapsed; a background drain schedule
     delivers the oldest pending row once the cooldown clears, then stamps
-    ``sent_at``.  ``sent_at IS NULL`` is the single source of truth for
-    "still pending".  ``collection`` is the collector that queued it (the
-    bound target name), so delivery is attributable.
+    ``sent_at``.  A row has three states, and each marker means exactly one
+    thing: **pending** (``sent_at IS NULL AND cancelled_at IS NULL``),
+    **delivered** (``sent_at`` stamped — the single source of truth for "was
+    it sent"), and **cancelled** (``cancelled_at`` stamped while ``sent_at``
+    stays NULL — the collector was archived before the message went out, so it
+    was never sent; #1634).  ``collection`` is the collector that queued it (the
+    bound target name), so delivery — and cancellation — is attributable.
     """
 
     __tablename__ = "send_queue"
@@ -479,6 +483,12 @@ class SendQueueItem(SQLModel, table=True):
     content: str
     collection: str
     sent_at: datetime | None = None
+    # Stamped when the queuing collector is archived before delivery (#1634):
+    # a VISIBLE cancellation (the row is kept as an audit trail, not deleted),
+    # excluded from the pending query structurally.  ``sent_at`` stays NULL — a
+    # cancelled row was never sent — so the delivered/cancelled distinction is
+    # never ambiguous.
+    cancelled_at: datetime | None = None
 
 
 class IosOutboxItem(SQLModel, table=True):

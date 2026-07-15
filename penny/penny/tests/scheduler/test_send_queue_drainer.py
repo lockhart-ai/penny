@@ -17,9 +17,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlmodel import Session, select
 
-from penny.constants import ChannelType, PennyConstants
+from penny.constants import ChannelType, MutationAction, PennyConstants
 from penny.database import Database
+from penny.database.models import SendQueueItem
+from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
 
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
@@ -205,3 +208,106 @@ async def test_drain_no_channel_is_noop(tmp_path):
     assert await drainer.execute() is False
     # Message remains pending for when a channel is available.
     assert db.send_queue.next_pending() is not None
+
+
+@pytest.mark.asyncio
+async def test_archiving_collection_cancels_pending_sends(tmp_path):
+    """Teardown means silence through the queue (#1634): a send queued while the
+    collector was alive is cancelled when the collection is archived, so the
+    drainer delivers NOTHING — even though the cooldown is vacuously elapsed and
+    would otherwise let it through.  The row is stamped cancelled (a visible audit
+    trail; ``sent_at`` stays NULL — it was never sent), and the archive's mutation
+    event names the cancelled count."""
+    db = _make_db(tmp_path)
+    db.memories.create_collection("hedgehog-watch", "hedgehog sightings", created_by_run_id="run-c")
+    db.send_queue.enqueue(content="a hedgehog!", collection="hedgehog-watch")
+
+    db.memories.archive("hedgehog-watch", run_id="run-arch")
+
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel)  # cooldown vacuously elapsed (no prior send)
+    did_work = await drainer.execute()
+
+    # Nothing delivered — the only queued row was cancelled by the archive.
+    assert did_work is False
+    channel.send_response.assert_not_awaited()
+    assert db.send_queue.next_pending() is None
+    assert db.send_queue.pending_items() == []
+
+    # Visible cancellation: the row is kept (audit trail), stamped cancelled_at,
+    # and sent_at stays NULL — the single-source-of-truth "was it sent" is clean.
+    with Session(db.engine) as session:
+        rows = session.exec(select(SendQueueItem)).all()
+    assert len(rows) == 1
+    assert rows[0].cancelled_at is not None
+    assert rows[0].sent_at is None
+
+    # The archive's mutation event names the count — the legible surface the
+    # cancellation renders on (self-state activity, memory_metadata).
+    events = db.mutations.history("hedgehog-watch", limit=10)
+    archive_event = next(e for e in events if e.action == MutationAction.ARCHIVED.value)
+    assert archive_event.detail is not None
+    assert (
+        MutationDetail.model_validate_json(archive_event.detail).note == "cancelled 1 pending send"
+    )
+    assert render_mutation(archive_event).endswith("— cancelled 1 pending send")
+
+
+@pytest.mark.asyncio
+async def test_archive_cancel_is_scoped_and_pluralizes(tmp_path):
+    """Cancellation is scoped to the archived collection's rows: a sibling
+    collection's pending send survives and is what the drainer delivers, while
+    both of the archived collection's rows are cancelled and the count pluralizes
+    (#1634)."""
+    db = _make_db(tmp_path)
+    db.memories.create_collection("hedgehog-watch", "hedgehog sightings")
+    db.memories.create_collection("weather-watch", "weather")
+    db.send_queue.enqueue(content="a hedgehog!", collection="hedgehog-watch")
+    db.send_queue.enqueue(content="another hedgehog!", collection="hedgehog-watch")
+    db.send_queue.enqueue(content="rain today", collection="weather-watch")
+
+    db.memories.archive("hedgehog-watch", run_id="run-arch")
+
+    # The sibling's send is untouched — the drainer delivers it.
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel)
+    assert await drainer.execute() is True
+    assert channel.send_response.await_args.kwargs["content"] == "rain today"
+
+    # Both of the archived collection's rows are cancelled (kept, sent_at NULL).
+    with Session(db.engine) as session:
+        hedgehog = session.exec(
+            select(SendQueueItem).where(SendQueueItem.collection == "hedgehog-watch")
+        ).all()
+    assert len(hedgehog) == 2
+    assert all(row.cancelled_at is not None and row.sent_at is None for row in hedgehog)
+
+    events = db.mutations.history("hedgehog-watch", limit=10)
+    archive_event = next(e for e in events if e.action == MutationAction.ARCHIVED.value)
+    assert archive_event.detail is not None
+    assert (
+        MutationDetail.model_validate_json(archive_event.detail).note == "cancelled 2 pending sends"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unarchive_does_not_resurrect_cancelled_sends(tmp_path):
+    """A cancelled send belongs to the dead epoch — unarchiving the collection
+    does NOT bring it back (#1634): the row stays cancelled and the drainer never
+    delivers it."""
+    db = _make_db(tmp_path)
+    db.memories.create_collection("hedgehog-watch", "hedgehog sightings")
+    db.send_queue.enqueue(content="a hedgehog!", collection="hedgehog-watch")
+    db.memories.archive("hedgehog-watch")
+
+    db.memories.unarchive("hedgehog-watch")
+
+    channel = _make_channel()
+    drainer = _make_drainer(db, channel)
+    assert await drainer.execute() is False
+    channel.send_response.assert_not_awaited()
+    assert db.send_queue.next_pending() is None
+    # The row is still cancelled — unarchive is not a resurrection.
+    with Session(db.engine) as session:
+        rows = session.exec(select(SendQueueItem)).all()
+    assert len(rows) == 1 and rows[0].cancelled_at is not None
