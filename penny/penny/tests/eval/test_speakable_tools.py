@@ -56,7 +56,6 @@ _DISLIKES = "dislikes"
 _GAMES = SynthCollection(
     _GAMES_NAME,
     "Video games the user is tracking or interested in: titles, release dates, and notes.",
-    inclusion="relevant",
     entries=(),
 )
 _MISTFORGE_KEY = "Mistforge Tactics"
@@ -347,14 +346,13 @@ async def test_delete_then_list_sequence(chat_eval: ChatEval) -> None:
 
 
 async def test_recall_sweep_sequence(chat_eval: ChatEval) -> None:
-    """Report-only — the ambient-recall confound (and a high-variance case:
-    4/5→2/5→5/5→1/5 across runs).  The seeded likes/dislikes/games entries are
-    surfaced verbatim in the recall block (all ``inclusion=always``), so the model
-    reasonably answers the "remind me" from there and produces a correct reminder
-    WITHOUT three explicit ``collection_read_latest`` calls — the scorer's
-    three-reads requirement over-fits.  The user-facing outcome is right; the
-    proper fix is to gate on the reminder OUTCOME (reply reflects a like + dislike
-    + game) rather than the reads — a follow-up, not the imperative-gating PR."""
+    """Report-only — a high-variance case (4/5→2/5→5/5→1/5 across runs).  The model
+    can answer the "remind me" from the conversation window or a subset of reads and
+    still produce a correct reminder WITHOUT three explicit ``collection_read_latest``
+    calls — the scorer's three-reads requirement over-fits.  The user-facing outcome
+    is right; the proper fix is to gate on the reminder OUTCOME (reply reflects a
+    like + dislike + game) rather than the reads — a follow-up, not the
+    imperative-gating PR."""
     await chat_eval(
         case_id="speak-recall-sweep",
         message="remind me what I like, what I dislike, and what's on my games list",

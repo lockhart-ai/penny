@@ -258,45 +258,6 @@ ConfigParam(
 # axis matches a single-signal gate would miss.
 
 ConfigParam(
-    key="RECALL_LIMIT",
-    description=(
-        "Max entries each memory contributes to the agent's recall block "
-        "(applies to recent, relevant, and all modes)"
-    ),
-    type=int,
-    default=5,
-    validator=_validate_positive_int,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="MEMORY_INCLUSION_THRESHOLD",
-    description=(
-        "Stage-1 routing gate: minimum cosine between the current message and a "
-        "relevant-inclusion memory's description anchor for it to participate "
-        "in recall"
-    ),
-    type=float,
-    default=0.40,
-    validator=_validate_unit_float,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
-    key="RECALL_TOP_K",
-    description=(
-        "Stage-1 routing: max number of relevant-inclusion collections admitted to "
-        "recall per turn, ranked by current-message cosine to their description "
-        "anchor (1 = only the single most relevant collection; always/never "
-        "collections are unaffected)"
-    ),
-    type=int,
-    default=1,
-    validator=_validate_positive_int,
-    group=GROUP_MEMORY,
-)
-
-ConfigParam(
     key="MEMORY_DEDUP_KEY_TCR_STRICT",
     description="Strict key token-containment threshold for memory dedup",
     type=float,

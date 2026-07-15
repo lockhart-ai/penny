@@ -35,7 +35,7 @@ import json
 import logging
 import random
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import numpy as np
@@ -63,7 +63,7 @@ from penny.database.memory.types import (
 )
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
 from penny.database.mutation_store import EnumeratedDecision
-from penny.text_validity import degenerate_reason, half_formed_send_reason, is_low_info
+from penny.text_validity import degenerate_reason, half_formed_send_reason
 from penny.validation.conditions import ConditionKey, run_flag_conditions
 
 logger = logging.getLogger(__name__)
@@ -96,14 +96,6 @@ class Memory:
     @property
     def description(self) -> str:
         return self.row.description
-
-    @property
-    def inclusion(self) -> str:
-        return self.row.inclusion
-
-    @property
-    def recall(self) -> str:
-        return self.row.recall
 
     @property
     def intent(self) -> str | None:
@@ -199,10 +191,9 @@ class Memory:
         self, k: int | None = None, offset: int = 0, search: str | None = None
     ) -> list[MemoryEntry]:
         """Newest-first entries — the shape-independent internal read used by
-        recall (recent mode), the log cursor's first read, and send_message's
-        cooldown probe.  The model-facing ``collection_read_latest`` is the
-        ``Collection.read_latest`` wrapper over this; logs reach it only through
-        ``read_batch``."""
+        the log cursor's first read and send_message's cooldown probe.  The
+        model-facing ``collection_read_latest`` is the ``Collection.read_latest``
+        wrapper over this; logs reach it only through ``read_batch``."""
         return self._newest_rows(k, offset, search)
 
     def read_all(self) -> list[MemoryEntry]:
@@ -256,54 +247,6 @@ class Memory:
         ranked = [valid[i] for i in order if float(scores[i]) >= floor]
         return ranked if k is None else ranked[:k]
 
-    def read_similar_hybrid(
-        self,
-        conversation_anchors: list[list[float]],
-        query_text: str,
-        k: int | None = None,
-        exclude_contents: set[str] | None = None,
-    ) -> list[MemoryEntry]:
-        """Stage-2 hybrid ranking: embedding cosine fused with IDF-lexical
-        coverage (RRF), top-``k``, no relevance floor — stage-1 inclusion
-        already decided this memory is relevant.
-
-        ``exclude_contents`` drops corpus rows matching the anchors (channel
-        ingress writes the current message/history into log memories, so an
-        anchor would otherwise self-match at cosine ≈ 1.0 and dominate).
-        Log-shaped memories also drop low-information rows; collections keep
-        their deliberately short keyed entries."""
-        if not conversation_anchors:
-            return []
-        rows = self._embedded_rows()
-        if exclude_contents:
-            rows = [row for row in rows if row.content not in exclude_contents]
-        if self.is_log:
-            rows = [row for row in rows if not is_low_info(row.content)]
-        valid = [
-            (row, row.content_embedding, row.id)
-            for row in rows
-            if row.id is not None and row.content_embedding is not None
-        ]
-        if not valid:
-            return []
-        ranked_ids = sim.hybrid_rank_ids(
-            [blob for _, blob, _ in valid],
-            [row.content for row, _, _ in valid],
-            [entry_id for _, _, entry_id in valid],
-            conversation_anchors,
-            query_text,
-        )
-        by_id = {entry_id: row for row, _, entry_id in valid}
-        ranked = [by_id[entry_id] for entry_id in ranked_ids]
-        return ranked if k is None else ranked[:k]
-
-    def expand_with_temporal_neighbors(
-        self, hits: list[MemoryEntry], window_minutes: int, per_hit_cap: int | None = None
-    ) -> list[MemoryEntry]:
-        """Collections have no conversational timeline — return hits unchanged.
-        Overridden by ``Log`` to pull in surrounding entries of each hit."""
-        return hits
-
     # ── Row primitives (memory_entry; facades override) ───────────────────────
 
     def _all_rows(self) -> list[MemoryEntry]:
@@ -354,20 +297,6 @@ class Memory:
                         MemoryEntry.memory_name == self.name,
                         MemoryEntry.content_embedding.is_not(None),  # type: ignore[union-attr]
                     )
-                ).all()
-            )
-
-    def _rows_in_window(self, start: datetime, end: datetime) -> list[MemoryEntry]:
-        with self._session() as session:
-            return list(
-                session.exec(
-                    select(MemoryEntry)
-                    .where(
-                        MemoryEntry.memory_name == self.name,
-                        MemoryEntry.created_at >= start,
-                        MemoryEntry.created_at <= end,
-                    )
-                    .order_by(MemoryEntry.created_at.asc())  # type: ignore[union-attr]
                 ).all()
             )
 
@@ -673,38 +602,6 @@ class Log(Memory):
         """Recent entries within a short look-back window, oldest-first."""
         return self.read_recent(window_seconds, limit)
 
-    def expand_with_temporal_neighbors(
-        self, hits: list[MemoryEntry], window_minutes: int, per_hit_cap: int | None = None
-    ) -> list[MemoryEntry]:
-        """Augment each hit with entries within ±``window_minutes`` of it — so a
-        single keyword match pulls in its surrounding conversation rather than a
-        line stripped of context.  Union, deduped by id, chronological.
-
-        ``per_hit_cap`` bounds each hit's window to its ``cap`` nearest-in-time
-        entries (the hit included).  Without it the expansion is unbounded — a
-        dense burst around a hit drags every entry in it into the prompt."""
-        if not hits:
-            return []
-        delta = timedelta(minutes=window_minutes)
-        seen_ids: set[int] = set()
-        expanded: list[MemoryEntry] = []
-        for hit in hits:
-            window = self._rows_in_window(hit.created_at - delta, hit.created_at + delta)
-            if per_hit_cap is not None and len(window) > per_hit_cap:
-                window = self._nearest_in_time(window, hit.created_at, per_hit_cap)
-            for row in window:
-                if row.id is not None and row.id not in seen_ids:
-                    seen_ids.add(row.id)
-                    expanded.append(row)
-        expanded.sort(key=lambda row: row.created_at)
-        return expanded
-
-    @staticmethod
-    def _nearest_in_time(rows: list[MemoryEntry], pivot: datetime, cap: int) -> list[MemoryEntry]:
-        """The ``cap`` entries closest in time to ``pivot`` (the hit, distance 0,
-        is always among them)."""
-        return sorted(rows, key=lambda row: abs(row.created_at - pivot))[:cap]
-
 
 class MessageLogMemory(Log):
     """Read facade over ``messagelog`` for ``user-messages`` / ``penny-messages``.
@@ -807,15 +704,6 @@ class MessageLogMemory(Log):
         with self._session() as session:
             rows = session.exec(
                 self._select().where(MessageLog.embedding.is_not(None))  # ty: ignore[union-attr]
-            ).all()
-        return [self._to_entry(row) for row in rows]
-
-    def _rows_in_window(self, start: datetime, end: datetime) -> list[MemoryEntry]:
-        with self._session() as session:
-            rows = session.exec(
-                self._select()
-                .where(MessageLog.timestamp >= start, MessageLog.timestamp <= end)
-                .order_by(MessageLog.timestamp.asc())
             ).all()
         return [self._to_entry(row) for row in rows]
 
@@ -1556,8 +1444,7 @@ class RunLog(Log):
     ``ix_promptlog_completed_runs`` partial index (a bounded ``ORDER BY ... LIMIT``,
     not a ``GROUP BY`` scan).  Each run renders to a model-readable record: a
     ``[target] <outcome>`` header plus, for a run that did something, its compact
-    tool-call trace.  Read-only; has no embeddings (so ``read_similar`` is empty
-    and it never enters relevant recall — ``collector-runs`` is inclusion=never).
+    tool-call trace.  Read-only; has no embeddings (so ``read_similar`` is empty).
 
     Scoped to every collector run (the log itself).  A single collection's runs
     are served as full runs by ``MessageStore.get_target_runs`` (the addon's
@@ -1596,22 +1483,18 @@ class RunLog(Log):
     def _embedded_rows(self) -> list[MemoryEntry]:
         return []
 
-    def _rows_in_window(self, start: datetime, end: datetime) -> list[MemoryEntry]:
-        return self._records(newest_first=False, window=(start, end))
-
     def _records(
         self,
         *,
         newest_first: bool,
         cursor: datetime | None = None,
-        window: tuple[datetime, datetime] | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[MemoryEntry]:
         """Completion rows → rendered run records as ``MemoryEntry`` (content =
         the record, created_at = completion time)."""
         with self._session() as session:
-            rows = self._completion_rows(session, newest_first, cursor, window, limit, offset)
+            rows = self._completion_rows(session, newest_first, cursor, limit, offset)
             if not rows:
                 return []
             grouped = self._group_prompts(session, [run_id for run_id, _, _ in rows])
@@ -1622,7 +1505,6 @@ class RunLog(Log):
         session: Session,
         newest_first: bool,
         cursor: datetime | None,
-        window: tuple[datetime, datetime] | None,
         limit: int | None,
         offset: int,
     ) -> list:
@@ -1633,8 +1515,6 @@ class RunLog(Log):
         )
         if cursor is not None:
             query = query.where(PromptLog.timestamp > cursor)
-        if window is not None:
-            query = query.where(PromptLog.timestamp >= window[0], PromptLog.timestamp <= window[1])
         order = PromptLog.timestamp.desc() if newest_first else PromptLog.timestamp.asc()
         query = query.order_by(order)  # type: ignore[union-attr]
         if offset:

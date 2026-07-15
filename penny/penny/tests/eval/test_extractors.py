@@ -32,7 +32,7 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import EntryInput, LogEntryInput
 from penny.tests.eval.conftest import (
     CollectorScorer,
     _InjectEmptyResponse,
@@ -90,8 +90,6 @@ def _seed_research_watcher(db: Database) -> None:
     db.memories.create_collection(
         RESEARCH_WATCHER.name,
         RESEARCH_WATCHER.description,
-        Inclusion(RESEARCH_WATCHER.inclusion),
-        RecallMode.RELEVANT,
         extraction_prompt=RESEARCH_WATCHER_EXTRACTION_PROMPT,
         intent=RESEARCH_WATCHER_INTENT,
         collector_interval_seconds=3600,

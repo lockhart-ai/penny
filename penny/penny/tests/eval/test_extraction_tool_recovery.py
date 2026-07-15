@@ -37,7 +37,6 @@ _COLLECTION = "board-games"
 _SYNTH = SynthCollection(
     _COLLECTION,
     "Strategy board games worth buying, one category at a time.",
-    inclusion="relevant",
     entries=(),
 )
 

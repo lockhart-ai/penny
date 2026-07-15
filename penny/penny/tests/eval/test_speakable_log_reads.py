@@ -21,13 +21,11 @@ salient turn out of BOTH the 20-message context window AND the per-direction
 top-N fetch (``get_messages_since`` caps each direction at 20).  Retrieval then
 genuinely requires a ``log_read``.
 
-**The ambient-recall confound (case 1 only).**  ``user-messages`` is seeded
-``inclusion=always, recall=relevant`` (migration 0026/0044), so the RELEVANT
-recall block can surface a topically-matching out-of-window user message by
-similarity — letting the model answer "what am I into" from recall without a
-``log_read``.  ``penny-messages`` (``recall=recent``, RECALL_LIMIT=5) and
-``browse-results``/``collector-runs`` (``recall=off`` → ``inclusion=never``) have
-no such leak.  Case 1's status (gated vs. report-only) is decided by its baseline
+**No ambient-recall confound.**  The chat prompt no longer injects a
+speculative recalled-content block (the ambient inversion, #1555, and the recall
+substrate's removal, #1583), so a topically-matching out-of-window user message
+can't leak into the prompt by similarity — retrieval genuinely requires a
+``log_read``.  Case 1's status (gated vs. report-only) is decided by its baseline
 — see its docstring.
 
 **read_run_calls is collector-internal, not user-dispatchable — dropped.**  Its
@@ -45,7 +43,7 @@ import pytest
 
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
-from penny.database.memory import Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import LogEntryInput
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
     ChatEval,
@@ -304,8 +302,6 @@ def _seed_collector_activity(db: Database) -> None:
     db.memories.create_collection(
         _PATCH_NOTES,
         "New Mistforge Tactics patch notes worth knowing about.",
-        Inclusion.RELEVANT,
-        RecallMode.RECENT,
         extraction_prompt=_PATCH_NOTES_PROMPT,
         intent="Keep me posted on new Mistforge Tactics patch notes.",
         collector_interval_seconds=3600,
@@ -313,8 +309,6 @@ def _seed_collector_activity(db: Database) -> None:
     db.memories.create_collection(
         _TRAIL_CONDITIONS,
         "Current conditions for the Verdant Hollow hiking trail.",
-        Inclusion.RELEVANT,
-        RecallMode.RECENT,
         extraction_prompt=_TRAIL_CONDITIONS_PROMPT,
         intent="Keep me posted on the Verdant Hollow trail conditions.",
         collector_interval_seconds=3600,
@@ -438,12 +432,11 @@ def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[str]:
 
 
 async def test_user_messages_act(chat_eval: ChatEval) -> None:
-    """Report-only — the ambient-recall confound bites.  ``user-messages`` is
-    ``inclusion=always, recall=relevant``, so the out-of-window hobby can surface
-    in the recall block and the model saves it to ``likes`` WITHOUT a ``log_read``
-    (~3/5).  The user-facing outcome (interest saved) is fine; requiring the
-    ``log_read`` specifically over-fits to one mechanism.  A follow-up could gate
-    on the OUTCOME (hobby in likes) instead of the tool."""
+    """Report-only.  The out-of-window hobby is retrieved from ``user-messages``
+    via a ``log_read``, and the model saves it to ``likes``.  The user-facing
+    outcome (interest saved) is what matters; requiring the ``log_read``
+    specifically over-fits to one mechanism.  A follow-up could gate on the
+    OUTCOME (hobby in likes) instead of the tool."""
     await chat_eval(
         case_id="speak-logread-user-messages-act",
         message="look back over everything I've told you and save what I said I'm into to my likes",

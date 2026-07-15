@@ -102,11 +102,9 @@ from penny.config_params import RUNTIME_CONFIG_PARAMS, get_params_by_group
 from penny.constants import ChannelType, PennyConstants
 from penny.database.memory import (
     EntryInput,
-    Inclusion,
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryTypeError,
-    RecallMode,
 )
 from penny.database.models import RuntimeConfig
 from penny.llm.embeddings import serialize_embedding
@@ -611,8 +609,6 @@ class IosChannel(MessageChannel):
             type=memory.type,
             description=memory.description,
             intent=memory.intent,
-            inclusion=memory.inclusion,
-            recall=memory.recall,
             published=memory.notify,  # wire field `published` ← the `notify` column (#1557)
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
@@ -635,20 +631,6 @@ class IosChannel(MessageChannel):
 
     _IOS_ENTRY_AUTHOR = "user"
 
-    @staticmethod
-    def _parse_routing(
-        inclusion: str | None, recall: str | None
-    ) -> tuple[Inclusion | None, RecallMode | None] | None:
-        """Resolve a supplied memory routing pair."""
-        if recall == "off":
-            return Inclusion.NEVER, RecallMode.RECENT
-        try:
-            parsed_inclusion = Inclusion(inclusion) if inclusion is not None else None
-            parsed_recall = RecallMode(recall) if recall is not None else None
-        except ValueError:
-            return None
-        return parsed_inclusion, parsed_recall
-
     async def _handle_memory_create(self, data: dict) -> None:
         """Create a user-authored collection."""
         try:
@@ -656,20 +638,11 @@ class IosChannel(MessageChannel):
         except ValidationError:
             logger.warning("Invalid memory_create: %s", str(data)[:200])
             return
-        routing = self._parse_routing(req.inclusion, req.recall)
-        if routing is None:
-            logger.warning(
-                "Invalid inclusion/recall in memory_create: %s/%s", req.inclusion, req.recall
-            )
-            return
-        inclusion, recall = routing
         description_embedding = await self._message_agent.embed_description(req.description)
         try:
             self._db.memories.create_collection(
                 req.name,
                 req.description,
-                inclusion or Inclusion.RELEVANT,
-                recall or RecallMode.RELEVANT,
                 extraction_prompt=req.extraction_prompt,
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,
@@ -686,13 +659,6 @@ class IosChannel(MessageChannel):
         except ValidationError:
             logger.warning("Invalid memory_update: %s", str(data)[:200])
             return
-        routing = self._parse_routing(req.inclusion, req.recall)
-        if routing is None:
-            logger.warning(
-                "Invalid inclusion/recall in memory_update: %s/%s", req.inclusion, req.recall
-            )
-            return
-        inclusion, recall = routing
         description_embedding = (
             await self._message_agent.embed_description(req.description)
             if req.description is not None
@@ -703,8 +669,6 @@ class IosChannel(MessageChannel):
                 req.name,
                 description=req.description,
                 intent=req.intent,
-                inclusion=inclusion,
-                recall=recall,
                 extraction_prompt=req.extraction_prompt,
                 collector_interval_seconds=req.collector_interval_seconds,
                 description_embedding=description_embedding,

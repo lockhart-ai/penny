@@ -245,12 +245,7 @@ class MemoryRow(SQLModel, table=True):
     the facades (messages, collector-runs) wrap a marker row but read their
     canonical tables.
 
-    Two orthogonal flags control how a memory feeds the chat agent's ambient
-    recall, in two stages: ``inclusion`` decides whether the memory participates
-    at all (collection routing), and ``recall`` decides which of its entries
-    surface once included (entry rendering).
-
-    An independent flag — ``notify`` — is emission-as-property (#1557): when set,
+    A flag — ``notify`` — is emission-as-property (#1557): when set,
     the collector tells the user about new/changed entries in the same cycle that
     produced them, via the run-time notify suffix appended to its system prompt.
     """
@@ -259,30 +254,18 @@ class MemoryRow(SQLModel, table=True):
 
     name: str = Field(primary_key=True)
     type: str  # MemoryType enum value: "collection" or "log"
-    description: str  # Content-reflective summary; doubles as the stage-1 anchor
-    # Stage 1 (collection routing): Inclusion enum — "always" | "relevant" |
-    # "never".  "relevant" is gated by cosine between the conversation and
-    # ``description_embedding``.  ``server_default`` so raw-SQL inserts
-    # (migrations, test fixtures) that predate the column still satisfy NOT NULL.
-    inclusion: str = Field(
-        default="relevant",
-        index=True,
-        sa_column_kwargs={"server_default": "relevant"},
-    )
-    # Stage 2 (entry rendering): RecallMode enum — "all" | "relevant" |
-    # "recent".  Decides which entries of an included memory surface.
-    recall: str
-    # Embedding of ``description`` — the stage-1 relevance anchor, computed
-    # once on create/description-edit (NULL until backfilled at startup).
+    description: str  # Content-reflective summary; the resolve-by-meaning anchor
+    # Embedding of ``description`` — the meaning anchor for ``find_mine`` /
+    # resolve-by-meaning (#1558), computed once on create/description-edit
+    # (NULL until backfilled at startup).
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
     # Emission-as-property (#1557, exposed by #1591's ``collection_create``): when
     # true the collection notifies the user of new/changed entries — assembly
     # appends the run-time notify steps (``Prompt.COLLECTOR_NOTIFY_STEPS``) to the
     # collector's composed prompt, numbered continuously before the injected
-    # terminal ``done()``.  Orthogonal to inclusion/recall (which govern chat
-    # recall).  Opt-in (default false); the sole emission flag since #1557 retired
-    # the ``published`` pub/sub side-channel + the notifier consumer.
+    # terminal ``done()``.  Opt-in (default false); the sole emission flag since
+    # #1557 retired the ``published`` pub/sub side-channel + the notifier consumer.
     # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)

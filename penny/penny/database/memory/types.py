@@ -27,33 +27,6 @@ class MemoryType(StrEnum):
     LOG = "log"
 
 
-class Inclusion(StrEnum):
-    """Stage-1 collection-routing flag — does this memory feed recall at all.
-
-    ``always`` participates unconditionally; ``relevant`` participates only
-    when the conversation embeds close to the memory's description anchor;
-    ``never`` is excluded (the old ``recall=off``).
-    """
-
-    ALWAYS = "always"
-    RELEVANT = "relevant"
-    NEVER = "never"
-
-
-class RecallMode(StrEnum):
-    """Stage-2 entry-rendering flag — which entries of an included memory surface.
-
-    ``recent`` is the newest-first slice; ``all`` is the full set; ``relevant``
-    is hybrid-ranked (embedding cosine fused with IDF-lexical) against the
-    conversation window, top-N, no floor — the stage-1 gate already decided
-    the memory is relevant.
-    """
-
-    RECENT = "recent"
-    RELEVANT = "relevant"
-    ALL = "all"
-
-
 class MemoryAccessError(Exception):
     """A memory operation refused at the tool boundary — the memory is missing,
     the wrong shape for the op, or a read-only facade.

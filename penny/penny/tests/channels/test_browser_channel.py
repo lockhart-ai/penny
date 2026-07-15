@@ -15,7 +15,7 @@ from penny.channels.browser.channel import BrowserChannel, ConnectionInfo
 from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.migrate import migrate
 from penny.database.models import Media, PromptLog, RuntimeConfig
 from penny.tests.conftest import wait_until
@@ -1356,8 +1356,6 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection(
             "board-games",
             "board games",
-            Inclusion.RELEVANT,
-            RecallMode.RELEVANT,
             extraction_prompt="extract games",
             collector_interval_seconds=300,
         )
@@ -1396,12 +1394,8 @@ class TestBrowserMemoryHandlers:
         """The query keeps memories matching by metadata OR by entry content —
         so searching an item inside a collection surfaces that collection."""
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection(
-            "board-games", "tabletop strategy", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        db.memories.create_collection(
-            "espresso-gear", "coffee equipment", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("board-games", "tabletop strategy")
+        db.memories.create_collection("espresso-gear", "coffee equipment")
         db.memory("espresso-gear").write(
             [EntryInput(key="grinder", content="Niche Zero burr grinder")],
             author="test",
@@ -1425,9 +1419,7 @@ class TestBrowserMemoryHandlers:
         """Drilling into a collection while a search is active filters its
         entries section to matches — but metadata keeps the full count."""
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection(
-            "espresso-gear", "coffee", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("espresso-gear", "coffee")
         db.memory("espresso-gear").write(
             [
                 EntryInput(key="grinder", content="Niche Zero burr grinder"),
@@ -1481,9 +1473,7 @@ class TestBrowserMemoryHandlers:
         that target — newest-first, as full runs (the Activity tab renders them
         as the prompts tab's run → prompts → turns cards)."""
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection(
-            "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
-        )
+        db.memories.create_collection("board-games", "games", extraction_prompt="x")
         _seed_collector_run(db, "other-target", "r0", "worked", "unrelated cycle")
         _seed_collector_run(db, "board-games", "r1", "worked", "wrote 2 games")
         _seed_collector_run(db, "board-games", "r2", "failed", "no source URL found")
@@ -1567,9 +1557,7 @@ class TestBrowserMemoryHandlers:
         scoped to the collection's target, carried in the ``runs`` field."""
         channel, db = self._channel(tmp_path)
         channel._MEMORY_PAGE_SIZE = 2
-        db.memories.create_collection(
-            "board-games", "games", Inclusion.RELEVANT, RecallMode.RELEVANT, extraction_prompt="x"
-        )
+        db.memories.create_collection("board-games", "games", extraction_prompt="x")
         for index, marker in enumerate(("cycle-1", "cycle-2", "cycle-3")):
             _seed_collector_run(db, "board-games", f"r{index}", "worked", marker)
 
@@ -1615,7 +1603,7 @@ class TestBrowserMemoryHandlers:
         """A collection write triggers the change callback so the addon can refresh."""
 
         _, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "games", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "games")
 
         received: list[str | None] = []
         db.memories._on_memory_changed = lambda name: received.append(name)
@@ -1631,7 +1619,7 @@ class TestBrowserMemoryHandlers:
         """Log appends fire the callback too — a writable (non-facade) log."""
 
         _, db = self._channel(tmp_path)
-        db.memories.create_log("notes", "scratch log", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("notes", "scratch log")
         received: list[str | None] = []
         db.memories._on_memory_changed = lambda name: received.append(name)
 
@@ -1690,8 +1678,6 @@ class TestBrowserMemoryHandlers:
                     "type": "memory_create",
                     "name": "board-games",
                     "description": "board games",
-                    "inclusion": "relevant",
-                    "recall": "relevant",
                     "published": True,
                     "extraction_prompt": "extract games",
                     "collector_interval_seconds": 600,
@@ -1701,8 +1687,6 @@ class TestBrowserMemoryHandlers:
         memory = db.memories.get("board-games")
         assert memory is not None
         assert memory.type == "collection"
-        assert memory.inclusion == "relevant"
-        assert memory.recall == "relevant"
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "extract games"
         assert memory.collector_interval_seconds == 600
@@ -1711,14 +1695,13 @@ class TestBrowserMemoryHandlers:
         """A duplicate name is logged and dropped — no crash."""
 
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "first", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "first")
         asyncio.run(
             channel._handle_memory_create(
                 {
                     "type": "memory_create",
                     "name": "board-games",
                     "description": "second",
-                    "recall": "off",
                 }
             )
         )
@@ -1733,8 +1716,6 @@ class TestBrowserMemoryHandlers:
         db.memories.create_collection(
             "board-games",
             "old description",
-            Inclusion.NEVER,
-            RecallMode.RECENT,
             extraction_prompt="old prompt",
             collector_interval_seconds=300,
             intent="track heavy euro strategy games",
@@ -1748,7 +1729,6 @@ class TestBrowserMemoryHandlers:
                     # intent is user-editable via this path (unlike the agent's
                     # collection_update tool, which has no intent field).
                     "intent": "track only co-op games now",
-                    "recall": None,
                     "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
                     "collector_interval_seconds": None,
@@ -1759,7 +1739,6 @@ class TestBrowserMemoryHandlers:
         assert memory is not None
         assert memory.description == "new description"
         assert memory.intent == "track only co-op games now"
-        assert memory.recall == "recent"
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
         assert memory.collector_interval_seconds == 300
@@ -1767,7 +1746,7 @@ class TestBrowserMemoryHandlers:
     def test_memory_archive_marks_archived(self, tmp_path):
 
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "x", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "x")
         channel._handle_memory_archive({"type": "memory_archive", "name": "board-games"})
         memory = db.memories.get("board-games")
         assert memory is not None
@@ -1777,7 +1756,7 @@ class TestBrowserMemoryHandlers:
         """The addon can move a collection's read cursor over a log to a chosen
         point (a backward-capable user override) and clear it back to unset."""
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("journal", "x", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("journal", "x")
         target = datetime(2026, 3, 1, tzinfo=UTC)
         channel._handle_cursor_set(
             {
@@ -1801,7 +1780,7 @@ class TestBrowserMemoryHandlers:
         authored from collector-authored when reading the entries list."""
 
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "x", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "x")
         channel._handle_entry_create(
             {
                 "type": "entry_create",
@@ -1819,7 +1798,7 @@ class TestBrowserMemoryHandlers:
     def test_entry_update_replaces_content(self, tmp_path):
 
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "x", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "x")
         db.memory("board-games").write(
             [EntryInput(key="catan", content="old")],
             author="user",
@@ -1838,7 +1817,7 @@ class TestBrowserMemoryHandlers:
     def test_entry_delete_removes_row(self, tmp_path):
 
         channel, db = self._channel(tmp_path)
-        db.memories.create_collection("board-games", "x", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board-games", "x")
         db.memory("board-games").write(
             [EntryInput(key="catan", content="A classic")],
             author="user",

@@ -91,7 +91,6 @@ _BOARDGAMES_NOTIFY = (
 _PAGE_WATCH = SynthCollection(
     "release-watch",
     "Watches a software release page and records each new version as it appears.",
-    inclusion="relevant",
     entries=(),
 )
 _PAGE_WATCH_INTENT = "Keep an eye on that release page and log every new version that shows up."

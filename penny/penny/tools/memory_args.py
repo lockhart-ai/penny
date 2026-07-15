@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, model_validator
 
 from penny.constants import PennyConstants
-from penny.database.memory import Inclusion, RecallMode, ResolvedKind
+from penny.database.memory import ResolvedKind
 from penny.text_validity import (
     require_extraction_prompt,
     require_non_blank_description,
@@ -94,11 +94,11 @@ def _blank_to_none(value: object) -> object:
 
     Models routinely emit ``""`` for an optional field they mean to leave
     unchanged — gpt-oss was observed passing ``extraction_prompt=""`` alongside
-    a recall change, reasoning "they will not be updated".  But the update layer
-    applies any value that ``is not None``, so a blank string would overwrite:
-    silently blanking a ``description`` (and re-embedding empty as its stage-1
-    routing anchor) or raising on an enum.  None of these fields has a
-    meaningful empty value, so a blank means "skip", never "set to empty".
+    another field's change, reasoning "they will not be updated".  But the update
+    layer applies any value that ``is not None``, so a blank string would
+    overwrite: silently blanking a ``description`` (and re-embedding empty as its
+    meaning anchor).  None of these fields has a meaningful empty value, so a
+    blank means "skip", never "set to empty".
     """
     if isinstance(value, str) and not value.strip():
         return None
@@ -122,22 +122,6 @@ OptionalSkill = Annotated[
 # field declares its rule by *type* — no per-field @field_validator methods.  The
 # required variants raise on a bad value; the optional variants coerce a blank to
 # ``None`` first (so "" means "leave unchanged") and skip the rule when omitted.
-
-
-def _require_inclusion(value: str) -> str:
-    """Raise unless ``value`` is a valid ``Inclusion`` mode, naming the choices."""
-    if value not in {mode.value for mode in Inclusion}:
-        valid = ", ".join(mode.value for mode in Inclusion)
-        raise ValueError(f"inclusion must be one of: {valid}.")
-    return value
-
-
-def _require_recall(value: str) -> str:
-    """Raise unless ``value`` is a valid ``RecallMode``, naming the choices."""
-    if value not in {mode.value for mode in RecallMode}:
-        valid = ", ".join(mode.value for mode in RecallMode)
-        raise ValueError(f"recall must be one of: {valid}.")
-    return value
 
 
 def _require_resolved_kind(value: str) -> str:
@@ -181,8 +165,6 @@ AppendableLogName = Annotated[
 ]
 
 NonBlankDescription = Annotated[str, AfterValidator(require_non_blank_description)]
-InclusionValue = Annotated[str, AfterValidator(_require_inclusion)]
-RecallValue = Annotated[str, AfterValidator(_require_recall)]
 CollectionContent = Annotated[str, AfterValidator(require_non_degenerate_content)]
 NonBlankLogContent = Annotated[str, AfterValidator(require_non_blank_log_content)]
 
@@ -191,12 +173,6 @@ OptionalExtractionPrompt = Annotated[
     str | None,
     BeforeValidator(_blank_to_none),
     AfterValidator(_skip_none(require_extraction_prompt)),
-]
-OptionalInclusion = Annotated[
-    str | None, BeforeValidator(_blank_to_none), AfterValidator(_skip_none(_require_inclusion))
-]
-OptionalRecall = Annotated[
-    str | None, BeforeValidator(_blank_to_none), AfterValidator(_skip_none(_require_recall))
 ]
 # Optional resolve-by-meaning family filter: blank → None (span all families).
 OptionalResolvedKind = Annotated[
@@ -269,8 +245,6 @@ class LogCreateArgs(ToolArgs):
 
     name: MemoryName
     description: NonBlankDescription
-    inclusion: InclusionValue  # "always" | "relevant" | "never"
-    recall: RecallValue  # "all" | "relevant" | "recent"
 
 
 class MemoryNameArgs(ToolArgs):
@@ -290,7 +264,7 @@ class CollectionUpdateArgs(ToolArgs):
     are applied.  A blank string counts as "not set": the ``OptionalText``
     fields coerce ``""`` to ``None`` so a field the model passes empty (to
     mean "leave it alone") is skipped rather than overwriting the existing
-    value.  ``inclusion`` and ``recall`` are validated in the store layer.
+    value.
 
     ``intent`` is ACCEPTED but not applied — we serialize it in the metadata the
     model reads, so it naturally passes it back on an edit; rather than reject the
@@ -307,8 +281,6 @@ class CollectionUpdateArgs(ToolArgs):
 
     name: MemoryName
     description: OptionalText = None
-    inclusion: OptionalInclusion = None  # "always" | "relevant" | "never"
-    recall: OptionalRecall = None  # "all" | "relevant" | "recent"
     extraction_prompt: OptionalExtractionPrompt = None
     collector_interval_seconds: int | None = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged

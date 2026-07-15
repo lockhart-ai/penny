@@ -30,7 +30,6 @@ from penny.channels.ios.models import (
 )
 from penny.constants import ChannelType
 from penny.database import Database
-from penny.database.memory import Inclusion, RecallMode
 from penny.database.migrate import migrate
 
 
@@ -320,8 +319,6 @@ async def test_admin_memories_request_returns_memory_records(tmp_path):
     db.memories.create_collection(
         "recipes",
         "Meal notes",
-        Inclusion.RELEVANT,
-        RecallMode.RECENT,
         intent="Remember food preferences",
     )
 

@@ -29,18 +29,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from penny.database.memory.types import Inclusion, RecallMode, slug
+from penny.database.memory.types import slug
 from penny.database.models import MemoryRow, Skill
 from penny.datetime_utils import format_log_timestamp
-
-# The collection's routing/recall policy is no longer model-facing (the ambient
-# inversion, #1555, left recall dark); a skill-instantiated watch is a user
-# research collection, so it takes the prior research-collection defaults —
-# surfaced in chat when the conversation matches, entries ranked by relevance.
-# Fixed here (the enum members, not bare literals), not guessed per call.
-DEFAULT_INCLUSION = Inclusion.RELEVANT
-DEFAULT_RECALL = RecallMode.RELEVANT
-
 
 # ── Skill resolution union ────────────────────────────────────────────────────
 

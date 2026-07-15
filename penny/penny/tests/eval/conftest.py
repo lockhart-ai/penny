@@ -25,7 +25,7 @@ from sqlmodel import Session, select
 from penny.config import Config
 from penny.constants import ChannelType
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, RecallMode
+from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog
 from penny.llm.client import LlmClient
@@ -201,8 +201,6 @@ def seed_collection(
     db.memories.create_collection(
         synth.name,
         synth.description,
-        Inclusion(synth.inclusion),
-        RecallMode.RELEVANT,
         extraction_prompt=extraction_prompt,
         collector_interval_seconds=interval,
         intent=intent,
@@ -509,10 +507,11 @@ def install_browse(penny: Penny, pages: list[CannedPage]) -> None:
 
 
 async def _embed_seeds(penny: Penny) -> None:
-    """Vectorize seeded memory so stage-1/2 recall behaves like prod.
+    """Vectorize seeded memory so similarity reads behave like prod.
 
     Penny's startup backfill ran on the empty DB before we seeded; re-run it so
-    seeded descriptions/entries get embeddings the recall path can match.
+    seeded descriptions/entries get embeddings that ``read_similar`` /
+    resolve-by-meaning can match.
     """
     await penny._backfill_memory_embeddings(_EMBED_BATCH)
     await penny._backfill_description_embeddings(_EMBED_BATCH)

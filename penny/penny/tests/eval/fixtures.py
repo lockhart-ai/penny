@@ -29,9 +29,8 @@ class Message:
 @dataclass(frozen=True)
 class SynthCollection:
     name: str
-    description: str  # the content-reflective stage-1 routing anchor
-    inclusion: str  # always | relevant | never
-    entries: tuple[str, ...]  # entry contents (for stage-2 retrieval)
+    description: str  # the content-reflective meaning anchor
+    entries: tuple[str, ...]  # entry contents (for retrieval)
 
 
 @dataclass(frozen=True)
@@ -84,7 +83,6 @@ BOARD_GAMES = SynthCollection(
     "board-games",
     "Heavier euro-style strategy board games and modern tabletop classics: "
     "worker-placement, engine-builders, 2-player duels, and group games worth buying.",
-    inclusion="relevant",
     entries=(
         "Brass: Birmingham — economic engine-builder, 2-4 players, ~2h.",
         "Ark Nova — zoo-building card-driven strategy, heavy, 1-4 players.",
@@ -119,7 +117,6 @@ ESPRESSO_GEAR = SynthCollection(
     "espresso-gear",
     "Home espresso equipment under ~$1000: dual-boiler and heat-exchanger "
     "machines, flat-burr grinders, distribution tools, and value picks.",
-    inclusion="relevant",
     entries=(
         "Gaggia Classic Pro — entry single-boiler, mod-friendly, ~$450.",
         "Eureka Mignon Specialita — 55mm flat-burr grinder, ~$400.",
@@ -131,7 +128,6 @@ HOUSEPLANT_CARE = SynthCollection(
     "houseplant-care",
     "Indoor houseplant care notes: light needs, watering schedules, and "
     "low-maintenance species for low-light apartments.",
-    inclusion="relevant",
     entries=(
         "Snake plant — very low light, water every 2-3 weeks.",
         "ZZ plant — thrives on neglect, low light, drought-tolerant.",
@@ -273,7 +269,6 @@ RESEARCH_WATCHER = SynthCollection(
     "indie-metroidvanias",
     "Newly released indie metroidvania games worth playing: hand-drawn "
     "exploration platformers with interconnected maps and new traversal mechanics.",
-    inclusion="relevant",
     entries=(),
 )
 RESEARCH_WATCHER_INTENT = (
@@ -327,7 +322,6 @@ WEEKLY_DIGEST = SynthCollection(
     "weekly-digest",
     "A single rolling summary of the user's recent messages: what they've been "
     "up to, key events, and how things are going.",
-    inclusion="never",
     entries=(),
 )
 WEEKLY_DIGEST_INTENT = "Keep one running summary of what I've been up to lately, updated as I chat."
@@ -363,7 +357,6 @@ WEEKLY_DIGEST_MESSAGES = (
 SEND_DIGEST = SynthCollection(
     "daily-ping",
     "A short daily ping to the user summarizing what they have mentioned lately.",
-    inclusion="never",
     entries=(),
 )
 SEND_DIGEST_INTENT = "Send me a short daily ping summarizing what I've mentioned lately."
@@ -389,7 +382,6 @@ HALF_FORMED_SEND = "Hi there! ......???"
 WATCHLIST = SynthCollection(
     "watchlist",
     "Movies and TV shows the user has said they want to watch.",
-    inclusion="never",
     entries=(),
 )
 WATCHLIST_INTENT = (
@@ -444,7 +436,6 @@ COLLECTOR_DONE_JSON_BAIL = '{"name": "done", "arguments": {}}'
 RECIPE_BOX = SynthCollection(
     "recipe-box",
     "Saved quick weeknight dinner recipes: short ingredient lists and fast cook times.",
-    inclusion="never",
     entries=(
         "Sheet-pan chicken fajitas — peppers, onion, chicken, 25 min at 425F.",
         "One-pot lemon orzo — orzo, lemon, spinach, parmesan, 20 min.",

@@ -4,9 +4,8 @@ Two families of shape-independent math the ``Memory`` objects compose:
 
   * dedup — the three-signal collision rule used by ``Collection.write`` and
     the ``exists`` probe (key TCR, key cosine, content cosine).
-  * retrieval — embedding stacking, plain cosine nearest-neighbor scoring for
-    the explicit ``read_similar`` search, and the hybrid cosine+lexical ranking
-    used by ambient recall's ``read_similar_hybrid``.
+  * retrieval — embedding stacking and plain cosine nearest-neighbor scoring for
+    the explicit ``read_similar`` search and resolve-by-meaning.
 
 Everything here is a free function over plain values so it stays trivially
 testable and reusable from both the entity classes and the registry.
@@ -23,9 +22,7 @@ from similarity.embeddings import (
     serialize_embedding,
     token_containment_ratio,
 )
-from similarity.lexical import idf, lexical_coverage, reciprocal_rank_fusion, tokens
 
-from penny.constants import PennyConstants
 from penny.database.memory.types import DedupThresholds, EntrySide
 
 
@@ -135,60 +132,9 @@ def cosine_scores(content_blobs: list[bytes], anchor: list[float]) -> np.ndarray
     """Per-row cosine of each stored embedding to a single ``anchor`` vector.
 
     Plain nearest-neighbor scoring for the explicit ``read_similar`` search
-    tool.  Deliberately carries none of the ambient-recall machinery — no
-    centrality-magnet penalty, no cluster-strength gate — because those decide
-    *whether anything is relevant enough to inject unprompted* into a bounded
-    prompt, which is the wrong policy for an explicit, model-invoked search
-    whose result feeds the model's own judgment.  Ambient recall keeps its own
-    gated path (``hybrid_rank_ids``).
+    tool and resolve-by-meaning — entries come back ranked so the model judges
+    them, with no relevance-injection gate.
     """
     matrix = stack_normalized(content_blobs)  # (N, D)
     anchor_matrix = stack_normalized_anchors([anchor])  # (1, D)
     return (matrix @ anchor_matrix.T)[:, 0]  # (N,)
-
-
-def hybrid_rank_ids(
-    content_blobs: list[bytes],
-    contents: list[str],
-    ids: list[int],
-    anchors: list[list[float]],
-    query_text: str,
-) -> list[int]:
-    """Fuse a cosine ranking and an IDF-lexical ranking via RRF, returning ids.
-
-    Cosine is the best similarity across the conversation window (``max`` over
-    anchors) so a strong hit on any turn counts; lexical coverage is the
-    IDF-weighted fraction of the query's distinctive tokens each entry
-    contains.  Inputs are parallel lists (blob/content/id per row).
-    """
-    matrix = stack_normalized(content_blobs)
-    anchor_matrix = stack_normalized_anchors(anchors)
-    best_cosine = (matrix @ anchor_matrix.T).max(axis=1)  # (N,) max over the window
-    cosine_rank = [ids[i] for i in np.argsort(-best_cosine)]
-
-    query_tokens = tokens(query_text)
-    document_tokens = [tokens(content) for content in contents]
-    idf_map = idf(document_tokens)
-    coverage = np.array([lexical_coverage(query_tokens, doc, idf_map) for doc in document_tokens])
-    coverage = _length_normalize(coverage, document_tokens)
-    lexical_rank = [ids[i] for i in np.argsort(-coverage)]
-    return reciprocal_rank_fusion([cosine_rank, lexical_rank])
-
-
-def _length_normalize(coverage: np.ndarray, document_tokens: list[set[str]]) -> np.ndarray:
-    """Damp lexical coverage by a sub-linear function of entry length.
-
-    A long entry has a large token set, so it coincidentally contains more of
-    any query's terms and wins the lexical leg on surface area alone — the
-    long-document bias.  Dividing coverage by ``(1-b) + b*sqrt(len/avglen)``
-    demotes those coincidental matches (modest coverage) while leaving genuinely
-    on-topic long entries (near-full coverage + strong cosine) in place.  The
-    penalty is ~flat — effectively inert — when entry lengths are uniform.
-    """
-    doc_len = np.array([len(doc) for doc in document_tokens], dtype=np.float32)
-    mean_len = float(doc_len.mean()) if doc_len.size else 0.0
-    if mean_len <= 0.0:
-        return coverage
-    b = PennyConstants.MEMORY_LEXICAL_LENGTH_B
-    length_norm = (1.0 - b) + b * np.sqrt(doc_len / mean_len)
-    return coverage / length_norm

@@ -2,9 +2,9 @@
 collections, driven against the REAL model and scored on PERSISTED DB state.
 
 This is the faithful replacement for scripts/prompt_validation/collection_lifecycle.py:
-same behavioural cases, but exercising the production prompt + tool surface +
-recall path end to end (no AST stubs, no hand-built tools), and asserting on
-what actually landed in the DB rather than captured tool-call JSON.
+same behavioural cases, but exercising the production prompt + tool surface end to
+end (no AST stubs, no hand-built tools), and asserting on what actually landed in
+the DB rather than captured tool-call JSON.
 
     create  — notify, silent, cadence-in-request
     update  — broaden scope, flip notify→silent
@@ -60,14 +60,12 @@ def _created_collection(db: Database, before: set[str]):
 
 
 def _score_create(
-    db: Database, before: set[str], *, inclusion: str, notify: bool, interval: int | None
+    db: Database, before: set[str], *, notify: bool, interval: int | None
 ) -> list[str]:
     memory = _created_collection(db, before)
     if memory is None:
         return ["no collection created"]
     fails = []
-    if memory.inclusion != inclusion:
-        fails.append(f"inclusion expected {inclusion!r}, got {memory.inclusion!r}")
     body = (memory.extraction_prompt or "").lower()
     if "browse" not in body:
         fails.append("extraction_prompt missing browse step")
@@ -153,9 +151,7 @@ async def test_create_notify(chat_eval: ChatEval) -> None:
         case_id="create-notify",
         message="research heavier euro-style strategy board games for me, "
         "ping me when you find good ones",
-        score=lambda db, before, reply: _score_create(
-            db, before, inclusion="relevant", notify=True, interval=None
-        ),
+        score=lambda db, before, reply: _score_create(db, before, notify=True, interval=None),
     )
 
 
@@ -163,9 +159,7 @@ async def test_create_silent(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="create-silent",
         message="research fountain pens and inks for me — silent, i'll check the list myself",
-        score=lambda db, before, reply: _score_create(
-            db, before, inclusion="never", notify=False, interval=None
-        ),
+        score=lambda db, before, reply: _score_create(db, before, notify=False, interval=None),
     )
 
 
@@ -173,9 +167,7 @@ async def test_create_cadence(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="create-cadence",
         message="research new sci-fi novels for me, check daily, ping me when good ones land",
-        score=lambda db, before, reply: _score_create(
-            db, before, inclusion="relevant", notify=True, interval=86400
-        ),
+        score=lambda db, before, reply: _score_create(db, before, notify=True, interval=86400),
     )
 
 

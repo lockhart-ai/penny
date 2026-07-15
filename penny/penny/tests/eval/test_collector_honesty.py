@@ -58,7 +58,6 @@ pytestmark = pytest.mark.eval
 ROUNDUP = SynthCollection(
     "tech-roundup",
     "A running list of fresh technology headlines worth a glance.",
-    inclusion="relevant",
     entries=(),
 )
 ROUNDUP_INTENT = "Keep a list of fresh tech headlines — I'll check the list myself."

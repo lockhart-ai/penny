@@ -280,9 +280,13 @@ def test_running_migration_twice_does_not_duplicate_entries(tmp_path):
         conn.commit()
 
     migrate(db.db_path)
-    # Force-re-run by clearing the migration record so the runner re-applies.
+    # Force-re-run 0027 by clearing its migration record so the runner re-applies
+    # it.  0027 seeds into the legacy ``recall`` column, which migration 0091 has
+    # since DROPPED (#1583) — re-provision it (matching the pre-0091 window) so the
+    # isolated re-run exercises 0027's block-empty guards, the point of this test.
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("DELETE FROM _migrations WHERE name = '0027_memory_data_migration'")
+        conn.execute("ALTER TABLE memory ADD COLUMN recall TEXT NOT NULL DEFAULT 'recent'")
         conn.commit()
     migrate(db.db_path)
 
@@ -303,8 +307,8 @@ def test_skips_block_when_target_memory_already_populated(tmp_path):
         _seed_preference(conn, "tea", "positive", base)
         conn.execute(
             "INSERT INTO memory"
-            " (name, type, description, recall, archived, created_at, updated_at)"
-            " VALUES ('likes', 'collection', 'x', 'relevant', 0, ?, ?)",
+            " (name, type, description, archived, created_at, updated_at)"
+            " VALUES ('likes', 'collection', 'x', 0, ?, ?)",
             (base.isoformat(), base.isoformat()),
         )
         conn.execute(

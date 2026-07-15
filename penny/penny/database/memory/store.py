@@ -30,12 +30,10 @@ from penny.database.memory.objects import Collection, Log, Memory, MessageLogMem
 from penny.database.memory.types import (
     DedupThresholds,
     EntrySide,
-    Inclusion,
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryType,
     MemoryTypeError,
-    RecallMode,
     ResolvedKind,
     ResolvedMatch,
     slug,
@@ -63,8 +61,6 @@ class _MetadataUpdate(BaseModel):
 
     description: str | None = None
     description_embedding: list[float] | None = None
-    inclusion: Inclusion | None = None
-    recall: RecallMode | None = None
     notify: bool | None = None
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
@@ -82,12 +78,6 @@ class _MetadataUpdate(BaseModel):
             memory.description = self.description
             memory.description_embedding = sim.maybe_serialize(self.description_embedding)
             changed.append("description")
-        if self.inclusion is not None:
-            memory.inclusion = self.inclusion.value
-            changed.append("inclusion")
-        if self.recall is not None:
-            memory.recall = self.recall.value
-            changed.append("recall")
         if self.notify is not None:
             memory.notify = self.notify
             changed.append("notify")
@@ -121,7 +111,7 @@ class MemoryStore:
     """Registry + factory for memories.
 
     Summary of the public surface:
-        * dispatch: memory, active_memories, run_log
+        * dispatch: memory, run_log
         * metadata: create_collection, create_log, get, list_all, archive,
           unarchive, update_collection_metadata, link_source_message,
           mark_collected, set_cadence
@@ -163,14 +153,6 @@ class MemoryStore:
         row = self.get(name)
         return self._build(row) if row is not None else None
 
-    def active_memories(self) -> list[Memory]:
-        """Memory objects for every non-archived, routable memory (recall)."""
-        return [
-            self._build(row)
-            for row in self.list_all()
-            if not row.archived and row.inclusion != Inclusion.NEVER
-        ]
-
     def run_log(self) -> RunLog | None:
         """The ``collector-runs`` facade over every collector run.  ``None`` if
         the marker row is somehow absent.  (Per-collection run views go through
@@ -209,8 +191,6 @@ class MemoryStore:
         self,
         name: str,
         description: str,
-        inclusion: Inclusion,
-        recall: RecallMode,
         archived: bool = False,
         extraction_prompt: str | None = None,
         collector_interval_seconds: int | None = None,
@@ -229,8 +209,6 @@ class MemoryStore:
             name,
             MemoryType.COLLECTION,
             description,
-            inclusion,
-            recall,
             archived,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
@@ -250,8 +228,6 @@ class MemoryStore:
         self,
         name: str,
         description: str,
-        inclusion: Inclusion,
-        recall: RecallMode,
         archived: bool = False,
         description_embedding: list[float] | None = None,
     ) -> MemoryRow:
@@ -260,8 +236,6 @@ class MemoryStore:
             name,
             MemoryType.LOG,
             description,
-            inclusion,
-            recall,
             archived,
             description_embedding=description_embedding,
         )
@@ -271,8 +245,6 @@ class MemoryStore:
         name: str,
         type_: MemoryType,
         description: str,
-        inclusion: Inclusion,
-        recall: RecallMode,
         archived: bool,
         *,
         extraction_prompt: str | None = None,
@@ -296,8 +268,6 @@ class MemoryStore:
                 name=name,
                 type=type_.value,
                 description=description,
-                inclusion=inclusion.value,
-                recall=recall.value,
                 description_embedding=sim.maybe_serialize(description_embedding),
                 archived=archived,
                 notify=notify,
@@ -468,8 +438,6 @@ class MemoryStore:
         name: str,
         *,
         description: str | None = None,
-        inclusion: Inclusion | None = None,
-        recall: RecallMode | None = None,
         extraction_prompt: str | None = None,
         collector_interval_seconds: int | None = None,
         description_embedding: list[float] | None = None,
@@ -482,9 +450,9 @@ class MemoryStore:
         """Update fields on an existing collection.  Only set fields are applied.
 
         When ``description`` changes the caller passes the freshly computed
-        ``description_embedding`` alongside it so the stage-1 anchor stays in
-        sync — the anchor moves *with* the text: a changed description always
-        replaces the embedding with the passed value, and if that value is
+        ``description_embedding`` alongside it so the resolve-by-meaning anchor
+        stays in sync — the anchor moves *with* the text: a changed description
+        always replaces the embedding with the passed value, and if that value is
         ``None`` (a transient embed failure at the caller) the anchor is cleared
         to ``NULL`` rather than left pointing at the old, now-mismatched text.  A
         ``NULL`` anchor is what the startup description backfill re-heals; a stale
@@ -501,8 +469,6 @@ class MemoryStore:
         fields = _MetadataUpdate(
             description=description,
             description_embedding=description_embedding,
-            inclusion=inclusion,
-            recall=recall,
             notify=notify,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
@@ -540,7 +506,7 @@ class MemoryStore:
 
         ``collection_create`` records ``created_by_run_id`` at creation, but the
         triggering message's id isn't known until the run returns (the channel
-        logs it afterward, so it never doubles into the turn's own recall).  The
+        logs it afterward).  The
         channel then calls this to link the two structurally — matching by the
         unique per-turn ``run_id``, and only where a source isn't already set —
         so the provenance is a read, not a reconstruction.  A no-op when the run
@@ -599,10 +565,10 @@ class MemoryStore:
         never reaches it.  A keyless log entry has a legitimately-null key vector,
         so it only qualifies on a missing content vector.
 
-        Scoped to non-archived memories whose ``inclusion`` is not ``never`` —
-        an ``inclusion=never`` memory never surfaces via recall or
-        ``read_similar``, so embedding its entries is pure waste.  Newest first,
-        so the most recall-relevant rows embed first when the backfill batches.
+        Scoped to non-archived memories — an archived memory never surfaces via
+        ``read_similar`` or resolve-by-meaning, so embedding its entries is pure
+        waste.  Newest first, so the most relevant rows embed first when the
+        backfill batches.
         """
         missing_vector = or_(
             MemoryEntry.content_embedding.is_(None),  # ty: ignore[unresolved-attribute]
@@ -619,7 +585,6 @@ class MemoryStore:
                     .where(
                         missing_vector,
                         MemoryRow.archived == False,  # noqa: E712
-                        MemoryRow.inclusion != Inclusion.NEVER.value,
                     )
                     .order_by(MemoryEntry.created_at.desc())  # type: ignore[union-attr]
                     .limit(limit)
@@ -627,11 +592,9 @@ class MemoryStore:
             )
 
     def get_memories_without_description_embedding(self, limit: int) -> list[MemoryRow]:
-        """Active, routable memories whose stage-1 description anchor is unset.
-
-        Scoped to non-archived memories with ``inclusion != never`` — a
-        ``never`` memory is never routed, so its anchor is never consulted.
-        """
+        """Active memories whose description anchor (resolve-by-meaning, #1558) is
+        unset.  Scoped to non-archived memories — an archived memory's anchor is
+        never consulted."""
         with self._session() as session:
             return list(
                 session.exec(
@@ -639,14 +602,13 @@ class MemoryStore:
                     .where(
                         MemoryRow.description_embedding == None,  # noqa: E711
                         MemoryRow.archived == False,  # noqa: E712
-                        MemoryRow.inclusion != Inclusion.NEVER.value,
                     )
                     .limit(limit)
                 ).all()
             )
 
     def set_description_embedding(self, name: str, embedding: list[float]) -> None:
-        """Persist the stage-1 description anchor on a memory (backfill path)."""
+        """Persist the description anchor on a memory (backfill path)."""
         name = slug(name)
         with self._session() as session:
             memory = session.get(MemoryRow, name)

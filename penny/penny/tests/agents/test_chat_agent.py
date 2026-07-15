@@ -17,7 +17,7 @@ import pytest
 from sqlmodel import select
 
 from penny.constants import MutationAction, MutationActor, PennyConstants
-from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
 from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.embeddings import serialize_embedding
@@ -75,39 +75,28 @@ async def test_basic_message_flow(
         # migrations 0026/0027/0068 (user-messages, penny-messages,
         # browse-results, likes, dislikes, knowledge, thoughts).
         # Active memories rendered in alphabetical order: "playlists" < "tips".
-        penny.db.memories.create_collection(
-            "playlists", "favorite playlists", Inclusion.ALWAYS, RecallMode.ALL
-        )
+        penny.db.memories.create_collection("playlists", "favorite playlists")
         penny.db.memory("playlists").write(
             [EntryInput(key="morning", content="prog rock")],
             author="user",
         )
-        penny.db.memories.create_log("tips", "useful tips", Inclusion.ALWAYS, RecallMode.RECENT)
+        penny.db.memories.create_log("tips", "useful tips")
         penny.db.memory("tips").append(
             [LogEntryInput(content="tune before playing")], author="user"
         )
         # Off and archived memories are seeded with entries so the verbatim
         # prompt assertion below proves they are filtered out of ambient recall.
-        penny.db.memories.create_collection("secrets", "hidden", Inclusion.NEVER, RecallMode.RECENT)
+        penny.db.memories.create_collection("secrets", "hidden")
         penny.db.memory("secrets").write(
             [EntryInput(key="do-not-share", content="classified")],
             author="user",
         )
-        penny.db.memories.create_collection(
-            "old-facts", "archived", Inclusion.ALWAYS, RecallMode.ALL
-        )
+        penny.db.memories.create_collection("old-facts", "archived")
         penny.db.memory("old-facts").write(
             [EntryInput(key="stale", content="no longer relevant")],
             author="user",
         )
         penny.db.memories.archive("old-facts")
-        # The seeded skills collection is inclusion=always; embeddings are now a
-        # required prerequisite, so its entries would surface here in a ranking
-        # that's an artifact of the deterministic test embedder, not production.
-        # Neutralize its recall so this test asserts only its own seeded memories
-        # (relevant-mode skill rendering is covered by the recall tests below);
-        # it stays listed in the Memory Inventory.
-        penny.db.memories.update_collection_metadata("skills", inclusion=Inclusion.NEVER)
 
         # Send incoming message
         await signal_server.push_message(
@@ -531,15 +520,9 @@ async def test_inventory_lists_non_archived_memories(
 ):
     """Inventory names every non-archived memory regardless of recall mode."""
     async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "likes-test", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        penny.db.memories.create_collection(
-            "dislikes-test", "negative prefs", Inclusion.NEVER, RecallMode.RECENT
-        )
-        penny.db.memories.create_log(
-            "messages-test", "convo log", Inclusion.ALWAYS, RecallMode.RECENT
-        )
+        penny.db.memories.create_collection("likes-test", "positive prefs")
+        penny.db.memories.create_collection("dislikes-test", "negative prefs")
+        penny.db.memories.create_log("messages-test", "convo log")
 
         result = penny.chat_agent._memory_inventory_section()
 
@@ -554,9 +537,7 @@ async def test_inventory_lists_non_archived_memories(
 @pytest.mark.asyncio
 async def test_inventory_excludes_archived(signal_server, mock_llm, test_config, running_penny):
     async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection(
-            "retired-test", "archived", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        penny.db.memories.create_collection("retired-test", "archived")
         penny.db.memories.archive("retired-test")
 
         result = penny.chat_agent._memory_inventory_section()
@@ -823,9 +804,7 @@ async def test_startup_backfill_fills_missing_key_vector(
     match_vec = deterministic_embed("dark roast")
     async with running_penny(config) as penny:
         # A non-seeded collection so the gap row is the only pending entry.
-        penny.db.memories.create_collection(
-            "backfill-gap", "gap fixture", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        penny.db.memories.create_collection("backfill-gap", "gap fixture")
         # Content vector present, key vector NULL (the gap state).
         penny.db.memory("backfill-gap").write(
             [EntryInput(key="dark roast", content="loves dark roast", content_embedding=match_vec)],
@@ -946,7 +925,6 @@ _BASIC_FLOW_EXPECTED = (
     "- unnotified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "\n"
     "### Recent activity\n"
-    "change · YYYY-MM-DD HH:MM UTC · skills updated by user-run — changed inclusion\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts created by user-run\n"
     "change · YYYY-MM-DD HH:MM UTC · secrets created by user-run\n"

@@ -31,7 +31,6 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import Inclusion, RecallMode
 from penny.tests.eval.conftest import CollectorScorer, collection_entries, tool_was_called
 from penny.tests.eval.fixtures import (
     WATCHLIST,
@@ -63,8 +62,6 @@ def _seed_watchlist(prompt: str):
         db.memories.create_collection(
             WATCHLIST.name,
             WATCHLIST.description,
-            Inclusion(WATCHLIST.inclusion),
-            RecallMode.RECENT,
             extraction_prompt=prompt,
             intent=WATCHLIST_INTENT,
             collector_interval_seconds=300,
@@ -85,8 +82,6 @@ def _seed_digest_empty(db: Database) -> None:
     db.memories.create_collection(
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
-        Inclusion(WEEKLY_DIGEST.inclusion),
-        RecallMode.RECENT,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
         intent=WEEKLY_DIGEST_INTENT,
         collector_interval_seconds=1200,

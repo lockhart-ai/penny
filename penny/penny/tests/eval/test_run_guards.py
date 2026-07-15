@@ -27,7 +27,7 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import Inclusion, RecallMode, half_formed_send_reason
+from penny.database.memory import half_formed_send_reason
 from penny.tests.eval.conftest import (
     _InjectDoneBail,
     _InjectSendBail,
@@ -58,8 +58,6 @@ def _seed_digest_with_messages(db: Database) -> None:
     db.memories.create_collection(
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
-        Inclusion(WEEKLY_DIGEST.inclusion),
-        RecallMode.RECENT,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
         intent=WEEKLY_DIGEST_INTENT,
         collector_interval_seconds=1200,
@@ -74,8 +72,6 @@ def _seed_send_digest(db: Database) -> None:
     db.memories.create_collection(
         SEND_DIGEST.name,
         SEND_DIGEST.description,
-        Inclusion(SEND_DIGEST.inclusion),
-        RecallMode.RECENT,
         extraction_prompt=SEND_DIGEST_EXTRACTION_PROMPT,
         intent=SEND_DIGEST_INTENT,
         collector_interval_seconds=1200,

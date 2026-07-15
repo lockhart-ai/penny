@@ -19,14 +19,11 @@ from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
     EntryInput,
-    Inclusion,
     LogEntryInput,
     MemoryNotFoundError,
     MemoryTypeError,
-    RecallMode,
     ResolvedKind,
 )
-from penny.database.memory._similarity import hybrid_rank_ids
 from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
@@ -76,12 +73,9 @@ def _unit_vec(idx: int, dim: int = 8) -> list[float]:
 class TestMemoryMetadata:
     def test_create_collection_and_fetch(self, tmp_path):
         db = _make_db(tmp_path)
-        memory = db.memories.create_collection(
-            "likes", "user positive preferences", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        memory = db.memories.create_collection("likes", "user positive preferences")
         assert memory.name == "likes"
         assert memory.type == "collection"
-        assert memory.recall == "relevant"
         assert memory.archived is False
 
         fetched = db.memories.get("likes")
@@ -90,21 +84,15 @@ class TestMemoryMetadata:
 
     def test_create_log_and_list(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log(
-            "user-messages", "inbound user messages", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
-        db.memories.create_collection(
-            "dislikes", "user negative preferences", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_log("user-messages", "inbound user messages")
+        db.memories.create_collection("dislikes", "user negative preferences")
 
         names = [s.name for s in db.memories.list_all()]
         assert names == ["dislikes", "user-messages"]
 
     def test_archive_and_unarchive(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "notes", "scratch", Inclusion.NEVER, RecallMode.RECENT, created_by_run_id="run-create"
-        )
+        db.memories.create_collection("notes", "scratch", created_by_run_id="run-create")
         db.memories.archive("notes", run_id="run-arch")
         assert db.memories.get("notes").archived is True
         db.memories.unarchive("notes", run_id="run-unarch")
@@ -116,10 +104,8 @@ class TestMemoryMetadata:
         mechanism's config history is a read, in time order (#1560, criteria
         2 + 4)."""
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "watch", "a watch", Inclusion.RELEVANT, RecallMode.RECENT, created_by_run_id="run-1"
-        )
-        db.memories.update_collection_metadata("watch", recall=RecallMode.ALL, run_id="run-2")
+        db.memories.create_collection("watch", "a watch", created_by_run_id="run-1")
+        db.memories.update_collection_metadata("watch", notify=True, run_id="run-2")
         db.memories.archive("watch", run_id="run-3")
         db.memories.unarchive("watch", run_id="run-4")
 
@@ -136,7 +122,7 @@ class TestMemoryMetadata:
         assert all(e.actor == MutationActor.USER_RUN.value for e in events)
         # The update names which field changed (values live in the run's promptlog).
         update = next(e for e in events if e.action == MutationAction.UPDATED.value)
-        assert update.detail is not None and "recall" in update.detail
+        assert update.detail is not None and "notify" in update.detail
         # A no-op update (nothing supplied) is not a mutation.
         db.memories.update_collection_metadata("watch")
         assert len(db.mutations.history("watch", limit=10)) == 4
@@ -152,8 +138,6 @@ class TestMemoryMetadata:
         db.memories.create_collection(
             "hedgehog-sightings",
             "neighbourhood hedgehog sightings",
-            Inclusion.NEVER,
-            RecallMode.RECENT,
             extraction_prompt="1. browse for hedgehog news. 2. done().",
             collector_interval_seconds=3600,
             intent="keep a log of hedgehog sightings",
@@ -179,9 +163,7 @@ What it does each cycle — the recipe below is the collection's actual behaviou
 When explaining the collection, walk through THESE steps, not the operational settings.
 extraction prompt: 1. browse for hedgehog news. 2. done().
 
-Operational settings (routing + cadence — secondary):
-inclusion: never
-recall: recent
+Operational settings (cadence — secondary):
 notify: False
 interval: 3600s
 status: archived 2026-03-05 08:10 UTC
@@ -217,12 +199,12 @@ Recent changes (newest first):
             action=MutationAction.UPDATED.value,
             actor=MutationActor.USER_RUN.value,
             run_id="run-t4",
-            detail=MutationDetail(changed_fields=["recall", "published"]).model_dump_json(),
+            detail=MutationDetail(changed_fields=["notify", "extraction_prompt"]).model_dump_json(),
             created_at=datetime(2026, 3, 5, 8, 15, tzinfo=UTC),
         )
         assert (
-            render_mutation(updated)
-            == "2026-03-05 08:15 UTC updated by user-run (run run-t4) — changed recall, published"
+            render_mutation(updated) == "2026-03-05 08:15 UTC updated by user-run (run run-t4) — "
+            "changed notify, extraction_prompt"
         )
         system_archive = MutationEvent(
             entity_type="collection",
@@ -249,7 +231,7 @@ Recent changes (newest first):
     def test_unicode_name_normalization(self, tmp_path):
         db = _make_db(tmp_path)
         # U+2011 NON-BREAKING HYPHEN — a unicode dash variant in the name
-        db.memories.create_collection("board‑games", "tabletop", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("board‑games", "tabletop")
 
         # Stored name is normalized to ASCII hyphen
         assert db.memories.get("board-games") is not None
@@ -268,8 +250,6 @@ Recent changes (newest first):
         db.memories.create_collection(
             "board-games",
             "strategy board games",
-            Inclusion.NEVER,
-            RecallMode.RECENT,
             collector_interval_seconds=300,
             extraction_prompt="Browse for new board games and write entries.",
             notify=True,
@@ -279,8 +259,6 @@ Recent changes (newest first):
         assert "board-games" in result.message
         assert "collection" in result.message
         assert "strategy board games" in result.message
-        assert "inclusion: never" in result.message
-        assert "recall: recent" in result.message
         # notify surfaces in metadata so the chat agent + quality can read notify-on-new.
         assert "notify: True" in result.message
         assert "300s" in result.message
@@ -301,7 +279,7 @@ Recent changes (newest first):
 
     def test_collection_metadata_tool_no_extraction_prompt(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("plain", "no collector", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("plain", "no collector")
         tool = MemoryMetadataTool(db)
         result = asyncio.run(tool.execute(memory="plain"))
         assert "extraction prompt: none" in result.message
@@ -310,7 +288,7 @@ Recent changes (newest first):
 
     def test_updated_at_advances_on_metadata_update(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("col", "desc", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("col", "desc")
         before = db.memories.get("col").updated_at
         db.memories.update_collection_metadata("col", description="new desc")
         after = db.memories.get("col").updated_at
@@ -330,9 +308,7 @@ Recent changes (newest first):
 class TestCollectionWrites:
     def test_write_returns_entry_ids(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
 
         results = db.memories.memory("likes").write(
             [
@@ -357,9 +333,7 @@ class TestCollectionWrites:
 
     def test_write_dedups_on_key_embedding(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         shared_key_vec = _unit_vec(0)
 
         db.memories.memory("likes").write(
@@ -394,9 +368,7 @@ class TestCollectionWrites:
 
     def test_write_dedups_on_content_embedding(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         shared_content = _unit_vec(4)
 
         db.memories.memory("likes").write(
@@ -425,9 +397,7 @@ class TestCollectionWrites:
 
     def test_write_without_embeddings_always_accepts(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
 
         first = db.memories.memory("likes").write(
             [EntryInput(key="a", content="hello")],
@@ -448,7 +418,7 @@ class TestCollectionWrites:
         (a collection is new-keys-only); ``matched_key`` binds the existing key.
         Whitespace around the value doesn't count as a change."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("watch", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("watch", "x")
         db.memories.memory("watch").write(
             [EntryInput(key="price", content="$42")], author="collector"
         )
@@ -466,7 +436,7 @@ class TestCollectionWrites:
         written and the stored baseline is untouched (the run advances it via
         ``update_entry``); ``matched_key`` binds the existing key."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("watch", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("watch", "x")
         db.memories.memory("watch").write(
             [EntryInput(key="price", content="$42")], author="collector"
         )
@@ -480,9 +450,7 @@ class TestCollectionWrites:
 
     def test_update_replaces_content(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         db.memories.memory("likes").write(
             [EntryInput(key="k", content="old body")],
             author="chat",
@@ -513,9 +481,7 @@ class TestCollectionWrites:
 
     def test_literal_bracket_key_matches_exactly_not_stripped(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         # A key that genuinely contains enclosing brackets resolves by exact
         # match — lookups are literal, so the brackets are part of the key.
         db.memories.memory("likes").write(
@@ -528,16 +494,12 @@ class TestCollectionWrites:
 
     def test_update_not_found(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         assert db.memories.memory("likes").update("missing", "body", "chat") == "not_found"
 
     def test_delete_removes_all_matching(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         db.memories.memory("likes").write([EntryInput(key="k", content="a")], author="chat")
         assert db.memories.memory("likes").delete("k") == 1
         assert db.memories.memory("likes").get("k") == []
@@ -551,8 +513,8 @@ class TestCollectionWrites:
 
     def test_move_transfers_entry(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("unnotified", "pending", Inclusion.NEVER, RecallMode.RECENT)
-        db.memories.create_collection("notified", "done", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("unnotified", "pending")
+        db.memories.create_collection("notified", "done")
         db.memories.memory("unnotified").write(
             [EntryInput(key="thought-1", content="x")], author="thinking-agent"
         )
@@ -575,8 +537,8 @@ class TestCollectionWrites:
 
     def test_move_collision(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("a", "src", Inclusion.NEVER, RecallMode.RECENT)
-        db.memories.create_collection("b", "dst", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("a", "src")
+        db.memories.create_collection("b", "dst")
         db.memories.memory("a").write([EntryInput(key="k", content="src")], author="chat")
         db.memories.memory("b").write([EntryInput(key="k", content="dst")], author="chat")
 
@@ -584,8 +546,8 @@ class TestCollectionWrites:
 
     def test_move_not_found(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("a", "src", Inclusion.NEVER, RecallMode.RECENT)
-        db.memories.create_collection("b", "dst", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection("a", "src")
+        db.memories.create_collection("b", "dst")
         assert db.memories.memory("a").move("missing", "b", author="chat") == "not_found"
 
 
@@ -594,9 +556,7 @@ class TestDegenerateContentRejection:
 
     def _make_collection(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "knowledge", "web summaries", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("knowledge", "web summaries")
         return db
 
     def test_pure_punctuation_rejected(self, tmp_path):
@@ -708,7 +668,7 @@ class TestDegenerateContentRejection:
 class TestLogAppend:
     def test_append_multiple_entries_stored_in_order(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("chatter", "inbound", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("chatter", "inbound")
         db.memories.memory("chatter").append(
             [
                 LogEntryInput(content="hello"),
@@ -724,13 +684,13 @@ class TestLogAppend:
 
     def test_append_to_collection_raises(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         with pytest.raises(MemoryTypeError):
             db.memories.memory("likes").append([LogEntryInput(content="nope")], author="user")
 
     def test_write_to_log_raises(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events", "x")
         with pytest.raises(MemoryTypeError):
             db.memories.memory("events").write(
                 [EntryInput(key="k", content="v")],
@@ -746,7 +706,7 @@ class TestReads:
         db = _make_db(tmp_path)
         log = PennyConstants.MEMORY_USER_MESSAGES_LOG
         # The facade dispatches on the marker row (seeded by migration in prod).
-        db.memories.create_log(log, "inbound messages", Inclusion.ALWAYS, RecallMode.RELEVANT)
+        db.memories.create_log(log, "inbound messages")
         direction = PennyConstants.MessageDirection.INCOMING
         db.messages.log_message(
             direction, "+1", "I love jazz", embedding=serialize_embedding([1.0, 0.0, 0.0])
@@ -762,7 +722,7 @@ class TestReads:
 
     def test_read_latest(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events", "x")
         for i in range(5):
             db.memories.memory("events").append([LogEntryInput(content=f"msg-{i}")], author="user")
 
@@ -775,7 +735,7 @@ class TestReads:
 
     def test_read_since(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events", "x")
         db.memories.memory("events").append([LogEntryInput(content="early")], author="user")
         mid = datetime.now(UTC)
         db.memories.memory("events").append([LogEntryInput(content="late")], author="user")
@@ -785,7 +745,7 @@ class TestReads:
 
     def test_read_random_returns_all_when_k_exceeds(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write([EntryInput(key="a", content="1")], author="chat")
         db.memories.memory("likes").write([EntryInput(key="b", content="2")], author="chat")
         picked = db.memories.memory("likes").read_random(5)
@@ -793,14 +753,14 @@ class TestReads:
 
     def test_read_random_no_k_returns_all(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write([EntryInput(key="a", content="1")], author="chat")
         db.memories.memory("likes").write([EntryInput(key="b", content="2")], author="chat")
         assert {e.key for e in db.memories.memory("likes").read_random()} == {"a", "b"}
 
     def test_read_random_samples_subset_deterministically(self, tmp_path, monkeypatch):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         for letter in ("a", "b", "c", "d"):
             db.memories.memory("likes").write(
                 [EntryInput(key=letter, content=letter)], author="chat"
@@ -823,7 +783,7 @@ class TestReads:
 
     def test_read_similar_orders_by_cosine(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         anchor = [1.0, 0.0, 0.0, 0.0]
         db.memories.memory("likes").write(
             [
@@ -851,7 +811,7 @@ class TestReads:
 
     def test_read_similar_respects_floor(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         anchor = [1.0, 0.0]
         db.memories.memory("likes").write(
             [
@@ -873,7 +833,7 @@ class TestReads:
         collapse a flat corpus to "No entries" (#1565: that broke the model's
         fuzzy-recovery path exactly when guessing at a skill's identity)."""
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("events", "x")
         anchor = [1.0, 0.0, 0.0]
         # Twenty entries with identical content embeddings — a maximally flat
         # corpus, which the old adaptive cluster gate suppressed entirely.
@@ -890,7 +850,7 @@ class TestReads:
         """Plain nearest-neighbour ranking: the strong-cluster entries come back
         ahead of the weak ones, so a bounded ``k`` returns the cluster first."""
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("events", "x")
         anchor = [1.0, 0.0, 0.0]
         # 5 strong matches (cos ≈ 0.95)
         for i in range(5):
@@ -908,67 +868,9 @@ class TestReads:
         top = [e.content for e in db.memories.memory("events").read_similar(anchor, k=5)]
         assert top and all(c.startswith("hit-") for c in top)
 
-    def test_read_similar_hybrid_filters_low_info_entries(self, tmp_path):
-        """Entries with fewer than ``MEMORY_RELEVANT_MIN_WORDS`` words are
-        excluded from the corpus before scoring.
-
-        Regression: short generic content (empty strings, "Hey!", "?")
-        otherwise dominates cosine ranking on short keyword anchors,
-        crowding out the real topical hits.
-        """
-        db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
-        anchor = [1.0, 0.0, 0.0]
-
-        # Junk entries that would otherwise dominate (1–4 words, high cosine)
-        for junk in ("", "?", "Hey!", "hi penny"):
-            db.memories.memory("events").append(
-                [LogEntryInput(content=junk, content_embedding=[0.95, 0.31, 0.0])],
-                author="chat",
-            )
-        # Real topical content (≥ 5 words, slightly lower cosine)
-        real = "a real topical sentence about coffee"
-        db.memories.memory("events").append(
-            [LogEntryInput(content=real, content_embedding=[0.9, 0.43, 0.0])],
-            author="chat",
-        )
-
-        hits = db.memories.memory("events").read_similar_hybrid([anchor], "coffee")
-        contents = [e.content for e in hits]
-        assert real in contents
-        for junk in ("", "?", "Hey!", "hi penny"):
-            assert junk not in contents
-
-    def test_hybrid_rank_demotes_long_coincidental_match(self):
-        """The lexical length penalty drops a long entry that merely *contains*
-        the query terms below genuinely-relevant short entries.
-
-        Two short entries each cover half the query and embed close to the
-        anchor; a long entry covers the whole query (its big token set contains
-        both terms) but embeds far from the anchor. Without length
-        normalization the long entry's full coverage lifts it above a short
-        on-topic entry; the sqrt penalty (``MEMORY_LEXICAL_LENGTH_B``) demotes
-        it to last, where its weak cosine also puts it.
-        """
-        anchor = [1.0, 0.0, 0.0]
-        fillers = " ".join(f"filler{i}" for i in range(60))
-        docs = [
-            (1, "alpha", [0.99, 0.141, 0.0]),  # on-topic, short, strongest cosine
-            (2, f"alpha beta {fillers}", [0.6, 0.8, 0.0]),  # coincidental, long, weakest cosine
-            (3, "beta", [0.95, 0.312, 0.0]),  # on-topic, short
-        ]
-        ranked = hybrid_rank_ids(
-            [serialize_embedding(vec) for _, _, vec in docs],
-            [content for _, content, _ in docs],
-            [entry_id for entry_id, _, _ in docs],
-            [anchor],
-            "alpha beta",
-        )
-        assert ranked[-1] == 2  # the long coincidental entry ranks last, not lifted by coverage
-
     def test_keys_returns_unique_in_insertion_order(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write([EntryInput(key="first", content="1")], author="chat")
         db.memories.memory("likes").write([EntryInput(key="second", content="2")], author="chat")
         assert db.memories.memory("likes").keys() == ["first", "second"]
@@ -977,7 +879,7 @@ class TestReads:
 class TestExists:
     def test_exists_by_exact_key(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [EntryInput(key="dark roast", content="body")], author="chat"
         )
@@ -992,8 +894,8 @@ class TestExists:
 
     def test_exists_by_similarity_across_stores(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("unnotified", "pending", Inclusion.NEVER, RecallMode.RECENT)
-        db.memories.create_collection("notified", "done", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("unnotified", "pending")
+        db.memories.create_collection("notified", "done")
         shared = _unit_vec(2)
         db.memories.memory("notified").write(
             [
@@ -1020,7 +922,7 @@ class TestExists:
 class TestCursorStore:
     def test_advance_and_get(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("user-messages", "inbound", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("user-messages", "inbound")
         now = datetime.now(UTC)
         db.cursors.advance_committed("preference-extractor", "user-messages", now)
 
@@ -1028,7 +930,7 @@ class TestCursorStore:
 
     def test_advance_is_monotonic(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("user-messages", "inbound", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_log("user-messages", "inbound")
         later = datetime.now(UTC)
         earlier = later - timedelta(minutes=5)
 
@@ -1151,7 +1053,7 @@ class TestMediaStore:
 class TestWriteTypeEnforcement:
     def test_write_requires_collection(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "x", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events", "x")
         # The wrong-shape refusal speaks the single house wording — names the value,
         # its actual shape, and binds the read tool that shape supports.
         with pytest.raises(MemoryTypeError, match="'events' is a log, not a collection"):
@@ -1165,7 +1067,7 @@ class TestWriteTypeEnforcement:
 
     def test_dedup_thresholds_configurable(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [
                 EntryInput(
@@ -1207,7 +1109,7 @@ class TestDedupSignals:
     def test_tcr_strict_alone_rejects(self, tmp_path):
         """Full token-subset on keys fires without any embeddings."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [EntryInput(key="dark roast", content="first body")],
             author="chat",
@@ -1221,7 +1123,7 @@ class TestDedupSignals:
     def test_tcr_relaxed_alone_does_not_fire(self, tmp_path):
         """TCR 2/3 with no other signal is not enough on its own."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [EntryInput(key="applied ai conference", content="first")],
             author="chat",
@@ -1235,7 +1137,7 @@ class TestDedupSignals:
     def test_two_relaxed_signals_reject(self, tmp_path):
         """TCR 2/3 plus a relaxed content-cosine hit (~0.80) → duplicate."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [
                 EntryInput(
@@ -1264,7 +1166,7 @@ class TestDedupSignals:
     def test_single_relaxed_signal_passes(self, tmp_path):
         """One signal at relaxed level only (no second signal) is not enough."""
         db = _make_db(tmp_path)
-        db.memories.create_collection("likes", "x", Inclusion.RELEVANT, RecallMode.RELEVANT)
+        db.memories.create_collection("likes", "x")
         db.memories.memory("likes").write(
             [
                 EntryInput(
@@ -1289,34 +1191,30 @@ class TestDedupSignals:
 
 
 class TestEmbeddingBackfill:
-    """Startup backfill targets recall-relevant, non-archived entries only.
+    """Startup backfill targets non-archived entries only.
 
     Migration-seeded content (skills) and other rows inserted via raw SQL
-    arrive with NULL embeddings; the backfill embeds the ones that are
-    actually reachable by similarity and skips bulk ``recall=off`` logs
-    (``collector-runs``) that would otherwise be a huge pointless embed.
+    arrive with NULL embeddings; the backfill embeds every non-archived
+    memory's entries — they're all reachable by ``read_similar`` /
+    resolve-by-meaning — and skips archived ones (never surfaced).
     """
 
-    def test_scopes_to_relevant_unarchived_and_persists(self, tmp_path):
+    def test_scopes_to_unarchived_and_persists(self, tmp_path):
         db = _make_db(tmp_path)
-        # A relevant collection (skills-like): entries SHOULD be embedded.
-        db.memories.create_collection(
-            "skills", "workflow patterns", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        # A non-archived collection: entries SHOULD be embedded.
+        db.memories.create_collection("skills", "workflow patterns")
         db.memories.memory("skills").write(
             [EntryInput(key="Do X when Y", content="TRIGGER ... STEPS ...")],
             author="system",
         )
-        # An off log (collector-runs-like): never surfaces → must be skipped.
-        db.memories.create_log("audit-log", "cycle log", Inclusion.NEVER, RecallMode.RECENT)
+        # A non-archived log: read_similar can search it, so its entries embed too.
+        db.memories.create_log("audit-log", "cycle log")
         db.memories.memory("audit-log").append(
             [LogEntryInput(content="cycle summary")],
             author="collector",
         )
         # An archived collection: never surfaces → must be skipped.
-        db.memories.create_collection(
-            "old-trip", "archived", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("old-trip", "archived")
         db.memories.memory("old-trip").write(
             [EntryInput(key="spot", content="some place")],
             author="chat",
@@ -1324,18 +1222,18 @@ class TestEmbeddingBackfill:
         db.memories.archive("old-trip")
 
         pending = db.memories.get_entries_without_embeddings(limit=100)
-        # Only the skills entry qualifies — off-log and archived are excluded.
-        assert [e.memory_name for e in pending] == ["skills"]
-        assert pending[0].content_embedding is None
+        # Both non-archived entries qualify; the archived one is excluded.
+        assert {e.memory_name for e in pending} == {"skills", "audit-log"}
+        assert all(e.content_embedding is None for e in pending)
 
-        # Persist embeddings, then confirm it drops out of the pending set.
-        entry_id = pending[0].id
-        assert entry_id is not None
-        db.memories.set_entry_embeddings(
-            entry_id,
-            key_embedding=_unit_vec(0),
-            content_embedding=_unit_vec(1),
-        )
+        # Persist embeddings for every pending entry, then confirm they drop out.
+        for entry in pending:
+            assert entry.id is not None
+            db.memories.set_entry_embeddings(
+                entry.id,
+                key_embedding=_unit_vec(0) if entry.key is not None else None,
+                content_embedding=_unit_vec(1),
+            )
         assert db.memories.get_entries_without_embeddings(limit=100) == []
         rows = db.memories.memory("skills").read_latest()
         assert rows[0].content_embedding is not None
@@ -1350,9 +1248,7 @@ class TestEmbeddingBackfill:
         without the content vector ever being disturbed.
         """
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "likes", "positive prefs", Inclusion.RELEVANT, RecallMode.RELEVANT
-        )
+        db.memories.create_collection("likes", "positive prefs")
         # Content vector present, key vector NULL (key present) — no dedup neighbour.
         db.memories.memory("likes").write(
             [
@@ -1384,7 +1280,7 @@ class TestEmbeddingBackfill:
         qualify on that alone (only on a missing content vector), or the backfill
         would loop forever trying to embed a key that will always be NULL."""
         db = _make_db(tmp_path)
-        db.memories.create_log("events", "event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events", "event stream")
         # Content vector present, no key (log entries are keyless).
         db.memories.memory("events").append(
             [LogEntryInput(content="something happened", content_embedding=_unit_vec(2))],
@@ -1422,27 +1318,19 @@ class TestResolveObjects:
         """One of every family sharing axis 0, plus off-axis noise: an active and
         an archived collection, a log, the ``skills`` container (off-axis) with one
         on-axis skill entry."""
-        db.memories.create_collection(
-            "watch", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
-        )
+        db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
         db.memories.create_collection(
             "old-watch",
             "d",
-            Inclusion.RELEVANT,
-            RecallMode.RECENT,
             archived=True,
             description_embedding=_unit_vec(0),
         )
-        db.memories.create_log(
-            "feed", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
-        )
+        db.memories.create_log("feed", "d", description_embedding=_unit_vec(0))
         # The skills CONTAINER sits off-axis (axis 3) — only its ENTRY is on-axis,
         # so the container never surfaces while the skill does.
         db.memories.create_collection(
             PennyConstants.MEMORY_SKILLS_COLLECTION,
             "d",
-            Inclusion.NEVER,
-            RecallMode.RECENT,
             description_embedding=_unit_vec(3),
         )
         self._add_skill(db, "escalate", _unit_vec(0))
@@ -1479,14 +1367,10 @@ class TestResolveObjects:
 
     def test_ranks_best_first(self, tmp_path):
         db = _make_db(tmp_path)
-        db.memories.create_collection(
-            "exact", "d", Inclusion.RELEVANT, RecallMode.RECENT, description_embedding=_unit_vec(0)
-        )
+        db.memories.create_collection("exact", "d", description_embedding=_unit_vec(0))
         db.memories.create_collection(
             "partial",
             "d",
-            Inclusion.RELEVANT,
-            RecallMode.RECENT,
             description_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         )
         matches = db.memories.resolve_objects(_unit_vec(0), None, 10)
@@ -1499,8 +1383,6 @@ class TestResolveObjects:
             db.memories.create_collection(
                 f"c{index}",
                 "d",
-                Inclusion.RELEVANT,
-                RecallMode.RECENT,
                 description_embedding=_unit_vec(0),
             )
         assert len(db.memories.resolve_objects(_unit_vec(0), None, 3)) == 3

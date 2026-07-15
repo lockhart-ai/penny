@@ -81,7 +81,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 91
+        assert count == 92
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -122,7 +122,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 91
+        assert count1 == 92
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -160,8 +160,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; 0002 through 0091 run = 90 migrations
-        assert count == 90
+        # 0001 is skipped; the rest run = 91 migrations
+        assert count == 91
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -187,7 +187,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 91  # all migrations applied
+        assert count == 92  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -683,14 +683,12 @@ class TestMigrate:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT type, inclusion, archived, extraction_prompt "
-            "FROM memory WHERE name = 'notifier'"
+            "SELECT type, archived, extraction_prompt FROM memory WHERE name = 'notifier'"
         ).fetchone()
         conn.close()
         assert row is not None
-        type_, inclusion, archived, prompt = row
+        type_, archived, prompt = row
         assert type_ == "collection"
-        assert inclusion == "never"  # internal — never surfaces in chat
         assert archived == 1  # retired by 0086 (emission is now the notify suffix)
         assert "read_published_latest" in prompt  # the 0067-seeded body survives (0087
         # strips only its terminal bare-done step line)
@@ -711,7 +709,7 @@ class TestMigrate:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT inclusion, notify, extraction_prompt FROM memory WHERE name = 'thoughts'"
+            "SELECT notify, extraction_prompt FROM memory WHERE name = 'thoughts'"
         ).fetchone()
         archived = dict(
             conn.execute(
@@ -721,8 +719,7 @@ class TestMigrate:
         )
         conn.close()
         assert row is not None
-        inclusion, notify, prompt = row
-        assert inclusion == "relevant"  # past thoughts still surface in chat
+        notify, prompt = row
         assert notify == 1  # 0085 seeded notify from published=1 — it tells the user
         assert 'collection_write("thoughts"' in prompt  # producer writes to itself
         assert "send_message" not in prompt  # gathers only; the notify suffix does the sending
@@ -1021,3 +1018,40 @@ class TestMigrate:
         assert {"entity_type", "entity_name", "action", "actor", "run_id", "detail"}.issubset(
             mutation_columns
         )
+
+    def test_0093_drops_recall_substrate(self, tmp_path):
+        """Migration 0093 (over the full chain): the dead recall columns
+        (``inclusion`` + ``recall``) are dropped, and the 0069-seeded research skill
+        recipes no longer teach the removed flags (their ``- inclusion: "relevant",
+        recall: "relevant"`` line is stripped).  ``description_embedding`` (resolve-
+        by-meaning) and ``notify`` (emission) stay."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        migrate(db_path)
+
+        conn = sqlite3.connect(db_path)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()}
+        skill_bodies = dict(
+            conn.execute(
+                "SELECT key, content FROM memory_entry WHERE memory_name = 'skills' "
+                "AND key IN (?, ?)",
+                (
+                    "Research collection — notify on new finds",
+                    "Research collection — silent",
+                ),
+            ).fetchall()
+        )
+        conn.close()
+
+        # The dead recall columns are gone; the retained anchors/flags stay.
+        assert "inclusion" not in columns
+        assert "recall" not in columns
+        assert "description_embedding" in columns  # resolve-by-meaning (#1558)
+        assert "notify" in columns  # emission-as-property (#1557)
+        # The seeded recipes no longer teach the dropped flags.
+        for body in skill_bodies.values():
+            assert 'inclusion: "relevant", recall: "relevant"' not in body

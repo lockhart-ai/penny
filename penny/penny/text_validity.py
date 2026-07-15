@@ -1,8 +1,8 @@
 """Content-validity primitives — pure text predicates, no DB / no model.
 
 The one home for "is this text usable?" rules, kept dependency-light (standard
-library + ``PennyConstants`` only) so every layer can import it without dragging in
-the database or agent packages.  Two callers that must agree share these:
+library only) so every layer can import it without dragging in the database or
+agent packages.  Two callers that must agree share these:
 
   * the memory write path (``Collection.write`` / the ``exists`` probe) rejects
     degenerate corpus content via :func:`degenerate_reason` — a SUBSTRING poison
@@ -28,8 +28,6 @@ from __future__ import annotations
 import difflib
 import re
 from collections.abc import Collection
-
-from penny.constants import PennyConstants
 
 _WORD_TOKEN_RE = re.compile(r"\w+")
 
@@ -449,16 +447,3 @@ def require_non_degenerate_content(value: str) -> str:
             f"text, or use collection_delete_entry if you meant to remove the entry."
         )
     return value
-
-
-def is_low_info(content: str) -> bool:
-    """Return True if ``content`` carries less than the configured minimum word
-    count and should be filtered from similarity scoring.
-
-    The filter targets entries that geometrically dominate cosine rankings on
-    short keyword anchors despite having no topical payload — empty strings,
-    lone punctuation, stock greetings, bare URL fragments.  Entries that pass
-    still appear in other recall paths (recent / all / read_latest); only the
-    relevant-mode similarity corpus is filtered.
-    """
-    return len(_WORD_TOKEN_RE.findall(content)) < PennyConstants.MEMORY_RELEVANT_MIN_WORDS

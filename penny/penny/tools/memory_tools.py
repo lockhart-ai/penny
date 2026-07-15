@@ -31,14 +31,12 @@ from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
     EntryInput,
-    Inclusion,
     LogEntryInput,
     Memory,
     MemoryAccessError,
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryType,
-    RecallMode,
     ResolvedKind,
     ResolvedMatch,
     WriteResult,
@@ -55,8 +53,6 @@ from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
-    DEFAULT_INCLUSION,
-    DEFAULT_RECALL,
     SkillResolution,
     SkillResolutionKind,
     Trigger,
@@ -102,10 +98,6 @@ if TYPE_CHECKING:
     from penny.llm.client import LlmClient
 
 logger = logging.getLogger(__name__)
-
-
-_INCLUSION_MODES = ", ".join(m.value for m in Inclusion)
-_RECALL_MODES = ", ".join(m.value for m in RecallMode)
 
 
 # ── Shared formatting ───────────────────────────────────────────────────────
@@ -272,8 +264,6 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
         f"{verb} collection '{memory.name}':\n"
         f"  interval: {memory.collector_interval_seconds}s "
         f"({humanize_interval(memory.collector_interval_seconds)})\n"
-        f"  inclusion: {memory.inclusion}\n"
-        f"  recall: {memory.recall}\n"
         f"  notify: {memory.notify}\n"
         f"{intent_line}"
         f"  description: {memory.description}\n"
@@ -284,19 +274,19 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
 
 # ── Description-anchor embed degradation (visible, self-healing) ─────────────
 #
-# A description doubles as the stage-1 routing anchor.  Unlike an entry write
-# (which fails hard, #1412, because a vectorless entry is recall-invisible and
-# corrupts dedup), a collection/log is still fully created or updated when its
-# description embed fails transiently — only its ``relevant``-routing anchor is
-# missing, and the startup description backfill re-embeds any ``NULL`` anchor.
-# So the create/update succeeds, but the degradation is NAMED in the result
-# rather than left silent (visible-degradation): the anchor is unset until it
-# self-heals.  No retry is demanded — the row already exists and retrying the
-# create would only collide.
+# A description doubles as the resolve-by-meaning anchor (#1558).  Unlike an entry
+# write (which fails hard, #1412, because a vectorless entry is invisible to
+# read_similar and corrupts dedup), a collection/log is still fully created or updated when its
+# description embed fails transiently — only its meaning anchor is missing, and
+# the startup description backfill re-embeds any ``NULL`` anchor.  So the
+# create/update succeeds, but the degradation is NAMED in the result rather than
+# left silent (visible-degradation): the anchor is unset until it self-heals.  No
+# retry is demanded — the row already exists and retrying the create would only
+# collide.
 _DESCRIPTION_EMBED_DEGRADED = (
     " (Heads up: couldn't embed its description just now — a transient embedding "
-    "error — so its relevance-routing anchor is unset and it won't surface via "
-    "'relevant' recall until it self-heals on the next restart.)"
+    "error — so its meaning anchor is unset and it won't resolve via find_mine "
+    "until it self-heals on the next restart.)"
 )
 
 
@@ -513,8 +503,8 @@ class CollectionCreateTool(MemoryTool):
         "- `name` — unique slug for the collection (lowercase, hyphens).\n"
         "- `intent` — REQUIRED. What the user asked for, in their own words — the "
         'goal this collection serves ("keep an eye on the price of that jacket"). '
-        "Immutable after creation and the collection's routing anchor, so get it "
-        "right and confirm it back.\n"
+        "Immutable after creation and the collection's meaning anchor (how "
+        "find_mine resolves it), so get it right and confirm it back.\n"
         "- `skill` — REQUIRED. The skill to instantiate, by exact name or a "
         'paraphrase of what it does ("watch a page for a change"). If your paraphrase '
         "matches several skills I'll list them to choose from; if it matches none I'll "
@@ -754,8 +744,6 @@ class CollectionCreateTool(MemoryTool):
         memory = self._db.memories.create_collection(
             args.name,
             args.intent,
-            DEFAULT_INCLUSION,
-            DEFAULT_RECALL,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=trigger.collector_interval_seconds,
             description_embedding=description_embedding,
@@ -792,8 +780,7 @@ class LogCreateTool(MemoryTool):
     description = (
         "Create a new append-only log. Logs store keyless entries in time order "
         "and are meant for streams of events (messages, measurements, etc.). "
-        f"Provide a content-reflective description, an inclusion mode "
-        f"({_INCLUSION_MODES}), and an entry-recall mode ({_RECALL_MODES})."
+        "Provide a content-reflective description."
     )
     parameters = {
         "type": "object",
@@ -801,23 +788,10 @@ class LogCreateTool(MemoryTool):
             "name": {"type": "string", "description": "Unique log name"},
             "description": {
                 "type": "string",
-                "description": "Content-reflective one-line summary (stage-1 routing anchor)",
-            },
-            "inclusion": {
-                "type": "string",
-                "enum": [m.value for m in Inclusion],
-                "description": (
-                    "Stage-1 routing: 'always', 'relevant' (matches the "
-                    "description), or 'never' (silent)."
-                ),
-            },
-            "recall": {
-                "type": "string",
-                "enum": [m.value for m in RecallMode],
-                "description": "Stage-2 entry rendering: 'relevant', 'recent', or 'all'.",
+                "description": "Content-reflective one-line summary (the meaning anchor)",
             },
         },
-        "required": ["name", "description", "inclusion", "recall"],
+        "required": ["name", "description"],
     }
     args_model = LogCreateArgs
 
@@ -838,8 +812,6 @@ class LogCreateTool(MemoryTool):
         self._db.memories.create_log(
             args.name,
             args.description,
-            Inclusion(args.inclusion),
-            RecallMode(args.recall),
             description_embedding=description_embedding,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
@@ -848,12 +820,14 @@ class LogCreateTool(MemoryTool):
 
 
 class CollectionArchiveTool(MemoryTool):
-    """Archive a collection — keeps data, removes it from ambient recall."""
+    """Archive a collection — keeps its data but retires the mechanism."""
 
     name = "collection_archive"
     description = (
         "Archive a collection. The data stays intact but the collection is "
-        "excluded from the chat agent's ambient recall until unarchived."
+        "retired — its collector stops running and it drops out of the active "
+        "memory list (it stays in the archived-inclusive catalog as a tombstone) "
+        "until unarchived."
     )
     parameters = {
         "type": "object",
@@ -883,7 +857,7 @@ class CollectionArchiveTool(MemoryTool):
 
 
 class CollectionUnarchiveTool(MemoryTool):
-    """Restore a previously archived collection to ambient recall."""
+    """Restore a previously archived collection — its collector resumes."""
 
     name = "collection_unarchive"
     description = "Unarchive a previously archived collection."
@@ -1226,7 +1200,7 @@ def _format_unexpected(results: list[WriteResult]) -> str:
 # ── Embed-failure at write time (fail-hard, #1412) ──────────────────────────
 #
 # Every stored entry MUST carry its similarity vector: an entry without one is
-# invisible to recall (``read_similar`` skips it) and silently weakens dedup.  So
+# invisible to ``read_similar`` (which skips it) and silently weakens dedup.  So
 # a transient embed failure at write time REFUSES the write outright rather than
 # persisting a vectorless row and reporting an optimistic success (the
 # visible-degradation principle — a failed capability produces honest state, not
@@ -1324,8 +1298,9 @@ class CollectionWriteTool(MemoryTool):
 
     def _embed_failure(self, memory: str, entries: list[EntryInput]) -> ToolResult | None:
         """Refuse the write, atomically, if any entry lost a vector to a transient
-        embed failure — a vectorless entry is recall-invisible and dedup-weakening,
-        so nothing is persisted and the model retries once embedding recovers
+        embed failure — a vectorless entry is invisible to read_similar and
+        dedup-weakening, so nothing is persisted and the model retries once embedding
+        recovers
         (fail-hard, #1412)."""
         missing = [
             entry.key
@@ -1556,7 +1531,7 @@ class CollectionUpdateTool(MemoryTool):
     """Update collection metadata, or re-render its prompt from a skill (#1620).
 
     Chat-facing.  Lets the user evolve a collection mid-conversation — refining
-    routing/recall/cadence, flipping notify, or re-rendering the ``extraction_prompt``
+    the description/cadence, flipping notify, or re-rendering the ``extraction_prompt``
     from a skill: **refresh** (the same skill re-taught → re-render from its current
     steps), **rebind** (new ``params``, same skill), **swap** (a different ``skill``),
     or **adopt** (give a legacy skill=NULL collection a skill for the first time).  All
@@ -1573,15 +1548,10 @@ class CollectionUpdateTool(MemoryTool):
         "Fields:\n"
         "- `name` (required) — the collection to update.\n"
         "- `description` — content-reflective one-line summary AND the "
-        "stage-1 routing anchor. Changing it re-embeds and re-routes when "
-        "the collection surfaces, so keep it an accurate summary of the "
-        "subject matter. It does not drive the collector — change the "
+        "meaning anchor (find_mine / resolve-by-meaning). Changing it "
+        "re-embeds it, so keep it an accurate summary of the subject "
+        "matter. It does not drive the collector — change the "
         "extraction_prompt for that.\n"
-        f"- `inclusion` ({_INCLUSION_MODES}) — stage-1 routing. Flip to "
-        "'never' to silence a collection (its collector still runs); 'always' "
-        "to always surface it; 'relevant' to gate on the description.\n"
-        f"- `recall` ({_RECALL_MODES}) — stage-2 entry rendering once "
-        "included.\n"
         "- `notify` — flip notify-on-new. `true` starts telling the "
         "user about new entries (they asked to be kept posted / alerted); "
         "`false` silences it (the collector keeps gathering). Omit to leave "
@@ -1620,26 +1590,10 @@ class CollectionUpdateTool(MemoryTool):
             "description": {
                 "type": "string",
                 "description": (
-                    "Content-reflective one-line summary AND the stage-1 "
-                    "routing anchor — changing it re-embeds and re-routes "
+                    "Content-reflective one-line summary AND the meaning anchor "
+                    "(find_mine / resolve-by-meaning) — changing it re-embeds "
                     "the collection. Keep it an accurate summary of the "
                     "subject matter."
-                ),
-            },
-            "inclusion": {
-                "type": "string",
-                "enum": [m.value for m in Inclusion],
-                "description": (
-                    "Stage-1 routing: 'never' silences a collection (collector "
-                    "still runs), 'always' always surfaces it, 'relevant' gates "
-                    "on the description."
-                ),
-            },
-            "recall": {
-                "type": "string",
-                "enum": [m.value for m in RecallMode],
-                "description": (
-                    "Stage-2 entry rendering once included: 'relevant', 'recent', or 'all'."
                 ),
             },
             "notify": {
@@ -1710,7 +1664,7 @@ class CollectionUpdateTool(MemoryTool):
         return await self._edit_metadata(args)
 
     async def _edit_metadata(self, args: CollectionUpdateArgs) -> ToolResult:
-        """The plain metadata edit — routing / recall / notify / cadence, and the
+        """The plain metadata edit — description / notify / cadence, and the
         prompt ONLY if a raw ``extraction_prompt`` is supplied (a skill re-render is
         the other path).  Omitting both skill/params and extraction_prompt leaves the
         collection's routine untouched."""
@@ -1789,8 +1743,6 @@ class CollectionUpdateTool(MemoryTool):
         return self._db.memories.update_collection_metadata(
             args.name,
             description=args.description,
-            inclusion=Inclusion(args.inclusion) if args.inclusion is not None else None,
-            recall=RecallMode(args.recall) if args.recall is not None else None,
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
@@ -1823,7 +1775,7 @@ class MemoryMetadataTool(MemoryTool):
     name = "memory_metadata"
     description = (
         "Return metadata for a memory: description, intent (the user's "
-        "original goal), recall mode, collector interval, last collected "
+        "original goal), notify flag, collector interval, last collected "
         "timestamp, archived state, and extraction prompt.  Works for both "
         "collections and logs."
     )
@@ -1874,9 +1826,9 @@ class MemoryMetadataTool(MemoryTool):
         skill = _skill_provenance_line(memory)
         # Lead with what the collection is FOR (intent) and what it DOES (the recipe),
         # because that is the substance a description should convey; the operational
-        # settings (routing/cadence/timestamps) are secondary and go last.  Ordered this
+        # settings (cadence/timestamps) are secondary and go last.  Ordered this
         # way — and with the nudge below — so a model asked "what does this do?" walks
-        # through the recipe's steps instead of reciting the cadence/recall trivia (the
+        # through the recipe's steps instead of reciting the cadence/notify trivia (the
         # failure the #1530 legibility baseline surfaced).
         lines = [
             f"name: {memory.name}",
@@ -1890,9 +1842,7 @@ class MemoryMetadataTool(MemoryTool):
             "operational settings.",
             f"extraction prompt: {memory.extraction_prompt or 'none'}",
             "",
-            "Operational settings (routing + cadence — secondary):",
-            f"inclusion: {memory.inclusion}",
-            f"recall: {memory.recall}",
+            "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
             f"interval: {interval}",
             *self._trigger_lines(memory),

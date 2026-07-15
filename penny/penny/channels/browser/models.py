@@ -208,14 +208,18 @@ class BrowserMemoryPageRequest(BaseModel):
 
 
 class MemoryRecord(BaseModel):
-    """One memory's metadata for the addon's Memories tab list view."""
+    """One memory's metadata for the addon's Memories tab list view.
+
+    The legacy ``inclusion`` / ``recall`` routing fields were dropped when the
+    dead recall substrate was removed (#1583); the addon TS may still read those
+    keys (a client-surface change, out of scope per #1606) — the server simply
+    no longer sends them.
+    """
 
     name: str
     type: str  # "collection" | "log"
     description: str
     intent: str | None  # the user's stated goal at creation (editable only here)
-    inclusion: str  # "always" | "relevant" | "never" — stage-1 routing
-    recall: str  # "all" | "relevant" | "recent" — stage-2 entry rendering
     # Notify-on-new. Wire field kept as ``published`` (the addon/iOS clients still send
     # and read that key); server-side it maps to the ``memory.notify`` column — the
     # ``published`` pub/sub side-channel was retired in #1557.
@@ -312,14 +316,16 @@ class BrowserMemoryChanged(BaseModel):
 
 class BrowserMemoryCreate(BaseModel):
     """Create a new collection from the addon.  Only collections are user-
-    creatable; logs are seeded by migrations."""
+    creatable; logs are seeded by migrations.
+
+    The legacy ``inclusion`` / ``recall`` routing fields were dropped with the
+    dead recall substrate (#1583); an addon that still sends them is fine — the
+    extra keys are ignored (a client-surface change is out of scope per #1606)."""
 
     type: str
     name: str
     description: str
     intent: str | None = None  # the user's goal for this collection
-    inclusion: str | None = None  # "always" | "relevant" | "never" (default relevant)
-    recall: str  # "all" | "relevant" | "recent" (legacy "off" → inclusion=never)
     # Notify-on-new (default silent). Wire field kept as ``published``; maps to the
     # ``memory.notify`` column server-side (#1557 retired the pub/sub side-channel).
     published: bool = False
@@ -331,14 +337,16 @@ class BrowserMemoryUpdate(BaseModel):
     """Edit metadata on an existing collection.  Only collections are user-
     editable; logs are read-only by design.  ``intent`` is editable here (the
     user owns the spec) even though the agent's ``collection_update`` tool
-    cannot touch it."""
+    cannot touch it.
+
+    The legacy ``inclusion`` / ``recall`` routing fields were dropped with the
+    dead recall substrate (#1583); an addon that still sends them is fine — the
+    extra keys are ignored (a client-surface change is out of scope per #1606)."""
 
     type: str
     name: str
     description: str | None = None
     intent: str | None = None
-    inclusion: str | None = None  # "always" | "relevant" | "never"
-    recall: str | None = None  # "all" | "relevant" | "recent"
     # Flip notify-on-new; None = leave unchanged. Wire field kept as ``published``;
     # maps to the ``memory.notify`` column server-side (#1557).
     published: bool | None = None

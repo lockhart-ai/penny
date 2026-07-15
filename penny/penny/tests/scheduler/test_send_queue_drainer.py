@@ -20,7 +20,6 @@ import pytest
 
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
-from penny.database.memory import Inclusion, RecallMode
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
 
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
@@ -41,8 +40,8 @@ def _make_db(tmp_path) -> Database:
     db.create_tables()
     # Marker rows so db.memory(...) dispatches the messagelog facades the
     # cooldown helpers read.
-    db.memories.create_log(_PENNY_LOG, "outbound", Inclusion.NEVER, RecallMode.RECENT)
-    db.memories.create_log(_USER_LOG, "inbound", Inclusion.NEVER, RecallMode.RECENT)
+    db.memories.create_log(_PENNY_LOG, "outbound")
+    db.memories.create_log(_USER_LOG, "inbound")
     db.users.save_info(
         sender=_RECIPIENT,
         name="user",

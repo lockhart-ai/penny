@@ -1365,13 +1365,12 @@ class Agent:
     def _memory_inventory_section(self) -> str | None:
         """### Memory Inventory — every non-archived memory by name, type, description, count.
 
-        Includes memories with ``recall=off`` so the model knows what
-        tool calls are possible for on-demand reads.  Sorted
-        alphabetically by name for stable prompt structure.  Each line
-        ends with the entry count so the model has a sense of which
-        collections / logs are worth pulling from.  Goes in every
-        agent's system prompt — chat and background alike — so the model
-        never needs to call ``list_memories``.
+        Every non-archived memory is listed, so the model knows what tool
+        calls are possible for on-demand reads.  Sorted alphabetically by
+        name for stable prompt structure.  Each line ends with the entry
+        count so the model has a sense of which collections / logs are worth
+        pulling from.  Goes in every agent's system prompt — chat and
+        background alike — so the model never needs to call ``list_memories``.
         """
         memories = sorted(
             (m for m in self.db.memories.list_all() if not m.archived),

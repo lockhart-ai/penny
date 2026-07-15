@@ -20,8 +20,6 @@ from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import (
-    Inclusion,
-    RecallMode,
     WriteGateOutcome,
     WriteResult,
     render_run_calls,
@@ -186,8 +184,6 @@ def _seed_collection(
     *,
     name: str,
     description: str = "x",
-    inclusion: str = "relevant",
-    recall: str = "recent",
     extraction_prompt: str = "test fixture extraction prompt",
     collector_interval_seconds: int = 3600,
     intent: str = "test intent",
@@ -199,8 +195,6 @@ def _seed_collection(
     return db.memories.create_collection(
         name,
         description,
-        Inclusion(inclusion),
-        RecallMode(recall),
         archived=archived,
         extraction_prompt=extraction_prompt,
         collector_interval_seconds=collector_interval_seconds,
@@ -598,7 +592,7 @@ class TestCollectionCreateFrontDoor:
         trigger back as ``on advance of <log>``."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
-        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="chained-watch",
             intent="digest events as they land",
@@ -620,7 +614,7 @@ class TestCollectionCreateFrontDoor:
         chatty source), while the trigger stays the source advance."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
-        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="throttled-watch",
             intent="digest events at most hourly",
@@ -675,7 +669,7 @@ class TestCollectionCreateFrontDoor:
         refused, nothing created."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
-        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="two-forms",
             intent="watch a peak",
@@ -712,20 +706,19 @@ class TestCreateAndList:
     async def test_create_log_persists(self, tmp_path):
         db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="user-messages", description="inbound", inclusion="always", recall="recent"
+            name="user-messages", description="inbound"
         )
         memories = {m.name: m for m in db.memories.list_all()}
         assert memories["user-messages"].type == "log"
-        assert memories["user-messages"].recall == "recent"
 
     @pytest.mark.asyncio
     async def test_create_log_duplicate_returns_user_friendly_message(self, tmp_path):
         db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="first", inclusion="always", recall="recent"
+            name="events", description="first"
         )
         result = await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="second", inclusion="never", recall="recent"
+            name="events", description="second"
         )
         assert "already exists" in result.message
         assert "events" in result.message
@@ -757,8 +750,6 @@ class TestCreateAndList:
             db,
             name="notes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt=original_prompt,
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -788,22 +779,18 @@ class TestCreateAndList:
             db,
             name="notes",
             description="real description",
-            inclusion="relevant",
-            recall="all",
             extraction_prompt=original_prompt,
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
-            recall="relevant",
             extraction_prompt="",
             description="   ",
             notify=True,
         )
         assert "Updated" in result.message
         updated = db.memories.get("notes")
-        assert updated.recall == "relevant"  # the real change landed
         assert updated.extraction_prompt == original_prompt  # blank skipped, not blanked
         assert updated.description == "real description"  # blank skipped, not blanked
         # notify flips on the update path (created silent by default → notify-on-new).
@@ -819,21 +806,17 @@ class TestCreateAndList:
             db,
             name="notes",
             description="real description",
-            inclusion="relevant",
-            recall="all",
             extraction_prompt="test fixture extraction prompt that is long enough",
             collector_interval_seconds=3600,
             intent="the original goal, set at creation",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
-            recall="relevant",
             intent="a rewritten goal the model tried to set",
         )
         assert result.success  # accepted, not rejected over the immutable field
         assert "`intent` was not changed" in result.message  # visible + actionable
         updated = db.memories.get("notes")
-        assert updated.recall == "relevant"  # the real edit landed
         assert updated.intent == "the original goal, set at creation"  # intent untouched
 
     @pytest.mark.asyncio
@@ -865,7 +848,7 @@ class TestCreateAndList:
     async def test_log_create_surfaces_description_embed_degradation(self, tmp_path):
         db = _make_db(tmp_path)
         result = await LogCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
-            name="events", description="event stream", inclusion="relevant", recall="recent"
+            name="events", description="event stream"
         )
         assert "Created log" in result.message
         assert "transient embedding error" in result.message
@@ -882,8 +865,6 @@ class TestCreateAndList:
             db,
             name="notes",
             description="old subject",
-            inclusion="relevant",
-            recall="relevant",
             extraction_prompt="test fixture extraction prompt that is long enough",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1229,8 +1210,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="relevant",
-            recall="relevant",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1302,8 +1281,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1342,8 +1319,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1413,8 +1388,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1441,8 +1414,6 @@ class TestCollectionWritesAndReads:
             db,
             name="watch",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="watch a page for a change",
@@ -1464,8 +1435,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1516,8 +1485,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1537,8 +1504,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1553,8 +1518,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1571,8 +1534,6 @@ class TestCollectionWritesAndReads:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1598,8 +1559,6 @@ class TestCollectionWritesAndReads:
             db,
             name="playbooks",
             description="reusable how-to recipes",
-            inclusion="always",
-            recall="all",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a set of reusable how-to recipes",
@@ -1639,8 +1598,6 @@ class TestEmbedFailureRefusesWrite:
             db,
             name="likes",
             description="x",
-            inclusion="relevant",
-            recall="relevant",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1690,9 +1647,7 @@ class TestEmbedFailureRefusesWrite:
     @pytest.mark.asyncio
     async def test_log_append_refuses_when_embedding_fails(self, tmp_path):
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
         result = await append.execute(memory="events", content="something happened")
         assert result.success is False
@@ -1714,8 +1669,6 @@ class TestCollectionMutations:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1760,8 +1713,6 @@ class TestCollectionMutations:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1785,8 +1736,6 @@ class TestCollectionMutations:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1806,9 +1755,7 @@ class TestLogTools:
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="events", content="first"
         )
@@ -1826,8 +1773,6 @@ class TestLogTools:
             db,
             name="notes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -1848,9 +1793,7 @@ class TestLogTools:
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="hello")
         rendered = await LogReadTool(db, "chat", scope=None).execute(memory="events")
@@ -1869,7 +1812,7 @@ class TestLogTools:
         stored entries, no keys, no get.  This is the quality collector's review."""
         db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="collector-runs", description="audit", inclusion="never", recall="recent"
+            name="collector-runs", description="audit"
         )
         response = {
             "choices": [
@@ -1922,8 +1865,6 @@ class TestLogTools:
             db,
             name="espresso-gear",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="1. browse for new espresso gear. 2. write it. 3. done().",
             collector_interval_seconds=3600,
             intent="track espresso gear",
@@ -2070,8 +2011,6 @@ class TestLogTools:
             db,
             name=name,
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2153,9 +2092,7 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_log_similar_with_client(self, tmp_path, mock_llm):
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="relevant", recall="relevant"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         client = _make_llm_client(mock_llm)
         await LogAppendTool(db, client, author="test").execute(
             memory="events", content="coffee is great"
@@ -2171,9 +2108,7 @@ class TestLogTools:
     async def test_read_next_returns_all_entries_when_no_cursor(self, tmp_path, mock_llm):
         """Without a stored cursor, read_next returns every entry in the log."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
         await append.execute(memory="events", content="second")
@@ -2188,9 +2123,7 @@ class TestLogTools:
     async def test_commit_pending_advances_cursor_to_max_seen(self, tmp_path, mock_llm):
         """commit_pending writes the highest timestamp seen during the run."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
         await append.execute(memory="events", content="second")
@@ -2212,9 +2145,7 @@ class TestLogTools:
     async def test_discard_pending_leaves_cursor_unchanged(self, tmp_path, mock_llm):
         """discard_pending drops the in-memory state without touching the DB cursor."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
 
@@ -2239,9 +2170,7 @@ class TestLogTools:
         from penny.constants import PennyConstants
 
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         # Append more entries than the bound to confirm trimming
         n_entries = PennyConstants.LOG_READ_LIMIT + 5
@@ -2267,9 +2196,7 @@ class TestLogTools:
         incrementally — even entries that the first cycle's bound excluded
         stay excluded (since they're older than the cursor)."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         for i in range(15):
             await append.execute(memory="events", content=f"old-{i:02d}")
@@ -2296,9 +2223,7 @@ class TestLogTools:
 
         limit = PennyConstants.LOG_READ_LIMIT
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
 
         # Establish a cursor, then pile up a backlog bigger than one batch.
@@ -2328,9 +2253,7 @@ class TestLogTools:
     async def test_per_agent_cursors_are_independent(self, tmp_path, mock_llm):
         """Two agents reading the same log have independent cursor state."""
         db = _make_db(tmp_path)
-        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="events", description="x", inclusion="always", recall="recent"
-        )
+        await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="events", content="hello"
         )
@@ -2359,8 +2282,6 @@ class TestEmissionProvenanceRender:
         db.memories.create_log(
             PennyConstants.MEMORY_PENNY_MESSAGES_LOG,
             "outbound messages",
-            Inclusion.NEVER,
-            RecallMode.RECENT,
         )
         with Session(db.engine) as session:
             session.add(
@@ -2422,8 +2343,6 @@ class TestExistsAndDone:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2444,8 +2363,6 @@ class TestExistsAndDone:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2465,8 +2382,6 @@ class TestExistsAndDone:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2502,8 +2417,6 @@ class TestExistsAndDone:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2530,8 +2443,6 @@ class TestExistsAndDone:
             db,
             name="board-games",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2558,8 +2469,6 @@ class TestExistsAndDone:
             db,
             name="board-games",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2614,8 +2523,6 @@ class TestAuthorAttribution:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2636,8 +2543,6 @@ class TestCollectionMerge:
             db,
             name="src",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2646,8 +2551,6 @@ class TestCollectionMerge:
             db,
             name="dst",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2671,8 +2574,6 @@ class TestCollectionMerge:
             db,
             name="src",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2681,8 +2582,6 @@ class TestCollectionMerge:
             db,
             name="dst",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2711,8 +2610,6 @@ class TestCollectionMerge:
             db,
             name="src",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2721,8 +2618,6 @@ class TestCollectionMerge:
             db,
             name="dst",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2855,8 +2750,6 @@ class TestScopedFactory:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2865,8 +2758,6 @@ class TestScopedFactory:
             db,
             name="dislikes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -2890,8 +2781,6 @@ class TestScopedFactory:
             db,
             name="likes",
             description="x",
-            inclusion="never",
-            recall="recent",
             extraction_prompt="test fixture extraction prompt",
             collector_interval_seconds=3600,
             intent="a running list the user asked me to keep",
@@ -3045,8 +2934,6 @@ class TestRegistryProvenanceAndLifecycle:
         db.memories.create_collection(
             "holiday-watch",
             "seasonal watch subject matter",
-            Inclusion.RELEVANT,
-            RecallMode.RECENT,
             extraction_prompt=("1. gather holiday deals.\n2. done()."),
             collector_interval_seconds=3600,
             expires_at=expiry,
@@ -3060,12 +2947,10 @@ class TestRegistryProvenanceAndLifecycle:
         """An on_advance collection's metadata carries the source-driven trigger line
         (#1604); an interval collection carries none (byte-identical to before)."""
         db = _make_db(tmp_path)
-        db.memories.create_log("events-log", "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+        db.memories.create_log("events-log", "an event stream")
         db.memories.create_collection(
             "chained-watch",
             "digest events subject matter",
-            Inclusion.RELEVANT,
-            RecallMode.RECENT,
             extraction_prompt=('1. log_read("events-log").\n2. digest.'),
             collector_interval_seconds=30,
             source_log="events-log",
@@ -3073,8 +2958,6 @@ class TestRegistryProvenanceAndLifecycle:
         db.memories.create_collection(
             "plain-watch",
             "recurring watch subject matter",
-            Inclusion.RELEVANT,
-            RecallMode.RECENT,
             extraction_prompt=("1. gather deals.\n2. save."),
             collector_interval_seconds=3600,
         )
@@ -3317,8 +3200,6 @@ class TestFindMine:
         await LogCreateTool(db, client).execute(
             name="aurora-log",
             description="aurora echo foxtrot",
-            inclusion="relevant",
-            recall="recent",
         )
         await _create_collection(db, client, "skills", "reusable recipes")
         await CollectionWriteTool(db, client, author="skills").execute(

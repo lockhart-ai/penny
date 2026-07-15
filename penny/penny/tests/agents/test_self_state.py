@@ -69,8 +69,6 @@ def _add_collection(
             name=name,
             type="collection",
             description=description,
-            inclusion="relevant",
-            recall="recent",
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=interval,
             expires_at=expires_at,
@@ -91,8 +89,6 @@ def _add_log(session: Session, name: str, description: str, *, when: datetime) -
             name=name,
             type="log",
             description=description,
-            inclusion="always",
-            recall="recent",
             created_at=when,
             updated_at=when,
         )

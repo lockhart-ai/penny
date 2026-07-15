@@ -33,7 +33,6 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.memory import Inclusion, RecallMode
 from penny.tests.eval.conftest import (
     _InjectDuplicateCall,
     collection_entries,
@@ -60,8 +59,6 @@ def _seed_digest_with_messages(db: Database) -> None:
     db.memories.create_collection(
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
-        Inclusion(WEEKLY_DIGEST.inclusion),
-        RecallMode.RECENT,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
         intent=WEEKLY_DIGEST_INTENT,
         collector_interval_seconds=1200,

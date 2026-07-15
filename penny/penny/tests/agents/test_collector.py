@@ -27,7 +27,7 @@ from penny.constants import (
     WriteGateOutcome,
 )
 from penny.database import Database
-from penny.database.memory import EntryInput, Inclusion, LogEntryInput, RecallMode
+from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
@@ -99,7 +99,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     and starved the rest.  ``get_tools`` keys on the bound collection instead.
     """
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_log("chatter", "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log("chatter", "log")
     chatter = db.memory("chatter")
     assert chatter is not None
     chatter.append(
@@ -108,7 +108,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
     )
 
     def _log_read_for(collection: str) -> LogReadTool:
-        db.memories.create_collection(collection, "d", Inclusion.NEVER, RecallMode.RECENT)
+        db.memories.create_collection(collection, "d")
         collector._current_target = db.memories.get(collection)
         tool = next(t for t in collector.get_tools() if isinstance(t, LogReadTool))
         collector._current_target = None
@@ -134,7 +134,7 @@ async def test_collector_cursors_partition_per_collection(test_config, tmp_path)
 
 def test_dispatcher_returns_none_when_no_collections_have_prompts(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("plain", "no collector wired", Inclusion.NEVER, RecallMode.RECENT)
+    db.memories.create_collection("plain", "no collector wired")
     assert collector._next_ready_collection() is None
 
 
@@ -146,8 +146,6 @@ def test_dispatcher_picks_collection_with_extraction_prompt(test_config, tmp_pat
     db.memories.create_collection(
         "wired",
         "has a collector",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
         collector_interval_seconds=3600,
     )
@@ -161,8 +159,6 @@ def test_dispatcher_skips_archived(test_config, tmp_path):
     db.memories.create_collection(
         "wired",
         "has a collector",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
     )
     db.memories.archive("wired")
@@ -180,8 +176,6 @@ def test_dispatcher_skips_collection_with_too_short_extraction_prompt(test_confi
     db.memories.create_collection(
         "test-col",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="test_extraction_prompt",
     )
     assert collector._next_ready_collection() is None
@@ -194,8 +188,6 @@ def test_dispatcher_skips_collections_within_interval(test_config, tmp_path):
     db.memories.create_collection(
         "wired",
         "has a collector",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
         collector_interval_seconds=300,
     )
@@ -209,16 +201,12 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
     db.memories.create_collection(
         "fresh",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
         collector_interval_seconds=60,
     )
     db.memories.create_collection(
         "stale",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
         collector_interval_seconds=60,
     )
@@ -242,9 +230,7 @@ def test_dispatcher_skips_collection_without_interval(test_config, tmp_path):
     collector_interval_seconds is skipped entirely — never run at a default
     cadence — until a cadence is set."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "wired", "x", Inclusion.NEVER, RecallMode.RECENT, extraction_prompt=_VALID_EXTRACTION_PROMPT
-    )
+    db.memories.create_collection("wired", "x", extraction_prompt=_VALID_EXTRACTION_PROMPT)
     # Never collected would be "always ready" with an interval, but a NULL
     # interval makes the dispatcher skip it.
     assert collector._next_ready_collection() is None
@@ -295,7 +281,7 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
     notify — the registry-shape tools are ABSENT, not merely discouraged, so a
     background poll cannot create, reconfigure, merge, or archive a mechanism."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("watch", "d", Inclusion.NEVER, RecallMode.RECENT)
+    db.memories.create_collection("watch", "d")
     collector._current_target = db.memories.get("watch")
     try:
         names = {tool.name for tool in collector.get_tools()}
@@ -334,8 +320,6 @@ def test_dispatcher_skips_collection_before_run_at(test_config, tmp_path):
     db.memories.create_collection(
         "delayed",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_ONE_SHOT_PROMPT,
         collector_interval_seconds=3600,
         run_at=datetime.now(UTC) + timedelta(hours=1),
@@ -349,8 +333,6 @@ def test_dispatcher_runs_collection_at_run_at(test_config, tmp_path):
     db.memories.create_collection(
         "due",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_ONE_SHOT_PROMPT,
         collector_interval_seconds=3600,
         run_at=datetime.now(UTC) - timedelta(minutes=1),
@@ -367,8 +349,6 @@ def test_max_runs_archives_after_quota(test_config, tmp_path):
     db.memories.create_collection(
         "one-shot",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_ONE_SHOT_PROMPT,
         collector_interval_seconds=3600,
         run_at=datetime.now(UTC) - timedelta(minutes=1),
@@ -421,8 +401,6 @@ def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
     db.memories.create_collection(
         "recurring",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_ONE_SHOT_PROMPT,
         collector_interval_seconds=3600,
     )
@@ -454,7 +432,6 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         name="board-games",
         type="collection",
         description="Strategy board games worth buying",
-        recall=RecallMode.RELEVANT.value,
         archived=False,
         extraction_prompt=(
             "Collect board games from chat and browse logs.\n"
@@ -522,7 +499,6 @@ def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true(
         name="indie-metroidvanias",
         type="collection",
         description="Indie metroidvania releases the user tracks",
-        recall=RecallMode.RELEVANT.value,
         archived=False,
         notify=True,
         extraction_prompt=_NOTIFY_RENDERED_PROMPT,
@@ -565,7 +541,6 @@ def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
         name="summit-status",
         type="collection",
         description="Summit trail status",
-        recall=RecallMode.RECENT.value,
         archived=False,
         notify=True,
         extraction_prompt=legacy_prompt,
@@ -631,8 +606,6 @@ def _seed_notify_collection(db: Database) -> None:
     db.memories.create_collection(
         "indie-metroidvanias",
         "Indie metroidvania releases",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_NOTIFY_RENDERED_PROMPT,
         collector_interval_seconds=3600,
         notify=True,
@@ -722,9 +695,7 @@ async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_p
     reason when it carries one (a write-gate stop reason), else the outcome enum —
     never a model-authored ``done()`` summary (there is none)."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "board-games", "games", Inclusion.RELEVANT, RecallMode.RECENT, extraction_prompt="x" * 30
-    )
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
     # run-a: a clean done() close stamps no reason → the outcome enum shows.
     # run-b: a write-gate STOP stamps its declared structural reason → that shows.
     for run_id, outcome, reason in [
@@ -762,9 +733,7 @@ async def test_run_history_section_absent_without_runs(test_config, tmp_path):
     """A collection with no prior completed runs gets no run-history block —
     a fresh collector's prompt is unchanged."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "board-games", "games", Inclusion.RELEVANT, RecallMode.RECENT, extraction_prompt="x" * 30
-    )
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
     collector._current_target = db.memories.get("board-games")
 
     prompt = await collector._build_system_prompt(None)
@@ -785,8 +754,6 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     db.memories.create_collection(
         "board-games",
         "Strategy board games worth buying",
-        Inclusion.RELEVANT,
-        RecallMode.RECENT,
         # Post-0087 stored shape: steps 1..A, no done() — assembly injects the terminal.
         extraction_prompt='Collect board games.\n1. log_read("user-messages")',
     )
@@ -905,7 +872,7 @@ def test_datetime_anchor_falls_back_to_utc_without_profile(test_config, tmp_path
 def _seed_collector_runs_log(db: Database) -> None:
     """Migration 0034 creates the log in production; tests using create_tables
     directly need to declare it themselves."""
-    db.memories.create_log("collector-runs", "audit log", Inclusion.NEVER, RecallMode.RECENT)
+    db.memories.create_log("collector-runs", "audit log")
 
 
 def _target() -> MemoryRow:
@@ -913,7 +880,6 @@ def _target() -> MemoryRow:
         name="board-games",
         type="collection",
         description="x",
-        recall=RecallMode.RECENT.value,
         archived=False,
         extraction_prompt="x",
     )
@@ -1105,9 +1071,7 @@ async def test_run_for_collection_not_found(test_config, tmp_path):
 @pytest.mark.asyncio
 async def test_run_for_archived_collection(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "archived-col", "x", Inclusion.NEVER, RecallMode.RECENT, extraction_prompt="x" * 30
-    )
+    db.memories.create_collection("archived-col", "x", extraction_prompt="x" * 30)
     db.memories.archive("archived-col")
     success, message = await collector.run_for("archived-col")
     assert success is False
@@ -1119,7 +1083,7 @@ async def test_run_for_archived_collection(test_config, tmp_path):
 @pytest.mark.asyncio
 async def test_run_for_no_extraction_prompt(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection("bare-col", "x", Inclusion.NEVER, RecallMode.RECENT)
+    db.memories.create_collection("bare-col", "x")
     success, message = await collector.run_for("bare-col")
     assert success is False
     assert "extraction_prompt" in message
@@ -1134,8 +1098,6 @@ async def test_run_for_rejects_too_short_extraction_prompt(test_config, tmp_path
     db.memories.create_collection(
         "short-col",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="test_extraction_prompt",
     )
     success, message = await collector.run_for("short-col")
@@ -1155,8 +1117,6 @@ async def test_run_for_runs_cycle_and_returns_structural_outcome(test_config, tm
     db.memories.create_collection(
         "test-col",
         "test",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="Extract things from user-messages.",
     )
 
@@ -1212,7 +1172,6 @@ def test_tag_promptlog_run_isolates_neighbouring_cycles(test_config, tmp_path):
         name="notified-thoughts",
         type="collection",
         description="x",
-        recall=RecallMode.RECENT.value,
         archived=False,
         extraction_prompt="x",
     )
@@ -1220,7 +1179,6 @@ def test_tag_promptlog_run_isolates_neighbouring_cycles(test_config, tmp_path):
         name="card-games",
         type="collection",
         description="x",
-        recall=RecallMode.RECENT.value,
         archived=False,
         extraction_prompt="x",
     )
@@ -1262,8 +1220,6 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
     db.memories.create_collection(
         "games",
         "x",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
     )
 
@@ -1350,8 +1306,6 @@ def test_create_stamps_base_interval(test_config, tmp_path):
     db.memories.create_collection(
         "quiet",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="x" * 30,
         collector_interval_seconds=3600,
     )
@@ -1365,8 +1319,6 @@ def test_throttle_backs_off_after_n_idle_runs_then_snaps_back(test_config, tmp_p
     db.memories.create_collection(
         "quiet",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="x" * 30,
         collector_interval_seconds=3600,
     )
@@ -1403,8 +1355,6 @@ def test_throttle_caps_at_max_interval(test_config, tmp_path):
     db.memories.create_collection(
         "quiet",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="x" * 30,
         collector_interval_seconds=3600,
     )
@@ -1420,8 +1370,6 @@ def test_editing_interval_resets_base_and_idle(test_config, tmp_path):
     db.memories.create_collection(
         "quiet",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="x" * 30,
         collector_interval_seconds=3600,
     )
@@ -1442,7 +1390,7 @@ def test_editing_interval_resets_base_and_idle(test_config, tmp_path):
 
 def _make_log_driven_collection(db: Database, *, log: str, prompt_names_log: bool) -> None:
     """A log + a collection whose prompt may or may not name that log."""
-    db.memories.create_log(log, "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log(log, "log")
     _memory(db, log).append([LogEntryInput(content="first", content_embedding=None)], author="user")
     prompt = (
         f'Extract relevant items: call log_read("{log}") then collection_write.'
@@ -1452,8 +1400,6 @@ def _make_log_driven_collection(db: Database, *, log: str, prompt_names_log: boo
     db.memories.create_collection(
         "watcher",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt=prompt,
         collector_interval_seconds=60,
     )
@@ -1511,12 +1457,10 @@ def test_log_driven_collection_is_exempt_from_throttle(test_config, tmp_path):
     idle ticks, so widening its interval would only stall catch-up.  It stays
     pinned at base no matter how many no-work cycles are applied."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_log("chatter", "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log("chatter", "log")
     db.memories.create_collection(
         "watcher",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt='Extract via log_read("chatter").',
         collector_interval_seconds=300,
     )
@@ -1534,12 +1478,10 @@ def test_input_pending_tristate(test_config, tmp_path):
     """The gate signal: None (no live cursor → interval-driven), False (live
     cursor, caught up → skip), True (live cursor behind its log → run)."""
     collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_log("chatter", "log", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log("chatter", "log")
     db.memories.create_collection(
         "watcher",
         "d",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt='Extract via log_read("chatter").',
         collector_interval_seconds=300,
     )
@@ -1561,12 +1503,10 @@ def _make_on_advance_collection(db: Database, *, source: str) -> None:
     """A collection whose trigger is a declared on_advance ``source_log`` — its
     prompt does NOT name the source, so only the declaration keeps it a live input
     (proving the trigger, not an inferred cursor)."""
-    db.memories.create_log(source, "an event stream", Inclusion.ALWAYS, RecallMode.RECENT)
+    db.memories.create_log(source, "an event stream")
     db.memories.create_collection(
         "chained",
         "digest the upstream events",
-        Inclusion.NEVER,
-        RecallMode.RECENT,
         extraction_prompt="1. digest the new events into entries.",
         collector_interval_seconds=60,
         source_log=source,
