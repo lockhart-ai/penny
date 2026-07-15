@@ -68,6 +68,7 @@ from penny.tools.collection_instantiation import (
     render_ambiguous,
     render_creation_echo,
     render_no_skill_found,
+    render_reinstantiation_echo,
     render_tombstone_duplicate,
     render_unbound_holes,
 )
@@ -422,11 +423,67 @@ def _recent_changes_block(db: Database, name: str) -> list[str]:
 
 
 # A skill query whose embedding failed transiently — resolution couldn't run, so
-# the create is refused with a retry (never a silent proceed to NO_SKILL_FOUND).
+# the create / re-render is refused with a retry (never a silent proceed to
+# NO_SKILL_FOUND).  Tool-agnostic wording: shared by create (#1591) + update (#1620).
 _SKILL_RESOLVE_EMBED_FAILURE = (
     "Couldn't resolve the skill '{query}' just now — a transient embedding error, so I "
-    "can't tell whether a matching skill exists. Retry collection_create in a moment."
+    "can't tell whether a matching skill exists. Retry in a moment."
 )
+
+
+# ── Shared skill resolve + render (#1591 create / #1620 re-render) ───────────
+#
+# The create front door and the update re-render path resolve a skill the same
+# way and render its steps the same way, so the machinery lives here once and both
+# tools compose it (never duplicate it): a collection created from a skill and one
+# re-rendered from it stamp a byte-identical prompt from identical steps + params.
+
+
+async def resolve_skill(db: Database, llm_client: LlmClient, query: str) -> SkillResolution:
+    """Resolve a ``skill`` arg by name-or-meaning (#1591): an exact name is a clean
+    MATCHED; otherwise rank the registry by meaning — any positive candidate is
+    AMBIGUOUS (never silently pick a fuzzy match), none is NO_SKILL_FOUND, a
+    transient embed miss is EMBED_FAILED."""
+    exact = db.skills.get(query)
+    if exact is not None:
+        return SkillResolution(kind=SkillResolutionKind.MATCHED, skill=exact)
+    vec = await embed_text(llm_client, query)
+    if vec is None:
+        return SkillResolution(kind=SkillResolutionKind.EMBED_FAILED)
+    candidates = db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MINE_MATCH_LIMIT)
+    if not candidates:
+        return SkillResolution(kind=SkillResolutionKind.NO_SKILL_FOUND)
+    return SkillResolution(kind=SkillResolutionKind.AMBIGUOUS, candidates=candidates)
+
+
+def unresolved_skill_result(query: str, resolution: SkillResolution) -> ToolResult:
+    """The enumerated result for a resolution that produced no skill: the AMBIGUOUS
+    candidates, the NO_SKILL_FOUND elicitation, or the transient EMBED_FAILED retry
+    — nothing is instantiated in any case."""
+    if resolution.kind == SkillResolutionKind.AMBIGUOUS:
+        return ToolResult(message=render_ambiguous(query, resolution.candidates), success=False)
+    if resolution.kind == SkillResolutionKind.NO_SKILL_FOUND:
+        return ToolResult(message=render_no_skill_found(query), success=False)
+    return ToolResult(message=_SKILL_RESOLVE_EMBED_FAILURE.format(query=query), success=False)
+
+
+def render_skill_prompt(
+    db: Database, llm_client: LlmClient, skill: Skill, params: dict[str, str]
+) -> tuple[str, ToolResult | None]:
+    """Validate the bound params against ``skill``'s holes, then render its steps +
+    params into the numbered TEXT ``extraction_prompt``.  An unbound required hole →
+    the actionable naming error; a rendered prompt that is too short or names an
+    unrunnable tool → the same authoring-time rejection.  The re-render preserves
+    the steps-1..A / no-stored-``done()`` invariant by construction — it is the same
+    render fn ``collection_create`` stamps at birth."""
+    missing = unbound_required_holes(holes_from_json(skill.holes), params)
+    if missing:
+        return "", ToolResult(message=render_unbound_holes(skill.name, missing), success=False)
+    prompt = render_skill(steps_from_json(skill.steps), params)
+    if (too_short := check_extraction_prompt(prompt)) is not None:
+        return "", ToolResult(message=too_short, success=False)
+    rejection = _reject_unknown_extraction_tools(db, llm_client, prompt)
+    return prompt, rejection
 
 
 class CollectionCreateTool(MemoryTool):
@@ -590,12 +647,12 @@ class CollectionCreateTool(MemoryTool):
         if isinstance(parsed, ToolResult):
             return parsed
         trigger, expires_at = parsed
-        resolution = await self._resolve_skill(args.skill)
+        resolution = await resolve_skill(self._db, self._llm_client, args.skill)
         skill = resolution.skill
         if skill is None:
             # AMBIGUOUS / NO_SKILL_FOUND / EMBED_FAILED — nothing created.
-            return self._unresolved_result(args.skill, resolution)
-        prompt, render_error = self._render_prompt(skill, args.params)
+            return unresolved_skill_result(args.skill, resolution)
+        prompt, render_error = render_skill_prompt(self._db, self._llm_client, skill, args.params)
         if render_error is not None:
             return render_error
         return await self._instantiate(args, skill, prompt, trigger, expires_at)
@@ -622,46 +679,6 @@ class CollectionCreateTool(MemoryTool):
         dispatcher tick from runtime config (eligible each tick after ``run_at``
         until ``max_runs``), reused rather than a new invented default."""
         return int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
-
-    async def _resolve_skill(self, query: str) -> SkillResolution:
-        """Resolve the ``skill`` arg by name-or-meaning (#1591): an exact name is a
-        clean MATCHED; otherwise rank the registry by meaning — any positive
-        candidate is AMBIGUOUS (never silently pick a fuzzy match), none is
-        NO_SKILL_FOUND, a transient embed miss is EMBED_FAILED."""
-        exact = self._db.skills.get(query)
-        if exact is not None:
-            return SkillResolution(kind=SkillResolutionKind.MATCHED, skill=exact)
-        vec = await embed_text(self._llm_client, query)
-        if vec is None:
-            return SkillResolution(kind=SkillResolutionKind.EMBED_FAILED)
-        candidates = self._db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MINE_MATCH_LIMIT)
-        if not candidates:
-            return SkillResolution(kind=SkillResolutionKind.NO_SKILL_FOUND)
-        return SkillResolution(kind=SkillResolutionKind.AMBIGUOUS, candidates=candidates)
-
-    def _unresolved_result(self, query: str, resolution: SkillResolution) -> ToolResult:
-        """The enumerated result for a resolution that produced no skill: the
-        AMBIGUOUS candidates, the NO_SKILL_FOUND elicitation, or the transient
-        EMBED_FAILED retry — nothing is created in any case."""
-        if resolution.kind == SkillResolutionKind.AMBIGUOUS:
-            return ToolResult(message=render_ambiguous(query, resolution.candidates), success=False)
-        if resolution.kind == SkillResolutionKind.NO_SKILL_FOUND:
-            return ToolResult(message=render_no_skill_found(query), success=False)
-        return ToolResult(message=_SKILL_RESOLVE_EMBED_FAILURE.format(query=query), success=False)
-
-    def _render_prompt(self, skill: Skill, params: dict[str, str]) -> tuple[str, ToolResult | None]:
-        """Validate the bound params against the skill's holes, then render steps +
-        params into the numbered TEXT ``extraction_prompt``.  An unbound required
-        hole → the actionable naming error; a rendered prompt naming an unrunnable
-        tool → the same authoring-time rejection ``collection_update`` uses."""
-        missing = unbound_required_holes(holes_from_json(skill.holes), params)
-        if missing:
-            return "", ToolResult(message=render_unbound_holes(skill.name, missing), success=False)
-        prompt = render_skill(steps_from_json(skill.steps), params)
-        if (too_short := check_extraction_prompt(prompt)) is not None:
-            return "", ToolResult(message=too_short, success=False)
-        rejection = _reject_unknown_extraction_tools(self._db, self._llm_client, prompt)
-        return prompt, rejection
 
     async def _instantiate(
         self,
@@ -1446,14 +1463,52 @@ class UpdateEntryTool(MemoryTool):
         return ToolResult(message=f"Updated '{args.key}' in '{args.memory}'.", mutated=True)
 
 
-class CollectionUpdateTool(MemoryTool):
-    """Update collection metadata: description, recall, extraction_prompt, interval.
+# ── Re-render actionable refusals (#1620) ────────────────────────────────────
 
-    Chat-facing.  Lets the user evolve a collection mid-conversation —
-    refining its extraction_prompt as the collector's quality becomes
-    clearer, swapping recall mode, retiring stale descriptions.  All
-    fields except ``name`` are optional; only the ones supplied are
-    applied.
+# A raw extraction_prompt passed alongside skill/params: the render owns the prompt,
+# so the two are mutually exclusive rather than one silently winning.
+_REINSTANTIATE_CONFLICT = (
+    "Can't set extraction_prompt AND skill/params in the same call — re-rendering from "
+    "a skill REPLACES the prompt with its rendered steps, so an extraction_prompt you "
+    "pass would be discarded. Either re-render from the skill (skill= / params=) OR edit "
+    "the prompt text directly (extraction_prompt=), not both."
+)
+
+# params-only rebind on a collection that was never instantiated from a skill (a
+# legacy hand-authored one): there are no holes to bind — name how to adopt one.
+_REBIND_NO_SKILL = (
+    "Can't rebind params on '{name}': it wasn't instantiated from a skill (it's "
+    "hand-authored), so it has no parameter holes to bind. Pass skill=<name> to adopt a "
+    "skill onto it, or edit its recipe directly with extraction_prompt=<the full body>."
+)
+
+# The collection's pinned skill name no longer resolves (deleted / renamed) — a
+# refresh/rebind can't re-render, so name the recovery (re-teach, or point elsewhere).
+_SKILL_GONE = (
+    "The skill '{skill}' this collection was built from no longer exists — it may have "
+    "been renamed or removed. Re-teach it (then it re-renders), or pass skill=<name> to "
+    "re-render this collection from a different skill."
+)
+
+
+def _current_skill_params(row: MemoryRow) -> dict[str, str]:
+    """The params currently bound into a collection's skill render (JSON on the row),
+    or ``{}`` when it has none — the refresh/rebind default when no new params are
+    passed, so a plain ``skill=<same>`` refresh keeps the existing bindings."""
+    return json.loads(row.skill_params) if row.skill_params else {}
+
+
+class CollectionUpdateTool(MemoryTool):
+    """Update collection metadata, or re-render its prompt from a skill (#1620).
+
+    Chat-facing.  Lets the user evolve a collection mid-conversation — refining
+    routing/recall/cadence, flipping notify, or re-rendering the ``extraction_prompt``
+    from a skill: **refresh** (the same skill re-taught → re-render from its current
+    steps), **rebind** (new ``params``, same skill), **swap** (a different ``skill``),
+    or **adopt** (give a legacy skill=NULL collection a skill for the first time).  All
+    fields except ``name`` are optional; only the ones supplied are applied.  Supplying
+    ``skill`` or ``params`` takes the re-render path (which re-stamps skill provenance
+    and records a mutation event); omitting both leaves the prompt untouched.
     """
 
     name = "collection_update"
@@ -1480,7 +1535,15 @@ class CollectionUpdateTool(MemoryTool):
         "- `extraction_prompt` — FULL replacement body, not a diff. "
         "Drives what the collector actually does. Read the current body "
         "via `memory_metadata(<collection>)` first if you need to preserve any "
-        "of it.\n"
+        "of it. Don't combine with `skill`/`params` — a re-render owns the prompt.\n"
+        "- `skill` — re-render the collection's routine from a skill's CURRENT "
+        "steps (by exact name or a paraphrase, resolved the same way as "
+        "`collection_create`). Use the SAME skill name to refresh after re-teaching "
+        "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
+        "adopts a skill for the first time (its old text is replaced by the render).\n"
+        "- `params` — rebind the skill's fill-in-the-blank holes to new values and "
+        "re-render, keeping the same skill. Omit to keep the current bindings. Every "
+        "required hole must be bound or the call is refused naming what's missing.\n"
         "- `collector_interval_seconds` — cadence in seconds.\n"
         "\n"
         "Returns a structured echo of the updated state. The echo is "
@@ -1539,7 +1602,22 @@ class CollectionUpdateTool(MemoryTool):
                     "FULL rewritten body — replaces the whole prompt, not "
                     "a diff. Drives what the collector actually does. Read "
                     "current body via memory_metadata(<collection>) first for "
-                    "scope or silent-flip changes."
+                    "scope or silent-flip changes. Mutually exclusive with skill/params."
+                ),
+            },
+            "skill": {
+                "type": "string",
+                "description": (
+                    "Re-render the collection's routine from a skill's current steps "
+                    "(exact name or paraphrase). Same name = refresh after re-teaching; "
+                    "a different skill = swap; on a hand-authored collection = adopt."
+                ),
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "Rebind the skill's holes to new values and re-render, same skill. "
+                    "Omit to keep current bindings. Every required hole must be bound."
                 ),
             },
             "collector_interval_seconds": {
@@ -1569,41 +1647,116 @@ class CollectionUpdateTool(MemoryTool):
         self._run_id = run_id
 
     async def _run(self, **kwargs: Any) -> ToolResult:
+        """Re-render from a skill when ``skill``/``params`` is given (the #1620
+        refresh / rebind / swap / adopt cases), else a plain metadata edit.  Reads
+        as a table of contents."""
         args = CollectionUpdateArgs(**kwargs)
+        if args.skill is not None or args.params is not None:
+            return await self._reinstantiate(args)
+        return await self._edit_metadata(args)
+
+    async def _edit_metadata(self, args: CollectionUpdateArgs) -> ToolResult:
+        """The plain metadata edit — routing / recall / notify / cadence, and the
+        prompt ONLY if a raw ``extraction_prompt`` is supplied (a skill re-render is
+        the other path).  Omitting both skill/params and extraction_prompt leaves the
+        collection's routine untouched."""
         if rejection := _reject_unknown_extraction_tools(
             self._db, self._llm_client, args.extraction_prompt
         ):
             return rejection
-        inclusion = Inclusion(args.inclusion) if args.inclusion is not None else None
-        recall = RecallMode(args.recall) if args.recall is not None else None
-        # Re-embed the routing anchor whenever the description changes.
-        description_embedding = (
-            await embed_text(self._llm_client, args.description)
-            if args.description is not None
-            else None
-        )
-        memory = self._db.memories.update_collection_metadata(
+        embedding = await self._description_embedding(args)
+        memory = self._apply_update(args, args.extraction_prompt, None, None, embedding)
+        suffix = _description_degraded_suffix(args.description, embedding)
+        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}{self._intent_note(args)}"
+        return ToolResult(message=message, mutated=True)
+
+    async def _reinstantiate(self, args: CollectionUpdateArgs) -> ToolResult:
+        """Re-render the collection's prompt from a skill's CURRENT steps and re-stamp
+        its provenance (#1620): refresh (same skill re-taught), rebind (new params),
+        swap (a different skill), or adopt (a legacy skill=NULL collection).  The
+        re-render preserves steps-1..A / no-stored-``done()`` by construction (same
+        render fn as creation).  A raw ``extraction_prompt`` alongside conflicts — the
+        render owns the prompt."""
+        if args.extraction_prompt is not None:
+            return ToolResult(message=_REINSTANTIATE_CONFLICT, success=False)
+        resolved = await self._resolve_target(args)
+        if isinstance(resolved, ToolResult):
+            return resolved
+        skill, params = resolved
+        prompt, render_error = render_skill_prompt(self._db, self._llm_client, skill, params)
+        if render_error is not None:
+            return render_error
+        embedding = await self._description_embedding(args)
+        memory = self._apply_update(args, prompt, skill.name, params, embedding)
+        suffix = _description_degraded_suffix(args.description, embedding)
+        echo = render_reinstantiation_echo(memory, skill.name, params)
+        return ToolResult(message=f"{echo}{suffix}{self._intent_note(args)}", mutated=True)
+
+    async def _resolve_target(
+        self, args: CollectionUpdateArgs
+    ) -> ToolResult | tuple[Skill, dict[str, str]]:
+        """The target skill + params for the re-render.  ``params`` default to the
+        collection's CURRENT bindings (a refresh keeps them) unless new ones are passed
+        (a rebind).  A ``skill`` arg resolves by name-or-meaning (swap / adopt /
+        refresh); without one the collection's current skill is reused (rebind),
+        refused actionably if it has none or if the pinned skill is gone."""
+        current = _resolve(self._db, args.name).row
+        params = args.params if args.params is not None else _current_skill_params(current)
+        if args.skill is not None:
+            resolution = await resolve_skill(self._db, self._llm_client, args.skill)
+            if resolution.skill is None:
+                return unresolved_skill_result(args.skill, resolution)
+            return resolution.skill, params
+        if current.skill_name is None:
+            return ToolResult(message=_REBIND_NO_SKILL.format(name=current.name), success=False)
+        skill = self._db.skills.get(current.skill_name)
+        if skill is None:
+            return ToolResult(message=_SKILL_GONE.format(skill=current.skill_name), success=False)
+        return skill, params
+
+    async def _description_embedding(self, args: CollectionUpdateArgs) -> list[float] | None:
+        """Re-embed the routing anchor only when the description changes; else ``None``
+        (the anchor stays put)."""
+        if args.description is None:
+            return None
+        return await embed_text(self._llm_client, args.description)
+
+    def _apply_update(
+        self,
+        args: CollectionUpdateArgs,
+        extraction_prompt: str | None,
+        skill_name: str | None,
+        skill_params: dict[str, str] | None,
+        description_embedding: list[float] | None,
+    ) -> MemoryRow:
+        """Thread the update through the store — the metadata fields plus the computed
+        prompt / skill provenance / anchor.  ``intent`` is never applied (immutable);
+        the enum args are coerced here.  Records the mutation event with the run id."""
+        return self._db.memories.update_collection_metadata(
             args.name,
             description=args.description,
-            inclusion=inclusion,
-            recall=recall,
-            extraction_prompt=args.extraction_prompt,
+            inclusion=Inclusion(args.inclusion) if args.inclusion is not None else None,
+            recall=RecallMode(args.recall) if args.recall is not None else None,
+            extraction_prompt=extraction_prompt,
             collector_interval_seconds=args.collector_interval_seconds,
             description_embedding=description_embedding,
             notify=args.notify,
+            skill_name=skill_name,
+            skill_params=skill_params,
             run_id=self._run_id,
         )
-        suffix = _description_degraded_suffix(args.description, description_embedding)
-        message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
-        if args.intent is not None:
-            # We serialize `intent` in the metadata the model reads, so it passes it back on
-            # an edit.  Accept-and-explain rather than reject the whole call over an immutable
-            # field (the model kept getting the update rejected, then giving up).
-            message += (
-                "\n\n`intent` was not changed — it's fixed at creation and can't be edited via "
-                "collection_update (everything else above was applied)."
-            )
-        return ToolResult(message=message, mutated=True)
+
+    @staticmethod
+    def _intent_note(args: CollectionUpdateArgs) -> str:
+        """The immutable-intent accommodation (migration 0050): if the model passed
+        ``intent`` back on an edit, apply everything else and say intent stayed fixed —
+        rather than reject the whole call and watch the model give up."""
+        if args.intent is None:
+            return ""
+        return (
+            "\n\n`intent` was not changed — it's fixed at creation and can't be edited via "
+            "collection_update (everything else above was applied)."
+        )
 
 
 class MemoryMetadataTool(MemoryTool):
