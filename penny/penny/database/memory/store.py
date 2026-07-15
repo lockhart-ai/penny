@@ -65,6 +65,18 @@ class _MetadataUpdate(BaseModel):
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
     intent: str | None = None
+    # Trigger union (#1629): the apply-time job axis.  ``replace_trigger`` swaps the
+    # WHOLE trigger atomically from these four values (cadence + the once-shaped
+    # run_at/max_runs overlay + the on_advance source_log), so switching forms clears
+    # the members the new form doesn't use.  ``expires_at`` is the end condition — an
+    # independent optional (set when provided; no clear path).  When ``replace_trigger``
+    # is false the legacy per-field ``collector_interval_seconds`` poke applies instead
+    # (the iOS / browser memory UIs, which edit only the interval).
+    run_at: datetime | None = None
+    max_runs: int | None = None
+    source_log: str | None = None
+    expires_at: datetime | None = None
+    replace_trigger: bool = False
     # Skill provenance re-stamp (#1620): on a re-render both move together — the
     # instantiating skill and the params bound into its render.  Applied as one unit
     # (``skill_name`` set ⇒ set both), so a re-render always re-stamps the pair the
@@ -84,13 +96,7 @@ class _MetadataUpdate(BaseModel):
         if self.extraction_prompt is not None:
             memory.extraction_prompt = self.extraction_prompt
             changed.append("extraction_prompt")
-        if self.collector_interval_seconds is not None:
-            # Editing the interval declares a new intended cadence: current and
-            # snap-back base both move, and any throttle backoff clears.
-            memory.collector_interval_seconds = self.collector_interval_seconds
-            memory.base_interval_seconds = self.collector_interval_seconds
-            memory.consecutive_idle_runs = 0
-            changed.append("collector_interval_seconds")
+        changed.extend(self._apply_trigger(memory))
         if self.intent is not None:
             memory.intent = self.intent
             changed.append("intent")
@@ -104,6 +110,32 @@ class _MetadataUpdate(BaseModel):
                 json.dumps(self.skill_params) if self.skill_params is not None else None
             )
             changed.append("skill")
+        return changed
+
+    def _apply_trigger(self, memory: MemoryRow) -> list[str]:
+        """The trigger axis (#1629).  ``replace_trigger`` swaps the whole trigger
+        (cadence + run_at/max_runs + source_log) atomically, so a form switch clears
+        the unused members; otherwise the legacy per-field cadence poke applies.
+        ``expires_at`` is set when provided.  Editing the interval declares a new
+        intended cadence, so ``base_interval_seconds`` moves with it and any throttle
+        backoff clears."""
+        changed: list[str] = []
+        if self.replace_trigger:
+            memory.collector_interval_seconds = self.collector_interval_seconds
+            memory.base_interval_seconds = self.collector_interval_seconds
+            memory.consecutive_idle_runs = 0
+            memory.run_at = self.run_at
+            memory.max_runs = self.max_runs
+            memory.source_log = self.source_log
+            changed.append("trigger")
+        elif self.collector_interval_seconds is not None:
+            memory.collector_interval_seconds = self.collector_interval_seconds
+            memory.base_interval_seconds = self.collector_interval_seconds
+            memory.consecutive_idle_runs = 0
+            changed.append("collector_interval_seconds")
+        if self.expires_at is not None:
+            memory.expires_at = self.expires_at
+            changed.append("expires_at")
         return changed
 
 
@@ -445,6 +477,11 @@ class MemoryStore:
         notify: bool | None = None,
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
+        run_at: datetime | None = None,
+        max_runs: int | None = None,
+        source_log: str | None = None,
+        expires_at: datetime | None = None,
+        replace_trigger: bool = False,
         run_id: str | None = None,
     ) -> MemoryRow:
         """Update fields on an existing collection.  Only set fields are applied.
@@ -473,6 +510,11 @@ class MemoryStore:
             extraction_prompt=extraction_prompt,
             collector_interval_seconds=collector_interval_seconds,
             intent=intent,
+            run_at=run_at,
+            max_runs=max_runs,
+            source_log=source_log,
+            expires_at=expires_at,
+            replace_trigger=replace_trigger,
             skill_name=skill_name,
             skill_params=skill_params,
         )

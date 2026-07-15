@@ -141,6 +141,26 @@ def test_dispatcher_returns_none_when_no_collections_have_prompts(test_config, t
 _VALID_EXTRACTION_PROMPT = "Extract relevant items from user-messages log."
 
 
+def test_inert_collection_never_dispatches_then_adopt_makes_it_run(test_config, tmp_path):
+    """An INERT collection (#1629: no extraction_prompt) is never picked by the
+    dispatcher even though it's a live, non-archived row — inertness, not archival, is
+    what excludes it. Giving it a routine + cadence (an adopt) makes the very next tick
+    pick it up."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("deals-watch", "inert storage the user set up")
+    row = db.memories.get("deals-watch")
+    assert row is not None and not row.archived  # a live container, just no job
+    assert collector._next_ready_collection() is None  # inert never dispatches
+    # Adopt a skill onto it (a routine + cadence) — now the dispatcher picks it up.
+    db.memories.update_collection_metadata(
+        "deals-watch",
+        extraction_prompt=_VALID_EXTRACTION_PROMPT,
+        collector_interval_seconds=3600,
+    )
+    picked = collector._next_ready_collection()
+    assert picked is not None and picked.name == "deals-watch"
+
+
 def test_dispatcher_picks_collection_with_extraction_prompt(test_config, tmp_path):
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(

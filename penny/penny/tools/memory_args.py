@@ -184,32 +184,39 @@ OptionalResolvedKind = Annotated[
 
 
 class CollectionCreateArgs(ToolArgs):
-    """Args for ``collection_create`` — the skill-instantiation front door (#1591).
+    """Args for ``collection_create`` — the skill-instantiation front door (#1591),
+    or a skill-less INERT container (#1629).
 
-    A collection is no longer authored with an inline procedure: it INSTANTIATES a
-    ``skill`` (resolved by name or meaning) whose steps render into the collection's
-    ``extraction_prompt``.  ``params`` binds the skill's parameter holes; an unbound
-    required hole is refused by the tool naming it.
+    A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
+    that skill (resolved by name or meaning) — its steps render into the collection's
+    ``extraction_prompt``, ``params`` binds the skill's parameter holes, and a trigger
+    schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only — no
+    ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it until
+    a skill is attached later via ``collection_update`` (the two-step teach bootstrap).
+    A job-shaped arg (a trigger / ``notify`` / ``expires_at``) alongside a skill-less
+    create is refused, since an inert container has no job to describe.
 
     ``intent`` (required, non-blank) is what the user asked for in their own words —
     the goal the collection serves, immutable after creation, and the collection's
     routing/dedup anchor.  ``name`` is the unique slug.
 
-    The **trigger** is an exclusive union validated in the tool (``build_trigger``):
-    EITHER ``interval`` (seconds — a recurring cadence), OR ``run_at`` + ``max_runs``
-    (a delayed / one-shot schedule), OR ``on_advance`` (the name of a source LOG —
-    the collection wakes when that log advances past its cursor, with an optional
-    ``min_interval`` floor).  ``expires_at`` (optional) is the end condition — the
-    watch archives itself when it passes.  ``notify`` (default false) makes the
-    collection tell the user about new/changed entries; an omission stays silent, so
-    it can never accidentally notify.  ``create_anyway`` (default false) is the
-    deliberate override for the idempotency check — it must be set explicitly to
+    The **trigger** (skill path only) is an exclusive union validated in the tool
+    (``build_trigger``): EITHER ``interval`` (seconds — a recurring cadence), OR
+    ``run_at`` + ``max_runs`` (a delayed / one-shot schedule), OR ``on_advance`` (the
+    name of a source LOG — the collection wakes when that log advances past its cursor,
+    with an optional ``min_interval`` floor).  ``expires_at`` (optional) is the end
+    condition — the watch archives itself when it passes.  ``notify`` (default false)
+    makes the collection tell the user about new/changed entries; an omission stays
+    silent, so it can never accidentally notify.  ``create_anyway`` (default false) is
+    the deliberate override for the idempotency check — it must be set explicitly to
     create a collection that resolves as a near-duplicate of an existing one.
     """
 
     name: MemoryName
     intent: NonBlankDescription
-    skill: MemoryName
+    # The skill to instantiate; omitted (``None``) yields an INERT storage-only
+    # collection — the first half of the two-step teach bootstrap (#1629).
+    skill: MemoryName | None = None
     # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
     params: dict[str, str] = {}
     # Trigger union — exactly one form, validated in the tool (build_trigger):
@@ -277,17 +284,34 @@ class CollectionUpdateArgs(ToolArgs):
     #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its holes.
     Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
     ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
+
+    The **trigger** is the apply-time job axis (#1629, absorbing #1604) — the SAME
+    exclusive union ``collection_create`` accepts, so a collection's schedule is
+    updatable post-create and an inert collection's job is set when a skill is adopted:
+    EITHER ``interval`` (recurring seconds), OR ``run_at`` + ``max_runs`` (a
+    delayed / one-shot schedule), OR ``on_advance`` (a source LOG + optional
+    ``min_interval`` floor); ``expires_at`` is the end condition.  Setting any trigger
+    field REPLACES the whole trigger (the unset members clear, so switching forms is
+    clean); omitting them all leaves the cadence untouched.
     """
 
     name: MemoryName
     description: OptionalText = None
     extraction_prompt: OptionalExtractionPrompt = None
-    collector_interval_seconds: int | None = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     intent: OptionalText = None  # accepted but NOT applied — immutable; the tool explains
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
     params: dict[str, str] | None = None  # rebind the skill's holes; None = reuse current
+    # Trigger union (#1629) — the apply-time job axis, mirroring collection_create.
+    # Setting any field replaces the whole trigger; omitting them all leaves cadence
+    # untouched.  Exactly one form: interval OR run_at+max_runs OR on_advance.
+    interval: int | None = None
+    run_at: str | None = None
+    max_runs: int | None = None
+    on_advance: str | None = None
+    min_interval: int | None = None
+    expires_at: str | None = None
 
 
 # ── Collection reads ────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ from penny.database.skills import (
     SkillSubKind,
     SkillSubstitution,
     render_skill,
+    retarget_writes,
 )
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
@@ -42,6 +43,8 @@ from penny.llm.models import LlmConnectionError
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.collection_instantiation import render_unbound_holes
 from penny.tools.memory_tools import (
+    _INERT_JOB_ARGS_REFUSAL,
+    _NO_TRIGGER_NOTE,
     _REBIND_NO_SKILL,
     _REINSTANTIATE_CONFLICT,
     _SKILL_GONE,
@@ -72,6 +75,7 @@ from penny.tools.memory_tools import (
     _format_duplicate,
     build_memory_tools,
 )
+from penny.tools.skill_tools import SkillCreateTool
 
 
 def _make_db(tmp_path) -> Database:
@@ -263,15 +267,17 @@ def _seed_watch_skill(
 
 # THE money literal — a skill + params flowing through the real front door into the
 # collection's stored ``extraction_prompt``: the {peak} hole bound verbatim in both
-# the browse query and the write key, the binding kept legible.
+# the browse query and the write key, the binding kept legible, and the write
+# RETARGETED to the collection's own name (#1629 — the demo wrote to 'elevations').
 _MONEY_LITERAL = (
     "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "2. collection_write(memory='elevations', "
+    "2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
 # The on_advance creation echo — the trigger line reads back the source-driven
-# form (#1604), everything else identical to the recurring echo shape.
+# form (#1604), the write retargeted to this collection (#1629), everything else
+# identical to the recurring echo shape.
 _ON_ADVANCE_ECHO_LITERAL = (
     "Created collection 'chained-watch' from skill 'Watch elevation':\n"
     "  intent: digest events as they land\n"
@@ -282,7 +288,7 @@ _ON_ADVANCE_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='elevations', "
+    "    2. collection_write(memory='chained-watch', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -298,7 +304,7 @@ _CREATE_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='elevations', "
+    "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -357,8 +363,9 @@ class TestCollectionCreateFrontDoor:
 
     @pytest.mark.asyncio
     async def test_no_skill_found_elicits_teaching(self, tmp_path):
-        """A skill query matching nothing returns the #1471 elicitation — ignorance
-        becomes the trigger to demonstrate and promote, with the next call named."""
+        """A skill query matching nothing returns the reshaped #1471/#1629 elicitation —
+        it NARRATES the two-step teach bootstrap (set up the container → walk me through
+        once → skill_create → attach via collection_update), asserted whole."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -370,9 +377,16 @@ class TestCollectionCreateFrontDoor:
         assert result.success is False
         assert result.message == (
             "I don't know how to \"xyzzy flibbertigibbet quux\" yet — there's no skill for "
-            "it. Walk me through it once and I'll learn it, then call skill_create(name="
-            "<title>, from_run=<that run's id>, steps=<range>) to save it. After that, "
-            "instantiating a collection from it is one call."
+            "it, so there's nothing to instantiate. Here's how we teach one:\n"
+            "1. Set up the container first: collection_create(name=<slug>, "
+            'intent="xyzzy flibbertigibbet quux") with NO skill — a storage-only collection '
+            "nothing runs against yet.\n"
+            "2. Walk me through getting the data ONCE, here in chat, so I actually do it "
+            "(browse, extract, and collection_write the result into that collection).\n"
+            "3. Save that run as a skill: skill_create(name=<title>, from_run=<that run's "
+            "id>, steps=<range>).\n"
+            "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
+            "skill=<title>, params={…}, interval=<seconds>, notify=<true/false>)."
         )
         assert db.memories.get("mystery") is None
 
@@ -960,7 +974,7 @@ _REFRESH_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the summit elevation in metres')\n"
-    "    2. collection_write(memory='elevations', "
+    "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -975,11 +989,12 @@ _REBIND_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Ashfall Ridge'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='elevations', "
+    "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Ashfall Ridge', 'content': the value from step 1}])"
 )
 
-# The swap echo — a DIFFERENT skill rendered into the same collection.
+# The swap echo — a DIFFERENT skill rendered into the same collection, its write
+# retargeted to that collection (#1629 — the river skill demoed against 'flows').
 _SWAP_ECHO_LITERAL = (
     "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
     "  intent: watch Cinder Peak's elevation\n"
@@ -990,12 +1005,12 @@ _SWAP_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Silt River'], extract='the current flow rate')\n"
-    "    2. collection_write(memory='flows', "
+    "    2. collection_write(memory='cinder-elevation', "
     "entries=[{'key': 'Silt River', 'content': the value from step 1}])"
 )
 
 # The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
-# hand-authored text is replaced by the render.
+# hand-authored text is replaced by the render, writes retargeted to it (#1629).
 _ADOPT_ECHO_LITERAL = (
     "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
     "  intent: a running list the user asked me to keep\n"
@@ -1006,7 +1021,7 @@ _ADOPT_ECHO_LITERAL = (
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='elevations', "
+    "    2. collection_write(memory='legacy-notes', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
@@ -1031,9 +1046,13 @@ class TestCollectionUpdateReinstantiation:
         ).execute(name="cinder-elevation", skill=_SKILL_NAME)
         assert result.success and result.mutated
         assert result.message == _REFRESH_ECHO_LITERAL
-        # Byte-identity: the stored prompt IS the fresh render of the current skill.
+        # Byte-identity: the stored prompt IS the fresh render of the current skill,
+        # with its writes retargeted to this collection's own name (#1629).
         current = db.skills.get(_SKILL_NAME)
-        expected = render_skill(steps_from_json(current.steps), {"peak": "Cinder Peak"})
+        expected = render_skill(
+            retarget_writes(steps_from_json(current.steps), "cinder-elevation"),
+            {"peak": "Cinder Peak"},
+        )
         stored = db.memories.get("cinder-elevation")
         assert stored.extraction_prompt == expected
         # Provenance re-stamped (same skill, same bindings).
@@ -1204,6 +1223,354 @@ class TestCollectionUpdateReinstantiation:
         assert result.success is False
         assert result.message == _REBIND_NO_SKILL.format(name="legacy")  # whole refusal
         assert db.memories.get("legacy").extraction_prompt == original
+
+
+# ── Inert collections + the two-step teach bootstrap (#1629) ──────────────────
+
+# The skill-less creation echo — storage only, no job, and the honest next steps.
+_INERT_ECHO_LITERAL = (
+    "Set up collection 'deals-watch' — storage only, no job yet:\n"
+    "  intent: track the trail-runner shoe deals\n"
+    "  status: inert (no skill attached)\n"
+    "It'll hold whatever gets written to it, but nothing runs against it until you give it "
+    "a skill. Teach me the routine once, save it with skill_create, then attach it with "
+    "collection_update(name='deals-watch', skill=<title>, interval=<seconds>) to make it do "
+    "something."
+)
+
+# The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it
+# distills into a hole; the write target ('deals-watch') does not, so it stays a constant
+# the render then RETARGETS to whatever collection the skill is applied to.
+_BOOTSTRAP_UTTERANCE = "watch the Meridian Trail 3 shoe and save its price"
+_BOOTSTRAP_PRICE = "$149"
+
+
+def _log_demo_run(db, run_id: str, *, write_target: str) -> None:
+    """Log one clean chat run (browse → collection_write into ``write_target``) as a
+    single promptlog row skill_create can distill: the triggering user turn, the two
+    batched tool calls in order (→ ordinals), each call's framed result, and its
+    STRUCTURAL success stamp (certified-by-execution)."""
+    browse_result = (
+        f"You used `browse` and here's the result: (browse result)\nEXTRACTED: {_BOOTSTRAP_PRICE}"
+    )
+    calls = [
+        (
+            "browse",
+            {"queries": ["Meridian Trail 3"], "extract": "the current price"},
+            browse_result,
+            True,
+        ),
+        (
+            "collection_write",
+            {
+                "memory": write_target,
+                "entries": [{"key": "Meridian Trail 3", "content": _BOOTSTRAP_PRICE}],
+            },
+            f"You saved an entry to {write_target}: (collection_write result)\n"
+            f"Wrote 1 entry to '{write_target}': Meridian Trail 3.",
+            True,
+        ),
+    ]
+    tool_calls = []
+    tool_turns = []
+    for index, (name, args, result, success) in enumerate(calls, start=1):
+        call_id = f"c{index}"
+        tool_calls.append(
+            {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
+        )
+        tool_turns.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": result,
+                PennyConstants.TOOL_RESULT_SUCCESS_KEY: success,
+            }
+        )
+    user_turn = {
+        "role": "user",
+        "content": f"live context{PennyConstants.SECTION_SEPARATOR}{_BOOTSTRAP_UTTERANCE}",
+    }
+    db.messages.log_prompt(
+        model="m",
+        messages=[user_turn, *tool_turns],
+        response={"choices": [{"message": {"tool_calls": tool_calls}}]},
+        run_id=run_id,
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+    )
+
+
+class TestInertCollections:
+    """Skill-less create yields an INERT storage collection (#1629): no
+    extraction_prompt / cadence / notify, never dispatches, catalog-visible,
+    idempotency still applies — and a job-shaped arg alongside is refused."""
+
+    @pytest.mark.asyncio
+    async def test_skill_less_create_is_inert_storage_only(self, tmp_path):
+        """A create with no skill lands exactly one storage-only row — no
+        extraction_prompt, cadence, notify, or skill provenance — and the echo is
+        honest about being inert (whole render)."""
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals"
+        )
+        assert result.success and result.mutated
+        assert result.message == _INERT_ECHO_LITERAL
+        row = db.memories.get("deals-watch")
+        assert row is not None
+        assert row.extraction_prompt is None  # no job
+        assert row.collector_interval_seconds is None  # no cadence
+        assert row.notify is False  # silent
+        assert row.skill_name is None  # no skill attached
+        assert row.archived is False  # a live, usable container
+
+    @pytest.mark.asyncio
+    async def test_inert_collection_is_catalog_visible(self, tmp_path):
+        """An inert collection enumerates in the catalog, marked as storage with no
+        routine — not hidden for lacking a prompt (#1629).  Whole render, so the inert
+        recipe marker's position and the unchanged rest are both pinned."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals"
+        )
+        row = db.memories.get("deals-watch")
+        catalog = await CollectionCatalogTool(db).execute()
+        assert catalog.message == (
+            "## deals-watch\n"
+            "status: active\n"
+            "expires: never\n"
+            f"created: {format_log_timestamp(row.created_at)}\n"
+            "description: track the trail-runner shoe deals\n"
+            "intent: track the trail-runner shoe deals\n"
+            "notify: False\n"
+            "extraction_prompt: (none — inert storage, no skill attached yet)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_job_arg_on_skill_less_create_is_refused(self, tmp_path):
+        """A trigger / notify / expiry on a skill-less create has no job to attach to —
+        refused naming the two-step fix (whole render), nothing created."""
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals", interval=3600
+        )
+        assert result.success is False
+        assert result.message == _INERT_JOB_ARGS_REFUSAL.format(name="deals-watch")
+        assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_inert_create_still_respects_idempotency(self, tmp_path):
+        """Idempotency-at-birth (#1567) still applies to an inert create — a
+        near-duplicate of an existing collection is refused, nothing created."""
+        db = _make_db(tmp_path)
+        _seed_collection(
+            db,
+            name="deals",
+            description="track the trail-runner shoe deals",
+            intent="track shoe deals",
+        )
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals"
+        )
+        assert result.success is False
+        assert "Already have a collection for this" in result.message
+        assert db.memories.get("deals-watch") is None
+
+
+class TestWriteRetargetAtApply:
+    """WRITE-RETARGET (#1629): applying a skill to a collection binds every
+    scoped-write step's ``memory`` argument to that collection's own name — the
+    demo target the skill baked in is overwritten at the render seam, so the
+    rendered program never lies about where it writes."""
+
+    @pytest.mark.asyncio
+    async def test_skill_demoed_against_a_renders_writes_to_b_on_create(self, tmp_path):
+        """A skill whose demo wrote into collection A ('elevations'), instantiated into
+        collection B, renders its write to B — byte-pinned."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)  # its write step targets 'elevations' (the demo constant)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="target-b",
+            intent="watch a different peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=3600,
+        )
+        assert result.success
+        stored = db.memories.get("target-b")
+        assert stored.extraction_prompt == (
+            "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+            "2. collection_write(memory='target-b', "
+            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+        )
+
+    @pytest.mark.asyncio
+    async def test_skill_demoed_against_a_renders_writes_to_b_on_adopt(self, tmp_path):
+        """Adopting a skill (demoed against A) onto a legacy collection B retargets its
+        write to B — byte-pinned, proving both apply paths retarget."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)  # write step targets 'elevations'
+        _seed_collection(
+            db,
+            name="target-b",
+            extraction_prompt="hand-authored prose long enough to pass the gate",
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="target-b", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
+        )
+        assert result.success
+        stored = db.memories.get("target-b")
+        assert stored.extraction_prompt == (
+            "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+            "2. collection_write(memory='target-b', "
+            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+        )
+
+
+class TestTwoStepTeachBootstrap:
+    """The whole #1629 bootstrap end-to-end through real tool calls (mocked LLM):
+    create inert → demonstrate a write into it → skill_create over that run → adopt
+    the skill with a trigger + notify → the collection runs the rendered routine."""
+
+    @pytest.mark.asyncio
+    async def test_create_inert_teach_adopt_makes_it_run(self, tmp_path):
+        db = _make_db(tmp_path)
+        # 1. Set up the inert container (real tool call).
+        created = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals"
+        )
+        assert created.success
+        assert db.memories.get("deals-watch").extraction_prompt is None
+
+        # 2. Demonstrate the routine once, writing INTO the inert collection (a logged run).
+        _log_demo_run(db, "run-demo", write_target="deals-watch")
+
+        # 3. Promote that run into a skill (real skill_create call over the demo run).
+        taught = await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat").execute(
+            name="Watch a shoe price", from_run="run-demo", steps="1-2"
+        )
+        assert taught.success
+        assert db.skills.get("Watch a shoe price") is not None
+
+        # 4. Adopt the skill onto the inert collection with a trigger + notify (real update).
+        adopted = await CollectionUpdateTool(
+            db, cast(Any, MockLlmClient()), run_id="run-adopt"
+        ).execute(
+            name="deals-watch",
+            skill="Watch a shoe price",
+            params={"queries": "Meridian Trail 3"},
+            interval=3600,
+            notify=True,
+        )
+        assert adopted.success and adopted.mutated
+
+        # The stored prompt IS the retargeted render of the taught skill; the collection
+        # now has a routine + cadence + notify, so it will dispatch (was inert before).
+        skill = db.skills.get("Watch a shoe price")
+        expected = render_skill(
+            retarget_writes(steps_from_json(skill.steps), "deals-watch"),
+            {"queries": "Meridian Trail 3"},
+        )
+        stored = db.memories.get("deals-watch")
+        # Byte-identity: the stored prompt IS the retargeted render (write → deals-watch).
+        assert stored.extraction_prompt == expected
+        assert stored.skill_name == "Watch a shoe price"
+        assert stored.collector_interval_seconds == 3600
+        assert stored.notify is True
+
+
+class TestCollectionUpdateTriggerAtApply:
+    """Trigger + notify are apply-time properties on collection_update (#1629, the full
+    union: interval | run_at+max_runs | on_advance + expires_at + notify) — recorded in
+    the mutation event's changed fields."""
+
+    @pytest.mark.asyncio
+    async def test_adopt_applies_interval_notify_recorded_in_mutation(self, tmp_path):
+        """Adopting a skill with interval + notify sets both and records them in the
+        mutation event's changed fields alongside the re-render."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        _seed_collection(
+            db,
+            name="legacy",
+            extraction_prompt="hand-authored prose long enough to pass",
+            notify=False,
+        )
+        result = await CollectionUpdateTool(
+            db, cast(Any, MockLlmClient()), run_id="run-adopt"
+        ).execute(
+            name="legacy",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            interval=7200,
+            notify=True,
+        )
+        assert result.success
+        stored = db.memories.get("legacy")
+        assert stored.collector_interval_seconds == 7200
+        assert stored.notify is True
+        event = next(e for e in db.mutations.history("legacy", 5) if e.run_id == "run-adopt")
+        summary = mutation_change_summary(event)
+        assert "trigger" in summary and "notify" in summary and "skill" in summary
+
+    @pytest.mark.asyncio
+    async def test_trigger_replaces_whole_schedule(self, tmp_path):
+        """Setting a run_at+max_runs trigger on a recurring collection replaces the whole
+        schedule (interval → dispatcher tick, run_at/max_runs set); a later interval
+        trigger clears the once-shaped overlay (#1629)."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="watch", collector_interval_seconds=3600)
+        # Switch to a one-shot schedule.
+        once = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch", run_at="2026-12-25T09:00:00Z", max_runs=1
+        )
+        assert once.success
+        row = db.memories.get("watch")
+        assert row.run_at is not None and row.max_runs == 1
+        # Switch back to a recurring interval — the once overlay must clear.
+        back = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch", interval=1800
+        )
+        assert back.success
+        row = db.memories.get("watch")
+        assert row.collector_interval_seconds == 1800
+        assert row.run_at is None and row.max_runs is None
+
+    @pytest.mark.asyncio
+    async def test_on_advance_trigger_at_apply_validates_source(self, tmp_path):
+        """An on_advance trigger at apply time sets the source_log; a non-existent
+        source is refused (the shared validator), nothing changed."""
+        db = _make_db(tmp_path)
+        db.memories.create_log("events-log", "an event stream")
+        _seed_collection(db, name="watch", collector_interval_seconds=3600)
+        ok = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch", on_advance="events-log"
+        )
+        assert ok.success
+        assert db.memories.get("watch").source_log == "events-log"
+        # A missing source log is refused actionably.
+        bad = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch", on_advance="no-such-log"
+        )
+        assert bad.success is False
+        assert "isn't a memory I have" in bad.message
+
+    @pytest.mark.asyncio
+    async def test_adopt_without_trigger_warns_it_wont_run(self, tmp_path):
+        """Adopting a skill onto an inert collection with NO trigger leaves it without a
+        cadence — the echo carries a visible no-trigger note (#1629), not a silent
+        won't-run."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", intent="track the trail-runner shoe deals"
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
+        )
+        assert result.success
+        # The whole no-trigger note is appended verbatim at the tail of the echo.
+        assert result.message.endswith(_NO_TRIGGER_NOTE.format(name="deals-watch"))
+        assert db.memories.get("deals-watch").collector_interval_seconds is None
 
 
 class TestCollectionWritesAndReads:

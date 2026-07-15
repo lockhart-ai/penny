@@ -22,6 +22,7 @@ from penny.database.skills import (
     SkillSubstitution,
     distill_steps,
     render_skill,
+    retarget_writes,
     unbound_required_holes,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
@@ -429,3 +430,47 @@ async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
     assert not result.success
     assert "step 1 (browse) didn't succeed" in result.message
     assert db.skills.get("Legacy") is None  # nothing persisted from an uncertain run
+
+
+# ── Write-retarget at apply (#1629, pure) ──────────────────────────────────────
+
+
+def test_retarget_writes_binds_the_write_memory_to_the_target():
+    """The scoped-write step's ``memory`` constant is overwritten with the target
+    collection's name, and the render reflects it — a skill demoed against
+    'elevations' renders its write to the collection it's applied to."""
+    steps = _elevation_steps()  # step 2 writes memory='elevations' (a constant)
+    retargeted = retarget_writes(steps, "cinder-elevation")
+    rendered = render_skill(retargeted, {"queries": "Cinder Peak"})
+    assert rendered == (
+        "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+        "2. collection_write(memory='cinder-elevation', "
+        "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+    )
+    # Pure: the source steps are untouched (a skill is target-agnostic at rest).
+    assert steps[1].arguments["memory"] == "elevations"
+
+
+def test_retarget_writes_drops_a_hole_on_the_memory_argument():
+    """A write whose ``memory`` was itself a hole is turned into the target constant —
+    the substitution addressing that leaf is dropped so the render can't put the hole
+    marker back over the fixed target."""
+    step = SkillStep(
+        ordinal=1,
+        source_ordinal=1,
+        tool="collection_write",
+        arguments={"memory": "{dest}", "entries": [{"key": "k", "content": "c"}]},
+        substitutions=[SkillSubstitution(path=["memory"], kind=SkillSubKind.HOLE, hole="dest")],
+    )
+    retargeted = retarget_writes([step], "target-b")
+    assert retargeted[0].arguments["memory"] == "target-b"
+    assert all(sub.path != ["memory"] for sub in retargeted[0].substitutions)
+    assert "memory='target-b'" in render_skill(retargeted, {})
+
+
+def test_retarget_writes_leaves_non_write_steps_untouched():
+    """A non-scoped-write step (a browse) is passed through unchanged — only the
+    scoped-write tools are retargeted."""
+    steps = _elevation_steps()
+    retargeted = retarget_writes(steps, "target-b")
+    assert retargeted[0].arguments == steps[0].arguments  # the browse step is identical

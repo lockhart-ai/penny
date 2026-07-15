@@ -66,9 +66,16 @@ _AMBIGUOUS_TAIL = (
 )
 
 _NO_SKILL_FOUND = (
-    "I don't know how to \"{query}\" yet — there's no skill for it. Walk me through it once "
-    "and I'll learn it, then call skill_create(name=<title>, from_run=<that run's id>, "
-    "steps=<range>) to save it. After that, instantiating a collection from it is one call."
+    "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
+    "instantiate. Here's how we teach one:\n"
+    '1. Set up the container first: collection_create(name=<slug>, intent="{query}") with '
+    "NO skill — a storage-only collection nothing runs against yet.\n"
+    "2. Walk me through getting the data ONCE, here in chat, so I actually do it (browse, "
+    "extract, and collection_write the result into that collection).\n"
+    "3. Save that run as a skill: skill_create(name=<title>, from_run=<that run's id>, "
+    "steps=<range>).\n"
+    "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
+    "skill=<title>, params={{…}}, interval=<seconds>, notify=<true/false>)."
 )
 
 
@@ -311,3 +318,26 @@ def render_reinstantiation_echo(row: MemoryRow, skill_name: str, params: dict[st
     return _instantiation_echo(
         row, skill_name, params, f"Re-rendered collection '{row.name}' from skill '{skill_name}':"
     )
+
+
+# ── Inert creation echo (#1629) ───────────────────────────────────────────────
+
+_INERT_ECHO = (
+    "Set up collection '{name}' — storage only, no job yet:\n"
+    "  intent: {intent}\n"
+    "  status: inert (no skill attached)\n"
+    "It'll hold whatever gets written to it, but nothing runs against it until you give it "
+    "a skill. Teach me the routine once, save it with skill_create, then attach it with "
+    "collection_update(name='{name}', skill=<title>, interval=<seconds>) to make it do "
+    "something."
+)
+
+
+def render_inert_echo(row: MemoryRow) -> str:
+    """The skill-less creation echo (#1629): a collection with no ``extraction_prompt``
+    is INERT — a container that holds entries but has no job, so it never dispatches.
+    The echo is honest about that (storage only, no skill) and names the two-step
+    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_update``)
+    — never claiming a routine that doesn't exist (visible degradation over silent
+    success)."""
+    return _INERT_ECHO.format(name=row.name, intent=row.intent)

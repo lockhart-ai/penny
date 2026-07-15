@@ -311,3 +311,44 @@ def unbound_required_holes(holes: list[SkillHole], params: dict[str, str]) -> li
     is an error).  Shipped here so the rule lives with the skill, tested
     standalone; not wired to a runtime surface in this stage."""
     return [hole.name for hole in holes if hole.required and hole.name not in params]
+
+
+# ── Write-retarget at apply (#1629) ────────────────────────────────────────────
+
+# The scoped-write tools a collector run is pinned to its bound target through
+# (``_memory_scope``): their ``memory`` argument must name the collection being
+# instantiated, not whatever the demonstration happened to write into.  A skill is
+# demonstrated against SOME collection, so its write steps carry that demo target
+# as a baked-in constant; instantiating the skill into collection C is what DEFINES
+# the write target, so the constant is overwritten with C at the render seam.
+SCOPED_WRITE_TOOLS = frozenset({"collection_write", "update_entry", "collection_delete_entry"})
+
+
+def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
+    """Bind every scoped-write step's ``memory`` argument to ``target`` — the
+    write-retarget-at-apply rule (#1629).
+
+    "Apply this skill to collection C" is what fixes where its writes go, so the
+    demo-run constant (or a stray hole/binding) on the ``memory`` argument is
+    replaced by ``target`` — the collection's own name.  This runs at the
+    render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
+    ``collection_create(skill=…)`` and the ``collection_update`` adopt paths, so the
+    rendered ``extraction_prompt`` never lies about its write target.  Pure — the
+    skill's STORED steps keep their demo constant (a skill is target-agnostic); only
+    the rendered-into-a-collection copy is retargeted.  A step that isn't a scoped
+    write, or whose call omits ``memory``, passes through untouched.
+    """
+    retargeted: list[SkillStep] = []
+    for step in steps:
+        if step.tool not in SCOPED_WRITE_TOOLS or "memory" not in step.arguments:
+            retargeted.append(step)
+            continue
+        arguments = copy.deepcopy(step.arguments)
+        arguments["memory"] = target
+        # The ``memory`` leaf is now a constant, so drop any hole/binding that
+        # addressed it — else the render would substitute a marker back over it.
+        substitutions = [sub for sub in step.substitutions if sub.path[:1] != ["memory"]]
+        retargeted.append(
+            step.model_copy(update={"arguments": arguments, "substitutions": substitutions})
+        )
+    return retargeted
