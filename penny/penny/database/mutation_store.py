@@ -65,6 +65,18 @@ class MutationDetail(BaseModel):
         return not self.changed_fields and self.note is None and self.decision is None
 
 
+def cancelled_sends_note(count: int) -> str:
+    """The mutation-detail clause naming how many pending queued sends an archive
+    cancelled (#1634).
+
+    Folded into the archive event's ``MutationDetail.note`` so the teardown's
+    silence is VISIBLE wherever a mutation renders (the self-state activity block,
+    ``memory_metadata``'s "Recent changes") — "cancelled N pending send(s)" reads
+    as the human cause the row carries, beside any policy reason a system archive
+    already notes."""
+    return f"cancelled {count} pending send{'' if count == 1 else 's'}"
+
+
 def render_mutation(event: MutationEvent) -> str:
     """One mutation as a model-readable line, naming its addressable ids (#1560).
 
