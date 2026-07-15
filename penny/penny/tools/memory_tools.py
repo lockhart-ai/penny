@@ -26,7 +26,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from penny.config_params import RuntimeParams
-from penny.constants import WRITE_GATE_STOP_REASONS, PennyConstants, WriteGateOutcome
+from penny.constants import (
+    WRITE_GATE_MUTATING_OUTCOMES,
+    WRITE_GATE_STOP_REASONS,
+    PennyConstants,
+    WriteGateOutcome,
+)
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -1232,16 +1237,15 @@ def _format_duplicate(result: WriteResult) -> str:
 
 
 def _format_changed(results: list[WriteResult]) -> str:
-    """The change-gate CHANGED part (#1587): the exact key already exists with a
-    DIFFERENT value — the observed value changed.  A collection is new-keys-only, so
-    nothing was written; bind ``update_entry`` per entry to refresh (advance) the
-    stored baseline, so the next observation of the same value reads as UNCHANGED."""
-    labelled = [
-        f"'{r.key}' changed — call update_entry(key='{r.key}', content=<the new value>) "
-        f"to refresh the stored value"
-        for r in results
-    ]
-    return f"Changed: {'; '.join(labelled)}."
+    """The change-gate CHANGED part (#1587/#1633): the exact key already existed with
+    a DIFFERENT value — the observed value changed, so the write gate auto-refreshed
+    the stored baseline IN PLACE (through the shared update path, stamping the writing
+    run).  Nothing further is needed — no ``update_entry`` call (the refresh already
+    happened); naming it just keeps the next observation of the same value reading as
+    UNCHANGED."""
+    keys = ", ".join(f"'{r.key}'" for r in results)
+    noun = "entry" if len(results) == 1 else "entries"
+    return f"Changed: {keys} — the stored baseline was refreshed to the new value ({noun})."
 
 
 def _format_unchanged(results: list[WriteResult]) -> str:
@@ -1411,17 +1415,18 @@ class CollectionWriteTool(MemoryTool):
 
         Each entry carries one ``WriteGateOutcome`` (#1587); this buckets them, logs
         the rejections, and renders one part per non-empty bucket.  ``mutated`` is
-        true only if a row actually landed (a NEW_KEY write) — an all-duplicate /
-        unchanged / changed / degenerate batch changed nothing, so it reads as
-        no-work for the throttle.  ``stop`` carries the write-gate STOP (collector
-        context only), honored by the collector loop."""
+        true when any entry changed durable state — a NEW_KEY write OR a
+        KEY_EXISTS_CHANGED baseline auto-refresh (#1633); an all-duplicate /
+        unchanged / degenerate batch changed nothing, so it reads as no-work for the
+        throttle.  ``stop`` carries the write-gate STOP (collector context only),
+        honored by the collector loop."""
         by = self._bucket(results)
         self._log_rejections(memory, by)
         parts = self._message_parts(memory, by)
         message = " ".join(parts) if parts else "(no entries written)"
         return ToolResult(
             message=message,
-            mutated=bool(by[WriteGateOutcome.NEW_KEY]),
+            mutated=any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results),
             stop=self._stop_outcome(results),
         )
 

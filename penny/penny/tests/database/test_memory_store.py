@@ -430,23 +430,37 @@ class TestCollectionWrites:
         assert again[0].matched_key == "price"
         assert len(db.memories.memory("watch").get("price")) == 1
 
-    def test_change_gate_changed_on_exact_key_different_content(self, tmp_path):
-        """The change-gate (#1587): re-writing an EXACT key with a DIFFERENT value is
-        KEY_EXISTS_CHANGED — genuine news.  Still new-keys-only, so nothing is
-        written and the stored baseline is untouched (the run advances it via
-        ``update_entry``); ``matched_key`` binds the existing key."""
+    def test_change_gate_changed_auto_refreshes_baseline(self, tmp_path):
+        """The change-gate auto-refresh (#1633): re-writing an EXACT key with a
+        DIFFERENT value is KEY_EXISTS_CHANGED — genuine news — and the gate refreshes
+        the stored baseline IN PLACE through the shared update path (stamping the
+        writing run), so the next observation of the same value reads UNCHANGED.  No
+        second row is created (still one entry per key); ``matched_key`` binds the
+        existing key.  This kills the last prose gate: no dangling ``update_entry``
+        for the model to run."""
         db = _make_db(tmp_path)
         db.memories.create_collection("watch", "x")
         db.memories.memory("watch").write(
-            [EntryInput(key="price", content="$42")], author="collector"
+            [EntryInput(key="price", content="$42")], author="collector", run_id="run-baseline"
         )
         changed = db.memories.memory("watch").write(
-            [EntryInput(key="price", content="$40")], author="collector"
+            [EntryInput(key="price", content="$40")], author="refresh", run_id="run-refresh"
         )
         assert changed[0].outcome == WriteGateOutcome.KEY_EXISTS_CHANGED
         assert changed[0].matched_key == "price"
-        # New-keys-only: the write did not overwrite the baseline.
-        assert db.memories.memory("watch").get("price")[0].content == "$42"
+        # Auto-refreshed: the one stored row now holds the new value, stamped by the
+        # writing run — created_by stays the baseline run, last_written advances.
+        rows = db.memories.memory("watch").get("price")
+        assert len(rows) == 1
+        assert rows[0].content == "$40"
+        assert rows[0].author == "refresh"
+        assert rows[0].created_by_run_id == "run-baseline"
+        assert rows[0].last_written_by_run_id == "run-refresh"
+        # The refreshed value now reads as UNCHANGED — changed once, then quiet.
+        again = db.memories.memory("watch").write(
+            [EntryInput(key="price", content="$40")], author="refresh", run_id="run-again"
+        )
+        assert again[0].outcome == WriteGateOutcome.KEY_EXISTS_UNCHANGED
 
     def test_update_replaces_content(self, tmp_path):
         db = _make_db(tmp_path)

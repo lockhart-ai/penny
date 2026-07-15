@@ -707,6 +707,84 @@ async def test_notify_cycle_composes_and_sends_on_a_productive_write(
 
 
 @pytest.mark.asyncio
+async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
+    mock_llm, test_config, tmp_path
+):
+    """The anti-spam proof (#1633): the last prose gate in the watch chain is gone.
+
+    A notify=true watch collector observes its key.  The source value CHANGES, so the
+    model writes the SAME key with a new value → the write gate auto-refreshes the
+    stored baseline IN PLACE (stamping the writing run) and, because CHANGED is not a
+    STOP, the notify suffix runs and emits ONCE.  The refresh is structural, at the
+    write chokepoint — the model needs no ``update_entry`` step (its absence from the
+    write-gate mechanism is pinned in test_memory_store / test_memory_tools; here the
+    model, like the live journey, only writes/notifies).  The NEXT cycle re-observes
+    the now-current value: the gate reads UNCHANGED and STOPs before the notify suffix,
+    so it emits NOTHING.  Changed once → notified once → quiet.  Driven through the
+    real collector loop with a mocked model."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)  # baseline: _NOTIFY_SEED_KEY = _NOTIFY_SEED_CONTENT
+    collector.set_channel(cast(Any, object()))  # presence flag: enables send_message
+
+    new_value = f"{_NOTIFY_SEED_CONTENT} — now with a playable demo!"
+
+    # Cycle 1: the source changed.  The model writes the SAME key with a new value,
+    # then (CHANGED is not a STOP) runs the notify suffix and sends once — no
+    # update_entry step (the gate refreshed the baseline itself).
+    def changed_handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:
+            return mock_llm._make_tool_call_response(
+                request,
+                "collection_write",
+                {
+                    "memory": "indie-metroidvanias",
+                    "entries": [{"key": _NOTIFY_SEED_KEY, "content": new_value}],
+                },
+            )
+        if count == 2:
+            return mock_llm._make_tool_call_response(
+                request, "send_message", {"content": f"Update on {_NOTIFY_SEED_KEY}!"}
+            )
+        return mock_llm._make_tool_call_response(request, "done", {})
+
+    mock_llm.set_response_handler(changed_handler)
+    await collector.run_for("indie-metroidvanias")
+
+    # The gate auto-refreshed the baseline in place: one row, now the new value,
+    # stamped by the writing run — via the write alone, no update_entry.
+    stored = db.memory("indie-metroidvanias").get(_NOTIFY_SEED_KEY)
+    assert len(stored) == 1
+    assert stored[0].content == new_value
+    assert stored[0].last_written_by_run_id is not None
+    # CHANGED reached the notify suffix — exactly one message queued.
+    assert [item.content for item in db.send_queue.pending_items()] == [
+        f"Update on {_NOTIFY_SEED_KEY}!"
+    ]
+
+    # Cycle 2: the source is unchanged since the refresh.  The model re-observes the
+    # same value → the gate reads UNCHANGED and STOPs at the write, before the notify
+    # suffix.  The model is asked exactly once and nothing new is queued.
+    requests_before_cycle_2 = len(mock_llm.requests)
+
+    def unchanged_handler(request: dict, count: int) -> LlmResponse:
+        return mock_llm._make_tool_call_response(
+            request,
+            "collection_write",
+            {
+                "memory": "indie-metroidvanias",
+                "entries": [{"key": _NOTIFY_SEED_KEY, "content": new_value}],
+            },
+        )
+
+    mock_llm.set_response_handler(unchanged_handler)
+    await collector.run_for("indie-metroidvanias")
+
+    # The write-gate STOP closed cycle 2 at the chokepoint — one model call, no new send.
+    assert len(mock_llm.requests) == requests_before_cycle_2 + 1
+    assert len(db.send_queue.pending_items()) == 1
+
+
+@pytest.mark.asyncio
 async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_path):
     """Each cycle's system prompt carries this collector's own recent run
     outcomes — newest first, each stamped with when it ran — so the model knows

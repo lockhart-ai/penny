@@ -56,8 +56,11 @@ class WriteGateOutcome(StrEnum):
 
     ``NEW_KEY`` — the key did not exist; the entry was written (baseline set) ·
     ``KEY_EXISTS_CHANGED`` — the exact key existed with *different* content: the
-    observed value changed since the baseline (nothing is written — a collection is
-    new-keys-only; the run refreshes the baseline via ``update_entry``) ·
+    observed value changed, so the write gate **auto-refreshes the stored baseline
+    itself** in place (through the update path — same validation, degeneracy screen,
+    and ``last_written_by_run_id`` stamp), and the run's only remaining job is to
+    notify.  No ``update_entry`` call is needed — the refresh already happened, so
+    the next observation of the same value reads ``KEY_EXISTS_UNCHANGED`` (#1633) ·
     ``KEY_EXISTS_UNCHANGED`` — the exact key existed with *identical* content: the
     value has not changed, so there is nothing further to do — the watch's "no
     change" signal, which carries STOP semantics (see ``WRITE_GATE_STOP_REASONS``) ·
@@ -95,6 +98,16 @@ class WriteGateOutcome(StrEnum):
 WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
     WriteGateOutcome.KEY_EXISTS_UNCHANGED: "the value was unchanged since the last observation",
 }
+
+
+# The write-gate outcomes that changed durable state — either a genuinely new key
+# landed (``NEW_KEY``) or an existing key's baseline was auto-refreshed in place
+# (``KEY_EXISTS_CHANGED``, #1633).  Read by the write path's change-notify and the
+# tool result's ``mutated`` flag (the throttle's work signal), so "did this write
+# change anything?" is one definition, not two that can drift.
+WRITE_GATE_MUTATING_OUTCOMES: frozenset[WriteGateOutcome] = frozenset(
+    {WriteGateOutcome.NEW_KEY, WriteGateOutcome.KEY_EXISTS_CHANGED}
+)
 
 
 class MutationAction(StrEnum):

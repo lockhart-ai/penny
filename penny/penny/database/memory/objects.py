@@ -43,7 +43,12 @@ from pydantic import BaseModel, Field, computed_field
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
-from penny.constants import PennyConstants, RunOutcome, WriteGateOutcome
+from penny.constants import (
+    WRITE_GATE_MUTATING_OUTCOMES,
+    PennyConstants,
+    RunOutcome,
+    WriteGateOutcome,
+)
 from penny.database.memory import _similarity as sim
 from penny.database.memory.types import (
     DedupThresholds,
@@ -372,7 +377,10 @@ class Collection(Memory):
 
         ``run_id`` (the writing run, threaded as a parameter — no ambient state)
         stamps ``created_by_run_id`` and ``last_written_by_run_id`` on each new
-        row, so an entry cites the run that produced it (#1560)."""
+        row, so an entry cites the run that produced it (#1560).  A ``KEY_EXISTS_CHANGED``
+        entry auto-refreshes its stored baseline in place through the same update
+        path (#1633) — so it too advances ``last_written_by_run_id`` and counts as a
+        change for the notify below."""
         thresholds = thresholds or DedupThresholds.from_runtime(self._runtime)
         existing = self._entries_with_vectors()
         results: list[WriteResult] = []
@@ -382,7 +390,7 @@ class Collection(Memory):
                     self._write_one(session, entry, author, existing, thresholds, run_id)
                 )
             session.commit()
-        if any(result.outcome == WriteGateOutcome.NEW_KEY for result in results):
+        if any(result.outcome in WRITE_GATE_MUTATING_OUTCOMES for result in results):
             self._notify()
         return results
 
@@ -398,14 +406,29 @@ class Collection(Memory):
             rows = self._rows_by_key(session, self.name, key)
             if not rows:
                 return "not_found"
-            for row in rows:
-                row.content = content
-                row.author = author
-                row.last_written_by_run_id = run_id
-                session.add(row)
+            self._apply_content(session, rows, content, author, run_id)
             session.commit()
         self._notify()
         return "ok"
+
+    @staticmethod
+    def _apply_content(
+        session: Session,
+        rows: list[MemoryEntry],
+        content: str,
+        author: str,
+        run_id: str | None,
+    ) -> None:
+        """Rewrite each row's content in place, stamping the writing run — the one
+        mutation shared by ``update`` (the model's correction path) and the
+        change-gate's ``KEY_EXISTS_CHANGED`` auto-refresh (#1633), so a baseline
+        advances identically whichever path reached it.  ``created_by_run_id`` is
+        left untouched (this is a rewrite, not a creation)."""
+        for row in rows:
+            row.content = content
+            row.author = author
+            row.last_written_by_run_id = run_id
+            session.add(row)
 
     def move(self, key: str, to_name: str, author: str) -> MoveOutcome:
         """Move every entry with ``key`` into another collection.  ``collision``
@@ -481,7 +504,7 @@ class Collection(Memory):
         change-gate at the write chokepoint (#1587).  The comparison is
         deterministic and total; nothing here is a model judgment.  The gate decides
         the non-write outcomes; only a genuinely new key is persisted."""
-        gated = self._gate_outcome(session, entry, existing, thresholds)
+        gated = self._gate_outcome(session, entry, author, existing, thresholds, run_id)
         if gated is not None:
             return gated
         return self._insert_new_entry(session, entry, author, existing, run_id)
@@ -490,12 +513,14 @@ class Collection(Memory):
         self,
         session: Session,
         entry: EntryInput,
+        author: str,
         existing: list[EntrySide],
         thresholds: DedupThresholds,
+        run_id: str | None,
     ) -> WriteResult | None:
         """The change-gate itself: the non-NEW_KEY outcome for an entry that is NOT
-        stored — DEGENERATE, KEY_EXISTS_CHANGED/UNCHANGED (an exact-key hit compared
-        by value: same value → never news, different value → news, decided
+        newly inserted — DEGENERATE, KEY_EXISTS_CHANGED/UNCHANGED (an exact-key hit
+        compared by value: same value → never news, different value → news, decided
         deterministically, not by an embedding threshold), or DUPLICATE — or ``None``
         when it's a genuinely new key to persist.
 
@@ -511,13 +536,7 @@ class Collection(Memory):
             )
         stored = self._rows_by_key(session, self.name, entry.key)
         if stored:
-            unchanged = _content_unchanged(stored[0].content, entry.content)
-            outcome = (
-                WriteGateOutcome.KEY_EXISTS_UNCHANGED
-                if unchanged
-                else WriteGateOutcome.KEY_EXISTS_CHANGED
-            )
-            return WriteResult(key=entry.key, outcome=outcome, matched_key=entry.key)
+            return self._exact_key_outcome(session, stored, entry, author, run_id)
         candidate = EntrySide(entry.key, entry.key_embedding, entry.content_embedding)
         matched = sim.is_duplicate(candidate, existing, thresholds)
         if matched is not None:
@@ -525,6 +544,30 @@ class Collection(Memory):
                 key=entry.key, outcome=WriteGateOutcome.DUPLICATE, matched_key=matched.key
             )
         return None
+
+    def _exact_key_outcome(
+        self,
+        session: Session,
+        stored: list[MemoryEntry],
+        entry: EntryInput,
+        author: str,
+        run_id: str | None,
+    ) -> WriteResult:
+        """The exact-key hit — compared by value, not embedding.  Identical value →
+        KEY_EXISTS_UNCHANGED (the watch's "no change" signal, STOP-worthy).  Different
+        value → KEY_EXISTS_CHANGED: the gate **auto-refreshes the stored baseline
+        itself** in place through the shared update path (#1633), so no dangling
+        ``update_entry`` is left for the model to run.  A degenerate new value never
+        reaches here — it classified DEGENERATE upstream — so the refresh only ever
+        stores screened content."""
+        if _content_unchanged(stored[0].content, entry.content):
+            return WriteResult(
+                key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_UNCHANGED, matched_key=entry.key
+            )
+        self._apply_content(session, stored, entry.content, author, run_id)
+        return WriteResult(
+            key=entry.key, outcome=WriteGateOutcome.KEY_EXISTS_CHANGED, matched_key=entry.key
+        )
 
     def _insert_new_entry(
         self,

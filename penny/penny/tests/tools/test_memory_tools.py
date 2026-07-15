@@ -1775,11 +1775,15 @@ class TestCollectionWritesAndReads:
         assert unchanged.stop is None
 
     @pytest.mark.asyncio
-    async def test_change_gate_changed_result_text_points_at_update_entry(self, tmp_path, mock_llm):
-        """The CHANGED result text (#1587): re-writing an EXACT key with a DIFFERENT
-        value reports the change and binds the exact ``update_entry`` refresh — an
-        actionable next move, since a collection is new-keys-only.  CHANGED is not
-        STOP-worthy, so no ``stop`` even for a collector-scoped write."""
+    async def test_change_gate_changed_auto_refreshes_baseline(self, tmp_path, mock_llm):
+        """The CHANGED auto-refresh result text (#1633): re-writing an EXACT key with a
+        DIFFERENT value refreshes the stored baseline IN PLACE through the shared write
+        gate — the result reports the refresh with NO dangling ``update_entry``
+        instruction (the wasted call that would teach the model to redo what already
+        happened), ``mutated=True`` (durable state changed), and CHANGED is never
+        STOP-worthy so no loop-stop even for a collector-scoped write.  The gate is
+        shared, so a chat-surface write (``scope=None``) gets the same auto-refresh and
+        stays non-STOP with honest text."""
         db = _make_db(tmp_path)
         _seed_collection(
             db,
@@ -1792,12 +1796,27 @@ class TestCollectionWritesAndReads:
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
         await write.execute(memory="watch", entries=[{"key": "price", "content": "$42"}])
         changed = await write.execute(memory="watch", entries=[{"key": "price", "content": "$40"}])
-        assert (
-            "Changed: 'price' changed — call update_entry(key='price', content=<the new value>) "
-            "to refresh the stored value." in changed.message
+        assert changed.message == (
+            "Changed: 'price' — the stored baseline was refreshed to the new value (entry)."
         )
-        assert changed.mutated is False
+        assert changed.mutated is True
         assert changed.stop is None
+        # The baseline was refreshed in place — one row, now the new value.
+        refreshed = db.memory("watch").get("price")
+        assert len(refreshed) == 1
+        assert refreshed[0].content == "$40"
+        # The gate is shared: a chat-surface write auto-refreshes identically, never STOPs.
+        chat_write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="chat")
+        await chat_write.execute(memory="watch", entries=[{"key": "note", "content": "v1"}])
+        chat_changed = await chat_write.execute(
+            memory="watch", entries=[{"key": "note", "content": "v2"}]
+        )
+        assert chat_changed.message == (
+            "Changed: 'note' — the stored baseline was refreshed to the new value (entry)."
+        )
+        assert chat_changed.mutated is True
+        assert chat_changed.stop is None
+        assert db.memory("watch").get("note")[0].content == "v2"
 
     @pytest.mark.asyncio
     async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
