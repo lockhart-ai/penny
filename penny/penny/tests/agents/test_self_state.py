@@ -122,16 +122,6 @@ def _add_skill(session: Session, *, name: str, intent: str, when: datetime) -> N
     )
 
 
-def _add_rule_entry(session: Session, *, key: str, content: str, when: datetime) -> None:
-    """One standing-rule entry in the legacy ``skills`` collection — the
-    dark-since-#1555 behavior rules the section resurfaces (rendered by title)."""
-    session.add(
-        MemoryEntry(
-            memory_name="skills", key=key, content=content, author="system", created_at=when
-        )
-    )
-
-
 def _add_run(
     session: Session,
     *,
@@ -300,29 +290,9 @@ def _seed_kitchen_sink(db: Database) -> None:
             updated_at=_t(6),
         )
         _add_entries(session, "favorites", 2, when=_t(7))
-        # The Skills-and-rules section's two feeds (#1471): the legacy ``skills``
-        # collection's standing-rule entries + the taught-skill registry.  The
-        # collection is a plain store here (no extraction_prompt) — its
-        # collector-ness is orthogonal to the section, which reads its entries.
-        _add_collection(
-            session,
-            "skills",
-            description="workflow patterns Penny follows",
-            created_at=_t(6),
-            updated_at=_t(6),
-        )
-        _add_rule_entry(
-            session,
-            key="Archive a collection",
-            content="TRIGGER\nUser is done with a collection.\n\nSTEPS\n1. collection_archive.",
-            when=_t(7),
-        )
-        _add_rule_entry(
-            session,
-            key="Research collection — notify on new finds",
-            content="TRIGGER\nUser wants new finds.\n\nSTEPS\n1. collection_create(notify=true).",
-            when=_t(7),
-        )
+        # The Skills-and-rules section's one feed (#1471/#1624): the taught-skill
+        # registry (the sole skills store — the legacy ``skills`` collection's
+        # standing-rules feed retired with the collection, migration 0092).
         _add_skill(
             session,
             name="Track a shipment",
@@ -486,49 +456,18 @@ def test_self_state_archived_heavy_render(tmp_path):
     assert actual == _ARCHIVED_HEAVY
 
 
-# ── 4c. Skills-and-rules section — each feed in isolation (#1471) ─────────
+# ── 4c. Skills-and-rules section — the taught-skill feed (#1471/#1624) ────
 #
-# The both-populated shape is folded into the kitchen sink; the both-empty shape
-# is the empty deployment.  These pin the two single-feed shapes: the group with
-# entries renders under its own drill-down label, the empty group is omitted
-# (never a stray label).  Standing-rules-only is the common fresh-install shape
-# (migration 0084 ships the taught-skill table empty, but the ``skills``
-# collection seeds its behavior rules).
-
-
-def test_self_state_standing_rules_only_render(tmp_path):
-    """Only the legacy ``skills`` collection's standing rules (no taught skills
-    yet) — the taught-skill group is omitted, the standing-rules group renders."""
-    db = _db(tmp_path)
-    with Session(db.engine) as session:
-        _add_collection(
-            session,
-            "skills",
-            description="workflow patterns Penny follows",
-            created_at=_t(6),
-            updated_at=_t(6),
-        )
-        _add_rule_entry(
-            session,
-            key="Archive a collection",
-            content="TRIGGER\nUser is done with a collection.\n\nSTEPS\n1. collection_archive.",
-            when=_t(7),
-        )
-        _add_rule_entry(
-            session,
-            key="Research collection — notify on new finds",
-            content="TRIGGER\nUser wants new finds.\n\nSTEPS\n1. collection_create(notify=true).",
-            when=_t(7),
-        )
-        session.commit()
-    actual = SelfStateHeader(db, None).render()
-    assert actual == _STANDING_RULES_ONLY
+# The populated shape is pinned here and in the kitchen sink; the empty shape
+# (the fresh-install default — migration 0084 ships the taught-skill table
+# empty) is the empty deployment's placeholder.  The taught-skill registry is
+# the section's ONLY feed: the legacy ``skills`` collection's standing-rules
+# feed retired with the collection (#1624, migration 0092).
 
 
 def test_self_state_taught_skills_only_render(tmp_path):
-    """Only the taught-skill registry (no standing-rules collection) — the
-    standing-rules group is omitted, the taught-skill group renders (name order,
-    intent collapsed to one line)."""
+    """The taught-skill registry renders under its drill-down label (name order,
+    intent collapsed to one line) — the section's sole feed."""
     db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_skill(
@@ -804,15 +743,11 @@ _KITCHEN_SINK = (
     "- news-digest (collection, 0 entries) — gather headlines\n"
     "- price-watch (collection, 0 entries) — watch a product price\n"
     "- reminder (collection, 0 entries) — one-off reminder\n"
-    "- skills (collection, 2 entries) — workflow patterns Penny follows\n"
     "\n"
     "### Skills and rules\n"
     "Skills you've been taught — skill_read(<name>) for the full recipe:\n"
     "- Track a shipment — track my package from acme and tell me when it moves\n"
     "- Watch a page field — watch the price on a product page and ping me when it drops\n"
-    'Standing rules you follow — collection_read_latest("skills") for the steps:\n'
-    "- Archive a collection\n"
-    "- Research collection — notify on new finds\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -929,33 +864,6 @@ _ARCHIVED_HEAVY = (
     "\n"
     "### Skills and rules\n"
     "(no skills or rules yet)\n"
-    "\n"
-    "### About the user\n"
-    "(no profile set yet)\n"
-    "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
-)
-
-_STANDING_RULES_ONLY = (
-    "## Penny's current state\n"
-    "\n"
-    "### Active mechanisms\n"
-    "(no mechanisms yet)\n"
-    "\n"
-    "### Recent activity\n"
-    "(no recent activity)\n"
-    "\n"
-    "### Your memory\n"
-    "- skills (collection, 2 entries) — workflow patterns Penny follows\n"
-    "\n"
-    "### Skills and rules\n"
-    'Standing rules you follow — collection_read_latest("skills") for the steps:\n'
-    "- Archive a collection\n"
-    "- Research collection — notify on new finds\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

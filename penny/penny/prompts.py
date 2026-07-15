@@ -42,8 +42,9 @@ class Prompt:
         "if memory doesn't have what the user needs, or for current/external info "
         "(news, products, prices, fresh facts).\n\n"
         "Compose your tools directly to satisfy what the user asks. If the user "
-        'teaches you a new pattern ("from now on when I say X, do Y"), write it as '
-        "a new entry in your `skills` collection so it's saved for next time.\n\n"
+        'teaches you a new pattern ("from now on when I say X, do Y"), do it once '
+        "with them now, then save that run as a skill with `skill_create` so it's "
+        "saved for next time.\n\n"
         "When a 'Current Browser Page' section appears above, the user is browsing "
         "that page right now. If they say 'this page', 'this thread', 'this article', "
         "or anything ambiguous, they mean the Current Browser Page — not something "

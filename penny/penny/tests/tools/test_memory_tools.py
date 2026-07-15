@@ -242,9 +242,12 @@ def _seed_watch_skill(
     description: str = "watch a peak's elevation and save it",
     holes: list[SkillHole] | None = None,
     steps: list[SkillStep] | None = None,
+    embed: bool = True,
 ) -> str:
     """Upsert the fictional watch-a-peak skill the create-flow tests instantiate;
-    returns its name."""
+    returns its name.  ``embed=False`` seeds it without a description anchor —
+    for tests that resolve it by exact name and must keep it OUT of the
+    resolve-by-meaning candidate pool (an unembedded skill is silently absent)."""
     draft = SkillDraft(
         name=name,
         intent=intent,
@@ -253,7 +256,8 @@ def _seed_watch_skill(
         holes=holes if holes is not None else [SkillHole(name=_SKILL_HOLE, required=True)],
         source_run_id="run-teach",
     )
-    db.skills.upsert(draft, author="chat", description_embedding=_single_hash_vec(description))
+    embedding = _single_hash_vec(description) if embed else None
+    db.skills.upsert(draft, author="chat", description_embedding=embedding)
     return name
 
 
@@ -3143,7 +3147,9 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
     """Instantiate a collection whose intent/description anchor is ``description``
     (what ``find_mine`` resolves over).  A hole-less skill supplies the rendered
     prompt; ``create_anyway`` skips the idempotency check so these tests can stand
-    up several deliberately-similar collections."""
+    up several deliberately-similar collections.  The helper skill is seeded
+    UNEMBEDDED (``embed=False``) — it's resolved by exact name, and an anchor in
+    the hash geometry would collide with the axis geometry these tests pin."""
     _seed_watch_skill(
         db,
         name="find-skill",
@@ -3159,6 +3165,7 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
                 substitutions=[],
             )
         ],
+        embed=False,
     )
     await CollectionCreateTool(db, client).execute(
         name=name, intent=description, skill="find-skill", interval=3600, create_anyway=True
@@ -3166,9 +3173,10 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
 
 
 class TestFindMine:
-    """Resolve-by-meaning over the whole registry + skills entries, fusing exact
-    identity with how to address it (#1558).  The result is model-facing text, so
-    each mode is asserted as a whole render."""
+    """Resolve-by-meaning over the whole registry + taught skills (the ``skill``
+    table, the sole skills store — #1624), fusing exact identity with how to
+    address it (#1558).  The result is model-facing text, so each mode is
+    asserted as a whole render."""
 
     _KITCHEN_SINK = (
         'Found 4 things matching "aurora beacon cascade", best first:\n'
@@ -3176,10 +3184,9 @@ class TestFindMine:
         "   how to use it: read it with collection_read_latest('aurora-watch'), "
         "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
-        "2. escalate-aurora — live skill entry in `skills`\n"
-        "   how to use it: read it with collection_get(memory='skills', "
-        "key='escalate-aurora'), edit it with update_entry(memory='skills', "
-        "key='escalate-aurora', content=<the new steps>)\n"
+        "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
+        "   how to use it: read it with skill_read('escalate-aurora'); to change it, "
+        "re-teach it with skill_create — the same name replaces it\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
         "entries stay readable with collection_read_latest('aurora-archive')\n"
@@ -3192,8 +3199,8 @@ class TestFindMine:
     @staticmethod
     async def _seed_world(db, client: LlmClient) -> None:
         """One object of every renderable family, all sharing the query's meaning:
-        an active collection, an archived collection, a log, and a skill entry —
-        plus the off-topic ``skills`` container (never a match)."""
+        an active collection, an archived collection, a log, and a taught skill
+        (seeded straight into the ``skill`` table with an axis-geometry anchor)."""
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await _create_collection(db, client, "aurora-archive", "aurora beacon delta")
         await CollectionArchiveTool(db).execute(memory="aurora-archive")
@@ -3201,10 +3208,17 @@ class TestFindMine:
             name="aurora-log",
             description="aurora echo foxtrot",
         )
-        await _create_collection(db, client, "skills", "reusable recipes")
-        await CollectionWriteTool(db, client, author="skills").execute(
-            memory="skills",
-            entries=[{"key": "escalate-aurora", "content": "aurora beacon cascade gamma"}],
+        db.skills.upsert(
+            SkillDraft(
+                name="escalate-aurora",
+                intent="aurora beacon cascade gamma",
+                description="aurora beacon cascade gamma",
+                steps=[],
+                holes=[],
+                source_run_id="run-teach",
+            ),
+            author="chat",
+            description_embedding=_axis_vec("aurora beacon cascade gamma"),
         )
 
     @pytest.mark.asyncio
@@ -3220,19 +3234,18 @@ class TestFindMine:
 
     @pytest.mark.asyncio
     async def test_type_filter_narrows_to_skills(self, tmp_path, mock_llm):
-        """``type=skill`` narrows the same world to the skill entry alone, with the
-        skill-specific addressing (the entry-vs-collection footgun answered in the
-        result)."""
+        """``type=skill`` narrows the same world to the taught skill alone, with
+        the skill-specific addressing (the skill-vs-collection footgun answered in
+        the result)."""
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
         result = await FindMineTool(db, client).execute(query="aurora beacon cascade", type="skill")
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
-            "1. escalate-aurora — live skill entry in `skills`\n"
-            "   how to use it: read it with collection_get(memory='skills', "
-            "key='escalate-aurora'), edit it with update_entry(memory='skills', "
-            "key='escalate-aurora', content=<the new steps>)"
+            "1. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
+            "   how to use it: read it with skill_read('escalate-aurora'); to change "
+            "it, re-teach it with skill_create — the same name replaces it"
         )
 
     @pytest.mark.asyncio

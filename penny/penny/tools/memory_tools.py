@@ -1574,11 +1574,6 @@ class CollectionUpdateTool(MemoryTool):
         "authoritative — if a field you tried to set isn't in it, the "
         'update didn\'t land; fix it and try again rather than saying "done".\n'
         "\n"
-        "For workflow guidance — which field maps to which user intent "
-        "(scope change vs cadence change vs silent flip), when to call "
-        "`memory_metadata(<collection>)` first, when to propose before "
-        "applying — read the recipes in your `skills` collection.\n"
-        "\n"
         "IMPORTANT: `extraction_prompt` is a FULL replacement — the whole "
         "prompt body, never a diff or a fragment; read the current body via "
         "`memory_metadata(<collection>)` first if you need to keep any of it."
@@ -2460,7 +2455,7 @@ _FIND_MINE_AMBIGUOUS_TAIL = (
 
 
 def _find_mine_state(match: ResolvedMatch) -> str:
-    """The live/archived state word: a skill entry is always ``live``; a
+    """The live/archived state word: a taught skill is always ``live``; a
     collection or log is ``active`` or ``archived``."""
     if match.kind == ResolvedKind.SKILL:
         return "live"
@@ -2468,10 +2463,11 @@ def _find_mine_state(match: ResolvedMatch) -> str:
 
 
 def _find_mine_type_label(match: ResolvedMatch) -> str:
-    """The family noun a hit renders — a skill names its containing collection so
-    the entry-vs-collection distinction is explicit."""
+    """The family noun a hit renders — a taught skill names the skill registry
+    (the sole skills store, #1624) so the skill-vs-collection distinction is
+    explicit."""
     if match.kind == ResolvedKind.SKILL:
-        return f"skill entry in `{PennyConstants.MEMORY_SKILLS_COLLECTION}`"
+        return "taught skill"
     return match.kind.value  # "collection" / "log"
 
 
@@ -2482,10 +2478,9 @@ def _find_mine_addressing(match: ResolvedMatch) -> str:
     model never derives this mapping — it copies the call verbatim."""
     name = match.name
     if match.kind == ResolvedKind.SKILL:
-        skills = PennyConstants.MEMORY_SKILLS_COLLECTION
         return (
-            f"read it with collection_get(memory='{skills}', key='{name}'), edit it with "
-            f"update_entry(memory='{skills}', key='{name}', content=<the new steps>)"
+            f"read it with skill_read('{name}'); to change it, re-teach it with "
+            f"skill_create — the same name replaces it"
         )
     if match.kind == ResolvedKind.LOG:
         return f"read it with log_read('{name}')"
@@ -2516,7 +2511,8 @@ class FindMineTool(MemoryTool):
 
     Embedding search (plain cosine, the #1565 explicit-search path) over every
     registry row's description anchor (collections + logs, ARCHIVED INCLUDED) and
-    every ``skills`` entry's content, ranked best-first.  Each hit returns its
+    every taught skill's description anchor (the ``skill`` table, the sole skills
+    store — #1624), ranked best-first.  Each hit returns its
     exact identity, family, live/archived state, AND how to address it — the
     specific tool + call shape that operates on it, fixed deterministically by the
     object's type (never derived by the model).  Ambiguity is returned, not
@@ -2528,7 +2524,7 @@ class FindMineTool(MemoryTool):
 
     name = "find_mine"
     description = (
-        "Find one of your own things — a collection, a log, or a skill — by "
+        "Find one of your own things — a collection, a log, or a taught skill — by "
         "meaning, when you don't know its exact name.  Pass `query`, a paraphrase "
         "of what it's about (\"the thing watching that product's price\"); "
         "optionally pass `type` (collection | log | skill) to narrow.  Returns the "
@@ -2834,7 +2830,7 @@ def build_memory_tools(
     ``read_similar`` (embedding search) and ``memory_metadata`` are the
     genuinely shape-agnostic reads — they work on either shape.  ``find_mine``
     (resolve-by-meaning, #1558) spans the whole registry — collections, logs, and
-    ``skills`` entries — and returns each hit's exact identity fused with how to
+    taught skills — and returns each hit's exact identity fused with how to
     address it, the guess-free fallback that every not-found error points at.
 
     ``DoneTool`` / ``send_message`` are intentionally not here — they're

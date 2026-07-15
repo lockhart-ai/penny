@@ -24,14 +24,13 @@ one guess-free tool call from the detail). Sections:
   #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
-- **Skills and rules** — the pinned firing channel for taught skills and
-  standing behavior rules (#1471). Rendered deterministically (all of them,
-  never a relevance guess) so a standing rule fires *ambiently* — the rule is in
-  the prompt, so firing costs **0 calls**. Two feeds: the taught-skill registry
-  (``db.skills``, #1590) whose full recipe is one ``skill_read(<name>)`` hop
-  away, and the legacy ``skills`` collection's standing-rule entries — behavior
-  rules that went dark when #1555 removed ambient recall, resurfaced here —
-  whose steps are one ``collection_read_latest("skills")`` hop away.
+- **Skills and rules** — the pinned firing channel for taught skills (#1471).
+  Rendered deterministically (all of them, never a relevance guess) so a taught
+  behavior fires *ambiently* — the skill is in the prompt, so firing costs
+  **0 calls**; its full recipe is one ``skill_read(<name>)`` hop away. One feed:
+  the taught-skill registry (``db.skills``, #1590) — the sole skills store. (The
+  legacy ``skills`` collection's standing-rules feed retired with the collection,
+  #1624/migration 0092.)
 - **About the user** — the durable user-fact core (name, timezone, location):
   deterministic facts, not a relevance guess, so personality survives without a
   lookup.
@@ -58,7 +57,7 @@ if TYPE_CHECKING:
 
     from penny.database.database import Database
     from penny.database.message_store import EmissionActivity, RunActivity, RunOutcomeStamp
-    from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
+    from penny.database.models import MemoryRow, MutationEvent
 
 
 class SelfStateHeader:
@@ -82,16 +81,12 @@ class SelfStateHeader:
     EMPTY_SKILLS = "(no skills or rules yet)"
     NO_PROFILE = "(no profile set yet)"
 
-    # The two feeds' group labels — each names its OWN guess-free drill-down (a
-    # taught skill resolves through ``skill_read``; a standing rule's steps live
-    # in the ``skills`` collection), so a rendered name is never a failed
-    # ``skill_read`` guess.  ``skill_read`` is named here, not in POINTERS, so the
-    # section addition stays surgical (POINTERS is shared, #1580 territory).
+    # The taught-skill feed's group label names its OWN guess-free drill-down
+    # (``skill_read(<name>)`` — the rendered name IS the argument), so a rendered
+    # name is never a failed guess.  ``skill_read`` is named here, not in
+    # POINTERS, so the section stays surgical (POINTERS is shared, #1580
+    # territory).
     TAUGHT_SKILLS_LABEL = "Skills you've been taught — skill_read(<name>) for the full recipe:"
-    STANDING_RULES_LABEL = (
-        "Standing rules you follow — "
-        f'collection_read_latest("{PennyConstants.MEMORY_SKILLS_COLLECTION}") for the steps:'
-    )
 
     # The overflow tail each bounded section shows when it has more rows than its
     # cap — the fetch tool named so the remainder is one guess-free call away
@@ -305,20 +300,21 @@ class SelfStateHeader:
             lines.append(self.MORE_MAP.format(count=overflow))
         return "\n".join(lines)
 
-    # ── Skills and standing rules ────────────────────────────────────────────
+    # ── Skills and rules ─────────────────────────────────────────────────────
 
     def _skills_section(self) -> str:
-        """The pinned firing channel for taught skills + standing rules (#1471).
+        """The pinned firing channel for taught skills (#1471).
 
-        Renders ALL of each feed (no relevance gating, no budget cap —
-        wholesale; trimming is a later tuning knob) so a standing rule fires
-        ambiently: it is *in the prompt*, so firing costs 0 calls. Each feed is a
-        labeled group naming its own guess-free drill-down; the whole section
-        collapses to one honest placeholder only when both feeds are empty."""
+        Renders ALL of the taught-skill registry (no relevance gating, no budget
+        cap — wholesale; trimming is a later tuning knob) so a taught behavior
+        fires ambiently: it is *in the prompt*, so firing costs 0 calls. The feed
+        is a labeled group naming its own guess-free drill-down; the section
+        collapses to one honest placeholder when nothing has been taught. (The
+        legacy standing-rules feed retired with the ``skills`` collection,
+        #1624.)"""
         taught = self._taught_skill_lines()
-        rules = self._standing_rule_lines()
-        lines = [self.SKILLS_HEADER, *taught, *rules]
-        if not taught and not rules:
+        lines = [self.SKILLS_HEADER, *taught]
+        if not taught:
             lines.append(self.EMPTY_SKILLS)
         return "\n".join(lines)
 
@@ -333,30 +329,6 @@ class SelfStateHeader:
         lines = [self.TAUGHT_SKILLS_LABEL]
         lines.extend(f"- {skill.name} — {self._one_line(skill.intent)}" for skill in skills)
         return lines
-
-    def _standing_rule_lines(self) -> list[str]:
-        """``- <title>`` per standing rule — the legacy ``skills`` collection's
-        entries (title order), under a label naming ``collection_read_latest``
-        as the drill-down to the steps. These behavior rules went dark when #1555
-        removed ambient recall; resurfacing them here is this ticket's purpose."""
-        entries = self._standing_rules()
-        if not entries:
-            return []
-        lines = [self.STANDING_RULES_LABEL]
-        lines.extend(f"- {entry.key}" for entry in entries)
-        return lines
-
-    def _standing_rules(self) -> list[MemoryEntry]:
-        """The ``skills`` collection's keyed entries, title-sorted for a stable
-        render (deterministic regardless of seed timing, the inventory
-        convention). Empty list when the collection is absent (a schema-only DB
-        before the seed migrations) — a read, never a raise."""
-        skills = self.db.memory(PennyConstants.MEMORY_SKILLS_COLLECTION)
-        if skills is None:
-            return []
-        entries = [entry for entry in skills.read_all() if entry.key]
-        entries.sort(key=lambda entry: entry.key or "")
-        return entries
 
     @staticmethod
     def _one_line(text: str) -> str:

@@ -196,8 +196,8 @@ class ResolvedKind(StrEnum):
 
     The axis that fixes the object's *finite action set*: the tool layer maps
     ``kind`` (+ archived state) to the exact tool call that operates on it, so the
-    model never derives the type→addressing mapping itself.  ``skill`` is a keyed
-    entry in the ``skills`` collection today (a dedicated table comes later);
+    model never derives the type→addressing mapping itself.  ``skill`` is a taught
+    skill in the ``skill`` table (the sole skills store, #1624);
     ``collection`` / ``log`` are registry rows.
     """
 
@@ -209,10 +209,10 @@ class ResolvedKind(StrEnum):
 class ResolvedMatch(BaseModel):
     """One resolve-by-meaning hit — identity fused with its affordances (#1558).
 
-    Carries the *exact* identity (``name`` — a collection/log name, or a skill
-    entry key), its ``kind``, whether it's ``archived`` (collections/logs; a skill
-    is always live), and a one-line ``label`` (the description for a collection or
-    log, empty for a skill) for disambiguation.  The tool renders identity + state
+    Carries the *exact* identity (``name`` — a collection/log name, or a taught
+    skill's name), its ``kind``, whether it's ``archived`` (collections/logs; a
+    skill is always live), and a one-line ``label`` (the description) for
+    disambiguation.  The tool renders identity + state
     + the deterministic addressing from these fields; ranking (plain cosine) is
     the store's, so no score is carried here.
     """

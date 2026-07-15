@@ -24,7 +24,7 @@ from penny.database.memory import (
     MemoryTypeError,
     ResolvedKind,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MutationEvent
+from penny.database.models import MemoryEntry, MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
@@ -1297,27 +1297,29 @@ def _norm(raw: list[float]) -> list[float]:
 
 class TestResolveObjects:
     """``resolve_objects`` — the plain-cosine resolve-by-meaning search over the
-    whole registry (collections + logs, archived included) plus ``skills`` entries
-    (#1558).  Deterministic unit-vector embeddings pin exact scores."""
+    whole registry (collections + logs, archived included) plus taught skills
+    (the ``skill`` table, the sole skills store — #1624).  Deterministic
+    unit-vector embeddings pin exact scores."""
 
     @staticmethod
-    def _add_skill(db, key: str, embedding: list[float]) -> None:
+    def _add_skill(db, name: str, embedding: list[float]) -> None:
         with Session(db.engine) as session:
             session.add(
-                MemoryEntry(
-                    memory_name=PennyConstants.MEMORY_SKILLS_COLLECTION,
-                    key=key,
-                    content="skill body",
-                    author="skills",
-                    content_embedding=serialize_embedding(embedding),
+                Skill(
+                    name=name,
+                    steps="[]",
+                    holes="[]",
+                    intent="skill body",
+                    description="skill body",
+                    description_embedding=serialize_embedding(embedding),
+                    author="chat",
                 )
             )
             session.commit()
 
     def _seed_mixed(self, db) -> None:
-        """One of every family sharing axis 0, plus off-axis noise: an active and
-        an archived collection, a log, the ``skills`` container (off-axis) with one
-        on-axis skill entry."""
+        """One of every family sharing axis 0: an active and an archived
+        collection, a log, and a taught skill."""
         db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
         db.memories.create_collection(
             "old-watch",
@@ -1326,13 +1328,6 @@ class TestResolveObjects:
             description_embedding=_unit_vec(0),
         )
         db.memories.create_log("feed", "d", description_embedding=_unit_vec(0))
-        # The skills CONTAINER sits off-axis (axis 3) — only its ENTRY is on-axis,
-        # so the container never surfaces while the skill does.
-        db.memories.create_collection(
-            PennyConstants.MEMORY_SKILLS_COLLECTION,
-            "d",
-            description_embedding=_unit_vec(3),
-        )
         self._add_skill(db, "escalate", _unit_vec(0))
 
     def test_spans_families_and_includes_archived(self, tmp_path):
@@ -1346,8 +1341,6 @@ class TestResolveObjects:
         assert ("old-watch", ResolvedKind.COLLECTION, True) in found  # archived included
         assert ("feed", ResolvedKind.LOG, False) in found
         assert ("escalate", ResolvedKind.SKILL, False) in found
-        # The off-axis skills container never surfaces — only its entry does.
-        assert all(name != PennyConstants.MEMORY_SKILLS_COLLECTION for name, _, _ in found)
 
     def test_kind_filter_narrows_to_one_family(self, tmp_path):
         db = _make_db(tmp_path)

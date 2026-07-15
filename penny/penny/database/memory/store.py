@@ -39,7 +39,7 @@ from penny.database.memory.types import (
     slug,
     wrong_shape_message,
 )
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, Skill
 from penny.database.mutation_store import MutationDetail, MutationStore
 
 logger = logging.getLogger(__name__)
@@ -647,7 +647,8 @@ class MemoryStore:
         Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
         no ambient centrality/cluster gating) of ``anchor`` against every registry
         row's description anchor (collections + logs, **archived included**) and
-        every ``skills`` entry's content vector.  ``kind`` narrows to one family;
+        every taught skill's description anchor (the ``skill`` table, the sole
+        skills store — #1624).  ``kind`` narrows to one family;
         ``None`` spans all three.  Only positively-correlated candidates survive
         (cosine > 0 — an orthogonal/anti-correlated object isn't a match, so a
         wholly-unrelated query returns an honest empty), capped at ``limit``.  The
@@ -667,7 +668,7 @@ class MemoryStore:
     ) -> list[tuple[ResolvedMatch, bytes]]:
         """Every (match, embedding-blob) pair eligible for ``resolve_objects`` —
         registry rows carrying a description anchor and, when ``kind`` allows,
-        ``skills`` entries carrying a content vector.  A row/entry without its
+        taught skills carrying a description anchor.  A row/skill without its
         vector is silently absent (the backfill fills it) — never surfaced
         unscored."""
         candidates: list[tuple[ResolvedMatch, bytes]] = []
@@ -691,23 +692,27 @@ class MemoryStore:
         return candidates
 
     def _skill_candidates(self) -> list[tuple[ResolvedMatch, bytes]]:
-        """The ``skills`` collection's keyed entries as resolvable skills — where
-        the entry-vs-collection confusion happens (skills are still entries
-        today).  Only entries carrying a content vector are eligible."""
+        """Taught skills as resolvable objects — the ``skill`` table (the sole
+        skills store, #1624), each anchored by its description vector (populated
+        at teach time).  Only skills carrying the vector are eligible."""
         with self._session() as session:
             rows = session.exec(
-                select(MemoryEntry).where(
-                    MemoryEntry.memory_name == PennyConstants.MEMORY_SKILLS_COLLECTION,
-                    MemoryEntry.content_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                select(Skill).where(
+                    Skill.description_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
                 )
             ).all()
         return [
             (
-                ResolvedMatch(name=row.key, kind=ResolvedKind.SKILL, archived=False, label=""),
-                row.content_embedding,
+                ResolvedMatch(
+                    name=row.name,
+                    kind=ResolvedKind.SKILL,
+                    archived=False,
+                    label=row.description,
+                ),
+                row.description_embedding,
             )
             for row in rows
-            if row.key is not None and row.content_embedding is not None
+            if row.description_embedding is not None
         ]
 
     # ── Idempotency at birth (#1567) ──────────────────────────────────────────
