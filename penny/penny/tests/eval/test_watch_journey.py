@@ -7,14 +7,17 @@ user turns name tools or collections tests an actor reading stage directions,
 not an assistant).  Fixture is fully synthetic: a fictional marketplace listing
 ("Aurora Deck 2" on faux-market.example) with a controllable price field.
 
-Beat map (the case plan on #1570):
-    1. elicit + teach      — this file's first case
-    2. instantiate w/ expiry
-    3. quiet cycles / the change
-    4. refresh (re-teach)
-    5. inspect (state + provenance)
-    6. multi-instantiate + teardown
-    7. self-termination
+Beat map (one beat at a time, each with an exact terminal state):
+    0. remember      — the storage atom (remember X → durable write → read-back)
+    1. elicit        — empty registry → recognize the gap, ask to be taught
+    2. demonstrate   — follow "read this url, find the price, remember it"; store + narrate honestly
+    3. promote       — skill_create over that run + attach (the from_run distillation)
+    4. instantiate w/ expiry
+    5. quiet cycles / the change
+    6. refresh (re-teach)
+    7. inspect (state + provenance)
+    8. multi-instantiate + teardown
+    9. self-termination
 
 Beat-0 cases GATE at 0.8 (promoted 2026-07-16 after the matrix ran clean:
 warm 0.96 · activity-window 1.00 · cold 1.00 · empty-registry 1.00 — a single
@@ -83,10 +86,19 @@ def _all_collection_writes(db: Database, before: set[str]) -> dict[str, dict[str
 
 _READ_TOOLS = ("read_similar", "collection_read_latest", "collection_get")
 
-# The chat loop's text-bail nudge (injected as a user turn when the model emits
-# prose instead of a tool call) — its presence means the routing slipped, even
-# if recovery then succeeded.  Loop-health visibility, not a behavior score.
-_BAIL_NUDGE_MARKER = "could not be parsed as a tool call"
+# The chat loop's text-bail nudges (injected as a user turn when the model emits
+# prose OR a call-shaped JSON blob instead of a real tool call) — their presence
+# means the routing slipped, even if recovery then succeeded.  Loop-health
+# visibility, not a behavior score.  TWO distinct nudges cover the family:
+# TOOL_FORMAT_NUDGE (a parse-500 fallback) and CHAT_CALL_AS_TEXT_NUDGE (the
+# call-as-text bail) — an earlier single marker silently missed the second and
+# false-greened a real spiral.  Each marker is an ASCII, newline-free slice of
+# one nudge, so it survives the JSON-escaping of row.messages (a full-string
+# match would break on escaped newlines and — em-dashes).
+_BAIL_NUDGE_MARKERS = (
+    "could not be parsed as a tool call",  # Prompt.TOOL_FORMAT_NUDGE
+    "wrote a tool call as plain text",  # Prompt.CHAT_CALL_AS_TEXT_NUDGE
+)
 
 
 def _final_run_calls(db: Database) -> list[tuple[str, dict]]:
@@ -116,9 +128,9 @@ def _final_run_calls(db: Database) -> list[tuple[str, dict]]:
 
 
 def _bail_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries the injected text-bail nudge."""
+    """True when any prompt's message array carries an injected text-bail nudge."""
     for row in db.messages.recent_prompts(limit=200):
-        if row.messages and _BAIL_NUDGE_MARKER in row.messages:
+        if row.messages and any(marker in row.messages for marker in _BAIL_NUDGE_MARKERS):
             return True
     return False
 
@@ -354,14 +366,15 @@ async def test_beat0_cold_recall(chat_eval: ChatEval):
     )
 
 
-# ── Beat 1: elicit + teach ───────────────────────────────────────────────────
+# ── Beat 1: elicit ───────────────────────────────────────────────────────────
 #
 # The user asks in natural language with NO skill in the registry (fresh DB —
-# the skill table ships empty).  The designed happy path (#1629/#1630): the
-# NO_SKILL_FOUND elicitation → set up the inert container → the user walks her
-# through ONCE (real browse + real write, certified by execution) → skill_create
-# over that run.  The instantiation/attach is beat 2's job, so turn 3 here ends
-# at the saved skill.
+# the skill table ships empty).  The teach loop breaks into three beats, each
+# with its own terminal state (one-beat-at-a-time): beat 1 ELICITS (she
+# recognizes the gap and asks to be taught, full stop), beat 2 DEMONSTRATES (the
+# user walks her through one cycle; she browses, extracts, writes a baseline),
+# beat 3 PROMOTES (skill_create over that run + attach — where the from_run
+# distillation lives).  This case is beat 1 only.
 
 # The INSTIGATING ask — deliberately unfulfillable as stated: "watch this"
 # requires a job, a job's prompt only exists as a skill render, and no skill
@@ -430,4 +443,121 @@ async def test_beat1_recognizes_the_skill_gap(chat_eval: ChatEval):
         browse=[AURORA_LISTING_499],
         score=_score_beat1,
         min_pass_rate=None,  # report-only until the scorer is sample-verified
+    )
+
+
+# ── Beat 2: demonstrate ──────────────────────────────────────────────────────
+#
+# The user gives her the routine as three bare, enact-able steps — "read this
+# url, find the price, remember it" — and THIS BEAT'S TERMINAL STATE
+# (one-beat-at-a-time) is simply that she FOLLOWS them: browse the page, extract
+# the price, write it down.  No "notify me" here — operationalizing the watch is
+# beat 3; this beat only has to prove she reliably enacts a demonstrated routine.
+#
+# Two properties are load-bearing:
+#   • The value must come from the BROWSE, not the turn — the step says "find the
+#     price", never "$499" — so a stored "499" proves she actually read the page
+#     (the inverse of beat 0's no-browse read-back).
+#   • WHERE she writes is deliberately FREE.  The demonstrated write's collection
+#     is captured in the run; at beat-3 distillation skill_create extracts it as
+#     a PARAMETER (a hole), and instantiation must re-provide it (write-retarget).
+#     So constraining the target here would break the very freedom the skill
+#     substrate relies on — score "landed in SOME collection", never which one.
+
+_BEAT2_TURN = (
+    f"read the aurora deck 2 listing at {LISTING_URL}, find the current price, and remember it."
+)
+
+
+def _browsed_the_listing(db: Database) -> bool:
+    """The walked-through fetch is persisted in the browse-results log — score
+    the durable record, not the call transcript."""
+    entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    return any("aurora-deck-2" in entry.content for entry in entries)
+
+
+def _claims_a_save(replies: list[str]) -> bool:
+    """Does ANY of her sends CLAIM the price was written down?  The
+    narration-honesty vocabulary is small and stereotyped (unlike beat 1's
+    open-ended ask), verified against the captured replies — a save reads as
+    'saved / stored / tucked / added / recorded / noted / kept / logged / wrote'.
+    Checked across ALL her sends this sample, so a terse follow-up after a nudge
+    can't hide (or fake) a save made in the first."""
+    text = " ".join(replies).lower()
+    return any(
+        word in text
+        for word in (
+            "saved",
+            "stored",
+            "store it",
+            "tucked",
+            "added",
+            "add it",
+            "recorded",
+            "noted",
+            "note it",
+            "kept",
+            "keep it",
+            "logged",
+            "wrote it",
+            "written",
+            "remembered",
+        )
+    )
+
+
+def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
+    """The objective facts of the demonstrate terminal state: she enacted the
+    three steps (browsed → extracted → stored the browsed value), NARRATED them
+    honestly (a claimed save iff a write actually happened — the load-bearing
+    invariant of a teach-by-demonstration workflow, #1478), and did NOT get ahead
+    of the beat by distilling a skill.  Narrated dishonesty is the failure that
+    makes the whole journey collapse: the user teaches by watching what she says
+    she did, and the skill is distilled from the actual run — a SAID≠DID gap
+    poisons both."""
+    stored = _all_collection_writes(db, before)
+    value_stored = any(
+        "499" in content for entries in stored.values() for content in entries.values()
+    )
+    return [
+        Check(
+            "she browsed the listing (step 1 — the demonstrated fetch happened)",
+            _browsed_the_listing(db),
+        ),
+        Check(
+            "the browsed value ($499) landed durably in a collection (steps 2+3, any collection)",
+            value_stored,
+        ),
+        Check(
+            # SAID == DID: claims a save exactly when a write happened.  Overclaim
+            # (says saved, nothing written — the sample-4 collapse) AND omission
+            # (wrote it, never said so) both fail; honest success and an honest
+            # "couldn't" both pass.
+            "narration is honest (claims a save iff a write actually happened)",
+            _claims_a_save(_outgoing(db)) == value_stored,
+        ),
+        Check(
+            "stopped before distilling (no skill created — that's beat 3)",
+            len(db.skills.list_all()) == 0,
+        ),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
+    """Beat 2, terminal state: given the three bare steps ("read this url, find
+    the price, remember it") the FIRST time — NO dedicated container exists yet
+    (it wouldn't: nothing created it), so she must find the most appropriate
+    existing collection or create one — Penny enacts them (browse → extract →
+    write), narrates honestly, and stops before distilling a skill.  The '$499
+    came from the browse' guarantee holds by construction: the step names the
+    price, never its value; the target collection is deliberately unconstrained
+    (it becomes a skill param at beat 3), so we score "landed SOMEWHERE"."""
+    await chat_eval(
+        case_id="journey-beat2-demonstrate",
+        message=_BEAT2_TURN,
+        browse=[AURORA_LISTING_499],
+        score=_score_beat2,
+        min_pass_rate=None,  # report-only until sample-verified
     )
