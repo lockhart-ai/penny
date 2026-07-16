@@ -1,13 +1,14 @@
 """The skill tool surface — ``skill_create`` (author by reference) and
 ``skill_read`` (list / render), #1590.
 
-``skill_create(name, from_run, steps=<range>)`` is the ONLY write path into a
-skill: the model points at a contiguous range of ONE verified run's tool-call
+``skill_create(name, steps=<range>, from_run=<optional>)`` is the ONLY write path
+into a skill: the model points at a contiguous range of ONE verified run's tool-call
 ordinals and the system copies those calls out of the ledger, enforcing
 **certified-by-execution** (every selected call succeeded in the source run) and
-factoring each argument by provenance into declared holes.  Cross-run splicing is
-structurally impossible — the single ``from_run`` argument is the whole selection
-scope.  ``skill_read`` renders the versionless registry.
+factoring each argument by provenance into declared holes.  ``from_run`` defaults to
+the demonstration just performed — the most recent completed chat run before this
+one (#1651) — and cross-run splicing is structurally impossible, so ONE run is always
+the whole selection scope.  ``skill_read`` renders the versionless registry.
 """
 
 from __future__ import annotations
@@ -118,6 +119,16 @@ def _render_skill_full(skill: Skill) -> str:
 
 # ── skill_create ──────────────────────────────────────────────────────────────
 
+# The omitted-``from_run`` default had no completed chat run to point at (#1651) —
+# actionable per the house error doctrine (the diagnosis + the concrete next move): a
+# skill is distilled from a demonstration, so the task must be walked through once
+# first.  "Save that as a skill" is an anaphora with nothing to resolve to.
+_NO_COMPLETED_RUN = (
+    "Nothing to promote yet — there's no completed run to save as a skill. A skill is "
+    "distilled from a demonstration, so walk through the task once first (make the tool "
+    "calls that actually do it), then save that run as a skill."
+)
+
 
 class SkillCreateTool(Tool):
     """Author a skill by reference to one verified run's ledger.
@@ -129,18 +140,19 @@ class SkillCreateTool(Tool):
     name = "skill_create"
     description = (
         "Save a verified run's tool-call sequence as a reusable skill — a named "
-        "recipe you can later instantiate as a collection.  You point at ONE run "
-        "you already ran cleanly (its id, from `read_run_calls`) and a contiguous "
-        "range of its steps; the system copies those exact calls (never retyped) "
-        "and figures out which arguments are parameters.\n"
+        "recipe you can later instantiate as a collection.  By default it saves the "
+        "run you JUST walked through (no run id needed); the system copies those "
+        "exact calls (never retyped) and figures out which arguments are parameters. "
+        "A skill comes from ONE run — you can't splice steps from several.\n"
         "\n"
         "Fields:\n"
         '- `name` — the skill\'s title (e.g. "Watch a page field"). Re-teaching '
         "the same name replaces it.\n"
-        "- `from_run` — the run id of the clean demonstration. A skill comes from "
-        "ONE run; you can't splice steps from several.\n"
         '- `steps` — the step range to keep, like "2-5" (steps 2 through 5) or a '
         'single "3". Trim off any incidental lookups at the start or end.\n'
+        "- `from_run` — OPTIONAL. Omit it to save the run you just demonstrated (the "
+        "most recent completed conversation). Pass a run id (from `read_run_calls`) "
+        "only to promote an OLDER run instead.\n"
         "\n"
         "Every selected step must have SUCCEEDED in that run (a skill only contains "
         "calls that actually worked). Arguments you took from the user's request "
@@ -155,16 +167,19 @@ class SkillCreateTool(Tool):
                 "type": "string",
                 "description": "The skill's title (unique; re-teach replaces)",
             },
-            "from_run": {
-                "type": "string",
-                "description": "The run id of the clean demonstration (from read_run_calls)",
-            },
             "steps": {
                 "type": "string",
                 "description": 'The step range to keep, e.g. "2-5" or a single "3"',
             },
+            "from_run": {
+                "type": "string",
+                "description": (
+                    "Optional — omit to save the run just demonstrated; pass an older "
+                    "run's id (from read_run_calls) to promote that instead"
+                ),
+            },
         },
-        "required": ["name", "from_run", "steps"],
+        "required": ["name", "steps"],
     }
     args_model = SkillCreateArgs
 
@@ -176,10 +191,15 @@ class SkillCreateTool(Tool):
             return f"You tried to save the skill{label} but it didn't work:"
         return f"You saved the skill{label}:"
 
-    def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
+    def __init__(
+        self, db: Database, llm_client: LlmClient, author: str, run_id: str | None = None
+    ) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
+        # The current turn's run id (#1651) — excluded when resolving the omitted
+        # ``from_run`` default, so "save that as a skill" never promotes itself.
+        self._run_id = run_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = SkillCreateArgs(**kwargs)
@@ -189,17 +209,36 @@ class SkillCreateTool(Tool):
             return ToolResult(message=str(exc), success=False)
 
     async def _create_from_ledger(self, args: SkillCreateArgs) -> ToolResult:
-        """The whole authoring flow, reading like a table of contents: parse the
+        """The whole authoring flow, reading like a table of contents: resolve the
+        source run (an explicit id, or the demonstration just performed), parse the
         range, load + project the run, select the slice, certify it, distill and
         persist.  Every refusal is a ``SkillCreateError`` caught once above."""
+        from_run = self._resolve_from_run(args.from_run)
         start, end = _parse_range(args.steps)
-        prompts = self._db.messages.get_run_prompts(args.from_run)
+        prompts = self._db.messages.get_run_prompts(from_run)
         if not prompts:
-            raise SkillCreateError(self._no_run_message(args.from_run))
+            raise SkillCreateError(self._no_run_message(from_run))
         projection = project_run(prompts)
         selected = self._select(projection, start, end)
-        self._require_certified(selected, args.from_run)
-        return await self._create(args.name, args.from_run, projection, selected)
+        self._require_certified(selected, from_run)
+        return await self._create(args.name, from_run, projection, selected)
+
+    def _resolve_from_run(self, explicit: str | None) -> str:
+        """The source run (#1651): an explicit id verbatim (promote an OLDER,
+        non-adjacent run), or — when omitted — the demonstration just performed, the
+        most recent completed chat run before this one.  Chat runs stamp no
+        ``run_outcome`` (only collectors do) and foreground chat turns are serialized,
+        so 'completed before this one' is exactly 'the latest chat run that is not the
+        current one'; the current run's id is excluded because its own prompts are
+        already in the ledger mid-loop.  No completed run to point at is an honest,
+        actionable refusal."""
+        chosen = (explicit or "").strip()
+        if chosen:
+            return chosen
+        resolved = self._db.messages.latest_completed_chat_run(exclude_run_id=self._run_id)
+        if resolved is None:
+            raise SkillCreateError(_NO_COMPLETED_RUN)
+        return resolved
 
     def _select(self, projection: RunProjection, start: int, end: int) -> list[RunProjectionStep]:
         """The run's non-``done`` steps whose ordinal is in ``[start, end]`` — a
@@ -277,10 +316,12 @@ class SkillCreateTool(Tool):
         skill, replaced = self._db.skills.upsert(
             draft, author=self._author, description_embedding=embedding
         )
+        # The echo names the selected run either way (#1651) — the resolved default
+        # or the explicit id — so the resolution is visible and SAID==DID-checkable.
         lead = (
-            f"Replaced the previous version of '{skill.name}'."
+            f"Replaced the previous version of '{skill.name}' from run {from_run}."
             if replaced
-            else f"Learned skill '{skill.name}'."
+            else f"Learned skill '{skill.name}' from run {from_run}."
         )
         return ToolResult(message=f"{lead}\n{_render_skill_full(skill)}", mutated=True)
 
@@ -346,7 +387,7 @@ class SkillReadTool(Tool):
         if not skills:
             return ToolResult(
                 message="No skills yet — teach one by demonstrating a flow, then "
-                "skill_create(name=<title>, from_run=<run id>, steps=<range>)."
+                "skill_create(name=<title>, steps=<range>)."
             )
         lines = [f"- {skill.name}: {skill.intent}" for skill in skills]
         return ToolResult(message="Your skills:\n" + "\n".join(lines))

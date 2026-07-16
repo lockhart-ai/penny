@@ -400,7 +400,7 @@ class Skill(SQLModel, table=True):
     steps distilled from ONE demonstrated run (#1590, stage ④ of #1562).
 
     A skill is authored only by reference to the ledger
-    (``skill_create(name, from_run, steps=<range>)``): the system copies a
+    (``skill_create(name, steps=<range>, from_run=<optional>)``): the system copies a
     contiguous, every-step-succeeded slice of a verified run's tool calls into
     ``steps`` (the ``LoggedToolCall`` shape as JSON) and factors each argument by
     provenance into declared ``holes`` (JSON) — a value from the user's utterance

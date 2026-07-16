@@ -3058,7 +3058,7 @@ def build_memory_tools(
         # Skill authoring / inspection rides the chat (lifecycle) surface — the user
         # teaches skills by demonstration; a cadence collector follows the rendered
         # text prompt and never touches the skill registry (#1590).
-        SkillCreateTool(db, llm_client, author=agent_name),
+        SkillCreateTool(db, llm_client, author=agent_name, run_id=run_id),
         SkillReadTool(db),
     ]
     mutations: list[Tool] = [

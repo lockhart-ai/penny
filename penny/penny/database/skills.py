@@ -4,7 +4,7 @@ steps→text render (#1590, stage ④ of #1562 / epic #1554).
 A **skill** is a certified-by-execution script distilled from ONE demonstrated
 run: an ordered list of structured steps in the ``LoggedToolCall`` shape (#1578)
 plus declared parameter *holes*.  It is authored only by reference to the ledger
-(``skill_create(name, from_run, steps=<range>)``) — the model points at a range
+(``skill_create(name, steps=<range>, from_run=<optional>)``) — the model points at a range
 of a verified run's persisted tool-call ordinals and the system copies the calls
 out, never re-emitting them.  Each argument leaf of a copied call is factored by
 **provenance** (the taint-tracking of #1471):

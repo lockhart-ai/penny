@@ -160,7 +160,7 @@ _MONEY_LITERAL = (
 # The WHOLE skill_create result — what the user sees of what was learned: the
 # lead, the identity/intent/holes lines, and the with-holes recipe.
 _CREATE_RESULT_LITERAL = (
-    "Learned skill 'Watch elevation'.\n"
+    "Learned skill 'Watch elevation' from run run-A.\n"
     "skill 'Watch elevation'\n"
     f"intent: {_UTTERANCE}\n"
     "holes: queries (required)\n"
@@ -327,7 +327,7 @@ async def test_skill_create_replaces_by_name(tmp_path):
     assert "Learned skill" in first.message
 
     second = await tool.execute(name="Watch elevation", from_run="run-D", steps="1-2")
-    assert "Replaced the previous version of 'Watch elevation'." in second.message
+    assert "Replaced the previous version of 'Watch elevation' from run run-D." in second.message
     # One row, now the two-step demonstration.
     assert len(db.skills.list_all()) == 1
     replaced = db.skills.get("Watch elevation")
@@ -347,6 +347,87 @@ async def test_skill_create_actionable_on_bad_input(tmp_path):
 
     unknown = await tool.execute(name="X", from_run="nope", steps="1")
     assert not unknown.success and "No run found with id 'nope'" in unknown.message
+
+
+# ── from_run optional: default to the demonstration just performed (#1651) ─────
+
+# The honest no-completed-run refusal, pinned verbatim (a local copy that must match
+# the production literal — the whole-render discipline).
+_NO_COMPLETED_RUN_LITERAL = (
+    "Nothing to promote yet — there's no completed run to save as a skill. A skill is "
+    "distilled from a demonstration, so walk through the task once first (make the tool "
+    "calls that actually do it), then save that run as a skill."
+)
+
+
+@pytest.mark.asyncio
+async def test_skill_create_defaults_to_the_demonstration_just_performed(tmp_path):
+    """``from_run`` omitted → the skill is distilled from the most recent COMPLETED
+    chat run before this one (the demo the user just walked through), and the CURRENT
+    run is excluded by id.  The echo names the selected run either way (#1651)."""
+    db = _make_db(tmp_path)
+    # The demonstration — an earlier completed chat turn.
+    _log_run(
+        db,
+        "run-A",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+            ("done", {}, "Cycle complete.", True),
+        ],
+    )
+    # The CURRENT "save that as a skill" turn — logged later, so it is the most recent
+    # chat run; it must be excluded, or the skill would be distilled from IT.
+    _log_run(db, "run-current", "save that as a skill", [("skill_read", {}, "ok", True)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-current")
+
+    result = await tool.execute(name="Watch elevation", steps="1-2")  # NO from_run
+
+    assert result.success and result.mutated
+    assert result.message == _CREATE_RESULT_LITERAL  # echoes "from run run-A"
+    stored = db.skills.get("Watch elevation")
+    assert stored is not None and stored.source_run_id == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_skill_create_explicit_from_run_promotes_the_named_older_run(tmp_path):
+    """The explicit path is unchanged: a ``from_run`` id promotes THAT run even when a
+    more-recent chat run exists — recency only drives the omitted default (#1651)."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-old",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+        ],
+    )
+    _log_run(db, "run-new", "something else entirely", [("skill_read", {}, "ok", True)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-new")
+
+    result = await tool.execute(name="Named", from_run="run-old", steps="1-2")
+    assert result.success
+    assert "from run run-old" in result.message
+    stored = db.skills.get("Named")
+    assert stored is not None and stored.source_run_id == "run-old"
+
+
+@pytest.mark.asyncio
+async def test_skill_create_no_completed_run_fails_honestly(tmp_path):
+    """``from_run`` omitted with no prior completed chat run → an actionable refusal
+    (nothing persisted), pinned verbatim (#1651)."""
+    db = _make_db(tmp_path)
+    # Only the current run exists in the ledger — nothing prior to promote.
+    _log_run(db, "run-current", "save that as a skill", [("skill_read", {}, "ok", True)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-current")
+
+    result = await tool.execute(name="X", steps="1-2")  # NO from_run
+
+    assert not result.success
+    assert result.message == _NO_COMPLETED_RUN_LITERAL
+    assert db.skills.get("X") is None
 
 
 # ── skill_read: render one / list all ─────────────────────────────────────────
@@ -388,7 +469,7 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
 # so this is what a fresh install's skill_read() returns.
 _EMPTY_LISTING = (
     "No skills yet — teach one by demonstrating a flow, then "
-    "skill_create(name=<title>, from_run=<run id>, steps=<range>)."
+    "skill_create(name=<title>, steps=<range>)."
 )
 
 

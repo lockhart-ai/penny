@@ -861,6 +861,37 @@ class MessageStore:
             grouped = self._group_runs(session, run_ids)
         return [grouped[run_id] for run_id in run_ids if run_id in grouped]
 
+    def latest_completed_chat_run(self, exclude_run_id: str | None) -> str | None:
+        """The run id of the most recent completed chat run other than
+        ``exclude_run_id`` — the demonstration ``skill_create`` promotes when its
+        ``from_run`` is omitted (#1651).
+
+        Chat runs stamp NO ``run_outcome`` (only collectors do — see
+        ``run_call_groups`` / ``set_run_outcome``), so 'completed' is not a column
+        read.  Foreground chat turns are serialized (single user), so any chat run
+        that is not the current one has necessarily finished — the discriminator is
+        the ``run_id``, not an outcome flag.  ``exclude_run_id`` is the current run,
+        whose prompts are already in the ledger mid-loop (and whose outcome is never
+        stamped); dropping it yields the immediately-prior demonstration.  Runs are
+        ordered by their last prompt's timestamp (datetime ordering, never id).
+        ``None`` when no prior chat run exists (the honest 'nothing to promote' case).
+        """
+        finished = func.max(PromptLog.timestamp)
+        with self._session() as session:
+            query = select(PromptLog.run_id, finished.label("finished")).where(
+                PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
+                PromptLog.agent_name == PennyConstants.CHAT_AGENT_NAME,
+            )
+            if exclude_run_id is not None:
+                query = query.where(PromptLog.run_id != exclude_run_id)
+            row = session.exec(
+                query.group_by(PromptLog.run_id).order_by(finished.desc()).limit(1)
+            ).first()
+            if row is None:
+                return None
+            run_id, _ = row
+        return run_id
+
     def get_run_prompts(self, run_id: str) -> list[PromptLog]:
         """Every prompt of one run, ascending time order — the raw material
         ``skill_create`` projects into ordinaled tool calls (#1590).  Empty when
