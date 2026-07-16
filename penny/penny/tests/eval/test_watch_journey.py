@@ -432,11 +432,10 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
     step_tools = [step.tool for step in steps]
     holes = holes_from_json(skill.holes) if skill else []
 
-    no_watch_yet = all(
-        row.extraction_prompt is None
-        for row in db.memories.list_all()
-        if row.type == "collection" and not row.archived
-    )
+    # Only collections SHE created this sample must be prompt-less (seeded
+    # system collections legitimately carry prompts — earlier check counted
+    # them and could never pass).
+    no_watch_yet = all(row.extraction_prompt is None for row in created)
 
     return [
         Check(
