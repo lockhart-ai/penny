@@ -187,8 +187,12 @@ def _delete_all_collections(db: Database) -> None:
             for row in session.exec(select(MemoryRow).where(MemoryRow.type == "collection")).all()
         ]
         for name in names:
-            session.exec(delete(MemoryEntry).where(MemoryEntry.memory_name == name))
-            session.exec(delete(MemoryRow).where(MemoryRow.name == name))
+            session.exec(
+                delete(MemoryEntry).where(MemoryEntry.memory_name == name)  # ty: ignore[invalid-argument-type]
+            )
+            session.exec(
+                delete(MemoryRow).where(MemoryRow.name == name)  # ty: ignore[invalid-argument-type]
+            )
         session.commit()
 
 
