@@ -34,6 +34,8 @@ from penny.database.memory.types import (
     MemoryNotFoundError,
     MemoryType,
     MemoryTypeError,
+    ResolvedEntry,
+    ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
     slug,
@@ -697,38 +699,59 @@ class MemoryStore:
 
     def resolve_objects(
         self, anchor: list[float], kind: ResolvedKind | None, limit: int
-    ) -> list[ResolvedMatch]:
-        """Rank Penny's own addressable objects by meaning, best-first (#1558).
+    ) -> list[ResolvedHit]:
+        """Rank Penny's own addressable things by meaning, best-first (#1558, #1640).
 
         Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
         no ambient centrality/cluster gating) of ``anchor`` against every registry
-        row's description anchor (collections + logs, **archived included**) and
-        every taught skill's description anchor (the ``skill`` table, the sole
-        skills store — #1624).  ``kind`` narrows to one family;
-        ``None`` spans all three.  Only positively-correlated candidates survive
-        (cosine > 0 — an orthogonal/anti-correlated object isn't a match, so a
-        wholly-unrelated query returns an honest empty), capped at ``limit``.  The
-        tool layer turns each match into identity + state + the deterministic
-        addressing; ambiguity (several hits) is returned, never silently resolved.
+        row's description anchor (collections + logs, **archived included**), every
+        taught skill's description anchor (the ``skill`` table, the sole skills
+        store — #1624), AND every stored entry's content/key anchors across the
+        non-archived collections + real logs (#1640).  ``kind`` narrows to one
+        family; ``None`` spans all of them.
+
+        The fusion is honest because it needs no rescaling: object description
+        anchors and entry content/key anchors are all produced by the SAME
+        embedding model, so they share one vector space and their cosines rank
+        directly against each other — one ``cosine_scores`` pass over the union.
+        An entry contributes up to two facet candidates (content + key); the
+        ranked walk keeps the FIRST (best-scoring) facet of each entry and skips
+        the rest, so an entry scores as the max over its facets (the same
+        "either signal" disjunction the write-dedup uses).  Only positively
+        correlated candidates survive (cosine > 0 — a wholly-unrelated query
+        returns an honest empty), capped at ``limit`` distinct hits.  The tool
+        layer turns each hit into identity + the deterministic addressing;
+        ambiguity (several hits) is returned, never silently resolved.
         """
         candidates = self._resolution_candidates(kind)
         if not candidates:
             return []
         scores = sim.cosine_scores([blob for _, blob in candidates], anchor)
-        order = list(np.argsort(-scores))
-        ranked = [candidates[i][0] for i in order if float(scores[i]) > 0.0]
-        return ranked[:limit]
+        ranked: list[ResolvedHit] = []
+        seen_entries: set[int] = set()
+        for index in np.argsort(-scores):
+            if float(scores[index]) <= 0.0:
+                break  # ``argsort(-scores)`` is score-descending — the rest are ≤ 0 too.
+            hit = candidates[index][0]
+            if isinstance(hit, ResolvedEntry):
+                if hit.entry_id in seen_entries:
+                    continue  # a lower-scoring facet of an entry already ranked.
+                seen_entries.add(hit.entry_id)
+            ranked.append(hit)
+            if len(ranked) >= limit:
+                break
+        return ranked
 
-    def _resolution_candidates(
-        self, kind: ResolvedKind | None
-    ) -> list[tuple[ResolvedMatch, bytes]]:
-        """Every (match, embedding-blob) pair eligible for ``resolve_objects`` —
-        registry rows carrying a description anchor and, when ``kind`` allows,
-        taught skills carrying a description anchor.  A row/skill without its
-        vector is silently absent (the backfill fills it) — never surfaced
-        unscored."""
-        candidates: list[tuple[ResolvedMatch, bytes]] = []
-        if kind is not ResolvedKind.SKILL:
+    def _resolution_candidates(self, kind: ResolvedKind | None) -> list[tuple[ResolvedHit, bytes]]:
+        """Every (hit, embedding-blob) pair eligible for ``resolve_objects`` —
+        registry rows carrying a description anchor, taught skills carrying a
+        description anchor, and (when ``kind`` allows) stored entries carrying a
+        content/key anchor.  A row/skill/entry without its vector is silently
+        absent (the backfill fills it) — never surfaced unscored.  ``kind`` gates
+        which families contribute: entries appear only for the unfiltered search
+        or an explicit ``type=entry`` (the ``type`` narrows the family)."""
+        candidates: list[tuple[ResolvedHit, bytes]] = []
+        if kind in (None, ResolvedKind.COLLECTION, ResolvedKind.LOG):
             for row in self.list_all():
                 if row.description_embedding is None:
                     continue
@@ -745,7 +768,61 @@ class MemoryStore:
                 candidates.append((match, row.description_embedding))
         if kind in (None, ResolvedKind.SKILL):
             candidates.extend(self._skill_candidates())
+        if kind in (None, ResolvedKind.ENTRY):
+            candidates.extend(self._entry_candidates())
         return candidates
+
+    def _entry_candidates(self) -> list[tuple[ResolvedEntry, bytes]]:
+        """Every (entry-hit, facet-embedding) pair eligible for resolution (#1640).
+
+        Each ``memory_entry`` in a NON-archived collection or real log contributes
+        up to two facet candidates — its ``content_embedding`` and, when keyed, its
+        ``key_embedding`` — so a query paraphrasing either the stored value or its
+        key surfaces the entry (``resolve_objects`` dedups the two facets by entry
+        id, keeping the better-scoring — max-of-facets).  Facades over
+        ``messagelog`` / ``promptlog`` have no ``memory_entry`` rows, so they never
+        appear; archived memories are excluded via the containing-row filter."""
+        pairs: list[tuple[ResolvedEntry, bytes]] = []
+        for entry, container_kind in self._embedded_entry_rows():
+            hit = ResolvedEntry(
+                entry_id=entry.id,  # ty: ignore[invalid-argument-type]
+                memory_name=entry.memory_name,
+                container_kind=container_kind,
+                key=entry.key,
+                content=entry.content,
+            )
+            if entry.content_embedding is not None:
+                pairs.append((hit, entry.content_embedding))
+            if entry.key_embedding is not None:
+                pairs.append((hit, entry.key_embedding))
+        return pairs
+
+    def _embedded_entry_rows(self) -> list[tuple[MemoryEntry, ResolvedKind]]:
+        """Every embedded entry in a non-archived collection/log, paired with its
+        container's kind (``collection`` | ``log``).  One pass over ``memory_entry``
+        — a single-user deployment, so no index gymnastics — filtered against the
+        registry's live (non-archived) rows built from ``list_all`` (which also
+        supplies each container's shape); an entry whose memory is archived or is a
+        facade marker with no real rows never matches."""
+        kinds = {
+            row.name: (
+                ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
+            )
+            for row in self.list_all()
+            if not row.archived
+        }
+        with self._session() as session:
+            entries = session.exec(
+                select(MemoryEntry).where(
+                    or_(
+                        MemoryEntry.content_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                        MemoryEntry.key_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                    )
+                )
+            ).all()
+        return [
+            (entry, kinds[entry.memory_name]) for entry in entries if entry.memory_name in kinds
+        ]
 
     def _skill_candidates(self) -> list[tuple[ResolvedMatch, bytes]]:
         """Taught skills as resolvable objects — the ``skill`` table (the sole

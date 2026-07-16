@@ -42,6 +42,8 @@ from penny.database.memory import (
     MemoryAlreadyExistsError,
     MemoryNotFoundError,
     MemoryType,
+    ResolvedEntry,
+    ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
     WriteResult,
@@ -85,7 +87,7 @@ from penny.tools.memory_args import (
     CollectionUpdateArgs,
     CollectionWriteArgs,
     ExistsArgs,
-    FindMineArgs,
+    FindArgs,
     GetEventArgs,
     LogAppendArgs,
     LogCreateArgs,
@@ -289,7 +291,7 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
 # collide.
 _DESCRIPTION_EMBED_DEGRADED = (
     " (Heads up: couldn't embed its description just now — a transient embedding "
-    "error — so its meaning anchor is unset and it won't resolve via find_mine "
+    "error — so its meaning anchor is unset and it won't resolve via find "
     "until it self-heals on the next restart.)"
 )
 
@@ -384,7 +386,7 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
     """``from skill: <name> (<param>=<value>, …)`` — the skill this collection was
     instantiated from (#1591's front door) and the params bound into its render, so
     the render names the recipe's origin.  The skill name is a live anchor: one
-    ``skill_read(<name>)`` / ``find_mine`` hop reaches its steps + holes (n≤1), and
+    ``skill_read(<name>)`` / ``find`` hop reaches its steps + holes (n≤1), and
     the bound params are the reachable input a future rebind/re-render consumes.
     Params are omitted when the skill had no holes (``from skill: <name>``).
     Returns ``None`` for a hand-authored / seeded collection (``skill_name`` NULL),
@@ -444,7 +446,7 @@ async def resolve_skill(db: Database, llm_client: LlmClient, query: str) -> Skil
     vec = await embed_text(llm_client, query)
     if vec is None:
         return SkillResolution(kind=SkillResolutionKind.EMBED_FAILED)
-    candidates = db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MINE_MATCH_LIMIT)
+    candidates = db.skills.resolve_by_meaning(vec, PennyConstants.FIND_MATCH_LIMIT)
     if not candidates:
         return SkillResolution(kind=SkillResolutionKind.NO_SKILL_FOUND)
     return SkillResolution(kind=SkillResolutionKind.AMBIGUOUS, candidates=candidates)
@@ -507,7 +509,7 @@ def validate_source_log(db: Database, source_log: str | None) -> ToolResult | No
         return ToolResult(
             message=(
                 f"on_advance source '{source_log}' isn't a memory I have — copy an exact log "
-                "name from your store map (collection_catalog / find_mine resolves one), then "
+                "name from your store map (collection_catalog / find resolves one), then "
                 "call the tool again."
             ),
             success=False,
@@ -576,7 +578,7 @@ class CollectionCreateTool(MemoryTool):
         "- `name` — unique slug for the collection (lowercase, hyphens).\n"
         "- `description` — REQUIRED. What this collection is for, in the user's own words "
         '("keep an eye on the price of that jacket"). It is the collection\'s meaning '
-        "anchor (how find_mine resolves it), so get it right and confirm it back.\n"
+        "anchor (how find resolves it), so get it right and confirm it back.\n"
         "- `skill` — OPTIONAL. The skill to instantiate, by exact name or a "
         'paraphrase of what it does ("watch a page for a change"). Omit it for an inert '
         "storage collection. If your paraphrase matches several skills I'll list them to "
@@ -1602,7 +1604,7 @@ class CollectionUpdateTool(MemoryTool):
         "Fields:\n"
         "- `name` (required) — the collection to update.\n"
         "- `description` — content-reflective one-line summary AND the "
-        "meaning anchor (find_mine / resolve-by-meaning). Changing it "
+        "meaning anchor (find / resolve-by-meaning). Changing it "
         "re-embeds it, so keep it an accurate summary of the subject "
         "matter. It does not drive the collector — change the "
         "extraction_prompt for that.\n"
@@ -1646,7 +1648,7 @@ class CollectionUpdateTool(MemoryTool):
                 "type": "string",
                 "description": (
                     "Content-reflective one-line summary AND the meaning anchor "
-                    "(find_mine / resolve-by-meaning) — changing it re-embeds "
+                    "(find / resolve-by-meaning) — changing it re-embeds "
                     "the collection. Keep it an accurate summary of the "
                     "subject matter."
                 ),
@@ -2386,14 +2388,14 @@ class ReadRunCallsTool(CursorReadTool):
 
 
 # An id with no recognised type tag: name what IS addressable + the guess-free
-# fallbacks (find_mine for names, the activity block for events), never a silent
+# fallbacks (find for names, the activity block for events), never a silent
 # empty (the anchor discipline — a rendered id resolves in one call, a malformed
 # one recovers).
 _GET_EVENT_UNTYPED = (
     "'{event_id}' isn't a typed event id.  Pass a run token exactly as your "
     "current-state activity block renders it — get_event(event_id='run <id>'), "
     "copying the whole `run <id>` token.  (Runs are the addressable events right "
-    "now; to resolve a collection or log by meaning use find_mine(query=<text>), "
+    "now; to resolve a collection or log by meaning use find(query=<text>), "
     "and your activity block names every recent event.)"
 )
 
@@ -2546,26 +2548,27 @@ class LogAppendTool(MemoryTool):
         return ToolResult(message=f"Appended to '{args.memory}'.", mutated=True)
 
 
-# ── Resolve by meaning (find_mine) ──────────────────────────────────────────
+# ── Resolve by meaning (find) ────────────────────────────────────────────────
 #
 # Identity and affordances are answered together: every hit renders its exact
 # identity AND how to address it — the specific tool + call shape that operates
-# on it.  The type→addressing map is DETERMINISTIC (the object's family fixes its
+# on it.  The type→addressing map is DETERMINISTIC (the thing's family fixes its
 # finite action set); the model never derives it, it copies the call verbatim.
 # This dissolves the entry-vs-collection footgun (a skill entry addressed with
 # collection tools) by answering "what can be done with it" in the same breath as
-# "what is it" (#1558).
+# "what is it" (#1558).  Stored entries are a fourth family (#1640): the hit
+# CARRIES the value, so for a short fact the find IS the answer.
 
-_FIND_MINE_EMBED_FAILURE = (
+_FIND_EMBED_FAILURE = (
     "Couldn't embed your query (a transient embedding error) — the meaning search "
-    "needs it. Retry find_mine(query=<what the thing is about>) in a moment, or list "
+    "needs it. Retry find(query=<what the thing is about>) in a moment, or list "
     "everything with collection_catalog()."
 )
 
 # Zero matches is an honest empty, not an error — name the wider nets (the catalog
 # spans archived collections too; the self-state header names active mechanisms,
 # logs, and recent activity) so the model never dead-ends on a miss.
-_FIND_MINE_EMPTY = (
+_FIND_EMPTY = (
     'Nothing of yours matched "{query}"{kind_clause}. Widen the net: '
     "collection_catalog() lists every collection (archived included), and your "
     "current-state header names your active mechanisms, logs, and recent activity."
@@ -2573,13 +2576,18 @@ _FIND_MINE_EMPTY = (
 
 # Ambiguity is RETURNED, never silently resolved: several hits come back ranked
 # with how to narrow.
-_FIND_MINE_AMBIGUOUS_TAIL = (
+_FIND_AMBIGUOUS_TAIL = (
     "Ranked by closeness — if one is what you meant, use its addressing above; "
-    "otherwise narrow by its exact name, or pass type=<collection|log|skill>."
+    "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
 )
 
+# A stored entry's value renders as one compact, whitespace-collapsed line — a
+# short fact shows whole (the find IS the answer, #1640), a long one is capped
+# like the run-trace result preview so a big value can't blow up the result.
+_ENTRY_PREVIEW_CHARS = 120
 
-def _find_mine_state(match: ResolvedMatch) -> str:
+
+def _find_state(match: ResolvedMatch) -> str:
     """The live/archived state word: a taught skill is always ``live``; a
     collection or log is ``active`` or ``archived``."""
     if match.kind == ResolvedKind.SKILL:
@@ -2587,7 +2595,7 @@ def _find_mine_state(match: ResolvedMatch) -> str:
     return "archived" if match.archived else "active"
 
 
-def _find_mine_type_label(match: ResolvedMatch) -> str:
+def _find_type_label(match: ResolvedMatch) -> str:
     """The family noun a hit renders — a taught skill names the skill registry
     (the sole skills store, #1624) so the skill-vs-collection distinction is
     explicit."""
@@ -2596,7 +2604,7 @@ def _find_mine_type_label(match: ResolvedMatch) -> str:
     return match.kind.value  # "collection" / "log"
 
 
-def _find_mine_addressing(match: ResolvedMatch) -> str:
+def _find_addressing(match: ResolvedMatch) -> str:
     """The deterministic type→addressing map: the object's family (plus archived
     state) fixes the exact tool call that operates on it, so following the stated
     addressing succeeds with no further guessing (the anchor discipline).  The
@@ -2621,42 +2629,91 @@ def _find_mine_addressing(match: ResolvedMatch) -> str:
     )
 
 
-def _render_find_mine_hit(index: int, match: ResolvedMatch) -> str:
-    """One fused hit: ``N. <name> — <state> <type>[: <scope>]`` then the
+def _entry_preview(content: str) -> str:
+    """One compact, whitespace-collapsed line of an entry's stored value (#1640) —
+    shown whole when short (the find carries the answer), capped when long."""
+    collapsed = " ".join(content.split())
+    if len(collapsed) <= _ENTRY_PREVIEW_CHARS:
+        return collapsed
+    return f"{collapsed[:_ENTRY_PREVIEW_CHARS].rstrip()}…"
+
+
+def _entry_identity(entry: ResolvedEntry) -> str:
+    """The entry's head identity: a keyed collection entry shows its invocation-form
+    key in its collection; a keyless log entry shows its ``#<id>`` handle in its
+    log (the two forms the entry can be read back by)."""
+    if entry.key is None:
+        return f"entry #{entry.entry_id} in `{entry.memory_name}` ({entry.container_kind.value})"
+    return f"entry {render_key(entry.key)} in `{entry.memory_name}`"
+
+
+def _entry_addressing(entry: ResolvedEntry) -> str:
+    """How to read the stored entry back — deterministic from whether it is keyed: a
+    keyed collection entry is one ``collection_get`` away (re-reads the exact value
+    the find already carried); a keyless log entry names its ``<log>#<id>`` handle
+    and the ``log_read`` that surfaces it (the entry_by_id-style retrieval, #1640)."""
+    if entry.key is None:
+        handle = f"{entry.memory_name}{PennyConstants.MEMORY_HANDLE_SEPARATOR}{entry.entry_id}"
+        return f"log_read('{entry.memory_name}') — the full entry is {handle}"
+    return f"collection_get(memory='{entry.memory_name}', key='{entry.key}')"
+
+
+def _render_entry_hit(index: int, entry: ResolvedEntry) -> str:
+    """One stored-entry hit (#1640): its identity + the value it carries, then how to
+    read it back — mirroring the object hit's two-line shape."""
+    head = f'{index}. {_entry_identity(entry)} — "{_entry_preview(entry.content)}"'
+    return f"{head}\n   read it: {_entry_addressing(entry)}"
+
+
+def _render_object_hit(index: int, match: ResolvedMatch) -> str:
+    """One object hit: ``N. <name> — <state> <type>[: <scope>]`` then the
     verbatim-usable addressing on the next line."""
-    head = f"{index}. {match.name} — {_find_mine_state(match)} {_find_mine_type_label(match)}"
+    head = f"{index}. {match.name} — {_find_state(match)} {_find_type_label(match)}"
     if match.label:
         head += f": {match.label}"
-    return f"{head}\n   how to use it: {_find_mine_addressing(match)}"
+    return f"{head}\n   how to use it: {_find_addressing(match)}"
 
 
-class FindMineTool(MemoryTool):
-    """Resolve one of Penny's own objects by meaning — the guess-free fallback
-    when the exact name/type isn't ambient (#1558).
+def _render_find_hit(index: int, hit: ResolvedHit) -> str:
+    """One fused hit, best-first ranked — dispatched by family: a stored entry
+    renders its value + how to read it, an object its state/type + how to use it."""
+    if isinstance(hit, ResolvedEntry):
+        return _render_entry_hit(index, hit)
+    return _render_object_hit(index, hit)
+
+
+class FindTool(MemoryTool):
+    """Find anything of Penny's own by meaning — the guess-free fallback when the
+    exact name/key isn't ambient (#1558, #1640).
 
     Embedding search (plain cosine, the #1565 explicit-search path) over every
-    registry row's description anchor (collections + logs, ARCHIVED INCLUDED) and
+    registry row's description anchor (collections + logs, ARCHIVED INCLUDED),
     every taught skill's description anchor (the ``skill`` table, the sole skills
-    store — #1624), ranked best-first.  Each hit returns its
-    exact identity, family, live/archived state, AND how to address it — the
-    specific tool + call shape that operates on it, fixed deterministically by the
-    object's type (never derived by the model).  Ambiguity is returned, not
+    store — #1624), AND every stored entry's content/key anchors across the
+    non-archived collections + real logs (#1640), ranked best-first in ONE fused
+    list.  An object hit returns its exact identity, family, live/archived state,
+    AND how to address it — the specific tool + call shape that operates on it,
+    fixed deterministically by its type (never derived by the model).  An entry hit
+    CARRIES the stored value plus how to read it back, so for a short fact the find
+    IS the answer (one call, no container guess).  Ambiguity is returned, not
     resolved: several candidates come back ranked with how to narrow; zero matches
     is an honest empty naming the catalog + self-state header as the wider net.
     Dissolves the name-guessing loop and the entry-vs-collection footgun by
     answering "what is it" and "what can be done with it" in one result.
     """
 
-    name = "find_mine"
+    name = "find"
     description = (
-        "Find one of your own things — a collection, a log, or a taught skill — by "
-        "meaning, when you don't know its exact name.  Pass `query`, a paraphrase "
-        "of what it's about (\"the thing watching that product's price\"); "
-        "optionally pass `type` (collection | log | skill) to narrow.  Returns the "
-        "closest matches, each with its exact name, type, whether it's active or "
-        "archived, and the exact tool call that operates on it — archived things "
-        "included.  Use it instead of guessing a name: a guessed name fails, this "
-        "resolves the real one."
+        "Find anything of your own by meaning, when you don't know its exact name — "
+        "a collection, a log, a taught skill, or a single stored entry (a fact you "
+        "saved).  Pass `query`, a paraphrase of what it's about (\"what I said that "
+        'product costs"); optionally pass `type` (collection | log | skill | entry) '
+        "to narrow.  Returns the closest matches, best first: a collection/log/skill "
+        "with its exact name, whether it's active or archived, and the exact tool "
+        "call that operates on it (archived included); a stored entry with the value "
+        "it holds and how to read it back.  Use it instead of guessing a name: a "
+        "guessed name fails, this resolves the real one — and for a short fact the "
+        "returned value IS the answer."
     )
     parameters = {
         "type": "object",
@@ -2670,45 +2727,45 @@ class FindMineTool(MemoryTool):
             "type": {
                 "type": "string",
                 "enum": [kind.value for kind in ResolvedKind],
-                "description": "Optional — narrow to 'collection', 'log', or 'skill'.",
+                "description": "Optional — narrow to 'collection', 'log', 'skill', or 'entry'.",
             },
         },
         "required": ["query"],
     }
-    args_model = FindMineArgs
+    args_model = FindArgs
 
     @classmethod
     def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
         query = arguments.get("query")
         label = f' for "{query}"' if query else ""
         if not result.success:
-            return f"You tried to find one of your own things{label} but it didn't work:"
-        return f"You looked for one of your own things{label}:"
+            return f"You tried to find something of your own{label} but it didn't work:"
+        return f"You looked for something of your own{label}:"
 
     def __init__(self, db: Database, llm_client: LlmClient) -> None:
         self._db = db
         self._llm = llm_client
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        args = FindMineArgs(**kwargs)
+        args = FindArgs(**kwargs)
         vec = await embed_text(self._llm, args.query)
         if vec is None:
-            logger.warning("find_mine: query embedding failed transiently")
-            return ToolResult(message=_FIND_MINE_EMBED_FAILURE, success=False)
+            logger.warning("find: query embedding failed transiently")
+            return ToolResult(message=_FIND_EMBED_FAILURE, success=False)
         kind = ResolvedKind(args.type) if args.type is not None else None
-        matches = self._db.memories.resolve_objects(vec, kind, PennyConstants.FIND_MINE_MATCH_LIMIT)
-        return ToolResult(message=self._format(args.query, kind, matches))
+        hits = self._db.memories.resolve_objects(vec, kind, PennyConstants.FIND_MATCH_LIMIT)
+        return ToolResult(message=self._format(args.query, kind, hits))
 
-    def _format(self, query: str, kind: ResolvedKind | None, matches: list[ResolvedMatch]) -> str:
-        if not matches:
+    def _format(self, query: str, kind: ResolvedKind | None, hits: list[ResolvedHit]) -> str:
+        if not hits:
             kind_clause = f" (type={kind.value})" if kind is not None else ""
-            return _FIND_MINE_EMPTY.format(query=query, kind_clause=kind_clause)
-        body = "\n".join(_render_find_mine_hit(i, m) for i, m in enumerate(matches, start=1))
-        if len(matches) == 1:
+            return _FIND_EMPTY.format(query=query, kind_clause=kind_clause)
+        body = "\n".join(_render_find_hit(i, h) for i, h in enumerate(hits, start=1))
+        if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
         return (
-            f'Found {len(matches)} things matching "{query}", best first:\n{body}\n'
-            f"{_FIND_MINE_AMBIGUOUS_TAIL}"
+            f'Found {len(hits)} things matching "{query}", best first:\n{body}\n'
+            f"{_FIND_AMBIGUOUS_TAIL}"
         )
 
 
@@ -2953,9 +3010,10 @@ def build_memory_tools(
       entry mutations are unrestricted, since edits are user-directed.
 
     ``read_similar`` (embedding search) and ``memory_metadata`` are the
-    genuinely shape-agnostic reads — they work on either shape.  ``find_mine``
-    (resolve-by-meaning, #1558) spans the whole registry — collections, logs, and
-    taught skills — and returns each hit's exact identity fused with how to
+    genuinely shape-agnostic reads — they work on either shape.  ``find``
+    (resolve-by-meaning, #1558/#1640) spans the whole registry — collections, logs,
+    taught skills, and stored entries — and returns each hit's exact identity fused
+    with how to
     address it, the guess-free fallback that every not-found error points at.
 
     ``DoneTool`` / ``send_message`` are intentionally not here — they're
@@ -2996,7 +3054,7 @@ def build_memory_tools(
         ReadRunCallsTool(db, agent_name),
         GetEventTool(db),
         ExistsTool(db, llm_client),
-        FindMineTool(db, llm_client),
+        FindTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
         CollectionCreateTool(db, llm_client, created_by_run_id=run_id),

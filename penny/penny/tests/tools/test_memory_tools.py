@@ -67,7 +67,7 @@ from penny.tools.memory_tools import (
     CollectionWriteTool,
     DoneTool,
     ExistsTool,
-    FindMineTool,
+    FindTool,
     GetEventTool,
     LogAppendTool,
     LogCreateTool,
@@ -2452,13 +2452,13 @@ class TestLogTools:
     @pytest.mark.asyncio
     async def test_get_event_untyped_id_is_actionable(self, tmp_path):
         """An id with no recognised type tag is refused, not silently emptied — the
-        message names what IS addressable and the guess-free fallbacks (find_mine +
+        message names what IS addressable and the guess-free fallbacks (find +
         the activity block), never a bare 'not found' (#1580)."""
         db = _make_db(tmp_path)
         result = await GetEventTool(db).run(event_id="news-1")
         assert result.success is False
         assert "news-1" in result.message
-        assert "find_mine" in result.message
+        assert "find(query=" in result.message
 
     @pytest.mark.asyncio
     async def test_get_event_unknown_run_is_actionable(self, tmp_path):
@@ -2789,8 +2789,8 @@ class TestExistsAndDone:
         assert result.success is False
         assert "lieks" in result.message
         assert "not found" in result.message
-        # The wrong-name miss names find_mine as the guess-free recovery (#1558).
-        assert "find_mine(query=" in result.message
+        # The wrong-name miss names find as the guess-free recovery (#1558).
+        assert "find(query=" in result.message
 
     @pytest.mark.asyncio
     async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
@@ -3088,7 +3088,7 @@ class TestFactory:
         "get_event",
         "read_similar",
         "exists",
-        "find_mine",
+        "find",
         # Lifecycle (shape)
         "collection_create",
         "collection_update",
@@ -3475,9 +3475,9 @@ class TestCollectionSkillProvenanceRender:
         assert "from skill: daily-digest (" not in result.message
 
 
-# ── find_mine: resolve-by-meaning, identity fused with affordances (#1558) ────
+# ── find: resolve-by-meaning, identity fused with affordances (#1558, #1640) ──
 
-_FIND_MINE_VOCAB = {
+_FIND_VOCAB = {
     "aurora": 0,
     "beacon": 1,
     "cascade": 2,
@@ -3490,7 +3490,7 @@ _FIND_MINE_VOCAB = {
     "orbit": 9,
     "nebula": 10,
 }
-_FIND_MINE_DIM = 16
+_FIND_DIM = 16
 
 
 def _axis_vec(text: str) -> list[float]:
@@ -3498,9 +3498,9 @@ def _axis_vec(text: str) -> list[float]:
     (unknown words ignored), so cosine between two texts is exactly
     (shared words) / (sqrt(len_a) * sqrt(len_b)) — deterministic scores for an
     exact whole-render literal."""
-    vec = [0.0] * _FIND_MINE_DIM
+    vec = [0.0] * _FIND_DIM
     for word in text.lower().split():
-        axis = _FIND_MINE_VOCAB.get(word)
+        axis = _FIND_VOCAB.get(word)
         if axis is not None:
             vec[axis] += 1.0
     norm = sum(value * value for value in vec) ** 0.5
@@ -3523,7 +3523,7 @@ def _axis_client(mock_llm) -> LlmClient:
 
 async def _create_collection(db, client: LlmClient, name: str, description: str) -> None:
     """Instantiate a collection whose intent/description anchor is ``description``
-    (what ``find_mine`` resolves over).  A hole-less skill supplies the rendered
+    (what ``find`` resolves over).  A hole-less skill supplies the rendered
     prompt; ``create_anyway`` skips the idempotency check so these tests can stand
     up several deliberately-similar collections.  The helper skill is seeded
     UNEMBEDDED (``embed=False``) — it's resolved by exact name, and an anchor in
@@ -3554,7 +3554,7 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
     )
 
 
-class TestFindMine:
+class TestFind:
     """Resolve-by-meaning over the whole registry + taught skills (the ``skill``
     table, the sole skills store — #1624), fusing exact identity with how to
     address it (#1558).  The result is model-facing text, so each mode is
@@ -3575,7 +3575,7 @@ class TestFindMine:
         "4. aurora-log — active log: aurora echo foxtrot\n"
         "   how to use it: read it with log_read('aurora-log')\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
-        "otherwise narrow by its exact name, or pass type=<collection|log|skill>."
+        "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
     )
 
     @staticmethod
@@ -3610,7 +3610,7 @@ class TestFindMine:
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
-        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.success
         assert result.message == self._KITCHEN_SINK
 
@@ -3622,7 +3622,7 @@ class TestFindMine:
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
-        result = await FindMineTool(db, client).execute(query="aurora beacon cascade", type="skill")
+        result = await FindTool(db, client).execute(query="aurora beacon cascade", type="skill")
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
@@ -3635,7 +3635,7 @@ class TestFindMine:
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "solo-watch", "aurora beacon cascade")
-        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.message == (
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
@@ -3652,7 +3652,7 @@ class TestFindMine:
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "watch-primary", "aurora beacon cascade")
         await _create_collection(db, client, "watch-secondary", "aurora beacon delta")
-        result = await FindMineTool(db, client).execute(query="aurora beacon cascade")
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
         assert result.message == (
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
@@ -3664,7 +3664,7 @@ class TestFindMine:
             "reconfigure it with collection_update(name='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
-            "otherwise narrow by its exact name, or pass type=<collection|log|skill>."
+            "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
         )
 
     @pytest.mark.asyncio
@@ -3674,7 +3674,7 @@ class TestFindMine:
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        result = await FindMineTool(db, client).execute(query="orbit nebula")
+        result = await FindTool(db, client).execute(query="orbit nebula")
         assert result.success
         assert result.message == (
             'Nothing of yours matched "orbit nebula". Widen the net: collection_catalog() '
@@ -3687,7 +3687,91 @@ class TestFindMine:
         """A transient query-embed failure returns an actionable retry, not a silent
         empty — the miss is named, the fix bound."""
         db = _make_db(tmp_path)
-        result = await FindMineTool(db, cast(Any, _FailingEmbedClient())).execute(query="anything")
+        result = await FindTool(db, cast(Any, _FailingEmbedClient())).execute(query="anything")
         assert result.success is False
         assert "Couldn't embed your query" in result.message
-        assert "find_mine(query=" in result.message
+        assert "find(query=" in result.message
+
+    @pytest.mark.asyncio
+    async def test_stored_entry_carries_content_and_addressing(self, tmp_path, mock_llm):
+        """A fact stored in a collection is found by the meaning of its content/key —
+        the hit CARRIES the value plus the collection_get that re-reads it, so for a
+        short fact the find IS the answer (#1640).  The collection's OWN description
+        is orthogonal, so only the entry surfaces (its container was not guessed)."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "knowledge-notes", "orbit nebula")
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="knowledge-notes",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma delta"}],
+        )
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        assert result.success
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. entry key='aurora beacon' in `knowledge-notes` — \"cascade gamma delta\"\n"
+            "   read it: collection_get(memory='knowledge-notes', key='aurora beacon')"
+        )
+
+    @pytest.mark.asyncio
+    async def test_entry_ranks_beside_its_collection(self, tmp_path, mock_llm):
+        """The entry and its (also-matching) collection come back in ONE best-first
+        list — the object outranks the entry here, both rendered by their own house
+        pattern (#1640)."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="aurora-watch",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
+        )
+        result = await FindTool(db, client).execute(query="aurora beacon cascade")
+        assert result.message == (
+            'Found 2 things matching "aurora beacon cascade", best first:\n'
+            "1. aurora-watch — active collection: aurora beacon cascade\n"
+            "   how to use it: read it with collection_read_latest('aurora-watch'), "
+            "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+            "with collection_archive('aurora-watch')\n"
+            "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
+            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"
+            "Ranked by closeness — if one is what you meant, use its addressing above; "
+            "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
+        )
+
+    @pytest.mark.asyncio
+    async def test_type_entry_narrows_to_the_stored_entry(self, tmp_path, mock_llm):
+        """``type=entry`` returns the stored entry alone, dropping the matching
+        collection object — the family narrows just like ``type=skill``."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
+        await CollectionWriteTool(db, client, author="test").execute(
+            memory="aurora-watch",
+            entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
+        )
+        result = await FindTool(db, client).execute(query="aurora beacon cascade", type="entry")
+        assert result.message == (
+            'Found 1 thing matching "aurora beacon cascade":\n'
+            "1. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
+            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')"
+        )
+
+    @pytest.mark.asyncio
+    async def test_keyless_log_entry_renders_its_id_handle(self, tmp_path, mock_llm):
+        """A keyless log entry renders its ``#<id>`` identity + the ``<log>#<id>``
+        handle for entry_by_id-style retrieval — a log has no key to collection_get
+        (#1640).  The log's OWN description is orthogonal, so only the entry surfaces."""
+        db = _make_db(tmp_path)
+        client = _axis_client(mock_llm)
+        await LogCreateTool(db, client).execute(name="aurora-log", description="orbit nebula")
+        await LogAppendTool(db, client, author="test").execute(
+            memory="aurora-log", content="aurora echo foxtrot"
+        )
+        entry_id = db.memories.memory("aurora-log").read_all()[0].id
+        result = await FindTool(db, client).execute(query="aurora echo foxtrot")
+        assert result.success
+        assert result.message == (
+            'Found 1 thing matching "aurora echo foxtrot":\n'
+            f'1. entry #{entry_id} in `aurora-log` (log) — "aurora echo foxtrot"\n'
+            f"   read it: log_read('aurora-log') — the full entry is aurora-log#{entry_id}"
+        )

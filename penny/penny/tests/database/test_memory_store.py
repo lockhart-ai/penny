@@ -22,7 +22,9 @@ from penny.database.memory import (
     LogEntryInput,
     MemoryNotFoundError,
     MemoryTypeError,
+    ResolvedEntry,
     ResolvedKind,
+    ResolvedMatch,
 )
 from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
@@ -301,7 +303,7 @@ Recent changes (newest first):
         # A wrong-name miss (incl. the entry-vs-collection footgun: a skill key
         # addressed as a collection) names the resolve-by-meaning recovery, so the
         # error is never a dead end (#1558).
-        assert "find_mine(query=" in result.message
+        assert "find(query=" in result.message
 
 
 class TestCollectionWrites:
@@ -1392,3 +1394,106 @@ class TestResolveObjects:
                 description_embedding=_unit_vec(0),
             )
         assert len(db.memories.resolve_objects(_unit_vec(0), None, 3)) == 3
+
+
+class TestResolveEntries:
+    """``resolve_objects`` fuses stored entries into the SAME best-first list as
+    objects (#1640): every ``memory_entry`` in a non-archived collection/log
+    contributes its content + key facets, scored in the SAME embedding space as the
+    object anchors (so their cosines rank directly against each other), deduped to
+    one hit per entry (max-of-facets).  Deterministic unit-vector embeddings pin
+    exact scores."""
+
+    @staticmethod
+    def _entries(hits: list) -> list[ResolvedEntry]:
+        return [hit for hit in hits if isinstance(hit, ResolvedEntry)]
+
+    def test_entry_fuses_beside_its_collection(self, tmp_path):
+        """A collection's entry surfaces alongside the collection object, carrying its
+        container, key, and content — one fused list, both families present."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("knowledge", "d", description_embedding=_unit_vec(0))
+        db.memories.memory("knowledge").write(
+            [
+                EntryInput(
+                    key="deck price",
+                    content="it is 499",
+                    key_embedding=_unit_vec(0),
+                    content_embedding=_unit_vec(0),
+                )
+            ],
+            author="test",
+        )
+        hits = db.memories.resolve_objects(_unit_vec(0), None, 10)
+        assert any(isinstance(hit, ResolvedMatch) for hit in hits)  # the collection object
+        entries = self._entries(hits)
+        assert len(entries) == 1  # deduped across both matching facets
+        entry = entries[0]
+        assert (entry.memory_name, entry.container_kind, entry.key, entry.content) == (
+            "knowledge",
+            ResolvedKind.COLLECTION,
+            "deck price",
+            "it is 499",
+        )
+
+    def test_entry_surfaces_on_either_facet(self, tmp_path):
+        """The key facet alone surfaces an entry whose content is orthogonal to the
+        query (and vice versa) — the max-of-facets disjunction."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("notes", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("notes").write(
+            [
+                EntryInput(
+                    key="target",
+                    content="unrelated",
+                    key_embedding=_unit_vec(0),  # matches an axis-0 query
+                    content_embedding=_unit_vec(5),  # orthogonal to it
+                )
+            ],
+            author="test",
+        )
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        assert [entry.key for entry in entries] == ["target"]
+
+    def test_keyless_log_entry_carries_log_container(self, tmp_path):
+        """A keyless log entry surfaces with ``container_kind=log`` and ``key=None`` —
+        the render addresses it by its id handle, not a collection_get key."""
+        db = _make_db(tmp_path)
+        db.memories.create_log("feed", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("feed").append(
+            [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
+        )
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        assert len(entries) == 1
+        assert entries[0].container_kind == ResolvedKind.LOG
+        assert entries[0].key is None
+
+    def test_archived_collection_entries_excluded(self, tmp_path):
+        """Entries in an archived collection never surface — only non-archived
+        containers contribute."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("live", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("live").write(
+            [EntryInput(key="a", content="x", content_embedding=_unit_vec(0))], author="test"
+        )
+        db.memories.create_collection("dead", "d", description_embedding=_unit_vec(5))
+        db.memories.memory("dead").write(
+            [EntryInput(key="b", content="y", content_embedding=_unit_vec(0))], author="test"
+        )
+        db.memories.archive("dead")
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        assert {entry.memory_name for entry in entries} == {"live"}
+
+    def test_type_filter_scopes_the_entry_family(self, tmp_path):
+        """``type=entry`` returns entries only; ``type=collection`` excludes entries —
+        the ``type`` narrows the family, entries appearing only unfiltered or as
+        ``entry``."""
+        db = _make_db(tmp_path)
+        db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
+        db.memories.memory("watch").write(
+            [EntryInput(key="k", content="c", content_embedding=_unit_vec(0))], author="test"
+        )
+        entry_only = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.ENTRY, 10)
+        assert entry_only and all(isinstance(hit, ResolvedEntry) for hit in entry_only)
+        coll_only = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.COLLECTION, 10)
+        assert coll_only and all(isinstance(hit, ResolvedMatch) for hit in coll_only)
