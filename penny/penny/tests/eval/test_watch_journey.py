@@ -232,6 +232,86 @@ async def test_beat0_empty_registry_creates(chat_eval: ChatEval):
     )
 
 
+# ── Beat 0a: ACTIVITY-WINDOW recall — the write is ambient ───────────────────
+#
+# The fact was written by a RECENT run (no conversation carries it), so the
+# self-state activity block renders the write ambiently (#1641):
+#   run <id> · <when> · knowledge → worked (2 calls) · wrote 'aurora deck 2
+#   price' → `knowledge`
+# Awareness costs zero calls; retrieval is one call with both arguments
+# consumable verbatim off the line.  Any storage read passes (code-owner
+# ruling); the transcript shows whether she copied the rendered key.
+
+_BEAT0A_TURN = "hey — remind me, what was the aurora deck 2 listed at?"
+
+
+def _seed_recent_run_write(db: Database) -> None:
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from sqlmodel import Session
+
+    from penny.database.models import MemoryEntry, PromptLog
+
+    when = datetime.now(UTC) - timedelta(minutes=20)
+    response = {"choices": [{"message": {"tool_calls": [{"id": "0"}, {"id": "1"}]}}]}
+    with Session(db.engine) as session:
+        session.add(
+            PromptLog(
+                model="test-model",
+                messages="[]",
+                response=_json.dumps(response),
+                agent_name="chat",
+                run_id="seedrun0a",
+                run_outcome="worked",
+                run_reason="",
+                run_target="knowledge",
+                timestamp=when,
+            )
+        )
+        session.add(
+            MemoryEntry(
+                memory_name="knowledge",
+                key="aurora deck 2 price",
+                content="$499",
+                author="chat",
+                created_at=when,
+                created_by_run_id="seedrun0a",
+                last_written_by_run_id="seedrun0a",
+            )
+        )
+        session.commit()
+
+
+def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
+    replies = _outgoing(db)
+    final_reply = replies[-1] if replies else ""
+    read_backed = any(
+        (tool in _READ_TOOLS and args.get("memory") == "knowledge") or tool == "find"
+        for tool, args in _final_run_calls(db)
+    )
+
+    return [
+        Check("recall states $499 (the write is ambient, value is not)", "499" in final_reply),
+        Check("answer BACKED by a storage read (any route)", read_backed),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat0a_activity_window_recall(chat_eval: ChatEval):
+    """Beat 0a: a fact written by a recent run renders ambiently on the run
+    line (key + collection, never the value) — retrieval is one call with
+    arguments consumable verbatim off the line."""
+    await chat_eval(
+        case_id="journey-beat0a-activity-recall",
+        message=_BEAT0A_TURN,
+        seed=_seed_recent_run_write,
+        score=_score_beat0a,
+        min_pass_rate=None,  # report-only until the scorer is sample-verified
+    )
+
+
 # ── Beat 0b: COLD recall — storage is the only route ────────────────────────
 #
 # The fact was stored in a PREVIOUS session (seeded directly; no conversation
