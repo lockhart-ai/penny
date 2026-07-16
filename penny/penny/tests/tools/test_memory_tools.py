@@ -3756,7 +3756,9 @@ class TestFind:
         assert result.message == (
             'Nothing of yours matched "orbit nebula". Widen the net: collection_catalog() '
             "lists every collection (archived included), and your current-state header "
-            "names your active mechanisms, logs, and recent activity."
+            "names your active mechanisms, logs, and recent activity. If you were looking "
+            "for how to do a task and no skill matched, ask the user to walk you through "
+            "it once — that's how a new skill gets taught."
         )
 
     @pytest.mark.asyncio

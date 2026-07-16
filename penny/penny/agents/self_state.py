@@ -86,7 +86,11 @@ class SelfStateHeader:
     EMPTY_MECHANISMS = "(no mechanisms yet)"
     EMPTY_ACTIVITY = "(no recent activity)"
     EMPTY_MAP = "(no stores yet)"
-    EMPTY_SKILLS = "(no skills or rules yet)"
+    EMPTY_SKILLS = (
+        "(no skills yet — when a task needs one, ask the user to walk you through it "
+        "once, then skill_create(name=<title>, from_run=<this run>, steps=<range>) "
+        "saves it)"
+    )
     NO_PROFILE = "(no profile set yet)"
 
     # The taught-skill feed's group label names its OWN guess-free drill-down

@@ -2567,11 +2567,15 @@ _FIND_EMBED_FAILURE = (
 
 # Zero matches is an honest empty, not an error — name the wider nets (the catalog
 # spans archived collections too; the self-state header names active mechanisms,
-# logs, and recent activity) so the model never dead-ends on a miss.
+# logs, and recent activity) so the model never dead-ends on a miss.  If the query
+# was a how-to/task lookup, the final clause signposts the task→skill→teach dead end
+# (#1650): no skill matched → ask the user to teach it once.
 _FIND_EMPTY = (
     'Nothing of yours matched "{query}". Widen the net: '
     "collection_catalog() lists every collection (archived included), and your "
-    "current-state header names your active mechanisms, logs, and recent activity."
+    "current-state header names your active mechanisms, logs, and recent activity. "
+    "If you were looking for how to do a task and no skill matched, ask the user to "
+    "walk you through it once — that's how a new skill gets taught."
 )
 
 # Ambiguity is RETURNED, never silently resolved: several hits come back ranked
