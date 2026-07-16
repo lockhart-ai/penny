@@ -18,7 +18,11 @@ one guess-free tool call from the detail). Sections:
   cadence, end condition, last-run outcome. "what's running right now?"
 - **Recent activity** — background runs, configuration mutations, and autonomous
   sends, interleaved in one time-ordered block at rollup altitude (one line each;
-  one run's per-call detail is one ``get_event(run <id>)`` hop away). The *complement* of the
+  one run's per-call detail is one ``get_event(run <id>)`` hop away). A run line
+  that wrote carries a ``· wrote '<key>' → `<collection>``` clause naming what it
+  changed (from the #1560 ``last_written_by_run_id`` stamp, #1641), so a just-
+  written fact is 0 calls away and its full entry is one ``collection_read_latest``
+  hop. The *complement* of the
   conversation — chat turns (direct replies) are already in context, so they're
   never duplicated here; only mechanism-authored sends (``mechanism`` non-NULL,
   #1568) appear.
@@ -46,9 +50,11 @@ the creating request (#1566).
 
 from __future__ import annotations
 
+from itertools import groupby
 from typing import TYPE_CHECKING
 
 from penny.constants import PennyConstants
+from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
 from penny.tools.collection_instantiation import render_trigger_clause
@@ -57,6 +63,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from penny.database.database import Database
+    from penny.database.memory.types import RunWrite
     from penny.database.message_store import EmissionActivity, RunActivity, RunOutcomeStamp
     from penny.database.models import MemoryRow, MutationEvent
 
@@ -223,11 +230,16 @@ class SelfStateHeader:
         Each source is fetched at ``cap + 1`` (so the section can tell that a
         ``cap + 1``-th event exists and show the overflow tail), merged, and
         sorted by time — so the block stays flat as activity grows and the newest
-        events of any kind win a slot."""
+        events of any kind win a slot.
+
+        The runs' writes are joined once (``writes_by_run`` over the fetched run
+        ids, #1641) rather than per line, so the writes clause stays one bounded
+        read."""
         fetch = PennyConstants.SELF_STATE_ACTIVITY_LIMIT + 1
+        runs = self.db.messages.recent_collector_runs(fetch)
+        writes = self.db.memories.writes_by_run([run.run_id for run in runs])
         events: list[tuple[datetime, str]] = [
-            (run.finished_at, self._run_line(run))
-            for run in self.db.messages.recent_collector_runs(fetch)
+            (run.finished_at, self._run_line(run, writes.get(run.run_id, []))) for run in runs
         ]
         events.extend(
             (event.created_at, self._mutation_line(event))
@@ -252,17 +264,58 @@ class SelfStateHeader:
         )
 
     @staticmethod
-    def _run_line(run: RunActivity) -> str:
-        """``run <run_id> · <when> · <target> → <OUTCOME> (<n> calls)`` — the run id
-        is the typed anchor, consumed verbatim by ``get_event(run <id>)`` (its
-        drill-down); the ``run `` tag is single-sourced with that tool's parse
-        (``RUN_EVENT_PREFIX``) so the rendered token IS the argument."""
+    def _run_line(run: RunActivity, writes: list[RunWrite]) -> str:
+        """``run <run_id> · <when> · <target> → <OUTCOME> (<n> calls)``, then — when
+        the run wrote — a ``· wrote …`` clause naming what it changed (#1641).
+
+        The run id is the typed anchor, consumed verbatim by ``get_event(run
+        <id>)`` (its drill-down); the ``run `` tag is single-sourced with that
+        tool's parse (``RUN_EVENT_PREFIX``) so the rendered token IS the argument.
+        The clause GROWS the line — a no-write run renders byte-identical to the
+        pre-#1641 shape."""
         plural = "" if run.call_count == 1 else "s"
         return (
             f"{PennyConstants.RUN_EVENT_PREFIX}{run.run_id} · "
             f"{format_log_timestamp(run.finished_at)} · "
             f"{run.target} → {run.outcome.upper()} ({run.call_count} call{plural})"
+            f"{SelfStateHeader._writes_clause(writes)}"
         )
+
+    @staticmethod
+    def _writes_clause(writes: list[RunWrite]) -> str:
+        """The ``· wrote …`` tail naming what a run wrote — one clause per
+        collection it wrote keyed entries to, so the model sees its own writes
+        ambiently (#1641). Empty (byte-identical to the pre-#1641 line) for a
+        no-write run; keys render invocation-form so each pastes into a read
+        tool's ``key=`` argument."""
+        return "".join(
+            f" · {SelfStateHeader._collection_writes(name, keys)}"
+            for name, keys in SelfStateHeader._group_writes(writes)
+        )
+
+    @staticmethod
+    def _group_writes(writes: list[RunWrite]) -> list[tuple[str, list[str]]]:
+        """``(collection, keys)`` groups, preserving the store's ``(memory_name,
+        created_at, id)`` order — same-collection writes are contiguous, so
+        ``groupby`` clusters each collection's keys oldest-first."""
+        return [
+            (name, [write.key for write in group])
+            for name, group in groupby(writes, key=lambda write: write.memory_name)
+        ]
+
+    @staticmethod
+    def _collection_writes(name: str, keys: list[str]) -> str:
+        """One collection's writes clause: a single write names its key
+        (``wrote '<key>' → `<name>```); several compact to a count plus a bounded
+        key sample (``wrote 3 entries → `<name>` ('k1', 'k2', …)``), the ``…`` tail
+        showing more keys exist than are named (#1641)."""
+        if len(keys) == 1:
+            return f"wrote {render_key_value(keys[0])} → `{name}`"
+        cap = PennyConstants.SELF_STATE_WRITES_KEY_SAMPLE
+        sample = ", ".join(render_key_value(key) for key in keys[:cap])
+        if len(keys) > cap:
+            sample = f"{sample}, …"
+        return f"wrote {len(keys)} entries → `{name}` ({sample})"
 
     @staticmethod
     def _mutation_line(event: MutationEvent) -> str:
