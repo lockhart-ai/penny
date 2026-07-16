@@ -161,10 +161,9 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
             else False,
         ),
         Check("read-back states $499", "499" in final_reply),
-        Check(
-            "read-back BACKED BY a storage read (turn-2 run read the fact's collection)",
-            read_backed,
-        ),
+        # NOTE: no hard provenance check here — answering a one-turn-old fact
+        # from the conversation window is correct behavior (live sample 5).
+        # The COLD variant below owns provenance absolutely.
         Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
     ]
 
@@ -177,6 +176,109 @@ async def test_beat0_remember_and_recall(chat_eval: ChatEval):
         case_id="journey-beat0-remember-recall",
         messages=_BEAT0_TURNS,
         score=_score_beat0,
+        min_pass_rate=None,  # report-only until the scorer is sample-verified
+    )
+
+
+# ── Beat 0c: EMPTY registry — "remember X" with nowhere to put it ───────────
+#
+# Every seeded collection is deleted before the conversation: the store map is
+# empty, there is no `knowledge` magnet, no container at all.  "Remember X"
+# must drive CREATION (the #1630 skill-optional inert create) + the write —
+# the create arm of remember → collection_create-or-collection_write.
+
+
+def _delete_all_collections(db: Database) -> None:
+    from sqlmodel import Session, delete, select
+
+    from penny.database.models import MemoryEntry, MemoryRow
+
+    with Session(db.engine) as session:
+        names = [
+            row.name
+            for row in session.exec(select(MemoryRow).where(MemoryRow.type == "collection")).all()
+        ]
+        for name in names:
+            session.exec(delete(MemoryEntry).where(MemoryEntry.memory_name == name))
+            session.exec(delete(MemoryRow).where(MemoryRow.name == name))
+        session.commit()
+
+
+def _score_beat0_empty(db: Database, before: set[str], reply: str) -> list[Check]:
+    created = new_collections(db, before)
+    replies = _outgoing(db)
+    final_reply = replies[-1] if replies else ""
+    entries = collection_entries(db, created[0].name) if len(created) == 1 else {}
+    fact_stored = any("499" in content for content in entries.values())
+
+    return [
+        Check("exactly one collection created (nowhere existed — she made one)", len(created) == 1),
+        Check("the fact landed in the created collection", fact_stored),
+        Check("read-back states $499", "499" in final_reply),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat0_empty_registry_creates(chat_eval: ChatEval):
+    """Beat 0c: with ZERO collections in the registry, 'remember X' must create
+    a container (skill-optional inert create) and write the fact into it."""
+    await chat_eval(
+        case_id="journey-beat0-empty-registry",
+        messages=_BEAT0_TURNS,
+        seed=_delete_all_collections,
+        score=_score_beat0_empty,
+        min_pass_rate=None,  # report-only until the scorer is sample-verified
+    )
+
+
+# ── Beat 0b: COLD recall — storage is the only route ────────────────────────
+#
+# The fact was stored in a PREVIOUS session (seeded directly; no conversation
+# history carries it), so conversation echo is impossible: the answer exists
+# only in the store.  This is the n≤1 invariant's absolute test — the model
+# must reach the entry via `find` (guess-free) or a correctly-aimed scoped
+# read.  Provenance is a HARD check here, unlike the warm case above.
+
+_BEAT0_COLD_TURN = (
+    "hey — a while back I asked you to remember what the aurora deck 2 "
+    "was listed at. what was the price?"
+)
+
+
+def _seed_cold_fact(db: Database) -> None:
+    from penny.database.memory.types import EntryInput
+
+    db.memory("knowledge").write(
+        [EntryInput(key="aurora deck 2 price", content="$499")], author="chat"
+    )
+
+
+def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]:
+    replies = _outgoing(db)
+    final_reply = replies[-1] if replies else ""
+    calls = _final_run_calls(db)
+    read_backed = any(
+        (tool in _READ_TOOLS and args.get("memory") == "knowledge") or tool == "find"
+        for tool, args in calls
+    )
+
+    return [
+        Check("cold recall states $499 (storage is the only route)", "499" in final_reply),
+        Check("answer BACKED by a storage read (find or a scoped read)", read_backed),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat0_cold_recall(chat_eval: ChatEval):
+    """Beat 0b: a fact stored in a previous session is retrieved with zero
+    conversational trace — the absolute test of one-call reachability."""
+    await chat_eval(
+        case_id="journey-beat0-cold-recall",
+        message=_BEAT0_COLD_TURN,
+        seed=_seed_cold_fact,
+        score=_score_beat0_cold,
         min_pass_rate=None,  # report-only until the scorer is sample-verified
     )
 
