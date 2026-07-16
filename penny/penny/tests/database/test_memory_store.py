@@ -1350,28 +1350,18 @@ class TestResolveObjects:
         self._seed_mixed(db)
         found = {
             (match.name, match.kind, match.archived)
-            for match in db.memories.resolve_objects(_unit_vec(0), None, 10)
+            for match in db.memories.resolve_objects(_unit_vec(0), 10)
         }
         assert ("watch", ResolvedKind.COLLECTION, False) in found
         assert ("old-watch", ResolvedKind.COLLECTION, True) in found  # archived included
         assert ("feed", ResolvedKind.LOG, False) in found
         assert ("escalate", ResolvedKind.SKILL, False) in found
 
-    def test_kind_filter_narrows_to_one_family(self, tmp_path):
-        db = _make_db(tmp_path)
-        self._seed_mixed(db)
-        cols = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.COLLECTION, 10)
-        assert {match.name for match in cols} == {"watch", "old-watch"}
-        logs = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.LOG, 10)
-        assert {match.name for match in logs} == {"feed"}
-        skills = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.SKILL, 10)
-        assert {(match.name, match.kind) for match in skills} == {("escalate", ResolvedKind.SKILL)}
-
     def test_orthogonal_query_returns_honest_empty(self, tmp_path):
         db = _make_db(tmp_path)
         self._seed_mixed(db)
         # Axis 5 is orthogonal to every seeded object → nothing is a match.
-        assert db.memories.resolve_objects(_unit_vec(5), None, 10) == []
+        assert db.memories.resolve_objects(_unit_vec(5), 10) == []
 
     def test_ranks_best_first(self, tmp_path):
         db = _make_db(tmp_path)
@@ -1381,7 +1371,7 @@ class TestResolveObjects:
             "d",
             description_embedding=_norm([1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         )
-        matches = db.memories.resolve_objects(_unit_vec(0), None, 10)
+        matches = db.memories.resolve_objects(_unit_vec(0), 10)
         # cos(axis0, exact)=1.0 > cos(axis0, partial)=0.707 → exact ranks first.
         assert [match.name for match in matches] == ["exact", "partial"]
 
@@ -1393,7 +1383,7 @@ class TestResolveObjects:
                 "d",
                 description_embedding=_unit_vec(0),
             )
-        assert len(db.memories.resolve_objects(_unit_vec(0), None, 3)) == 3
+        assert len(db.memories.resolve_objects(_unit_vec(0), 3)) == 3
 
 
 class TestResolveEntries:
@@ -1424,7 +1414,7 @@ class TestResolveEntries:
             ],
             author="test",
         )
-        hits = db.memories.resolve_objects(_unit_vec(0), None, 10)
+        hits = db.memories.resolve_objects(_unit_vec(0), 10)
         assert any(isinstance(hit, ResolvedMatch) for hit in hits)  # the collection object
         entries = self._entries(hits)
         assert len(entries) == 1  # deduped across both matching facets
@@ -1452,7 +1442,7 @@ class TestResolveEntries:
             ],
             author="test",
         )
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
         assert [entry.key for entry in entries] == ["target"]
 
     def test_keyless_log_entry_carries_log_container(self, tmp_path):
@@ -1463,7 +1453,7 @@ class TestResolveEntries:
         db.memories.memory("feed").append(
             [LogEntryInput(content="c", content_embedding=_unit_vec(0))], author="test"
         )
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
         assert len(entries) == 1
         assert entries[0].container_kind == ResolvedKind.LOG
         assert entries[0].key is None
@@ -1481,19 +1471,17 @@ class TestResolveEntries:
             [EntryInput(key="b", content="y", content_embedding=_unit_vec(0))], author="test"
         )
         db.memories.archive("dead")
-        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), None, 10))
+        entries = self._entries(db.memories.resolve_objects(_unit_vec(0), 10))
         assert {entry.memory_name for entry in entries} == {"live"}
 
-    def test_type_filter_scopes_the_entry_family(self, tmp_path):
-        """``type=entry`` returns entries only; ``type=collection`` excludes entries —
-        the ``type`` narrows the family, entries appearing only unfiltered or as
-        ``entry``."""
+    def test_query_matching_both_families_fuses_them(self, tmp_path):
+        """An object and its entry both surface in the SAME unfiltered list — the
+        search spans every family, never narrowing up front (#1643)."""
         db = _make_db(tmp_path)
         db.memories.create_collection("watch", "d", description_embedding=_unit_vec(0))
         db.memories.memory("watch").write(
             [EntryInput(key="k", content="c", content_embedding=_unit_vec(0))], author="test"
         )
-        entry_only = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.ENTRY, 10)
-        assert entry_only and all(isinstance(hit, ResolvedEntry) for hit in entry_only)
-        coll_only = db.memories.resolve_objects(_unit_vec(0), ResolvedKind.COLLECTION, 10)
-        assert coll_only and all(isinstance(hit, ResolvedMatch) for hit in coll_only)
+        hits = db.memories.resolve_objects(_unit_vec(0), 10)
+        assert any(isinstance(hit, ResolvedMatch) for hit in hits)
+        assert any(isinstance(hit, ResolvedEntry) for hit in hits)

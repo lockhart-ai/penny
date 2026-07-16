@@ -697,9 +697,7 @@ class MemoryStore:
 
     # ── Resolve by meaning ────────────────────────────────────────────────────
 
-    def resolve_objects(
-        self, anchor: list[float], kind: ResolvedKind | None, limit: int
-    ) -> list[ResolvedHit]:
+    def resolve_objects(self, anchor: list[float], limit: int) -> list[ResolvedHit]:
         """Rank Penny's own addressable things by meaning, best-first (#1558, #1640).
 
         Plain-cosine nearest-neighbour search (the explicit-search path, #1565 —
@@ -707,8 +705,10 @@ class MemoryStore:
         row's description anchor (collections + logs, **archived included**), every
         taught skill's description anchor (the ``skill`` table, the sole skills
         store — #1624), AND every stored entry's content/key anchors across the
-        non-archived collections + real logs (#1640).  ``kind`` narrows to one
-        family; ``None`` spans all of them.
+        non-archived collections + real logs (#1640).  The search spans every
+        family — one fused best-first list, no up-front narrowing (#1643): a family
+        filter it reasons about first can only encode a guess, and at single-user
+        scale the ranked, capped list is readable whole.
 
         The fusion is honest because it needs no rescaling: object description
         anchors and entry content/key anchors are all produced by the SAME
@@ -723,7 +723,7 @@ class MemoryStore:
         layer turns each hit into identity + the deterministic addressing;
         ambiguity (several hits) is returned, never silently resolved.
         """
-        candidates = self._resolution_candidates(kind)
+        candidates = self._resolution_candidates()
         if not candidates:
             return []
         scores = sim.cosine_scores([blob for _, blob in candidates], anchor)
@@ -742,34 +742,26 @@ class MemoryStore:
                 break
         return ranked
 
-    def _resolution_candidates(self, kind: ResolvedKind | None) -> list[tuple[ResolvedHit, bytes]]:
+    def _resolution_candidates(self) -> list[tuple[ResolvedHit, bytes]]:
         """Every (hit, embedding-blob) pair eligible for ``resolve_objects`` —
         registry rows carrying a description anchor, taught skills carrying a
-        description anchor, and (when ``kind`` allows) stored entries carrying a
-        content/key anchor.  A row/skill/entry without its vector is silently
-        absent (the backfill fills it) — never surfaced unscored.  ``kind`` gates
-        which families contribute: entries appear only for the unfiltered search
-        or an explicit ``type=entry`` (the ``type`` narrows the family)."""
+        description anchor, and stored entries carrying a content/key anchor.  A
+        row/skill/entry without its vector is silently absent (the backfill fills
+        it) — never surfaced unscored.  Every family contributes; the search never
+        narrows up front (#1643)."""
         candidates: list[tuple[ResolvedHit, bytes]] = []
-        if kind in (None, ResolvedKind.COLLECTION, ResolvedKind.LOG):
-            for row in self.list_all():
-                if row.description_embedding is None:
-                    continue
-                row_kind = (
-                    ResolvedKind.COLLECTION
-                    if row.type == MemoryType.COLLECTION
-                    else ResolvedKind.LOG
-                )
-                if kind is not None and row_kind is not kind:
-                    continue
-                match = ResolvedMatch(
-                    name=row.name, kind=row_kind, archived=row.archived, label=row.description
-                )
-                candidates.append((match, row.description_embedding))
-        if kind in (None, ResolvedKind.SKILL):
-            candidates.extend(self._skill_candidates())
-        if kind in (None, ResolvedKind.ENTRY):
-            candidates.extend(self._entry_candidates())
+        for row in self.list_all():
+            if row.description_embedding is None:
+                continue
+            row_kind = (
+                ResolvedKind.COLLECTION if row.type == MemoryType.COLLECTION else ResolvedKind.LOG
+            )
+            match = ResolvedMatch(
+                name=row.name, kind=row_kind, archived=row.archived, label=row.description
+            )
+            candidates.append((match, row.description_embedding))
+        candidates.extend(self._skill_candidates())
+        candidates.extend(self._entry_candidates())
         return candidates
 
     def _entry_candidates(self) -> list[tuple[ResolvedEntry, bytes]]:

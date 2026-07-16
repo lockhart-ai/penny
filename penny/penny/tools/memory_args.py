@@ -14,7 +14,6 @@ from typing import Annotated, Any
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, model_validator
 
 from penny.constants import PennyConstants
-from penny.database.memory import ResolvedKind
 from penny.text_validity import (
     require_extraction_prompt,
     require_non_blank_description,
@@ -124,14 +123,6 @@ OptionalSkill = Annotated[
 # ``None`` first (so "" means "leave unchanged") and skip the rule when omitted.
 
 
-def _require_resolved_kind(value: str) -> str:
-    """Raise unless ``value`` is a valid ``ResolvedKind``, naming the choices."""
-    if value not in {kind.value for kind in ResolvedKind}:
-        valid = ", ".join(kind.value for kind in ResolvedKind)
-        raise ValueError(f"type must be one of: {valid}.")
-    return value
-
-
 def _skip_none(validator: Any) -> Any:
     """Wrap an AfterValidator predicate so it runs only when the value is set —
     an optional field coerced to ``None`` (omitted) skips the rule."""
@@ -173,10 +164,6 @@ OptionalExtractionPrompt = Annotated[
     str | None,
     BeforeValidator(_blank_to_none),
     AfterValidator(_skip_none(require_extraction_prompt)),
-]
-# Optional resolve-by-meaning family filter: blank → None (span all families).
-OptionalResolvedKind = Annotated[
-    str | None, BeforeValidator(_blank_to_none), AfterValidator(_skip_none(_require_resolved_kind))
 ]
 
 
@@ -469,15 +456,17 @@ class ExistsArgs(ToolArgs):
 
 
 class FindArgs(ToolArgs):
-    """Find anything of Penny's own by meaning (#1558, #1640).
+    """Find anything of Penny's own by meaning (#1558, #1640, #1643).
 
-    ``query`` is a paraphrase of what the thing is about (its meaning, not its
-    exact name/key); ``type`` optionally narrows to a single family (collection |
-    log | skill | entry).  A blank ``type`` means "span all families".
+    ``query`` — a paraphrase of what the thing is about (its meaning, not its
+    exact name/key) — is the tool's whole surface.  The search spans every family
+    (collection | log | skill | entry) in one fused best-first list; there is no
+    up-front family filter (a knob the model reasons about first can only encode a
+    guess, #1643), so a passed ``type`` is rejected as an unknown argument
+    (``ToolArgs`` ``extra="forbid"``).
     """
 
     query: str
-    type: OptionalResolvedKind = None
 
 
 # ``done`` is an argless sentinel (#1569): it just marks the cycle finished.  The

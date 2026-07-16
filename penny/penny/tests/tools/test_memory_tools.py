@@ -3575,7 +3575,7 @@ class TestFind:
         "4. aurora-log — active log: aurora echo foxtrot\n"
         "   how to use it: read it with log_read('aurora-log')\n"
         "Ranked by closeness — if one is what you meant, use its addressing above; "
-        "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
+        "otherwise narrow by its exact name."
     )
 
     @staticmethod
@@ -3615,20 +3615,18 @@ class TestFind:
         assert result.message == self._KITCHEN_SINK
 
     @pytest.mark.asyncio
-    async def test_type_filter_narrows_to_skills(self, tmp_path, mock_llm):
-        """``type=skill`` narrows the same world to the taught skill alone, with
-        the skill-specific addressing (the skill-vs-collection footgun answered in
-        the result)."""
+    async def test_type_argument_is_rejected(self, tmp_path, mock_llm):
+        """``find`` accepts exactly ``query`` (#1643): a passed ``type`` gets the
+        standard unknown-argument rejection (``ToolArgs`` ``extra="forbid"``) — the
+        guess-free tool never offers a family filter to guess with.  Rejected before
+        ``execute``, so the arg-validation envelope names the offending field."""
         db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
-        result = await FindTool(db, client).execute(query="aurora beacon cascade", type="skill")
-        assert result.message == (
-            'Found 1 thing matching "aurora beacon cascade":\n'
-            "1. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
-            "   how to use it: read it with skill_read('escalate-aurora'); to change "
-            "it, re-teach it with skill_create — the same name replaces it"
-        )
+        result = await FindTool(db, client).run(query="aurora beacon cascade", type="skill")
+        assert result.success is False
+        assert "unknown parameter 'type'" in result.message
+        assert "valid parameters: query" in result.message
 
     @pytest.mark.asyncio
     async def test_single_confident_match(self, tmp_path, mock_llm):
@@ -3664,7 +3662,7 @@ class TestFind:
             "reconfigure it with collection_update(name='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
-            "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
+            "otherwise narrow by its exact name."
         )
 
     @pytest.mark.asyncio
@@ -3735,25 +3733,7 @@ class TestFind:
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
             "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
-            "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
-        )
-
-    @pytest.mark.asyncio
-    async def test_type_entry_narrows_to_the_stored_entry(self, tmp_path, mock_llm):
-        """``type=entry`` returns the stored entry alone, dropping the matching
-        collection object — the family narrows just like ``type=skill``."""
-        db = _make_db(tmp_path)
-        client = _axis_client(mock_llm)
-        await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
-        await CollectionWriteTool(db, client, author="test").execute(
-            memory="aurora-watch",
-            entries=[{"key": "aurora beacon", "content": "cascade gamma"}],
-        )
-        result = await FindTool(db, client).execute(query="aurora beacon cascade", type="entry")
-        assert result.message == (
-            'Found 1 thing matching "aurora beacon cascade":\n'
-            "1. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
-            "   read it: collection_get(memory='aurora-watch', key='aurora beacon')"
+            "otherwise narrow by its exact name."
         )
 
     @pytest.mark.asyncio

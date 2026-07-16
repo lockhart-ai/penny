@@ -2569,7 +2569,7 @@ _FIND_EMBED_FAILURE = (
 # spans archived collections too; the self-state header names active mechanisms,
 # logs, and recent activity) so the model never dead-ends on a miss.
 _FIND_EMPTY = (
-    'Nothing of yours matched "{query}"{kind_clause}. Widen the net: '
+    'Nothing of yours matched "{query}". Widen the net: '
     "collection_catalog() lists every collection (archived included), and your "
     "current-state header names your active mechanisms, logs, and recent activity."
 )
@@ -2578,7 +2578,7 @@ _FIND_EMPTY = (
 # with how to narrow.
 _FIND_AMBIGUOUS_TAIL = (
     "Ranked by closeness — if one is what you meant, use its addressing above; "
-    "otherwise narrow by its exact name, or pass type=<collection|log|skill|entry>."
+    "otherwise narrow by its exact name."
 )
 
 # A stored entry's value renders as one compact, whitespace-collapsed line — a
@@ -2707,13 +2707,12 @@ class FindTool(MemoryTool):
         "Find anything of your own by meaning, when you don't know its exact name — "
         "a collection, a log, a taught skill, or a single stored entry (a fact you "
         "saved).  Pass `query`, a paraphrase of what it's about (\"what I said that "
-        'product costs"); optionally pass `type` (collection | log | skill | entry) '
-        "to narrow.  Returns the closest matches, best first: a collection/log/skill "
-        "with its exact name, whether it's active or archived, and the exact tool "
-        "call that operates on it (archived included); a stored entry with the value "
-        "it holds and how to read it back.  Use it instead of guessing a name: a "
-        "guessed name fails, this resolves the real one — and for a short fact the "
-        "returned value IS the answer."
+        'product costs").  Returns the closest matches, best first: a '
+        "collection/log/skill with its exact name, whether it's active or archived, "
+        "and the exact tool call that operates on it (archived included); a stored "
+        "entry with the value it holds and how to read it back.  Use it instead of "
+        "guessing a name: a guessed name fails, this resolves the real one — and for "
+        "a short fact the returned value IS the answer."
     )
     parameters = {
         "type": "object",
@@ -2723,11 +2722,6 @@ class FindTool(MemoryTool):
                 "description": (
                     "A paraphrase of what the thing is about — its meaning, not its exact name."
                 ),
-            },
-            "type": {
-                "type": "string",
-                "enum": [kind.value for kind in ResolvedKind],
-                "description": "Optional — narrow to 'collection', 'log', 'skill', or 'entry'.",
             },
         },
         "required": ["query"],
@@ -2752,14 +2746,12 @@ class FindTool(MemoryTool):
         if vec is None:
             logger.warning("find: query embedding failed transiently")
             return ToolResult(message=_FIND_EMBED_FAILURE, success=False)
-        kind = ResolvedKind(args.type) if args.type is not None else None
-        hits = self._db.memories.resolve_objects(vec, kind, PennyConstants.FIND_MATCH_LIMIT)
-        return ToolResult(message=self._format(args.query, kind, hits))
+        hits = self._db.memories.resolve_objects(vec, PennyConstants.FIND_MATCH_LIMIT)
+        return ToolResult(message=self._format(args.query, hits))
 
-    def _format(self, query: str, kind: ResolvedKind | None, hits: list[ResolvedHit]) -> str:
+    def _format(self, query: str, hits: list[ResolvedHit]) -> str:
         if not hits:
-            kind_clause = f" (type={kind.value})" if kind is not None else ""
-            return _FIND_EMPTY.format(query=query, kind_clause=kind_clause)
+            return _FIND_EMPTY.format(query=query)
         body = "\n".join(_render_find_hit(i, h) for i, h in enumerate(hits, start=1))
         if len(hits) == 1:
             return f'Found 1 thing matching "{query}":\n{body}'
