@@ -546,7 +546,8 @@ class TestCollectionCreateFrontDoor:
     async def test_unparseable_trigger_teaches_three_forms(self, tmp_path):
         """An unreadable trigger shape is reject-and-teach: the failure names all three
         enumerated forms so the model rewrites to one instead of inventing a fourth
-        (#1631) — nothing created."""
+        (#1631), plus the #1646 omission line (leave the trigger out for a storage-only
+        collection) — nothing created."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -564,7 +565,8 @@ class TestCollectionCreateFrontDoor:
             "- once at <ISO datetime> [xN] — run at a time, optionally N times "
             "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
             "- on advance of <log> — wake when a source log gets a new entry "
-            "(e.g. on advance of browse-results)"
+            "(e.g. on advance of browse-results)\n"
+            "Or leave the trigger out entirely for a storage-only collection."
         )
         assert db.memories.get("garbled") is None
 
@@ -1402,6 +1404,83 @@ class TestInertCollections:
         assert result.success is False
         assert "Already have a collection for this" in result.message
         assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_blank_optional_args_coerce_to_inert_create(self, tmp_path):
+        """The live journey beat-0 failing shape (#1646): gpt-oss fills the optional
+        args it means to omit with "" — skill="" / trigger="" / expires_at="" — which
+        USED to route to the skill path and die in the trigger parser ("I couldn't read
+        the trigger ''"), abandoning storage. Blank coercion (OptionalSkill /
+        OptionalText) turns each "" into omitted BEFORE routing, so the exact call lands
+        as an inert storage create — the byte-identical echo of an all-omitted create,
+        and a genuinely inert row (no job / cadence / skill / expiry)."""
+        db = _make_db(tmp_path)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch",
+            description="track the trail-runner shoe deals",
+            skill="",
+            trigger="",
+            expires_at="",
+        )
+        assert result.success and result.mutated
+        assert result.message == _INERT_ECHO_LITERAL  # byte-identical to the omitted-args echo
+        row = db.memories.get("deals-watch")
+        assert row is not None
+        assert row.extraction_prompt is None  # inert — no job
+        assert row.collector_interval_seconds is None  # blank trigger → no cadence
+        assert row.skill_name is None  # blank skill → not resolved, no provenance
+        assert row.expires_at is None  # blank expiry → no end condition
+        assert row.notify is False
+
+    @pytest.mark.asyncio
+    async def test_blank_equals_omitted_parity_create_and_update(self, tmp_path):
+        """Blank == omitted, byte-identical, on BOTH create and update (#1646, the parity
+        with update). Passing "" for every optional arg produces the exact same tool echo
+        AND stored row as leaving those args off — proven side by side on twin DBs so
+        neither run's state can leak into the other."""
+        blank_dir, omit_dir = tmp_path / "blank", tmp_path / "omit"
+        blank_dir.mkdir()
+        omit_dir.mkdir()
+        blank_db, omit_db = _make_db(blank_dir), _make_db(omit_dir)
+
+        # CREATE parity: "" for skill/trigger/expires_at == leaving them off.
+        blank_create = await CollectionCreateTool(blank_db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch",
+            description="track the trail-runner shoe deals",
+            skill="",
+            trigger="",
+            expires_at="",
+        )
+        omit_create = await CollectionCreateTool(omit_db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", description="track the trail-runner shoe deals"
+        )
+        assert blank_create.success and omit_create.success
+        assert blank_create.message == omit_create.message  # byte-identical create echo
+
+        # UPDATE parity: "" for skill/trigger/expires_at alongside a real description edit
+        # == leaving them off — a plain metadata edit, cadence + routine untouched.
+        blank_update = await CollectionUpdateTool(blank_db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch",
+            description="track the trail-runner shoe deals a bit differently",
+            skill="",
+            trigger="",
+            expires_at="",
+        )
+        omit_update = await CollectionUpdateTool(omit_db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch",
+            description="track the trail-runner shoe deals a bit differently",
+        )
+        assert blank_update.success and omit_update.success
+        assert blank_update.message == omit_update.message  # byte-identical update echo
+        blank_row, omit_row = (
+            blank_db.memories.get("deals-watch"),
+            omit_db.memories.get("deals-watch"),
+        )
+        assert blank_row.description == omit_row.description  # description applied either way
+        assert blank_row.collector_interval_seconds == omit_row.collector_interval_seconds
+        assert blank_row.extraction_prompt == omit_row.extraction_prompt
+        assert blank_row.skill_name == omit_row.skill_name
+        assert blank_row.expires_at == omit_row.expires_at  # blank expires_at == omitted
 
 
 class TestWriteRetargetAtApply:

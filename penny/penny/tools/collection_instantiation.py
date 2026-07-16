@@ -184,7 +184,10 @@ _ON_ADVANCE_PREFIX = "on advance of "
 
 # The reject-and-teach failure for an unrecognised trigger shape (#1631): name the
 # three enumerated forms so the model rewrites to one of them instead of inventing a
-# fourth.  Each example is a copyable input (display form == invocation form).
+# fourth.  Each example is a copyable input (display form == invocation form).  The
+# closing omission line (#1646) names the other valid move — leave the trigger out
+# entirely for a storage-only collection — since a blank trigger now coerces to omitted
+# and this rejection is only reached for genuinely garbled (non-blank) input.
 _TRIGGER_TEACHING = (
     "I couldn't read the trigger '{trigger}'. Set it to one of these three forms "
     "(copy the shape exactly):\n"
@@ -192,7 +195,8 @@ _TRIGGER_TEACHING = (
     "- once at <ISO datetime> [xN] — run at a time, optionally N times "
     "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
     "- on advance of <log> — wake when a source log gets a new entry "
-    "(e.g. on advance of browse-results)"
+    "(e.g. on advance of browse-results)\n"
+    "Or leave the trigger out entirely for a storage-only collection."
 )
 
 

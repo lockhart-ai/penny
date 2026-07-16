@@ -187,6 +187,15 @@ class CollectionCreateArgs(ToolArgs):
     own words — the goal it serves and the collection's routing/dedup meaning anchor.
     ``name`` is the unique slug.
 
+    **A blank string on an optional arg counts as "not set"** — the same rule
+    ``collection_update`` documents, missed on create before #1646.  ``skill`` /
+    ``trigger`` / ``expires_at`` coerce ``""`` to ``None`` (``OptionalSkill`` /
+    ``OptionalText``) BEFORE any routing or parsing, so a model that fills an optional
+    field it means to omit with ``""`` (a chronic gpt-oss habit) gets the omitted
+    behaviour: a blank ``skill`` takes the inert storage path (not a resolution of the
+    empty skill), and a blank ``trigger`` / ``expires_at`` never reaches the trigger
+    parser (nor trips the inert create's job-arg refusal) — never a spurious rejection.
+
     The **trigger** (skill path only) is ONE argument with three enumerated forms,
     parsed by prefix in the tool (``parse_trigger``): ``"every <seconds>"`` (a recurring
     cadence), ``"once at <ISO time> [xN]"`` (a delayed / one-shot schedule, N runs
@@ -201,18 +210,23 @@ class CollectionCreateArgs(ToolArgs):
 
     name: MemoryName
     description: NonBlankDescription
-    # The skill to instantiate; omitted (``None``) yields an INERT storage-only
-    # collection — the first half of the two-step teach bootstrap (#1629).
-    skill: MemoryName | None = None
+    # The skill to instantiate; omitted OR blank (``""`` → ``None``, #1646) yields an
+    # INERT storage-only collection — the first half of the two-step teach bootstrap
+    # (#1629).  OptionalSkill == update's skill: blank→None + dash-normalise.
+    skill: OptionalSkill = None
     # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
     params: dict[str, str] = {}
     # Trigger — one arg, three enumerated forms, parsed by prefix in the tool
     # (parse_trigger, #1631): "every <seconds>" | "once at <ISO> [xN]" |
     # "on advance of <log>".  Its render (render_trigger_clause) IS this input form.
-    trigger: str | None = None
+    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) so it never reaches the
+    # parser as a garbled trigger.
+    trigger: OptionalText = None
     # End condition (optional) — an ISO-8601 datetime; the collection archives
     # itself when it passes.  Parsed in the tool (actionable error on a bad value).
-    expires_at: str | None = None
+    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) so it reads as "no end
+    # condition" and can't trip the inert create's job-arg refusal.
+    expires_at: OptionalText = None
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
     notify: bool = False
@@ -283,7 +297,9 @@ class CollectionUpdateArgs(ToolArgs):
     # collection_create.  Present → replaces the whole trigger atomically; a blank/omit
     # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of <log>".
     trigger: OptionalText = None
-    expires_at: str | None = None
+    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) — "leave the end condition
+    # alone" — mirroring create; behaviour is unchanged (the tool already guarded blank).
+    expires_at: OptionalText = None
 
 
 # ── Collection reads ────────────────────────────────────────────────────────
