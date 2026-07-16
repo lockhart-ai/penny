@@ -54,3 +54,4 @@ node_modules/
 # claude
 .claude/
 QUALITY-REVIEW.md
+penny/penny/eval-reports/

@@ -16,9 +16,11 @@ Beat map (the case plan on #1570):
     6. multi-instantiate + teardown
     7. self-termination
 
-Cases start REPORT-ONLY (``min_pass_rate=None``) per the promote-later
-discipline: first live runs locate where the model actually stumbles; gating
-thresholds come once the scorer is verified against captured samples.
+Beat-0 cases GATE at 0.8 (promoted 2026-07-16 after the matrix ran clean:
+warm 0.96 · activity-window 1.00 · cold 1.00 · empty-registry 1.00 — a single
+bail-recovery costs exactly one of five checks, so honest recoveries pass and
+real breakage fails).  Later beats start REPORT-ONLY per the promote-later
+discipline and gate once sample-verified.
 """
 
 from __future__ import annotations
@@ -170,7 +172,7 @@ async def test_beat0_remember_and_recall(chat_eval: ChatEval):
         case_id="journey-beat0-remember-recall",
         messages=_BEAT0_TURNS,
         score=_score_beat0,
-        min_pass_rate=None,  # report-only until the scorer is sample-verified
+        min_pass_rate=0.8,  # promoted 2026-07-16: sample-verified across the beat-0 matrix
     )
 
 
@@ -222,7 +224,7 @@ async def test_beat0_empty_registry_creates(chat_eval: ChatEval):
         messages=_BEAT0_TURNS,
         seed=_delete_all_collections,
         score=_score_beat0_empty,
-        min_pass_rate=None,  # report-only until the scorer is sample-verified
+        min_pass_rate=0.8,  # promoted 2026-07-16: sample-verified across the beat-0 matrix
     )
 
 
@@ -302,7 +304,7 @@ async def test_beat0a_activity_window_recall(chat_eval: ChatEval):
         message=_BEAT0A_TURN,
         seed=_seed_recent_run_write,
         score=_score_beat0a,
-        min_pass_rate=None,  # report-only until the scorer is sample-verified
+        min_pass_rate=0.8,  # promoted 2026-07-16: sample-verified across the beat-0 matrix
     )
 
 
@@ -353,7 +355,7 @@ async def test_beat0_cold_recall(chat_eval: ChatEval):
         message=_BEAT0_COLD_TURN,
         seed=_seed_cold_fact,
         score=_score_beat0_cold,
-        min_pass_rate=None,  # report-only until the scorer is sample-verified
+        min_pass_rate=0.8,  # promoted 2026-07-16: sample-verified across the beat-0 matrix
     )
 
 
