@@ -31,6 +31,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.database.skill_store import holes_from_json, steps_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -559,5 +560,97 @@ async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
         message=_BEAT2_TURN,
         browse=[AURORA_LISTING_499],
         score=_score_beat2,
+        min_pass_rate=None,  # report-only until sample-verified
+    )
+
+
+# ── Beat 3: promote ──────────────────────────────────────────────────────────
+#
+# The full teach loop, stitched together: instigate → teach-me → demonstrate →
+# "save that as a skill".  The first two turns PRIME a real ledger — the
+# demonstration (turn 2) is a genuine chat run (browse → extract → write), so
+# turn 3's skill_create has a real preceding run to snapshot.  THIS BEAT'S
+# TERMINAL STATE (one-beat-at-a-time): a skill row exists, distilled from that
+# demonstration run.  Attaching it to a collection (the watch goes live) is a
+# LATER beat — this stops at "the skill exists".
+#
+# skill_create is name-only now — it snapshots the whole preceding run — so turn
+# 3 is a natural "save that as a skill": no run id, no step range from the model
+# (both were ledger coordinates it couldn't reliably produce mid-conversation).
+
+_BEAT3_TURNS = [
+    _BEAT1_TURN,
+    _BEAT2_TURN,
+    "perfect — now save that as a price watch skill.",
+]
+
+
+def _claims_saved_skill(replies: list[str]) -> bool:
+    """The SAID side of SAID==DID for the promote step: does any send claim a
+    SKILL was saved/learned?  Anchored on the word 'skill' plus a save/learn verb
+    — verified against the captured replies; tuned like beat 2's _claims_a_save."""
+    text = " ".join(replies).lower()
+    return "skill" in text and any(
+        verb in text
+        for verb in ("saved", "learned", "created", "made", "set up", "got it", "stored")
+    )
+
+
+def _attached_collections(db: Database) -> list[str]:
+    """Collections that have a skill attached (the watch made live).  Beat 3's
+    terminal state stops BEFORE this — attaching is the next beat."""
+    return [
+        row.name
+        for row in db.memories.list_all()
+        if row.type == "collection" and row.skill_name is not None
+    ]
+
+
+def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
+    """The objective terminal state of the promote beat: a skill was distilled
+    from the demonstration run (browse + write, parameterized by provenance), she
+    narrated it honestly, and she STOPPED before attaching it (the watch isn't
+    live yet)."""
+    skills = db.skills.list_all()
+    skill = skills[0] if skills else None
+    step_tools = [step.tool for step in steps_from_json(skill.steps)] if skill else []
+    holes = holes_from_json(skill.holes) if skill else []
+    return [
+        Check("a skill was distilled (exactly one skill exists)", len(skills) == 1),
+        Check(
+            "it captured the routine (browse + collection_write among its steps)",
+            "browse" in step_tools and "collection_write" in step_tools,
+        ),
+        Check(
+            "it's parameterized (the demo's URL/collection became fill-in holes)",
+            len(holes) >= 1,
+        ),
+        Check(
+            "stopped before attaching (no collection made live — that's the next beat)",
+            not _attached_collections(db),
+        ),
+        Check(
+            "narration is honest (claims a skill saved iff one exists)",
+            _claims_saved_skill(_outgoing(db)) == bool(skill),
+        ),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat3_promotes_the_demonstration(chat_eval: ChatEval):
+    """Beat 3, terminal state: after the full teach loop (watch → teach me →
+    demonstrate → 'save that as a skill'), a skill row exists, distilled from the
+    demonstration run — captured wholesale by the name-only skill_create.  The
+    watch is NOT yet live; attaching the skill to a collection is a later beat.
+
+    The scored checks cover the objective terminal state; the 'confirms she
+    learned the skill' verdict is read off the dumped transcript (see
+    _score_beat3)."""
+    await chat_eval(
+        case_id="journey-beat3-promote",
+        messages=_BEAT3_TURNS,
+        browse=[AURORA_LISTING_499],
+        score=_score_beat3,
         min_pass_rate=None,  # report-only until sample-verified
     )
