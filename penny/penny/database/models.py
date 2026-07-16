@@ -399,9 +399,9 @@ class Skill(SQLModel, table=True):
     """A named, immutable skill — a certified-by-execution script of tool-call
     steps distilled from ONE demonstrated run (#1590, stage ④ of #1562).
 
-    A skill is authored only by reference to the ledger
-    (``skill_create(name, from_run, steps=<range>)``): the system copies a
-    contiguous, every-step-succeeded slice of a verified run's tool calls into
+    A skill is authored only by reference to the ledger (``skill_create(name)`` —
+    name-only): the system snapshots the whole preceding run, copying its
+    every-step-succeeded, non-``done`` tool calls into
     ``steps`` (the ``LoggedToolCall`` shape as JSON) and factors each argument by
     provenance into declared ``holes`` (JSON) — a value from the user's utterance
     becomes a parameter, a value from a prior step's result a binding, everything

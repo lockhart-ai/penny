@@ -390,8 +390,8 @@ class TestCollectionCreateFrontDoor:
             "not a whole name+hook+price blob — a multi-field blob changes whenever any "
             "part does and would false-alarm every cycle), and collection_write that value "
             "into the collection.\n"
-            "3. Save that run as a skill: skill_create(name=<title>, from_run=<that run's "
-            "id>, steps=<range>).\n"
+            "3. Save that run as a skill: skill_create(name=<title>) — it captures the "
+            "whole run you just did, no run id or step range needed.\n"
             "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
             'skill=<title>, params={…}, trigger="every <seconds>", notify=<true/false>).'
         )
@@ -1551,10 +1551,11 @@ class TestTwoStepTeachBootstrap:
         # 2. Demonstrate the routine once, writing INTO the inert collection (a logged run).
         _log_demo_run(db, "run-demo", write_target="deals-watch")
 
-        # 3. Promote that run into a skill (real skill_create call over the demo run).
-        taught = await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat").execute(
-            name="Watch a shoe price", from_run="run-demo", steps="1-2"
-        )
+        # 3. Promote that run into a skill (name-only skill_create; it snapshots the
+        #    preceding run — run-demo, the only chat run before this one).
+        taught = await SkillCreateTool(
+            db, cast(Any, MockLlmClient()), author="chat", run_id="run-B"
+        ).execute(name="Watch a shoe price")
         assert taught.success
         assert db.skills.get("Watch a shoe price") is not None
 

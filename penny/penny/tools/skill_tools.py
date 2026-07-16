@@ -1,13 +1,16 @@
-"""The skill tool surface — ``skill_create`` (author by reference) and
+"""The skill tool surface — ``skill_create`` (snapshot the preceding run) and
 ``skill_read`` (list / render), #1590.
 
-``skill_create(name, from_run, steps=<range>)`` is the ONLY write path into a
-skill: the model points at a contiguous range of ONE verified run's tool-call
-ordinals and the system copies those calls out of the ledger, enforcing
-**certified-by-execution** (every selected call succeeded in the source run) and
-factoring each argument by provenance into declared holes.  Cross-run splicing is
-structurally impossible — the single ``from_run`` argument is the whole selection
-scope.  ``skill_read`` renders the versionless registry.
+``skill_create(name)`` is the ONLY write path into a skill, and it is **name-only**:
+the model supplies just a title, and the system snapshots the run immediately
+preceding this one (the routine the user just demonstrated in chat) — copying ALL
+its non-``done`` tool calls out of the ledger, enforcing **certified-by-execution**
+(every captured call succeeded in the source run) and factoring each argument by
+provenance into declared holes.  No run id and no step range come from the model —
+both are ledger coordinates it can't reliably produce mid-conversation; the
+preceding run is resolved structurally by the executing agent's own run id.
+Cross-run splicing is structurally impossible — one run in, one skill out.
+``skill_read`` renders the versionless registry.
 """
 
 from __future__ import annotations
@@ -39,8 +42,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ``done`` consumes a tool-call ordinal (matching ``render_run_calls``) but is a
-# loop-control call, never a skill step — excluded from every selected range.
+# loop-control call, never a skill step — excluded from the captured steps.
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
+
+# The refusal when there's no preceding run to snapshot, or the preceding run had
+# no runnable (non-``done``) step — actionable: run the routine once, then save it.
+_NOTHING_TO_SAVE = (
+    "Nothing to save yet — run the routine once here in chat first "
+    "(browse, extract, write), then tell me to save it as a skill."
+)
 
 
 class SkillCreateError(Exception):
@@ -58,34 +68,6 @@ class SkillCreateError(Exception):
 # (#1600 — ``RunProjectionStep.success``, hydrated from the ``tool_success`` stamp
 # the framework wrote at execution time), so "did this call succeed?" is a boolean
 # read, not a narration parse.  The gate itself lives in ``_require_certified``.
-
-
-# ── Range parsing (``"2-5"`` / ``"2..5"`` / ``"3"``) ──────────────────────────
-
-_RANGE_HELP = 'write it as a range like "2-5" (steps 2 through 5) or a single step like "3".'
-
-
-def _parse_range(raw: str) -> tuple[int, int]:
-    """Parse a ``steps`` argument into ``(start, end)``; raises an actionable
-    ``SkillCreateError`` on a malformed range.  Accepts ``"N"``, ``"N-M"``,
-    and ``"N..M"``."""
-    text = raw.strip().replace("..", "-")
-    parts = text.split("-")
-    try:
-        bounds = [int(part.strip()) for part in parts]
-    except ValueError:
-        raise SkillCreateError(f"Couldn't read steps={raw!r} — {_RANGE_HELP}") from None
-    if len(bounds) == 1:
-        start = end = bounds[0]
-    elif len(bounds) == 2:
-        start, end = bounds
-    else:
-        raise SkillCreateError(f"Couldn't read steps={raw!r} — {_RANGE_HELP}")
-    if start < 1 or end < start:
-        raise SkillCreateError(
-            f"steps={raw!r} isn't a valid range (start≥1, end≥start) — {_RANGE_HELP}"
-        )
-    return start, end
 
 
 # ── Full render (shared by the create result and the read surface) ────────────
@@ -120,7 +102,7 @@ def _render_skill_full(skill: Skill) -> str:
 
 
 class SkillCreateTool(Tool):
-    """Author a skill by reference to one verified run's ledger.
+    """Snapshot the preceding run into a skill.
 
     A skill's step count is bounded by the shared step budget of the run that
     demonstrates it (``MAX_STEPS`` == ``BACKGROUND_MAX_STEPS`` by default —
@@ -128,25 +110,24 @@ class SkillCreateTool(Tool):
 
     name = "skill_create"
     description = (
-        "Save a verified run's tool-call sequence as a reusable skill — a named "
-        "recipe you can later instantiate as a collection.  You point at ONE run "
-        "you already ran cleanly (its id, from `read_run_calls`) and a contiguous "
-        "range of its steps; the system copies those exact calls (never retyped) "
-        "and figures out which arguments are parameters.\n"
+        "Save what you JUST did as a reusable skill — a named recipe you can later "
+        "instantiate as a collection. It snapshots the routine you ran in the run "
+        "right before this one (browse, extract, write, …), copying those exact "
+        "tool calls (never retyped) and figuring out which arguments are "
+        "parameters.\n"
+        "\n"
+        "You pass ONLY a `name`. You do NOT pass a run id or a step range — the "
+        "system captures the whole preceding run for you.\n"
         "\n"
         "Fields:\n"
         '- `name` — the skill\'s title (e.g. "Watch a page field"). Re-teaching '
         "the same name replaces it.\n"
-        "- `from_run` — the run id of the clean demonstration. A skill comes from "
-        "ONE run; you can't splice steps from several.\n"
-        '- `steps` — the step range to keep, like "2-5" (steps 2 through 5) or a '
-        'single "3". Trim off any incidental lookups at the start or end.\n'
         "\n"
-        "Every selected step must have SUCCEEDED in that run (a skill only contains "
-        "calls that actually worked). Arguments you took from the user's request "
-        "become fill-in-the-blank holes; a value that came from an earlier step "
-        "becomes 'the value from step N'; anything else is baked in. Returns the "
-        "learned skill so you can confirm it back."
+        "Every step of that run must have SUCCEEDED (a skill only contains calls "
+        "that actually worked). Arguments you took from the user's request become "
+        "fill-in-the-blank holes; a value that came from an earlier step becomes "
+        "'the value from step N'; anything else is baked in. Returns the learned "
+        "skill so you can confirm it back."
     )
     parameters = {
         "type": "object",
@@ -155,16 +136,8 @@ class SkillCreateTool(Tool):
                 "type": "string",
                 "description": "The skill's title (unique; re-teach replaces)",
             },
-            "from_run": {
-                "type": "string",
-                "description": "The run id of the clean demonstration (from read_run_calls)",
-            },
-            "steps": {
-                "type": "string",
-                "description": 'The step range to keep, e.g. "2-5" or a single "3"',
-            },
         },
-        "required": ["name", "from_run", "steps"],
+        "required": ["name"],
     }
     args_model = SkillCreateArgs
 
@@ -176,10 +149,15 @@ class SkillCreateTool(Tool):
             return f"You tried to save the skill{label} but it didn't work:"
         return f"You saved the skill{label}:"
 
-    def __init__(self, db: Database, llm_client: LlmClient, author: str) -> None:
+    def __init__(
+        self, db: Database, llm_client: LlmClient, author: str, run_id: str | None = None
+    ) -> None:
         self._db = db
         self._llm = llm_client
         self._author = author
+        # The current run's id (this ``skill_create`` cycle, run B) — the anchor
+        # for resolving the preceding run (run A) to snapshot.
+        self._run_id = run_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         args = SkillCreateArgs(**kwargs)
@@ -189,36 +167,36 @@ class SkillCreateTool(Tool):
             return ToolResult(message=str(exc), success=False)
 
     async def _create_from_ledger(self, args: SkillCreateArgs) -> ToolResult:
-        """The whole authoring flow, reading like a table of contents: parse the
-        range, load + project the run, select the slice, certify it, distill and
-        persist.  Every refusal is a ``SkillCreateError`` caught once above."""
-        start, end = _parse_range(args.steps)
-        prompts = self._db.messages.get_run_prompts(args.from_run)
-        if not prompts:
-            raise SkillCreateError(self._no_run_message(args.from_run))
-        projection = project_run(prompts)
-        selected = self._select(projection, start, end)
-        self._require_certified(selected, args.from_run)
-        return await self._create(args.name, args.from_run, projection, selected)
+        """The whole authoring flow, reading like a table of contents: resolve the
+        preceding run, load + project it, select ALL its non-``done`` steps, certify
+        them, distill and persist.  Every refusal is a ``SkillCreateError`` caught
+        once above."""
+        source_run = self._preceding_run_id()
+        if source_run is None:
+            raise SkillCreateError(_NOTHING_TO_SAVE)
+        projection = project_run(self._db.messages.get_run_prompts(source_run))
+        selected = self._select(projection)
+        self._require_certified(selected, source_run)
+        return await self._create(args.name, source_run, projection, selected)
 
-    def _select(self, projection: RunProjection, start: int, end: int) -> list[RunProjectionStep]:
-        """The run's non-``done`` steps whose ordinal is in ``[start, end]`` — a
-        contiguous slice of surviving ordinals (a ``done`` in the range is a gap,
-        never renumbered).  Raises when the range names no runnable step."""
-        chosen = [
-            step
-            for step in projection.steps
-            if start <= step.ordinal <= end and step.call.name != _DONE_TOOL
-        ]
-        if chosen:
-            return chosen
-        available = ", ".join(
-            str(step.ordinal) for step in projection.steps if step.call.name != _DONE_TOOL
-        )
-        raise SkillCreateError(
-            f"No tool-call steps in range {start}-{end} for this run. Its steps are: "
-            f"{available or '(none)'}. Pick a range that covers the steps you want."
-        )
+    def _preceding_run_id(self) -> str | None:
+        """The run immediately preceding this one for the executing agent — the
+        demonstration to snapshot (run A, the routine just run before this
+        ``skill_create`` cycle).  ``None`` when there's no current run id to anchor
+        against, or no earlier run of this agent exists (an actionable refusal)."""
+        if self._run_id is None:
+            return None
+        return self._db.messages.most_recent_run_id_before(self._run_id, self._author)
+
+    def _select(self, projection: RunProjection) -> list[RunProjectionStep]:
+        """EVERY non-``done`` step of the preceding run — the whole demonstration
+        captured verbatim (no range selection; a ``done`` is loop control, never a
+        skill step).  Raises the nothing-to-save refusal when the run had no
+        runnable step."""
+        chosen = [step for step in projection.steps if step.call.name != _DONE_TOOL]
+        if not chosen:
+            raise SkillCreateError(_NOTHING_TO_SAVE)
+        return chosen
 
     def _require_certified(self, selected: list[RunProjectionStep], from_run: str) -> None:
         """The certified-by-execution gate: raises naming the first selected step
@@ -242,7 +220,7 @@ class SkillCreateTool(Tool):
                     f"Can't save this skill: step {step.ordinal} "
                     f"({step.call.name}) didn't succeed in run {from_run}, and a skill "
                     "may only contain calls that worked. Re-demonstrate the flow so "
-                    "every step succeeds, then save that run's range."
+                    "every step succeeds, then save it as a skill again."
                 )
 
     async def _create(
@@ -283,14 +261,6 @@ class SkillCreateTool(Tool):
             else f"Learned skill '{skill.name}'."
         )
         return ToolResult(message=f"{lead}\n{_render_skill_full(skill)}", mutated=True)
-
-    @staticmethod
-    def _no_run_message(from_run: str) -> str:
-        return (
-            f"No run found with id {from_run!r}. Use read_run_calls(target='chat') "
-            "(or a collector's name) to find the id of the run you want to save, then "
-            "pass that exact id as from_run."
-        )
 
 
 # ── skill_read ────────────────────────────────────────────────────────────────
@@ -346,7 +316,7 @@ class SkillReadTool(Tool):
         if not skills:
             return ToolResult(
                 message="No skills yet — teach one by demonstrating a flow, then "
-                "skill_create(name=<title>, from_run=<run id>, steps=<range>)."
+                "skill_create(name=<title>)."
             )
         lines = [f"- {skill.name}: {skill.intent}" for skill in skills]
         return ToolResult(message="Your skills:\n" + "\n".join(lines))

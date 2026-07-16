@@ -11,19 +11,16 @@ from penny.tools.models import ToolArgs
 
 
 class SkillCreateArgs(ToolArgs):
-    """Args for ``skill_create(name, from_run, steps)``.
+    """Args for ``skill_create(name)``.
 
     ``name`` is the skill's human-readable title (the unique key — re-teaching the
-    same name replaces the skill).  ``from_run`` is the run id of ONE verified
-    demonstration (a single run — cross-run splicing is structurally impossible).
-    ``steps`` is a contiguous ordinal range over that run's tool calls, written
-    ``"2-5"`` (or a single ``"3"``); the range is parsed and bounds-checked by the
-    tool so an out-of-range or malformed range gets an actionable error.
+    same name replaces the skill).  It is the ONLY argument: the tool captures the
+    whole run immediately preceding this one (the demonstration you just ran here in
+    chat), so the model supplies neither a run id nor a step range — both are ledger
+    coordinates it can't reliably produce mid-conversation.
     """
 
     name: str
-    from_run: str
-    steps: str
 
 
 class SkillReadArgs(ToolArgs):
