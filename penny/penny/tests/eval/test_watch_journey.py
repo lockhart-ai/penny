@@ -136,14 +136,6 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
     fact_stored = bool(fact_collections)
     first_reply = replies[0] if replies else ""
     final_reply = replies[-1] if replies else ""
-    read_backed = any(
-        (tool in _READ_TOOLS and args.get("memory") in fact_collections)
-        # `find` (#1640) is the guess-free cross-memory entry search — a find
-        # call in the answering run IS a storage read (the hit carries the
-        # value); the separate $499 check still guards answer correctness.
-        or tool == "find"
-        for tool, args in _final_run_calls(db)
-    )
 
     return [
         Check("the fact landed durably in a collection (any route)", fact_stored),
