@@ -369,19 +369,22 @@ async def test_beat0_cold_recall(chat_eval: ChatEval):
 # at the saved skill.
 
 _BEAT1_TURNS = [
-    # The natural ask — "remember it" must map to storage, "let me know if it
-    # changes" to emission.  No tool names, no "collection".
+    # The INSTIGATING ask — deliberately unfulfillable as stated: "watch this"
+    # requires a job, a job's prompt only exists as a skill render, and no
+    # skill exists.  The correct move is the honest gap: "I don't know how —
+    # teach me."  (The earlier draft front-loaded the read/extract/store
+    # instructions here; those are the TEACHING prompt and belong in turn 2,
+    # as the user's RESPONSE to her ask.)
     (
-        f"can you go read the aurora deck 2 listing at {LISTING_URL}, "
-        "find the price, and remember it? and let me know if it ever changes"
+        f"can you watch the aurora deck 2 listing at {LISTING_URL} "
+        "and let me know if the price ever changes?"
     ),
-    # The walkthrough — still natural: the one value to extract, and a plain
-    # "remember it as" for the write.
+    # The TEACHING walkthrough — the explicit instructions, where they belong.
     (
         f"sure — read {LISTING_URL}, pull out just the price (nothing else), "
         "and remember it as 'Aurora Deck 2'"
     ),
-    # The promotion.
+    # The promotion.  (Attaching the skill to make the watch RUN is beat 2.)
     "perfect — save that as a skill so you can do this again",
 ]
 
@@ -393,18 +396,22 @@ def _outgoing(db: Database) -> list[str]:
 
 
 def _asks_for_demonstration(replies: list[str]) -> bool:
-    """Broad semantic match for the elicitation being RELAYED to the user —
-    the model paraphrases the walk-me-through-it-once literal, so match the
-    intent, not the wording."""
+    """Broad semantic match for the honest gap being voiced — "I don't know
+    how, teach me" in any paraphrase.  Match the intent, not the wording."""
     needles = (
         "walk me through",
         "walk you through",
         "show me how",
         "show me once",
         "teach me",
+        "teach it",
         "demonstrate",
         "walk me thru",
         "guide me through",
+        "don't know how",
+        "don't yet know how",
+        "haven't learned",
+        "no skill",
     )
     return any(needle in reply.lower() for reply in replies for needle in needles)
 
@@ -429,12 +436,18 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
     step_tools = [step.tool for step in steps]
     holes = holes_from_json(skill.holes) if skill else []
 
+    no_watch_yet = all(
+        row.extraction_prompt is None
+        for row in db.memories.list_all()
+        if row.type == "collection" and not row.archived
+    )
+
     return [
-        Check("exactly one container created (remember → storage)", len(created) == 1),
         Check(
-            "a reply asks for a demonstration (elicitation relayed)",
+            "turn 1 voices the honest gap (asks to be taught, any paraphrase)",
             _asks_for_demonstration(replies),
         ),
+        Check("exactly one container created", len(created) == 1),
         Check("demo browse read the listing (persisted in browse-results)", _browsed_listing(db)),
         Check("demo write landed the price in the container", wrote_price),
         Check(
@@ -447,6 +460,10 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
         ),
         Check("skill records its source run", bool(skill and skill.source_run_id)),
         Check("at least one hole inferred from the utterance", len(holes) >= 1),
+        Check(
+            "no dispatchable watch exists yet (attach is beat 2 — no faked watch)",
+            no_watch_yet,
+        ),
     ]
 
 
