@@ -382,23 +382,41 @@ def _outgoing(db: Database) -> list[str]:
 
 def _asks_for_demonstration(replies: list[str]) -> bool:
     """Broad semantic match for the honest gap being voiced — "I don't know
-    how, teach me" in any paraphrase.  Match the intent, not the wording."""
+    how, teach me" in any paraphrase.  Match the ASK-to-be-taught intent, not
+    the wording: a bare refusal that names the gap without inviting a
+    walk-through must still MISS (that's a dead end, not the terminal state).
+    Typography is normalized first — live replies carry non-breaking hyphens
+    and typographic dashes that would slip a plain-hyphen needle."""
     needles = (
+        # she invites the user to show her the routine
         "walk me through",
         "walk you through",
+        "walk-through",  # "a quick walk-through from you" (noun form)
+        "walkthrough",
+        "walk me thru",
         "show me how",
         "show me once",
+        "show me which",
+        "point out which",  # "just point out which part holds the price"
+        "point me",
+        "tell me which",  # "can you tell me which part shows the price"
         "teach me",
         "teach it",
         "demonstrate",
-        "walk me thru",
         "guide me through",
+        # she names not-yet-knowing AS a request to learn it together
         "don't know how",
         "don't yet know how",
         "haven't learned",
+        "need to learn",  # "I'll need to learn what to look for"
+        "learn what to look for",
         "no skill",
     )
-    return any(needle in reply.lower() for reply in replies for needle in needles)
+    normalized = [
+        reply.lower().replace("‑", "-").replace("–", "-").replace("—", "-")
+        for reply in replies
+    ]
+    return any(needle in reply for reply in normalized for needle in needles)
 
 
 def _browsed_listing(db: Database) -> bool:
