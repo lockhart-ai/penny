@@ -38,6 +38,7 @@ from penny.database.memory.types import (
     ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
+    RunWrite,
     slug,
     wrong_shape_message,
 )
@@ -392,6 +393,44 @@ class MemoryStore:
             counts[log_name] = by_direction.get(direction, 0)
         counts[PennyConstants.MEMORY_COLLECTOR_RUNS_LOG] = run_count or 0
         return counts
+
+    def writes_by_run(self, run_ids: list[str]) -> dict[str, list[RunWrite]]:
+        """The keyed entries each run wrote the CURRENT value of, grouped by run
+        id (#1641) — the ``last_written_by_run_id`` join the self-state activity
+        block renders as a run's writes clause.
+
+        Scoped to the given run ids (the runs the block shows) in one query, so
+        the header stays a bounded read.  Keyed entries only (``key IS NOT
+        NULL``): a log append carries no key and is browse scratch, not a
+        registry write.  Ordered by ``(memory_name, created_at, id)`` — the name
+        clusters each collection's writes into one render group; ``created_at``
+        lists a group's keys oldest-first; ``id`` is only the same-instant
+        tiebreak (datetime for ordering, ids for joins — house rule)."""
+        if not run_ids:
+            return {}
+        grouped: dict[str, list[RunWrite]] = {}
+        with self._session() as session:
+            rows = session.exec(
+                select(
+                    MemoryEntry.last_written_by_run_id,
+                    MemoryEntry.memory_name,
+                    MemoryEntry.key,
+                )
+                .where(
+                    MemoryEntry.last_written_by_run_id.in_(run_ids),  # ty: ignore[unresolved-attribute]
+                    MemoryEntry.key.isnot(None),  # ty: ignore[unresolved-attribute]
+                )
+                .order_by(
+                    MemoryEntry.memory_name.asc(),
+                    MemoryEntry.created_at.asc(),
+                    MemoryEntry.id.asc(),
+                )
+            ).all()
+        for run_id, memory_name, key in rows:
+            if run_id is None or key is None:
+                continue
+            grouped.setdefault(run_id, []).append(RunWrite(memory_name=memory_name, key=key))
+        return grouped
 
     def names_with_entry_match(self, search: str) -> set[str]:
         """Names of memories holding an entry whose ``key`` or ``content``

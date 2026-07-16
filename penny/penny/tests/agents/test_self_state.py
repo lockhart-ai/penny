@@ -104,6 +104,33 @@ def _add_entries(session: Session, name: str, count: int, *, when: datetime) -> 
         )
 
 
+def _add_written_entry(
+    session: Session,
+    *,
+    memory_name: str,
+    key: str,
+    run_id: str,
+    when: datetime,
+    created_run_id: str | None = None,
+) -> None:
+    """A collection entry whose CURRENT value was written by ``run_id`` — the
+    #1560 ``last_written_by_run_id`` stamp the run-line writes clause joins on
+    (#1641).  ``created_run_id`` defaults to ``run_id`` (a fresh write); pass a
+    different value to model a rewrite (created by one run, last written by
+    another), so the clause is shown to report the LAST writer, not the creator."""
+    session.add(
+        MemoryEntry(
+            memory_name=memory_name,
+            key=key,
+            content=f"value for {key}",
+            author="collector",
+            created_at=when,
+            created_by_run_id=created_run_id if created_run_id is not None else run_id,
+            last_written_by_run_id=run_id,
+        )
+    )
+
+
 def _add_skill(session: Session, *, name: str, intent: str, when: datetime) -> None:
     """A taught skill (the ``skill`` registry, #1590) — the taught-skill feed of
     the self-state Skills-and-rules section.  ``steps``/``holes`` are irrelevant
@@ -320,6 +347,19 @@ def _seed_kitchen_sink(db: Database) -> None:
             outcome="failed",
             calls=2,
             finished_at=_t(8),
+        )
+        # The price-watch cycle (run 7f3a1b2c) wrote one entry — its run line
+        # grows a writes clause naming the key + collection (#1641).  Created by
+        # an earlier run, last written by this one, so the clause reports the
+        # current-value writer; the failed news-digest run wrote nothing (no
+        # clause — byte-identical to the pre-#1641 line).
+        _add_written_entry(
+            session,
+            memory_name="price-watch",
+            key="aurora deck 2 price",
+            run_id="7f3a1b2c",
+            when=_t(9, 14),
+            created_run_id="5c0dd001",
         )
         _add_mutation(
             session,
@@ -555,6 +595,136 @@ def test_activity_run_lines_every_rendered_outcome(tmp_path):
     assert actual == _RUN_OUTCOME_MATRIX
 
 
+# ── 4d. Run-line writes clause — what a run wrote is ambient (#1641) ───────
+#
+# A run's line grows a ``· wrote …`` clause from the #1560 entry stamp
+# ``last_written_by_run_id``: the single-write form names the key, the
+# multi-write form compacts to a count + a bounded key sample with an ellipsis,
+# and a no-write run renders byte-identical to the pre-#1641 line.  Keys render
+# invocation-form (``'<key>'`` — the value a read tool's ``key=`` receives).
+
+
+def test_activity_run_lines_carry_writes(tmp_path):
+    """The four writes-clause shapes in one render: a single-write run names its
+    key + collection; a two-write run (exactly the key-sample cap) lists both keys
+    with NO ellipsis; a three-write run compacts to a count + a two-key sample WITH
+    an ellipsis; a no-write run is byte-identical to today.  The single-write entry
+    was CREATED by an earlier run but LAST WRITTEN by this one, proving the clause
+    reports the current-value writer (``last_written_by_run_id``), not the
+    creator."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_collection(
+            session, "knowledge", description="web-page facts", created_at=_t(6), updated_at=_t(6)
+        )
+        _add_collection(
+            session, "board-games", description="games to try", created_at=_t(6), updated_at=_t(6)
+        )
+        _add_collection(
+            session, "watchlist", description="pages watched", created_at=_t(6), updated_at=_t(6)
+        )
+        _add_collection(
+            session,
+            "news-digest",
+            description="gather headlines",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_run(
+            session,
+            run_id="a1knowrun",
+            target="knowledge",
+            outcome="worked",
+            calls=2,
+            finished_at=_t(9, 30),
+        )
+        _add_written_entry(
+            session,
+            memory_name="knowledge",
+            key="aurora deck 2 price",
+            run_id="a1knowrun",
+            when=_t(9, 30),
+            created_run_id="0old0run",
+        )
+        _add_run(
+            session,
+            run_id="b2boardrun",
+            target="board-games",
+            outcome="worked",
+            calls=4,
+            finished_at=_t(9, 20),
+        )
+        for index in range(3):
+            _add_written_entry(
+                session,
+                memory_name="board-games",
+                key=f"k{index + 1}",
+                run_id="b2boardrun",
+                when=_t(9, 20 + index),
+            )
+        # Exactly the key-sample cap (2): both keys render, NO ellipsis — the
+        # ``== cap`` boundary of the count-vs-sample split (#1641).
+        _add_run(
+            session,
+            run_id="e5pairrun",
+            target="watchlist",
+            outcome="worked",
+            calls=2,
+            finished_at=_t(9, 15),
+        )
+        for index in range(2):
+            _add_written_entry(
+                session,
+                memory_name="watchlist",
+                key=f"p{index + 1}",
+                run_id="e5pairrun",
+                when=_t(9, 15 + index),
+            )
+        _add_run(
+            session,
+            run_id="c3newsrun",
+            target="news-digest",
+            outcome="worked",
+            calls=1,
+            finished_at=_t(9, 10),
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _RUN_WRITES
+
+
+def test_activity_run_line_multiple_collections(tmp_path):
+    """A run that wrote keyed entries to two collections renders one ``· wrote …``
+    clause per collection, grouped by name (the join is run-type agnostic — a chat
+    turn writing likes + dislikes would render the same way).  Groups render in
+    name order (``dislikes`` before ``likes``)."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_collection(
+            session, "likes", description="things liked", created_at=_t(6), updated_at=_t(6)
+        )
+        _add_collection(
+            session, "dislikes", description="things disliked", created_at=_t(6), updated_at=_t(6)
+        )
+        _add_run(
+            session,
+            run_id="d4dualrun",
+            target="likes",
+            outcome="worked",
+            calls=3,
+            finished_at=_t(9, 40),
+        )
+        _add_written_entry(
+            session, memory_name="likes", key="hiking", run_id="d4dualrun", when=_t(9, 40)
+        )
+        _add_written_entry(
+            session, memory_name="dislikes", key="rain", run_id="d4dualrun", when=_t(9, 41)
+        )
+        session.commit()
+    actual = SelfStateHeader(db, None).render()
+    assert actual == _RUN_WRITES_MULTI_COLLECTION
+
+
 def test_activity_excludes_cancelled_and_chat_runs(tmp_path):
     """The two by-design exclusions, proven against a rendering sibling: a
     CANCELLED collector run (not a real cycle) and a chat run (no outcome, no
@@ -731,7 +901,8 @@ _KITCHEN_SINK = (
     "### Recent activity\n"
     "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
     "changed collector_interval_seconds\n"
-    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls)\n"
+    "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · "
+    "wrote 'aurora deck 2 price' → `price-watch`\n"
     'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
     "change · 2026-07-11 08:30 UTC · old-watch archived by system — max_runs reached (1 "
     "of 1)\n"
@@ -741,7 +912,7 @@ _KITCHEN_SINK = (
     "- chat-log (log, 0 entries) — shared conversation log\n"
     "- favorites (collection, 2 entries) — things the user likes\n"
     "- news-digest (collection, 0 entries) — gather headlines\n"
-    "- price-watch (collection, 0 entries) — watch a product price\n"
+    "- price-watch (collection, 1 entries) — watch a product price\n"
     "- reminder (collection, 0 entries) — one-off reminder\n"
     "\n"
     "### Skills and rules\n"
@@ -926,6 +1097,69 @@ _RUN_OUTCOME_MATRIX = (
     "\n"
     "### Your memory\n"
     "(no stores yet)\n"
+    "\n"
+    "### Skills and rules\n"
+    "(no skills or rules yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
+)
+
+_RUN_WRITES = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "run a1knowrun · 2026-07-11 09:30 UTC · knowledge → WORKED (2 calls) · "
+    "wrote 'aurora deck 2 price' → `knowledge`\n"
+    "run b2boardrun · 2026-07-11 09:20 UTC · board-games → WORKED (4 calls) · "
+    "wrote 3 entries → `board-games` ('k1', 'k2', …)\n"
+    "run e5pairrun · 2026-07-11 09:15 UTC · watchlist → WORKED (2 calls) · "
+    "wrote 2 entries → `watchlist` ('p1', 'p2')\n"
+    "run c3newsrun · 2026-07-11 09:10 UTC · news-digest → WORKED (1 call)\n"
+    "\n"
+    "### Your memory\n"
+    "- board-games (collection, 3 entries) — games to try\n"
+    "- knowledge (collection, 1 entries) — web-page facts\n"
+    "- news-digest (collection, 0 entries) — gather headlines\n"
+    "- watchlist (collection, 2 entries) — pages watched\n"
+    "\n"
+    "### Skills and rules\n"
+    "(no skills or rules yet)\n"
+    "\n"
+    "### About the user\n"
+    "(no profile set yet)\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
+)
+
+_RUN_WRITES_MULTI_COLLECTION = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "(no mechanisms yet)\n"
+    "\n"
+    "### Recent activity\n"
+    "run d4dualrun · 2026-07-11 09:40 UTC · likes → WORKED (3 calls) · "
+    "wrote 'rain' → `dislikes` · wrote 'hiking' → `likes`\n"
+    "\n"
+    "### Your memory\n"
+    "- dislikes (collection, 1 entries) — things disliked\n"
+    "- likes (collection, 1 entries) — things liked\n"
     "\n"
     "### Skills and rules\n"
     "(no skills or rules yet)\n"

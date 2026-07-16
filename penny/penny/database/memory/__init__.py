@@ -40,11 +40,13 @@ from penny.database.memory.types import (
     ResolvedHit,
     ResolvedKind,
     ResolvedMatch,
+    RunWrite,
     UpdateOutcome,
     WriteGateOutcome,
     WriteResult,
     WrongShapeError,
     render_key,
+    render_key_value,
     slug,
     strip_display_brackets,
 )
@@ -79,6 +81,7 @@ __all__ = [
     "ResolvedHit",
     "ResolvedKind",
     "ResolvedMatch",
+    "RunWrite",
     "RunHealth",
     "RunLog",
     "RunProjection",
@@ -94,5 +97,6 @@ __all__ = [
     "WrongShapeError",
     "slug",
     "render_key",
+    "render_key_value",
     "strip_display_brackets",
 ]

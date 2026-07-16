@@ -407,6 +407,10 @@ class PennyConstants:
     SELF_STATE_MECHANISMS_LIMIT = 12
     SELF_STATE_ACTIVITY_LIMIT = 8
     SELF_STATE_MAP_LIMIT = 20
+    # Keys named before the "…" tail in a multi-write run line's writes clause
+    # (#1641): a run that wrote several entries shows the count plus this many
+    # sample keys, so the clause stays one line.  Wholesale bound, tunable later.
+    SELF_STATE_WRITES_KEY_SAMPLE = 2
     MEMORY_PENNY_MESSAGES_LOG = "penny-messages"
     MEMORY_BROWSE_RESULTS_LOG = "browse-results"
     # Typed-id separator for an entry handle (``<memory>#<id>``).  A browse

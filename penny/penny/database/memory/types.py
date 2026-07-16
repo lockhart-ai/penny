@@ -263,6 +263,20 @@ def slug(name: str) -> str:
     return normalize_unicode(name).lower()
 
 
+def render_key_value(key: str) -> str:
+    """The bare invocation-form VALUE of an entry key — ``'<key>'`` — the token a
+    ``key=`` argument receives, without the ``key=`` label itself.
+
+    Used where a key renders inside prose that already fixes the field position,
+    so the label would be redundant: the self-state activity block's writes
+    clause (``wrote '<key>' → `<collection>```, #1641), where the quoted token
+    pastes straight into a ``collection_read_latest`` / ``read_similar`` ``key=``
+    argument.  ``render_key`` composes this with the ``key=`` label, so the
+    quoting is single-sourced — the two forms can't drift apart.
+    """
+    return f"'{key}'"
+
+
 def render_key(key: str) -> str:
     """Render an entry key in **invocation form** — ``key='<key>'`` — for every
     model-facing entry render.
@@ -275,7 +289,7 @@ def render_key(key: str) -> str:
     the model pasted verbatim into key args — the eval contract in
     ``tests/eval/test_key_render.py`` guards the behaviour).
     """
-    return f"key='{key}'"
+    return f"key={render_key_value(key)}"
 
 
 def strip_display_brackets(key: str) -> str:
@@ -295,3 +309,16 @@ def strip_display_brackets(key: str) -> str:
     if len(key) > 2 and key.startswith("[") and key.endswith("]"):
         return key[1:-1]
     return key
+
+
+class RunWrite(BaseModel):
+    """One keyed entry a run wrote the CURRENT value of — the ``(collection, key)``
+    the self-state activity block names in a run's writes clause (#1641).
+
+    Joined from the #1560 entry stamp ``last_written_by_run_id`` (the current-value
+    writer, distinct from the creator), so the clause reports what the run left in
+    the keyed registry.  ``key`` is non-null: a log append carries no key and is
+    excluded from the join (browse scratch, not a registry write)."""
+
+    memory_name: str
+    key: str
