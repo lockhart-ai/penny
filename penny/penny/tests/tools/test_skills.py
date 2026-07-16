@@ -26,7 +26,7 @@ from penny.database.skills import (
     unbound_required_holes,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
+from penny.tools.skill_tools import _NOTHING_TO_SAVE, SkillCreateTool, SkillReadTool
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
@@ -237,9 +237,11 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
             ("done", {}, "Cycle complete.", True),
         ],
     )
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+    # skill_create runs inside its OWN run (run-B); the preceding run (run-A) is the
+    # demonstration it snapshots.  run-A is the most-recent run whose id != run-B.
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
 
-    result = await tool.execute(name="Watch elevation", from_run="run-A", steps="1-2")
+    result = await tool.execute(name="Watch elevation")
 
     assert result.success and result.mutated
     assert result.message == _CREATE_RESULT_LITERAL
@@ -252,13 +254,14 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_skill_create_excludes_done_and_honours_the_range(tmp_path):
-    """``done`` consumes an ordinal but is never a skill step, and a range that
-    trims a leading incidental lookup keeps only the selected calls."""
+async def test_skill_create_captures_the_whole_preceding_run(tmp_path):
+    """Name-only capture snapshots EVERY non-``done`` step of the preceding run —
+    no range selection.  ``done`` consumes an ordinal but is never a skill step, so
+    it's excluded; the leading incidental lookup is kept (nothing is trimmed)."""
     db = _make_db(tmp_path)
     _log_run(
         db,
-        "run-B",
+        "run-A",
         _UTTERANCE,
         [
             (
@@ -272,17 +275,18 @@ async def test_skill_create_excludes_done_and_honours_the_range(tmp_path):
             ("done", {}, "Cycle complete.", True),
         ],
     )
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
 
-    # Trim the leading read (step 1); keep the browse+write (steps 2-3).
-    result = await tool.execute(name="Trimmed", from_run="run-B", steps="2-3")
+    result = await tool.execute(name="Whole run")
     assert result.success
-    trimmed = db.skills.get("Trimmed")
-    assert trimmed is not None
-    steps = steps_from_json(trimmed.steps)
-    assert [s.tool for s in steps] == ["browse", "collection_write"]
-    # The binding still points at the skill's own step 1 (renumbered).
-    assert steps[1].substitutions[-1].step == 1
+    whole = db.skills.get("Whole run")
+    assert whole is not None
+    steps = steps_from_json(whole.steps)
+    # All three non-``done`` steps captured, in order — the read is NOT trimmed; the
+    # ``done`` IS excluded.
+    assert [s.tool for s in steps] == ["collection_read_latest", "browse", "collection_write"]
+    # The write's content still binds to the browse step (step 2, renumbered).
+    assert steps[2].substitutions[-1].step == 2
 
 
 @pytest.mark.asyncio
@@ -292,16 +296,16 @@ async def test_skill_create_rejects_an_uncertified_step(tmp_path):
     db = _make_db(tmp_path)
     _log_run(
         db,
-        "run-C",
+        "run-A",
         _UTTERANCE,
         [
             ("browse", _BROWSE_ARGS, _BROWSE_FAILED, False),  # total browse failure
             ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
         ],
     )
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
 
-    result = await tool.execute(name="Broken", from_run="run-C", steps="1-2")
+    result = await tool.execute(name="Broken")
     assert not result.success
     assert "step 1 (browse) didn't succeed" in result.message
     assert db.skills.get("Broken") is None  # nothing persisted
@@ -309,9 +313,20 @@ async def test_skill_create_rejects_an_uncertified_step(tmp_path):
 
 @pytest.mark.asyncio
 async def test_skill_create_replaces_by_name(tmp_path):
-    """No versioning: re-teaching an existing name REPLACES the row and says so."""
+    """No versioning: re-teaching an existing name REPLACES the row and says so.
+
+    Each save snapshots the PRECEDING run, so the two demonstrations are logged in
+    sequence: run-A (a lone browse) is saved first, then run-D (browse + write) is
+    logged and saved second — the newer run replaces the older skill."""
     db = _make_db(tmp_path)
     _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK, True)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
+
+    # run-A is the only run so far (and != run-B) → it's the preceding run.
+    first = await tool.execute(name="Watch elevation")
+    assert "Learned skill" in first.message
+
+    # Log a newer demonstration; it becomes the most-recent run != run-B.
     _log_run(
         db,
         "run-D",
@@ -321,12 +336,7 @@ async def test_skill_create_replaces_by_name(tmp_path):
             ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
         ],
     )
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
-
-    first = await tool.execute(name="Watch elevation", from_run="run-A", steps="1")
-    assert "Learned skill" in first.message
-
-    second = await tool.execute(name="Watch elevation", from_run="run-D", steps="1-2")
+    second = await tool.execute(name="Watch elevation")
     assert "Replaced the previous version of 'Watch elevation'." in second.message
     # One row, now the two-step demonstration.
     assert len(db.skills.list_all()) == 1
@@ -336,17 +346,26 @@ async def test_skill_create_replaces_by_name(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_skill_create_actionable_on_bad_input(tmp_path):
-    """A malformed range and an unknown run get actionable, guess-free errors."""
+async def test_skill_create_refuses_when_nothing_to_save(tmp_path):
+    """The name-only refusals — both resolve to the actionable 'nothing to save'
+    message: (1) no run precedes the current one (only run-B exists, and the query
+    excludes it), and (2) the preceding run had only a ``done`` (no runnable step)."""
     db = _make_db(tmp_path)
-    _log_run(db, "run-A", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK, True)])
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
 
-    bad_range = await tool.execute(name="X", from_run="run-A", steps="oops")
-    assert not bad_range.success and "steps='oops'" in bad_range.message
+    # (1) No preceding run: the only logged run IS the current one (run-B).
+    _log_run(db, "run-B", _UTTERANCE, [("browse", _BROWSE_ARGS, _BROWSE_OK, True)])
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
+    no_preceding = await tool.execute(name="X")
+    assert not no_preceding.success
+    assert no_preceding.message == _NOTHING_TO_SAVE
+    assert db.skills.get("X") is None
 
-    unknown = await tool.execute(name="X", from_run="nope", steps="1")
-    assert not unknown.success and "No run found with id 'nope'" in unknown.message
+    # (2) The preceding run (run-A) ran only ``done`` — no runnable step to capture.
+    _log_run(db, "run-A", _UTTERANCE, [("done", {}, "Cycle complete.", True)])
+    done_only = await tool.execute(name="X")
+    assert not done_only.success
+    assert done_only.message == _NOTHING_TO_SAVE
+    assert db.skills.get("X") is None
 
 
 # ── skill_read: render one / list all ─────────────────────────────────────────
@@ -366,8 +385,8 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
             ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
         ],
     )
-    await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat").execute(
-        name="Watch elevation", from_run="run-A", steps="1-2"
+    await SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B").execute(
+        name="Watch elevation"
     )
     read = SkillReadTool(db)
 
@@ -387,8 +406,7 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
 # skill table EMPTY (no seed library — every skill enters through skill_create),
 # so this is what a fresh install's skill_read() returns.
 _EMPTY_LISTING = (
-    "No skills yet — teach one by demonstrating a flow, then "
-    "skill_create(name=<title>, from_run=<run id>, steps=<range>)."
+    "No skills yet — teach one by demonstrating a flow, then skill_create(name=<title>)."
 )
 
 
@@ -416,7 +434,7 @@ async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
     db = _make_db(tmp_path)
     _log_run(
         db,
-        "run-legacy",
+        "run-A",
         _UTTERANCE,
         [
             ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
@@ -424,9 +442,9 @@ async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
         ],
         stamp_success=False,  # a pre-#1600 run: framed results, no structural stamp
     )
-    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat")
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
 
-    result = await tool.execute(name="Legacy", from_run="run-legacy", steps="1-2")
+    result = await tool.execute(name="Legacy")
     assert not result.success
     assert "step 1 (browse) didn't succeed" in result.message
     assert db.skills.get("Legacy") is None  # nothing persisted from an uncertain run

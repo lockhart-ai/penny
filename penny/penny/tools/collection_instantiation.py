@@ -76,8 +76,8 @@ _NO_SKILL_FOUND = (
     "extract just the ONE value you want watched (pull out only the price, not a whole "
     "name+hook+price blob — a multi-field blob changes whenever any part does and would "
     "false-alarm every cycle), and collection_write that value into the collection.\n"
-    "3. Save that run as a skill: skill_create(name=<title>, from_run=<that run's id>, "
-    "steps=<range>).\n"
+    "3. Save that run as a skill: skill_create(name=<title>) — it captures the whole "
+    "run you just did, no run id or step range needed.\n"
     "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
     'skill=<title>, params={{…}}, trigger="every <seconds>", notify=<true/false>).'
 )
