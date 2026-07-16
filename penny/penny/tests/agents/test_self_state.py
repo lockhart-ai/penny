@@ -757,8 +757,9 @@ _KITCHEN_SINK = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _ON_ADVANCE = (
@@ -785,8 +786,9 @@ _ON_ADVANCE = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _EMPTY = (
@@ -810,8 +812,9 @@ _EMPTY = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _OVERFLOW = (
@@ -843,8 +846,9 @@ _OVERFLOW = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _ARCHIVED_HEAVY = (
@@ -871,8 +875,9 @@ _ARCHIVED_HEAVY = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _TAUGHT_SKILLS_ONLY = (
@@ -898,8 +903,9 @@ _TAUGHT_SKILLS_ONLY = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 
@@ -930,8 +936,9 @@ _RUN_OUTCOME_MATRIX = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _EXCLUSION_RENDER = (
@@ -955,8 +962,9 @@ _EXCLUSION_RENDER = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _MUTATION_CHANGED_FIELDS_MATRIX = (
@@ -995,8 +1003,9 @@ _MUTATION_CHANGED_FIELDS_MATRIX = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _MUTATION_NOTE_MATRIX = (
@@ -1035,8 +1044,9 @@ _MUTATION_NOTE_MATRIX = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _EMISSION_MATRIX = (
@@ -1063,8 +1073,9 @@ _EMISSION_MATRIX = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )
 
 _MUTATION_BARE_MATRIX = (
@@ -1095,6 +1106,7 @@ _MUTATION_BARE_MATRIX = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )

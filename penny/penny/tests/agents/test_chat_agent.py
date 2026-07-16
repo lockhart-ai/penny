@@ -591,7 +591,7 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "read_run_calls" in names
         assert "get_event" in names
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
-        assert "find_mine" in names
+        assert "find" in names
 
         # Notification mute/unmute — chat-surface tools over the MuteState row
         # (the retired /mute + /unmute commands), dispatched from natural language.
@@ -958,6 +958,7 @@ _BASIC_FLOW_EXPECTED = (
     "To look deeper: memory_metadata(<name>) for a collection's full config and change "
     "history, get_event(run <id>) for one run's tool calls, "
     "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-    "collection_catalog() for every collection."
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
 )

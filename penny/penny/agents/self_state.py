@@ -100,8 +100,9 @@ class SelfStateHeader:
         "To look deeper: memory_metadata(<name>) for a collection's full config and "
         "change history, get_event(run <id>) for one run's tool calls, "
         "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) "
-        "for stored entries, find_mine(query=<text>) to resolve a name by meaning, and "
-        "collection_catalog() for every collection."
+        "for stored entries, find(query=<text>) to find anything of yours by meaning "
+        "(a collection, a skill, or a stored entry), and collection_catalog() for "
+        "every collection."
     )
 
     def __init__(self, db: Database, user: str | None) -> None:
@@ -269,7 +270,7 @@ class SelfStateHeader:
         — the causing run id (present for a user-run mutation, absent for a system
         one) is a ``get_event(run <id>)`` anchor, single-sourced with that tool's
         parse (``RUN_EVENT_PREFIX``); the entity name resolves via
-        ``memory_metadata``/``find_mine``, and the detail carries the changed
+        ``memory_metadata``/``find``, and the detail carries the changed
         fields."""
         parts = [
             f"change · {format_log_timestamp(event.created_at)} · "

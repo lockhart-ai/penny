@@ -468,12 +468,12 @@ class ExistsArgs(ToolArgs):
     key: str | None = None
 
 
-class FindMineArgs(ToolArgs):
-    """Resolve one of Penny's own objects by meaning (#1558).
+class FindArgs(ToolArgs):
+    """Find anything of Penny's own by meaning (#1558, #1640).
 
     ``query`` is a paraphrase of what the thing is about (its meaning, not its
-    exact name); ``type`` optionally narrows to a single family (collection | log
-    | skill).  A blank ``type`` means "span all families".
+    exact name/key); ``type`` optionally narrows to a single family (collection |
+    log | skill | entry).  A blank ``type`` means "span all families".
     """
 
     query: str

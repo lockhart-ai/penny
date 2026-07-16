@@ -77,7 +77,7 @@ class MemoryNotFoundError(MemoryAccessError):
     def __init__(self, name: str) -> None:
         super().__init__(
             f"Memory '{name}' not found. Check the name (it may be misspelled), or find "
-            f"it by meaning with find_mine(query=<what it's about>) — it resolves your "
+            f"it by meaning with find(query=<what it's about>) — it resolves your "
             f"collections, logs, and skills (archived included) and names the exact tool "
             f"for each. Or create it with collection_create(name='{name}') / "
             f"log_create(name='{name}') if it should exist."
@@ -192,22 +192,28 @@ class EntrySide(NamedTuple):
 
 
 class ResolvedKind(StrEnum):
-    """The family of an addressable object ``find_mine`` resolves (#1558).
+    """The family of an addressable thing ``find`` resolves (#1558, #1640).
 
-    The axis that fixes the object's *finite action set*: the tool layer maps
+    The axis that fixes the thing's *finite action set*: the tool layer maps
     ``kind`` (+ archived state) to the exact tool call that operates on it, so the
     model never derives the type→addressing mapping itself.  ``skill`` is a taught
     skill in the ``skill`` table (the sole skills store, #1624);
-    ``collection`` / ``log`` are registry rows.
+    ``collection`` / ``log`` are registry rows; ``entry`` is a single stored
+    ``memory_entry`` (a fact inside a collection or log — #1640).  An entry's
+    *container* is always a ``collection`` or ``log`` (never an ``entry``/``skill``),
+    the axis that fixes how the entry is read back.
     """
 
     COLLECTION = "collection"
     LOG = "log"
     SKILL = "skill"
+    ENTRY = "entry"
 
 
 class ResolvedMatch(BaseModel):
-    """One resolve-by-meaning hit — identity fused with its affordances (#1558).
+    """One resolve-by-meaning hit on an *object* — identity fused with its
+    affordances (#1558).  The collection/log/skill arm of a :data:`ResolvedHit`;
+    the entry arm is :class:`ResolvedEntry`.
 
     Carries the *exact* identity (``name`` — a collection/log name, or a taught
     skill's name), its ``kind``, whether it's ``archived`` (collections/logs; a
@@ -221,6 +227,35 @@ class ResolvedMatch(BaseModel):
     kind: ResolvedKind
     archived: bool
     label: str
+
+
+class ResolvedEntry(BaseModel):
+    """One resolve-by-meaning hit on a *stored entry* (#1640) — the entry arm of a
+    :data:`ResolvedHit` (the object arm is :class:`ResolvedMatch`).
+
+    A fact stored in a collection or log, found by the meaning of its content or
+    key rather than by guessing its container: the hit CARRIES the content, so for
+    a short fact the find IS the answer.  ``memory_name`` is the containing
+    collection/log; ``container_kind`` (``collection`` | ``log``) fixes how the
+    entry is read back; ``key`` is the invocation-form lookup key (``None`` for a
+    keyless log entry, which is addressed by its ``entry_id`` handle instead);
+    ``content`` is the stored value the tool previews.  Ranking (plain cosine over
+    the entry's content/key embeddings) is the store's, so no score is carried
+    here.
+    """
+
+    entry_id: int
+    memory_name: str
+    container_kind: ResolvedKind
+    key: str | None
+    content: str
+
+
+# The two arms of one best-first ``find`` result list (#1640): an object hit
+# (collection / log / skill) or a stored-entry hit.  The tool renders each by its
+# own house pattern but ranks them in ONE fused list — same embedding space, one
+# cosine, no second result shape.
+ResolvedHit = ResolvedMatch | ResolvedEntry
 
 
 def slug(name: str) -> str:

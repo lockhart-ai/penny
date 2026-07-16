@@ -255,7 +255,7 @@ class MemoryRow(SQLModel, table=True):
     name: str = Field(primary_key=True)
     type: str  # MemoryType enum value: "collection" or "log"
     description: str  # Content-reflective summary; the resolve-by-meaning anchor
-    # Embedding of ``description`` — the meaning anchor for ``find_mine`` /
+    # Embedding of ``description`` — the meaning anchor for ``find`` /
     # resolve-by-meaning (#1558), computed once on create/description-edit
     # (NULL until backfilled at startup).
     description_embedding: bytes | None = None
