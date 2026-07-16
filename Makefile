@@ -153,6 +153,7 @@ eval: $(if $(LOCAL),,build)
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
 		EVAL_REPORT_DIR="$${EVAL_REPORT_DIR}" \
+		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
 		pytest $(EVAL_PYTEST_ARGS)
 
 migrate-test: $(if $(LOCAL),,build)
