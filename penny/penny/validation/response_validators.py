@@ -338,6 +338,36 @@ class DoneJsonBailValidator:
         return NudgeContinue(message=Prompt.COLLECTOR_DONE_JSON_NUDGE)
 
 
+# ── Chat-only run-shape validators ───────────────────────────────────────────
+
+
+class SkillNarrationValidator:
+    """A chat run that just AUTO-EXTRACTED a skill narrates it in the same turn
+    (#1658, SAID==DID).
+
+    Extraction is deterministic and runs at the text-branch prep
+    (``ChatAgent._prepare_text_shape``), which stamps the learned skill's rendered
+    frame onto ``ctx.learned_skill_frame`` on a qualifying run.  This validator —
+    a validator in the chat chain, not a branch in the loop — turns that frame into
+    a ``NudgeContinue`` so the model re-replies, telling the user what it just
+    learned FROM the render (its name, trigger, numbered recipe, required holes)
+    rather than from memory.  The frame is present at most once per run (the prep
+    extracts once per run id), so the re-reply doesn't re-narrate — it falls through
+    to the real final answer.
+
+    On the final step there's no room to continue (tools stripped, the loop would
+    exhaust), so it Proceeds — the skill is still saved (extraction already ran) and
+    surfaces ambiently in the next turn's self-state header."""
+
+    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
+        if ctx.is_final_step or response.has_tool_calls:
+            return Proceed(response=response)
+        if ctx.learned_skill_frame:
+            logger.info("Narrating an auto-extracted skill this turn")
+            return NudgeContinue(message=ctx.learned_skill_frame)
+        return Proceed(response=response)
+
+
 # ── Chat-only run-shape validator ────────────────────────────────────────────
 
 # The tool-call envelope shape the model also emits as text: {"name": …, "arguments": {…}}.

@@ -861,32 +861,10 @@ class MessageStore:
             grouped = self._group_runs(session, run_ids)
         return [grouped[run_id] for run_id in run_ids if run_id in grouped]
 
-    def most_recent_run_id_before(self, current_run_id: str, agent_name: str) -> str | None:
-        """The ``run_id`` of the most recent run (by ``timestamp`` DESC) that
-        ``agent_name`` executed and that is NOT ``current_run_id`` — the
-        demonstration immediately preceding the current run (#1590, name-only
-        ``skill_create``).
-
-        ``skill_create`` runs inside its own new run (call it B); this resolves run
-        A, the routine the user just ran before it.  Excluding ``current_run_id``
-        drops B; filtering by ``agent_name`` guarantees an interleaved background
-        collector run can never be captured.  ``None`` when there is no such run."""
-        with self._session() as session:
-            return session.exec(
-                select(PromptLog.run_id)
-                .where(
-                    PromptLog.agent_name == agent_name,
-                    PromptLog.run_id != current_run_id,
-                    PromptLog.run_id.isnot(None),  # ty: ignore[unresolved-attribute]
-                )
-                .order_by(PromptLog.timestamp.desc())
-                .limit(1)
-            ).first()
-
     def get_run_prompts(self, run_id: str) -> list[PromptLog]:
-        """Every prompt of one run, ascending time order — the raw material
-        ``skill_create`` projects into ordinaled tool calls (#1590).  Empty when
-        the run id is unknown, so the tool surfaces an actionable 'no such run'."""
+        """Every prompt of one run, ascending time order — the raw material the
+        run-end skill extractor (#1658) projects into ordinaled tool calls (#1590).
+        Empty when the run id is unknown."""
         with self._session() as session:
             return list(
                 session.exec(

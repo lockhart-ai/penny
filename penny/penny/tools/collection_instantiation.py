@@ -76,8 +76,8 @@ _NO_SKILL_FOUND = (
     "extract just the ONE value you want watched (pull out only the price, not a whole "
     "name+hook+price blob — a multi-field blob changes whenever any part does and would "
     "false-alarm every cycle), and collection_write that value into the collection.\n"
-    "3. Save that run as a skill: skill_create(name=<title>) — it captures the whole "
-    "run you just did, no run id or step range needed.\n"
+    "3. That's the save step — I learn the routine automatically as a skill from what we "
+    "just did (no separate command).\n"
     "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
     'skill=<title>, params={{…}}, trigger="every <seconds>", notify=<true/false>).'
 )
@@ -311,15 +311,58 @@ def _expires_line(row: MemoryRow) -> str:
     return f"  expires: {format_log_timestamp(row.expires_at)}"
 
 
+# ── The plain-language lead line (what the collector WILL do, #1658) ───────────
+#
+# The instantiation echoes LEAD with one deterministic English sentence composed
+# from the STRUCTURED fields — skill · cadence · target · notify — so the model (and
+# the user it mirrors it to) reads what the collector will actually do without
+# confabulating it.  Template-method over the trigger forms × the notify flag; the
+# detailed field-by-field echo stays below it.
+
+
+def _lead_cadence_phrase(row: MemoryRow) -> str:
+    """The 'when it runs' clause, built off the SAME trigger fields
+    ``render_trigger_clause`` reads: on-advance · once-at · every-seconds, or a bare
+    'I'll run' when the collection carries no cadence at all (defensive — a
+    skill-backed collection always has one)."""
+    if row.source_log is not None:
+        return f"Whenever '{row.source_log}' gets a new entry I'll run"
+    if row.run_at is not None:
+        times = f" ({row.max_runs} times)" if row.max_runs not in (None, 1) else ""
+        return f"At {format_log_timestamp(row.run_at)}{times} I'll run"
+    if row.collector_interval_seconds:
+        return f"Every {row.collector_interval_seconds} seconds I'll run"
+    return "I'll run"
+
+
+def _lead_notify_tail(row: MemoryRow) -> str:
+    """The 'what it does with a change' clause — the notify flag in plain words."""
+    if row.notify:
+        return "message you when something changes."
+    return "quietly store what it finds."
+
+
+def _lead_line(row: MemoryRow, skill_name: str) -> str:
+    """One deterministic English sentence: cadence + skill + target + notify —
+    e.g. "Every 900 seconds I'll run 'watch-a-page' against 'aurora-prices' and
+    message you when something changes." / "…and quietly store what it finds."."""
+    return (
+        f"{_lead_cadence_phrase(row)} '{skill_name}' against '{row.name}' and "
+        f"{_lead_notify_tail(row)}"
+    )
+
+
 def _instantiation_echo(
     row: MemoryRow, skill_name: str, params: dict[str, str], headline: str
 ) -> str:
-    """The shared instantiation confirm-shape — a ``headline`` over skill · bound
-    params · trigger · notify · expiry · the full rendered ``extraction_prompt``.
-    Both the creation echo (#1591) and the re-render echo (#1620) compose it, so a
-    freshly created collection and a re-rendered one confirm back the same fields."""
+    """The shared instantiation confirm-shape — a plain-language LEAD line (what the
+    collector will do) over a ``headline`` and skill · bound params · trigger ·
+    notify · expiry · the full rendered ``extraction_prompt``.  Both the creation
+    echo (#1591) and the re-render echo (#1620) compose it, so a freshly created
+    collection and a re-rendered one confirm back the same fields."""
     prompt = (row.extraction_prompt or "").replace("\n", "\n    ")
     lines = [
+        _lead_line(row, skill_name),
         headline,
         f"  description: {row.description}",
         f"  skill: {skill_name}",
@@ -359,9 +402,9 @@ _INERT_ECHO = (
     "  description: {description}\n"
     "  status: inert (no skill attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until you give it "
-    "a skill. Teach me the routine once, save it with skill_create, then attach it with "
-    "collection_update(name='{name}', skill=<title>, trigger=\"every <seconds>\") to make "
-    "it do something."
+    "a skill. Teach me the routine once here in chat — I learn it automatically as a "
+    "skill — then attach it with collection_update(name='{name}', skill=<title>, "
+    'trigger="every <seconds>") to make it do something.'
 )
 
 

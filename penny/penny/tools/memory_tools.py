@@ -100,7 +100,7 @@ from penny.tools.memory_args import (
     UpdateEntryArgs,
 )
 from penny.tools.models import NoArgs, ToolResult
-from penny.tools.skill_tools import SkillCreateTool, SkillReadTool
+from penny.tools.skill_tools import SkillReadTool
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
@@ -570,9 +570,10 @@ class CollectionCreateTool(MemoryTool):
         "- WITHOUT a `skill`: an INERT storage collection — it holds entries but nothing "
         "runs against it yet. Use this to set up the container first when you're about "
         "to TEACH a skill: create it (name + description only), demonstrate the routine "
-        "once so you can save it with skill_create, then attach the skill with "
-        "collection_update to make it do the job. Don't pass a trigger / notify / expiry "
-        "with a skill-less create — an inert collection has no job to schedule.\n"
+        "once here in chat — you learn it automatically as a skill — then attach that "
+        "skill with collection_update to make it do the job. Don't pass a trigger / "
+        "notify / expiry with a skill-less create — an inert collection has no job to "
+        "schedule.\n"
         "\n"
         "Fields:\n"
         "- `name` — unique slug for the collection (lowercase, hyphens).\n"
@@ -2575,7 +2576,8 @@ _FIND_EMPTY = (
     "collection_catalog() lists every collection (archived included), and your "
     "current-state header names your active mechanisms, logs, and recent activity. "
     "If you were looking for how to do a task and no skill matched, ask the user to "
-    "walk you through it once — that's how a new skill gets taught."
+    "walk you through it once here in chat — you'll learn it as a new skill "
+    "automatically."
 )
 
 # Ambiguity is RETURNED, never silently resolved: several hits come back ranked
@@ -2616,8 +2618,8 @@ def _find_addressing(match: ResolvedMatch) -> str:
     name = match.name
     if match.kind == ResolvedKind.SKILL:
         return (
-            f"read it with skill_read('{name}'); to change it, re-teach it with "
-            f"skill_create — the same name replaces it"
+            f"read it with skill_read('{name}'); to change it, demonstrate it again "
+            f"in chat — I relearn it automatically, replacing this one"
         )
     if match.kind == ResolvedKind.LOG:
         return f"read it with log_read('{name}')"
@@ -3059,10 +3061,11 @@ def build_memory_tools(
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
         LogCreateTool(db, llm_client),
-        # Skill authoring / inspection rides the chat (lifecycle) surface — the user
-        # teaches skills by demonstration; a cadence collector follows the rendered
-        # text prompt and never touches the skill registry (#1590).
-        SkillCreateTool(db, llm_client, author=agent_name, run_id=run_id),
+        # Skill INSPECTION rides the chat (lifecycle) surface.  There is no
+        # skill_create tool — skills are distilled automatically at chat-run end
+        # (#1658); the model only reads them (skill_read) and instantiates them
+        # (collection_create / collection_update).  A cadence collector follows the
+        # rendered text prompt and never touches the skill registry.
         SkillReadTool(db),
     ]
     mutations: list[Tool] = [

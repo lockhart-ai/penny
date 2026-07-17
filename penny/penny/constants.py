@@ -197,8 +197,9 @@ class PennyConstants:
     # The framework-internal per-call execution stamp (#1600).  Written onto each
     # framework-authored tool-RESULT message dict (beside ``content`` /
     # ``tool_call_id``) at execution time from the tool's structured
-    # ``ToolResult.success`` — the STRUCTURAL "did this call work?" bit skill_create's
-    # certification reads instead of parsing result-frame prose.  It lives in
+    # ``ToolResult.success`` — the STRUCTURAL "did this call work?" bit the run-end
+    # skill extractor's certification reads instead of parsing result-frame prose.
+    # It lives in
     # ``promptlog.messages`` (round-trips via ``json.dumps``), never in
     # ``promptlog.response`` (the model's verbatim output), and is stripped from the
     # wire in ``LlmClient._translate_messages`` so the model never sees it.

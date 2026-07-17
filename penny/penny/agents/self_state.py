@@ -88,7 +88,7 @@ class SelfStateHeader:
     EMPTY_MAP = "(no stores yet)"
     EMPTY_SKILLS = (
         "(no skills yet — when a task needs one, ask the user to walk you through it "
-        "once, then skill_create(name=<title>) saves it)"
+        "once and you'll learn it automatically)"
     )
     NO_PROFILE = "(no profile set yet)"
 

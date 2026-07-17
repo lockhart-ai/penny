@@ -57,9 +57,9 @@ class Prompt:
         "2. A skill matches → instantiate it: collection_create(name=<slug>, "
         "description=<the ask>, skill=<the matched skill's name>).\n"
         "3. No skill matches → tell the user you don't have a skill for that yet and "
-        "ask them to walk you through it once; do it together here, then "
-        "skill_create(name=<title>) to save what you just did and "
-        "collection_update(name=<slug>, skill=<title>) to attach it.\n"
+        "ask them to walk you through it once; do it together here — you'll learn it "
+        "automatically as a skill — then collection_update(name=<slug>, "
+        "skill=<title>) to attach it.\n"
         "NEVER improvise a stand-in — a one-off write into some collection, a "
         "hand-built extraction_prompt — for a task that needs a skill you don't "
         "have; if you can't find the skill, ask to be taught it.\n\n"
@@ -196,6 +196,20 @@ class Prompt:
         "2. If you've already gathered what you can — or a search came back empty — do "
         "NOT call anything: reply to the user in plain words, telling them what you "
         "found or that you couldn't find it."
+    )
+
+    # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
+    # what it did this turn (#1658).  It carries the FULL rendered skill so the model
+    # narrates from the render, not from memory (SAID==DID): name, trigger, numbered
+    # recipe, required holes.  The model re-replies telling the user what it learned.
+    SKILL_LEARNED_NARRATION = (
+        "You just learned a reusable skill from what you did in this conversation — "
+        "it's saved automatically, and here is exactly what it captured:\n\n"
+        "{skill}\n\n"
+        "Tell the user, in your own words, that you've learned this routine: name it, "
+        "say plainly what it does (the steps), and name what you'd need from them to "
+        "run it again (its required inputs). Then offer to set it running on a "
+        "schedule if they'd like."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

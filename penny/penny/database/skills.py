@@ -3,12 +3,12 @@ steps→text render (#1590, stage ④ of #1562 / epic #1554).
 
 A **skill** is a certified-by-execution script distilled from ONE demonstrated
 run: an ordered list of structured steps in the ``LoggedToolCall`` shape (#1578)
-plus declared parameter *holes*.  It is authored only by reference to the ledger
-(``skill_create(name)`` — name-only): the system snapshots the run immediately
-preceding this one, copying ALL its non-``done`` tool-call ordinals out, never
-re-emitting them.  Each argument leaf of a copied call is factored by
-**provenance** — derived STRUCTURALLY from the ledger, never by matching the
-user's prose (#1659):
+plus declared parameter *holes*.  It is authored only by the framework — there is
+no ``skill_create`` tool.  The run-end extractor (``penny.skill_extraction``,
+#1658) snapshots a qualifying chat run's own ledger, copying ALL its succeeded,
+non-``done`` tool-call ordinals out, never re-emitting them.  Each argument leaf of
+a copied call is factored by **provenance** — derived STRUCTURALLY from the ledger,
+never by matching the user's prose (#1659):
 
 * a value that **equals, is contained in, or wraps** a prior selected step's
   result → a **binding** (rendered "the value from step N"), because in the
@@ -25,7 +25,8 @@ This module is pure (no engine, no tool imports): the step/hole models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
 ``extraction_prompt`` a collection runs.  The DB store lives in
-:mod:`penny.database.skill_store`; the ``skill_create`` / ``skill_read`` tools in
+:mod:`penny.database.skill_store`; the run-end extractor in
+:mod:`penny.skill_extraction`; the ``skill_read`` tool in
 :mod:`penny.tools.skill_tools`.
 """
 
@@ -104,9 +105,9 @@ class SkillHole(BaseModel):
 
 
 class SkillDraft(BaseModel):
-    """A skill distilled but not yet persisted — the bundle ``skill_create`` hands
-    to the store.  ``source_run_id`` is the demonstrated run; the triggering user
-    message is reachable *through* that run (never copied here)."""
+    """A skill distilled but not yet persisted — the bundle the run-end extractor
+    hands to the store.  ``source_run_id`` is the demonstrated run; the triggering
+    user message is the ``description`` (reachable through that run too)."""
 
     name: str
     intent: str

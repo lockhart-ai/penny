@@ -103,6 +103,12 @@ class LoopContext(BaseModel):
     # Reasons already retried this model call — a validator keyed on one of these
     # must not ask to retry it again (the loop also enforces this).
     retried: set[ConditionKey] = Field(default_factory=set)
+    # The rendered frame of a skill this run just auto-extracted (#1658), stamped
+    # onto the text-branch ctx by ``ChatAgent._prepare_text_shape`` so the chat
+    # ``SkillNarrationValidator`` can narrate it (SAID==DID).  ``None`` when the run
+    # did not qualify for extraction, so every non-chat / non-qualifying run reads
+    # the same empty default.
+    learned_skill_frame: str | None = None
 
 
 @runtime_checkable

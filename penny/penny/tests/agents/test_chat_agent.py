@@ -19,13 +19,16 @@ from sqlmodel import select
 from penny.constants import MutationAction, MutationActor, PennyConstants
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
+from penny.database.skill_store import steps_from_json
 from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.prompts import Prompt
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
+from penny.tools.skill_tools import render_skill_full
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -289,6 +292,162 @@ async def test_collection_create_stamps_chat_provenance(
         )
         assert this_run is not None
         assert all(p.run_target is None for p in this_run)
+
+
+# ── 1b. Automatic skill extraction + narration at run end (#1658) ─────────
+
+_FRAME_MARKER = "You just learned a reusable skill"
+
+
+def _tool_call(call_id: str, name: str, arguments: dict) -> LlmResponse:
+    return LlmResponse(
+        message=LlmMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                LlmToolCall(
+                    id=call_id, function=LlmToolCallFunction(name=name, arguments=arguments)
+                )
+            ],
+        ),
+        model="test-model",
+    )
+
+
+def _text(content: str) -> LlmResponse:
+    return LlmResponse(message=LlmMessage(role="assistant", content=content), model="test-model")
+
+
+def _spy_extractor(penny) -> dict:
+    """Wrap the chat agent's extractor to count how many times it runs — the
+    once-per-run guard is what stops the post-narration re-reply re-extracting."""
+    counter = {"n": 0}
+    original = penny.chat_agent._skill_extractor.extract
+
+    async def counting_extract(run_id: str):
+        counter["n"] += 1
+        return await original(run_id)
+
+    penny.chat_agent._skill_extractor.extract = counting_extract
+    return counter
+
+
+@pytest.mark.asyncio
+async def test_run_end_extracts_and_narrates_a_skill(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A chat turn that READS then WRITES is a routine: at run end the framework
+    distils it into a skill (no skill_create tool), and a run-shape validator narrates
+    it in the SAME turn from the rendered recipe (SAID==DID) — one extra model call,
+    the extraction running exactly once."""
+    ask = "watch the aurora deck 2 price and remember it for me"
+    captured: dict[str, str | None] = {"frame": None}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        frame = next(
+            (
+                m["content"]
+                for m in messages
+                if isinstance(m.get("content"), str) and _FRAME_MARKER in m["content"]
+            ),
+            None,
+        )
+        if frame is not None:  # the narration nudge is present → the post-nudge re-reply
+            captured["frame"] = frame
+            return _text("nice — i learned that routine! 🌟")
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if not tool_turns:  # a read (senses) — the first half of the routine
+            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+        if len(tool_turns) == 1:  # a write (acts) — the second half
+            return _tool_call(
+                "c1",
+                "collection_write",
+                {
+                    "memory": "aurora-prices",
+                    "entries": [{"key": "aurora deck 2 price", "content": "$499"}],
+                },
+            )
+        return _text("the aurora deck 2 is $499 right now")  # final text → triggers extraction
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+        penny.db.memory("aurora-prices").write(
+            [EntryInput(key="seed", content="a prior reading")], author="user"
+        )
+        calls = _spy_extractor(penny)
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        # First the skill lands (extraction qualified + persisted), then the re-reply
+        # model call captures the narration frame — it only happens after the nudge.
+        await wait_until(lambda: len(penny.db.skills.list_all()) == 1)
+        await wait_until(lambda: captured["frame"] is not None)
+
+        # A skill was distilled from THIS turn's read→write run.
+        skill = penny.db.skills.list_all()[0]
+        assert skill.name == "watch-the-aurora-deck-2-price"
+        assert [s.tool for s in steps_from_json(skill.steps)] == [
+            "collection_read_latest",
+            "collection_write",
+        ]
+        assert skill.description == ask
+
+        # The injected narration frame IS the SKILL_LEARNED_NARRATION template filled
+        # with the rendered recipe — the model narrates from the render, not memory.
+        assert captured["frame"] == Prompt.SKILL_LEARNED_NARRATION.format(
+            skill=render_skill_full(skill)
+        )
+
+        # Extraction ran EXACTLY once — the re-reply found the run already handled.
+        assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pure_write_remember_turn_extracts_no_skill_and_does_not_narrate(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A 'remember this' turn is a plain WRITE — the storage atom, not a routine — so
+    the run-end extractor produces NO skill and NO narration nudge fires (the reply is
+    the direct one)."""
+    ask = "remember that the aurora deck 2 is $499"
+    saw_frame = {"hit": False}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        if any(
+            isinstance(m.get("content"), str) and _FRAME_MARKER in m["content"] for m in messages
+        ):
+            saw_frame["hit"] = True
+            return _text("(this should never be reached)")
+        if any(m.get("role") == "tool" for m in messages):
+            return _text("got it — noted that the aurora deck 2 is $499")
+        return _tool_call(
+            "c0",
+            "collection_write",
+            {"memory": "aurora-prices", "entries": [{"key": "aurora deck 2", "content": "$499"}]},
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+        calls = _spy_extractor(penny)
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        reply = await signal_server.wait_for_message(timeout=10.0)
+
+        assert "noted" in reply["message"].lower()  # the DIRECT reply, no narration
+        assert saw_frame["hit"] is False  # the narration nudge never fired
+        assert penny.db.skills.list_all() == []  # a plain write is not a skill
+        assert calls["n"] == 1  # extraction was attempted once and declined (PURE_WRITE)
 
 
 # ── 2. Special success cases ──────────────────────────────────────────────
@@ -877,9 +1036,9 @@ _BASIC_FLOW_EXPECTED = (
     "2. A skill matches → instantiate it: collection_create(name=<slug>, "
     "description=<the ask>, skill=<the matched skill's name>).\n"
     "3. No skill matches → tell the user you don't have a skill for that yet and ask "
-    "them to walk you through it once; do it together here, then "
-    "skill_create(name=<title>) to save what you just did and "
-    "collection_update(name=<slug>, skill=<title>) to attach it.\n"
+    "them to walk you through it once; do it together here — you'll learn it "
+    "automatically as a skill — then collection_update(name=<slug>, skill=<title>) "
+    "to attach it.\n"
     "NEVER improvise a stand-in — a one-off write into some collection, a hand-built "
     "extraction_prompt — for a task that needs a skill you don't have; if you can't "
     "find the skill, ask to be taught it.\n"
@@ -967,7 +1126,7 @@ _BASIC_FLOW_EXPECTED = (
     "\n"
     "### Skills and rules\n"
     "(no skills yet — when a task needs one, ask the user to walk you through it "
-    "once, then skill_create(name=<title>) saves it)\n"
+    "once and you'll learn it automatically)\n"
     "\n"
     "### About the user\n"
     "- name: Test User\n"

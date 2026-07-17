@@ -19,16 +19,20 @@ from penny.constants import ChatPromptType, PennyConstants
 from penny.datetime_utils import current_datetime_line
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
+from penny.skill_extraction import NoExtraction, SkillExtracted, SkillExtractor
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
-from penny.validation.response_validators import CallAsTextValidator
+from penny.tools.skill_tools import render_skill_full
+from penny.validation.outcomes import LoopContext
+from penny.validation.response_validators import CallAsTextValidator, SkillNarrationValidator
 
 if TYPE_CHECKING:
     from penny.agents.collector import Collector
     from penny.llm.image_client import OllamaImageClient
+    from penny.llm.models import LlmResponse
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +58,16 @@ class ChatAgent(Agent):
 
     name: str = "chat"
     system_prompt = Prompt.CONVERSATION_PROMPT
-    # Chat's run-shape chain (base Agent's is empty).  Chat replies inline via a
-    # text turn, so a text response that is really a serialized tool call (gpt-oss's
-    # Harmony call-as-text bail) would be sent to the user as a raw JSON blob;
-    # CallAsTextValidator catches it on the text branch and nudges the model to
-    # re-emit the real call or reply in plain words.  A new chat shape guard is one
+    # Chat's run-shape chain (base Agent's is empty).  A new chat shape guard is one
     # more entry here — never a branch in the loop.
-    run_shape_validators = [CallAsTextValidator()]
+    #  - SkillNarrationValidator: on a run that just auto-extracted a skill (#1658),
+    #    nudge the model to tell the user what it learned FROM the rendered frame the
+    #    text-branch prep stamped on the ctx (SAID==DID).  First, so narration wins.
+    #  - CallAsTextValidator: a text response that is really a serialized tool call
+    #    (gpt-oss's Harmony call-as-text bail) would be sent to the user as a raw
+    #    JSON blob; catch it and nudge the model to re-emit the real call or reply in
+    #    plain words.
+    run_shape_validators = [SkillNarrationValidator(), CallAsTextValidator()]
     # Stable id linking the synthetic page-context tool-call to its tool-result
     # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not
     # an ad-hoc ``tool_name`` field.
@@ -92,6 +99,16 @@ class ChatAgent(Agent):
         # tools fresh per turn (read_emails summarises against the current
         # message + date), so it takes ``(user_query, today)``.
         self._email_tools_builder = email_tools_builder
+        # Automatic skill extraction at run end (#1658): the chat run's own ledger
+        # is distilled into a skill when the run qualifies (read + write, healthy).
+        # There is no ``skill_create`` tool — the framework does this deterministically.
+        self._skill_extractor = SkillExtractor(
+            self.db, self._embedding_model_client, agent_name=self.name
+        )
+        # The run whose extraction was already attempted this turn — the structural
+        # once-per-run guard, so the post-narration re-reply never re-extracts or
+        # re-narrates (chat turns are sequential, so one field suffices; no leak).
+        self._extraction_run_id: str | None = None
 
     def set_collector(self, collector: Collector) -> None:
         """Bind the Collector so test_extraction_prompt is available in chat."""
@@ -132,6 +149,41 @@ class ChatAgent(Agent):
         return self._email_tools_builder(
             self._current_message or "", current_datetime_line(self.db)
         )
+
+    # ── Automatic skill extraction + narration (#1658) ──────────────────
+
+    async def _prepare_text_shape(
+        self, response: LlmResponse, ctx: LoopContext, run_id: str
+    ) -> LoopContext:
+        """When the chat run emits final text, run automatic skill extraction over
+        this run's completed ledger (Python-space, the run-end chokepoint) and, on a
+        qualifying run, stamp the learned skill's rendered frame onto the ctx so the
+        ``SkillNarrationValidator`` narrates it in the same turn.
+
+        Extraction runs at most once per run (``_extraction_run_id``): the first
+        final text extracts + narrates; the model's post-narration re-reply finds the
+        run already attempted and falls through to the real final answer.  A
+        non-qualifying run stamps nothing (the ctx passes through unchanged)."""
+        if run_id == self._extraction_run_id:
+            return ctx
+        self._extraction_run_id = run_id
+        frame = await self._extract_and_frame_skill(run_id)
+        if frame is None:
+            return ctx
+        return ctx.model_copy(update={"learned_skill_frame": frame})
+
+    async def _extract_and_frame_skill(self, run_id: str) -> str | None:
+        """Extract a skill from this run and, on success, build the narration frame
+        (the same ``render_skill_full`` render the read surface shows) so the model
+        narrates from the render, not from memory.  ``None`` when the run did not
+        qualify — the gate is logged, never silently swallowed."""
+        result = await self._skill_extractor.extract(run_id)
+        match result:
+            case SkillExtracted(skill=skill):
+                return Prompt.SKILL_LEARNED_NARRATION.format(skill=render_skill_full(skill))
+            case NoExtraction(gate=gate):
+                logger.debug("No skill extracted from run %s (%s)", run_id, gate)
+                return None
 
     # ── Message handling ───────────────────────────────────────────────
 

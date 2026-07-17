@@ -1419,16 +1419,16 @@ def render_run_calls(prompts: list[PromptLog]) -> str:
 
 
 class RunProjectionStep(BaseModel):
-    """One tool call of a run, with its absolute ordinal — the selection
-    coordinate ``skill_create`` addresses (#1590).  ``ordinal`` is the run's FULL
+    """One tool call of a run, with its absolute ordinal — the coordinate the
+    run-end skill extractor addresses (#1590/#1658).  ``ordinal`` is the run's FULL
     tool-call position (``done`` consumes one, matching ``render_run_calls``); a
     filtered view shows gaps, never renumbers.
 
     ``success`` is the STRUCTURAL per-call execution stamp (#1600), hydrated from
     the tool-result message's ``tool_success`` bit: ``True`` (the call succeeded),
-    ``False`` (it failed), or ``None`` (no stamp — a run logged before #1600).
-    ``skill_create``'s certified-by-execution gate reads this boolean, not the
-    framed result prose."""
+    ``False`` (it failed), or ``None`` (no stamp — a run logged before #1600).  The
+    extractor's certified-by-execution filter reads this boolean, not the framed
+    result prose."""
 
     ordinal: int
     call_id: str | None
@@ -1452,7 +1452,7 @@ class RunProjection(BaseModel):
 
 def project_run(prompts: list[PromptLog]) -> RunProjection:
     """Project a run into ``(origin_message, ordinaled steps, results-by-call-id)``
-    — the raw material ``skill_create`` selects a contiguous range from (#1590).
+    — the raw material the run-end skill extractor snapshots (#1590/#1658).
 
     The step ordinals are the run's FULL tool-call ordinals (composed from the same
     ``_run_logged_steps`` ``render_run_calls`` numbers against), so a range the

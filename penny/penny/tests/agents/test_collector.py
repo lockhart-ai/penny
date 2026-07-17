@@ -290,7 +290,6 @@ _LIFECYCLE_TOOL_NAMES = frozenset(
         "collection_archive",
         "collection_unarchive",
         "log_create",
-        "skill_create",
         "skill_read",
     }
 )

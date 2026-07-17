@@ -40,6 +40,7 @@ from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
+from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.collection_instantiation import (
     parse_trigger,
@@ -80,7 +81,6 @@ from penny.tools.memory_tools import (
     _format_duplicate,
     build_memory_tools,
 )
-from penny.tools.skill_tools import SkillCreateTool
 
 
 def _make_db(tmp_path) -> Database:
@@ -282,6 +282,8 @@ _MONEY_LITERAL = (
 # form (#1604), the write retargeted to this collection (#1629), everything else
 # identical to the recurring echo shape.
 _ON_ADVANCE_ECHO_LITERAL = (
+    "Whenever 'events-log' gets a new entry I'll run 'Watch elevation' against "
+    "'chained-watch' and quietly store what it finds.\n"
     "Created collection 'chained-watch' from skill 'Watch elevation':\n"
     "  description: digest events as they land\n"
     "  skill: Watch elevation\n"
@@ -298,6 +300,8 @@ _ON_ADVANCE_ECHO_LITERAL = (
 # The whole creation echo — skill · bound params · trigger · notify · expiry · the
 # rendered routine (the money literal, indented) — confirmed back to the user.
 _CREATE_ECHO_LITERAL = (
+    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "message you when something changes.\n"
     "Created collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
@@ -368,8 +372,8 @@ class TestCollectionCreateFrontDoor:
     async def test_no_skill_found_elicits_teaching(self, tmp_path):
         """A skill query matching nothing returns the reshaped #1471/#1629/#1631
         elicitation — it NARRATES the two-step teach bootstrap (set up the container →
-        walk me through once, extracting ONE value → skill_create → attach via
-        collection_update), asserted whole."""
+        walk me through once, extracting ONE value → learned automatically → attach
+        via collection_update), asserted whole."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -390,8 +394,8 @@ class TestCollectionCreateFrontDoor:
             "not a whole name+hook+price blob — a multi-field blob changes whenever any "
             "part does and would false-alarm every cycle), and collection_write that value "
             "into the collection.\n"
-            "3. Save that run as a skill: skill_create(name=<title>) — it captures the "
-            "whole run you just did, no run id or step range needed.\n"
+            "3. That's the save step — I learn the routine automatically as a skill from "
+            "what we just did (no separate command).\n"
             "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
             'skill=<title>, params={…}, trigger="every <seconds>", notify=<true/false>).'
         )
@@ -995,6 +999,8 @@ async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> Non
 # The refresh echo — the SAME skill re-taught, re-rendered from its CURRENT steps with
 # the CURRENT bindings; render-at-update mirrors the creation echo.
 _REFRESH_ECHO_LITERAL = (
+    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
@@ -1010,6 +1016,8 @@ _REFRESH_ECHO_LITERAL = (
 
 # The rebind echo — SAME skill (original steps), NEW params bound and re-rendered.
 _REBIND_ECHO_LITERAL = (
+    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
@@ -1026,6 +1034,8 @@ _REBIND_ECHO_LITERAL = (
 # The swap echo — a DIFFERENT skill rendered into the same collection, its write
 # retargeted to that collection (#1629 — the river skill demoed against 'flows').
 _SWAP_ECHO_LITERAL = (
+    "Every 3600 seconds I'll run 'Track river flow' against 'cinder-elevation' and "
+    "quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Track river flow\n"
@@ -1042,6 +1052,8 @@ _SWAP_ECHO_LITERAL = (
 # The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
 # hand-authored text is replaced by the render, writes retargeted to it (#1629).
 _ADOPT_ECHO_LITERAL = (
+    "Every 3600 seconds I'll run 'Watch elevation' against 'legacy-notes' and "
+    "quietly store what it finds.\n"
     "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
     "  description: a running list the user asked me to keep\n"
     "  skill: Watch elevation\n"
@@ -1263,9 +1275,9 @@ _INERT_ECHO_LITERAL = (
     "  description: track the trail-runner shoe deals\n"
     "  status: inert (no skill attached)\n"
     "It'll hold whatever gets written to it, but nothing runs against it until you give it "
-    "a skill. Teach me the routine once, save it with skill_create, then attach it with "
-    "collection_update(name='deals-watch', skill=<title>, trigger=\"every <seconds>\") to make "
-    "it do something."
+    "a skill. Teach me the routine once here in chat — I learn it automatically as a "
+    "skill — then attach it with collection_update(name='deals-watch', skill=<title>, "
+    'trigger="every <seconds>") to make it do something.'
 )
 
 # The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it
@@ -1277,9 +1289,9 @@ _BOOTSTRAP_PRICE = "$149"
 
 def _log_demo_run(db, run_id: str, *, write_target: str) -> None:
     """Log one clean chat run (browse → collection_write into ``write_target``) as a
-    single promptlog row skill_create can distill: the triggering user turn, the two
-    batched tool calls in order (→ ordinals), each call's framed result, and its
-    STRUCTURAL success stamp (certified-by-execution)."""
+    single promptlog row the run-end skill extractor can distill: the triggering user
+    turn, the two batched tool calls in order (→ ordinals), each call's framed result,
+    and its STRUCTURAL success stamp (certified-by-execution)."""
     browse_result = (
         f"You used `browse` and here's the result: (browse result)\nEXTRACTED: {_BOOTSTRAP_PRICE}"
     )
@@ -1551,20 +1563,23 @@ class TestTwoStepTeachBootstrap:
         # 2. Demonstrate the routine once, writing INTO the inert collection (a logged run).
         _log_demo_run(db, "run-demo", write_target="deals-watch")
 
-        # 3. Promote that run into a skill (name-only skill_create; it snapshots the
-        #    preceding run — run-demo, the only chat run before this one).
-        taught = await SkillCreateTool(
-            db, cast(Any, MockLlmClient()), author="chat", run_id="run-B"
-        ).execute(name="Watch a shoe price")
-        assert taught.success
-        assert db.skills.get("Watch a shoe price") is not None
+        # 3. The routine is learned AUTOMATICALLY at run end — the extractor distils
+        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  Its
+        #    name is a deterministic slug of the demo's triggering message.
+        extraction = await SkillExtractor(
+            db, cast(Any, MockLlmClient()), agent_name="chat"
+        ).extract("run-demo")
+        assert isinstance(extraction, SkillExtracted)
+        taught_name = extraction.skill.name
+        assert taught_name == "watch-the-meridian-trail-3-shoe"
+        assert db.skills.get(taught_name) is not None
 
         # 4. Adopt the skill onto the inert collection with a trigger + notify (real update).
         adopted = await CollectionUpdateTool(
             db, cast(Any, MockLlmClient()), run_id="run-adopt"
         ).execute(
             name="deals-watch",
-            skill="Watch a shoe price",
+            skill=taught_name,
             # Every distilled hole is required (#1659): the browse query AND the
             # extract instruction must both be bound — no silent default.
             params={"queries": "Meridian Trail 3", "extract": "the current price"},
@@ -1575,7 +1590,7 @@ class TestTwoStepTeachBootstrap:
 
         # The stored prompt IS the retargeted render of the taught skill; the collection
         # now has a routine + cadence + notify, so it will dispatch (was inert before).
-        skill = db.skills.get("Watch a shoe price")
+        skill = db.skills.get(taught_name)
         expected = render_skill(
             retarget_writes(steps_from_json(skill.steps), "deals-watch"),
             {"queries": "Meridian Trail 3", "extract": "the current price"},
@@ -1583,7 +1598,7 @@ class TestTwoStepTeachBootstrap:
         stored = db.memories.get("deals-watch")
         # Byte-identity: the stored prompt IS the retargeted render (write → deals-watch).
         assert stored.extraction_prompt == expected
-        assert stored.skill_name == "Watch a shoe price"
+        assert stored.skill_name == taught_name
         assert stored.collector_interval_seconds == 3600
         assert stored.notify is True
 
@@ -3178,7 +3193,6 @@ class TestFactory:
         "collection_archive",
         "collection_unarchive",
         "log_create",
-        "skill_create",
         "skill_read",
         # Entry mutations (contents)
         "collection_write",
@@ -3650,7 +3664,7 @@ class TestFind:
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
         "   how to use it: read it with skill_read('escalate-aurora'); to change it, "
-        "re-teach it with skill_create — the same name replaces it\n"
+        "demonstrate it again in chat — I relearn it automatically, replacing this one\n"
         "3. aurora-archive — archived collection: aurora beacon delta\n"
         "   how to use it: restore it with collection_unarchive('aurora-archive'); its "
         "entries stay readable with collection_read_latest('aurora-archive')\n"
@@ -3761,7 +3775,7 @@ class TestFind:
             "lists every collection (archived included), and your current-state header "
             "names your active mechanisms, logs, and recent activity. If you were looking "
             "for how to do a task and no skill matched, ask the user to walk you through "
-            "it once — that's how a new skill gets taught."
+            "it once here in chat — you'll learn it as a new skill automatically."
         )
 
     @pytest.mark.asyncio

@@ -471,7 +471,7 @@ class Agent:
                     return abort
                 continue
 
-            if self._nudge_text_step(response, messages, ctx):
+            if await self._nudge_text_step(response, messages, ctx, run_id):
                 continue
 
             return self._build_final_response(response, source_urls, tool_call_records)
@@ -531,14 +531,27 @@ class Agent:
             case unreachable:
                 assert_never(unreachable)
 
-    def _nudge_text_step(
-        self, response: LlmResponse, messages: list[dict], ctx: LoopContext
+    async def _prepare_text_shape(
+        self, response: LlmResponse, ctx: LoopContext, run_id: str
+    ) -> LoopContext:
+        """Template hook: enrich the loop context before the text-branch run-shape
+        validators run.  The base is a no-op (collectors never extract); the
+        ``ChatAgent`` overrides it to run automatic skill extraction here (#1658)
+        and stamp the learned skill's rendered frame onto the ctx, so its
+        ``SkillNarrationValidator`` — a validator in the list, not a loop branch —
+        can narrate it."""
+        return ctx
+
+    async def _nudge_text_step(
+        self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
-        ``NudgeContinue`` (collector narrated prose where a tool call was due).
+        ``NudgeContinue`` (collector narrated prose where a tool call was due, or a
+        chat run that just learned a skill and must narrate it).
 
         Returns True when the loop should ``continue`` (response + nudge appended),
         False to treat the text as the final answer."""
+        ctx = await self._prepare_text_shape(response, ctx, run_id)
         match run_validators(self.run_shape_validators, response, ctx):
             case NudgeContinue(message=message):
                 messages.append(response.message.to_input_message())

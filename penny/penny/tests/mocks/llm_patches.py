@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -285,10 +286,24 @@ class _FakeCompletion:
         self.choices = [_FakeChoice(response)]
 
     def model_dump(self) -> dict:
-        return {
-            "model": self.model,
-            "choices": [{"message": {"role": "assistant", "content": self._response.content}}],
-        }
+        # Mirror a real OpenAI ChatCompletion dump: the message carries its
+        # ``tool_calls`` (id + function name + JSON-string arguments) so the logged
+        # promptlog ``response`` is faithful — the ledger readers (``read_run_calls``,
+        # the run-end skill extractor, #1658) parse tool steps out of exactly this.
+        message: dict[str, Any] = {"role": "assistant", "content": self._response.content}
+        if self._response.message.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": json.dumps(call.function.arguments),
+                    },
+                }
+                for call in self._response.message.tool_calls
+            ]
+        return {"model": self.model, "choices": [{"message": message}]}
 
 
 class _FakeChoice:

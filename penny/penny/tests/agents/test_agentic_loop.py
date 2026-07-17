@@ -55,6 +55,7 @@ from penny.validation.response_validators import (
     HallucinatedUrlValidator,
     PrematureDoneValidator,
     RefusalValidator,
+    SkillNarrationValidator,
     TextInsteadOfToolValidator,
     XmlTagValidator,
     build_strong_nudge,
@@ -2804,9 +2805,13 @@ class TestResponseValidators:
         )
         # Base agent has no run-shape guards (no shape forbids an early terminator).
         assert Agent.run_shape_validators == []
-        # Chat composes its own single run-shape guard: the call-as-text bail catch
-        # (chat replies inline, so a call-shaped text turn would reach the user raw).
-        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [CallAsTextValidator]
+        # Chat composes its own run-shape guards: the run-end skill-narration nudge
+        # first (so narration wins), then the call-as-text bail catch (chat replies
+        # inline, so a call-shaped text turn would reach the user raw).
+        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [
+            SkillNarrationValidator,
+            CallAsTextValidator,
+        ]
 
     def test_run_validators_threads_repair_then_short_circuits(self):
         """A Repair threads its transformed response into the rest of the chain;

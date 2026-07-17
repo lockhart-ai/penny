@@ -139,8 +139,8 @@ ConfigParam(
     key="MAX_STEPS",
     description=(
         "Max agent loop steps per chat message cycle. Equal to "
-        "BACKGROUND_MAX_STEPS by default: teaching (the consolidation pass "
-        "skill_create selects from) runs in a chat turn, so any sequence "
+        "BACKGROUND_MAX_STEPS by default: teaching (the demonstration the "
+        "run-end skill extractor snapshots) runs in a chat turn, so any sequence "
         "longer than chat's budget would be unteachable while a collector "
         "could still execute it — equal budgets give both entry points the "
         "same power."

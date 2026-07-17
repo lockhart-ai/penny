@@ -399,27 +399,27 @@ class Skill(SQLModel, table=True):
     """A named, immutable skill — a certified-by-execution script of tool-call
     steps distilled from ONE demonstrated run (#1590, stage ④ of #1562).
 
-    A skill is authored only by reference to the ledger (``skill_create(name)`` —
-    name-only): the system snapshots the whole preceding run, copying its
-    every-step-succeeded, non-``done`` tool calls into
-    ``steps`` (the ``LoggedToolCall`` shape as JSON) and factors each argument by
-    provenance into declared ``holes`` (JSON) — a value from the user's utterance
-    becomes a parameter, a value from a prior step's result a binding, everything
-    else a constant.  #1591's ``collection_create`` renders ``steps`` + bound
-    params into the collection's numbered TEXT ``extraction_prompt`` at creation.
+    A skill is authored ONLY by the framework — there is no ``skill_create`` tool.
+    At the end of every qualifying chat run the run-end extractor
+    (``penny.skill_extraction``) snapshots that run's own ledger, copying its
+    succeeded, non-``done`` tool calls into ``steps`` (the ``LoggedToolCall`` shape as
+    JSON) and factoring each argument by provenance into declared ``holes`` (JSON) —
+    a value from a prior step's result becomes a binding, the scoped-write target a
+    retarget-owned constant, every other string leaf a required parameter (#1658/
+    #1659).  #1591's ``collection_create`` renders ``steps`` + bound params into the
+    collection's numbered TEXT ``extraction_prompt`` at creation.
 
     **One row per name — no versioning.**  Collections carry the rendered text
     snapshotted at creation, so a re-teach never retroactively changes an
-    instantiation; the version pin had no remaining job.  ``skill_create`` with an
-    existing name REPLACES the row (steps/holes/provenance), so ``name`` is the
-    unique key.
+    instantiation; the version pin had no remaining job.  Re-demonstrating a routine
+    REPLACES the row (steps/holes/provenance) by name — or, for a same-shape,
+    same-meaning routine, keeping the existing name — so ``name`` is the unique key.
 
     ``description`` doubles as the resolution anchor (``description_embedding``,
-    populated at write).  ``source_run_id`` is the demonstrated run — the
-    triggering user message is reachable *through* the run.  ``author`` is the
-    teaching agent.  There is no seed library (migration 0084 ships the table
-    empty), so the certified-by-execution invariant holds universally — every
-    stored step succeeded in its source run.
+    populated at write) and is the run's triggering message.  ``source_run_id`` is
+    the demonstrated run.  ``author`` is the extracting agent.  There is no seed
+    library (migration 0084 ships the table empty), so the certified-by-execution
+    invariant holds universally — every stored step succeeded in its source run.
     """
 
     __tablename__ = "skill"
