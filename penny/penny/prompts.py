@@ -202,7 +202,7 @@ class Prompt:
     # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
     # what it did this turn (#1658).  It carries the FULL rendered skill so the model
     # narrates from the render, not from memory (SAID==DID): name, trigger, numbered
-    # recipe, required holes.  The model re-replies telling the user what it learned.
+    # recipe, required parameters.  The model re-replies telling the user what it learned.
     SKILL_LEARNED_NARRATION = (
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"

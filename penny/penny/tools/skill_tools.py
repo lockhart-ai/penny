@@ -2,7 +2,8 @@
 
 Skills are no longer model-authored: there is no ``skill_create`` tool.  A skill is
 distilled deterministically from a qualifying chat run's own ledger at run end
-(``penny.skill_extraction``), certified-by-execution with provenance-inferred holes.
+(``penny.skill_extraction``), certified-by-execution with provenance-inferred
+parameters.
 The model's only skill actions are resolve (``find``), READ (``skill_read``, here),
 and instantiate/attach (``collection_create(skill=…)`` / ``collection_update(skill=…)``).
 ``skill_read`` renders the versionless registry; ``render_skill_full`` is the shared
@@ -15,39 +16,50 @@ from typing import Any
 
 from penny.database import Database
 from penny.database.models import Skill
-from penny.database.skill_store import holes_from_json, steps_from_json
-from penny.database.skills import SkillHole, render_skill, slug_skill_name
+from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.skills import SkillParameter, render_skill, slug_skill_name
 from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 from penny.tools.skill_args import SkillReadArgs
 
 # ── Full render (shared by the read surface and the run-end narration frame) ───
 
+_STEP_INDENT = "  "
 
-def _holes_line(holes: list[SkillHole]) -> str:
-    # Model-facing vocabulary is "parameters", never the "hole" PL jargon (#1665);
-    # the internal identifiers (SkillHole, holes JSON) are unchanged.
-    if not holes:
+
+def _parameters_block(parameters: list[SkillParameter]) -> str:
+    """The ``parameters:`` block (#1668): one ``- <name> (required): <description>``
+    line per SKILL-level parameter (the description omitted cleanly when None), the
+    semantic ``name`` being the binding key at instantiation.  Collapses to a single
+    ``parameters: none`` line for a parameter-less skill."""
+    if not parameters:
         return "parameters: none"
-    rendered = ", ".join(
-        f"{hole.name} ({'required' if hole.required else 'optional'})" for hole in holes
-    )
-    return f"parameters: {rendered}"
+    lines = ["parameters:"]
+    for parameter in parameters:
+        required = "required" if parameter.required else "optional"
+        line = f"{_STEP_INDENT}- {parameter.name} ({required})"
+        if parameter.description:
+            line += f": {parameter.description}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def render_skill_full(skill: Skill) -> str:
-    """The whole skill as text — its name, intent, declared holes, and the numbered
-    recipe (holes shown as ``{name}``).  ``skill_read`` returns it for one skill, and
-    the run-end narration frame (#1658) embeds it so the model narrates what it just
-    learned FROM the render, not from memory."""
+    """The whole skill as text (#1668, the code owner's sketch) — its name, what it's
+    for, the ``parameters:`` block (semantic names + descriptions), and the numbered
+    recipe (parameters shown as ``{name}``, display form == invocation form).
+    ``skill_read`` returns it for one skill, and the run-end narration frame (#1658)
+    embeds it so the model narrates what it just learned FROM the render, not from
+    memory; the ambient Skills section renders it wholesale."""
     steps = steps_from_json(skill.steps)
-    holes = holes_from_json(skill.holes)
+    parameters = parameters_from_json(skill.parameters)
+    recipe = "\n".join(f"{_STEP_INDENT}{line}" for line in render_skill(steps).splitlines())
     lines = [
         f"skill '{skill.name}'",
-        f"intent: {skill.intent}",
-        _holes_line(holes),
+        f"what it's for: {skill.intent}",
+        _parameters_block(parameters),
         "steps:",
-        render_skill(steps),
+        recipe,
     ]
     return "\n".join(lines)
 

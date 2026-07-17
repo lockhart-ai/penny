@@ -1,6 +1,7 @@
 """Tests for the database migration system."""
 
 import importlib.util
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -81,7 +82,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 95
+        assert count == 96
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -122,7 +123,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 95
+        assert count1 == 96
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -160,8 +161,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 94 migrations
-        assert count == 94
+        # 0001 is skipped; the rest run = 95 migrations
+        assert count == 95
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -187,7 +188,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 95  # all migrations applied
+        assert count == 96  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1084,3 +1085,65 @@ class TestMigrate:
         # The seeded recipes no longer teach the dropped flags.
         for body in skill_bodies.values():
             assert 'inclusion: "relevant", recall: "relevant"' not in body
+
+    def test_0096_renames_skill_holes_to_parameters(self, tmp_path):
+        """Migration 0096 (#1668): the ``skill.holes`` column renames to
+        ``parameters``, AND each stored skill's ``steps`` JSON renames its per-leaf
+        substitution ``hole`` key to ``parameter`` — so a skill demonstrated before
+        the rename keeps rendering its parameter names, not an empty placeholder."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        # A pre-0096 skill table (the 0084 shape, ``holes`` column) with one skill whose
+        # steps carry a substitution keyed on the OLD ``hole`` key.
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, holes TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        steps = [
+            {
+                "ordinal": 1,
+                "source_ordinal": 1,
+                "tool": "browse",
+                "arguments": {"queries": ["{url}"]},
+                "substitutions": [
+                    {"path": ["queries", 0], "kind": "hole", "hole": "url", "step": None}
+                ],
+            }
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, holes, intent, description, author) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "watch-a-page",
+                json.dumps(steps),
+                '[{"name": "url", "required": true}]',
+                "x",
+                "x",
+                "c",
+            ),
+        )
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0096_rename_skill_holes_to_parameters.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0096", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(skill)").fetchall()}
+        assert "parameters" in columns and "holes" not in columns
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'watch-a-page'").fetchone()[0]
+        )
+        sub = stored[0]["substitutions"][0]
+        assert sub["parameter"] == "url" and "hole" not in sub  # key renamed, value kept
+        conn.close()

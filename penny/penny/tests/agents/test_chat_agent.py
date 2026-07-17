@@ -258,7 +258,7 @@ async def test_collection_create_stamps_chat_provenance(
                         substitutions=[],
                     )
                 ],
-                holes=[],
+                parameters=[],
                 source_run_id="run-teach",
             ),
             author="chat",

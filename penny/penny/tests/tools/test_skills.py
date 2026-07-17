@@ -14,14 +14,14 @@ from penny.database.migrate import migrate
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
-    SkillHole,
+    SkillParameter,
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
     distill_steps,
     render_skill,
     retarget_writes,
-    unbound_required_holes,
+    unbound_required_parameters,
 )
 from penny.tools.skill_tools import SkillReadTool
 
@@ -87,8 +87,8 @@ def _elevation_steps() -> list[SkillStep]:
             tool="browse",
             arguments=dict(_BROWSE_ARGS),
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="queries"),
-                SkillSubstitution(path=["extract"], kind=SkillSubKind.HOLE, hole="extract"),
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="queries"),
+                SkillSubstitution(path=["extract"], kind=SkillSubKind.HOLE, parameter="extract"),
             ],
         ),
         SkillStep(
@@ -98,7 +98,7 @@ def _elevation_steps() -> list[SkillStep]:
             arguments=json.loads(json.dumps(_WRITE_ARGS)),
             substitutions=[
                 SkillSubstitution(
-                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, hole="queries"
+                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter="queries"
                 ),
                 SkillSubstitution(
                     path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
@@ -155,30 +155,31 @@ def test_distill_classifies_binding_holes_and_write_target():
             source_ordinal=2, tool="collection_write", arguments=_WRITE_ARGS, result=_WRITE_OK
         ),
     ]
-    steps, holes = distill_steps(inputs)
+    steps, parameters = distill_steps(inputs)
 
-    # Two required holes — the browse query and the extract instruction; the write
-    # KEY reuses the query's hole (same value → one shared parameter).
-    assert holes == [
-        SkillHole(name="queries", required=True),
-        SkillHole(name="extract", required=True),
+    # Two required parameters — the browse query and the extract instruction; the write
+    # KEY reuses the query's parameter (same value → one shared parameter).
+    assert parameters == [
+        SkillParameter(name="queries", required=True),
+        SkillParameter(name="extract", required=True),
     ]
-    # Every hole is required, so an unbound instantiation refuses naming each one;
-    # binding them all clears the validation (#1591/#1659, no silent default).
-    assert unbound_required_holes(holes, {}) == ["queries", "extract"]
-    assert unbound_required_holes(holes, {"queries": "x", "extract": "y"}) == []
+    # Every parameter is required, so an unbound instantiation refuses naming each one
+    # (the refusal carries the whole SkillParameter — name + description); binding them
+    # all clears the validation (#1591/#1659, no silent default).
+    assert [p.name for p in unbound_required_parameters(parameters, {})] == ["queries", "extract"]
+    assert unbound_required_parameters(parameters, {"queries": "x", "extract": "y"}) == []
 
-    # Step 1: the query and the extract instruction are both HOLES.
+    # Step 1: the query and the extract instruction are both parameters.
     step1 = {tuple(s.path): s for s in steps[0].substitutions}
     assert step1[("queries", 0)].kind == SkillSubKind.HOLE
-    assert step1[("queries", 0)].hole == "queries"
+    assert step1[("queries", 0)].parameter == "queries"
     assert step1[("extract",)].kind == SkillSubKind.HOLE
 
     # Step 2: the key is the SHARED 'queries' hole; the content is a BINDING to step
     # 1's result; the write TARGET ('memory') is a retarget-owned constant — no sub.
     step2 = {tuple(s.path): s for s in steps[1].substitutions}
     assert step2[("entries", 0, "key")].kind == SkillSubKind.HOLE
-    assert step2[("entries", 0, "key")].hole == "queries"
+    assert step2[("entries", 0, "key")].parameter == "queries"
     assert step2[("entries", 0, "content")].kind == SkillSubKind.BINDING
     assert step2[("entries", 0, "content")].step == 1
     assert ("memory",) not in step2  # write-target owned by retarget, not parameterized
@@ -247,8 +248,8 @@ def test_distill_strips_the_top_level_reasoning_thinkaloud():
     steps, holes = distill_steps(inputs)
     # Same two holes as the reasoning-free run (test above) — the think-aloud added none.
     assert holes == [
-        SkillHole(name="queries", required=True),
-        SkillHole(name="extract", required=True),
+        SkillParameter(name="queries", required=True),
+        SkillParameter(name="extract", required=True),
     ]
     assert all("reasoning" not in step.arguments for step in steps)
     assert "reasoning=" not in render_skill(steps)
@@ -282,7 +283,7 @@ def test_distill_keeps_a_nested_key_named_reasoning():
 def _seed_skill(db: Database, name: str) -> None:
     """Persist a skill directly (the extractor's output shape) so the read surface
     can be tested independently of the extraction path."""
-    steps, holes = distill_steps(
+    steps, parameters = distill_steps(
         [
             DistillInput(
                 source_ordinal=1, tool="browse", arguments=_BROWSE_ARGS, result=_BROWSE_OK
@@ -298,7 +299,7 @@ def _seed_skill(db: Database, name: str) -> None:
             intent=_UTTERANCE,
             description=_UTTERANCE,
             steps=steps,
-            holes=holes,
+            parameters=parameters,
             source_run_id="run-A",
         ),
         author="chat",
@@ -315,7 +316,10 @@ async def test_skill_read_renders_one_and_lists_all(tmp_path):
     read = SkillReadTool(db)
 
     one = await read.execute(name="Watch elevation")
-    assert one.success and "skill 'Watch elevation'" in one.message and _WITH_HOLES in one.message
+    # render_skill_full indents the recipe block two spaces under `steps:` (#1668).
+    indented_recipe = "\n".join(f"  {line}" for line in _WITH_HOLES.splitlines())
+    assert one.success and "skill 'Watch elevation'" in one.message
+    assert indented_recipe in one.message
 
     listing = await read.execute()
     assert listing.success and "- Watch elevation:" in listing.message
@@ -405,7 +409,9 @@ def test_retarget_writes_drops_a_hole_on_the_memory_argument():
         source_ordinal=1,
         tool="collection_write",
         arguments={"memory": "{dest}", "entries": [{"key": "k", "content": "c"}]},
-        substitutions=[SkillSubstitution(path=["memory"], kind=SkillSubKind.HOLE, hole="dest")],
+        substitutions=[
+            SkillSubstitution(path=["memory"], kind=SkillSubKind.HOLE, parameter="dest")
+        ],
     )
     retargeted = retarget_writes([step], "target-b")
     assert retargeted[0].arguments["memory"] == "target-b"

@@ -27,12 +27,19 @@ from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import Skill
 from penny.database.skill_store import (
-    holes_from_json,
-    holes_to_json,
+    parameters_from_json,
+    parameters_to_json,
     steps_from_json,
     steps_to_json,
 )
-from penny.database.skills import SkillHole, SkillStep, SkillSubKind, SkillSubstitution
+from penny.database.skills import (
+    SkillParameter,
+    SkillStep,
+    SkillSubKind,
+    SkillSubstitution,
+    render_skill,
+    unbound_required_parameters,
+)
 from penny.llm.models import LlmMessage, LlmResponse
 from penny.prompts import Prompt
 from penny.skill_extraction import (
@@ -42,6 +49,7 @@ from penny.skill_extraction import (
     SkillExtractor,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.skill_tools import render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
@@ -77,11 +85,15 @@ def _extractor(
     tests set its embed handler); ``model`` is the TEXT client for the naming
     micro-context — a bare mock returns untagged text, so naming falls back to the
     deterministic slug (which keeps the pre-#1665 name/description assertions holding)."""
+    client = cast(Any, model or MockLlmClient())
     return SkillExtractor(
         db,
         cast(Any, mock or MockLlmClient()),
-        cast(Any, model or MockLlmClient()),
+        client,
         agent_name="chat",
+        # The REAL collector-runnable surface (#1668) — so the lifecycle-filter test
+        # exercises the actual masked surface, not a hand-copied set.
+        collector_tool_surface=collector_tool_surface(db, client),
     )
 
 
@@ -145,7 +157,7 @@ async def test_read_write_run_qualifies_and_distils_correctly(tmp_path):
     # Holes: the browse query and the extract instruction; the write KEY reuses the
     # query's hole (same value → one shared parameter).  The write CONTENT is a
     # binding (it flowed from the browse), so it is NOT a hole.
-    assert [hole.name for hole in holes_from_json(skill.holes)] == ["queries", "extract"]
+    assert [hole.name for hole in parameters_from_json(skill.parameters)] == ["queries", "extract"]
     steps = steps_from_json(skill.steps)
     assert [step.tool for step in steps] == ["browse", "collection_write"]
     content_sub = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
@@ -422,12 +434,12 @@ _WATCH_STEPS = steps_to_json(
             tool="browse",
             arguments={"queries": ["https://shop.test/widget"]},
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="url")
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="url")
             ],
         )
     ]
 )
-_WATCH_PARAMS = holes_to_json([SkillHole(name="url", required=True)])
+_WATCH_PARAMS = parameters_to_json([SkillParameter(name="url", required=True)])
 
 
 def _naming_model(content: str) -> MockLlmClient:
@@ -496,7 +508,7 @@ async def test_wrapped_write_value_binds_against_the_result_payload(tmp_path):
     steps = steps_from_json(result.skill.steps)
     content_sub = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
     assert content_sub.kind.value == "binding" and content_sub.step == 1
-    hole_names = [hole.name for hole in holes_from_json(result.skill.holes)]
+    hole_names = [hole.name for hole in parameters_from_json(result.skill.parameters)]
     assert "content" not in hole_names  # the wrapped value bound; it is NOT a parameter
     assert "key" in hole_names  # the topic-name key did NOT false-bind — it's a parameter
 
@@ -541,6 +553,124 @@ async def test_untagged_naming_falls_back_to_the_deterministic_slug(tmp_path):
     assert result.skill.description == _UTTERANCE
 
 
+# ── #1668: semantic parameter names + descriptions ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tagged_param_labels_become_semantic_names_and_descriptions(tmp_path):
+    """The naming micro-context relabels each parameter (#1668): tagged PARAM lines
+    (keyed by the CURRENT arg-derived name) become the skill's SEMANTIC parameter
+    names + descriptions, they render in the parameters block AND as ``{name}``
+    placeholders in the steps, and binding is by the semantic name (display form ==
+    invocation form) — the binding key at instantiation."""
+    db = _make_db(tmp_path)
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price on a listing page and record it.\n"
+        "PARAM queries: url — the page to look at\n"
+        "PARAM extract: what_to_find — what to pull from it"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description) for p in params] == [
+        ("url", "the page to look at"),
+        ("what_to_find", "what to pull from it"),
+    ]
+    # The full render shows the semantic parameters block AND {semantic} placeholders.
+    rendered = render_skill_full(result.skill)
+    assert "  - url (required): the page to look at" in rendered
+    assert "  - what_to_find (required): what to pull from it" in rendered
+    assert "browse(queries=[{url}], extract={what_to_find})" in rendered
+    # Binding is by the semantic name — the params binding key at instantiation.
+    assert [p.name for p in unbound_required_parameters(params, {})] == ["url", "what_to_find"]
+    assert unbound_required_parameters(params, {"url": "u", "what_to_find": "w"}) == []
+
+
+@pytest.mark.asyncio
+async def test_param_labelling_falls_back_per_parameter(tmp_path):
+    """Per-parameter fallback, not all-or-nothing (#1668): a parameter the model
+    labels gets its semantic name + description; one it omits keeps its arg-derived
+    name and carries no description."""
+    db = _make_db(tmp_path)
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price and record it.\n"
+        "PARAM queries: url — the page to look at"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description) for p in params] == [
+        ("url", "the page to look at"),  # labelled
+        ("extract", None),  # unlabelled → arg-derived name, no description
+    ]
+
+
+@pytest.mark.asyncio
+async def test_semantic_names_are_hardened_slugged_and_deduped(tmp_path):
+    """Deterministic hardening of returned names (#1668, load-bearing — the name is
+    the binding key): 'Page URL' slugs to 'page_url' (lowercase, spaces→underscores),
+    and two parameters that slug to the SAME name are disambiguated with a numeric
+    suffix so a binding key can never collide."""
+    db = _make_db(tmp_path)
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price and record it.\n"
+        "PARAM queries: Page URL — the page\n"
+        "PARAM extract: Page URL — the field"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [p.name for p in params] == ["page_url", "page_url_2"]
+    # The rename maps through every leaf site — the render substitutes by the slugged name.
+    rendered = render_skill(steps_from_json(result.skill.steps))
+    assert "queries=[{page_url}]" in rendered
+    assert "{page_url_2}" in rendered
+
+
+# ── #1668: a skill captures ONLY collector-runnable steps ──────────────────────
+
+_CREATE_OK = (
+    "You set up a collection: (collection_create result)\nCreated collection 'widget-prices'."
+)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_call_is_dropped_from_the_recipe(tmp_path):
+    """A demo that sets up a container mid-run (collection_create — a lifecycle call
+    a collector can never run) has that step DROPPED from the captured skill (#1668):
+    a skill renders into a collector prompt, so only collector-runnable steps belong
+    in it.  The create's args (name/description) never become nonsense parameters,
+    and the create doesn't count toward the read/write taxonomy."""
+    db = _make_db(tmp_path)
+    create = (
+        "collection_create",
+        {"name": "widget-prices", "description": "watch the widget price"},
+        _CREATE_OK,
+        True,
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, create, _WRITE])
+
+    result = await _extractor(db).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    assert [step.tool for step in steps] == ["browse", "collection_write"]
+    names = [p.name for p in parameters_from_json(result.skill.parameters)]
+    assert "name" not in names and "description" not in names and "skill" not in names
+
+
 # ── #1665: the run-end narration frame (whole-render literal) ──────────────────
 
 
@@ -552,7 +682,7 @@ def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on(
     skill = Skill(
         name="watch-a-listing-price",
         steps=_WATCH_STEPS,
-        holes=_WATCH_PARAMS,
+        parameters=_WATCH_PARAMS,
         intent="Watch a listing page's price and record it.",
         description="Watch a listing page's price and record it.",
         author="chat",
@@ -565,10 +695,11 @@ def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on(
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "skill 'watch-a-listing-price'\n"
-        "intent: Watch a listing page's price and record it.\n"
-        "parameters: url (required)\n"
+        "what it's for: Watch a listing page's price and record it.\n"
+        "parameters:\n"
+        "  - url (required)\n"
         "steps:\n"
-        "1. browse(queries=[{url}])\n\n"
+        "  1. browse(queries=[{url}])\n\n"
         "You demonstrated it on: watch the aurora deck 2 price and remember it\n\n"
         "Tell the user, in your own words, that you've learned this routine: name it "
         "by what it does generally (not just this one instance), say plainly what it "

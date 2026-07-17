@@ -1323,7 +1323,7 @@ class TestResolveObjects:
                 Skill(
                     name=name,
                     steps="[]",
-                    holes="[]",
+                    parameters="[]",
                     intent="skill body",
                     description="skill body",
                     description_embedding=serialize_embedding(embedding),

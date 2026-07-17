@@ -350,7 +350,7 @@ class SkillNarrationValidator:
     frame onto ``ctx.learned_skill_frame`` on a qualifying run.  This validator —
     a validator in the chat chain, not a branch in the loop — turns that frame into
     a ``NudgeContinue`` so the model re-replies, telling the user what it just
-    learned FROM the render (its name, trigger, numbered recipe, required holes)
+    learned FROM the render (its name, trigger, numbered recipe, required parameters)
     rather than from memory.  The frame is present at most once per run (the prep
     extracts once per run id), so the re-reply doesn't re-narrate — it falls through
     to the real final answer.

@@ -403,16 +403,17 @@ class Skill(SQLModel, table=True):
     At the end of every qualifying chat run the run-end extractor
     (``penny.skill_extraction``) snapshots that run's own ledger, copying its
     succeeded, non-``done`` tool calls into ``steps`` (the ``LoggedToolCall`` shape as
-    JSON) and factoring each argument by provenance into declared ``holes`` (JSON) —
-    a value from a prior step's result becomes a binding, the scoped-write target a
+    JSON) and factoring each argument by provenance into declared ``parameters`` (JSON)
+    — a value from a prior step's result becomes a binding, the scoped-write target a
     retarget-owned constant, every other string leaf a required parameter (#1658/
-    #1659).  #1591's ``collection_create`` renders ``steps`` + bound params into the
+    #1659), semantically named + described by the run-end naming micro-context
+    (#1668).  #1591's ``collection_create`` renders ``steps`` + bound params into the
     collection's numbered TEXT ``extraction_prompt`` at creation.
 
     **One row per name — no versioning.**  Collections carry the rendered text
     snapshotted at creation, so a re-teach never retroactively changes an
     instantiation; the version pin had no remaining job.  Re-demonstrating a routine
-    REPLACES the row (steps/holes/provenance) by name — or, for a same-shape,
+    REPLACES the row (steps/parameters/provenance) by name — or, for a same-shape,
     same-meaning routine, keeping the existing name — so ``name`` is the unique key.
 
     ``description`` doubles as the resolution anchor (``description_embedding``,
@@ -426,7 +427,7 @@ class Skill(SQLModel, table=True):
 
     name: str = Field(primary_key=True)
     steps: str  # JSON-serialized list[SkillStep]
-    holes: str  # JSON-serialized list[SkillHole]
+    parameters: str  # JSON-serialized list[SkillParameter]
     intent: str
     description: str
     description_embedding: bytes | None = None

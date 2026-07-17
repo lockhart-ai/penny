@@ -54,8 +54,8 @@ from penny.database.memory import (
 from penny.database.memory.types import slug
 from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.mutation_store import render_mutation
-from penny.database.skill_store import holes_from_json, steps_from_json
-from penny.database.skills import render_skill, retarget_writes, unbound_required_holes
+from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.skills import render_skill, retarget_writes, unbound_required_parameters
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
@@ -76,7 +76,7 @@ from penny.tools.collection_instantiation import (
     render_reinstantiation_echo,
     render_tombstone_duplicate,
     render_trigger_field,
-    render_unbound_holes,
+    render_unbound_parameters,
 )
 from penny.tools.memory_args import (
     CatalogArgs,
@@ -391,9 +391,9 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
     """``from skill: <name> (<param>=<value>, …)`` — the skill this collection was
     instantiated from (#1591's front door) and the params bound into its render, so
     the render names the recipe's origin.  The skill name is a live anchor: one
-    ``skill_read(<name>)`` / ``find`` hop reaches its steps + holes (n≤1), and
+    ``skill_read(<name>)`` / ``find`` hop reaches its steps + parameters (n≤1), and
     the bound params are the reachable input a future rebind/re-render consumes.
-    Params are omitted when the skill had no holes (``from skill: <name>``).
+    Params are omitted when the skill had no parameters (``from skill: <name>``).
     Returns ``None`` for a hand-authored / seeded collection (``skill_name`` NULL),
     so its render stays byte-identical to the unmarked pre-provenance shape — the
     unmarked case is the quiet default."""
@@ -471,21 +471,21 @@ def unresolved_skill_result(query: str, resolution: SkillResolution) -> ToolResu
 def render_skill_prompt(
     db: Database, llm_client: LlmClient, skill: Skill, params: dict[str, str], target_name: str
 ) -> tuple[str, ToolResult | None]:
-    """Validate the bound params against ``skill``'s holes, then render its steps +
+    """Validate the bound params against ``skill``'s parameters, then render its steps +
     params into the numbered TEXT ``extraction_prompt`` for the collection ``target_name``.
-    An unbound required hole → the actionable naming error; a rendered prompt that is too
-    short or names an unrunnable tool → the same authoring-time rejection.  The re-render
-    preserves the steps-1..A / no-stored-``done()`` invariant by construction — it is the
-    same render fn ``collection_create`` stamps at birth.
+    An unbound required parameter → the actionable naming error; a rendered prompt that is
+    too short or names an unrunnable tool → the same authoring-time rejection.  The
+    re-render preserves the steps-1..A / no-stored-``done()`` invariant by construction — it
+    is the same render fn ``collection_create`` stamps at birth.
 
     Every scoped-write step's ``memory`` argument is retargeted to ``target_name`` at
     this seam (#1629): applying a skill to a collection is what DEFINES where its writes
     land, so the demo-run target the skill baked in is replaced by the collection's own
     name — the rendered program never lies about its write target, on either the one-call
     create or the adopt path."""
-    missing = unbound_required_holes(holes_from_json(skill.holes), params)
+    missing = unbound_required_parameters(parameters_from_json(skill.parameters), params)
     if missing:
-        return "", ToolResult(message=render_unbound_holes(skill.name, missing), success=False)
+        return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)
     steps = retarget_writes(steps_from_json(skill.steps), target_name)
     prompt = render_skill(steps, params)
     if (too_short := check_extraction_prompt(prompt)) is not None:
@@ -556,7 +556,7 @@ class CollectionCreateTool(MemoryTool):
 
     A collection is never authored with an inline procedure any more: it names a
     ``skill`` (resolved by name or meaning against the skill registry), binds the
-    skill's parameter holes from ``params``, and the skill's steps RENDER into the
+    skill's parameters from ``params``, and the skill's steps RENDER into the
     collection's ``extraction_prompt`` at creation (a deterministic snapshot).  The
     resolution is an enumerated union — a clean name match instantiates; a fuzzy
     match returns ranked candidates to choose from; no match returns the teach-me
@@ -589,8 +589,8 @@ class CollectionCreateTool(MemoryTool):
         'paraphrase of what it does ("watch a page for a change"). Omit it for an inert '
         "storage collection. If your paraphrase matches several skills I'll list them to "
         "choose from; if it matches none I'll walk you through teaching one.\n"
-        "- `params` — a map binding the skill's holes to values "
-        '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED hole '
+        "- `params` — a map binding the skill's parameters to values "
+        '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED parameter '
         "must be bound or the call is refused naming what's missing.\n"
         '- `trigger` — ONE string, in one of three forms: "every <seconds>" (a recurring '
         'cadence, e.g. "every 3600" for hourly), "once at <ISO datetime> [xN]" (run at a '
@@ -636,8 +636,8 @@ class CollectionCreateTool(MemoryTool):
             "params": {
                 "type": "object",
                 "description": (
-                    "Bindings for the skill's fill-in-the-blank holes: {hole: value}. Every "
-                    "required hole must be bound."
+                    "Bindings for the skill's fill-in-the-blank parameters: "
+                    "{parameter: value}. Every required parameter must be bound."
                 ),
             },
             "trigger": {
@@ -1558,10 +1558,10 @@ _REINSTANTIATE_CONFLICT = (
 )
 
 # params-only rebind on a collection that was never instantiated from a skill (a
-# legacy hand-authored one): there are no holes to bind — name how to adopt one.
+# legacy hand-authored one): there are no parameters to bind — name how to adopt one.
 _REBIND_NO_SKILL = (
     "Can't rebind params on '{name}': it wasn't instantiated from a skill (it's "
-    "hand-authored), so it has no parameter holes to bind. Pass skill=<name> to adopt a "
+    "hand-authored), so it has no parameters to bind. Pass skill=<name> to adopt a "
     "skill onto it, or edit its recipe directly with extraction_prompt=<the full body>."
 )
 
@@ -1627,9 +1627,9 @@ class CollectionUpdateTool(MemoryTool):
         "`collection_create`). Use the SAME skill name to refresh after re-teaching "
         "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
         "adopts a skill for the first time (its old text is replaced by the render).\n"
-        "- `params` — rebind the skill's fill-in-the-blank holes to new values and "
+        "- `params` — rebind the skill's fill-in-the-blank parameters to new values and "
         "re-render, keeping the same skill. Omit to keep the current bindings. Every "
-        "required hole must be bound or the call is refused naming what's missing.\n"
+        "required parameter must be bound or the call is refused naming what's missing.\n"
         "- `trigger` — the job's schedule as ONE string (set it to change the schedule, "
         'else omit to leave it): "every <seconds>" (recurring, e.g. "every 3600"), '
         '"once at <ISO datetime> [xN]" (run at a time, N times), or "on advance of <log>" '
@@ -1687,8 +1687,8 @@ class CollectionUpdateTool(MemoryTool):
             "params": {
                 "type": "object",
                 "description": (
-                    "Rebind the skill's holes to new values and re-render, same skill. "
-                    "Omit to keep current bindings. Every required hole must be bound."
+                    "Rebind the skill's parameters to new values and re-render, same skill. "
+                    "Omit to keep current bindings. Every required parameter must be bound."
                 ),
             },
             "trigger": {
@@ -2930,9 +2930,11 @@ class TestExtractionPromptTool(Tool):
 _VOCAB_PROBE_AGENT = "collector"
 
 
-def _collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str]:
+def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str]:
     """The names of every tool a collector runs with — the surface an
-    ``extraction_prompt`` may legitimately call.
+    ``extraction_prompt`` may legitimately call, AND the set the run-end skill
+    extractor filters captured steps to (#1668: a skill renders into a collector
+    prompt, so only collector-runnable steps belong in the recipe).
 
     Discovered from the *real* assembly (``build_memory_tools`` + browse + done +
     send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so
@@ -2965,7 +2967,7 @@ def _reject_unknown_extraction_tools(
     collector would then fail to run every cycle."""
     if extraction_prompt is None:
         return None
-    surface = _collector_tool_surface(db, llm_client)
+    surface = collector_tool_surface(db, llm_client)
     if error := check_extraction_prompt_tools(extraction_prompt, surface):
         return ToolResult(message=error, success=False)
     return None

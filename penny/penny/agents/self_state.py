@@ -32,7 +32,7 @@ one guess-free tool call from the detail). Sections:
   each rendered as its FULL recipe (#1665). Rendered deterministically (all of
   them, verbatim + wholesale, never a relevance guess) — the same
   ``render_skill_full`` ``skill_read`` returns — so a taught behavior fires
-  *ambiently* AND is instantiable with **no lookup**: name, intent, holes, and
+  *ambiently* AND is instantiable with **no lookup**: name, intent, parameters, and
   numbered steps are all in the prompt, so firing and instantiation both cost
   **0 calls** (n=0 beats n=1). One feed: the taught-skill registry (``db.skills``,
   #1590) — the sole skills store. (The legacy ``skills`` collection's
@@ -96,7 +96,7 @@ class SelfStateHeader:
     NO_PROFILE = "(no profile set yet)"
 
     # The taught-skill feed renders each skill's FULL recipe VERBATIM (#1665), so the
-    # label must NOT imply a needed lookup: the holes are ambient, so firing AND
+    # label must NOT imply a needed lookup: the parameters are ambient, so firing AND
     # instantiation are both zero-call.  ``skill_read`` remains for archived/explicit
     # reads but is no longer a drill-down the label points at.
     TAUGHT_SKILLS_LABEL = (
@@ -373,11 +373,12 @@ class SelfStateHeader:
         Renders ALL of the taught-skill registry (no relevance gating, no budget cap
         — wholesale; trimming is a later tuning knob) and each skill VERBATIM AND
         WHOLESALE via the SAME ``render_skill_full`` the ``skill_read`` tool returns
-        (single-sourced): name, intent, holes with required-ness, numbered steps. So a
-        taught behavior fires ambiently AND is instantiable with NO lookup — its holes
-        are in the prompt (n=0 beats n=1). The section collapses to one honest
-        placeholder when nothing has been taught. (The legacy standing-rules feed
-        retired with the ``skills`` collection, #1624.)"""
+        (single-sourced): name, what-it's-for, parameters with required-ness +
+        descriptions, numbered steps. So a taught behavior fires ambiently AND is
+        instantiable with NO lookup — its parameters are in the prompt (n=0 beats
+        n=1). The section collapses to one honest placeholder when nothing has been
+        taught. (The legacy standing-rules feed retired with the ``skills``
+        collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
             return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])

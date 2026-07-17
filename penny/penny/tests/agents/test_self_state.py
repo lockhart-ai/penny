@@ -36,8 +36,8 @@ from penny.database.models import (
     UserInfo,
 )
 from penny.database.mutation_store import MutationDetail
-from penny.database.skill_store import holes_to_json, steps_to_json
-from penny.database.skills import SkillHole, SkillStep, SkillSubKind, SkillSubstitution
+from penny.database.skill_store import parameters_to_json, steps_to_json
+from penny.database.skills import SkillParameter, SkillStep, SkillSubKind, SkillSubstitution
 from penny.prompts import Prompt
 
 USER = "+15550001111"
@@ -143,12 +143,12 @@ _TRACK_SHIPMENT_STEPS = steps_to_json(
             tool="browse",
             arguments={"queries": ["1Z-DEMO"]},
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="tracking")
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="tracking")
             ],
         )
     ]
 )
-_TRACK_SHIPMENT_HOLES = holes_to_json([SkillHole(name="tracking", required=True)])
+_TRACK_SHIPMENT_HOLES = parameters_to_json([SkillParameter(name="tracking", required=True)])
 _WATCH_FIELD_STEPS = steps_to_json(
     [
         SkillStep(
@@ -157,12 +157,12 @@ _WATCH_FIELD_STEPS = steps_to_json(
             tool="browse",
             arguments={"queries": ["https://shop.test/widget"]},
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="url")
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="url")
             ],
         )
     ]
 )
-_WATCH_FIELD_HOLES = holes_to_json([SkillHole(name="url", required=True)])
+_WATCH_FIELD_HOLES = parameters_to_json([SkillParameter(name="url", required=True)])
 
 
 def _add_skill(
@@ -172,17 +172,17 @@ def _add_skill(
     intent: str,
     when: datetime,
     steps: str = "[]",
-    holes: str = "[]",
+    parameters: str = "[]",
 ) -> None:
     """A taught skill (the ``skill`` registry, #1590) — the taught-skill feed of the
     Skills-and-rules section, which renders each skill's FULL recipe ambiently
     (#1665, the same ``render_skill_full`` ``skill_read`` returns).  Pass real
-    ``steps``/``holes`` JSON to exercise the recipe render."""
+    ``steps``/``parameters`` JSON to exercise the recipe render."""
     session.add(
         Skill(
             name=name,
             steps=steps,
-            holes=holes,
+            parameters=parameters,
             intent=intent,
             description=intent,
             author="chat",
@@ -369,7 +369,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             intent="track my package from acme and tell me when it moves",
             when=_t(7),
             steps=_TRACK_SHIPMENT_STEPS,
-            holes=_TRACK_SHIPMENT_HOLES,
+            parameters=_TRACK_SHIPMENT_HOLES,
         )
         _add_skill(
             session,
@@ -377,7 +377,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             intent="watch the price on a product page and ping me when it drops",
             when=_t(7),
             steps=_WATCH_FIELD_STEPS,
-            holes=_WATCH_FIELD_HOLES,
+            parameters=_WATCH_FIELD_HOLES,
         )
         _add_run(
             session,
@@ -563,7 +563,7 @@ def test_self_state_taught_skills_only_render(tmp_path):
             intent="track my package from acme and tell me when it moves",
             when=_t(7),
             steps=_TRACK_SHIPMENT_STEPS,
-            holes=_TRACK_SHIPMENT_HOLES,
+            parameters=_TRACK_SHIPMENT_HOLES,
         )
         _add_skill(
             session,
@@ -571,7 +571,7 @@ def test_self_state_taught_skills_only_render(tmp_path):
             intent="watch the price on a product page and ping me when it drops",
             when=_t(7),
             steps=_WATCH_FIELD_STEPS,
-            holes=_WATCH_FIELD_HOLES,
+            parameters=_WATCH_FIELD_HOLES,
         )
         session.commit()
     actual = SelfStateHeader(db, None).render()
@@ -970,16 +970,18 @@ _KITCHEN_SINK = (
     "Skills you've been taught — full recipe each; fire or instantiate directly, "
     "no lookup needed:\n"
     "skill 'Track a shipment'\n"
-    "intent: track my package from acme and tell me when it moves\n"
-    "parameters: tracking (required)\n"
+    "what it's for: track my package from acme and tell me when it moves\n"
+    "parameters:\n"
+    "  - tracking (required)\n"
     "steps:\n"
-    "1. browse(queries=[{tracking}])\n"
+    "  1. browse(queries=[{tracking}])\n"
     "\n"
     "skill 'Watch a page field'\n"
-    "intent: watch the price on a product page and ping me when it drops\n"
-    "parameters: url (required)\n"
+    "what it's for: watch the price on a product page and ping me when it drops\n"
+    "parameters:\n"
+    "  - url (required)\n"
     "steps:\n"
-    "1. browse(queries=[{url}])\n"
+    "  1. browse(queries=[{url}])\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1132,16 +1134,18 @@ _TAUGHT_SKILLS_ONLY = (
     "Skills you've been taught — full recipe each; fire or instantiate directly, "
     "no lookup needed:\n"
     "skill 'Track a shipment'\n"
-    "intent: track my package from acme and tell me when it moves\n"
-    "parameters: tracking (required)\n"
+    "what it's for: track my package from acme and tell me when it moves\n"
+    "parameters:\n"
+    "  - tracking (required)\n"
     "steps:\n"
-    "1. browse(queries=[{tracking}])\n"
+    "  1. browse(queries=[{tracking}])\n"
     "\n"
     "skill 'Watch a page field'\n"
-    "intent: watch the price on a product page and ping me when it drops\n"
-    "parameters: url (required)\n"
+    "what it's for: watch the price on a product page and ping me when it drops\n"
+    "parameters:\n"
+    "  - url (required)\n"
     "steps:\n"
-    "1. browse(queries=[{url}])\n"
+    "  1. browse(queries=[{url}])\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

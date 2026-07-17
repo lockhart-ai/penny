@@ -2,7 +2,7 @@
 
 A collection is never authored with an inline procedure any more — it is an
 *instantiation of a skill*: ``collection_create`` takes a ``skill`` (resolved by
-name or meaning), binds its parameter holes from ``params``, renders the skill's
+name or meaning), binds its parameters from ``params``, renders the skill's
 steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
 it at creation.  This module holds the pure, DB-free pieces of that flow so they
 are whole-render tested in isolation:
@@ -20,7 +20,7 @@ are whole-render tested in isolation:
 * the **creation echo** (skill · params · trigger · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
-The orchestration (embed, resolve, validate holes, dedup, create) lives on
+The orchestration (embed, resolve, validate parameters, dedup, create) lives on
 ``CollectionCreateTool`` in :mod:`penny.tools.memory_tools`.
 """
 
@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from penny.database.memory.types import slug
 from penny.database.models import MemoryRow, Skill
+from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
 
 # ── Skill resolution union ────────────────────────────────────────────────────
@@ -98,20 +99,30 @@ def render_no_skill_found(query: str) -> str:
     return _NO_SKILL_FOUND.format(query=query)
 
 
-# ── Hole validation ───────────────────────────────────────────────────────────
+# ── Parameter validation ──────────────────────────────────────────────────────
 
-_UNBOUND_HOLES = (
-    "Can't instantiate '{skill}': the required parameter(s) {missing} aren't bound. Pass "
-    "them in params (e.g. params={{{example}}}), then call collection_create again."
+_UNBOUND_PARAMETERS = (
+    "Can't instantiate '{skill}': these required parameters aren't bound:\n{listed}\n"
+    "Pass them in params (e.g. params={{{example}}}), then call collection_create again."
 )
 
 
-def render_unbound_holes(skill_name: str, missing: list[str]) -> str:
-    """The hole-validation error: name every unbound required parameter and show
-    the exact ``params`` shape to supply (actionable-error contract)."""
-    named = ", ".join(missing)
-    example = ", ".join(f"'{name}': <value>" for name in missing)
-    return _UNBOUND_HOLES.format(skill=skill_name, missing=named, example=example)
+def _parameter_line(parameter: SkillParameter) -> str:
+    """One unbound-parameter line — its semantic name and, when set, its description
+    (so a stale/unknown name is answered with the CURRENT names + what they mean)."""
+    if parameter.description:
+        return f"  - {parameter.name}: {parameter.description}"
+    return f"  - {parameter.name}"
+
+
+def render_unbound_parameters(skill_name: str, missing: list[SkillParameter]) -> str:
+    """The parameter-validation error (#1668): name every unbound required parameter
+    with its description (the current, semantic names — so a rebind with a stale name
+    is answered actionably) and show the exact ``params`` shape to supply
+    (actionable-error contract)."""
+    listed = "\n".join(_parameter_line(parameter) for parameter in missing)
+    example = ", ".join(f"'{parameter.name}': <value>" for parameter in missing)
+    return _UNBOUND_PARAMETERS.format(skill=skill_name, listed=listed, example=example)
 
 
 # ── Idempotency at birth (#1567) ──────────────────────────────────────────────

@@ -117,32 +117,32 @@ OptionalSkill = Annotated[
 
 
 def _coerce_single_element_list(value: object) -> object:
-    """Unwrap a single-element list bound to a skill hole down to its element (#1666).
+    """Unwrap a single-element list bound to a skill parameter down to its element (#1666).
 
-    A skill hole always fills exactly ONE string leaf of a step's arguments, and that
+    A skill parameter always fills exactly ONE string leaf of a step's arguments, and that
     leaf frequently sits INSIDE a list: a browse step's ``queries[0]`` (distilled from
-    ``browse(queries=[<url>])``) becomes the hole ``queries``.  The model, following the
-    browse tool's real argument shape, then routinely binds that hole with a one-element
-    LIST — ``params={"queries": ["https://…"]}`` — rather than the bare string the leaf
-    holds.  The ``dict[str, str]`` param type refuses it (``params.queries: Input should
-    be a valid string``), punishing the model for matching the tool's type.
+    ``browse(queries=[<url>])``) becomes a parameter.  The model, following the browse
+    tool's real argument shape, then routinely binds that parameter with a one-element
+    LIST — ``params={"url": ["https://…"]}`` — rather than the bare string the leaf holds.
+    The ``dict[str, str]`` param type refuses it (``params.url: Input should be a valid
+    string``), punishing the model for matching the tool's type.
 
     Since the bound value is a single leaf, unwrap the one element deterministically: the
     render substitutes it straight back into the list position, so a list-bound param
     renders byte-identically to the string-bound form (only the params-value TYPE
-    validation was wrong).  A multi-element list is a genuine over-binding — a hole takes
-    exactly one value — so it stays a refusal, made actionable: the error ``loc`` names
-    the offending hole (``params.<hole>``) and the message names the count and the
-    expected one-value shape.
+    validation was wrong).  A multi-element list is a genuine over-binding — a parameter
+    takes exactly one value — so it stays a refusal, made actionable: the error ``loc``
+    names the offending parameter (``params.<parameter>``) and the message names the count
+    and the expected one-value shape.
     """
     if not isinstance(value, list):
         return value
     if len(value) == 1:
         return value[0]
     raise ValueError(
-        f"a skill hole binds one value, but got a list of {len(value)} — pass a single "
-        "value per hole (a one-item list is unwrapped for you; more than one isn't). "
-        "Expected shape: params={'<hole>': '<value>'}"
+        f"a skill parameter binds one value, but got a list of {len(value)} — pass a "
+        "single value per parameter (a one-item list is unwrapped for you; more than one "
+        "isn't). Expected shape: params={'<parameter>': '<value>'}"
     )
 
 
@@ -212,7 +212,7 @@ class CollectionCreateArgs(ToolArgs):
 
     A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
     that skill (resolved by name or meaning) — its steps render into the collection's
-    ``extraction_prompt``, ``params`` binds the skill's parameter holes, and a
+    ``extraction_prompt``, ``params`` binds the skill's parameters, and a
     ``trigger`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
     — no ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it
     until a skill is attached later via ``collection_update`` (the two-step teach
@@ -250,7 +250,7 @@ class CollectionCreateArgs(ToolArgs):
     # INERT storage-only collection — the first half of the two-step teach bootstrap
     # (#1629).  OptionalSkill == update's skill: blank→None + dash-normalise.
     skill: OptionalSkill = None
-    # Bindings for the skill's parameter holes ({url}, {field}, …) → values.  A value
+    # Bindings for the skill's parameters ({url}, {field}, …) → values.  A value
     # passed as a single-element list is unwrapped to its element (#1666,
     # SkillParamValue) — the model mirrors the browse tool's list-shaped queries arg.
     params: dict[str, SkillParamValue] = {}
@@ -308,7 +308,7 @@ class CollectionUpdateArgs(ToolArgs):
     ``skill`` / ``params`` are the re-render axis (#1620): supplying either RE-RENDERS
     the ``extraction_prompt`` from a skill's current steps and re-stamps the
     collection's skill provenance — ``skill`` names a skill (by name or meaning, the
-    #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its holes.
+    #1591 resolution union) to refresh / swap / adopt; ``params`` rebinds its parameters.
     Omitting both leaves the prompt untouched (a plain metadata edit).  ``params`` is
     ``None`` (reuse the collection's current bindings) vs. a dict (rebind to these).
     ``extraction_prompt`` is the raw-edit escape hatch — a FULL replacement body when
@@ -330,7 +330,7 @@ class CollectionUpdateArgs(ToolArgs):
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
-    # Rebind the skill's holes; None = reuse current.  A single-element list value is
+    # Rebind the skill's parameters; None = reuse current.  A single-element list value is
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
     # Trigger — one arg, three enumerated forms (parse_trigger, #1631), mirroring

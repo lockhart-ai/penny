@@ -29,7 +29,7 @@ from penny.database.mutation_store import mutation_change_summary
 from penny.database.skill_store import steps_from_json
 from penny.database.skills import (
     SkillDraft,
-    SkillHole,
+    SkillParameter,
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
@@ -45,7 +45,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.collection_instantiation import (
     parse_trigger,
     render_trigger_clause,
-    render_unbound_holes,
+    render_unbound_parameters,
 )
 from penny.tools.memory_args import CollectionCreateArgs, CollectionUpdateArgs
 from penny.tools.memory_tools import (
@@ -80,6 +80,7 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
     _format_duplicate,
     build_memory_tools,
+    collector_tool_surface,
 )
 
 
@@ -221,7 +222,9 @@ def _watch_skill_steps() -> list[SkillStep]:
             tool="browse",
             arguments={"queries": [_SKILL_HOLE], "extract": "the elevation above sea level"},
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole=_SKILL_HOLE)
+                SkillSubstitution(
+                    path=["queries", 0], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
+                )
             ],
         ),
         SkillStep(
@@ -231,7 +234,7 @@ def _watch_skill_steps() -> list[SkillStep]:
             arguments={"memory": "elevations", "entries": [{"key": _SKILL_HOLE, "content": "x"}]},
             substitutions=[
                 SkillSubstitution(
-                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, hole=_SKILL_HOLE
+                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
                 ),
                 SkillSubstitution(
                     path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
@@ -247,7 +250,7 @@ def _seed_watch_skill(
     name: str = _SKILL_NAME,
     intent: str = "watch a peak's elevation and save it",
     description: str = "watch a peak's elevation and save it",
-    holes: list[SkillHole] | None = None,
+    parameters: list[SkillParameter] | None = None,
     steps: list[SkillStep] | None = None,
     embed: bool = True,
 ) -> str:
@@ -260,7 +263,9 @@ def _seed_watch_skill(
         intent=intent,
         description=description,
         steps=steps if steps is not None else _watch_skill_steps(),
-        holes=holes if holes is not None else [SkillHole(name=_SKILL_HOLE, required=True)],
+        parameters=parameters
+        if parameters is not None
+        else [SkillParameter(name=_SKILL_HOLE, required=True)],
         source_run_id="run-teach",
     )
     embedding = _single_hash_vec(description) if embed else None
@@ -390,9 +395,9 @@ class TestCollectionCreateFrontDoor:
         )
         assert result.success is False
         assert result.message == (
-            "params.peak: a skill hole binds one value, but got a list of 2 — pass a "
-            "single value per hole (a one-item list is unwrapped for you; more than one "
-            "isn't). Expected shape: params={'<hole>': '<value>'}. "
+            "params.peak: a skill parameter binds one value, but got a list of 2 — pass a "
+            "single value per parameter (a one-item list is unwrapped for you; more than "
+            "one isn't). Expected shape: params={'<parameter>': '<value>'}. "
             "Call collection_create(<valid arguments>) again."
         )
         assert db.memories.get("multi-peak") is None
@@ -412,8 +417,9 @@ class TestCollectionCreateFrontDoor:
         )
         assert result.success is False
         assert result.message == (
-            "Can't instantiate 'Watch elevation': the required parameter(s) peak aren't "
-            "bound. Pass them in params (e.g. params={'peak': <value>}), then call "
+            "Can't instantiate 'Watch elevation': these required parameters aren't bound:\n"
+            "  - peak\n"
+            "Pass them in params (e.g. params={'peak': <value>}), then call "
             "collection_create again."
         )
         assert db.memories.get("no-peak") is None
@@ -1011,7 +1017,9 @@ def _river_skill_steps() -> list[SkillStep]:
             tool="browse",
             arguments={"queries": [_RIVER_HOLE], "extract": "the current flow rate"},
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole=_RIVER_HOLE)
+                SkillSubstitution(
+                    path=["queries", 0], kind=SkillSubKind.HOLE, parameter=_RIVER_HOLE
+                )
             ],
         ),
         SkillStep(
@@ -1021,7 +1029,7 @@ def _river_skill_steps() -> list[SkillStep]:
             arguments={"memory": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
             substitutions=[
                 SkillSubstitution(
-                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, hole=_RIVER_HOLE
+                    path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_RIVER_HOLE
                 ),
                 SkillSubstitution(
                     path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
@@ -1184,7 +1192,7 @@ class TestCollectionUpdateReinstantiation:
             intent="track a river's flow",
             description="track a river's flow rate over time",
             steps=_river_skill_steps(),
-            holes=[SkillHole(name=_RIVER_HOLE, required=True)],
+            parameters=[SkillParameter(name=_RIVER_HOLE, required=True)],
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation", skill=_RIVER_SKILL, params={"river": "Silt River"}
@@ -1207,7 +1215,7 @@ class TestCollectionUpdateReinstantiation:
             intent="track a river's flow",
             description="track a river's flow rate over time",
             steps=_river_skill_steps(),
-            holes=[SkillHole(name=_RIVER_HOLE, required=True)],
+            parameters=[SkillParameter(name=_RIVER_HOLE, required=True)],
         )
         before = db.memories.get("cinder-elevation").extraction_prompt
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1215,8 +1223,10 @@ class TestCollectionUpdateReinstantiation:
             skill=_RIVER_SKILL,  # no params → 'river' unbound
         )
         assert result.success is False
-        # The whole refusal names the missing hole + the params shape to supply.
-        assert result.message == render_unbound_holes(_RIVER_SKILL, [_RIVER_HOLE])
+        # The whole refusal names the missing parameter + the params shape to supply.
+        assert result.message == render_unbound_parameters(
+            _RIVER_SKILL, [SkillParameter(name=_RIVER_HOLE, required=True)]
+        )
         stored = db.memories.get("cinder-elevation")
         assert stored.extraction_prompt == before  # nothing rendered
         assert stored.skill_name == _SKILL_NAME  # provenance unchanged
@@ -1618,8 +1628,13 @@ class TestTwoStepTeachBootstrap:
         #    a bare model client the generic-naming micro-context (#1665) produces no
         #    NAME:/DESCRIPTION: tags, so the name falls back to a deterministic slug of
         #    the demo's triggering message.
+        client = cast(Any, MockLlmClient())
         extraction = await SkillExtractor(
-            db, cast(Any, MockLlmClient()), cast(Any, MockLlmClient()), agent_name="chat"
+            db,
+            client,
+            client,
+            agent_name="chat",
+            collector_tool_surface=collector_tool_surface(db, client),
         ).extract("run-demo")
         assert isinstance(extraction, SkillExtracted)
         taught_name = extraction.skill.name
@@ -3397,7 +3412,7 @@ class TestRegistryProvenanceAndLifecycle:
             name="gather-items",
             intent="gather fresh items on a topic",
             description="gather fresh items on a topic",
-            holes=[],
+            parameters=[],
             steps=[
                 SkillStep(
                     ordinal=1,
@@ -3640,7 +3655,7 @@ class TestCollectionSkillProvenanceRender:
             name="daily-digest",
             intent="gather the day's fresh items",
             description="gather the day's fresh items",
-            holes=[],
+            parameters=[],
             steps=[
                 SkillStep(
                     ordinal=1,
@@ -3721,7 +3736,7 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
         name="find-skill",
         intent="find skill",
         description="find skill",
-        holes=[],
+        parameters=[],
         steps=[
             SkillStep(
                 ordinal=1,
@@ -3784,7 +3799,7 @@ class TestFind:
                 intent="aurora beacon cascade gamma",
                 description="aurora beacon cascade gamma",
                 steps=[],
-                holes=[],
+                parameters=[],
                 source_run_id="run-teach",
             ),
             author="chat",

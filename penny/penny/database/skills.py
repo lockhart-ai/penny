@@ -1,11 +1,12 @@
-"""The skill substrate — structured steps, provenance-inferred holes, and the
+"""The skill substrate — structured steps, provenance-inferred parameters, and the
 steps→text render (#1590, stage ④ of #1562 / epic #1554).
 
 A **skill** is a certified-by-execution script distilled from ONE demonstrated
 run: an ordered list of structured steps in the ``LoggedToolCall`` shape (#1578)
-plus declared parameter *holes*.  It is authored only by the framework — there is
-no ``skill_create`` tool.  The run-end extractor (``penny.skill_extraction``,
-#1658) snapshots a qualifying chat run's own ledger, copying ALL its succeeded,
+plus declared *parameters* (SKILL-level inputs, semantically named + described,
+not tool-arg echoes — #1668).  It is authored only by the framework — there is no
+``skill_create`` tool.  The run-end extractor (``penny.skill_extraction``, #1658)
+snapshots a qualifying chat run's own ledger, copying ALL its succeeded,
 non-``done`` tool-call ordinals out, never re-emitting them.  Each argument leaf of
 a copied call is factored by **provenance** — derived STRUCTURALLY from the ledger,
 never by matching the user's prose (#1659):
@@ -16,12 +17,14 @@ never by matching the user's prose (#1659):
   ``Price: $499`` over a browse that returned ``$499``);
 * the scoped-write **target** argument (``memory`` on a write step) → a
   **constant** owned by write-retarget (#1629), never a parameter;
-* **every other string leaf** → a required **hole** (a parameter the model binds
-  per instantiation); identical values collapse to ONE shared hole.  A hole is
-  ``required`` by construction — an unbound hole is a loud refusal at
-  instantiation, never a silent default (no-silent-fallbacks).
+* **every other string leaf** → a required **parameter** (the model binds it per
+  instantiation); identical values collapse to ONE shared parameter.  A parameter
+  is ``required`` by construction — an unbound one is a loud refusal at
+  instantiation, never a silent default (no-silent-fallbacks).  Parameters get
+  arg-derived names at distill; the run-end naming micro-context relabels them
+  semantically (#1668).
 
-This module is pure (no engine, no tool imports): the step/hole models, the
+This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
 ``extraction_prompt`` a collection runs.  The DB store lives in
@@ -63,13 +66,15 @@ class SkillSubstitution(BaseModel):
     """One dynamic leaf inside a step's arguments, addressed by its JSON ``path``.
 
     A leaf NOT covered by any substitution is a constant (rendered verbatim).  A
-    ``HOLE`` names the parameter that fills it at instantiation; a ``BINDING``
-    names the prior *skill* step (1-based ordinal) whose result flows into it.
+    ``HOLE`` names the parameter that fills it at instantiation (``parameter`` is
+    the parameter's semantic name — the binding key at instantiation); a
+    ``BINDING`` names the prior *skill* step (1-based ordinal) whose result flows
+    into it.
     """
 
     path: list[str | int]
     kind: SkillSubKind
-    hole: str | None = None  # set when kind == HOLE
+    parameter: str | None = None  # set when kind == HOLE — the parameter's semantic name
     step: int | None = None  # set when kind == BINDING — the skill-relative ordinal
 
 
@@ -82,7 +87,7 @@ class SkillStep(BaseModel):
     ordinal of the run it was copied from (the provenance/selection anchor, #1578)
     — kept so the skill can always be traced back to the exact call that certified
     it.  ``arguments`` is the call's verbatim argument structure; ``substitutions``
-    marks which leaves are holes/bindings.
+    marks which leaves are parameters/bindings.
     """
 
     ordinal: int
@@ -92,17 +97,22 @@ class SkillStep(BaseModel):
     substitutions: list[SkillSubstitution] = Field(default_factory=list)
 
 
-class SkillHole(BaseModel):
-    """A declared parameter of a skill — its ``name`` and whether it is
-    ``required`` (an unbound required hole is a loud validation error at
-    instantiation, #1591/#1659; never a silent default).  Every hole inferred by
-    :func:`distill_steps` is ``required`` by construction: structural provenance
-    can't know a safe fallback, so the model must bind each parameter explicitly —
-    an out-of-context guess would be untraceable later.  ``required`` stays a
-    declared field so a future authoring path can still mark a hole optional."""
+class SkillParameter(BaseModel):
+    """A declared parameter of a skill — a SKILL-level input, not a tool-arg echo
+    (#1668).  ``name`` is its semantic name (the binding key at instantiation —
+    ``params={name: value}``, display form == invocation form), ``description`` a
+    one-line what-to-supply (``None`` when unlabelled — the run-end naming
+    micro-context writes both, falling back to the arg-derived name), and
+    ``required`` whether an unbound value is a loud validation error at
+    instantiation (#1591/#1659; never a silent default).  Every parameter inferred
+    by :func:`distill_steps` is ``required`` by construction: structural provenance
+    can't know a safe fallback, so the model must bind each explicitly — an
+    out-of-context guess would be untraceable later.  ``required`` stays a declared
+    field so a future authoring path can still mark a parameter optional."""
 
     name: str
     required: bool = True
+    description: str | None = None
 
 
 class SkillDraft(BaseModel):
@@ -114,7 +124,7 @@ class SkillDraft(BaseModel):
     intent: str
     description: str
     steps: list[SkillStep]
-    holes: list[SkillHole]
+    parameters: list[SkillParameter]
     source_run_id: str
 
 
@@ -135,7 +145,7 @@ class DistillInput(BaseModel):
 # The framework injects a universal ``reasoning`` think-aloud string into every
 # tool call's arguments (``Tool.to_ollama_tool``) — the model's per-run narration
 # of *why* it made the call.  It is run narration, never part of the routine, so
-# it is stripped from a distilled step outright (#1661): not a hole, not a baked
+# it is stripped from a distilled step outright (#1661): not a parameter, not a baked
 # constant, simply absent — the executing model supplies its own reasoning at run
 # time.  Only the TOP-LEVEL key is dropped; a nested arg that happens to share the
 # name is real routine data and stays.
@@ -145,7 +155,7 @@ _REASONING_KEY = "reasoning"
 def _without_reasoning(arguments: dict[str, Any]) -> dict[str, Any]:
     """A shallow copy of a logged call's arguments with the top-level ``reasoning``
     think-aloud removed (#1661) — so distillation never sees it as a string leaf
-    (a nonsense required hole) and the stored step never carries or renders it."""
+    (a nonsense required parameter) and the stored step never carries or renders it."""
     return {key: value for key, value in arguments.items() if key != _REASONING_KEY}
 
 
@@ -168,18 +178,20 @@ def _leaf_paths(value: Any, prefix: list[str | int]) -> list[tuple[list[str | in
 
 
 def _nearest_key(path: list[str | int]) -> str:
-    """The nearest string key up a leaf's path — the inferred hole's name (mirrors
-    the ``{url}`` / ``{field}`` convention: a hole is named for the argument key it
-    fills).  A leaf directly under a list falls back to ``"param"``."""
+    """The nearest string key up a leaf's path — the inferred parameter's initial
+    (arg-derived) name (mirrors the ``{url}`` / ``{field}`` convention: a parameter
+    is first named for the argument key it fills, then relabelled semantically by
+    the run-end naming micro-context, #1668).  A leaf directly under a list falls
+    back to ``"param"``."""
     for part in reversed(path):
         if isinstance(part, str):
             return part
     return "param"
 
 
-class _HoleNamer:
-    """Assigns a stable hole name per distinct demonstrated value — the same value
-    in two places is ONE parameter (deduped), and two different values never
+class _ParameterNamer:
+    """Assigns a stable parameter name per distinct demonstrated value — the same
+    value in two places is ONE parameter (deduped), and two different values never
     collide (a name clash gets a numeric suffix)."""
 
     def __init__(self) -> None:
@@ -209,7 +221,7 @@ _MIN_BINDING_OVERLAP = 3
 # compares against that PAYLOAD, not the frame (#1665/#1661 item 3): an arg that
 # WRAPS the value (``Price: $499`` over a browse that returned ``$499``) can never
 # contain the whole frame, so the wraps direction would otherwise never fire —
-# ``content`` becomes a nonsense required hole that leaks into narration.
+# ``content`` becomes a nonsense required parameter that leaks into narration.
 #
 # The tag is the structural anchor (mirrors ``RESULT_TAG = "({tool} result)"`` in
 # ``tools/base.py`` — matched structurally, not imported, so this module stays pure):
@@ -240,7 +252,7 @@ def _result_payload(result: str) -> str:
 
 def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int | None:
     """The skill ordinal (1-based) of the latest PRIOR selected step whose result the
-    value flowed from, or ``None`` when none produced it (then it is a hole).
+    value flowed from, or ``None`` when none produced it (then it is a parameter).
 
     Comparison is against each prior result's PAYLOAD (``_result_payload`` — the frame
     stripped off, #1665), not the framed text.  A value binds when it **equals or is
@@ -273,8 +285,8 @@ def _is_write_target(tool: str, path: list[str | int]) -> bool:
     return tool in SCOPED_WRITE_TOOLS and path == ["memory"]
 
 
-def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[SkillHole]]:
-    """Factor one run's selected steps into ``(steps, holes)`` by STRUCTURAL
+def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[SkillParameter]]:
+    """Factor one run's selected steps into ``(steps, parameters)`` by STRUCTURAL
     provenance — read off the ledger, never by matching the user's prose (#1659).
 
     ``selected`` is the contiguous, certified slice in run order.  The universal
@@ -283,12 +295,13 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
     remaining string leaf is classified in order: the scoped-write **target** is a
     retarget-owned constant (skipped); a value that **equals / is contained in /
     wraps** a prior selected step's result is a **binding** (it came from that step);
-    **every other** string leaf is a required **hole**, with identical values
-    collapsing to one shared hole.  A non-string leaf (a number/bool) is always a
-    constant."""
-    namer = _HoleNamer()
+    **every other** string leaf is a required **parameter**, with identical values
+    collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
+    a constant.  Parameters get arg-derived names here; the run-end naming
+    micro-context relabels them semantically (#1668)."""
+    namer = _ParameterNamer()
     steps: list[SkillStep] = []
-    holes: dict[str, SkillHole] = {}
+    parameters: dict[str, SkillParameter] = {}
     for index, inp in enumerate(selected):
         arguments = _without_reasoning(inp.arguments)
         subs: list[SkillSubstitution] = []
@@ -300,8 +313,8 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
                 subs.append(SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer))
                 continue
             name = namer.name_for(value, path)
-            holes.setdefault(name, SkillHole(name=name, required=True))
-            subs.append(SkillSubstitution(path=path, kind=SkillSubKind.HOLE, hole=name))
+            parameters.setdefault(name, SkillParameter(name=name, required=True))
+            subs.append(SkillSubstitution(path=path, kind=SkillSubKind.HOLE, parameter=name))
         steps.append(
             SkillStep(
                 ordinal=index + 1,
@@ -311,20 +324,21 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
                 substitutions=subs,
             )
         )
-    return steps, list(holes.values())
+    return steps, list(parameters.values())
 
 
 # ── The render (steps + bound params → the numbered TEXT extraction_prompt) ────
 
 
 class _Bound(BaseModel):
-    """Render sentinel: a hole filled with its bound parameter value (verbatim)."""
+    """Render sentinel: a parameter filled with its bound value (verbatim)."""
 
     value: Any
 
 
 class _Placeholder(BaseModel):
-    """Render sentinel: an unbound hole, shown as ``{name}`` (the with-holes form)."""
+    """Render sentinel: an unbound parameter, shown as ``{name}`` (the with-params
+    form)."""
 
     name: str
 
@@ -337,7 +351,7 @@ class _BindingRef(BaseModel):
 
 def _marker_for(sub: SkillSubstitution, params: dict[str, str]) -> Any:
     if sub.kind == SkillSubKind.HOLE:
-        name = sub.hole or ""
+        name = sub.parameter or ""
         if name in params:
             return _Bound(value=params[name])
         return _Placeholder(name=name)
@@ -356,8 +370,8 @@ def _set_at_path(root: Any, path: list[str | int], marker: Any) -> None:
 def _render_value(value: Any) -> str:
     """One argument value in the canonical call notation (the ``!r`` projection
     #1578's ``render_tool_call`` uses), with the render sentinels rendered
-    legibly: a bound hole as its value (verbatim, quoted like any literal), an
-    unbound hole as ``{name}``, a binding as ``the value from step N``."""
+    legibly: a bound parameter as its value (verbatim, quoted like any literal), an
+    unbound parameter as ``{name}``, a binding as ``the value from step N``."""
     if isinstance(value, _Bound):
         return repr(value.value)
     if isinstance(value, _Placeholder):
@@ -388,22 +402,25 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     same numbered-tool-call dialect production ``extraction_prompt``s use.
 
     The load-bearing deliverable (#1590): #1591's ``collection_create`` calls this
-    to stamp the collection's ``extraction_prompt`` at creation.  Holes present in
-    ``params`` are substituted with their value verbatim; holes NOT in ``params``
-    render as ``{name}`` (the with-holes form the read surface shows); bindings
-    render as ``the value from step N``; everything else is a constant.  Pure and
+    to stamp the collection's ``extraction_prompt`` at creation.  Parameters present
+    in ``params`` are substituted with their value verbatim; parameters NOT in
+    ``params`` render as ``{name}`` (the with-params form the read surface shows);
+    bindings render as ``the value from step N``; everything else is a constant.  Pure and
     deterministic — the same steps + params always produce the same text.
     """
     params = params or {}
     return "\n".join(_render_step(step, params) for step in steps)
 
 
-def unbound_required_holes(holes: list[SkillHole], params: dict[str, str]) -> list[str]:
-    """Names of the required holes ``params`` doesn't bind — the validation
-    #1591's ``collection_create`` runs before rendering (an unbound required hole
-    is an error).  Shipped here so the rule lives with the skill, tested
-    standalone; not wired to a runtime surface in this stage."""
-    return [hole.name for hole in holes if hole.required and hole.name not in params]
+def unbound_required_parameters(
+    parameters: list[SkillParameter], params: dict[str, str]
+) -> list[SkillParameter]:
+    """The required parameters ``params`` doesn't bind — the validation #1591's
+    ``collection_create`` runs before rendering (an unbound required parameter is an
+    error).  Returns the whole :class:`SkillParameter` (name + description) so the
+    refusal can name each parameter AND what to supply (#1668).  Shipped here so the
+    rule lives with the skill, tested standalone."""
+    return [p for p in parameters if p.required and p.name not in params]
 
 
 # ── Write-retarget at apply (#1629) ────────────────────────────────────────────
@@ -422,7 +439,7 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
     write-retarget-at-apply rule (#1629).
 
     "Apply this skill to collection C" is what fixes where its writes go, so the
-    demo-run constant (or a stray hole/binding) on the ``memory`` argument is
+    demo-run constant (or a stray parameter/binding) on the ``memory`` argument is
     replaced by ``target`` — the collection's own name.  This runs at the
     render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
     ``collection_create(skill=…)`` and the ``collection_update`` adopt paths, so the
@@ -438,7 +455,7 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
             continue
         arguments = copy.deepcopy(step.arguments)
         arguments["memory"] = target
-        # The ``memory`` leaf is now a constant, so drop any hole/binding that
+        # The ``memory`` leaf is now a constant, so drop any parameter/binding that
         # addressed it — else the render would substitute a marker back over it.
         substitutions = [sub for sub in step.substitutions if sub.path[:1] != ["memory"]]
         retargeted.append(

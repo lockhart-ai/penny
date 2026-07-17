@@ -104,7 +104,7 @@ class _MetadataUpdate(BaseModel):
             # A re-render re-homes the collection on a skill: stamp the origin skill
             # and its bound params (JSON, as at creation), so provenance stays a read
             # off the row.  ``skill_params`` is serialized even when empty — a
-            # hole-less skill binds nothing but is still a skill instantiation.
+            # parameter-less skill binds nothing but is still a skill instantiation.
             memory.skill_name = self.skill_name
             memory.skill_params = (
                 json.dumps(self.skill_params) if self.skill_params is not None else None

@@ -78,32 +78,50 @@ _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
 # extraction fails honestly.
 _UNTAGGED_DRAW_BUDGET = 2
 
-# ── Second customer: run-end skill naming (#1665) ──────────────────────────────
+# ── Second customer: run-end skill naming (#1665/#1668) ────────────────────────
 # The naming contract is a DIFFERENT enumerated output shape riding the SAME
-# poison-screen + reroll machinery (``_draw_clean``): given a distilled routine,
-# write a GENERIC verb-noun name + a one-line generic description.  Its two tags
-# are enumerated on both sides of the interface, exactly like EXTRACTED:/NOT_PRESENT:
-# — the system prompt names them and ``_parse_label`` parses them deterministically.
+# poison-screen + reroll machinery (``_draw_clean``): given a distilled routine
+# AND its parameters, write a GENERIC verb-noun name + a one-line generic
+# description AND a semantic name + description for each parameter (#1668 — skill
+# parameters are SKILL-level inputs, not tool-arg echoes).  Every tag is enumerated
+# on both sides of the interface, exactly like EXTRACTED:/NOT_PRESENT: — the system
+# prompt names them and ``_parse_label`` parses them deterministically.  The
+# per-parameter line is keyed by the parameter's CURRENT (arg-derived) name, so the
+# system owns an unambiguous mapping back; the model writes LABELS only.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
+PARAM_TAG = "PARAM"
+# The em-dash separating a parameter's semantic name from its description on a
+# ``PARAM <current>: <semantic> — <description>`` line.
+_PARAM_DESC_SEPARATOR = "—"
 
 SKILL_NAMING_SYSTEM_PROMPT = (
     "You are a naming step. You are given a reusable routine — a numbered list of "
-    "tool calls with fill-in-the-blank {variables} — plus the message that first "
-    "demonstrated it. Name the routine GENERICALLY: what KIND of task it is, as a "
-    "short verb-noun label (e.g. 'watch a page price for changes', 'summarize a "
-    "subscription feed'), never the specific thing this one instance happened to "
-    "use. Treat every {variable} as a user-supplied input, not part of the name.\n"
-    "Respond with exactly two lines, in these forms:\n"
+    "tool calls with fill-in-the-blank {parameters} — the message that first "
+    "demonstrated it, and the routine's parameters (each currently named after the "
+    "tool argument it fills). Do two things:\n"
+    "1. Name the ROUTINE generically: what KIND of task it is, as a short verb-noun "
+    "label (e.g. 'watch a page price for changes', 'summarize a subscription feed'), "
+    "never the specific thing this one instance happened to use.\n"
+    "2. Name each PARAMETER by what the value MEANS to the user (e.g. 'url', "
+    "'what_to_find', 'label'), NOT the tool argument it happens to fill — plus a "
+    "one-line description of what to supply for it.\n"
+    "Respond with these tagged lines and nothing else:\n"
     f"{NAME_TAG} <a short generic verb-noun name>\n"
     f"{DESCRIPTION_TAG} <one line saying what the routine does, generically>\n"
+    f"{PARAM_TAG} <current name>: <semantic_name> {_PARAM_DESC_SEPARATOR} <one-line "
+    "description>   (one line per parameter, repeating its CURRENT name exactly so "
+    "it maps back; use a single lowercase word or snake_case for <semantic_name>)\n"
     "Write nothing else — no preamble, no explanation, no restating the routine."
 )
 
-# The single per-call ask; the routine itself is the content.  Fixed, so the
-# caller only supplies the content (the naming contract is a property of this
+# The single per-call ask; the routine + its parameters are the content.  Fixed, so
+# the caller only supplies the content (the naming contract is a property of this
 # customer, not a per-call parameter).
-_SKILL_NAMING_INSTRUCTION = "Name this routine generically and describe in one line what it does."
+_SKILL_NAMING_INSTRUCTION = (
+    "Name this routine generically, describe in one line what it does, and give each "
+    "parameter a semantic name and one-line description."
+)
 
 
 class MicroExtractOutcome(StrEnum):
@@ -139,14 +157,28 @@ class MicroContextResult(BaseModel):
     reason: str = ""
 
 
+class ParameterLabel(BaseModel):
+    """One parameter's semantic label from the naming micro-context (#1668): a
+    generic ``name`` (what the value means, not the tool arg it fills) and a one-line
+    ``description`` (empty when the model gave none).  Keyed back to the CURRENT
+    arg-derived name by the parse, so the caller's rename is unambiguous."""
+
+    name: str
+    description: str = ""
+
+
 class SkillLabel(BaseModel):
-    """The run-end naming micro-context's typed result (#1665): a GENERIC verb-noun
-    ``name`` and a one-line generic ``description`` for a distilled routine.  Both
-    are non-blank by construction (``_parse_label`` returns ``None`` otherwise, so
-    the caller falls back to the deterministic slug — naming never blocks extraction)."""
+    """The run-end naming micro-context's typed result (#1665/#1668): a GENERIC
+    verb-noun ``name`` + one-line ``description`` for the distilled routine, plus a
+    per-parameter semantic label keyed by the parameter's CURRENT (arg-derived)
+    name.  ``name``/``description`` are non-blank by construction (``_parse_label``
+    returns ``None`` otherwise, so the caller falls back to the deterministic slug —
+    naming never blocks extraction); ``parameters`` may be empty or partial (a
+    parameter without a valid ``PARAM`` line keeps its arg-derived name, per-param)."""
 
     name: str
     description: str
+    parameters: dict[str, ParameterLabel] = {}
 
 
 class MicroContext:
@@ -208,14 +240,18 @@ class MicroContext:
     async def label_skill(
         self, content: str, *, run_target: str | None = None
     ) -> SkillLabel | None:
-        """Write a GENERIC name + description for a distilled routine (#1665) — the
-        second customer of this machinery.  Rides the SAME poison-screen + reroll
-        draw loop as ``extract``, with the naming system prompt and its own ledger
-        attribution, then a deterministic two-tag parse (``NAME:`` / ``DESCRIPTION:``).
+        """Write a GENERIC name + description for a distilled routine AND a semantic
+        name + description per parameter (#1665/#1668) — the second customer of this
+        machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
+        with the naming system prompt and its own ledger attribution, then a
+        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``PARAM`` line
+        per parameter).
 
         Returns the label, or ``None`` on ANY failure (poison exhausted, or the
-        model never produced both tagged lines) — the caller falls back to the
-        deterministic slug, so run-end skill extraction NEVER blocks on the rewrite."""
+        model never produced both the name and description tags) — the caller falls
+        back to the deterministic slug, so run-end skill extraction NEVER blocks on
+        the rewrite.  Parameter labels are best-effort: a parameter without a valid
+        ``PARAM`` line is simply absent (the caller keeps its arg-derived name)."""
         for _ in range(_UNTAGGED_DRAW_BUDGET):
             draw = await self._draw_clean(
                 content,
@@ -236,15 +272,17 @@ class MicroContext:
 
     @staticmethod
     def _parse_label(draw: str) -> SkillLabel | None:
-        """Deterministic parse of the two-line naming contract — a ``NAME:`` line
-        and a ``DESCRIPTION:`` line, each with a non-blank payload.  Missing either
-        (or a blank payload) is a contract violation → ``None`` (the caller rerolls
-        once and then falls back), never a partial label."""
+        """Deterministic parse of the naming contract — a ``NAME:`` line, a
+        ``DESCRIPTION:`` line (each with a non-blank payload), and zero or more
+        ``PARAM <current>: <semantic> — <description>`` lines.  Missing the name or
+        description (or a blank payload) is a contract violation → ``None`` (the
+        caller rerolls once and then falls back), never a partial label.  Parameter
+        labels are best-effort — a malformed ``PARAM`` line is dropped, not fatal."""
         name = _tagged_payload(draw, NAME_TAG)
         description = _tagged_payload(draw, DESCRIPTION_TAG)
         if name is None or description is None:
             return None
-        return SkillLabel(name=name, description=description)
+        return SkillLabel(name=name, description=description, parameters=_parse_param_labels(draw))
 
     async def _draw_clean(
         self,
@@ -320,3 +358,27 @@ def _tagged_payload(draw: str, tag: str) -> str | None:
             if not is_blank(payload):
                 return payload
     return None
+
+
+def _parse_param_labels(draw: str) -> dict[str, ParameterLabel]:
+    """Every ``PARAM <current>: <semantic> — <description>`` line parsed into a
+    ``{current_name: ParameterLabel}`` map (#1668).  The line is keyed by the
+    parameter's CURRENT (arg-derived) name so the mapping back is unambiguous; the
+    semantic name and description are split on the em-dash (description optional).
+    A line missing a current name or a semantic name is dropped (best-effort — the
+    caller keeps the arg-derived name for any parameter absent from this map)."""
+    labels: dict[str, ParameterLabel] = {}
+    for line in draw.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(f"{PARAM_TAG} "):
+            continue
+        body = stripped[len(PARAM_TAG) :].strip()
+        current, sep, rest = body.partition(":")
+        if not sep:
+            continue
+        semantic, _, description = rest.partition(_PARAM_DESC_SEPARATOR)
+        current, semantic = current.strip(), semantic.strip()
+        if is_blank(current) or is_blank(semantic):
+            continue
+        labels[current] = ParameterLabel(name=semantic, description=description.strip())
+    return labels

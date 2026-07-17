@@ -23,7 +23,7 @@ from penny.skill_extraction import NoExtraction, SkillExtracted, SkillExtractor
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
-from penny.tools.memory_tools import TestExtractionPromptTool
+from penny.tools.memory_tools import TestExtractionPromptTool, collector_tool_surface
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.tools.skill_tools import render_skill_full
 from penny.validation.outcomes import LoopContext
@@ -107,6 +107,11 @@ class ChatAgent(Agent):
             self._embedding_model_client,
             self._model_client,
             agent_name=self.name,
+            # The collector-runnable tool surface (#1668) — single-sourced, so a
+            # captured step a collector could never run (a lifecycle call the demo
+            # made) is dropped from the recipe instead of baked into an
+            # uninstantiable skill.
+            collector_tool_surface=collector_tool_surface(self.db, self._model_client),
         )
         # The run whose extraction was already attempted this turn — the structural
         # once-per-run guard, so the post-narration re-reply never re-extracts or
