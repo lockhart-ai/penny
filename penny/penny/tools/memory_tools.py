@@ -65,6 +65,7 @@ from penny.tools.collection_instantiation import (
     SkillResolutionKind,
     Trigger,
     TriggerError,
+    has_trigger,
     parse_datetime,
     parse_trigger,
     render_active_duplicate,
@@ -74,7 +75,7 @@ from penny.tools.collection_instantiation import (
     render_no_skill_found,
     render_reinstantiation_echo,
     render_tombstone_duplicate,
-    render_trigger_clause,
+    render_trigger_field,
     render_unbound_holes,
 )
 from penny.tools.memory_args import (
@@ -267,10 +268,14 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     making up fields.  Includes the full extraction_prompt verbatim
     so the model's reply can summarize accurately (the model previously
     confabulated this because the create/update returns were one-liners).
+    The trigger renders via ``render_trigger_field`` — the copyable clause when the
+    collection has a cadence, else ``trigger: none`` for an inert/no-cadence one, so a
+    plain update on a trigger-less collection never echoes ``trigger: every None``
+    (#1666).
     """
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  trigger: {render_trigger_clause(memory)}\n"
+        f"  trigger: {render_trigger_field(memory)}\n"
         f"  notify: {memory.notify}\n"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
@@ -1876,11 +1881,7 @@ class CollectionUpdateTool(MemoryTool):
         source_log, so it won't dispatch until one is set.  Named, not silent."""
         if memory.extraction_prompt is None:
             return ""
-        if (
-            memory.collector_interval_seconds is not None
-            or memory.run_at is not None
-            or memory.source_log is not None
-        ):
+        if has_trigger(memory):
             return ""
         return _NO_TRIGGER_NOTE.format(name=memory.name)
 
@@ -1973,13 +1974,9 @@ class MemoryMetadataTool(MemoryTool):
         """The copyable ``trigger`` clause (#1631, display form == invocation form):
         ``trigger: every <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>``
         for a collection with a trigger, or ``trigger: none`` for a log / an inert
-        collection with no cadence yet — so the render never emits a half-formed clause."""
-        has_trigger = (
-            memory.collector_interval_seconds is not None
-            or memory.run_at is not None
-            or memory.source_log is not None
-        )
-        return f"trigger: {render_trigger_clause(memory) if has_trigger else 'none'}"
+        collection with no cadence yet — so the render never emits a half-formed clause
+        (#1666, via the shared ``render_trigger_field``)."""
+        return f"trigger: {render_trigger_field(memory)}"
 
 
 class CollectionCatalogTool(MemoryTool):

@@ -348,6 +348,56 @@ class TestCollectionCreateFrontDoor:
         assert stored.notify is True
 
     @pytest.mark.asyncio
+    async def test_single_element_list_param_renders_identically_to_string(self, tmp_path):
+        """The #1 live instantiation blocker (#1666): the model binds a hole with a
+        one-element LIST — ``params={"peak": ["Cinder Peak"]}`` — mirroring the browse
+        tool's list-shaped ``queries`` arg (the {peak} hole fills ``queries[0]``).  The
+        value is unwrapped to its element deterministically, so the whole echo, the
+        stored ``extraction_prompt``, AND the stored skill_params are byte-identical to
+        binding the bare string."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-elevation",
+            description="watch Cinder Peak's elevation",
+            skill=_SKILL_NAME,
+            params={"peak": ["Cinder Peak"]},  # a one-element list, not the bare string
+            trigger="every 3600",
+            notify=True,
+        )
+        assert result.success and result.mutated
+        # Byte-identical to the string-bound form — same echo, prompt, and provenance.
+        assert result.message == _CREATE_ECHO_LITERAL
+        stored = db.memories.get("cinder-elevation")
+        assert stored.extraction_prompt == _MONEY_LITERAL
+        # The stored binding records the UNWRAPPED scalar, not the list wrapper.
+        assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
+
+    @pytest.mark.asyncio
+    async def test_multi_element_list_param_is_refused_actionably(self, tmp_path):
+        """A hole binds exactly ONE value, so a multi-element list stays a refusal
+        (#1666) — but an ACTIONABLE one: the ``loc`` names the offending hole
+        (``params.peak``), and the message names the count and the expected one-value
+        shape.  Nothing is created (the arg-validation gate fails before ``execute``)."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
+            name="multi-peak",
+            description="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": ["Ashfall Ridge", "Cinder Peak"]},
+            trigger="every 3600",
+        )
+        assert result.success is False
+        assert result.message == (
+            "params.peak: a skill hole binds one value, but got a list of 2 — pass a "
+            "single value per hole (a one-item list is unwrapped for you; more than one "
+            "isn't). Expected shape: params={'<hole>': '<value>'}. "
+            "Call collection_create(<valid arguments>) again."
+        )
+        assert db.memories.get("multi-peak") is None
+
+    @pytest.mark.asyncio
     async def test_unbound_required_hole_is_refused_naming_it(self, tmp_path):
         """A skill instantiated without binding a required hole is refused, naming
         the missing parameter and the params shape to supply — nothing created."""
@@ -1682,8 +1732,10 @@ class TestCollectionUpdateTriggerAtApply:
     @pytest.mark.asyncio
     async def test_adopt_without_trigger_warns_it_wont_run(self, tmp_path):
         """Adopting a skill onto an inert collection with NO trigger leaves it without a
-        cadence — the echo carries a visible no-trigger note (#1629), not a silent
-        won't-run."""
+        cadence — the echo renders ``trigger: none`` (never the half-formed ``every
+        None``, #1666) and carries a visible no-trigger note (#1629), not a silent
+        won't-run.  Whole render, so the honest trigger line and the tail note are both
+        pinned."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1693,9 +1745,47 @@ class TestCollectionUpdateTriggerAtApply:
             name="deals-watch", skill=_SKILL_NAME, params={"peak": "Cinder Peak"}
         )
         assert result.success
-        # The whole no-trigger note is appended verbatim at the tail of the echo.
-        assert result.message.endswith(_NO_TRIGGER_NOTE.format(name="deals-watch"))
+        expected_echo = (
+            "I'll run 'Watch elevation' against 'deals-watch' and quietly store what it "
+            "finds.\n"
+            "Re-rendered collection 'deals-watch' from skill 'Watch elevation':\n"
+            "  description: track the trail-runner shoe deals\n"
+            "  skill: Watch elevation\n"
+            "  params: peak=Cinder Peak\n"
+            "  trigger: none\n"
+            "  notify: False\n"
+            "  expires: never\n"
+            "  extraction_prompt: |\n"
+            "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+            "    2. collection_write(memory='deals-watch', "
+            "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+        )
+        assert result.message == expected_echo + _NO_TRIGGER_NOTE.format(name="deals-watch")
+        assert "every None" not in result.message
         assert db.memories.get("deals-watch").collector_interval_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_plain_update_on_trigger_less_collection_echoes_none(self, tmp_path):
+        """The live-observed #1666 bug: a plain metadata update (no skill/params) on a
+        collection with no cadence echoes ``trigger: none`` — never the half-formed
+        ``trigger: every None``.  Whole render off an inert collection (the natural
+        trigger-less case)."""
+        db = _make_db(tmp_path)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", description="track the trail-runner shoe deals"
+        )
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="deals-watch", description="track the road-runner shoe deals"
+        )
+        assert result.success
+        assert result.message == (
+            "Updated collection 'deals-watch':\n"
+            "  trigger: none\n"
+            "  notify: False\n"
+            "  description: track the road-runner shoe deals\n"
+            "  extraction_prompt: |\n    "
+        )
+        assert "every None" not in result.message
 
 
 class TestCollectionWritesAndReads:

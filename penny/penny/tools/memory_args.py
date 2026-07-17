@@ -116,6 +116,42 @@ OptionalSkill = Annotated[
 ]
 
 
+def _coerce_single_element_list(value: object) -> object:
+    """Unwrap a single-element list bound to a skill hole down to its element (#1666).
+
+    A skill hole always fills exactly ONE string leaf of a step's arguments, and that
+    leaf frequently sits INSIDE a list: a browse step's ``queries[0]`` (distilled from
+    ``browse(queries=[<url>])``) becomes the hole ``queries``.  The model, following the
+    browse tool's real argument shape, then routinely binds that hole with a one-element
+    LIST — ``params={"queries": ["https://…"]}`` — rather than the bare string the leaf
+    holds.  The ``dict[str, str]`` param type refuses it (``params.queries: Input should
+    be a valid string``), punishing the model for matching the tool's type.
+
+    Since the bound value is a single leaf, unwrap the one element deterministically: the
+    render substitutes it straight back into the list position, so a list-bound param
+    renders byte-identically to the string-bound form (only the params-value TYPE
+    validation was wrong).  A multi-element list is a genuine over-binding — a hole takes
+    exactly one value — so it stays a refusal, made actionable: the error ``loc`` names
+    the offending hole (``params.<hole>``) and the message names the count and the
+    expected one-value shape.
+    """
+    if not isinstance(value, list):
+        return value
+    if len(value) == 1:
+        return value[0]
+    raise ValueError(
+        f"a skill hole binds one value, but got a list of {len(value)} — pass a single "
+        "value per hole (a one-item list is unwrapped for you; more than one isn't). "
+        "Expected shape: params={'<hole>': '<value>'}"
+    )
+
+
+# One skill-param binding (#1666): a single-element list is unwrapped to its element
+# (the model mirrors the browse tool's list-shaped ``queries`` arg), a multi-element list
+# is an actionable refusal, a scalar passes straight through to the ``str`` core rule.
+SkillParamValue = Annotated[str, BeforeValidator(_coerce_single_element_list)]
+
+
 # ── Annotated validator types ─────────────────────────────────────────────────
 # One Annotated type per validation concern, wrapping a shared predicate, so a
 # field declares its rule by *type* — no per-field @field_validator methods.  The
@@ -214,8 +250,10 @@ class CollectionCreateArgs(ToolArgs):
     # INERT storage-only collection — the first half of the two-step teach bootstrap
     # (#1629).  OptionalSkill == update's skill: blank→None + dash-normalise.
     skill: OptionalSkill = None
-    # Bindings for the skill's parameter holes ({url}, {field}, …) → values.
-    params: dict[str, str] = {}
+    # Bindings for the skill's parameter holes ({url}, {field}, …) → values.  A value
+    # passed as a single-element list is unwrapped to its element (#1666,
+    # SkillParamValue) — the model mirrors the browse tool's list-shaped queries arg.
+    params: dict[str, SkillParamValue] = {}
     # Trigger — one arg, three enumerated forms, parsed by prefix in the tool
     # (parse_trigger, #1631): "every <seconds>" | "once at <ISO> [xN]" |
     # "on advance of <log>".  Its render (render_trigger_clause) IS this input form.
@@ -292,7 +330,9 @@ class CollectionUpdateArgs(ToolArgs):
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
-    params: dict[str, str] | None = None  # rebind the skill's holes; None = reuse current
+    # Rebind the skill's holes; None = reuse current.  A single-element list value is
+    # unwrapped to its element (#1666, SkillParamValue), mirroring create.
+    params: dict[str, SkillParamValue] | None = None
     # Trigger — one arg, three enumerated forms (parse_trigger, #1631), mirroring
     # collection_create.  Present → replaces the whole trigger atomically; a blank/omit
     # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of <log>".

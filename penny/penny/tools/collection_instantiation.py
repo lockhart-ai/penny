@@ -289,13 +289,43 @@ def render_trigger_clause(row: MemoryRow) -> str:
     return f"{_EVERY_PREFIX}{row.collector_interval_seconds}"
 
 
+# The honest labelled-trigger fallback for a row with no cadence (#1666) — matching
+# ``memory_metadata``'s ``trigger: none`` convention, so no surface emits ``every None``.
+_NO_TRIGGER_CLAUSE = "none"
+
+
+def has_trigger(row: MemoryRow) -> bool:
+    """True when ``row`` carries any trigger member — a recurring
+    ``collector_interval_seconds``, a once-shaped ``run_at``, or an ``on_advance``
+    ``source_log``.  False for a log or an inert collection with no cadence yet, whose
+    ``render_trigger_clause`` would otherwise emit the half-formed ``every None`` (#1666).
+    The single predicate every labelled-trigger render guards on, so no surface
+    re-derives the three-member OR (already inlined on the self-state cadence, the
+    metadata trigger line, and the no-trigger note)."""
+    return (
+        row.collector_interval_seconds is not None
+        or row.run_at is not None
+        or row.source_log is not None
+    )
+
+
+def render_trigger_field(row: MemoryRow) -> str:
+    """The trigger rendered for a labelled echo/metadata field: the copyable clause when
+    ``row`` has a trigger (display form == invocation form, #1631), else the honest
+    ``none`` — so an inert/no-cadence collection never renders the half-formed ``every
+    None`` (#1666).  Consistent with ``memory_metadata``'s ``trigger: none`` across every
+    surface that shows a labelled trigger."""
+    return render_trigger_clause(row) if has_trigger(row) else _NO_TRIGGER_CLAUSE
+
+
 # ── Creation echo ─────────────────────────────────────────────────────────────
 
 
 def _trigger_line(row: MemoryRow) -> str:
-    """The echo's one-line trigger summary — the copyable ``trigger`` clause (#1631,
-    display form == invocation form)."""
-    return f"  trigger: {render_trigger_clause(row)}"
+    """The echo's one-line trigger summary — the copyable ``trigger`` clause when the
+    collection has a trigger, or ``trigger: none`` for an inert/no-cadence one (#1666,
+    never the half-formed ``every None``; #1631, display form == invocation form)."""
+    return f"  trigger: {render_trigger_field(row)}"
 
 
 def _params_line(params: dict[str, str]) -> str:
