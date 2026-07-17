@@ -33,7 +33,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.database.skill_store import holes_from_json, steps_from_json
+from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -546,8 +546,8 @@ def _extracted_skill_shape_ok(db: Database) -> bool:
     if len(skills) != 1:
         return False
     step_tools = [step.tool for step in steps_from_json(skills[0].steps)]
-    holes = holes_from_json(skills[0].holes)
-    return "browse" in step_tools and "collection_write" in step_tools and len(holes) >= 1
+    parameters = parameters_from_json(skills[0].parameters)
+    return "browse" in step_tools and "collection_write" in step_tools and len(parameters) >= 1
 
 
 @pytest.mark.asyncio
