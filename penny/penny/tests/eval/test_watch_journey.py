@@ -594,6 +594,7 @@ async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
         browse=[AURORA_LISTING_499],
         score=_score_beat2,
         min_pass_rate=None,  # report-only until sample-verified
+        timeout=240.0,  # extraction + the narration re-reply (a live sample timed out at 120)
     )
 
 
@@ -641,10 +642,10 @@ def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
     )
     retargeted = watch is not None and f"memory='{watch.name}'" in (watch.extraction_prompt or "")
     return [
+        Check("the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1),
         Check(
-            "the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1
+            "ONE live watch was instantiated (skill attached, prompt rendered)", len(watches) == 1
         ),
-        Check("ONE live watch was instantiated (skill attached, prompt rendered)", len(watches) == 1),
         Check("the watch has a trigger (it will actually run)", has_trigger),
         Check("notify is on (the ask was 'let me know')", watch.notify if watch else False),
         Check(
@@ -671,4 +672,5 @@ async def test_beat3_instantiates_the_watch(chat_eval: ChatEval):
         browse=[AURORA_LISTING_499],
         score=_score_beat3,
         min_pass_rate=None,  # report-only until sample-verified
+        timeout=240.0,  # the demonstrate turn carries extraction + the narration nudge
     )
