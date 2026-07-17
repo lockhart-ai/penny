@@ -15,6 +15,7 @@ from penny.database.memory import (
     LoggedToolCall,
     classify_run,
     half_formed_send_reason,
+    project_run,
     render_run_calls,
     render_run_record,
 )
@@ -605,6 +606,57 @@ run chat-quiet
 user: how are you?
 penny: doing great — thanks for asking!"""
     )
+
+
+def test_render_run_calls_bare_utterance_origin_full_literal():
+    """A REAL chat row carries the user's message as the BARE utterance — no fused
+    Live-context ``---`` prefix (#1661).  With no separator the whole turn IS the
+    origin, so the render shows ``user: <utterance>`` (the prior split-only code
+    returned ``""`` here, dropping the origin entirely).  The fused/separator form
+    is pinned by ``test_render_run_calls_pure_reply_run_full_literal`` above."""
+    turn = {"role": "user", "content": "how are you?"}
+    only = PromptLog(
+        model="m",
+        messages=json.dumps([turn]),
+        response=json.dumps(
+            {"choices": [{"message": {"role": "assistant", "content": "doing great!"}}]}
+        ),
+        run_id="chat-bare",
+        run_target=None,
+    )
+    assert (
+        render_run_calls([only])
+        == """\
+run chat-bare
+user: how are you?
+penny: doing great!"""
+    )
+
+
+def test_project_run_origin_message_bare_and_fused_forms():
+    """The origin message a run projects for skill authoring (#1661).  A REAL chat
+    row is the BARE utterance (no ``---`` prefix), so with no separator the whole
+    turn IS the origin — the prior split-only code returned ``""`` and killed the
+    skill's description/intent derivation.  A turn that DOES carry a fused
+    Live-context block still has it stripped back off (unchanged behavior)."""
+    utterance = "save the ridge elevation"
+    bare = _prompt(
+        [_call("browse", {"queries": ["x"]})],
+        run_id="bare",
+        target=None,
+        messages=json.dumps([{"role": "user", "content": utterance}]),
+    )
+    assert project_run([bare]).origin_message == utterance
+
+    fused = _prompt(
+        [_call("browse", {"queries": ["x"]})],
+        run_id="fused",
+        target=None,
+        messages=json.dumps(
+            [{"role": "user", "content": f"live ctx{PennyConstants.SECTION_SEPARATOR}{utterance}"}]
+        ),
+    )
+    assert project_run([fused]).origin_message == utterance
 
 
 def test_render_run_calls_empty_history():

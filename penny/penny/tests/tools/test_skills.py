@@ -13,7 +13,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
-from penny.database.skill_store import steps_from_json
+from penny.database.skill_store import holes_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
     SkillHole,
@@ -37,6 +37,14 @@ from penny.tools.skill_tools import _NOTHING_TO_SAVE, SkillCreateTool, SkillRead
 
 _UTTERANCE = "Save the Zephyr Ridge elevation to my notes"
 _EXTRACTED_VALUE = "1,842 m"
+
+# Every real tool call the framework logs carries the universal ``reasoning``
+# think-aloud (``Tool.to_ollama_tool`` injects it) — the model's per-call
+# narration.  The fixtures inject it so a demonstration matches a REAL promptlog
+# (the #1661 divergence: the old fixtures omitted it, so distill never had to
+# strip it and a real run surfaced nonsense ``reasoning`` holes).  Distill drops
+# the top-level ``reasoning`` outright — never a hole, never a stored/rendered arg.
+_REASONING = "because the user asked me to save it"
 
 _BROWSE_ARGS = {"queries": ["Zephyr Ridge elevation"], "extract": "the elevation above sea level"}
 _WRITE_ARGS = {
@@ -79,29 +87,35 @@ def _log_run(
     calls: list[tuple[str, dict, str, bool]],
     *,
     stamp_success: bool = True,
+    fused: bool = True,
 ) -> None:
     """Log one chat run as a single promptlog row: the triggering user turn, the
     batched tool calls (in order → ordinals), and each call's framed result plus its
     STRUCTURAL success stamp (``tool_success``, #1600 — what the framework writes at
     execution time and skill_create's certification reads).
 
+    Each logged call carries the universal ``reasoning`` think-aloud the framework
+    injects on every real tool call (#1661), so the fixture matches a real
+    promptlog — distill must strip it, not distill it into a hole.
+
     ``stamp_success=False`` omits the stamp entirely — a run as logged BEFORE #1600,
-    used to exercise the honest absent-stamp refusal."""
+    used to exercise the honest absent-stamp refusal.  ``fused=False`` logs the user
+    turn as the BARE utterance (a real chat row) instead of the fused
+    ``<context>---<utterance>`` form — the origin-extraction fallback (#1661)."""
     tool_calls = []
     tool_turns = []
     for index, (name, args, result, success) in enumerate(calls, start=1):
         call_id = f"c{index}"
+        logged_args = {**args, "reasoning": _REASONING}
         tool_calls.append(
-            {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
+            {"id": call_id, "function": {"name": name, "arguments": json.dumps(logged_args)}}
         )
         turn = {"role": "tool", "tool_call_id": call_id, "content": result}
         if stamp_success:
             turn[PennyConstants.TOOL_RESULT_SUCCESS_KEY] = success
         tool_turns.append(turn)
-    user_turn = {
-        "role": "user",
-        "content": f"live context{PennyConstants.SECTION_SEPARATOR}{utterance}",
-    }
+    content = f"live context{PennyConstants.SECTION_SEPARATOR}{utterance}" if fused else utterance
+    user_turn = {"role": "user", "content": content}
     db.messages.log_prompt(
         model="m",
         messages=[user_turn, *tool_turns],
@@ -270,6 +284,57 @@ def test_distill_does_not_bind_a_trivial_overlap():
     assert content.kind == SkillSubKind.HOLE
 
 
+def test_distill_strips_the_top_level_reasoning_thinkaloud():
+    """#1661: the universal top-level ``reasoning`` think-aloud every real call carries
+    is stripped at distill — it adds NO hole, never lands in a stored step's
+    arguments, and never renders (it is per-run narration; the executing model
+    supplies its own reasoning at run time)."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={**_BROWSE_ARGS, "reasoning": _REASONING},
+            result=_BROWSE_OK,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={**_WRITE_ARGS, "reasoning": "because it flowed from step 1"},
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, holes = distill_steps(inputs)
+    # Same two holes as the reasoning-free run (test above) — the think-aloud added none.
+    assert holes == [
+        SkillHole(name="queries", required=True),
+        SkillHole(name="extract", required=True),
+    ]
+    assert all("reasoning" not in step.arguments for step in steps)
+    assert "reasoning=" not in render_skill(steps)
+
+
+def test_distill_keeps_a_nested_key_named_reasoning():
+    """Only the TOP-LEVEL ``reasoning`` is stripped (#1661): a NESTED arg that merely
+    shares the name is real routine data — it stays in the stored step (and, as a
+    non-binding string leaf, is a hole like any other)."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="collection_write",
+            arguments={
+                "memory": "notes",
+                "reasoning": "top-level narration — stripped",
+                "entries": [{"key": "k", "content": "c", "reasoning": "nested — kept"}],
+            },
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, _ = distill_steps(inputs)
+    args = steps[0].arguments
+    assert "reasoning" not in args  # the top-level think-aloud is gone
+    assert args["entries"][0]["reasoning"] == "nested — kept"  # the nested key is untouched
+
+
 # ── skill_create: end-to-end through the tool ─────────────────────────────────
 
 
@@ -300,11 +365,50 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
     stored = db.skills.get("Watch elevation")
     assert stored is not None
     assert stored.source_run_id == "run-A" and stored.author == "chat"
+    stored_steps = steps_from_json(stored.steps)
     rendered = render_skill(
-        steps_from_json(stored.steps),
+        stored_steps,
         {"queries": "Cinder Peak elevation", "extract": "the elevation above sea level"},
     )
     assert rendered == _MONEY_LITERAL
+
+    # #1661: every demonstration call carried the universal ``reasoning`` think-aloud,
+    # but distill strips it — no ``reasoning`` hole, no ``reasoning`` key on any stored
+    # step, and the render never prints ``reasoning=`` (not in the money literal above,
+    # nor the with-holes form the user was shown).
+    assert "reasoning" not in {hole.name for hole in holes_from_json(stored.holes)}
+    assert all("reasoning" not in step.arguments for step in stored_steps)
+    assert "reasoning=" not in rendered
+    assert "reasoning" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_skill_description_from_bare_utterance(tmp_path):
+    """#1661: a REAL chat row carries the user's message as the BARE utterance (no
+    fused ``---`` Live-context prefix).  The origin-extraction fallback uses the
+    whole turn, so the skill's description/intent IS that utterance — the prior
+    split-only code left the origin empty, degrading it to a generic ``Skill:
+    <name>``."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-A",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+        ],
+        fused=False,  # a real chat row: the bare utterance, no fused Live-context
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
+
+    result = await tool.execute(name="Bare origin")
+    assert result.success
+    stored = db.skills.get("Bare origin")
+    assert stored is not None
+    # The bare utterance became the skill's description/intent — not "Skill: Bare origin".
+    assert stored.intent == _UTTERANCE and stored.description == _UTTERANCE
+    assert f"intent: {_UTTERANCE}" in result.message
 
 
 @pytest.mark.asyncio

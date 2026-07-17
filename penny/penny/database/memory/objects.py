@@ -1208,11 +1208,16 @@ _ROLE_USER = "user"
 def _opening_user_message(prompts: list[PromptLog]) -> str:
     """The user's message that opened a run, or ``""`` when there is none.
 
-    The message is the last ``user`` turn of the run's first prompt with the
-    injected Live-context block (fused into that turn) stripped back off, so a
-    reader sees what the user actually said — not the recall/time scaffolding.
-    A collector/background run opens with an empty prompt (pure injected context,
-    no separator), so this is ``""`` — the structural signal it had no user intent.
+    The message is the last ``user`` turn of the run's first prompt.  When that
+    turn carries an injected Live-context block fused in as
+    ``<context>{SEP}<message>``, the block is stripped back off so a reader sees
+    what the user actually said — not the recall/time scaffolding.  A real chat
+    row carries the user's message as the BARE utterance (no separator prefix),
+    so when the separator is absent the whole turn IS the message (#1661 — the
+    prior split-only code returned ``""`` here, killing the trigger/description
+    derivation for skills).  A collector/background run opens with an empty prompt
+    (no user content at all), so this stays ``""`` — the structural signal it had
+    no user intent.
     """
     if not prompts or not prompts[0].messages:
         return ""
@@ -1222,7 +1227,7 @@ def _opening_user_message(prompts: list[PromptLog]) -> str:
         return ""
     raw = user_turns[-1]
     if PennyConstants.SECTION_SEPARATOR not in raw:
-        return ""
+        return raw.strip()
     return raw.split(PennyConstants.SECTION_SEPARATOR, 1)[1].strip()
 
 

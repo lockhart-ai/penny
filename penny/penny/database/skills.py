@@ -130,6 +130,23 @@ class DistillInput(BaseModel):
     result: str
 
 
+# The framework injects a universal ``reasoning`` think-aloud string into every
+# tool call's arguments (``Tool.to_ollama_tool``) — the model's per-run narration
+# of *why* it made the call.  It is run narration, never part of the routine, so
+# it is stripped from a distilled step outright (#1661): not a hole, not a baked
+# constant, simply absent — the executing model supplies its own reasoning at run
+# time.  Only the TOP-LEVEL key is dropped; a nested arg that happens to share the
+# name is real routine data and stays.
+_REASONING_KEY = "reasoning"
+
+
+def _without_reasoning(arguments: dict[str, Any]) -> dict[str, Any]:
+    """A shallow copy of a logged call's arguments with the top-level ``reasoning``
+    think-aloud removed (#1661) — so distillation never sees it as a string leaf
+    (a nonsense required hole) and the stored step never carries or renders it."""
+    return {key: value for key, value in arguments.items() if key != _REASONING_KEY}
+
+
 def _leaf_paths(value: Any, prefix: list[str | int]) -> list[tuple[list[str | int], str]]:
     """Every ``(path, string_value)`` string leaf under ``value``, recursively.
 
@@ -220,18 +237,22 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
     """Factor one run's selected steps into ``(steps, holes)`` by STRUCTURAL
     provenance — read off the ledger, never by matching the user's prose (#1659).
 
-    ``selected`` is the contiguous, certified slice in run order.  Each string leaf is
-    classified in order: the scoped-write **target** is a retarget-owned constant
-    (skipped); a value that **equals / is contained in / wraps** a prior selected
-    step's result is a **binding** (it came from that step); **every other** string
-    leaf is a required **hole**, with identical values collapsing to one shared hole.
-    A non-string leaf (a number/bool) is always a constant."""
+    ``selected`` is the contiguous, certified slice in run order.  The universal
+    ``reasoning`` think-aloud is stripped from each call's arguments FIRST (#1661) —
+    run narration, never routine — so it is neither classified nor stored.  Each
+    remaining string leaf is classified in order: the scoped-write **target** is a
+    retarget-owned constant (skipped); a value that **equals / is contained in /
+    wraps** a prior selected step's result is a **binding** (it came from that step);
+    **every other** string leaf is a required **hole**, with identical values
+    collapsing to one shared hole.  A non-string leaf (a number/bool) is always a
+    constant."""
     namer = _HoleNamer()
     steps: list[SkillStep] = []
     holes: dict[str, SkillHole] = {}
     for index, inp in enumerate(selected):
+        arguments = _without_reasoning(inp.arguments)
         subs: list[SkillSubstitution] = []
-        for path, value in _leaf_paths(inp.arguments, []):
+        for path, value in _leaf_paths(arguments, []):
             if _is_write_target(inp.tool, path):
                 continue
             producer = _binding_step(value, index, selected)
@@ -246,7 +267,7 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
                 ordinal=index + 1,
                 source_ordinal=inp.source_ordinal,
                 tool=inp.tool,
-                arguments=inp.arguments,
+                arguments=arguments,
                 substitutions=subs,
             )
         )
