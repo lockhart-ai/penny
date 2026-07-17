@@ -182,12 +182,22 @@ class BrowseArgs(ToolArgs):
     content is read in a fresh scoped micro-context and only the extracted value
     (plus a fetch handle) returns to the main loop — the page body never enters
     the run context.  Absent (chat's usage today), the page content is returned
-    directly, unchanged.
+    directly, unchanged.  A BLANK extract coerces to None: models pass
+    ``extract: ""`` meaning "no instruction", and treating it as a real target
+    replaced the page content with a confusing "the page doesn't contain ''"
+    miss (observed live — it derailed a whole demonstration).
     """
 
     queries: QueryList
     extract: str | None = None
     reasoning: str | None = None
+
+    @field_validator("extract")
+    @classmethod
+    def _blank_extract_is_none(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            return None
+        return value
 
 
 class SendMessageArgs(ToolArgs):

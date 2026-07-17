@@ -36,7 +36,7 @@ from penny.text_validity import (
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import ToolArgs, ToolResult
+from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -1415,6 +1415,13 @@ class TestParallelToolCalls:
         assert result.success is False
         assert "queries" in result.message
         assert "search query or URL" in result.message
+
+        # A BLANK extract coerces to None at the same gate: models pass
+        # extract="" meaning "no instruction", and treating it as a real target
+        # replaced the page content with a "doesn't contain ''" miss (live bug).
+        assert BrowseArgs(queries=["q"], extract="").extract is None
+        assert BrowseArgs(queries=["q"], extract="  ").extract is None
+        assert BrowseArgs(queries=["q"], extract="the price").extract == "the price"
 
     @pytest.mark.asyncio
     async def test_urls_always_route_to_browse(self, test_db, mock_llm):
