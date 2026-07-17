@@ -7,14 +7,19 @@ plus declared parameter *holes*.  It is authored only by reference to the ledger
 (``skill_create(name)`` — name-only): the system snapshots the run immediately
 preceding this one, copying ALL its non-``done`` tool-call ordinals out, never
 re-emitting them.  Each argument leaf of a copied call is factored by
-**provenance** (the taint-tracking of #1471):
+**provenance** — derived STRUCTURALLY from the ledger, never by matching the
+user's prose (#1659):
 
-* a value that appears **verbatim in the run's triggering user message** →
-  a **hole** (a parameter, bound per instantiation);
-* a value that **matches a prior selected step's result** → a **binding**
-  (rendered "the value from step N"), because in the source run it *came from*
-  that step;
-* **neither** → a **constant** baked into the skill.
+* a value that **equals, is contained in, or wraps** a prior selected step's
+  result → a **binding** (rendered "the value from step N"), because in the
+  source run it *came from* that step (a wrapped result binds too — the arg
+  ``Price: $499`` over a browse that returned ``$499``);
+* the scoped-write **target** argument (``memory`` on a write step) → a
+  **constant** owned by write-retarget (#1629), never a parameter;
+* **every other string leaf** → a required **hole** (a parameter the model binds
+  per instantiation); identical values collapse to ONE shared hole.  A hole is
+  ``required`` by construction — an unbound hole is a loud refusal at
+  instantiation, never a silent default (no-silent-fallbacks).
 
 This module is pure (no engine, no tool imports): the step/hole models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
@@ -87,10 +92,12 @@ class SkillStep(BaseModel):
 
 class SkillHole(BaseModel):
     """A declared parameter of a skill — its ``name`` and whether it is
-    ``required`` (an unbound required hole is a validation error at instantiation,
-    #1591).  Holes inferred from a demonstration are required by construction (the
-    user supplied a concrete value); ``required`` stays declared per the #1590
-    shape so a future authoring path can mark a hole optional."""
+    ``required`` (an unbound required hole is a loud validation error at
+    instantiation, #1591/#1659; never a silent default).  Every hole inferred by
+    :func:`distill_steps` is ``required`` by construction: structural provenance
+    can't know a safe fallback, so the model must bind each parameter explicitly —
+    an out-of-context guess would be untraceable later.  ``required`` stays a
+    declared field so a future authoring path can still mark a hole optional."""
 
     name: str
     required: bool = True
@@ -152,9 +159,9 @@ def _nearest_key(path: list[str | int]) -> str:
 
 
 class _HoleNamer:
-    """Assigns a stable hole name per distinct utterance value — the same value in
-    two places is ONE parameter (deduped), and two different values never collide
-    (a name clash gets a numeric suffix)."""
+    """Assigns a stable hole name per distinct demonstrated value — the same value
+    in two places is ONE parameter (deduped), and two different values never
+    collide (a name clash gets a numeric suffix)."""
 
     def __init__(self) -> None:
         self._by_value: dict[str, str] = {}
@@ -174,41 +181,66 @@ class _HoleNamer:
         return name
 
 
+_MIN_BINDING_OVERLAP = 3
+
+
 def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int | None:
-    """The skill ordinal (1-based) of the latest PRIOR selected step whose result
-    contains ``value`` — the step the value flowed from — or ``None`` when no prior
-    step produced it (then it is a constant, not a binding)."""
+    """The skill ordinal (1-based) of the latest PRIOR selected step whose result the
+    value flowed from, or ``None`` when none produced it (then it is a hole).
+
+    A value binds when it **equals or is contained in** a prior result (the model
+    copied the tool output verbatim) OR **contains** a prior result (it wrapped the
+    output — ``Price: $499`` over a returned ``$499``).  Guarded against degenerate
+    matches: a blank/whitespace prior result never binds, and the shared content must
+    be non-trivial (``_MIN_BINDING_OVERLAP`` chars) so a one-character coincidence
+    can't manufacture a binding."""
+    stripped_value = value.strip()
     for prior in range(index - 1, -1, -1):
-        if value and value in selected[prior].result:
+        result = selected[prior].result
+        stripped_result = result.strip()
+        if not stripped_result:
+            continue
+        if len(stripped_value) >= _MIN_BINDING_OVERLAP and value in result:
+            return prior + 1
+        if len(stripped_result) >= _MIN_BINDING_OVERLAP and result in value:
             return prior + 1
     return None
 
 
-def distill_steps(
-    selected: list[DistillInput], utterance: str
-) -> tuple[list[SkillStep], list[SkillHole]]:
-    """Factor one run's selected steps into ``(steps, holes)`` by provenance.
+def _is_write_target(tool: str, path: list[str | int]) -> bool:
+    """The scoped-write target leaf (``memory`` on a ``collection_write`` /
+    ``update_entry`` / ``collection_delete_entry`` step) — excluded from provenance
+    classification (#1659).  Write-retarget (#1629, :func:`retarget_writes`) rebinds
+    it to the attached collection at the render seam, so making it a parameter would
+    force the model to bind a value retarget then overwrites; it stays a constant."""
+    return tool in SCOPED_WRITE_TOOLS and path == ["memory"]
 
-    ``selected`` is the contiguous, certified slice in run order; ``utterance`` is
-    the run's triggering user message.  Each string leaf is classified —
-    utterance-verbatim → hole, prior-result match → binding, else constant — with
-    utterance taking precedence over a result match (a value the user named is a
-    parameter even if a later step echoed it).
-    """
+
+def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[SkillHole]]:
+    """Factor one run's selected steps into ``(steps, holes)`` by STRUCTURAL
+    provenance — read off the ledger, never by matching the user's prose (#1659).
+
+    ``selected`` is the contiguous, certified slice in run order.  Each string leaf is
+    classified in order: the scoped-write **target** is a retarget-owned constant
+    (skipped); a value that **equals / is contained in / wraps** a prior selected
+    step's result is a **binding** (it came from that step); **every other** string
+    leaf is a required **hole**, with identical values collapsing to one shared hole.
+    A non-string leaf (a number/bool) is always a constant."""
     namer = _HoleNamer()
     steps: list[SkillStep] = []
     holes: dict[str, SkillHole] = {}
     for index, inp in enumerate(selected):
         subs: list[SkillSubstitution] = []
         for path, value in _leaf_paths(inp.arguments, []):
-            if value and value in utterance:
-                name = namer.name_for(value, path)
-                holes.setdefault(name, SkillHole(name=name, required=True))
-                subs.append(SkillSubstitution(path=path, kind=SkillSubKind.HOLE, hole=name))
+            if _is_write_target(inp.tool, path):
                 continue
             producer = _binding_step(value, index, selected)
             if producer is not None:
                 subs.append(SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer))
+                continue
+            name = namer.name_for(value, path)
+            holes.setdefault(name, SkillHole(name=name, required=True))
+            subs.append(SkillSubstitution(path=path, kind=SkillSubKind.HOLE, hole=name))
         steps.append(
             SkillStep(
                 ordinal=index + 1,

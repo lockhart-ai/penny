@@ -30,9 +30,10 @@ from penny.tools.skill_tools import _NOTHING_TO_SAVE, SkillCreateTool, SkillRead
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
 #
-# The one utterance phrase the model reused ("Zephyr Ridge elevation") is a HOLE;
-# the extracted reading ("1,842 m") flows step 1 → step 2 as a BINDING; the fixed
-# instruction and target collection are CONSTANTS.  All fictional.
+# Structural provenance (#1659): the browse query and the extract instruction are
+# non-binding string leaves → HOLES; the extracted reading ("1,842 m") flows
+# step 1 → step 2 as a BINDING; the write TARGET ("elevations") is owned by
+# write-retarget, never a hole.  All fictional.
 
 _UTTERANCE = "Save the Zephyr Ridge elevation to my notes"
 _EXTRACTED_VALUE = "1,842 m"
@@ -120,7 +121,8 @@ def _elevation_steps() -> list[SkillStep]:
             tool="browse",
             arguments=dict(_BROWSE_ARGS),
             substitutions=[
-                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="queries")
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="queries"),
+                SkillSubstitution(path=["extract"], kind=SkillSubKind.HOLE, hole="extract"),
             ],
         ),
         SkillStep(
@@ -143,7 +145,7 @@ def _elevation_steps() -> list[SkillStep]:
 # ── The render: with-holes and the money literal ──────────────────────────────
 
 _WITH_HOLES = (
-    "1. browse(queries=[{queries}], extract='the elevation above sea level')\n"
+    "1. browse(queries=[{queries}], extract={extract})\n"
     "2. collection_write(memory='elevations', "
     "entries=[{'key': {queries}, 'content': the value from step 1}])"
 )
@@ -163,7 +165,7 @@ _CREATE_RESULT_LITERAL = (
     "Learned skill 'Watch elevation'.\n"
     "skill 'Watch elevation'\n"
     f"intent: {_UTTERANCE}\n"
-    "holes: queries (required)\n"
+    "holes: queries (required), extract (required)\n"
     "steps:\n"
     f"{_WITH_HOLES}"
 )
@@ -176,47 +178,96 @@ def test_render_skill_with_holes_is_the_template():
 
 
 def test_render_skill_bound_is_the_money_literal():
-    """steps + bound params → the numbered text prompt a collection will run: holes
-    substituted with the param value verbatim, the binding kept legible."""
-    rendered = render_skill(_elevation_steps(), {"queries": "Cinder Peak elevation"})
+    """steps + bound params → the numbered text prompt a collection will run: every
+    hole substituted with the param value verbatim, the binding kept legible."""
+    rendered = render_skill(
+        _elevation_steps(),
+        {"queries": "Cinder Peak elevation", "extract": "the elevation above sea level"},
+    )
     assert rendered == _MONEY_LITERAL
 
 
-# ── Provenance inference: hole / binding / constant in one run ─────────────────
+# ── Provenance inference: binding / hole / write-target in one run ─────────────
 
 
-def test_distill_classifies_all_three_provenance_classes():
-    """The fixture exercises hole (utterance), binding (prior result), and constant
-    (neither) in one run — the inference is deterministic and tested against it."""
+def test_distill_classifies_binding_holes_and_write_target():
+    """Structural provenance (#1659): a value that flowed from a prior result is a
+    BINDING; every other string leaf is a REQUIRED hole (shared values collapse to
+    one); the scoped-write target is NOT a hole — write-retarget owns it."""
     inputs = [
         DistillInput(source_ordinal=1, tool="browse", arguments=_BROWSE_ARGS, result=_BROWSE_OK),
         DistillInput(
             source_ordinal=2, tool="collection_write", arguments=_WRITE_ARGS, result=_WRITE_OK
         ),
     ]
-    steps, holes = distill_steps(inputs, _UTTERANCE)
+    steps, holes = distill_steps(inputs)
 
-    # One parameter, deduped across the two places the utterance value appears.
-    assert holes == [SkillHole(name="queries", required=True)]
-    # The #1591 instantiation rule lives with the holes: an unbound required hole
-    # is named; a bound one isn't.
-    assert unbound_required_holes(holes, {}) == ["queries"]
-    assert unbound_required_holes(holes, {"queries": "Cinder Peak elevation"}) == []
+    # Two required holes — the browse query and the extract instruction; the write
+    # KEY reuses the query's hole (same value → one shared parameter).
+    assert holes == [
+        SkillHole(name="queries", required=True),
+        SkillHole(name="extract", required=True),
+    ]
+    # Every hole is required, so an unbound instantiation refuses naming each one;
+    # binding them all clears the validation (#1591/#1659, no silent default).
+    assert unbound_required_holes(holes, {}) == ["queries", "extract"]
+    assert unbound_required_holes(holes, {"queries": "x", "extract": "y"}) == []
 
-    # Step 1: the query is a HOLE (verbatim in the utterance); the extract
-    # instruction is a CONSTANT (never seen, so no substitution).
+    # Step 1: the query and the extract instruction are both HOLES.
     step1 = {tuple(s.path): s for s in steps[0].substitutions}
     assert step1[("queries", 0)].kind == SkillSubKind.HOLE
     assert step1[("queries", 0)].hole == "queries"
-    assert ("extract",) not in step1  # constant → baked in, not substituted
+    assert step1[("extract",)].kind == SkillSubKind.HOLE
 
-    # Step 2: the key is the same HOLE; the content is a BINDING to step 1's result;
-    # the target collection is a CONSTANT.
+    # Step 2: the key is the SHARED 'queries' hole; the content is a BINDING to step
+    # 1's result; the write TARGET ('memory') is a retarget-owned constant — no sub.
     step2 = {tuple(s.path): s for s in steps[1].substitutions}
     assert step2[("entries", 0, "key")].kind == SkillSubKind.HOLE
+    assert step2[("entries", 0, "key")].hole == "queries"
     assert step2[("entries", 0, "content")].kind == SkillSubKind.BINDING
     assert step2[("entries", 0, "content")].step == 1
-    assert ("memory",) not in step2  # constant → baked in
+    assert ("memory",) not in step2  # write-target owned by retarget, not parameterized
+    assert steps[1].arguments["memory"] == "elevations"  # the constant demo value stays
+
+
+def test_distill_binds_a_wrapped_prior_result():
+    """A binding is structural, not equality: the value binds when it CONTAINS a
+    prior result (the model wrapped '$499' into 'Price: $499 today'), #1659."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1, tool="browse", arguments={"queries": ["gadget price"]}, result="$499"
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "prices",
+                "entries": [{"key": "gadget", "content": "Price: $499 today"}],
+            },
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, _ = distill_steps(inputs)
+    content = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
+    assert content.kind == SkillSubKind.BINDING and content.step == 1
+
+
+def test_distill_does_not_bind_a_trivial_overlap():
+    """The binding guard: a sub-``_MIN_BINDING_OVERLAP`` coincidence never binds — a
+    1-char prior result contained in a longer arg stays a hole, not a false binding."""
+    inputs = [
+        DistillInput(source_ordinal=1, tool="browse", arguments={"queries": ["fruit"]}, result="a"),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={"memory": "fruits", "entries": [{"key": "k", "content": "banana"}]},
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, _ = distill_steps(inputs)
+    content = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
+    # 'a' (len 1) is inside 'banana' but too trivial to bind → 'banana' stays a hole.
+    assert content.kind == SkillSubKind.HOLE
 
 
 # ── skill_create: end-to-end through the tool ─────────────────────────────────
@@ -249,7 +300,10 @@ async def test_skill_create_end_to_end_renders_the_money_literal(tmp_path):
     stored = db.skills.get("Watch elevation")
     assert stored is not None
     assert stored.source_run_id == "run-A" and stored.author == "chat"
-    rendered = render_skill(steps_from_json(stored.steps), {"queries": "Cinder Peak elevation"})
+    rendered = render_skill(
+        steps_from_json(stored.steps),
+        {"queries": "Cinder Peak elevation", "extract": "the elevation above sea level"},
+    )
     assert rendered == _MONEY_LITERAL
 
 
@@ -290,25 +344,37 @@ async def test_skill_create_captures_the_whole_preceding_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_skill_create_rejects_an_uncertified_step(tmp_path):
-    """Certified-by-execution: a selected step that FAILED in the source run is
-    rejected with an error naming the failed step — enforced, not documented."""
+async def test_skill_create_filters_failed_steps_and_renumbers_bindings(tmp_path):
+    """Filter-not-refuse (#1659): failed steps are DROPPED from the recipe (not a
+    whole-save refusal), and a binding renumbers against the SURVIVING steps —
+    ``source_ordinal`` keeps the original run position, ``ordinal`` is skill-local."""
     db = _make_db(tmp_path)
     _log_run(
         db,
         "run-A",
         _UTTERANCE,
         [
-            ("browse", _BROWSE_ARGS, _BROWSE_FAILED, False),  # total browse failure
-            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),
+            ("browse", _BROWSE_ARGS, _BROWSE_OK, True),  # ok → skill step 1 (source 1)
+            ("collection_read_latest", {"memory": "notes"}, "read failed", False),  # dropped
+            ("collection_write", _WRITE_ARGS, _WRITE_OK, True),  # ok → skill step 2 (source 3)
+            ("done", {}, "Cycle complete.", True),
         ],
     )
     tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
 
-    result = await tool.execute(name="Broken")
-    assert not result.success
-    assert "step 1 (browse) didn't succeed" in result.message
-    assert db.skills.get("Broken") is None  # nothing persisted
+    result = await tool.execute(name="Filtered")
+    assert result.success
+    stored = db.skills.get("Filtered")
+    assert stored is not None
+    steps = steps_from_json(stored.steps)
+    # Only the two SUCCEEDED calls survive; the failed read is left out.
+    assert [s.tool for s in steps] == ["browse", "collection_write"]
+    # source_ordinal keeps the ORIGINAL run position; ordinal is the skill-local number.
+    assert [s.source_ordinal for s in steps] == [1, 3]
+    assert [s.ordinal for s in steps] == [1, 2]
+    # The content binding renumbers against the SURVIVING steps → skill step 1.
+    content = steps[1].substitutions[-1]
+    assert content.kind == SkillSubKind.BINDING and content.step == 1
 
 
 @pytest.mark.asyncio
@@ -421,16 +487,38 @@ async def test_fresh_migrated_registry_is_empty_and_reads_honestly(tmp_path):
     assert listing.message == _EMPTY_LISTING
 
 
-# ── Certified-by-execution: absent stamp is an HONEST refusal (#1600) ──────────
+# ── Certified-by-execution: nothing survives the filter → nothing to save ─────
+
+
+@pytest.mark.asyncio
+async def test_skill_create_refuses_when_no_step_succeeded(tmp_path):
+    """Filter-not-refuse's floor (#1659): when every captured call FAILED, the
+    routine didn't actually work — nothing survives the filter, so it resolves to
+    the same actionable nothing-to-save refusal; nothing is persisted."""
+    db = _make_db(tmp_path)
+    _log_run(
+        db,
+        "run-A",
+        _UTTERANCE,
+        [
+            ("browse", _BROWSE_ARGS, _BROWSE_FAILED, False),
+            ("collection_write", _WRITE_ARGS, "write failed", False),
+        ],
+    )
+    tool = SkillCreateTool(db, cast(Any, MockLlmClient()), author="chat", run_id="run-B")
+
+    result = await tool.execute(name="AllBroken")
+    assert not result.success
+    assert result.message == _NOTHING_TO_SAVE
+    assert db.skills.get("AllBroken") is None
 
 
 @pytest.mark.asyncio
 async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
-    """A run logged BEFORE #1600 carries no per-call success stamp.  The
-    certification reads the STRUCTURAL bit, not the framed prose — so an absent
-    stamp is uncertain, and refuse-to-certify-uncertain beats optimistic-pass
-    (visible degradation over silent success): every step refuses, nothing is
-    persisted, even though the framed results read like clean successes."""
+    """A run logged BEFORE #1600 carries no per-call success stamp.  The filter reads
+    the STRUCTURAL bit, not the framed prose — an absent stamp is uncertain, so no
+    step certifies, none survive, and the nothing-to-save refusal fires (visible
+    degradation over silent success) even though the framed results read as clean."""
     db = _make_db(tmp_path)
     _log_run(
         db,
@@ -446,7 +534,7 @@ async def test_skill_create_refuses_a_run_with_no_success_stamps(tmp_path):
 
     result = await tool.execute(name="Legacy")
     assert not result.success
-    assert "step 1 (browse) didn't succeed" in result.message
+    assert result.message == _NOTHING_TO_SAVE
     assert db.skills.get("Legacy") is None  # nothing persisted from an uncertain run
 
 
@@ -459,7 +547,9 @@ def test_retarget_writes_binds_the_write_memory_to_the_target():
     'elevations' renders its write to the collection it's applied to."""
     steps = _elevation_steps()  # step 2 writes memory='elevations' (a constant)
     retargeted = retarget_writes(steps, "cinder-elevation")
-    rendered = render_skill(retargeted, {"queries": "Cinder Peak"})
+    rendered = render_skill(
+        retargeted, {"queries": "Cinder Peak", "extract": "the elevation above sea level"}
+    )
     assert rendered == (
         "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
         "2. collection_write(memory='cinder-elevation', "
@@ -469,10 +559,39 @@ def test_retarget_writes_binds_the_write_memory_to_the_target():
     assert steps[1].arguments["memory"] == "elevations"
 
 
+def test_write_target_is_not_a_hole_and_retarget_owns_it():
+    """The scoped-write target arg is NOT parameterized (#1659): the demo's
+    memory='knowledge' produces no hole, and applying the skill to a collection
+    renders the write to that TARGET — write-retarget owns the target structurally."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["Zephyr Ridge elevation"], "extract": "the elevation"},
+            result=_BROWSE_OK,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "knowledge",
+                "entries": [{"key": "Zephyr Ridge elevation", "content": _EXTRACTED_VALUE}],
+            },
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, holes = distill_steps(inputs)
+    assert "memory" not in {hole.name for hole in holes}  # target is not a parameter
+    assert all(sub.path != ["memory"] for sub in steps[1].substitutions)
+    retargeted = retarget_writes(steps, "peak-notes")
+    rendered = render_skill(retargeted, {"queries": "Cinder Peak", "extract": "the elevation"})
+    assert "collection_write(memory='peak-notes'" in rendered
+
+
 def test_retarget_writes_drops_a_hole_on_the_memory_argument():
-    """A write whose ``memory`` was itself a hole is turned into the target constant —
-    the substitution addressing that leaf is dropped so the render can't put the hole
-    marker back over the fixed target."""
+    """Defensive: distill never makes the write target a hole (#1659), but retarget
+    still turns any stray hole on ``memory`` into the target constant — dropping the
+    substitution so the render can't put a hole marker back over the fixed target."""
     step = SkillStep(
         ordinal=1,
         source_ordinal=1,

@@ -1565,7 +1565,9 @@ class TestTwoStepTeachBootstrap:
         ).execute(
             name="deals-watch",
             skill="Watch a shoe price",
-            params={"queries": "Meridian Trail 3"},
+            # Every distilled hole is required (#1659): the browse query AND the
+            # extract instruction must both be bound — no silent default.
+            params={"queries": "Meridian Trail 3", "extract": "the current price"},
             trigger="every 3600",
             notify=True,
         )
@@ -1576,7 +1578,7 @@ class TestTwoStepTeachBootstrap:
         skill = db.skills.get("Watch a shoe price")
         expected = render_skill(
             retarget_writes(steps_from_json(skill.steps), "deals-watch"),
-            {"queries": "Meridian Trail 3"},
+            {"queries": "Meridian Trail 3", "extract": "the current price"},
         )
         stored = db.memories.get("deals-watch")
         # Byte-identity: the stored prompt IS the retargeted render (write → deals-watch).

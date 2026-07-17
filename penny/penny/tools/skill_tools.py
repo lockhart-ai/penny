@@ -67,7 +67,9 @@ class SkillCreateError(Exception):
 # The ledger now persists a per-call success bit beside each tool-result frame
 # (#1600 — ``RunProjectionStep.success``, hydrated from the ``tool_success`` stamp
 # the framework wrote at execution time), so "did this call succeed?" is a boolean
-# read, not a narration parse.  The gate itself lives in ``_require_certified``.
+# read, not a narration parse.  The filter itself lives in ``_certified_steps``:
+# failed calls are DROPPED from the recipe, not refused (#1659) — a routine only
+# contains the calls that worked, and if none did there is nothing to save.
 
 
 # ── Full render (shared by the create result and the read surface) ────────────
@@ -123,11 +125,12 @@ class SkillCreateTool(Tool):
         '- `name` — the skill\'s title (e.g. "Watch a page field"). Re-teaching '
         "the same name replaces it.\n"
         "\n"
-        "Every step of that run must have SUCCEEDED (a skill only contains calls "
-        "that actually worked). Arguments you took from the user's request become "
-        "fill-in-the-blank holes; a value that came from an earlier step becomes "
-        "'the value from step N'; anything else is baked in. Returns the learned "
-        "skill so you can confirm it back."
+        "Any call in that run that didn't succeed is left OUT of the recipe (a "
+        "skill only contains calls that actually worked); if none of them succeeded, "
+        "there's nothing to save. Each argument value becomes a fill-in-the-blank "
+        "hole you supply when you reuse the skill, unless it came from an earlier "
+        "step's result — then it renders as 'the value from step N'. Returns the "
+        "learned skill so you can confirm it back."
     )
     parameters = {
         "type": "object",
@@ -168,16 +171,16 @@ class SkillCreateTool(Tool):
 
     async def _create_from_ledger(self, args: SkillCreateArgs) -> ToolResult:
         """The whole authoring flow, reading like a table of contents: resolve the
-        preceding run, load + project it, select ALL its non-``done`` steps, certify
-        them, distill and persist.  Every refusal is a ``SkillCreateError`` caught
-        once above."""
+        preceding run, load + project it, select ALL its non-``done`` steps, keep the
+        ones that SUCCEEDED, distill and persist.  Every refusal is a
+        ``SkillCreateError`` caught once above."""
         source_run = self._preceding_run_id()
         if source_run is None:
             raise SkillCreateError(_NOTHING_TO_SAVE)
         projection = project_run(self._db.messages.get_run_prompts(source_run))
         selected = self._select(projection)
-        self._require_certified(selected, source_run)
-        return await self._create(args.name, source_run, projection, selected)
+        certified = self._certified_steps(selected)
+        return await self._create(args.name, source_run, projection, certified)
 
     def _preceding_run_id(self) -> str | None:
         """The run immediately preceding this one for the executing agent — the
@@ -198,40 +201,38 @@ class SkillCreateTool(Tool):
             raise SkillCreateError(_NOTHING_TO_SAVE)
         return chosen
 
-    def _require_certified(self, selected: list[RunProjectionStep], from_run: str) -> None:
-        """The certified-by-execution gate: raises naming the first selected step
-        whose call did NOT succeed in the source run (a skill only contains calls
-        that worked).
+    def _certified_steps(self, selected: list[RunProjectionStep]) -> list[RunProjectionStep]:
+        """Keep only the steps that SUCCEEDED in the source run, dropping any that
+        failed — a failed exploratory call isn't part of the routine (#1659).
 
         Reads the STRUCTURAL per-call success stamp (``RunProjectionStep.success``,
         #1600) — a boolean the framework wrote at execution time from the tool's
-        ``ToolResult.success``, not the framed result prose.  A step certifies only
+        ``ToolResult.success``, not the framed result prose.  A step survives only
         when its stamp is exactly ``True``; a recorded failure (``False``) or a
-        missing stamp (``None`` — a run logged before #1600 carries none) refuses, so
-        an uncertain call never optimistically passes (refuse-to-certify-uncertain:
-        visible degradation over silent success).
+        missing stamp (``None`` — a run logged before #1600, uncertain) is left out,
+        so an uncertain call never sneaks into a skill (visible degradation over
+        silent success).  Certified-by-execution then holds by construction — every
+        STORED step succeeded.
 
-        The invariant holds universally: ``skill_create`` is the ONLY write path
-        into a skill (there is no seed library — migration 0084 ships the table
-        empty), so every stored step passed this gate."""
-        for step in selected:
-            if step.success is not True:
-                raise SkillCreateError(
-                    f"Can't save this skill: step {step.ordinal} "
-                    f"({step.call.name}) didn't succeed in run {from_run}, and a skill "
-                    "may only contain calls that worked. Re-demonstrate the flow so "
-                    "every step succeeds, then save it as a skill again."
-                )
+        If NOTHING survives there's nothing to save (a skill is never empty): the
+        demonstrated routine didn't actually work, so it refuses with the same
+        actionable nothing-to-save guidance (re-run it cleanly, then save)."""
+        certified = [step for step in selected if step.success is True]
+        if not certified:
+            raise SkillCreateError(_NOTHING_TO_SAVE)
+        return certified
 
     async def _create(
         self,
         name: str,
         from_run: str,
         projection: RunProjection,
-        selected: list[RunProjectionStep],
+        certified: list[RunProjectionStep],
     ) -> ToolResult:
         """Distill the certified slice into a skill, embed its description, upsert
-        it, and return the learned skill's full render."""
+        it, and return the learned skill's full render.  ``source_ordinal`` keeps
+        each step's ORIGINAL run ordinal; the skill-local ``ordinal`` (and any
+        binding) renumbers against the surviving steps in :func:`distill_steps`."""
         inputs = [
             DistillInput(
                 source_ordinal=step.ordinal,
@@ -239,9 +240,9 @@ class SkillCreateTool(Tool):
                 arguments=step.call.arguments,
                 result=projection.results.get(step.call_id, "") if step.call_id else "",
             )
-            for step in selected
+            for step in certified
         ]
-        steps, holes = distill_steps(inputs, projection.origin_message)
+        steps, holes = distill_steps(inputs)
         description = projection.origin_message or f"Skill: {name}"
         draft = SkillDraft(
             name=name,
