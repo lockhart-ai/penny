@@ -679,6 +679,17 @@ def _place_checks(
     return marks, leftover
 
 
+def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
+    """Where a sample's hermetic DB lives.  When ``EVAL_REPORT_DIR`` is set the DB
+    persists BESIDE the reports (the mounted dir survives the ``--rm`` container),
+    so a run's raw promptlog can be re-read after the fact — same doctrine as the
+    transcripts: the evidence always survives the run.  Unset → tmp_path as before."""
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    base = Path(report_dir) if report_dir else tmp_path
+    Path(base).mkdir(parents=True, exist_ok=True)
+    return str(Path(base) / f"{case_id}-{sample_index}.db")
+
+
 def _write_sample_report(
     db: Database, case_id: str, sample_index: int, *, result: SampleResult, reply: str = ""
 ) -> None:
@@ -780,7 +791,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -867,7 +878,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1045,7 +1056,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1363,7 +1374,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1426,7 +1437,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
