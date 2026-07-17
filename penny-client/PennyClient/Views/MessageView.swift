@@ -11,7 +11,6 @@ struct MessageView: View {
     @State private var messageScrollFrames: [Int: CGRect] = [:]
     @State private var messageActionProxyHeights: [Int: CGFloat] = [:]
     @State private var messageContextScale: CGFloat = 1
-    @State private var shouldUseFastComposerScroll = false
     @State private var keyboardSettledScrollTask: Task<Void, Never>?
     @State private var typingIndicatorStatus = "Penny is typing"
     @State private var isTypingIndicatorVisible = false
@@ -56,10 +55,6 @@ struct MessageView: View {
                                 withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
                                     viewModel.startReply(to: message)
                                 }
-                                Task { @MainActor in
-                                    await Task.yield()
-                                    isComposerFocused = true
-                                }
                             }
                         } label: {
                             Image(systemName: "magnifyingglass")
@@ -68,6 +63,9 @@ struct MessageView: View {
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.primary)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            isComposerFocused = false
+                        })
                         .accessibilityLabel("Search messages")
 
                         Button {
@@ -804,7 +802,6 @@ private extension MessageView {
     func messageActionMenu(for message: ChatMessage) -> some View {
         VStack(spacing: 0) {
             Button {
-                shouldUseFastComposerScroll = true
                 withTransaction(Transaction(animation: .easeOut(duration: 0.12))) {
                     viewModel.startReply(to: message)
                     dismissMessageActions()
