@@ -7,17 +7,19 @@ user turns name tools or collections tests an actor reading stage directions,
 not an assistant).  Fixture is fully synthetic: a fictional marketplace listing
 ("Aurora Deck 2" on faux-market.example) with a controllable price field.
 
-Beat map (one beat at a time, each with an exact terminal state):
+Beat map (one beat at a time, each with an exact terminal state; #1658 made
+skill authoring AUTOMATIC — no "save that as a skill" beat exists anymore):
     0. remember      — the storage atom (remember X → durable write → read-back)
     1. elicit        — empty registry → recognize the gap, ask to be taught
-    2. demonstrate   — follow "read this url, find the price, remember it"; store + narrate honestly
-    3. promote       — skill_create over that run + attach (the from_run distillation)
-    4. instantiate w/ expiry
-    5. quiet cycles / the change
-    6. refresh (re-teach)
-    7. inspect (state + provenance)
-    8. multi-instantiate + teardown
-    9. self-termination
+    2. demonstrate   — follow "read this url, find the price, remember it";
+                       the skill AUTO-EXTRACTS from the run + she narrates it
+    3. instantiate   — "keep watching it and let me know" → find hits the
+                       learned skill → a LIVE watch (trigger, notify, retarget)
+    4. quiet cycles / the change
+    5. refresh (re-demonstrate — replaces the skill)
+    6. inspect (state + provenance)
+    7. multi-instantiate + teardown
+    8. self-termination
 
 Beat-0 cases GATE at 0.8 (promoted 2026-07-16 after the matrix ran clean:
 warm 0.96 · activity-window 1.00 · cold 1.00 · empty-registry 1.00 — a single
@@ -538,23 +540,54 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
             _claims_a_save(_outgoing(db)) == value_stored,
         ),
         Check(
-            "stopped before distilling (no skill created — that's beat 3)",
-            len(db.skills.list_all()) == 0,
+            # The auto-extraction (#1658): the demonstration run ITSELF yields the
+            # skill — deterministically, at the run-end chokepoint, no authoring
+            # tool.  The demonstrate turn's terminal state includes it.
+            "a skill was auto-extracted from the demonstration (browse+write, parameterized)",
+            _extracted_skill_shape_ok(db),
+        ),
+        Check(
+            "the learned-skill narration frame fired (she narrates FROM the render)",
+            _learned_frame_fired(db),
         ),
         Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
     ]
 
 
+# The SkillNarrationValidator's injected frame (Prompt.SKILL_LEARNED_NARRATION) —
+# a stable slice; its presence in the prompt log proves the extraction fired and
+# the model was handed the RENDERED recipe to narrate from.
+_LEARNED_FRAME_MARKER = "You just learned a reusable skill"
+
+
+def _learned_frame_fired(db: Database) -> bool:
+    for row in db.messages.recent_prompts(limit=200):
+        if row.messages and _LEARNED_FRAME_MARKER in row.messages:
+            return True
+    return False
+
+
+def _extracted_skill_shape_ok(db: Database) -> bool:
+    """Exactly one skill, carrying the demonstrated routine (browse + write among
+    its steps) and parameterized (≥1 required hole — the URL/extract/key)."""
+    skills = db.skills.list_all()
+    if len(skills) != 1:
+        return False
+    step_tools = [step.tool for step in steps_from_json(skills[0].steps)]
+    holes = holes_from_json(skills[0].holes)
+    return "browse" in step_tools and "collection_write" in step_tools and len(holes) >= 1
+
+
 @pytest.mark.asyncio
 async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
-    """Beat 2, terminal state: given the three bare steps ("read this url, find
-    the price, remember it") the FIRST time — NO dedicated container exists yet
-    (it wouldn't: nothing created it), so she must find the most appropriate
-    existing collection or create one — Penny enacts them (browse → extract →
-    write), narrates honestly, and stops before distilling a skill.  The '$499
-    came from the browse' guarantee holds by construction: the step names the
-    price, never its value; the target collection is deliberately unconstrained
-    (it becomes a skill param at beat 3), so we score "landed SOMEWHERE"."""
+    """Beat 2, terminal state (as amended by #1658 auto-extraction): given the
+    three bare steps ("read this url, find the price, remember it") the FIRST
+    time — no dedicated container exists yet — Penny enacts them (browse →
+    extract → write), the skill is AUTO-EXTRACTED from the run (no authoring
+    tool), and she narrates what she learned from the injected render.  The
+    '$499 came from the browse' guarantee holds by construction: the step names
+    the price, never its value; the target collection is deliberately
+    unconstrained, so we score "landed SOMEWHERE"."""
     await chat_eval(
         case_id="journey-beat2-demonstrate",
         message=_BEAT2_TURN,
@@ -564,91 +597,76 @@ async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
     )
 
 
-# ── Beat 3: promote ──────────────────────────────────────────────────────────
+# ── Beat 3: instantiate — the watch goes live, no machinery words ────────────
 #
-# The full teach loop, stitched together: instigate → teach-me → demonstrate →
-# "save that as a skill".  The first two turns PRIME a real ledger — the
-# demonstration (turn 2) is a genuine chat run (browse → extract → write), so
-# turn 3's skill_create has a real preceding run to snapshot.  THIS BEAT'S
-# TERMINAL STATE (one-beat-at-a-time): a skill row exists, distilled from that
-# demonstration run.  Attaching it to a collection (the watch goes live) is a
-# LATER beat — this stops at "the skill exists".
-#
-# skill_create is name-only now — it snapshots the whole preceding run — so turn
-# 3 is a natural "save that as a skill": no run id, no step range from the model
-# (both were ledger coordinates it couldn't reliably produce mid-conversation).
+# The full simplified teach loop (#1658): instigate → teach-me → demonstrate
+# (the skill AUTO-EXTRACTS from that run — no authoring tool, no "save that as
+# a skill" handoff to trip on) → the user closes with pure INTENT: "keep
+# watching it and let me know if the price ever changes."  She already knows
+# how (find hits the auto-extracted skill / it renders ambiently), so THIS
+# BEAT'S TERMINAL STATE: a LIVE dispatchable collection exists — the skill
+# attached, its prompt rendered, writes retargeted to the new collection, a
+# trigger set, notify on.  The user never says "skill" or "collection".
 
 _BEAT3_TURNS = [
     _BEAT1_TURN,
     _BEAT2_TURN,
-    "perfect — now save that as a price watch skill.",
+    "perfect — keep watching it and let me know if the price ever changes.",
 ]
 
 
-def _claims_saved_skill(replies: list[str]) -> bool:
-    """The SAID side of SAID==DID for the promote step: does any send claim a
-    SKILL was saved/learned?  Anchored on the word 'skill' plus a save/learn verb
-    — verified against the captured replies; tuned like beat 2's _claims_a_save."""
-    text = " ".join(replies).lower()
-    return "skill" in text and any(
-        verb in text
-        for verb in ("saved", "learned", "created", "made", "set up", "got it", "stored")
-    )
-
-
-def _attached_collections(db: Database) -> list[str]:
-    """Collections that have a skill attached (the watch made live).  Beat 3's
-    terminal state stops BEFORE this — attaching is the next beat."""
+def _live_watches(db: Database, before: set[str]) -> list:
+    """Collections created THIS SAMPLE that are live, dispatchable watches: a
+    skill attached AND a rendered prompt (inert storage has neither)."""
     return [
-        row.name
-        for row in db.memories.list_all()
-        if row.type == "collection" and row.skill_name is not None
+        row
+        for row in new_collections(db, before)
+        if row.skill_name is not None and row.extraction_prompt is not None
     ]
 
 
 def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The objective terminal state of the promote beat: a skill was distilled
-    from the demonstration run (browse + write, parameterized by provenance), she
-    narrated it honestly, and she STOPPED before attaching it (the watch isn't
-    live yet)."""
+    """The objective terminal state of the instantiate beat: the auto-extracted
+    skill got attached to a live watch — trigger set, notify on, writes
+    retargeted to the new collection.  The 'she says what the watch will do'
+    verdict (the what-it-will-do echo narrated back) is read off the dumped
+    transcript."""
     skills = db.skills.list_all()
-    skill = skills[0] if skills else None
-    step_tools = [step.tool for step in steps_from_json(skill.steps)] if skill else []
-    holes = holes_from_json(skill.holes) if skill else []
+    watches = _live_watches(db, before)
+    watch = watches[0] if watches else None
+    has_trigger = watch is not None and (
+        watch.collector_interval_seconds is not None
+        or watch.run_at is not None
+        or watch.source_log is not None
+    )
+    retargeted = watch is not None and f"memory='{watch.name}'" in (watch.extraction_prompt or "")
     return [
-        Check("a skill was distilled (exactly one skill exists)", len(skills) == 1),
         Check(
-            "it captured the routine (browse + collection_write among its steps)",
-            "browse" in step_tools and "collection_write" in step_tools,
+            "the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1
         ),
+        Check("ONE live watch was instantiated (skill attached, prompt rendered)", len(watches) == 1),
+        Check("the watch has a trigger (it will actually run)", has_trigger),
+        Check("notify is on (the ask was 'let me know')", watch.notify if watch else False),
         Check(
-            "it's parameterized (the demo's URL/collection became fill-in holes)",
-            len(holes) >= 1,
-        ),
-        Check(
-            "stopped before attaching (no collection made live — that's the next beat)",
-            not _attached_collections(db),
-        ),
-        Check(
-            "narration is honest (claims a skill saved iff one exists)",
-            _claims_saved_skill(_outgoing(db)) == bool(skill),
+            "writes retargeted to the new collection (the rendered program doesn't lie)",
+            retargeted,
         ),
         Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
     ]
 
 
 @pytest.mark.asyncio
-async def test_beat3_promotes_the_demonstration(chat_eval: ChatEval):
-    """Beat 3, terminal state: after the full teach loop (watch → teach me →
-    demonstrate → 'save that as a skill'), a skill row exists, distilled from the
-    demonstration run — captured wholesale by the name-only skill_create.  The
-    watch is NOT yet live; attaching the skill to a collection is a later beat.
+async def test_beat3_instantiates_the_watch(chat_eval: ChatEval):
+    """Beat 3, terminal state (the #1658 world): after elicit → demonstrate
+    (auto-extracted) → 'keep watching it and let me know', a LIVE watch exists —
+    the skill attached to a new collection, prompt rendered with writes
+    retargeted, a trigger set, notify on.  No machinery words anywhere in the
+    user's turns; the skill and the collection are Penny's bookkeeping.
 
-    The scored checks cover the objective terminal state; the 'confirms she
-    learned the skill' verdict is read off the dumped transcript (see
-    _score_beat3)."""
+    The scored checks cover the objective terminal state; the 'she says what
+    the watch will do' verdict is read off the dumped transcript."""
     await chat_eval(
-        case_id="journey-beat3-promote",
+        case_id="journey-beat3-instantiate",
         messages=_BEAT3_TURNS,
         browse=[AURORA_LISTING_499],
         score=_score_beat3,
