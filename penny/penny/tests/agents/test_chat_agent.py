@@ -398,9 +398,12 @@ async def test_run_end_extracts_and_narrates_a_skill(
         assert skill.description == ask
 
         # The injected narration frame IS the SKILL_LEARNED_NARRATION template filled
-        # with the rendered recipe — the model narrates from the render, not memory.
+        # with the rendered recipe + the demonstrated-on origin message (#1665) — the
+        # model narrates from the render, not memory.  The shared mock handler doesn't
+        # speak the NAME:/DESCRIPTION: naming contract, so naming falls back to the
+        # deterministic slug + the ask as the description (extraction never blocks).
         assert captured["frame"] == Prompt.SKILL_LEARNED_NARRATION.format(
-            skill=render_skill_full(skill)
+            skill=render_skill_full(skill), demonstrated_on=ask
         )
 
         # Extraction ran EXACTLY once — the re-reply found the run already handled.
@@ -1031,14 +1034,15 @@ _BASIC_FLOW_EXPECTED = (
     "Compose your tools directly to satisfy what the user asks. When the ask is for "
     "something ongoing or repeatable — watch, track, monitor, collect, get notified, "
     "anything recurring — that is a SKILL, and the path is always the same:\n"
-    "1. find(query=<what the user asked for>) — check whether you already have a "
-    "skill for it.\n"
-    "2. A skill matches → instantiate it: collection_create(name=<slug>, "
-    "description=<the ask>, skill=<the matched skill's name>).\n"
-    "3. No skill matches → tell the user you don't have a skill for that yet and ask "
-    "them to walk you through it once; do it together here — you'll learn it "
-    "automatically as a skill — then collection_update(name=<slug>, skill=<title>) "
-    "to attach it.\n"
+    "1. Your Skills section below lists every skill you know, full recipes included — "
+    "check it first. A skill there fits → step 2. Nothing fits → find(query=<the "
+    "generic task phrase — what KIND of task, e.g. 'watch a page price for changes'>) "
+    "to double-check. If find also misses, tell the user you don't have a skill for "
+    "that yet and ask them to walk you through it once; do it together here — you'll "
+    "learn it automatically as a skill — then collection_update(name=<slug>, "
+    "skill=<its name>) to attach it.\n"
+    "2. A skill matches → instantiate it directly: collection_create(name=<slug>, "
+    "description=<the ask>, skill=<its name>, params=<bind its parameters>).\n"
     "NEVER improvise a stand-in — a one-off write into some collection, a hand-built "
     "extraction_prompt — for a task that needs a skill you don't have; if you can't "
     "find the skill, ask to be taught it.\n"

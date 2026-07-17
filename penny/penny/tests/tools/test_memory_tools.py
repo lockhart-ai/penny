@@ -1614,10 +1614,12 @@ class TestTwoStepTeachBootstrap:
         _log_demo_run(db, "run-demo", write_target="deals-watch")
 
         # 3. The routine is learned AUTOMATICALLY at run end — the extractor distils
-        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  Its
-        #    name is a deterministic slug of the demo's triggering message.
+        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  With
+        #    a bare model client the generic-naming micro-context (#1665) produces no
+        #    NAME:/DESCRIPTION: tags, so the name falls back to a deterministic slug of
+        #    the demo's triggering message.
         extraction = await SkillExtractor(
-            db, cast(Any, MockLlmClient()), agent_name="chat"
+            db, cast(Any, MockLlmClient()), cast(Any, MockLlmClient()), agent_name="chat"
         ).extract("run-demo")
         assert isinstance(extraction, SkillExtracted)
         taught_name = extraction.skill.name

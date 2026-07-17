@@ -33,6 +33,7 @@ provenance inference (:func:`distill_steps`), and the load-bearing render
 from __future__ import annotations
 
 import copy
+import re
 from enum import StrEnum
 from typing import Any
 
@@ -201,26 +202,64 @@ class _HoleNamer:
 
 _MIN_BINDING_OVERLAP = 3
 
+# A tool result reaches distillation FRAMED (``Tool.format_result``): a first-person
+# narration line carrying the ``(<tool> result)`` machine tag, then the body, and —
+# for a browse-with-``extract`` result — a trailing fetch-handle line pointing at the
+# stored full content.  Only the BODY is the routine's real output, so binding
+# compares against that PAYLOAD, not the frame (#1665/#1661 item 3): an arg that
+# WRAPS the value (``Price: $499`` over a browse that returned ``$499``) can never
+# contain the whole frame, so the wraps direction would otherwise never fire —
+# ``content`` becomes a nonsense required hole that leaks into narration.
+#
+# The tag is the structural anchor (mirrors ``RESULT_TAG = "({tool} result)"`` in
+# ``tools/base.py`` — matched structurally, not imported, so this module stays pure):
+# a first line ending in ``(<tool> result)`` is the narration and is dropped.
+_RESULT_TAG_LINE = re.compile(r"\([\w-]+ result\)\s*$")
+# The browse fetch-handle tail (``tools/browse.py`` ``_EXTRACT_HANDLE_CLAUSE``,
+# ``"Full page content saved to {handles} — read it there for anything more."``) —
+# anchored on its INVARIANT prefix (the ``{handles}`` and phrasing after it vary
+# structurally), so the payload isn't inflated by the pointer-to-stored-content line.
+_FETCH_HANDLE_PREFIX = "Full page content saved to "
+
+
+def _result_payload(result: str) -> str:
+    """A framed tool result stripped to its PAYLOAD (#1665) — the routine's real
+    output, for binding comparison.  Drops the leading narration line ending in the
+    ``(<tool> result)`` machine tag and truncates at any trailing browse fetch-handle
+    line, then trims surrounding whitespace.  An unframed string passes through
+    (nothing matched)."""
+    body = result
+    first_break = body.find("\n")
+    if first_break != -1 and _RESULT_TAG_LINE.search(body[:first_break]):
+        body = body[first_break + 1 :]
+    handle_at = body.find(_FETCH_HANDLE_PREFIX)
+    if handle_at != -1:
+        body = body[:handle_at]
+    return body.strip()
+
 
 def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int | None:
     """The skill ordinal (1-based) of the latest PRIOR selected step whose result the
     value flowed from, or ``None`` when none produced it (then it is a hole).
 
-    A value binds when it **equals or is contained in** a prior result (the model
-    copied the tool output verbatim) OR **contains** a prior result (it wrapped the
-    output — ``Price: $499`` over a returned ``$499``).  Guarded against degenerate
-    matches: a blank/whitespace prior result never binds, and the shared content must
-    be non-trivial (``_MIN_BINDING_OVERLAP`` chars) so a one-character coincidence
-    can't manufacture a binding."""
+    Comparison is against each prior result's PAYLOAD (``_result_payload`` — the frame
+    stripped off, #1665), not the framed text.  A value binds when it **equals or is
+    contained in** a prior payload (the model copied the tool output verbatim) OR
+    **contains** a prior payload (it wrapped the output — ``Price: $499`` over a
+    returned ``$499``).  Guarded against degenerate matches: a blank payload never
+    binds, and the shared content must be non-trivial (``_MIN_BINDING_OVERLAP`` chars)
+    so a one-character coincidence can't manufacture a binding.  No fuzzy matching or
+    thresholds — strict containment on the payload is what makes the wraps direction
+    fire without loosening anything (#1661's LCS analysis showed loosening false-binds
+    topic names)."""
     stripped_value = value.strip()
     for prior in range(index - 1, -1, -1):
-        result = selected[prior].result
-        stripped_result = result.strip()
-        if not stripped_result:
+        payload = _result_payload(selected[prior].result)
+        if not payload:
             continue
-        if len(stripped_value) >= _MIN_BINDING_OVERLAP and value in result:
+        if len(stripped_value) >= _MIN_BINDING_OVERLAP and value in payload:
             return prior + 1
-        if len(stripped_result) >= _MIN_BINDING_OVERLAP and result in value:
+        if len(payload) >= _MIN_BINDING_OVERLAP and payload in value:
             return prior + 1
     return None
 

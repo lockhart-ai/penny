@@ -103,7 +103,10 @@ class ChatAgent(Agent):
         # is distilled into a skill when the run qualifies (read + write, healthy).
         # There is no ``skill_create`` tool — the framework does this deterministically.
         self._skill_extractor = SkillExtractor(
-            self.db, self._embedding_model_client, agent_name=self.name
+            self.db,
+            self._embedding_model_client,
+            self._model_client,
+            agent_name=self.name,
         )
         # The run whose extraction was already attempted this turn — the structural
         # once-per-run guard, so the post-narration re-reply never re-extracts or
@@ -179,8 +182,10 @@ class ChatAgent(Agent):
         qualify — the gate is logged, never silently swallowed."""
         result = await self._skill_extractor.extract(run_id)
         match result:
-            case SkillExtracted(skill=skill):
-                return Prompt.SKILL_LEARNED_NARRATION.format(skill=render_skill_full(skill))
+            case SkillExtracted(skill=skill, origin_message=origin):
+                return Prompt.SKILL_LEARNED_NARRATION.format(
+                    skill=render_skill_full(skill), demonstrated_on=origin
+                )
             case NoExtraction(gate=gate):
                 logger.debug("No skill extracted from run %s (%s)", run_id, gate)
                 return None

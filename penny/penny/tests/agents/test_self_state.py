@@ -36,6 +36,8 @@ from penny.database.models import (
     UserInfo,
 )
 from penny.database.mutation_store import MutationDetail
+from penny.database.skill_store import holes_to_json, steps_to_json
+from penny.database.skills import SkillHole, SkillStep, SkillSubKind, SkillSubstitution
 from penny.prompts import Prompt
 
 USER = "+15550001111"
@@ -131,15 +133,56 @@ def _add_written_entry(
     )
 
 
-def _add_skill(session: Session, *, name: str, intent: str, when: datetime) -> None:
-    """A taught skill (the ``skill`` registry, #1590) — the taught-skill feed of
-    the self-state Skills-and-rules section.  ``steps``/``holes`` are irrelevant
-    to the render (it shows name + intent), so they're seeded empty."""
+# Two taught-skill fixtures with real recipes, so the Skills-and-rules section's
+# FULL-recipe render (#1665) is exercised — holes + numbered steps, not just name.
+_TRACK_SHIPMENT_STEPS = steps_to_json(
+    [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["1Z-DEMO"]},
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="tracking")
+            ],
+        )
+    ]
+)
+_TRACK_SHIPMENT_HOLES = holes_to_json([SkillHole(name="tracking", required=True)])
+_WATCH_FIELD_STEPS = steps_to_json(
+    [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["https://shop.test/widget"]},
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="url")
+            ],
+        )
+    ]
+)
+_WATCH_FIELD_HOLES = holes_to_json([SkillHole(name="url", required=True)])
+
+
+def _add_skill(
+    session: Session,
+    *,
+    name: str,
+    intent: str,
+    when: datetime,
+    steps: str = "[]",
+    holes: str = "[]",
+) -> None:
+    """A taught skill (the ``skill`` registry, #1590) — the taught-skill feed of the
+    Skills-and-rules section, which renders each skill's FULL recipe ambiently
+    (#1665, the same ``render_skill_full`` ``skill_read`` returns).  Pass real
+    ``steps``/``holes`` JSON to exercise the recipe render."""
     session.add(
         Skill(
             name=name,
-            steps="[]",
-            holes="[]",
+            steps=steps,
+            holes=holes,
             intent=intent,
             description=intent,
             author="chat",
@@ -325,12 +368,16 @@ def _seed_kitchen_sink(db: Database) -> None:
             name="Track a shipment",
             intent="track my package from acme and tell me when it moves",
             when=_t(7),
+            steps=_TRACK_SHIPMENT_STEPS,
+            holes=_TRACK_SHIPMENT_HOLES,
         )
         _add_skill(
             session,
             name="Watch a page field",
             intent="watch the price on a product page and ping me when it drops",
             when=_t(7),
+            steps=_WATCH_FIELD_STEPS,
+            holes=_WATCH_FIELD_HOLES,
         )
         _add_run(
             session,
@@ -506,8 +553,8 @@ def test_self_state_archived_heavy_render(tmp_path):
 
 
 def test_self_state_taught_skills_only_render(tmp_path):
-    """The taught-skill registry renders under its drill-down label (name order,
-    intent collapsed to one line) — the section's sole feed."""
+    """The taught-skill registry renders each skill's FULL recipe (#1665) — name,
+    intent, holes, and numbered steps, name order — the section's sole feed."""
     db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_skill(
@@ -515,12 +562,16 @@ def test_self_state_taught_skills_only_render(tmp_path):
             name="Track a shipment",
             intent="track my package from acme and tell me when it moves",
             when=_t(7),
+            steps=_TRACK_SHIPMENT_STEPS,
+            holes=_TRACK_SHIPMENT_HOLES,
         )
         _add_skill(
             session,
             name="Watch a page field",
             intent="watch the price on a product page and ping me when it drops",
             when=_t(7),
+            steps=_WATCH_FIELD_STEPS,
+            holes=_WATCH_FIELD_HOLES,
         )
         session.commit()
     actual = SelfStateHeader(db, None).render()
@@ -916,9 +967,19 @@ _KITCHEN_SINK = (
     "- reminder (collection, 0 entries) — one-off reminder\n"
     "\n"
     "### Skills and rules\n"
-    "Skills you've been taught — skill_read(<name>) for the full recipe:\n"
-    "- Track a shipment — track my package from acme and tell me when it moves\n"
-    "- Watch a page field — watch the price on a product page and ping me when it drops\n"
+    "Skills you've been taught — full recipe each; fire or instantiate directly, "
+    "no lookup needed:\n"
+    "skill 'Track a shipment'\n"
+    "intent: track my package from acme and tell me when it moves\n"
+    "parameters: tracking (required)\n"
+    "steps:\n"
+    "1. browse(queries=[{tracking}])\n"
+    "\n"
+    "skill 'Watch a page field'\n"
+    "intent: watch the price on a product page and ping me when it drops\n"
+    "parameters: url (required)\n"
+    "steps:\n"
+    "1. browse(queries=[{url}])\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1068,9 +1129,19 @@ _TAUGHT_SKILLS_ONLY = (
     "(no stores yet)\n"
     "\n"
     "### Skills and rules\n"
-    "Skills you've been taught — skill_read(<name>) for the full recipe:\n"
-    "- Track a shipment — track my package from acme and tell me when it moves\n"
-    "- Watch a page field — watch the price on a product page and ping me when it drops\n"
+    "Skills you've been taught — full recipe each; fire or instantiate directly, "
+    "no lookup needed:\n"
+    "skill 'Track a shipment'\n"
+    "intent: track my package from acme and tell me when it moves\n"
+    "parameters: tracking (required)\n"
+    "steps:\n"
+    "1. browse(queries=[{tracking}])\n"
+    "\n"
+    "skill 'Watch a page field'\n"
+    "intent: watch the price on a product page and ping me when it drops\n"
+    "parameters: url (required)\n"
+    "steps:\n"
+    "1. browse(queries=[{url}])\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

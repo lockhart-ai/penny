@@ -25,12 +25,14 @@ from penny.tools.skill_args import SkillReadArgs
 
 
 def _holes_line(holes: list[SkillHole]) -> str:
+    # Model-facing vocabulary is "parameters", never the "hole" PL jargon (#1665);
+    # the internal identifiers (SkillHole, holes JSON) are unchanged.
     if not holes:
-        return "holes: none"
+        return "parameters: none"
     rendered = ", ".join(
         f"{hole.name} ({'required' if hole.required else 'optional'})" for hole in holes
     )
-    return f"holes: {rendered}"
+    return f"parameters: {rendered}"
 
 
 def render_skill_full(skill: Skill) -> str:
@@ -59,7 +61,7 @@ class SkillReadTool(Tool):
     name = "skill_read"
     description = (
         "Read your saved skills — reusable tool-call recipes. Pass `name` to see "
-        "one skill's full recipe (its steps and fill-in-the-blank holes); omit "
+        "one skill's full recipe (its steps and fill-in-the-blank parameters); omit "
         "`name` to list every skill with what it's for."
     )
     parameters = {

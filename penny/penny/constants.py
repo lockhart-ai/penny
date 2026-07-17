@@ -370,6 +370,13 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
+    # The ledger identity of a run-end skill-naming micro-context (#1665) — the
+    # SECOND customer of the micro-context machinery.  After a qualifying chat run
+    # is distilled, one single-shot model call writes a GENERIC name + description
+    # for the routine (the tagged NAME:/DESCRIPTION: contract); it logs its own
+    # promptlog rows under this agent/prompt type so run traces attribute it.
+    SKILL_NAMING_AGENT_NAME = "skill-namer"
+    SKILL_NAMING_PROMPT_TYPE = "skill_naming"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

@@ -28,13 +28,15 @@ one guess-free tool call from the detail). Sections:
   #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
-- **Skills and rules** — the pinned firing channel for taught skills (#1471).
-  Rendered deterministically (all of them, never a relevance guess) so a taught
-  behavior fires *ambiently* — the skill is in the prompt, so firing costs
-  **0 calls**; its full recipe is one ``skill_read(<name>)`` hop away. One feed:
-  the taught-skill registry (``db.skills``, #1590) — the sole skills store. (The
-  legacy ``skills`` collection's standing-rules feed retired with the collection,
-  #1624/migration 0092.)
+- **Skills and rules** — the pinned firing channel for taught skills (#1471),
+  each rendered as its FULL recipe (#1665). Rendered deterministically (all of
+  them, verbatim + wholesale, never a relevance guess) — the same
+  ``render_skill_full`` ``skill_read`` returns — so a taught behavior fires
+  *ambiently* AND is instantiable with **no lookup**: name, intent, holes, and
+  numbered steps are all in the prompt, so firing and instantiation both cost
+  **0 calls** (n=0 beats n=1). One feed: the taught-skill registry (``db.skills``,
+  #1590) — the sole skills store. (The legacy ``skills`` collection's
+  standing-rules feed retired with the collection, #1624/migration 0092.)
 - **About the user** — the durable user-fact core (name, timezone, location):
   deterministic facts, not a relevance guess, so personality survives without a
   lookup.
@@ -58,6 +60,7 @@ from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
 from penny.tools.collection_instantiation import render_trigger_clause
+from penny.tools.skill_tools import render_skill_full
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -92,12 +95,14 @@ class SelfStateHeader:
     )
     NO_PROFILE = "(no profile set yet)"
 
-    # The taught-skill feed's group label names its OWN guess-free drill-down
-    # (``skill_read(<name>)`` — the rendered name IS the argument), so a rendered
-    # name is never a failed guess.  ``skill_read`` is named here, not in
-    # POINTERS, so the section stays surgical (POINTERS is shared, #1580
-    # territory).
-    TAUGHT_SKILLS_LABEL = "Skills you've been taught — skill_read(<name>) for the full recipe:"
+    # The taught-skill feed renders each skill's FULL recipe VERBATIM (#1665), so the
+    # label must NOT imply a needed lookup: the holes are ambient, so firing AND
+    # instantiation are both zero-call.  ``skill_read`` remains for archived/explicit
+    # reads but is no longer a drill-down the label points at.
+    TAUGHT_SKILLS_LABEL = (
+        "Skills you've been taught — full recipe each; fire or instantiate directly, "
+        "no lookup needed:"
+    )
 
     # The overflow tail each bounded section shows when it has more rows than its
     # cap — the fetch tool named so the remainder is one guess-free call away
@@ -362,38 +367,22 @@ class SelfStateHeader:
     # ── Skills and rules ─────────────────────────────────────────────────────
 
     def _skills_section(self) -> str:
-        """The pinned firing channel for taught skills (#1471).
+        """The pinned firing channel for taught skills (#1471), each rendered as its
+        FULL recipe (#1665).
 
-        Renders ALL of the taught-skill registry (no relevance gating, no budget
-        cap — wholesale; trimming is a later tuning knob) so a taught behavior
-        fires ambiently: it is *in the prompt*, so firing costs 0 calls. The feed
-        is a labeled group naming its own guess-free drill-down; the section
-        collapses to one honest placeholder when nothing has been taught. (The
-        legacy standing-rules feed retired with the ``skills`` collection,
-        #1624.)"""
-        taught = self._taught_skill_lines()
-        lines = [self.SKILLS_HEADER, *taught]
-        if not taught:
-            lines.append(self.EMPTY_SKILLS)
-        return "\n".join(lines)
-
-    def _taught_skill_lines(self) -> list[str]:
-        """``- <name> — <intent>`` per taught skill (the ``skill`` registry,
-        #1590, name order), under a label naming ``skill_read(<name>)`` as the
-        drill-down — the rendered name IS that call's argument (n≤1). Empty when
-        nothing has been taught yet (a fresh install ships the table empty)."""
+        Renders ALL of the taught-skill registry (no relevance gating, no budget cap
+        — wholesale; trimming is a later tuning knob) and each skill VERBATIM AND
+        WHOLESALE via the SAME ``render_skill_full`` the ``skill_read`` tool returns
+        (single-sourced): name, intent, holes with required-ness, numbered steps. So a
+        taught behavior fires ambiently AND is instantiable with NO lookup — its holes
+        are in the prompt (n=0 beats n=1). The section collapses to one honest
+        placeholder when nothing has been taught. (The legacy standing-rules feed
+        retired with the ``skills`` collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
-            return []
-        lines = [self.TAUGHT_SKILLS_LABEL]
-        lines.extend(f"- {skill.name} — {self._one_line(skill.intent)}" for skill in skills)
-        return lines
-
-    @staticmethod
-    def _one_line(text: str) -> str:
-        """Collapse whitespace/newlines to a single line so a taught skill's
-        intent (a user utterance, possibly multi-line) stays one bullet."""
-        return " ".join(text.split())
+            return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])
+        recipes = "\n\n".join(render_skill_full(skill) for skill in skills)
+        return "\n".join([self.SKILLS_HEADER, self.TAUGHT_SKILLS_LABEL, recipes])
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 

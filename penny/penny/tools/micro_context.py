@@ -78,6 +78,33 @@ _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
 # extraction fails honestly.
 _UNTAGGED_DRAW_BUDGET = 2
 
+# ── Second customer: run-end skill naming (#1665) ──────────────────────────────
+# The naming contract is a DIFFERENT enumerated output shape riding the SAME
+# poison-screen + reroll machinery (``_draw_clean``): given a distilled routine,
+# write a GENERIC verb-noun name + a one-line generic description.  Its two tags
+# are enumerated on both sides of the interface, exactly like EXTRACTED:/NOT_PRESENT:
+# — the system prompt names them and ``_parse_label`` parses them deterministically.
+NAME_TAG = "NAME:"
+DESCRIPTION_TAG = "DESCRIPTION:"
+
+SKILL_NAMING_SYSTEM_PROMPT = (
+    "You are a naming step. You are given a reusable routine — a numbered list of "
+    "tool calls with fill-in-the-blank {variables} — plus the message that first "
+    "demonstrated it. Name the routine GENERICALLY: what KIND of task it is, as a "
+    "short verb-noun label (e.g. 'watch a page price for changes', 'summarize a "
+    "subscription feed'), never the specific thing this one instance happened to "
+    "use. Treat every {variable} as a user-supplied input, not part of the name.\n"
+    "Respond with exactly two lines, in these forms:\n"
+    f"{NAME_TAG} <a short generic verb-noun name>\n"
+    f"{DESCRIPTION_TAG} <one line saying what the routine does, generically>\n"
+    "Write nothing else — no preamble, no explanation, no restating the routine."
+)
+
+# The single per-call ask; the routine itself is the content.  Fixed, so the
+# caller only supplies the content (the naming contract is a property of this
+# customer, not a per-call parameter).
+_SKILL_NAMING_INSTRUCTION = "Name this routine generically and describe in one line what it does."
+
 
 class MicroExtractOutcome(StrEnum):
     """The enumerated outcome of a micro-context extraction — a closed set the
@@ -110,6 +137,16 @@ class MicroContextResult(BaseModel):
     outcome: MicroExtractOutcome
     value: str = ""
     reason: str = ""
+
+
+class SkillLabel(BaseModel):
+    """The run-end naming micro-context's typed result (#1665): a GENERIC verb-noun
+    ``name`` and a one-line generic ``description`` for a distilled routine.  Both
+    are non-blank by construction (``_parse_label`` returns ``None`` otherwise, so
+    the caller falls back to the deterministic slug — naming never blocks extraction)."""
+
+    name: str
+    description: str
 
 
 class MicroContext:
@@ -168,19 +205,71 @@ class MicroContext:
                 return MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason=reason)
         return None
 
+    async def label_skill(
+        self, content: str, *, run_target: str | None = None
+    ) -> SkillLabel | None:
+        """Write a GENERIC name + description for a distilled routine (#1665) — the
+        second customer of this machinery.  Rides the SAME poison-screen + reroll
+        draw loop as ``extract``, with the naming system prompt and its own ledger
+        attribution, then a deterministic two-tag parse (``NAME:`` / ``DESCRIPTION:``).
+
+        Returns the label, or ``None`` on ANY failure (poison exhausted, or the
+        model never produced both tagged lines) — the caller falls back to the
+        deterministic slug, so run-end skill extraction NEVER blocks on the rewrite."""
+        for _ in range(_UNTAGGED_DRAW_BUDGET):
+            draw = await self._draw_clean(
+                content,
+                _SKILL_NAMING_INSTRUCTION,
+                run_target,
+                system_prompt=SKILL_NAMING_SYSTEM_PROMPT,
+                agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+                prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
+            )
+            if draw is None:
+                return None
+            label = self._parse_label(draw)
+            if label is not None:
+                return label
+            logger.warning("Skill-naming output untagged — one reroll of the unchanged context")
+        logger.warning("Skill-naming output untagged after reroll — falling back to the slug")
+        return None
+
+    @staticmethod
+    def _parse_label(draw: str) -> SkillLabel | None:
+        """Deterministic parse of the two-line naming contract — a ``NAME:`` line
+        and a ``DESCRIPTION:`` line, each with a non-blank payload.  Missing either
+        (or a blank payload) is a contract violation → ``None`` (the caller rerolls
+        once and then falls back), never a partial label."""
+        name = _tagged_payload(draw, NAME_TAG)
+        description = _tagged_payload(draw, DESCRIPTION_TAG)
+        if name is None or description is None:
+            return None
+        return SkillLabel(name=name, description=description)
+
     async def _draw_clean(
-        self, content: str, instruction: str, run_target: str | None
+        self,
+        content: str,
+        instruction: str,
+        run_target: str | None,
+        *,
+        system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
+        agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
-        append it, re-draw on the same context, abort after the attempt budget."""
-        messages = self._messages(content, instruction)
+        append it, re-draw on the same context, abort after the attempt budget.
+
+        The ``system_prompt`` + ledger attribution are parameters (defaulting to the
+        browse-extract contract) so a second output contract — run-end skill naming
+        (#1665) — rides the SAME poison/reroll loop without duplicating it."""
+        messages = self._messages(content, instruction, system_prompt)
         run_id = uuid.uuid4().hex
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
                 messages=messages,
-                agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
-                prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+                agent_name=agent_name,
+                prompt_type=prompt_type,
                 run_id=run_id,
                 run_target=run_target,
             )
@@ -205,13 +294,29 @@ class MicroContext:
         return has_leaked_harmony_envelope(text) or is_degenerate_run(text)
 
     @staticmethod
-    def _messages(content: str, instruction: str) -> list[dict]:
-        """The scoped two-message context: the extraction framing, then the
-        instruction paired with the bulk content."""
+    def _messages(
+        content: str, instruction: str, system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT
+    ) -> list[dict]:
+        """The scoped two-message context: the contract framing (``system_prompt``,
+        default the browse-extract contract), then the instruction paired with the
+        bulk content."""
         return [
-            {"role": "system", "content": MICRO_CONTEXT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": _USER_TEMPLATE.format(instruction=instruction, content=content),
             },
         ]
+
+
+def _tagged_payload(draw: str, tag: str) -> str | None:
+    """The stripped payload of the first line of ``draw`` beginning with ``tag``,
+    or ``None`` when no such line exists or its payload is blank — the deterministic
+    per-tag parse the naming contract (#1665) is classified by."""
+    for line in draw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(tag):
+            payload = stripped[len(tag) :].strip()
+            if not is_blank(payload):
+                return payload
+    return None

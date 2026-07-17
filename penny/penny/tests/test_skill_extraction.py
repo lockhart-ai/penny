@@ -1,4 +1,4 @@
-"""Automatic skill extraction at chat-run end (#1658).
+"""Automatic skill extraction at chat-run end (#1658/#1665).
 
 Drives ``SkillExtractor.extract`` over REAL-SHAPED logged runs — every tool call
 carries the framework's top-level ``reasoning`` think-aloud, and the user turn is a
@@ -6,6 +6,12 @@ bare utterance (no fused ``---`` Live-context prefix), the #1661 shape.  The mat
 read+write qualifies (correct holes/bindings, reasoning stripped) · pure-read /
 pure-write / failed-write-only / bail-nudged / no-calls excluded (each naming its
 gate) · failed-step filtering · name slugging · dedup by name and by shape+meaning.
+The #1665 additions: orientation verbs (``find`` etc.) are dropped from the recipe
+and don't count as the qualifying read (find+write → pure write) · a wrapped write
+value binds against a prior result's PAYLOAD (the frame stripped) while a topic-name
+key still doesn't · the skill is named GENERICALLY by a micro-context (tagged
+NAME:/DESCRIPTION:), falling back to the deterministic slug on any failure · the
+run-end narration frame renders the generic name plus the demonstrated-on instance.
 All content is synthetic (aurora / faux-market).
 """
 
@@ -19,7 +25,15 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.migrate import migrate
-from penny.database.skill_store import holes_from_json, steps_from_json
+from penny.database.models import Skill
+from penny.database.skill_store import (
+    holes_from_json,
+    holes_to_json,
+    steps_from_json,
+    steps_to_json,
+)
+from penny.database.skills import SkillHole, SkillStep, SkillSubKind, SkillSubstitution
+from penny.llm.models import LlmMessage, LlmResponse
 from penny.prompts import Prompt
 from penny.skill_extraction import (
     ExtractionGate,
@@ -28,6 +42,7 @@ from penny.skill_extraction import (
     SkillExtractor,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tools.skill_tools import render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
 
@@ -52,8 +67,22 @@ def _make_db(tmp_path) -> Database:
     return db
 
 
-def _extractor(db: Database, mock: MockLlmClient | None = None) -> SkillExtractor:
-    return SkillExtractor(db, cast(Any, mock or MockLlmClient()), agent_name="chat")
+def _extractor(
+    db: Database,
+    mock: MockLlmClient | None = None,
+    *,
+    model: MockLlmClient | None = None,
+) -> SkillExtractor:
+    """Build a ``SkillExtractor`` (#1665): ``mock`` is the EMBEDDING client (dedup
+    tests set its embed handler); ``model`` is the TEXT client for the naming
+    micro-context — a bare mock returns untagged text, so naming falls back to the
+    deterministic slug (which keeps the pre-#1665 name/description assertions holding)."""
+    return SkillExtractor(
+        db,
+        cast(Any, mock or MockLlmClient()),
+        cast(Any, model or MockLlmClient()),
+        agent_name="chat",
+    )
 
 
 def _log_run(
@@ -236,8 +265,9 @@ async def test_failed_step_is_filtered_from_the_routine(tmp_path):
 
 @pytest.mark.asyncio
 async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(tmp_path):
-    """The name is a deterministic slug of the triggering message: the URL is
-    removed, lowercased, non-alphanumeric collapsed to hyphens, capped at 6 words —
+    """The deterministic-slug FALLBACK (#1665): with a bare model (no NAME:/DESCRIPTION:
+    naming draw), the name falls back to a slug of the triggering message — the URL is
+    removed, lowercased, non-alphanumeric collapsed to hyphens, capped at 6 words — and
     the full message stays the description."""
     db = _make_db(tmp_path)
     utterance = (
@@ -363,3 +393,185 @@ async def test_fresh_migrated_registry_stays_empty_without_a_qualifying_run(tmp_
     result = await _extractor(db).extract("run-A")
     assert isinstance(result, NoExtraction)
     assert db.skills.list_all() == []
+
+
+# ── #1665 fixtures: orientation, the real framed browse result, a wrapped write ─
+
+_FIND_RESULT = "You searched your memory: (find result)\nNo matching skill — nothing saved yet."
+# The REAL browse-with-extract frame shape: a narration line carrying the
+# ``(browse result)`` machine tag, the payload, then the fetch-handle tail.
+_REAL_BROWSE_FRAME = (
+    "You opened the Aurora Deck 2 listing (browse result)\n"
+    "$499\n\n"
+    "Full page content saved to browse-results#1 — read it there for anything more."
+)
+# A write whose content WRAPS the browse payload ('$499') and whose key is a topic
+# name (a real parameter that must NOT false-bind to the payload).
+_WRAP_WRITE_ARGS = {
+    "memory": "aurora-prices",
+    "entries": [
+        {"key": "aurora deck 2 price", "content": "Current price of Aurora Deck 2 is $499."}
+    ],
+}
+# A one-step recipe for the narration-frame whole-render literal.
+_WATCH_STEPS = steps_to_json(
+    [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": ["https://shop.test/widget"]},
+            substitutions=[
+                SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, hole="url")
+            ],
+        )
+    ]
+)
+_WATCH_PARAMS = holes_to_json([SkillHole(name="url", required=True)])
+
+
+def _naming_model(content: str) -> MockLlmClient:
+    """A text model client whose every chat returns ``content`` (the naming draw)."""
+    model = MockLlmClient()
+    model.set_response_handler(
+        lambda _request, _count: LlmResponse(message=LlmMessage(role="assistant", content=content))
+    )
+    return model
+
+
+# ── #1665: orientation verbs excluded from steps AND the qualifying read ───────
+
+
+@pytest.mark.asyncio
+async def test_orientation_find_step_is_dropped_from_the_recipe(tmp_path):
+    """A run that ORIENTS (find) then reads + writes is a routine, but the find call
+    is registry-navigation, not routine: it is dropped from the distilled steps, and a
+    find result echoing the query never manufactures a false binding (#1665)."""
+    db = _make_db(tmp_path)
+    find = ("find", {"query": "watch a listing price"}, _FIND_RESULT, True)
+    _log_run(db, "run-A", _UTTERANCE, [find, _BROWSE, _WRITE])
+
+    result = await _extractor(db).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    # find is gone; only the content read + the write survive, in run order.
+    assert [step.tool for step in steps] == ["browse", "collection_write"]
+    assert [step.source_ordinal for step in steps] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_find_plus_write_only_is_a_pure_write_not_a_skill(tmp_path):
+    """A find + write run has NO content read once orientation is excluded — a find
+    does not count as the qualifying read — so it is a pure write (the storage atom),
+    not a skill (#1665)."""
+    db = _make_db(tmp_path)
+    find = ("find", {"query": "aurora prices"}, _FIND_RESULT, True)
+    _log_run(db, "run-A", _UTTERANCE, [find, _WRITE])
+
+    result = await _extractor(db).extract("run-A")
+
+    assert result == NoExtraction(gate=ExtractionGate.PURE_WRITE)
+    assert db.skills.list_all() == []
+
+
+# ── #1665: binding compares against the result PAYLOAD, not the frame ──────────
+
+
+@pytest.mark.asyncio
+async def test_wrapped_write_value_binds_against_the_result_payload(tmp_path):
+    """A write value that WRAPS the browse output ('Current price … is $499.') binds
+    to the browse step — the comparison strips the tool-result FRAME to its payload
+    ('$499'), so the wraps direction fires (#1665/#1661 item 3).  The 'content' leaf
+    is a binding, never a nonsense required parameter; a topic-name KEY still doesn't
+    bind (it stays a real parameter)."""
+    db = _make_db(tmp_path)
+    browse = ("browse", {"queries": ["aurora deck 2 listing"]}, _REAL_BROWSE_FRAME, True)
+    write = ("collection_write", _WRAP_WRITE_ARGS, _WRITE_OK, True)
+    _log_run(db, "run-A", _UTTERANCE, [browse, write])
+
+    result = await _extractor(db).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    content_sub = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
+    assert content_sub.kind.value == "binding" and content_sub.step == 1
+    hole_names = [hole.name for hole in holes_from_json(result.skill.holes)]
+    assert "content" not in hole_names  # the wrapped value bound; it is NOT a parameter
+    assert "key" in hole_names  # the topic-name key did NOT false-bind — it's a parameter
+
+
+# ── #1665: generic naming via the micro-context, slug fallback ────────────────
+
+
+@pytest.mark.asyncio
+async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(tmp_path):
+    """A qualifying run's skill is named GENERICALLY by the naming micro-context: a
+    tagged NAME:/DESCRIPTION: draw becomes the skill's slugged name + generic
+    description (which the description_embedding anchors), NOT the instance
+    utterance (#1665).  The demonstrated-on instance rides back for the frame."""
+    db = _make_db(tmp_path)
+    model = _naming_model(
+        "NAME: Watch a listing price\nDESCRIPTION: Look up a price on a listing page and record it."
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert result.skill.name == "watch-a-listing-price"  # the generic NAME, slugged
+    assert result.skill.description == "Look up a price on a listing page and record it."
+    assert result.skill.intent == "Look up a price on a listing page and record it."
+    assert result.origin_message == _UTTERANCE
+
+
+@pytest.mark.asyncio
+async def test_untagged_naming_falls_back_to_the_deterministic_slug(tmp_path):
+    """When the naming micro-context never produces both tags, extraction does NOT
+    block: it falls back to the deterministic slug of the triggering message + that
+    message as the description (#1665)."""
+    db = _make_db(tmp_path)
+    model = _naming_model("I think this is a price-watching routine of some kind.")
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
+    assert result.skill.description == _UTTERANCE
+
+
+# ── #1665: the run-end narration frame (whole-render literal) ──────────────────
+
+
+def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on():
+    """The narration frame (#1665) renders the GENERIC skill (name · intent ·
+    parameters · steps, via the shared render_skill_full) AND a line naming the
+    INSTANCE it was demonstrated on — whole-render literal, model-facing 'parameters'
+    vocabulary."""
+    skill = Skill(
+        name="watch-a-listing-price",
+        steps=_WATCH_STEPS,
+        holes=_WATCH_PARAMS,
+        intent="Watch a listing page's price and record it.",
+        description="Watch a listing page's price and record it.",
+        author="chat",
+    )
+    frame = Prompt.SKILL_LEARNED_NARRATION.format(
+        skill=render_skill_full(skill),
+        demonstrated_on="watch the aurora deck 2 price and remember it",
+    )
+    assert frame == (
+        "You just learned a reusable skill from what you did in this conversation — "
+        "it's saved automatically, and here is exactly what it captured:\n\n"
+        "skill 'watch-a-listing-price'\n"
+        "intent: Watch a listing page's price and record it.\n"
+        "parameters: url (required)\n"
+        "steps:\n"
+        "1. browse(queries=[{url}])\n\n"
+        "You demonstrated it on: watch the aurora deck 2 price and remember it\n\n"
+        "Tell the user, in your own words, that you've learned this routine: name it "
+        "by what it does generally (not just this one instance), say plainly what it "
+        "does (the steps), and name what you'd need from them to run it again (its "
+        "required parameters). Then offer to set it running on a schedule if they'd like."
+    )

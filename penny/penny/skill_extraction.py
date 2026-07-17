@@ -17,10 +17,16 @@ retired tool produced, now fired by the run finishing instead of a model call.
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
   steps: strips the framework ``reasoning`` leaf, excludes the retarget-owned
   write target, classifies bindings vs. required holes (#1659/#1660/#1662).
-* **name** — a deterministic slug of the run's triggering message (URLs removed,
-  ≤6 words); the full message stays the skill's description / find anchor.
+* **name** — a GENERIC verb-noun label + a one-line generic description, written by
+  a single-shot naming micro-context (#1665, the SECOND customer of the micro-context
+  machinery) over the distilled routine — so a skill is named by its CONTRACT ("look
+  up a price on a listing page and record it"), not by the instance ("read-the-aurora-
+  deck-2-listing"), and cross-instance ``find`` can match it.  On ANY naming failure
+  the fallback is the deterministic slug of the triggering message (URLs removed, ≤6
+  words) + that message as the description — extraction NEVER blocks on the rewrite.
 * **dedup (REPLACE semantics)** — exact name match → REPLACE; else a same-shape,
-  same-meaning skill → REPLACE keeping ITS name; otherwise insert.
+  same-meaning skill (the GENERIC ``description_embedding`` converges cross-instance)
+  → REPLACE keeping ITS name; otherwise insert.
 
 Every outcome is TYPED and loggable — the extracted/replaced skill, or a
 no-extraction outcome naming which gate failed — never a silent ``None`` (visible
@@ -48,9 +54,16 @@ from penny.database.memory import _similarity as sim
 from penny.database.memory.types import DedupThresholds
 from penny.database.models import PromptLog, Skill
 from penny.database.skill_store import steps_from_json
-from penny.database.skills import DistillInput, SkillDraft, SkillStep, distill_steps
+from penny.database.skills import (
+    DistillInput,
+    SkillDraft,
+    SkillStep,
+    distill_steps,
+    render_skill,
+)
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
+from penny.tools.micro_context import MicroContext, SkillLabel
 
 if TYPE_CHECKING:
     from penny.llm.client import LlmClient
@@ -64,6 +77,24 @@ logger = logging.getLogger(__name__)
 WRITE_SHAPED_TOOLS = frozenset(
     {"collection_write", "update_entry", "collection_delete_entry", "log_append"}
 )
+
+# Registry-navigation verbs: the model uses these to ORIENT — resolve a skill or
+# collection (``find``), read a skill's params (``skill_read``), inspect a
+# collection's config (``memory_metadata``), or list the catalog
+# (``collection_catalog``) — before it acts.  They are not part of the routine a
+# skill captures (a re-run re-orients itself), and a ``find`` result ECHOES its
+# query, which manufactured a FALSE binding when captured as a step (#1665).  So
+# orientation calls are dropped from the distilled steps AND do not count as the
+# qualifying CONTENT read: a find + write run is a pure write (the storage atom),
+# not a skill.  The qualifying read must be a content read (browse, log_read,
+# collection_read_latest, read_similar, collection_get, entry reads).
+ORIENTATION_TOOLS = frozenset({"find", "skill_read", "memory_metadata", "collection_catalog"})
+
+# The resolve-by-meaning verb (and its arg): its ``query`` phrases seed the run-end
+# naming micro-context (#1665's step-1 doctrine sends the GENERIC task phrase to
+# find), a naming signal even though the find call itself is dropped from the recipe.
+_FIND_TOOL = "find"
+_FIND_QUERY_ARG = "query"
 
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 
@@ -88,12 +119,16 @@ class ExtractionGate(StrEnum):
 
 class SkillExtracted(BaseModel):
     """A run qualified and a skill was persisted — ``replaced`` is True when an
-    existing skill (by name, or same shape + meaning) was overwritten."""
+    existing skill (by name, or same shape + meaning) was overwritten.
+    ``origin_message`` is the run's triggering message (the INSTANCE the skill was
+    demonstrated on), carried so the narration frame can name it alongside the
+    generic name/intent (#1665) — the skill's own ``description`` is now generic."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     skill: Skill
     replaced: bool
+    origin_message: str
 
 
 class NoExtraction(BaseModel):
@@ -111,12 +146,18 @@ def _runnable_steps(projection: RunProjection) -> list[RunProjectionStep]:
 
 
 def _certified_steps(projection: RunProjection) -> list[RunProjectionStep]:
-    """The run's non-``done`` steps that SUCCEEDED — the routine that actually
-    worked (#1659 filter-not-refuse).  Reads the structural per-call success stamp
-    (``RunProjectionStep.success``, #1600): a step survives only when its stamp is
-    exactly ``True`` (a recorded failure or a missing stamp is uncertain and left
-    out), so certified-by-execution holds by construction."""
-    return [step for step in _runnable_steps(projection) if step.success is True]
+    """The run's non-``done``, non-ORIENTATION steps that SUCCEEDED — the routine
+    that actually worked (#1659 filter-not-refuse; #1665 orientation-out).  Reads the
+    structural per-call success stamp (``RunProjectionStep.success``, #1600): a step
+    survives only when its stamp is exactly ``True`` (a recorded failure or a missing
+    stamp is uncertain and left out) AND it is not a registry-navigation verb
+    (``ORIENTATION_TOOLS`` — dropped from the recipe and not counted as the qualifying
+    read), so certified-by-execution + routine-only hold by construction."""
+    return [
+        step
+        for step in _runnable_steps(projection)
+        if step.success is True and step.call.name not in ORIENTATION_TOOLS
+    ]
 
 
 def _slug_name(origin_message: str) -> str:
@@ -134,9 +175,19 @@ class SkillExtractor:
     """The run-end skill-extraction pipeline — one instance per chat agent, holding
     its DB + embedding client (threaded, never ambient state)."""
 
-    def __init__(self, db: Database, embedding_client: LlmClient, *, agent_name: str) -> None:
+    def __init__(
+        self,
+        db: Database,
+        embedding_client: LlmClient,
+        model_client: LlmClient,
+        *,
+        agent_name: str,
+    ) -> None:
         self._db = db
         self._embedding = embedding_client
+        # The text model client drives the run-end naming micro-context (#1665) — the
+        # SECOND customer of the micro-context machinery, threaded in (never ambient).
+        self._micro_context = MicroContext(model_client)
         # The chat agent's name — the 'is this a chat run?' qualify anchor and the
         # author stamped on every extracted skill.
         self._agent_name = agent_name
@@ -153,8 +204,8 @@ class SkillExtractor:
         gate = self._disqualify(prompts, projection, certified)
         if gate is not None:
             return NoExtraction(gate=gate)
-        draft = self._draft(run_id, projection, certified)
-        return await self._persist(draft)
+        draft = await self._draft(run_id, projection, certified)
+        return await self._persist(draft, projection.origin_message)
 
     # ── Qualify (all structural) ──────────────────────────────────────────────
 
@@ -184,17 +235,25 @@ class SkillExtractor:
 
     # ── Distill + name → draft ────────────────────────────────────────────────
 
-    def _draft(
+    async def _draft(
         self,
         run_id: str,
         projection: RunProjection,
         certified: list[RunProjectionStep],
     ) -> SkillDraft:
         """Distil the certified steps into structured steps + holes, name the skill
-        off the triggering message, and bundle it for the store."""
+        GENERICALLY via a single-shot micro-context (#1665, a verb-noun name +
+        one-line description over the rendered routine), and bundle it for the store.
+
+        On ANY naming failure the fallback is the deterministic slug of the triggering
+        message + that message as the description — the model writes the LABEL only;
+        steps/holes are untouched, and extraction never blocks on the rewrite."""
         steps, holes = distill_steps(self._distill_inputs(projection, certified))
-        name = _slug_name(projection.origin_message)
-        description = projection.origin_message or f"Skill: {name}"
+        fallback_name = _slug_name(projection.origin_message)
+        fallback_description = projection.origin_message or f"Skill: {fallback_name}"
+        label = await self._label_skill(steps, projection)
+        name = _slug_name(label.name) if label is not None else fallback_name
+        description = label.description if label is not None else fallback_description
         return SkillDraft(
             name=name,
             intent=description,
@@ -203,6 +262,18 @@ class SkillExtractor:
             holes=holes,
             source_run_id=run_id,
         )
+
+    async def _label_skill(
+        self, steps: list[SkillStep], projection: RunProjection
+    ) -> SkillLabel | None:
+        """One single-shot naming micro-context over the rendered routine (#1665).
+
+        Content = the numbered recipe with holes as ``{variables}`` + the triggering
+        message + the run's ``find`` query phrases; the micro-context writes a GENERIC
+        name + description (poison-screened + one reroll, its own ledger attribution).
+        ``None`` on any failure/missing tag — the caller falls back to the slug."""
+        content = _naming_content(steps, projection)
+        return await self._micro_context.label_skill(content, run_target=self._agent_name)
 
     @staticmethod
     def _distill_inputs(
@@ -223,10 +294,11 @@ class SkillExtractor:
 
     # ── Persist (embed → dedup → upsert) ──────────────────────────────────────
 
-    async def _persist(self, draft: SkillDraft) -> SkillExtracted:
-        """Embed the description, resolve the dedup target (name-or-shape+meaning),
-        and upsert — REPLACE by name, so a re-demonstration of the same routine
-        overwrites the prior skill in place."""
+    async def _persist(self, draft: SkillDraft, origin_message: str) -> SkillExtracted:
+        """Embed the GENERIC description, resolve the dedup target
+        (name-or-shape+meaning), and upsert — REPLACE by name, so a re-demonstration
+        of the same routine overwrites the prior skill in place.  ``origin_message``
+        (the demonstrated-on instance) rides back for the narration frame (#1665)."""
         embedding = await embed_text(self._embedding, draft.description)
         target_name = self._dedup_target(draft, embedding)
         if target_name != draft.name:
@@ -240,7 +312,7 @@ class SkillExtractor:
             "replaced" if replaced else "new",
             draft.source_run_id,
         )
-        return SkillExtracted(skill=skill, replaced=replaced)
+        return SkillExtracted(skill=skill, replaced=replaced, origin_message=origin_message)
 
     def _dedup_target(self, draft: SkillDraft, embedding: list[float] | None) -> str:
         """The name to upsert under (REPLACE semantics): (a) an exact name match →
@@ -271,6 +343,35 @@ class SkillExtractor:
             if existing is not None and cosine_similarity(embedding, existing) >= threshold:
                 return skill
         return None
+
+
+def _naming_content(steps: list[SkillStep], projection: RunProjection) -> str:
+    """The naming micro-context's content (#1665): the numbered recipe (holes as
+    ``{variables}``, so the model treats them as user-supplied), the message that
+    first demonstrated it, and any ``find`` query phrases from the run (the generic
+    task phrases the step-1 doctrine sends to find — a naming signal)."""
+    parts = [
+        f"Routine steps:\n{render_skill(steps)}",
+        f"First demonstrated by this message:\n{projection.origin_message}",
+    ]
+    find_phrases = _find_phrases(projection)
+    if find_phrases:
+        parts.append("Search phrases used to look for a skill:\n" + "\n".join(find_phrases))
+    return "\n\n".join(parts)
+
+
+def _find_phrases(projection: RunProjection) -> list[str]:
+    """The non-blank ``find(query=…)`` phrases across the run's steps — the generic
+    task phrases (#1665's step-1 doctrine sends the GENERIC task to find), a naming
+    signal even though the find call itself is dropped from the recipe."""
+    phrases: list[str] = []
+    for step in projection.steps:
+        if step.call.name != _FIND_TOOL:
+            continue
+        query = step.call.arguments.get(_FIND_QUERY_ARG)
+        if isinstance(query, str) and query.strip():
+            phrases.append(query.strip())
+    return phrases
 
 
 def _tool_sequence(steps: list[SkillStep]) -> list[str]:
