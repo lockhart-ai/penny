@@ -25,6 +25,5 @@ def test_analyze_refreshes_sqlite_statistics_and_logs_completion(tmp_path, caplo
 
     assert stat is not None
     assert any(
-        record.message.startswith("Database query completed: ANALYZE")
-        for record in caplog.records
+        record.message.startswith("Database query completed: ANALYZE") for record in caplog.records
     )
