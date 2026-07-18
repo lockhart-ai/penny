@@ -454,6 +454,7 @@ class Agent:
                 result = await self._process_tool_calls(
                     response,
                     called_tools,
+                    tool_call_records,
                     on_tool_start,
                     on_progress,
                     run_id,
@@ -1069,6 +1070,7 @@ class Agent:
         self,
         response,
         called_tools: set[tuple[str, ...]],
+        prior_records: list[ToolCallRecord],
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
         run_id: str = "",
@@ -1076,13 +1078,19 @@ class Agent:
         step: int | None = None,
         max_steps: int | None = None,
     ) -> _StepResult:
-        """Process all tool calls from a model response, executing valid ones in parallel."""
+        """Process all tool calls from a model response, executing valid ones in parallel.
+
+        ``prior_records`` are the run's executed tool-call records BEFORE this step —
+        the dedup guard consults them to state a blocked repeat's prior OUTCOME (#1673).
+        After the step, a successful MUTATING call clears ``called_tools`` so a
+        legitimate retry-after-remediation / re-read-after-write runs next time.
+        """
         logger.info("Model requested %d tool call(s)", len(response.message.tool_calls or []))
         messages: list[dict] = [response.message.to_input_message()]
         records: list[ToolCallRecord] = []
         source_urls: list[str] = []
 
-        pending = self._dedup_tool_calls(response, called_tools, messages)
+        pending = self._dedup_tool_calls(response, called_tools, prior_records, messages)
         await self._notify_tool_start(on_tool_start, pending)
         if pending:
             await self._notify_progress(
@@ -1107,6 +1115,17 @@ class Agent:
 
         self._collect_tool_results(pending, results, messages, records, source_urls)
 
+        # A successful MUTATING call changes the world, so every previously-seen call is
+        # forgettable — an identical call against an UNCHANGED world is what the dedup
+        # guard exists to block, and a mutation means the world is no longer unchanged.
+        # Clearing the seen-calls cache on any mutation lets a legitimate repeat RUN in
+        # BOTH directions (#1673): retry-after-remediation (a failed write retried once
+        # its precondition was created) and re-read-after-write (verifying the entry just
+        # written).  Loop-safe: a repeat with no mutation since its prior occurrence
+        # never clears the cache, so it stays blocked.
+        if any(record.mutated for record in records):
+            called_tools.clear()
+
         return _StepResult(
             messages=messages,
             records=records,
@@ -1117,12 +1136,23 @@ class Agent:
         self,
         response: Any,
         called_tools: set[tuple[str, ...]],
+        prior_records: list[ToolCallRecord],
         messages: list[dict],
     ) -> list[tuple[str, str, dict, str | None]]:
         """Filter out repeat tool calls, returning the pending ones to execute.
 
-        Repeats append a "you already called this" message in place so the
-        model sees the rejection. Mutates ``called_tools`` and ``messages``.
+        A byte-identical repeat of a call still in the seen-calls cache is rejected in
+        place with a frame that states the PRIOR call's OUTCOME (#1673) — succeeded →
+        reuse its result, FAILED → fix the precondition — so the model reads honest
+        state instead of the old "already ran, use its result" (which reads as success
+        even for a call that failed, and made the model narrate a write that never
+        happened).
+
+        A repeat only reaches here while its call is still in ``called_tools``; a
+        successful MUTATING call empties that cache (in ``_process_tool_calls``), so a
+        legitimate retry-after-remediation or re-read-after-write RUNS the next time it
+        appears rather than being blocked (#1673).  Mutates ``called_tools`` and
+        ``messages``.
         """
         pending: list[tuple[str, str, dict, str | None]] = []
         for tool_call in response.message.tool_calls or []:
@@ -1135,27 +1165,82 @@ class Agent:
 
             if not self.allow_repeat_tools and call_key in called_tools:
                 logger.info("Skipping repeat: %s(%s)", tool_name, arguments)
-                repeat_message = Prompt.DUPLICATE_CALL_REJECTION
-                messages.append(
-                    {
-                        "role": MessageRole.TOOL,
-                        "content": self._frame_injected_result(
-                            tool_name,
-                            Prompt.DUPLICATE_CALL_NARRATION.format(tool_name=tool_name),
-                            repeat_message,
-                        ),
-                        "tool_call_id": tool_call_id,
-                        # A dedup'd repeat never executed — it's a rejection, not a
-                        # successful call — so its structural stamp is False (#1600):
-                        # a range that selects it can't certify.
-                        PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
-                    }
-                )
+                prior_index = self._last_matching_index(call_key, prior_records)
+                prior = prior_records[prior_index] if prior_index is not None else None
+                self._append_duplicate_rejection(tool_call_id, tool_name, prior, messages)
                 continue
 
             called_tools.add(call_key)
             pending.append((tool_call_id, tool_name, arguments, reasoning))
         return pending
+
+    @staticmethod
+    def _last_matching_index(
+        call_key: tuple[str, ...], records: list[ToolCallRecord]
+    ) -> int | None:
+        """Index of the most recent EXECUTED record matching this call key, or None.
+
+        The blocked repeat's prior occurrence is the record that last put this key in
+        the cache (the cache clears on mutation, so a still-cached key was admitted
+        since the last clear).  Scans newest-first so the OUTCOME rendered into the
+        rejection frame (#1673) is that latest occurrence's.  ``None`` when no record
+        matches — a within-step duplicate admitted earlier in the current
+        (still-executing) batch, whose outcome isn't known yet.
+        """
+        for index in range(len(records) - 1, -1, -1):
+            if Agent._make_call_key(records[index].tool, records[index].arguments) == call_key:
+                return index
+        return None
+
+    def _append_duplicate_rejection(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        prior: ToolCallRecord | None,
+        messages: list[dict],
+    ) -> None:
+        """Append the in-place rejection for a blocked duplicate, framed OUTCOME-FIRST
+        (#1673) so the model reads what happened to the action, not procedural
+        "you already called this".
+
+        Same tagged first-person envelope + machine tag as a real tool result, carrying
+        the structural success stamp False (#1600 — a rejection never executed, so a
+        range selecting it can't certify).
+        """
+        narration, body = self._duplicate_rejection_frame(tool_name, prior)
+        messages.append(
+            {
+                "role": MessageRole.TOOL,
+                "content": self._frame_injected_result(tool_name, narration, body),
+                "tool_call_id": tool_call_id,
+                PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
+            }
+        )
+
+    @staticmethod
+    def _duplicate_rejection_frame(tool_name: str, prior: ToolCallRecord | None) -> tuple[str, str]:
+        """The (narration, body) for a blocked duplicate, stating the prior OUTCOME
+        (#1673).
+
+        A prior that FAILED (only reachable when no mutation has cleared the cache
+        since, given the cache-clear-on-mutation allowance) leads with the failure and
+        quotes the first line of its error, prescribing a precondition fix — never
+        "use its result", which implies a success that didn't happen.  A prior that
+        succeeded (or a within-batch duplicate with no recorded outcome yet) leads with
+        success and keeps the reuse-the-result guidance.
+        """
+        if prior is not None and prior.failed:
+            first_line = prior.result.splitlines()[0] if prior.result else ""
+            return (
+                Prompt.DUPLICATE_CALL_NARRATION_FAILED.format(tool_name=tool_name),
+                Prompt.DUPLICATE_CALL_REJECTION_FAILED.format(
+                    tool_name=tool_name, first_line=first_line
+                ),
+            )
+        return (
+            Prompt.DUPLICATE_CALL_NARRATION_SUCCEEDED.format(tool_name=tool_name),
+            Prompt.DUPLICATE_CALL_REJECTION_SUCCEEDED,
+        )
 
     async def _notify_tool_start(
         self,
