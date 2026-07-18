@@ -721,8 +721,11 @@ def _notable_written(db: Database, before: set[str]) -> bool:
     """A round's write carries page-derived content — 'Brandt' exists ONLY in the
     fixture pages, so a stored copy proves browse → extract → write."""
     stored = _all_collection_writes(db, before)
+    # Page-ONLY tokens (never in the user's turns), so a truncated-but-real write
+    # ("Foxes sign veteran…") still counts and a fabricated sample entry doesn't.
+    page_tokens = ("brandt", "volk", "aurelio", "petra", "veteran", "goalie", "player development")
     return any(
-        "brandt" in content.lower() or "volk" in content.lower()
+        any(token in content.lower() for token in page_tokens)
         for entries in stored.values()
         for content in entries.values()
     )
