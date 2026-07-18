@@ -166,6 +166,42 @@ async def test_read_write_run_qualifies_and_distils_correctly(tmp_path):
     assert all("reasoning" not in step.arguments for step in steps)
 
 
+@pytest.mark.asyncio
+async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
+    """The demonstrated round created its own write target → the skill auto-attaches
+    framework-side: the collection's prompt is the rendered skill, provenance is
+    stamped, params bind to the DEMONSTRATED values, and the job stays trigger-less
+    (nothing dispatches until the schedule binds via collection_update).  A round
+    that wrote into a PRE-EXISTING collection attaches nothing — the join is the
+    ``created_by_run_id`` stamp, never a guess."""
+    db = _make_db(tmp_path)
+    db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+    extractor = _extractor(db)
+    result = await extractor.extract("run-A")
+    assert isinstance(result, SkillExtracted)
+
+    attached = extractor.attach_to_created_collection(result.skill, "run-A")
+
+    assert attached is not None and attached.collection == "aurora-prices"
+    row = db.memories.get("aurora-prices")
+    assert row is not None and row.skill_name == result.skill.name
+    assert row.extraction_prompt is not None and "collection_write" in row.extraction_prompt
+    # Params bound to the demonstrated values, read off the steps' verbatim args
+    # by the substitution paths (the queries LEAF, not the list around it).
+    assert attached.params["queries"] == "aurora deck 2 price"
+    assert attached.params["extract"] == "the current price"
+    # Trigger-less: the dispatcher skips it until the schedule binds.
+    assert row.collector_interval_seconds is None
+
+    # The pre-existing-collection direction: a later run writing into the SAME
+    # (now established) collection extracts a skill but attaches nothing.
+    _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
+    later = await extractor.extract("run-B")
+    assert isinstance(later, SkillExtracted)
+    assert extractor.attach_to_created_collection(later.skill, "run-B") is None
+
+
 # ── Excluded: pure read, pure write, failed-write-only, bail, no-calls ─────────
 
 

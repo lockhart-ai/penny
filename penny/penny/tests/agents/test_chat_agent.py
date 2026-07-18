@@ -1056,12 +1056,11 @@ _BASIC_FLOW_EXPECTED = (
     "section shows exactly what you did last time) and re-run the WHOLE round "
     "corrected. A corrected re-demonstration replaces the skill.\n"
     "Whichever case, you'll learn it automatically as a skill from that round — "
-    "the skill appears when the round closes (your reply ends it), so attach it "
-    "NEXT turn with collection_update(name=<slug>, skill=<its name>, "
-    'trigger="every <seconds>", notify=…), never mid-round. Cadence words in '
-    "their ask ('morning and evening', 'daily') are the trigger for that attach "
-    "step, not part of the round — don't design the trigger until the skill "
-    "exists.\n"
+    "a learned notice will tell you the moment it exists and what it was attached "
+    "to, and any schedule or notify the user asked for gets set right then, "
+    "exactly as the notice directs. During the round itself, ignore scheduling "
+    "entirely — cadence words in their ask ('morning and evening', 'daily') bind "
+    "at that later step, not in the round.\n"
     "2. A skill fits → set up the whole thing in ONE call: "
     "collection_create(name=<slug>, description=<the ask>, skill=<its name>, "
     'params=<bind its parameters>, trigger="every <seconds>", notify=<true when '

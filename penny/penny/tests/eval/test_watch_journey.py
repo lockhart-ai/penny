@@ -751,17 +751,36 @@ def _notable_written(db: Database, before: set[str]) -> bool:
     )
 
 
+# The teach-ask family — how she asks to be walked through the round.  Broad by
+# design (live samples said "teach me a single round" / "a quick walkthrough of
+# one round", never the scripted "one message" literally); the semantics scored
+# is one-complete-pass elicitation, not the exact phrase.
+_TEACH_ASK_TOKENS = (
+    "teach me",
+    "walk me through",
+    "walkthrough",
+    "one message",
+    "single message",
+    "one round",
+    "single round",
+    "one pass",
+    "one complete pass",
+)
+
+
+def _teach_ask(text: str) -> bool:
+    return any(t in text.lower() for t in _TEACH_ASK_TOKENS)
+
+
 def _decompose_ask(replies: list[str]) -> tuple[bool, bool]:
-    """Turn-1 verdicts on the FIRST reply: (the routine was requested in ONE
-    message — the scripted shape, so the user can answer completely in one
-    turn; the example was modelled from THEIR sources, so 'yes, do that' is a
-    complete answer)."""
+    """Turn-1 verdicts on the FIRST reply: (she recognized she can't act yet and
+    asked to be taught the round — the one-complete-pass elicitation; the example
+    was modelled from THEIR sources, so 'yes, do that' is a complete answer)."""
     if not replies:
         return False, False
     first = replies[0].lower()
-    one_message = any(t in first for t in ("one message", "single message", "one go"))
     modelled = any(t in first for t in ("ridgelinefoxes", "harborseals", "foxes", "seals"))
-    return one_message, modelled
+    return _teach_ask(first), modelled
 
 
 def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
@@ -775,9 +794,7 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
         or watch.source_log is not None
     )
     return [
-        Check(
-            "the fused ask got the decompose response (routine asked in ONE message)", one_message
-        ),
+        Check("she recognized she can't act yet and asked to be taught the round", one_message),
         Check("the decompose example is modelled from THEIR sources", modelled),
         Check("the routine ran on arrival (browsed the given sites)", _round_ran(db)),
         Check(
@@ -788,6 +805,10 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "the watch has a trigger and notify is on",
             has_trigger and bool(watch.notify if watch else False),
+        ),
+        Check(
+            "no re-teach ask once the skill exists (final reply doesn't re-elicit)",
+            not (_teach_ask(replies[-1]) if replies else False),
         ),
         Check(
             "she never demanded page mechanics (snippets/selectors/patterns)",
@@ -815,4 +836,68 @@ async def test_beat2b_fused_ask_decomposes(chat_eval: ChatEval):
         score=_score_beat2b,
         min_pass_rate=None,  # report-only until the reshaped sequencing is sample-verified
         timeout=300.0,  # three turns: decompose + enact-with-extraction + instantiate
+    )
+
+
+# ── Beat 2c: the ONE-SHOT — routine + schedule in a single message ───────────
+#
+# The fast path the split sequencing earns: when the user's single message
+# already carries the routine AS STEPS plus the schedule, no decompose ask is
+# needed — she enacts immediately (case a), the skill auto-extracts, the
+# framework auto-attaches it to the collection the round created, and the
+# learned notice hands her the one remaining decision: bind the user's schedule
+# words as the trigger + notify.  Terminal state = a live watch in ONE turn.
+
+_BEAT2C_TURN = (
+    "hey penny — every morning and evening, check the ridgeline foxes and "
+    f"harbor seals news pages ({FOXES_URL} and {SEALS_URL}): 1. go to both "
+    "pages 2. pull out any trades, signings, or injuries — skip game scores "
+    "3. remember the title plus a short blurb for each — and let me know when "
+    "something new shows up."
+)
+
+
+def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
+    replies = _outgoing(db)
+    watches = _live_watches(db, before)
+    watch = watches[0] if watches else None
+    has_trigger = watch is not None and (
+        watch.collector_interval_seconds is not None
+        or watch.run_at is not None
+        or watch.source_log is not None
+    )
+    return [
+        Check("the routine ran (browsed the given sites)", _round_ran(db)),
+        Check(
+            "the round's write landed (page-derived content stored)", _notable_written(db, before)
+        ),
+        Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
+        Check("a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check(
+            "the watch has a trigger and notify is on",
+            has_trigger and bool(watch.notify if watch else False),
+        ),
+        Check(
+            "no teach-ask for a routine already in hand",
+            not any(_teach_ask(r) for r in replies),
+        ),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat2c_one_shot_fused_routine(chat_eval: ChatEval):
+    """Beat 2c, terminal state: a single message carrying the routine as steps
+    PLUS the schedule yields a live watch in ONE turn — enact (case a), skill
+    auto-extracts, framework auto-attaches to the round's own collection, and
+    the learned notice's config affordance binds trigger + notify.  The reverse
+    detection direction is scored too: a routine already in hand must never be
+    re-elicited."""
+    await chat_eval(
+        case_id="journey-beat2c-one-shot",
+        message=_BEAT2C_TURN,
+        browse=[FOXES_NEWS_PAGE, SEALS_NEWS_PAGE],
+        score=_score_beat2c,
+        min_pass_rate=None,  # report-only until sample-verified
+        timeout=300.0,  # enact + extraction + auto-attach + the config continuation
     )
