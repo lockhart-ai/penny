@@ -731,7 +731,9 @@ def _notable_written(db: Database, before: set[str]) -> bool:
 def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
     return [
         Check("she ran the round HERSELF (browsed the given sites)", _round_ran(db)),
-        Check("the round's write landed (page-derived content stored)", _notable_written(db, before)),
+        Check(
+            "the round's write landed (page-derived content stored)", _notable_written(db, before)
+        ),
         Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
         Check(
             "she never demanded page mechanics (snippets/selectors/patterns)",
@@ -753,5 +755,5 @@ async def test_beat2b_self_started_demonstration(chat_eval: ChatEval):
         browse=[FOXES_NEWS_PAGE, SEALS_NEWS_PAGE],
         score=_score_beat2b,
         min_pass_rate=None,  # report-only: first run must REPRODUCE the field failure
-        timeout=240.0,  # extraction + the narration re-reply
+        timeout=300.0,  # the multi-source round + extraction + the narration re-reply
     )
