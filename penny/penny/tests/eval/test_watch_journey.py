@@ -715,8 +715,7 @@ def _round_ran(db: Database) -> bool:
     """The self-started round's browse is persisted in browse-results."""
     entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
     return any(
-        "ridgelinefoxes" in entry.content or "harborseals" in entry.content
-        for entry in entries
+        "ridgelinefoxes" in entry.content or "harborseals" in entry.content for entry in entries
     )
 
 
