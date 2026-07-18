@@ -663,13 +663,13 @@ async def test_beat3_instantiates_the_watch(chat_eval: ChatEval):
 # auto-extracts from that round, and she never demands page mechanics (snippets,
 # selectors, patterns) from the user.
 
-FOXES_URL = "https://faux-sports.example/foxes-news"
-SEALS_URL = "https://faux-sports.example/seals-news"
+FOXES_URL = "https://www.ridgelinefoxes.com/news"
+SEALS_URL = "https://www.harborseals.com/news"
 
 FOXES_NEWS_PAGE = CannedPage(
-    match="foxes-news",
+    match="ridgelinefoxes",
     text=(
-        "Title: Ridgeline Foxes — team news | faux-sports\n"
+        "Title: Ridgeline Foxes | Official Site — Team News\n"
         f"{FOXES_URL}\n\n"
         "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
         "confirmed the signing Thursday morning.\n"
@@ -679,9 +679,9 @@ FOXES_NEWS_PAGE = CannedPage(
 )
 
 SEALS_NEWS_PAGE = CannedPage(
-    match="seals-news",
+    match="harborseals",
     text=(
-        "Title: Harbor Seals — team news | faux-sports\n"
+        "Title: Harbor Seals | Official Site — Team News\n"
         f"{SEALS_URL}\n\n"
         "Seals name Petra Volk head of player development after a lengthy search.\n"
         "Final score: Seals 1, Gulls 4.\n"
@@ -714,7 +714,10 @@ def _demanded_mechanics(replies: list[str]) -> bool:
 def _round_ran(db: Database) -> bool:
     """The self-started round's browse is persisted in browse-results."""
     entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
-    return any("faux-sports" in entry.content for entry in entries)
+    return any(
+        "ridgelinefoxes" in entry.content or "harborseals" in entry.content
+        for entry in entries
+    )
 
 
 def _notable_written(db: Database, before: set[str]) -> bool:
