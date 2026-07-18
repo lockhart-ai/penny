@@ -185,7 +185,7 @@ async def test_beat0_remember_and_recall(chat_eval: ChatEval):
 # ── Beat 0c: EMPTY registry — "remember X" with nowhere to put it ───────────
 #
 # Every seeded collection is deleted before the conversation: the store map is
-# empty, there is no `knowledge` magnet, no container at all.  "Remember X"
+# empty — post-0097 this is nearly the DEFAULT world (no catch-alls).  "Remember X"
 # must drive CREATION (the #1630 skill-optional inert create) + the write —
 # the create arm of remember → collection_create-or-collection_write.
 
@@ -242,8 +242,8 @@ async def test_beat0_empty_registry_creates(chat_eval: ChatEval):
 #
 # The fact was written by a RECENT run (no conversation carries it), so the
 # self-state activity block renders the write ambiently (#1641):
-#   run <id> · <when> · knowledge → worked (2 calls) · wrote 'aurora deck 2
-#   price' → `knowledge`
+#   run <id> · <when> · gear-notes → worked (2 calls) · wrote 'aurora deck 2
+#   price' → `gear-notes`
 # Awareness costs zero calls; retrieval is one call with both arguments
 # consumable verbatim off the line.  Any storage read passes (code-owner
 # ruling); the transcript shows whether she copied the rendered key.
@@ -261,6 +261,9 @@ def _seed_recent_run_write(db: Database) -> None:
 
     when = datetime.now(UTC) - timedelta(minutes=20)
     response = {"choices": [{"message": {"tool_calls": [{"id": "0"}, {"id": "1"}]}}]}
+    # Post-0097 there is no catch-all to lean on — the fact lives in a
+    # user-shaped collection, created here like a real earlier turn would have.
+    db.memories.create_collection("gear-notes", "notes about gear the user tracks")
     with Session(db.engine) as session:
         session.add(
             PromptLog(
@@ -271,13 +274,13 @@ def _seed_recent_run_write(db: Database) -> None:
                 run_id="seedrun0a",
                 run_outcome="worked",
                 run_reason="",
-                run_target="knowledge",
+                run_target="gear-notes",
                 timestamp=when,
             )
         )
         session.add(
             MemoryEntry(
-                memory_name="knowledge",
+                memory_name="gear-notes",
                 key="aurora deck 2 price",
                 content="$499",
                 author="chat",
@@ -293,7 +296,7 @@ def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
     replies = _outgoing(db)
     final_reply = replies[-1] if replies else ""
     read_backed = any(
-        (tool in _READ_TOOLS and args.get("memory") == "knowledge") or tool == "find"
+        (tool in _READ_TOOLS and args.get("memory") == "gear-notes") or tool == "find"
         for tool, args in _final_run_calls(db)
     )
 
@@ -335,7 +338,8 @@ _BEAT0_COLD_TURN = (
 def _seed_cold_fact(db: Database) -> None:
     from penny.database.memory.types import EntryInput
 
-    db.memory("knowledge").write(
+    db.memories.create_collection("gear-notes", "notes about gear the user tracks")
+    db.memory("gear-notes").write(
         [EntryInput(key="aurora deck 2 price", content="$499")], author="chat"
     )
 
@@ -345,7 +349,7 @@ def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]
     final_reply = replies[-1] if replies else ""
     calls = _final_run_calls(db)
     read_backed = any(
-        (tool in _READ_TOOLS and args.get("memory") == "knowledge") or tool == "find"
+        (tool in _READ_TOOLS and args.get("memory") == "gear-notes") or tool == "find"
         for tool, args in calls
     )
 
@@ -413,12 +417,12 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
     # system collections legitimately carry prompts).
     no_watch_faked = all(row.extraction_prompt is None for row in created)
     seeded_writes = sum(
-        len(collection_entries(db, name)) for name in ("likes", "dislikes", "knowledge", "thoughts")
+        len(collection_entries(db, name)) for name in ("dislikes",)
     )
 
     return [
         Check(
-            "no improvised stand-in writes (seeded collections untouched)",
+            "no improvised stand-in writes (the surviving seeded collection untouched)",
             seeded_writes == 0,
         ),
         Check(

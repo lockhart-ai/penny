@@ -1,91 +1,35 @@
-"""NL-dispatch pre-validation for the `choose` tool (built AFTER this passes).
+"""NL-dispatch contract for the `choose` tool (#1679/#1680).
 
 The model is a biased chooser — asked to "pick one at random" it gravitates to
-the first/most-salient option — so random choice belongs in Python (the v3
-`pick()` design).  Before building the real tool, this case grafts a SYNTHETIC
-stub carrying the REAL intended name + description onto the chat agent and
-validates the dispatch contract both ways (the house NL-dispatch pattern):
+the first/most-salient option — so random choice belongs in Python.  The
+dispatch was PRE-VALIDATED against a synthetic stub carrying this name +
+description (fires 1.00 with options intact and the tool's pick reported;
+no-fire guard 5/5 on judgment asks); these cases now run against the REAL
+registered tool and are its standing contract:
 
   * "choose one of X, Y, Z" → the tool is CALLED with the options, and the
-    reply reports the TOOL'S result — the stub returns a FIXED option that a
-    free-choosing model would be unlikely to echo by luck, so a reply naming a
-    different option means she picked herself instead of using the tool.
+    reply reports the pick the TOOL returned (read from its persisted result —
+    a reply naming a different option means she free-chose past the tool).
   * a JUDGMENT ask over the same options ("which do you think is best?") must
     NOT fire it — an opinion is hers to give, not a coin flip.
-
-When the real tool lands, the stub registration is replaced by the real
-surface and these cases become its standing contract.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+import re
 
 import pytest
 
 from penny.database import Database
-from penny.penny import Penny
 from penny.tests.eval.conftest import ChatEval, Check
-from penny.tools.base import Tool
-from penny.tools.models import ToolArgs, ToolResult
 
 pytestmark = pytest.mark.eval
 
-# The stub always "randomly" lands on the SECOND option — a fixed sentinel so
-# the scorer can tell tool-reported picks from the model free-choosing (a real
-# random.choice is the built tool's concern; dispatch is this case's).
 _OPTIONS = ["cedar", "maple", "birch"]
-_STUB_PICK = "maple"
 
-
-class _ChooseArgs(ToolArgs):
-    options: list[str]
-    reasoning: str | None = None
-
-
-class _ChooseStub(Tool):
-    """The synthetic `choose` — the NAME + DESCRIPTION are the real design under
-    test (the dispatch lever); execute is a fixed-sentinel stand-in."""
-
-    name = "choose"
-    description = (
-        "Pick ONE option at random from a list, fairly — a Python coin flip, not "
-        "a judgment. Use this whenever the user asks you to choose, pick, or "
-        "select randomly among options ('choose one of', 'pick one at random', "
-        "'surprise me with one of these') — never pick yourself: you are a "
-        "biased chooser and this tool is the fair one. Returns the chosen option; "
-        "use it for whatever comes next. Not for questions asking your opinion "
-        "or judgment about which option is best."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "options": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "The options to choose among (2 or more).",
-            },
-        },
-        "required": ["options"],
-    }
-    args_model = _ChooseArgs
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        args = _ChooseArgs(**kwargs)
-        pick = _STUB_PICK if _STUB_PICK in args.options else args.options[0]
-        return ToolResult(message=f"Chose '{pick}' at random from {len(args.options)} options.")
-
-
-def _graft_choose(penny: Penny) -> None:
-    """Register the stub on the chat agent for this sample (the per-turn tool
-    build composes get_tools fresh, so wrap it)."""
-    original = penny.chat_agent.get_tools
-
-    def with_choose(run_id: str | None = None) -> list[Tool]:
-        return [*original(run_id), _ChooseStub()]
-
-    penny.chat_agent.get_tools = with_choose  # ty: ignore[invalid-assignment]
+# The real tool's result body (whole-render pinned in its unit tests).
+_PICK_PATTERN = re.compile(r"Chose '([^']+)' at random")
 
 
 def _choose_calls(db: Database) -> list[dict]:
@@ -110,31 +54,41 @@ _CHOOSE_TURN = (
 )
 
 
+def _tool_picks(db: Database) -> list[str]:
+    """Every pick the REAL tool returned this sample, read from its persisted
+    result frames in the prompt log."""
+    picks: list[str] = []
+    for row in db.messages.recent_prompts(limit=200):
+        if row.messages:
+            picks += _PICK_PATTERN.findall(row.messages)
+    return picks
+
+
 def _score_dispatch(db: Database, before: set[str], reply: str) -> list[Check]:
     calls = _choose_calls(db)
     options_ok = any(
         {option.lower() for option in call.get("options", [])} == set(_OPTIONS) for call in calls
     )
+    picks = _tool_picks(db)
     return [
         Check("the choose tool was called", bool(calls)),
         Check("it was given all three options", options_ok),
         Check(
-            # The stub's fixed sentinel: a reply naming a different option means
-            # the model free-chose instead of using the tool's result.
-            "the reply reports the TOOL'S pick (maple), not her own",
-            _STUB_PICK in reply.lower(),
+            # SAID == DID on the pick itself: the reply must report the option
+            # the TOOL returned — naming a different one means she free-chose.
+            "the reply reports the TOOL'S pick, not her own",
+            bool(picks) and picks[-1].lower() in reply.lower(),
         ),
     ]
 
 
 @pytest.mark.asyncio
 async def test_choose_fires_on_a_random_pick_ask(chat_eval: ChatEval):
-    """'choose one of X, Y, Z at random' → the choose tool is called with the
-    options and the reply reports its result."""
+    """'choose one of X, Y, Z at random' → the real choose tool is called with
+    the options and the reply reports the pick it returned."""
     await chat_eval(
         case_id="choose-dispatch-fires",
         message=_CHOOSE_TURN,
-        prepare=_graft_choose,
         score=_score_dispatch,
         min_pass_rate=None,  # report-only: pre-build dispatch validation
     )
@@ -166,7 +120,6 @@ async def test_choose_does_not_fire_on_a_judgment_ask(chat_eval: ChatEval):
     await chat_eval(
         case_id="choose-dispatch-no-fire",
         message=_JUDGMENT_TURN,
-        prepare=_graft_choose,
         score=_score_no_fire,
         min_pass_rate=None,  # report-only: pre-build dispatch validation
     )
