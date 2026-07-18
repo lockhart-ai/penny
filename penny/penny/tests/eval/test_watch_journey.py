@@ -721,7 +721,10 @@ _BEAT2B_TURNS = [
 
 # Page-mechanics demands — the observed stall vocabulary.  Present in a SENT
 # reply = she's asking the user to do her reading for her.
-_MECHANICS_DEMANDS = ("selector", "snippet", "xpath", "css", "html pattern", "parse pattern")
+# "snippet" deliberately absent: live replies use it benignly ("scan the
+# headlines or snippets for keywords") — the field regression's demand shape is
+# structural vocabulary (selectors/xpath/css/parse patterns), which never is.
+_MECHANICS_DEMANDS = ("selector", "xpath", "css", "html pattern", "parse pattern")
 
 
 def _demanded_mechanics(replies: list[str]) -> bool:
