@@ -645,3 +645,113 @@ async def test_beat3_instantiates_the_watch(chat_eval: ChatEval):
         min_pass_rate=None,  # report-only until sample-verified
         timeout=240.0,  # the demonstrate turn carries extraction + the narration nudge
     )
+
+
+# ── Beat 2b: the SELF-STARTED demonstration (the field regression, codified) ──
+#
+# The first external deployment exposed a sequencing our imperative-shaped beat 2
+# structurally couldn't: the user supplies everything one round needs — sources,
+# cadence, filter, format — as ANSWERS TO HER QUESTIONS, across turns, and never
+# issues an imperative ("go read it").  Observed live: she elicited correctly,
+# then PLANNED forever — sketching recipes, demanding "the snippet and pattern
+# for one of the URLs" — and no round ever ran: zero browses of the given sites,
+# zero writes, zero skills, machinery words throughout.  (All fixture content
+# here is synthetic; the shape is what's real.)
+#
+# THIS BEAT'S TERMINAL STATE: holding the inputs, she RUNS ONE ROUND HERSELF —
+# browses the given sites, extracts in plain language, writes — the skill
+# auto-extracts from that round, and she never demands page mechanics (snippets,
+# selectors, patterns) from the user.
+
+FOXES_URL = "https://faux-sports.example/foxes-news"
+SEALS_URL = "https://faux-sports.example/seals-news"
+
+FOXES_NEWS_PAGE = CannedPage(
+    match="foxes-news",
+    text=(
+        "Title: Ridgeline Foxes — team news | faux-sports\n"
+        f"{FOXES_URL}\n\n"
+        "Foxes sign veteran goalie Aurelio Brandt to a two-year deal — the club "
+        "confirmed the signing Thursday morning.\n"
+        "Final score: Foxes 3, Rovers 2 (overtime).\n"
+        "Training camp opens next month at Ridgeline Arena.\n"
+    ),
+)
+
+SEALS_NEWS_PAGE = CannedPage(
+    match="seals-news",
+    text=(
+        "Title: Harbor Seals — team news | faux-sports\n"
+        f"{SEALS_URL}\n\n"
+        "Seals name Petra Volk head of player development after a lengthy search.\n"
+        "Final score: Seals 1, Gulls 4.\n"
+        "Season ticket renewals open Friday.\n"
+    ),
+)
+
+# The user's turns: parameters, answers, details — NEVER an imperative to read.
+_BEAT2B_TURNS = [
+    "hey can you set up news alerts for my favourite teams?",
+    (
+        "the ridgeline foxes and the harbor seals — their news pages are "
+        f"{FOXES_URL} and {SEALS_URL}. check them morning and evening, and alert "
+        "me about notable stuff like trades, signings, and injuries — not game "
+        "scores."
+    ),
+    "morning and evening works, title plus a short blurb, and just one message per check.",
+]
+
+# Page-mechanics demands — the observed stall vocabulary.  Present in a SENT
+# reply = she's asking the user to do her reading for her.
+_MECHANICS_DEMANDS = ("selector", "snippet", "xpath", "css", "html pattern", "parse pattern")
+
+
+def _demanded_mechanics(replies: list[str]) -> bool:
+    text = " ".join(replies).lower()
+    return any(term in text for term in _MECHANICS_DEMANDS)
+
+
+def _round_ran(db: Database) -> bool:
+    """The self-started round's browse is persisted in browse-results."""
+    entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    return any("faux-sports" in entry.content for entry in entries)
+
+
+def _notable_written(db: Database, before: set[str]) -> bool:
+    """A round's write carries page-derived content — 'Brandt' exists ONLY in the
+    fixture pages, so a stored copy proves browse → extract → write."""
+    stored = _all_collection_writes(db, before)
+    return any(
+        "brandt" in content.lower() or "volk" in content.lower()
+        for entries in stored.values()
+        for content in entries.values()
+    )
+
+
+def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
+    return [
+        Check("she ran the round HERSELF (browsed the given sites)", _round_ran(db)),
+        Check("the round's write landed (page-derived content stored)", _notable_written(db, before)),
+        Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
+        Check(
+            "she never demanded page mechanics (snippets/selectors/patterns)",
+            not _demanded_mechanics(_outgoing(db)),
+        ),
+        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat2b_self_started_demonstration(chat_eval: ChatEval):
+    """Beat 2b, terminal state: given sources + cadence + filter as ANSWERS (no
+    imperative anywhere), she runs one round herself — browse, extract in plain
+    language, write — the skill auto-extracts, and she never asks the user for
+    snippets or selectors.  Codifies the first field regression verbatim in shape."""
+    await chat_eval(
+        case_id="journey-beat2b-self-start",
+        messages=_BEAT2B_TURNS,
+        browse=[FOXES_NEWS_PAGE, SEALS_NEWS_PAGE],
+        score=_score_beat2b,
+        min_pass_rate=None,  # report-only: first run must REPRODUCE the field failure
+        timeout=240.0,  # extraction + the narration re-reply
+    )
