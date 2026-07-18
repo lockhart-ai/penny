@@ -647,21 +647,29 @@ async def test_beat3_instantiates_the_watch(chat_eval: ChatEval):
     )
 
 
-# ── Beat 2b: the SELF-STARTED demonstration (the field regression, codified) ──
+# ── Beat 2b: the fused ask DECOMPOSES into teach-then-schedule (field shape) ──
 #
-# The first external deployment exposed a sequencing our imperative-shaped beat 2
-# structurally couldn't: the user supplies everything one round needs — sources,
-# cadence, filter, format — as ANSWERS TO HER QUESTIONS, across turns, and never
-# issues an imperative ("go read it").  Observed live: she elicited correctly,
-# then PLANNED forever — sketching recipes, demanding "the snippet and pattern
-# for one of the URLs" — and no round ever ran: zero browses of the given sites,
-# zero writes, zero skills, machinery words throughout.  (All fixture content
-# here is synthetic; the shape is what's real.)
+# The first external deployment exposed the FUSED ask our imperative-shaped
+# beat 2 structurally couldn't handle: one message carrying sources, cadence,
+# and filter — never an imperative.  Observed live: she elicited page mechanics
+# ("the snippet and pattern for one of the URLs") and PLANNED forever; no round
+# ever ran.  Four prompt iterations at demanding a SELF-STARTED round moved
+# nothing (writes 1/8 — the conversational prior at a descriptive message is
+# propose-and-confirm, and doctrine prose loses to it).  The adopted design
+# HARNESSES that prior instead: teaching and instantiation are two separate
+# things, so the correct response to a fused ask is to SPLIT IT OUT LOUD —
+# "teach me the find first: give me the whole routine in one message (example
+# modelled from THEIR parameters) — then I'll run it on your schedule."  The
+# user's routine reply manufactures the imperative the enact machinery (beat 2,
+# 0.90) fires on; the schedule binds at the attach step (beat 3, 1.00).
+# (All fixture content here is synthetic; the shape is what's real.)
 #
-# THIS BEAT'S TERMINAL STATE: holding the inputs, she RUNS ONE ROUND HERSELF —
-# browses the given sites, extracts in plain language, writes — the skill
-# auto-extracts from that round, and she never demands page mechanics (snippets,
-# selectors, patterns) from the user.
+# THIS BEAT'S TERMINAL STATE, turn by turn: (1) the fused ask gets the
+# decompose response — the routine requested in ONE message, example modelled
+# from their sources, no mechanics demands, no schedule design; (2) the
+# routine arrives → she runs it — browse, extract in plain language, WRITE —
+# and the skill auto-extracts from that round; (3) "now do that morning and
+# evening" → a live watch: skill attached, trigger set, notify on.
 
 FOXES_URL = "https://www.ridgelinefoxes.com/news"
 SEALS_URL = "https://www.harborseals.com/news"
@@ -689,16 +697,26 @@ SEALS_NEWS_PAGE = CannedPage(
     ),
 )
 
-# The user's turns: parameters, answers, details — NEVER an imperative to read.
+# Turn 1 = the FUSED ask (sources + filter + schedule, no imperative — the
+# field shape verbatim).  Turn 2 = the user's routine, the answer the decompose
+# ask requests (imperative steps; the URLs referenced, not retyped — a real
+# user doesn't repeat themselves).  Turn 3 = pure schedule intent.
 _BEAT2B_TURNS = [
-    "hey can you set up news alerts for my favourite teams?",
     (
-        "the ridgeline foxes and the harbor seals — their news pages are "
-        f"{FOXES_URL} and {SEALS_URL}. check them morning and evening, and alert "
-        "me about notable stuff like trades, signings, and injuries — not game "
-        "scores."
+        "hey can you set up news alerts for my favourite teams? the ridgeline "
+        f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
+        f"{SEALS_URL}. check them morning and evening, and alert me about "
+        "notable stuff like trades, signings, and injuries — not game scores."
     ),
-    "morning and evening works, title plus a short blurb, and just one message per check.",
+    (
+        "sure: 1. go to those two news pages 2. pull out any trades, signings, "
+        "or injuries — skip game scores 3. remember the title plus a short "
+        "blurb for each"
+    ),
+    (
+        "perfect — now do that every morning and evening and let me know when "
+        "something new shows up."
+    ),
 ]
 
 # Page-mechanics demands — the observed stall vocabulary.  Present in a SENT
@@ -733,32 +751,68 @@ def _notable_written(db: Database, before: set[str]) -> bool:
     )
 
 
+def _decompose_ask(replies: list[str]) -> tuple[bool, bool]:
+    """Turn-1 verdicts on the FIRST reply: (the routine was requested in ONE
+    message — the scripted shape, so the user can answer completely in one
+    turn; the example was modelled from THEIR sources, so 'yes, do that' is a
+    complete answer)."""
+    if not replies:
+        return False, False
+    first = replies[0].lower()
+    one_message = any(t in first for t in ("one message", "single message", "one go"))
+    modelled = any(t in first for t in ("ridgelinefoxes", "harborseals", "foxes", "seals"))
+    return one_message, modelled
+
+
 def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
+    replies = _outgoing(db)
+    one_message, modelled = _decompose_ask(replies)
+    watches = _live_watches(db, before)
+    watch = watches[0] if watches else None
+    has_trigger = watch is not None and (
+        watch.collector_interval_seconds is not None
+        or watch.run_at is not None
+        or watch.source_log is not None
+    )
     return [
-        Check("she ran the round HERSELF (browsed the given sites)", _round_ran(db)),
+        Check(
+            "the fused ask got the decompose response (routine asked in ONE message)", one_message
+        ),
+        Check("the decompose example is modelled from THEIR sources", modelled),
+        Check("the routine ran on arrival (browsed the given sites)", _round_ran(db)),
         Check(
             "the round's write landed (page-derived content stored)", _notable_written(db, before)
         ),
         Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
+        Check("a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check(
+            "the watch has a trigger and notify is on",
+            has_trigger and bool(watch.notify if watch else False),
+        ),
         Check(
             "she never demanded page mechanics (snippets/selectors/patterns)",
-            not _demanded_mechanics(_outgoing(db)),
+            not _demanded_mechanics(replies),
         ),
         Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
     ]
 
 
 @pytest.mark.asyncio
-async def test_beat2b_self_started_demonstration(chat_eval: ChatEval):
-    """Beat 2b, terminal state: given sources + cadence + filter as ANSWERS (no
-    imperative anywhere), she runs one round herself — browse, extract in plain
-    language, write — the skill auto-extracts, and she never asks the user for
-    snippets or selectors.  Codifies the first field regression verbatim in shape."""
+async def test_beat2b_fused_ask_decomposes(chat_eval: ChatEval):
+    """Beat 2b, terminal state (the split sequencing): the FUSED field-shaped ask
+    gets the decompose response — the routine requested in ONE message, the
+    example modelled from their sources — the user's routine reply is enacted on
+    arrival (browse → extract → write, skill auto-extracts), and the closing
+    schedule intent instantiates a live watch (skill attached, trigger, notify).
+    Teaching and instantiation are two separate things; the decompose ask is
+    what routes a fused ask onto the two proven paths.  The 'learned it and
+    ready to put it on a schedule' narration after the enact turn is read off
+    the dumped transcript (the beat-1/beat-3 pattern for linguistic facets)."""
     await chat_eval(
-        case_id="journey-beat2b-self-start",
+        case_id="journey-beat2b-decompose",
         messages=_BEAT2B_TURNS,
         browse=[FOXES_NEWS_PAGE, SEALS_NEWS_PAGE],
         score=_score_beat2b,
-        min_pass_rate=None,  # report-only: first run must REPRODUCE the field failure
-        timeout=300.0,  # the multi-source round + extraction + the narration re-reply
+        min_pass_rate=None,  # report-only until the reshaped sequencing is sample-verified
+        timeout=300.0,  # three turns: decompose + enact-with-extraction + instantiate
     )
