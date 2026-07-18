@@ -216,10 +216,13 @@ class Prompt:
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "{skill}\n\n"
         "You demonstrated it on: {demonstrated_on}\n\n"
-        "Tell the user, in your own words, that you've learned this routine: name it "
-        "by what it does generally (not just this one instance), say plainly what it "
-        "does (the steps), and name what you'd need from them to run it again (its "
-        "required parameters). Then offer to set it running on a schedule if they'd like."
+        "Reply to the user now. FIRST answer what they actually asked: report the "
+        "outcome of this round — the value you found and where you stored it — since "
+        "this reply is the only one they receive. THEN tell them, in your own words, "
+        "that you've learned this routine: name it by what it does generally (not "
+        "just this one instance), say plainly what it does (the steps), and name "
+        "what you'd need from them to run it again (its required parameters). Then "
+        "offer to set it running on a schedule if they'd like."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls
