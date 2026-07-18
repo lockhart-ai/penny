@@ -1,9 +1,15 @@
 """Tests for migration 0027 — data migration into the memory framework.
 
-Each block of the migration (messages, preferences, thoughts, knowledge)
-gets a focused test that seeds the relevant old table(s), runs the
-migration, and verifies the resulting ``memory_entry`` rows.  A separate
-test pair confirms idempotency and the empty-target guard.
+Each surviving block of the migration (messages → the user/penny facades,
+preferences → ``dislikes``) gets a focused test that seeds the relevant old
+table(s), runs the FULL migration chain, and verifies the resulting rows.  A
+separate test pair confirms idempotency and the empty-target guard.
+
+The thoughts/knowledge/likes blocks of 0027 still run, but migration 0097 (#1676)
+nukes those generic catch-all collections entirely downstream — so their
+end-of-chain state is verified by ``test_0097_nukes_generic_seeded_collections``
+in ``test_migrations.py``, and the surviving witness of 0027's split here is
+``dislikes`` (narrow + specific, deliberately retained).
 """
 
 from __future__ import annotations
@@ -54,54 +60,6 @@ def _seed_preference(
         " VALUES ('+15551234567', ?, ?, ?, ?, 1, 'extracted')",
         (content, valence, embedding, created_at.isoformat()),
     )
-
-
-def _seed_thought(
-    conn: sqlite3.Connection,
-    content: str,
-    title: str | None,
-    notified_at: datetime | None,
-    created_at: datetime,
-    embedding: bytes | None = None,
-    title_embedding: bytes | None = None,
-) -> None:
-    conn.execute(
-        "INSERT INTO thought"
-        " (user, content, title, notified_at, created_at, embedding, title_embedding)"
-        " VALUES ('+15551234567', ?, ?, ?, ?, ?, ?)",
-        (
-            content,
-            title,
-            notified_at.isoformat() if notified_at else None,
-            created_at.isoformat(),
-            embedding,
-            title_embedding,
-        ),
-    )
-
-
-def _seed_knowledge(
-    conn: sqlite3.Connection,
-    url: str,
-    title: str,
-    summary: str,
-    created_at: datetime,
-    embedding: bytes | None = None,
-) -> int:
-    """Insert a knowledge row.  Requires a promptlog row first for FK."""
-    cur = conn.execute(
-        "INSERT INTO promptlog (timestamp, model, messages, response)"
-        " VALUES (?, 'test-model', '[]', '{}')",
-        (created_at.isoformat(),),
-    )
-    prompt_id = cur.lastrowid
-    conn.execute(
-        "INSERT INTO knowledge"
-        " (url, title, summary, embedding, source_prompt_id, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (url, title, summary, embedding, prompt_id, created_at.isoformat(), created_at.isoformat()),
-    )
-    return prompt_id or 0
 
 
 def _entries(conn: sqlite3.Connection, name: str) -> list[tuple]:
@@ -183,86 +141,12 @@ def test_preferences_split_by_valence(tmp_path):
         likes = _entries(conn, "likes")
         dislikes = _entries(conn, "dislikes")
 
-    assert likes == [("dark roast coffee", "dark roast coffee", "history", None, coffee_vec)]
+    # 0027 splits by valence into likes/dislikes; migration 0097 (#1676) then nukes
+    # the generic ``likes`` catch-all, leaving ``dislikes`` (narrow + specific) as
+    # the surviving preference collection at end-of-chain.  (``coffee_vec`` still
+    # rides the positive→likes path 0027 exercises; it just doesn't survive 0097.)
+    assert likes == []
     assert dislikes == [("country music", "country music", "history", None, None)]
-
-
-def test_thoughts_split_by_notified_status(tmp_path):
-    db = _make_db(tmp_path)
-    base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
-
-    content_vec = serialize_embedding([1.0, 0.0, 0.0])
-    title_vec = serialize_embedding([0.0, 1.0, 0.0])
-
-    with sqlite3.connect(db.db_path) as conn:
-        _seed_thought(
-            conn,
-            "pending insight",
-            "Quantum Gravity",
-            None,
-            base,
-            embedding=content_vec,
-            title_embedding=title_vec,
-        )
-        _seed_thought(
-            conn,
-            "shared insight",
-            "Black Holes",
-            base + timedelta(hours=1),
-            base + timedelta(seconds=1),
-        )
-        # No-title thought is skipped — collections require a key.
-        _seed_thought(conn, "untitled musing", None, None, base + timedelta(seconds=2))
-        conn.commit()
-
-    migrate(db.db_path)
-
-    with sqlite3.connect(db.db_path) as conn:
-        thoughts = _entries(conn, "thoughts")
-        unnotified = _entries(conn, "unnotified-thoughts")
-        notified = _entries(conn, "notified-thoughts")
-
-    # 0027 backfills the old `thought` table into the unnotified/notified
-    # collections; 0068 then unifies both into one published `thoughts` collection
-    # (the move-drain pair retired), so every migrated thought lands there and the
-    # old shells are left empty.
-    assert sorted(thoughts) == sorted(
-        [
-            ("Quantum Gravity", "pending insight", "thinking", title_vec, content_vec),
-            ("Black Holes", "shared insight", "thinking", None, None),
-        ]
-    )
-    assert unnotified == []
-    assert notified == []
-
-
-def test_knowledge_collection_populated_with_url_in_content(tmp_path):
-    db = _make_db(tmp_path)
-    base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
-
-    knowledge_vec = serialize_embedding([1.0, 0.0, 0.0])
-
-    with sqlite3.connect(db.db_path) as conn:
-        _seed_knowledge(
-            conn,
-            "https://example.com/quantum-gravity",
-            "Quantum Gravity Primer",
-            "Loop quantum gravity reconciles GR with QM via spin networks.",
-            base,
-            embedding=knowledge_vec,
-        )
-        conn.commit()
-
-    migrate(db.db_path)
-
-    with sqlite3.connect(db.db_path) as conn:
-        rows = _entries(conn, "knowledge")
-
-    expected_body = (
-        "URL: https://example.com/quantum-gravity\n\n"
-        "Loop quantum gravity reconciles GR with QM via spin networks."
-    )
-    assert rows == [("Quantum Gravity Primer", expected_body, "history", None, knowledge_vec)]
 
 
 # ── Idempotency / skip-when-populated guards ──────────────────────────────
@@ -276,7 +160,9 @@ def test_running_migration_twice_does_not_duplicate_entries(tmp_path):
 
     with sqlite3.connect(db.db_path) as conn:
         _seed_message(conn, "incoming", "first", base)
-        _seed_preference(conn, "tea", "positive", base)
+        # A NEGATIVE preference lands in ``dislikes`` — the surviving preference
+        # collection after migration 0097 (#1676) nukes the ``likes`` catch-all.
+        _seed_preference(conn, "tea", "negative", base)
         conn.commit()
 
     migrate(db.db_path)
@@ -291,8 +177,10 @@ def test_running_migration_twice_does_not_duplicate_entries(tmp_path):
     migrate(db.db_path)
 
     with sqlite3.connect(db.db_path) as conn:
+        # dislikes survives 0097, so the re-run hits 0027's populated-target SKIP
+        # guard (not a re-create) — proving the block is idempotent, no duplicate.
         assert len(_entries(conn, "user-messages")) == 1
-        assert len(_entries(conn, "likes")) == 1
+        assert len(_entries(conn, "dislikes")) == 1
 
 
 def test_skips_block_when_target_memory_already_populated(tmp_path):
@@ -300,21 +188,23 @@ def test_skips_block_when_target_memory_already_populated(tmp_path):
     db = _make_db(tmp_path)
     base = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
 
-    # Pre-seed an entry directly into likes (simulating a partial earlier run
+    # Pre-seed an entry directly into dislikes (simulating a partial earlier run
     # or manual fix-up).  The migration should leave it intact and not append
-    # the seeded preference row alongside it.
+    # the seeded preference row alongside it.  ``dislikes`` is the surviving
+    # preference collection after migration 0097 (#1676) — a NEGATIVE preference
+    # targets it.
     with sqlite3.connect(db.db_path) as conn:
-        _seed_preference(conn, "tea", "positive", base)
+        _seed_preference(conn, "tea", "negative", base)
         conn.execute(
             "INSERT INTO memory"
             " (name, type, description, archived, created_at, updated_at)"
-            " VALUES ('likes', 'collection', 'x', 0, ?, ?)",
+            " VALUES ('dislikes', 'collection', 'x', 0, ?, ?)",
             (base.isoformat(), base.isoformat()),
         )
         conn.execute(
             "INSERT INTO memory_entry"
             " (memory_name, key, content, author, created_at)"
-            " VALUES ('likes', 'pre-existing', 'pre-existing', 'manual', ?)",
+            " VALUES ('dislikes', 'pre-existing', 'pre-existing', 'manual', ?)",
             (base.isoformat(),),
         )
         conn.commit()
@@ -322,5 +212,5 @@ def test_skips_block_when_target_memory_already_populated(tmp_path):
     migrate(db.db_path)
 
     with sqlite3.connect(db.db_path) as conn:
-        rows = _entries(conn, "likes")
+        rows = _entries(conn, "dislikes")
     assert rows == [("pre-existing", "pre-existing", "manual", None, None)]

@@ -454,58 +454,29 @@ class PennyConstants:
         }
     )
 
-    # The RETIRED self-correcting collector (seeded by migration 0055, archived by
-    # #1569/migration 0089): it reviewed Penny's own runs against each collection's
-    # intent and proposed prompt fixes.  It existed to correct drift in prompts
-    # GENERATED FROM PROSE — the model improvising an extraction_prompt from a
-    # description.  That authoring channel is gone (#1590/#1591): a collector's
-    # prompt is now a deterministic render of a taught skill, and a wrong prompt is
-    # fixed by the USER re-teaching the skill (re-teach REPLACES it; the collection
-    # re-renders) — no prose-generation step left to review, so the reviewer
-    # retired with the failure mode.  Retained here to keep the archived shell
-    # hidden from the catalog (via ``SYSTEM_COLLECTIONS``).
-    MEMORY_QUALITY_COLLECTION = "quality"
-
-    # The retired skills collection (seeded by migration 0043, ARCHIVED by 0092,
-    # #1624).  It carried prose skill recipes — a reconcile collector maintained
-    # them by model judgment, and the self-state section rendered them as standing
-    # rules.  Both duties are superseded by the structural path: there is exactly
-    # ONE skills store now, the ``skill`` TABLE (taught #1590, instantiated #1591,
-    # fired ambiently #1621, re-rendered #1620).  0092 archived the collection
-    # (visible tombstone) and deleted its seeded rule entries (never demonstrated,
-    # so they cannot enter the certified-by-execution table; needed behaviors get
-    # re-taught live).  Retained here to keep the archived shell hidden from the
-    # catalog (via ``SYSTEM_COLLECTIONS``), same as quality/notifier.
-    MEMORY_SKILLS_COLLECTION = "skills"
     # The retired pub/sub notifier consumer (seeded by migration 0067, archived by
-    # #1557): it drained every ``published`` collection's new entries and delivered
-    # them to the user.  #1557 replaced it with emission-as-property (the ``notify``
-    # flag + the run-time notify suffix), archiving the row.  Retained here to keep
-    # the archived shell hidden from the catalog (via ``SYSTEM_COLLECTIONS``) and to
-    # classify historical notifier-sent messages on the iOS surface.
+    # #1557, then NUKED entirely by migration 0097/#1676).  Its ``memory`` row is
+    # gone, but historical ``messagelog`` rows it sent survive (history is never
+    # rewritten), so this key is retained SOLELY to classify those notifier-sent
+    # messages on the iOS surface (``channels/ios/channel.py``).  No longer a member
+    # of ``SYSTEM_COLLECTIONS`` — there is no archived shell left to hide.
     MEMORY_NOTIFIER_COLLECTION = "notifier"
-    # Built-in preference / knowledge / inner-monologue extractors, seeded by
-    # migration (0027/0031/0068) — Penny's own machinery, not collections the
-    # user built.
-    MEMORY_LIKES_COLLECTION = "likes"
+    # The one surviving built-in preference extractor (seeded by migration 0027):
+    # very narrow and specific, so it stays where the generic catch-alls (likes,
+    # knowledge, thoughts, and the retired notifier/quality/skills/thoughts-pair
+    # shells) were nuked by migration 0097/#1676.
     MEMORY_DISLIKES_COLLECTION = "dislikes"
-    MEMORY_KNOWLEDGE_COLLECTION = "knowledge"
-    MEMORY_THOUGHTS_COLLECTION = "thoughts"
 
     # Built-in framework collections, seeded by migration rather than created by
-    # the user.  ``collection_catalog`` hides them: these are Penny's own machinery
-    # (the preference/knowledge/thought extractors and the retired
-    # skills/notification/self-correction shells), not collections the *user*
-    # built, so the catalog — which surfaces user-built collections — leaves them
-    # out.  Parallels ``SYSTEM_LOGS``.
+    # the user.  ``collection_catalog`` hides them: ``dislikes`` is Penny's own
+    # machinery (the negative-preference extractor), not a collection the *user*
+    # built, so the catalog — which surfaces user-built collections — leaves it out.
+    # The generic catch-alls that used to live here (likes/knowledge/thoughts + the
+    # retired notifier/quality/skills/unnotified-thoughts/notified-thoughts shells)
+    # were removed entirely by migration 0097/#1676 — a deleted row needs no
+    # catalog hiding.  Parallels ``SYSTEM_LOGS``.
     SYSTEM_COLLECTIONS = frozenset(
         {
-            MEMORY_SKILLS_COLLECTION,
-            MEMORY_QUALITY_COLLECTION,
-            MEMORY_NOTIFIER_COLLECTION,
-            MEMORY_LIKES_COLLECTION,
             MEMORY_DISLIKES_COLLECTION,
-            MEMORY_KNOWLEDGE_COLLECTION,
-            MEMORY_THOUGHTS_COLLECTION,
         }
     )

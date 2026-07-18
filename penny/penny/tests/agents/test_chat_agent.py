@@ -75,8 +75,9 @@ async def test_basic_message_flow(
         )
         # Memory seed: exercise every rendering path in one verbatim assertion.
         # Test-only names avoid colliding with system memories created by
-        # migrations 0026/0027/0068 (user-messages, penny-messages,
-        # browse-results, likes, dislikes, knowledge, thoughts).
+        # migrations 0026/0027 (user-messages, penny-messages, browse-results,
+        # dislikes) — the generic catch-alls (likes/knowledge/thoughts + the
+        # retired shells) were nuked by migration 0097 (#1676).
         # Active memories rendered in alphabetical order: "playlists" < "tips".
         penny.db.memories.create_collection("playlists", "favorite playlists")
         penny.db.memory("playlists").write(
@@ -1096,14 +1097,6 @@ _BASIC_FLOW_EXPECTED = (
     "\n"
     "### Active mechanisms\n"
     "- dislikes — active · every 300 · no runs yet\n"
-    "- knowledge — active · every 300 · no runs yet\n"
-    "- likes — active · every 300 · no runs yet\n"
-    "- notified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- notifier — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- quality — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- skills — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
-    "- thoughts — active · every 5400 · no runs yet\n"
-    "- unnotified-thoughts — archived YYYY-MM-DD HH:MM UTC · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"
@@ -1117,14 +1110,9 @@ _BASIC_FLOW_EXPECTED = (
     "generated structural record (outcome, counts, tool trace)\n"
     "- dislikes (collection, 0 entries) — Topics the user has expressed negative "
     "sentiment about\n"
-    "- knowledge (collection, 0 entries) — Summarized facts from web pages Penny has read\n"
-    "- likes (collection, 0 entries) — Topics the user has expressed positive sentiment "
-    "about\n"
     "- penny-messages (log, 0 entries) — Every outgoing Penny reply\n"
     "- playlists (collection, 1 entries) — favorite playlists\n"
     "- secrets (collection, 1 entries) — hidden\n"
-    "- thoughts (collection, 0 entries) — Penny's inner-monologue thoughts about the "
-    "user's interests.\n"
     "- tips (log, 1 entries) — useful tips\n"
     "- user-messages (log, 0 entries) — Every incoming user message\n"
     "\n"
