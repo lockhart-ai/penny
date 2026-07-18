@@ -61,6 +61,7 @@ def _add_collection(
     run_at: datetime | None = None,
     max_runs: int | None = None,
     source_log: str | None = None,
+    cron_expression: str | None = None,
     archived: bool = False,
     created_at: datetime,
     updated_at: datetime,
@@ -77,6 +78,7 @@ def _add_collection(
             run_at=run_at,
             max_runs=max_runs,
             source_log=source_log,
+            cron_expression=cron_expression,
             archived=archived,
             created_at=created_at,
             updated_at=updated_at,
@@ -471,6 +473,30 @@ def test_self_state_on_advance_mechanism_render(tmp_path):
         session.commit()
     _add_user(db)
     assert SelfStateHeader(db, USER).render() == _ON_ADVANCE
+
+
+# ── 1c. cron trigger — the mechanisms line reads the cron clause ───────────
+
+
+def test_self_state_cron_mechanism_render(tmp_path):
+    """A cron-scheduled collection renders ``cron <5-field expression>`` as its cadence
+    clause on the mechanisms line (#1684, display form == invocation form), so the
+    stated schedule reads at a glance and copies straight back as the ``trigger`` arg."""
+    db = _db(tmp_path)
+    with Session(db.engine) as session:
+        _add_collection(
+            session,
+            "twice-daily",
+            description="check the peak morning and evening",
+            extraction_prompt="1. check the peak.",
+            interval=30,  # only the dispatcher tick — the cron clause wins the render
+            cron_expression="0 8,20 * * *",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        session.commit()
+    _add_user(db)
+    assert SelfStateHeader(db, USER).render() == _CRON_MECH
 
 
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────
@@ -1008,6 +1034,35 @@ _ON_ADVANCE = (
     "### Your memory\n"
     "- chained-watch (collection, 0 entries) — digest upstream events\n"
     "- events-log (log, 0 entries) — an event stream\n"
+    "\n"
+    "### Skills and rules\n"
+    "(no skills yet — when a task needs one, ask the user to walk you through it "
+    "once and you'll learn it automatically)\n"
+    "\n"
+    "### About the user\n"
+    "- name: Alex\n"
+    "- timezone: America/Toronto\n"
+    "- location: Toronto, Canada\n"
+    "\n"
+    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
+    "history, get_event(run <id>) for one run's tool calls, "
+    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
+    "stored entries, find(query=<text>) to find anything of yours by meaning "
+    "(a collection, a skill, or a stored entry), and collection_catalog() for "
+    "every collection."
+)
+
+_CRON_MECH = (
+    "## Penny's current state\n"
+    "\n"
+    "### Active mechanisms\n"
+    "- twice-daily — active · cron 0 8,20 * * * · no runs yet\n"
+    "\n"
+    "### Recent activity\n"
+    "(no recent activity)\n"
+    "\n"
+    "### Your memory\n"
+    "- twice-daily (collection, 0 entries) — check the peak morning and evening\n"
     "\n"
     "### Skills and rules\n"
     "(no skills yet — when a task needs one, ask the user to walk you through it "

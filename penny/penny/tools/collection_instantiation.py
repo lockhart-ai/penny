@@ -13,10 +13,10 @@ are whole-render tested in isolation:
 * the **idempotency-at-birth** results (#1567) — the active-duplicate refusal and
   the tombstone-duplicate confirm-shaped result, each naming the existing row and
   the deliberate override;
-* the **trigger** parse (one ``trigger`` arg, three enumerated forms: ``every
-  <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>``, #1631) and the
-  ``expires_at`` end condition, with ``render_trigger_clause`` rendering the stored
-  trigger back AS its copyable input form;
+* the **trigger** parse (one ``trigger`` arg, four enumerated forms: ``every
+  <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>`` | ``cron <5-field
+  expression>``, #1631/#1684) and the ``expires_at`` end condition, with
+  ``render_trigger_clause`` rendering the stored trigger back AS its copyable input form;
 * the **creation echo** (skill · params · trigger · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
@@ -29,6 +29,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from croniter import croniter
 from pydantic import BaseModel
 
 from penny.database.memory.types import slug
@@ -156,7 +157,7 @@ def render_tombstone_duplicate(row: MemoryRow) -> str:
     )
 
 
-# ── Trigger: one arg, three enumerated forms (#1631) ─────────────────────────
+# ── Trigger: one arg, four enumerated forms (#1631/#1684) ────────────────────
 
 
 class TriggerError(Exception):
@@ -166,13 +167,15 @@ class TriggerError(Exception):
 
 class Trigger(BaseModel):
     """The parsed, store-ready trigger: the cadence the collector paces on plus the
-    optional once-shaped overlay (``run_at`` + ``max_runs``) or on_advance overlay
-    (``source_log``)."""
+    optional once-shaped overlay (``run_at`` + ``max_runs``), on_advance overlay
+    (``source_log``), or cron overlay (``cron_expression``) — mutually exclusive
+    overlays, one per form."""
 
     collector_interval_seconds: int
     run_at: datetime | None = None
     max_runs: int | None = None
     source_log: str | None = None
+    cron_expression: str | None = None
 
 
 def parse_datetime(value: str, field: str) -> datetime:
@@ -192,33 +195,56 @@ def parse_datetime(value: str, field: str) -> datetime:
 _EVERY_PREFIX = "every "
 _ONCE_PREFIX = "once at "
 _ON_ADVANCE_PREFIX = "on advance of "
+_CRON_PREFIX = "cron "
 
-# The reject-and-teach failure for an unrecognised trigger shape (#1631): name the
-# three enumerated forms so the model rewrites to one of them instead of inventing a
-# fourth.  Each example is a copyable input (display form == invocation form).  The
-# closing omission line (#1646) names the other valid move — leave the trigger out
-# entirely for a storage-only collection — since a blank trigger now coerces to omitted
-# and this rejection is only reached for genuinely garbled (non-blank) input.
-_TRIGGER_TEACHING = (
-    "I couldn't read the trigger '{trigger}'. Set it to one of these three forms "
-    "(copy the shape exactly):\n"
+# The four enumerated trigger forms as copyable bullets (display form == invocation
+# form), shared by the reject-and-teach texts so every rejection names the WHOLE
+# vocabulary.  The cron form (#1684) encodes a time-of-day recurrence a stated schedule
+# states in words ("morning and evening") that the other three can't express.
+_FOUR_FORMS = (
     "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
     "- once at <ISO datetime> [xN] — run at a time, optionally N times "
     "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
     "- on advance of <log> — wake when a source log gets a new entry "
     "(e.g. on advance of browse-results)\n"
+    "- cron <5-field expression> — a time-of-day recurrence in cron form "
+    "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
+)
+
+# The reject-and-teach failure for an unrecognised trigger shape (#1631/#1684): name the
+# four enumerated forms so the model rewrites to one of them instead of inventing a
+# fifth.  Each example is a copyable input (display form == invocation form).  The
+# closing omission line (#1646) names the other valid move — leave the trigger out
+# entirely for a storage-only collection — since a blank trigger now coerces to omitted
+# and this rejection is only reached for genuinely garbled (non-blank) input.
+_TRIGGER_TEACHING = (
+    "I couldn't read the trigger '{trigger}'. Set it to one of these four forms "
+    "(copy the shape exactly):\n"
+    f"{_FOUR_FORMS}\n"
     "Or leave the trigger out entirely for a storage-only collection."
+)
+
+# The reject-and-teach failure for a ``cron`` form whose expression ``croniter`` rejects
+# (#1684): lead with the cron-specific diagnosis (the actionable surface — a bare
+# croniter error is a stack-dump-shaped fragment), then name all four forms so the model
+# can fix the expression OR pivot to a different form.
+_CRON_INVALID = (
+    "'cron {expr}' isn't a valid cron expression. A cron trigger is five space-separated "
+    "fields — minute hour day-of-month month day-of-week — e.g. cron 0 8,20 * * * for 8am "
+    "and 8pm daily. Set the trigger to one of these four forms (copy the shape exactly):\n"
+    f"{_FOUR_FORMS}"
 )
 
 
 def parse_trigger(trigger: str, once_form_interval_seconds: int) -> Trigger:
     """Parse the single ``trigger`` arg into a store-ready ``Trigger`` — classify by
-    prefix, then validate the form (the enumerated-cases doctrine).  Three forms:
+    prefix, then validate the form (the enumerated-cases doctrine).  Four forms:
     ``every <seconds>`` (a recurring cadence), ``once at <ISO> [xN]`` (a delayed /
     one-shot schedule, N defaulting to 1), ``on advance of <log>`` (wake when the named
-    source LOG advances).  The rendered clause IS this input (``render_trigger_clause``),
-    so a displayed trigger copies straight back as the arg and round-trips.  An
-    unrecognised shape raises the teaching ``TriggerError`` naming all three."""
+    source LOG advances), ``cron <5-field expression>`` (a time-of-day recurrence,
+    #1684).  The rendered clause IS this input (``render_trigger_clause``), so a
+    displayed trigger copies straight back as the arg and round-trips.  An unrecognised
+    shape raises the teaching ``TriggerError`` naming all four."""
     text = trigger.strip()
     lowered = text.lower()
     if lowered.startswith(_EVERY_PREFIX):
@@ -229,6 +255,8 @@ def parse_trigger(trigger: str, once_form_interval_seconds: int) -> Trigger:
         return _parse_on_advance(
             text[len(_ON_ADVANCE_PREFIX) :].strip(), once_form_interval_seconds
         )
+    if lowered.startswith(_CRON_PREFIX):
+        return _parse_cron(text[len(_CRON_PREFIX) :].strip(), once_form_interval_seconds)
     raise TriggerError(_TRIGGER_TEACHING.format(trigger=trigger))
 
 
@@ -282,15 +310,29 @@ def _parse_on_advance(rest: str, once_form_interval_seconds: int) -> Trigger:
     return Trigger(collector_interval_seconds=once_form_interval_seconds, source_log=slug(rest))
 
 
+def _parse_cron(rest: str, once_form_interval_seconds: int) -> Trigger:
+    """``cron <5-field expression>`` — a time-of-day recurrence the model maps a stated
+    schedule onto ("morning and evening" → ``0 8,20 * * *``), #1684.  ``croniter``'s own
+    validation is the authority (a well-known formalism, no NL parsing in Python); an
+    expression it rejects raises the teaching ``TriggerError`` naming all four forms.
+    Paced at the dispatcher tick like the once-shaped / on_advance forms — the real gate
+    is the cron next-fire time, computed in ``Collector._is_ready``."""
+    if not croniter.is_valid(rest):
+        raise TriggerError(_CRON_INVALID.format(expr=rest))
+    return Trigger(collector_interval_seconds=once_form_interval_seconds, cron_expression=rest)
+
+
 def render_trigger_clause(row: MemoryRow) -> str:
     """The mechanism's trigger rendered AS the copyable ``trigger`` input — display
     form == invocation form (#1631), the render-teaches-the-call property: the clause a
     surface shows (the self-state mechanisms line, ``memory_metadata``, the creation
     echo) is exactly what ``parse_trigger`` accepts, so it copies straight back and
-    round-trips to the same stored config.  ``on advance of <log>`` · ``once at <ISO>
-    [xN]`` (the ``xN`` suffix only when it repeats more than once) · ``every
-    <seconds>``.  Built off the SAME prefix constants ``parse_trigger`` classifies on, so
-    display and invocation can't structurally diverge."""
+    round-trips to the same stored config.  ``cron <5-field expression>`` · ``on advance
+    of <log>`` · ``once at <ISO> [xN]`` (the ``xN`` suffix only when it repeats more than
+    once) · ``every <seconds>``.  Built off the SAME prefix constants ``parse_trigger``
+    classifies on, so display and invocation can't structurally diverge."""
+    if row.cron_expression is not None:
+        return f"{_CRON_PREFIX}{row.cron_expression}"
     if row.source_log is not None:
         return f"{_ON_ADVANCE_PREFIX}{row.source_log}"
     if row.run_at is not None:
@@ -307,16 +349,17 @@ _NO_TRIGGER_CLAUSE = "none"
 
 def has_trigger(row: MemoryRow) -> bool:
     """True when ``row`` carries any trigger member — a recurring
-    ``collector_interval_seconds``, a once-shaped ``run_at``, or an ``on_advance``
-    ``source_log``.  False for a log or an inert collection with no cadence yet, whose
-    ``render_trigger_clause`` would otherwise emit the half-formed ``every None`` (#1666).
-    The single predicate every labelled-trigger render guards on, so no surface
-    re-derives the three-member OR (already inlined on the self-state cadence, the
-    metadata trigger line, and the no-trigger note)."""
+    ``collector_interval_seconds``, a once-shaped ``run_at``, an ``on_advance``
+    ``source_log``, or a ``cron_expression`` (#1684).  False for a log or an inert
+    collection with no cadence yet, whose ``render_trigger_clause`` would otherwise emit
+    the half-formed ``every None`` (#1666).  The single predicate every labelled-trigger
+    render guards on, so no surface re-derives the four-member OR (also inlined on the
+    self-state cadence)."""
     return (
         row.collector_interval_seconds is not None
         or row.run_at is not None
         or row.source_log is not None
+        or row.cron_expression is not None
     )
 
 
@@ -366,6 +409,8 @@ def _lead_cadence_phrase(row: MemoryRow) -> str:
     ``render_trigger_clause`` reads: on-advance · once-at · every-seconds, or a bare
     'I'll run' when the collection carries no cadence at all (defensive — a
     skill-backed collection always has one)."""
+    if row.cron_expression is not None:
+        return f"On the cron schedule '{row.cron_expression}' I'll run"
     if row.source_log is not None:
         return f"Whenever '{row.source_log}' gets a new entry I'll run"
     if row.run_at is not None:

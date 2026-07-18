@@ -43,6 +43,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from croniter import croniter
+
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
 from penny.config import Config
@@ -330,6 +332,11 @@ class Collector(BackgroundAgent):
         they run, so it never idles its way into a wider interval (which would
         just re-create the catch-up lag the gate exists to remove).
 
+        A **cron** collection is exempt too (#1684): the user stated an exact
+        schedule, and idleness must never widen it — the cron next-fire time, not
+        a timer, gates it in ``_is_ready``, so ``collector_interval_seconds`` isn't
+        its cadence.
+
         A productive cycle (``worked`` or ``incomplete`` — both changed durable
         state) snaps the interval back to the user's set cadence
         (``base_interval_seconds``) and clears the idle counter.  After
@@ -345,6 +352,12 @@ class Collector(BackgroundAgent):
         base = collection.base_interval_seconds
         current = collection.collector_interval_seconds
         if threshold <= 0 or base is None or current is None:
+            return
+        if collection.cron_expression is not None:
+            # A cron collection runs on its stated schedule; idle cycles must never
+            # widen it (#1684), and there's no interval to snap back — the cron
+            # expression is the schedule, not ``collector_interval_seconds``.  Fully
+            # exempt, like a live-cursor log-driven collection.
             return
         if outcome in (RunOutcome.WORKED, RunOutcome.INCOMPLETE):
             interval, idle = base, 0
@@ -642,6 +655,14 @@ class Collector(BackgroundAgent):
         # system archive (the codebase separates readiness from archival).
         if memory.expires_at is not None and now >= _aware(memory.expires_at):
             return False
+        # Cron trigger (#1684): the 5-field cron expression IS the schedule — ready iff
+        # ``now`` has reached the next fire time after the last run.  Croniter, not the
+        # interval floor / cursor gate, decides; a cron collection is generative, so
+        # those don't apply — so this returns early.  Paced by the dispatcher tick like
+        # the other non-interval forms (eligible each tick, the cron time the real gate).
+        cron_expression = memory.cron_expression
+        if cron_expression is not None:
+            return self._cron_due(memory, cron_expression, now)
         if memory.last_collected_at is not None:
             elapsed = (now - _aware(memory.last_collected_at)).total_seconds()
             if elapsed < memory.collector_interval_seconds:
@@ -650,6 +671,20 @@ class Collector(BackgroundAgent):
         # log-driven collection caught up on every live input is skipped without
         # entering the model — the watermark, not the clock, says there's work.
         return self._input_pending(memory) is not False
+
+    def _cron_due(self, memory: MemoryRow, cron_expression: str, now: datetime) -> bool:
+        """Whether a cron-scheduled collection has reached its next fire time (#1684).
+
+        Ready iff ``now`` has passed the next cron occurrence after the last run
+        (``last_collected_at``), or after creation when it has never run — ``croniter``
+        computes the next fire from that base.  Both the base and ``now`` are UTC-aware,
+        so the returned occurrence is UTC-aware and directly comparable.  ``cron_expression``
+        is passed narrowed (non-None) from ``_is_ready``.  The cron expression is the
+        collection's whole gate; the interval floor and cursor gate don't apply
+        (``_is_ready`` returns here directly)."""
+        base = _aware(memory.last_collected_at or memory.created_at)
+        next_fire = croniter(cron_expression, base).get_next(datetime)
+        return now >= next_fire
 
     # ── Cursor gate (skip-when-no-new-input) ──────────────────────────────
 

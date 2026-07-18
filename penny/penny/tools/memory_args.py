@@ -232,12 +232,13 @@ class CollectionCreateArgs(ToolArgs):
     empty skill), and a blank ``trigger`` / ``expires_at`` never reaches the trigger
     parser (nor trips the inert create's job-arg refusal) — never a spurious rejection.
 
-    The **trigger** (skill path only) is ONE argument with three enumerated forms,
+    The **trigger** (skill path only) is ONE argument with four enumerated forms,
     parsed by prefix in the tool (``parse_trigger``): ``"every <seconds>"`` (a recurring
     cadence), ``"once at <ISO time> [xN]"`` (a delayed / one-shot schedule, N runs
-    defaulting to 1), or ``"on advance of <log>"`` (the collection wakes when that source
-    LOG advances past its cursor).  An unparseable trigger is refused with a teaching
-    error naming the three forms.  ``expires_at`` (optional) is the end condition — the
+    defaulting to 1), ``"on advance of <log>"`` (the collection wakes when that source
+    LOG advances past its cursor), or ``"cron <5-field expression>"`` (a time-of-day
+    recurrence, #1684).  An unparseable trigger is refused with a teaching error naming
+    the four forms.  ``expires_at`` (optional) is the end condition — the
     watch archives itself when it passes.  ``notify`` (default false) makes the collection
     tell the user about new/changed entries; an omission stays silent, so it can never
     accidentally notify.  ``create_anyway`` (default false) is the reactive idempotency
@@ -254,11 +255,11 @@ class CollectionCreateArgs(ToolArgs):
     # passed as a single-element list is unwrapped to its element (#1666,
     # SkillParamValue) — the model mirrors the browse tool's list-shaped queries arg.
     params: dict[str, SkillParamValue] = {}
-    # Trigger — one arg, three enumerated forms, parsed by prefix in the tool
-    # (parse_trigger, #1631): "every <seconds>" | "once at <ISO> [xN]" |
-    # "on advance of <log>".  Its render (render_trigger_clause) IS this input form.
-    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) so it never reaches the
-    # parser as a garbled trigger.
+    # Trigger — one arg, four enumerated forms, parsed by prefix in the tool
+    # (parse_trigger, #1631/#1684): "every <seconds>" | "once at <ISO> [xN]" |
+    # "on advance of <log>" | "cron <5-field expression>".  Its render
+    # (render_trigger_clause) IS this input form.  OptionalText: a blank ``""`` coerces to
+    # ``None`` (#1646) so it never reaches the parser as a garbled trigger.
     trigger: OptionalText = None
     # End condition (optional) — an ISO-8601 datetime; the collection archives
     # itself when it passes.  Parsed in the tool (actionable error on a bad value).
@@ -315,13 +316,13 @@ class CollectionUpdateArgs(ToolArgs):
     editing the prompt directly rather than re-rendering from a skill (mutually
     exclusive with ``skill`` / ``params``).
 
-    The **trigger** is the apply-time job axis — the SAME one-arg, three-form trigger
-    ``collection_create`` accepts (``parse_trigger``, #1631): ``"every <seconds>"`` |
-    ``"once at <ISO> [xN]"`` | ``"on advance of <log>"``.  Present → the whole trigger
-    is replaced atomically (the members the new form doesn't use clear); absent → the
-    cadence is left untouched.  So a collection's schedule is updatable post-create and
-    an inert collection's job is set when a skill is adopted.  ``expires_at`` is the end
-    condition.
+    The **trigger** is the apply-time job axis — the SAME one-arg, four-form trigger
+    ``collection_create`` accepts (``parse_trigger``, #1631/#1684): ``"every <seconds>"`` |
+    ``"once at <ISO> [xN]"`` | ``"on advance of <log>"`` | ``"cron <5-field expression>"``.
+    Present → the whole trigger is replaced atomically (the members the new form doesn't
+    use clear); absent → the cadence is left untouched.  So a collection's schedule is
+    updatable post-create and an inert collection's job is set when a skill is adopted.
+    ``expires_at`` is the end condition.
     """
 
     name: MemoryName
@@ -333,9 +334,10 @@ class CollectionUpdateArgs(ToolArgs):
     # Rebind the skill's parameters; None = reuse current.  A single-element list value is
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
-    # Trigger — one arg, three enumerated forms (parse_trigger, #1631), mirroring
+    # Trigger — one arg, four enumerated forms (parse_trigger, #1631/#1684), mirroring
     # collection_create.  Present → replaces the whole trigger atomically; a blank/omit
-    # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of <log>".
+    # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of
+    # <log>" | "cron <5-field expression>".
     trigger: OptionalText = None
     # OptionalText: a blank ``""`` coerces to ``None`` (#1646) — "leave the end condition
     # alone" — mirroring create; behaviour is unchanged (the tool already guarded blank).

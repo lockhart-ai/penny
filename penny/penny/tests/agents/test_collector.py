@@ -373,6 +373,48 @@ def test_dispatcher_runs_collection_at_run_at(test_config, tmp_path):
     assert target is not None and target.name == "due"
 
 
+def test_cron_collection_ready_only_at_next_fire(test_config, tmp_path):
+    """A cron-scheduled collection is ready iff ``now`` has reached the next cron fire
+    after its last run — the cron expression, not the interval floor, is the gate
+    (#1684).  Deterministic around a fixed clock: '0 8,20 * * *' fires at 08:00 and
+    20:00 UTC, so a run at 08:00 makes 20:00 the next fire."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    memory = MemoryRow(
+        name="twice-daily",
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=30,
+        cron_expression="0 8,20 * * *",
+        last_collected_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
+    )
+    # Between fires (noon) → not due; the interval floor is bypassed, cron decides.
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 12, 0, tzinfo=UTC)) is False
+    # Exactly at the next fire (20:00) → due.
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 0, tzinfo=UTC)) is True
+    # Past the next fire → still due.
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 30, tzinfo=UTC)) is True
+
+
+def test_cron_collection_never_run_bases_next_fire_on_created_at(test_config, tmp_path):
+    """A cron collection that has never run bases its next fire on ``created_at`` — not
+    ready until the first cron occurrence after creation passes (#1684)."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    memory = MemoryRow(
+        name="fresh-cron",
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        collector_interval_seconds=30,
+        cron_expression="0 8,20 * * *",
+        last_collected_at=None,
+        created_at=datetime(2026, 7, 20, 9, 0, tzinfo=UTC),  # after the 08:00 fire
+    )
+    # Next fire after 09:00 is 20:00 — not due at noon, due at 20:00.
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 12, 0, tzinfo=UTC)) is False
+    assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 0, tzinfo=UTC)) is True
+
+
 def test_max_runs_archives_after_quota(test_config, tmp_path):
     """After ``max_runs`` completed (non-cancelled) cycles the scheduler archives
     the collection — a one-shot reminder retires itself.  The count is read from
@@ -1695,6 +1737,27 @@ def test_log_driven_collection_is_exempt_from_throttle(test_config, tmp_path):
 
     m = _get(db, "watcher")
     assert m.collector_interval_seconds == 300
+    assert m.consecutive_idle_runs == 0
+
+
+def test_cron_collection_is_exempt_from_throttle(test_config, tmp_path):
+    """A cron collection never throttles — the user stated an exact schedule, so idle
+    cycles must never widen it (#1684).  It stays pinned no matter how many no-work
+    cycles are applied; the cron next-fire, not collector_interval_seconds, gates it."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "twice-daily",
+        "d",
+        extraction_prompt="x" * 30,
+        collector_interval_seconds=30,
+        cron_expression="0 8,20 * * *",
+    )
+
+    for _ in range(10):
+        collector._apply_throttle(_get(db, "twice-daily"), RunOutcome.NO_WORK)
+
+    m = _get(db, "twice-daily")
+    assert m.collector_interval_seconds == 30
     assert m.consecutive_idle_runs == 0
 
 

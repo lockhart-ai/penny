@@ -302,6 +302,25 @@ _ON_ADVANCE_ECHO_LITERAL = (
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
+# The cron creation echo — the trigger line reads back the cron form (#1684, display
+# form == invocation form), the lead line names the cron schedule in plain words,
+# everything else identical to the recurring echo shape.
+_CRON_ECHO_LITERAL = (
+    "On the cron schedule '0 8,20 * * *' I'll run 'Watch elevation' against "
+    "'twice-daily' and quietly store what it finds.\n"
+    "Created collection 'twice-daily' from skill 'Watch elevation':\n"
+    "  description: check the peak morning and evening\n"
+    "  skill: Watch elevation\n"
+    "  params: peak=Cinder Peak\n"
+    "  trigger: cron 0 8,20 * * *\n"
+    "  notify: False\n"
+    "  expires: never\n"
+    "  extraction_prompt: |\n"
+    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
+    "    2. collection_write(memory='twice-daily', "
+    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+)
+
 # The whole creation echo — skill · bound params · trigger · notify · expiry · the
 # rendered routine (the money literal, indented) — confirmed back to the user.
 _CREATE_ECHO_LITERAL = (
@@ -589,7 +608,7 @@ class TestCollectionCreateFrontDoor:
     @pytest.mark.asyncio
     async def test_missing_trigger_is_refused(self, tmp_path):
         """A skill collection with no trigger would never run (silent degradation) — it's
-        refused up front naming the three forms, nothing created."""
+        refused up front naming the four forms, nothing created."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -603,11 +622,11 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("no-trigger") is None
 
     @pytest.mark.asyncio
-    async def test_unparseable_trigger_teaches_three_forms(self, tmp_path):
-        """An unreadable trigger shape is reject-and-teach: the failure names all three
-        enumerated forms so the model rewrites to one instead of inventing a fourth
-        (#1631), plus the #1646 omission line (leave the trigger out for a storage-only
-        collection) — nothing created."""
+    async def test_unparseable_trigger_teaches_four_forms(self, tmp_path):
+        """An unreadable trigger shape is reject-and-teach: the failure names all four
+        enumerated forms so the model rewrites to one instead of inventing a fifth
+        (#1631/#1684), plus the #1646 omission line (leave the trigger out for a
+        storage-only collection) — nothing created."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -620,15 +639,71 @@ class TestCollectionCreateFrontDoor:
         assert result.success is False
         assert result.message == (
             "I couldn't read the trigger 'whenever I feel like it'. Set it to one of these "
-            "three forms (copy the shape exactly):\n"
+            "four forms (copy the shape exactly):\n"
             "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
             "- once at <ISO datetime> [xN] — run at a time, optionally N times "
             "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
             "- on advance of <log> — wake when a source log gets a new entry "
             "(e.g. on advance of browse-results)\n"
+            "- cron <5-field expression> — a time-of-day recurrence in cron form "
+            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)\n"
             "Or leave the trigger out entirely for a storage-only collection."
         )
         assert db.memories.get("garbled") is None
+
+    @pytest.mark.asyncio
+    async def test_cron_trigger_persists_and_echoes(self, tmp_path):
+        """The ``cron <5-field expression>`` trigger (#1684) persists the expression on the
+        row, paces the collection at the dispatcher tick (the cron next-fire is the real
+        gate), and the whole creation echo reads the trigger back AS ``cron <expr>``
+        (display form == invocation form)."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="twice-daily",
+            description="check the peak morning and evening",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            trigger="cron 0 8,20 * * *",
+        )
+        assert result.success and result.mutated
+        assert result.message == _CRON_ECHO_LITERAL
+        row = db.memories.get("twice-daily")
+        assert row.cron_expression == "0 8,20 * * *"
+        # A cron trigger is exclusive — the other overlays stay clear.
+        assert row.run_at is None and row.max_runs is None and row.source_log is None
+        # Paced at the dispatcher tick — the cron next-fire time is the real gate (#1684).
+        assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
+
+    @pytest.mark.asyncio
+    async def test_invalid_cron_expression_teaches_four_forms(self, tmp_path):
+        """A ``cron`` form croniter rejects is reject-and-teach: it leads with the cron
+        diagnosis and names all four forms (#1684, croniter's validation surfaced
+        actionably) — nothing created."""
+        db = _make_db(tmp_path)
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="bad-cron",
+            description="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            trigger="cron 0 99 * * *",
+        )
+        assert result.success is False
+        assert result.message == (
+            "'cron 0 99 * * *' isn't a valid cron expression. A cron trigger is five "
+            "space-separated fields — minute hour day-of-month month day-of-week — e.g. "
+            "cron 0 8,20 * * * for 8am and 8pm daily. Set the trigger to one of these four "
+            "forms (copy the shape exactly):\n"
+            "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
+            "- once at <ISO datetime> [xN] — run at a time, optionally N times "
+            "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
+            "- on advance of <log> — wake when a source log gets a new entry "
+            "(e.g. on advance of browse-results)\n"
+            "- cron <5-field expression> — a time-of-day recurrence in cron form "
+            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
+        )
+        assert db.memories.get("bad-cron") is None
 
     @pytest.mark.asyncio
     async def test_bad_expires_at_is_actionable(self, tmp_path):
@@ -780,6 +855,7 @@ class TestTriggerRoundTrip:
             ("once at 2026-12-25T09:00:00Z", "once at 2026-12-25T09:00:00+00:00"),
             ("once at 2026-12-25T09:00:00Z x3", "once at 2026-12-25T09:00:00+00:00 x3"),
             ("on advance of events-log", "on advance of events-log"),
+            ("cron 0 8,20 * * *", "cron 0 8,20 * * *"),
         ],
     )
     @pytest.mark.asyncio
@@ -809,6 +885,7 @@ class TestTriggerRoundTrip:
             run_at=reparsed.run_at,
             max_runs=reparsed.max_runs,
             source_log=reparsed.source_log,
+            cron_expression=reparsed.cron_expression,
         )
         assert render_trigger_clause(rerendered) == clause
 

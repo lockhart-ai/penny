@@ -183,13 +183,15 @@ class SelfStateHeader:
     @staticmethod
     def _cadence(row: MemoryRow) -> str:
         """The mechanism's trigger clause rendered AS the copyable ``trigger`` input
-        (#1631, display form == invocation form): ``on advance of <log>`` · ``once at
-        <ISO> [xN]`` · ``every <seconds>``.  Empty when the collection has no trigger yet
-        (an adopted skill awaiting a cadence), so the mechanism line drops the clause."""
+        (#1631, display form == invocation form): ``cron <5-field expression>`` · ``on
+        advance of <log>`` · ``once at <ISO> [xN]`` · ``every <seconds>``.  Empty when the
+        collection has no trigger yet (an adopted skill awaiting a cadence), so the
+        mechanism line drops the clause."""
         has_trigger = (
             row.source_log is not None
             or row.run_at is not None
             or row.collector_interval_seconds is not None
+            or row.cron_expression is not None
         )
         return render_trigger_clause(row) if has_trigger else ""
 

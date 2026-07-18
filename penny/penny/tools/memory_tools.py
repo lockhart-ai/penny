@@ -594,11 +594,12 @@ _INERT_JOB_ARGS_REFUSAL = (
 )
 
 # A skill create with no trigger: the collection wouldn't know when to run, so it's
-# refused naming the three forms (a skill collection must be scheduled, #1631).
+# refused naming the four forms (a skill collection must be scheduled, #1631/#1684).
 _MISSING_TRIGGER = (
     "A skill collection needs a trigger so it knows when to run. Set trigger to one of: "
-    '"every <seconds>" (recurring), "once at <ISO> [xN]" (scheduled / one-shot), or '
-    '"on advance of <log>" (wake when a source log advances).'
+    '"every <seconds>" (recurring), "once at <ISO> [xN]" (scheduled / one-shot), '
+    '"on advance of <log>" (wake when a source log advances), or '
+    '"cron <5-field expression>" (a time-of-day recurrence, e.g. cron 0 8,20 * * *).'
 )
 
 
@@ -644,13 +645,16 @@ class CollectionCreateTool(MemoryTool):
         "- `params` — a map binding the skill's parameters to values "
         '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED parameter '
         "must be bound or the call is refused naming what's missing.\n"
-        '- `trigger` — ONE string, in one of three forms: "every <seconds>" (a recurring '
+        '- `trigger` — ONE string, in one of four forms: "every <seconds>" (a recurring '
         'cadence, e.g. "every 3600" for hourly), "once at <ISO datetime> [xN]" (run at a '
         'time, N times — "once at 2026-07-20T09:00:00Z" is a one-time reminder that '
-        'archives itself, "... x3" runs three times), or "on advance of <log>" (the '
+        'archives itself, "... x3" runs three times), "on advance of <log>" (the '
         "collection wakes as soon as that source LOG gets a new entry — chain one "
-        "collector off another's output). An unreadable trigger is refused naming the "
-        "three forms.\n"
+        'collector off another\'s output), or "cron <5-field expression>" (a time-of-day '
+        'recurrence, e.g. "cron 0 8,20 * * *" for 8am and 8pm — use this for "morning and '
+        'evening" / "weekdays at 9" schedules; the 5 fields are read in UTC, so convert '
+        "the user's wall-clock times to UTC). An unreadable trigger is refused naming the "
+        "four forms.\n"
         "- `expires_at` — OPTIONAL. An ISO datetime end condition; the collection "
         "archives itself once it passes, so a bounded watch needs no teardown.\n"
         "- `notify` — Set `true` when the user wants to be told about / kept posted "
@@ -695,10 +699,12 @@ class CollectionCreateTool(MemoryTool):
             "trigger": {
                 "type": "string",
                 "description": (
-                    "One of three forms: 'every <seconds>' (recurring cadence, e.g. "
+                    "One of four forms: 'every <seconds>' (recurring cadence, e.g. "
                     "'every 3600' hourly), 'once at <ISO datetime> [xN]' (run at a time, N "
                     "times — 'once at 2026-07-20T09:00:00Z' is a one-shot, '... x3' three "
-                    "times), or 'on advance of <log>' (wake when a source log advances)."
+                    "times), 'on advance of <log>' (wake when a source log advances), or "
+                    "'cron <5-field expression>' (a time-of-day recurrence, e.g. "
+                    "'cron 0 8,20 * * *' for 8am and 8pm; fields are read in UTC)."
                 ),
             },
             "expires_at": {
@@ -819,7 +825,7 @@ class CollectionCreateTool(MemoryTool):
     ) -> ToolResult | tuple[Trigger, datetime | None]:
         """Parse the single ``trigger`` arg + optional end condition before any skill
         work, so a bad schedule fails fast.  A skill collection needs a trigger (it must
-        know when to run), so a missing one is refused naming the three forms; an
+        know when to run), so a missing one is refused naming the four forms; an
         unparseable one surfaces ``parse_trigger``'s teaching rejection verbatim."""
         if args.trigger is None:
             return ToolResult(message=_MISSING_TRIGGER, success=False)
@@ -865,6 +871,7 @@ class CollectionCreateTool(MemoryTool):
             skill_name=skill.name,
             skill_params=args.params,
             source_log=trigger.source_log,
+            cron_expression=trigger.cron_expression,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
@@ -1651,7 +1658,7 @@ _SKILL_GONE = (
 _NO_TRIGGER_NOTE = (
     "\n\nHeads up: this collection now has a routine but no trigger, so it won't run yet. "
     "Set one with collection_update(name='{name}', trigger=\"every <seconds>\") (or "
-    '"once at <ISO> [xN]", or "on advance of <log>").'
+    '"once at <ISO> [xN]", "on advance of <log>", or "cron <5-field expression>").'
 )
 
 
@@ -1705,9 +1712,11 @@ class CollectionUpdateTool(MemoryTool):
         "required parameter must be bound or the call is refused naming what's missing.\n"
         "- `trigger` — the job's schedule as ONE string (set it to change the schedule, "
         'else omit to leave it): "every <seconds>" (recurring, e.g. "every 3600"), '
-        '"once at <ISO datetime> [xN]" (run at a time, N times), or "on advance of <log>" '
-        "(wake when a source log advances). Setting it REPLACES the whole schedule. This "
-        "is how you give an INERT collection its cadence when you adopt a skill onto it.\n"
+        '"once at <ISO datetime> [xN]" (run at a time, N times), "on advance of <log>" '
+        '(wake when a source log advances), or "cron <5-field expression>" (a time-of-day '
+        'recurrence, e.g. "cron 0 8,20 * * *"; fields are read in UTC). Setting it '
+        "REPLACES the whole schedule. This is how you give an INERT collection its cadence "
+        "when you adopt a skill onto it.\n"
         "- `expires_at` — OPTIONAL ISO datetime end condition; the collection archives "
         "itself once it passes.\n"
         "\n"
@@ -1767,10 +1776,12 @@ class CollectionUpdateTool(MemoryTool):
             "trigger": {
                 "type": "string",
                 "description": (
-                    "The job's schedule, ONE string in one of three forms — setting it "
+                    "The job's schedule, ONE string in one of four forms — setting it "
                     "REPLACES the whole schedule: 'every <seconds>' (recurring), 'once at "
-                    "<ISO datetime> [xN]' (run at a time, N times), or 'on advance of <log>' "
-                    "(wake when a source log advances). Omit to leave the schedule unchanged."
+                    "<ISO datetime> [xN]' (run at a time, N times), 'on advance of <log>' "
+                    "(wake when a source log advances), or 'cron <5-field expression>' (a "
+                    "time-of-day recurrence, e.g. 'cron 0 8,20 * * *'; fields are read in "
+                    "UTC). Omit to leave the schedule unchanged."
                 ),
             },
             "expires_at": {
@@ -1824,8 +1835,8 @@ class CollectionUpdateTool(MemoryTool):
     def _parse_trigger(
         self, args: CollectionUpdateArgs
     ) -> ToolResult | tuple[Trigger | None, datetime | None]:
-        """Parse the optional ``trigger`` arg + end condition at apply time (#1631, the
-        same one-arg three-form trigger collection_create uses).  Returns
+        """Parse the optional ``trigger`` arg + end condition at apply time (#1631/#1684,
+        the same one-arg four-form trigger collection_create uses).  Returns
         ``(None, expires)`` when no trigger is set (cadence untouched) or the parsed
         ``(Trigger, expires)``; an unparseable trigger surfaces ``parse_trigger``'s
         teaching rejection verbatim."""
@@ -1947,6 +1958,7 @@ class CollectionUpdateTool(MemoryTool):
             run_at=trigger.run_at if trigger else None,
             max_runs=trigger.max_runs if trigger else None,
             source_log=trigger.source_log if trigger else None,
+            cron_expression=trigger.cron_expression if trigger else None,
             expires_at=expires_at,
             replace_trigger=trigger is not None,
             run_id=self._run_id,
@@ -2049,11 +2061,11 @@ class MemoryMetadataTool(MemoryTool):
 
     @staticmethod
     def _trigger_line(memory: Any) -> str:
-        """The copyable ``trigger`` clause (#1631, display form == invocation form):
-        ``trigger: every <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>``
-        for a collection with a trigger, or ``trigger: none`` for a log / an inert
-        collection with no cadence yet — so the render never emits a half-formed clause
-        (#1666, via the shared ``render_trigger_field``)."""
+        """The copyable ``trigger`` clause (#1631/#1684, display form == invocation form):
+        ``trigger: every <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>`` |
+        ``cron <5-field expression>`` for a collection with a trigger, or ``trigger: none``
+        for a log / an inert collection with no cadence yet — so the render never emits a
+        half-formed clause (#1666, via the shared ``render_trigger_field``)."""
         return f"trigger: {render_trigger_field(memory)}"
 
 
