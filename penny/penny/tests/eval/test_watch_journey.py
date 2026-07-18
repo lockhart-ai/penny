@@ -416,9 +416,7 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
     # Only collections SHE created this sample must be prompt-less (seeded
     # system collections legitimately carry prompts).
     no_watch_faked = all(row.extraction_prompt is None for row in created)
-    seeded_writes = sum(
-        len(collection_entries(db, name)) for name in ("dislikes",)
-    )
+    seeded_writes = sum(len(collection_entries(db, name)) for name in ("dislikes",))
 
     return [
         Check(
