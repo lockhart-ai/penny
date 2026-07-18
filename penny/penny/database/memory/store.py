@@ -69,16 +69,17 @@ class _MetadataUpdate(BaseModel):
     notify: bool | None = None
     extraction_prompt: str | None = None
     collector_interval_seconds: int | None = None
-    # Trigger union (#1629): the apply-time job axis.  ``replace_trigger`` swaps the
-    # WHOLE trigger atomically from these four values (cadence + the once-shaped
-    # run_at/max_runs overlay + the on_advance source_log), so switching forms clears
-    # the members the new form doesn't use.  ``expires_at`` is the end condition — an
-    # independent optional (set when provided; no clear path).  When ``replace_trigger``
-    # is false the legacy per-field ``collector_interval_seconds`` poke applies instead
-    # (the iOS / browser memory UIs, which edit only the interval).
+    # Trigger union (#1629/#1684): the apply-time job axis.  ``replace_trigger`` swaps the
+    # WHOLE trigger atomically from these five values (cadence + the once-shaped
+    # run_at/max_runs overlay + the on_advance source_log + the cron cron_expression), so
+    # switching forms clears the members the new form doesn't use.  ``expires_at`` is the
+    # end condition — an independent optional (set when provided; no clear path).  When
+    # ``replace_trigger`` is false the legacy per-field ``collector_interval_seconds`` poke
+    # applies instead (the iOS / browser memory UIs, which edit only the interval).
     run_at: datetime | None = None
     max_runs: int | None = None
     source_log: str | None = None
+    cron_expression: str | None = None
     expires_at: datetime | None = None
     replace_trigger: bool = False
     # Skill provenance re-stamp (#1620): on a re-render both move together — the
@@ -114,10 +115,10 @@ class _MetadataUpdate(BaseModel):
         return changed
 
     def _apply_trigger(self, memory: MemoryRow) -> list[str]:
-        """The trigger axis (#1629).  ``replace_trigger`` swaps the whole trigger
-        (cadence + run_at/max_runs + source_log) atomically, so a form switch clears
-        the unused members; otherwise the legacy per-field cadence poke applies.
-        ``expires_at`` is set when provided.  Editing the interval declares a new
+        """The trigger axis (#1629/#1684).  ``replace_trigger`` swaps the whole trigger
+        (cadence + run_at/max_runs + source_log + cron_expression) atomically, so a form
+        switch clears the unused members; otherwise the legacy per-field cadence poke
+        applies.  ``expires_at`` is set when provided.  Editing the interval declares a new
         intended cadence, so ``base_interval_seconds`` moves with it and any throttle
         backoff clears."""
         changed: list[str] = []
@@ -128,6 +129,7 @@ class _MetadataUpdate(BaseModel):
             memory.run_at = self.run_at
             memory.max_runs = self.max_runs
             memory.source_log = self.source_log
+            memory.cron_expression = self.cron_expression
             changed.append("trigger")
         elif self.collector_interval_seconds is not None:
             memory.collector_interval_seconds = self.collector_interval_seconds
@@ -243,6 +245,7 @@ class MemoryStore:
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
         source_log: str | None = None,
+        cron_expression: str | None = None,
     ) -> MemoryRow:
         return self._create_memory(
             name,
@@ -260,6 +263,7 @@ class MemoryStore:
             skill_name=skill_name,
             skill_params=skill_params,
             source_log=source_log,
+            cron_expression=cron_expression,
         )
 
     def create_log(
@@ -296,6 +300,7 @@ class MemoryStore:
         skill_name: str | None = None,
         skill_params: dict[str, str] | None = None,
         source_log: str | None = None,
+        cron_expression: str | None = None,
     ) -> MemoryRow:
         name = slug(name)
         if self.get(name) is not None:
@@ -330,6 +335,9 @@ class MemoryStore:
                 # On_advance trigger (#1604): the declared source log whose advance
                 # wakes this collection.  NULL for the interval / once forms.
                 source_log=source_log,
+                # Cron trigger (#1684): the 5-field cron schedule.  NULL for every
+                # other form.
+                cron_expression=cron_expression,
                 created_at=datetime.now(UTC),
             )
             session.add(memory)
@@ -540,6 +548,7 @@ class MemoryStore:
         run_at: datetime | None = None,
         max_runs: int | None = None,
         source_log: str | None = None,
+        cron_expression: str | None = None,
         expires_at: datetime | None = None,
         replace_trigger: bool = False,
         run_id: str | None = None,
@@ -569,6 +578,7 @@ class MemoryStore:
             run_at=run_at,
             max_runs=max_runs,
             source_log=source_log,
+            cron_expression=cron_expression,
             expires_at=expires_at,
             replace_trigger=replace_trigger,
             skill_name=skill_name,

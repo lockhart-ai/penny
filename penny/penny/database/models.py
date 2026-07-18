@@ -283,6 +283,14 @@ class MemoryRow(SQLModel, table=True):
     # union is exclusive.  The collection is paced at ``collector_interval_seconds``
     # (the optional ``min_interval`` floor, or the dispatcher tick).
     source_log: str | None = Field(default=None)
+    # Cron trigger (#1684, migration 0098): a 5-field cron expression the model maps
+    # a stated time-of-day recurrence onto ("morning and evening" → ``0 8,20 * * *``).
+    # When set, the collector gates readiness on ``croniter``'s next fire time after
+    # the last run (``now >= croniter(cron_expression, last_collected_at or created).
+    # get_next()``) — the fourth, mutually-exclusive trigger-union member alongside
+    # ``interval`` / ``run_at``+``max_runs`` / ``source_log``.  NULL for every other
+    # form; paced at the dispatcher tick like the once-shaped / on_advance forms.
+    cron_expression: str | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(
