@@ -1,6 +1,7 @@
 """Database facade — composes domain-specific stores."""
 
 import logging
+import time
 from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine
@@ -80,6 +81,18 @@ class Database:
         """Create all tables if they don't exist."""
         SQLModel.metadata.create_all(self.engine)
         logger.info("Database tables created")
+
+    def analyze(self) -> None:
+        """Refresh SQLite query-planner statistics for the current schema."""
+        started = time.perf_counter()
+        try:
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql("ANALYZE")
+        except Exception:
+            logger.exception("Database query failed: ANALYZE")
+            return
+        elapsed_ms = int((time.perf_counter() - started) * 1_000)
+        logger.info("Database query completed: ANALYZE (elapsed_ms=%d)", elapsed_ms)
 
     def get_session(self) -> Session:
         """Get a database session (for direct use by config modules)."""

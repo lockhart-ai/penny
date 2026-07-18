@@ -86,6 +86,7 @@ class Penny:
         self.db = Database(config.db_path, runtime=config.runtime)
         self.db.create_tables()
         migrate(config.db_path)
+        self.db.analyze()
         config.runtime._db = self.db
 
     def _create_llm_client(

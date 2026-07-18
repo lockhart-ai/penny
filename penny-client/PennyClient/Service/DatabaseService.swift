@@ -72,6 +72,9 @@ final class DatabaseService {
         do {
             try MessageModel.createTable(database: databaseConnection)
             try migrateDatabase()
+            try measureQuery("analyze") {
+                try databaseConnection.execute("ANALYZE")
+            }
         } catch {
             fatalError(error.localizedDescription)
         }
