@@ -22,6 +22,7 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
     has_leaked_harmony_envelope,
+    is_call_fragment_reply,
     is_degenerate_run,
     is_degenerate_tool_name,
 )
@@ -157,6 +158,11 @@ class Agent:
     # an early terminator or a text answer); ``BackgroundAgent`` adds the
     # collector guards.  A future shape guard is one more entry here.
     run_shape_validators: list[ResponseValidator] = []
+
+    # A final-text bare JSON call fragment ({"memory": …}) is rerolled only where
+    # it would EGRESS to the user — ChatAgent sets this True; background agents
+    # keep their teaching nudge chains for call-shaped text (#1569/#1570).
+    _reroll_call_fragments: bool = False
 
     def __init__(
         self,
@@ -898,6 +904,18 @@ class Agent:
             parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
         if any(has_leaked_harmony_envelope(part) for part in parts):
             return ConditionKey.TOOL_CALL_LEAK
+        # A would-be final reply that is a bare JSON call fragment ({"memory": …})
+        # is unusable — it would be SENT verbatim (#1570 field audit).  CHAT only
+        # (``_reroll_call_fragments``): a collector's call-shaped text belongs to
+        # its TEACHING nudge chain and never reaches the user.  Only when there
+        # are no tool calls: alongside real calls the content never egresses, and
+        # the full {"name": …} envelope keeps its teaching validators.
+        if (
+            self._reroll_call_fragments
+            and not (response.message.tool_calls or [])
+            and is_call_fragment_reply(response.message.content or "")
+        ):
+            return ConditionKey.CALL_FRAGMENT_REPLY
         if any(is_degenerate_run(part) for part in parts):
             return ConditionKey.DEGENERATE_OUTPUT
         return None

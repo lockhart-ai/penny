@@ -52,7 +52,6 @@ from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_TRIGGER_NOTE,
     _REBIND_NO_SKILL,
-    _REINSTANTIATE_CONFLICT,
     _SKILL_GONE,
     CollectionArchiveTool,
     CollectionCatalogTool,
@@ -522,7 +521,7 @@ class TestCollectionCreateFrontDoor:
             "same thing, so I didn't create a second one. Reuse it: read it with "
             "collection_read_latest('jacket-price'), or adjust it with "
             "collection_set(name='jacket-price', ...). If this really is a distinct "
-            "task, create it deliberately with collection_set(..., create_anyway=true)."
+            "task, give it a clearly different name and description and set it up again."
         )
         assert db.memories.get("jacket-monitor") is None
 
@@ -551,26 +550,8 @@ class TestCollectionCreateFrontDoor:
             "There's an archived collection for this: 'jacket-price' (archived " in result.message
         )
         assert "collection_unarchive('jacket-price')" in result.message
-        assert "create_anyway=true" in result.message
+        assert "clearly different name and description" in result.message
         assert db.memories.get("jacket-monitor") is None
-
-    @pytest.mark.asyncio
-    async def test_create_anyway_overrides_the_duplicate_check(self, tmp_path):
-        """The deliberate override creates the near-duplicate the check would refuse —
-        a distinct, explicit act, never a default."""
-        db = _make_db(tmp_path)
-        _seed_watch_skill(db)
-        _seed_collection(db, name="jacket-price", description="watch the blue jacket price")
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="jacket-monitor",
-            description="watch the blue jacket price",
-            skill=_SKILL_NAME,
-            params={"peak": "jacket"},
-            trigger="every 3600",
-            create_anyway=True,
-        )
-        assert result.success and result.mutated
-        assert db.memories.get("jacket-monitor") is not None
 
     @pytest.mark.asyncio
     async def test_one_shot_once_at_trigger_persists(self, tmp_path):
@@ -805,12 +786,11 @@ class TestCollectionCreateFrontDoor:
 
 
 class TestMinimalSurfaceCensus:
-    """The minimal collection surface (#1631): the model reasons about six concepts —
-    name · description · skill(+params) · trigger · notify · expires_at — plus the
-    reactive ``create_anyway`` (create) and the raw-edit ``extraction_prompt`` escape
-    hatch (update).  Pinned so a future field can't silently creep back onto the
-    surface, and so the dropped shrapnel (``intent`` + the six flat trigger fields)
-    stays gone."""
+    """The minimal collection surface (#1631, tightened by #1570): the model reasons
+    about six concepts — name · description · skill(+params) · trigger · notify ·
+    expires_at.  ``create_anyway`` and the raw-edit ``extraction_prompt`` are GONE
+    (dedup always runs; a routine is only ever a skill render).  Pinned so a future
+    field can't silently creep back onto the surface."""
 
     def test_create_accepts_exactly_the_minimal_fields(self):
         assert set(CollectionCreateArgs.model_fields) == {
@@ -821,12 +801,11 @@ class TestMinimalSurfaceCensus:
             "trigger",
             "notify",
             "expires_at",
-            "create_anyway",
         }
 
     def test_update_accepts_exactly_the_minimal_fields(self):
-        # ``extraction_prompt`` is the retained raw-edit escape hatch (it has a live eval
-        # contract, #1529); ``create_anyway`` is create-only (reactive at birth).
+        # No ``extraction_prompt`` — a routine is only ever a skill render (#1570);
+        # the #1529 raw-edit escape hatch is gone with the authoring channel.
         assert set(CollectionUpdateArgs.model_fields) == {
             "name",
             "description",
@@ -835,7 +814,6 @@ class TestMinimalSurfaceCensus:
             "trigger",
             "notify",
             "expires_at",
-            "extraction_prompt",
         }
 
     def test_dropped_shrapnel_is_gone_from_both_surfaces(self):
@@ -916,49 +894,6 @@ class TestCreateAndList:
         assert "events" in result.message
 
     @pytest.mark.asyncio
-    async def test_update_rejects_short_extraction_prompt(self, tmp_path):
-        db = _make_db(tmp_path)
-        original_prompt = "test fixture extraction prompt"
-        _seed_collection(db, name="notes", extraction_prompt=original_prompt)
-        # The optional extraction_prompt rule on CollectionUpdateArgs validates
-        # only when present, via the pre-execute Tool.run gate.
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
-            name="notes", extraction_prompt="yes"
-        )
-        assert result.success is False
-        assert "extraction_prompt" in result.message
-        assert "too short" in result.message
-        # Update rejected — original prompt preserved unchanged
-        assert db.memories.get("notes").extraction_prompt == original_prompt
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_fictitious_tool_call(self, tmp_path):
-        db = _make_db(tmp_path)
-        original_prompt = (
-            'Collect notes.\n1. browse(["x"])\n'
-            '2. collection_write("notes", entries=[{key: "k", content: "c"}])\n3. done()'
-        )
-        _seed_collection(
-            db,
-            name="notes",
-            description="x",
-            extraction_prompt=original_prompt,
-            collector_interval_seconds=3600,
-        )
-        # A rewrite that introduces a fictitious tool is rejected via the pre-execute
-        # Tool.run gate, and the stored prompt is left untouched.
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
-            name="notes",
-            extraction_prompt=(
-                'Collect notes.\n1. browse(["x"])\n2. extract_text(page)\n'
-                '3. collection_write("notes", entries=[{key: "k", content: "c"}])\n4. done()'
-            ),
-        )
-        assert result.success is False
-        assert "extract_text" in result.message
-        assert db.memories.get("notes").extraction_prompt == original_prompt
-
-    @pytest.mark.asyncio
     async def test_update_treats_blank_fields_as_omitted(self, tmp_path, mock_llm):
         # Models emit "" for an optional field they mean to leave alone (gpt-oss
         # was observed passing extraction_prompt="" alongside a recall change).
@@ -975,7 +910,6 @@ class TestCreateAndList:
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
-            extraction_prompt="",
             description="   ",
             notify=True,
         )
@@ -1377,19 +1311,20 @@ class TestCollectionUpdateReinstantiation:
         assert stored.notify is True  # the named change landed
 
     @pytest.mark.asyncio
-    async def test_extraction_prompt_alongside_skill_is_a_conflict(self, tmp_path):
-        """A raw extraction_prompt AND skill/params in one call is refused — the render
-        owns the prompt, so the two can't both win; nothing changes."""
+    async def test_extraction_prompt_is_not_a_model_argument(self, tmp_path):
+        """There is NO extraction_prompt argument on the model surface (#1570 —
+        prompts are only ever renders of demonstrated skills): passing one is an
+        unknown-parameter rejection through the arg envelope, and the stored
+        routine is untouched."""
         db = _make_db(tmp_path)
         await _create_watch_collection(db)
         before = db.memories.get("cinder-elevation").extraction_prompt
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
             name="cinder-elevation",
-            skill=_SKILL_NAME,
             extraction_prompt="a full replacement body long enough to pass the length gate",
         )
         assert result.success is False
-        assert result.message == _REINSTANTIATE_CONFLICT  # whole refusal
+        assert "extraction_prompt" in result.message
         assert db.memories.get("cinder-elevation").extraction_prompt == before
 
     @pytest.mark.asyncio
@@ -1926,11 +1861,12 @@ class TestCollectionWritesAndReads:
         # Birth needs a description.
         result = await tool.execute(name="trip-plans")
         assert result.success is False and "needs a `description`" in result.message
-        # Birth with a hand-authored prompt is refused (routines enter by demonstration).
-        result = await tool.execute(
+        # extraction_prompt is not a model argument AT ALL (#1570): unknown-parameter
+        # rejection through the arg envelope, on the set tool like everywhere else.
+        result = await tool.run(
             name="trip-plans", description="trip planning notes", extraction_prompt="1. x" * 10
         )
-        assert result.success is False and "DEMONSTRATED" in result.message
+        assert result.success is False and "extraction_prompt" in result.message
         # Create path: inert storage, provenance stamped.
         result = await tool.execute(name="trip-plans", description="trip planning notes")
         assert result.success is True
@@ -4034,7 +3970,6 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
         description=description,
         skill="find-skill",
         trigger="every 3600",
-        create_anyway=True,
     )
 
 

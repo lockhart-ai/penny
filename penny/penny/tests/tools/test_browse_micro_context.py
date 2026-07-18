@@ -234,19 +234,19 @@ async def test_extract_keeps_page_body_out_of_main_context(tmp_path, mock_llm):
 
 
 @pytest.mark.asyncio
-async def test_browse_without_extract_is_unchanged(tmp_path):
-    """Chat's browse (no ``extract``) is byte-identical to before: the page body
-    returns directly and no micro-context model call is made."""
+async def test_browse_without_extract_is_rejected_at_the_gate(tmp_path):
+    """``extract`` is REQUIRED (#1570 — every browse routes page content through a
+    micro-context; the page never enters the main context whole).  A missing
+    extract is an arg-gate rejection naming the fix, and no fetch happens."""
     db = _make_db(tmp_path)
     model = MockLlmClient()
     tool = _extract_tool(db, model)
 
-    result = await tool.execute(queries=[_PAGE_URL])
+    result = await tool.run(queries=[_PAGE_URL])
 
-    assert PennyConstants.BROWSE_PAGE_HEADER in result.message
-    assert _BODY_PHRASE in result.message  # the full page body IS returned
-    assert result.success is True
-    assert model.requests == []  # no extraction call was made
+    assert result.success is False
+    assert "extract" in result.message
+    assert model.requests == []  # nothing ran
 
 
 @pytest.mark.asyncio

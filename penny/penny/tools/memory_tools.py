@@ -617,7 +617,7 @@ class CollectionCreateTool(MemoryTool):
     resolution is an enumerated union — a clean name match instantiates; a fuzzy
     match returns ranked candidates to choose from; no match returns the teach-me
     elicitation.  Idempotency at birth (#1567) refuses a near-duplicate of an
-    existing collection unless creation is made deliberate (``create_anyway``).
+    existing collection — birth dedup always runs (there is no override arg).
     """
 
     name = "collection_set"
@@ -724,12 +724,6 @@ class CollectionCreateTool(MemoryTool):
                     "kept posted / alerted); false (default) = silent."
                 ),
             },
-            "create_anyway": {
-                "type": "boolean",
-                "description": (
-                    "Reactive override — set only when a near-duplicate refusal says to."
-                ),
-            },
         },
         "required": ["name", "description"],
     }
@@ -799,10 +793,9 @@ class CollectionCreateTool(MemoryTool):
         if job_error := self._reject_job_args(args):
             return job_error
         description_embedding = await embed_text(self._llm_client, args.description)
-        if not args.create_anyway:
-            dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
-            if dup is not None:
-                return self._duplicate_result(dup)
+        dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
+        if dup is not None:
+            return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
             args.description,
@@ -853,10 +846,9 @@ class CollectionCreateTool(MemoryTool):
         run-time notify suffix on the collector (#1557 — the sole emission path since
         the notifier consumer was retired)."""
         description_embedding = await embed_text(self._llm_client, args.description)
-        if not args.create_anyway:
-            dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
-            if dup is not None:
-                return self._duplicate_result(dup)
+        dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
+        if dup is not None:
+            return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
             args.description,
@@ -1699,21 +1691,13 @@ class UpdateEntryTool(MemoryTool):
 
 # ── Re-render actionable refusals (#1620) ────────────────────────────────────
 
-# A raw extraction_prompt passed alongside skill/params: the render owns the prompt,
-# so the two are mutually exclusive rather than one silently winning.
-_REINSTANTIATE_CONFLICT = (
-    "Can't set extraction_prompt AND skill/params in the same call — re-rendering from "
-    "a skill REPLACES the prompt with its rendered steps, so an extraction_prompt you "
-    "pass would be discarded. Either re-render from the skill (skill= / params=) OR edit "
-    "the prompt text directly (extraction_prompt=), not both."
-)
-
 # params-only rebind on a collection that was never instantiated from a skill (a
 # legacy hand-authored one): there are no parameters to bind — name how to adopt one.
 _REBIND_NO_SKILL = (
     "Can't rebind params on '{name}': it wasn't instantiated from a skill (it's "
     "hand-authored), so it has no parameters to bind. Pass skill=<name> to adopt a "
-    "skill onto it, or edit its recipe directly with extraction_prompt=<the full body>."
+    "skill onto it — demonstrate the routine once in chat if no skill exists yet; "
+    "it's learned automatically."
 )
 
 # The collection's pinned skill name no longer resolves (deleted / renamed) — a
@@ -1746,7 +1730,7 @@ class CollectionSetTool(MemoryTool):
     reasons about whether the collection already exists.
 
     Missing name → the create path (birth idempotency-dedup unless
-    ``create_anyway``, skill instantiation, the inert/job-arg refusal).  Existing
+    skill instantiation, the inert/job-arg refusal).  Existing
     name → the update path (adopt/rebind/swap/refresh re-render, atomic trigger
     replace, raw prompt edit).  Both inner paths keep their full validation —
     this class is a dispatcher, not a re-implementation."""
@@ -1774,8 +1758,6 @@ class CollectionSetTool(MemoryTool):
             "trigger": {"type": "string"},
             "expires_at": {"type": "string"},
             "notify": {"type": "boolean"},
-            "create_anyway": {"type": "boolean"},
-            "extraction_prompt": {"type": "string"},
         },
         "required": ["name"],
     }
@@ -1803,16 +1785,11 @@ class CollectionSetTool(MemoryTool):
             return await self._update._run(
                 name=args.name,
                 description=args.description,
-                extraction_prompt=args.extraction_prompt,
                 notify=args.notify,
                 skill=args.skill,
                 params=args.params,
                 trigger=args.trigger,
                 expires_at=args.expires_at,
-            )
-        if args.extraction_prompt is not None:
-            return ToolResult(
-                message=_SET_BIRTH_PROMPT_REFUSAL.format(name=args.name), success=False
             )
         if args.description is None:
             return ToolResult(
@@ -1826,18 +1803,8 @@ class CollectionSetTool(MemoryTool):
             trigger=args.trigger,
             expires_at=args.expires_at,
             notify=bool(args.notify),
-            create_anyway=args.create_anyway,
         )
 
-
-_SET_BIRTH_PROMPT_REFUSAL = (
-    "'{name}' doesn't exist yet, and a new collection can't be born with a "
-    "hand-written extraction_prompt — a routine enters by being DEMONSTRATED once "
-    "(do it in chat: browse, extract, collection_write) and is learned as a skill "
-    "automatically. Then collection_set(name='{name}', skill=<its name>, ...) "
-    "attaches it. The raw extraction_prompt edit is only for an EXISTING "
-    "collection's routine."
-)
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
     "'{name}' doesn't exist yet, so this call would create it — but a new "
@@ -1925,15 +1892,6 @@ class CollectionUpdateTool(MemoryTool):
                     "Flip notify-on-new: true = start telling the user about "
                     "new entries; false = stop (keep gathering silently). Omit "
                     "to leave unchanged."
-                ),
-            },
-            "extraction_prompt": {
-                "type": "string",
-                "description": (
-                    "FULL rewritten body — replaces the whole prompt, not "
-                    "a diff. Drives what the collector actually does. Read "
-                    "current body via memory_metadata(<collection>) first for "
-                    "scope or silent-flip changes. Mutually exclusive with skill/params."
                 ),
             },
             "skill": {
@@ -2032,18 +1990,11 @@ class CollectionUpdateTool(MemoryTool):
     async def _edit_metadata(
         self, args: CollectionUpdateArgs, trigger: Trigger | None, expires_at: datetime | None
     ) -> ToolResult:
-        """The plain metadata edit — description / notify / trigger, and the prompt ONLY
-        if a raw ``extraction_prompt`` is supplied (a skill re-render is the other path).
-        Omitting skill/params AND extraction_prompt leaves the collection's routine
-        untouched; a trigger applies whether or not the prompt changes (#1604 follow-up)."""
-        if rejection := _reject_unknown_extraction_tools(
-            self._db, self._llm_client, args.extraction_prompt
-        ):
-            return rejection
+        """The plain metadata edit — description / notify / trigger.  The collection's
+        routine is untouchable here: a prompt is only ever a RENDER of a skill (the
+        re-render path); there is no raw-edit argument on the model surface."""
         embedding = await self._description_embedding(args)
-        memory = self._apply_update(
-            args, args.extraction_prompt, None, None, embedding, trigger, expires_at
-        )
+        memory = self._apply_update(args, None, None, None, embedding, trigger, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
         return ToolResult(message=message, mutated=True)
@@ -2058,8 +2009,6 @@ class CollectionUpdateTool(MemoryTool):
         the render seam (#1629); the re-render preserves steps-1..A / no-stored-``done()``
         by construction.  A raw ``extraction_prompt`` alongside conflicts — the render
         owns the prompt."""
-        if args.extraction_prompt is not None:
-            return ToolResult(message=_REINSTANTIATE_CONFLICT, success=False)
         resolved = await self._resolve_target(args)
         if isinstance(resolved, ToolResult):
             return resolved

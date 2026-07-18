@@ -68,6 +68,9 @@ class ChatAgent(Agent):
     #    JSON blob; catch it and nudge the model to re-emit the real call or reply in
     #    plain words.
     run_shape_validators = [SkillNarrationValidator(), CallAsTextValidator()]
+    # A bare JSON call fragment as final text would be SENT to the user — reroll it
+    # (#1570 field audit); the full call envelope keeps CallAsTextValidator.
+    _reroll_call_fragments = True
     # Stable id linking the synthetic page-context tool-call to its tool-result
     # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not
     # an ad-hoc ``tool_name`` field.

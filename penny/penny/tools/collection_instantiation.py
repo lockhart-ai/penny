@@ -136,13 +136,13 @@ _ACTIVE_DUPLICATE = (
     "Already have a collection for this: '{name}' (active) — it covers the same thing, so I "
     "didn't create a second one. Reuse it: read it with collection_read_latest('{name}'), or "
     "adjust it with collection_set(name='{name}', ...). If this really is a distinct task, "
-    "create it deliberately with collection_set(..., create_anyway=true)."
+    "give it a clearly different name and description and set it up again."
 )
 
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
-    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, or "
-    "start a fresh one deliberately with collection_set(..., create_anyway=true)."
+    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, "
+    "or set up a fresh one with a clearly different name and description."
 )
 
 

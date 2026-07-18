@@ -241,8 +241,7 @@ class CollectionCreateArgs(ToolArgs):
     the four forms.  ``expires_at`` (optional) is the end condition — the
     watch archives itself when it passes.  ``notify`` (default false) makes the collection
     tell the user about new/changed entries; an omission stays silent, so it can never
-    accidentally notify.  ``create_anyway`` (default false) is the reactive idempotency
-    override — set only when a near-duplicate refusal tells you to.
+    accidentally notify.
     """
 
     name: MemoryName
@@ -269,10 +268,6 @@ class CollectionCreateArgs(ToolArgs):
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
     notify: bool = False
-    # The reactive idempotency override (#1567) — default false so an omission never
-    # silently creates a near-duplicate; set true ONLY in response to a near-duplicate
-    # refusal (that refusal is the sole place it's explained).
-    create_anyway: bool = False
 
 
 class LogCreateArgs(ToolArgs):
@@ -305,16 +300,17 @@ class CollectionSetArgs(ToolArgs):
 
     ``name`` missing → the collection comes into being with this config (the
     create path, all its validation intact: birth idempotency-dedup unless
-    ``create_anyway``, skill resolution, the inert/job-arg refusal).  ``name``
+    skill resolution, the inert/job-arg refusal).  ``name``
     exists → only the fields explicitly set change (the update path: adopt /
     rebind / swap / refresh re-render, atomic trigger replace, raw
     ``extraction_prompt`` edit).  The model never reasons about which case it is.
 
     ``description`` is required the FIRST time (it's the meaning anchor);
     optional after.  ``notify`` is tri-state: ``None`` = leave unchanged (birth
-    default: silent).  ``extraction_prompt`` is the raw-edit escape hatch and is
-    only meaningful on an existing collection — at birth a hand-authored prompt
-    is refused (a routine enters through a demonstrated round, #1658)."""
+    default: silent).  There is NO ``extraction_prompt`` argument anywhere on the
+    model surface: a collection's routine is only ever a RENDER of a demonstrated
+    skill (#1658) — a wrong routine is fixed by re-teaching, never by editing
+    prompt text."""
 
     name: MemoryName
     description: OptionalText = None
@@ -323,8 +319,6 @@ class CollectionSetArgs(ToolArgs):
     trigger: OptionalText = None
     expires_at: OptionalText = None
     notify: bool | None = None
-    create_anyway: bool = False
-    extraction_prompt: OptionalExtractionPrompt = None
 
 
 class CollectionUpdateArgs(ToolArgs):
@@ -357,7 +351,6 @@ class CollectionUpdateArgs(ToolArgs):
 
     name: MemoryName
     description: OptionalText = None
-    extraction_prompt: OptionalExtractionPrompt = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is

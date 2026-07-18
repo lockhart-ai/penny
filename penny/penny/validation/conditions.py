@@ -50,6 +50,7 @@ class ConditionKey(StrEnum):
     DONE_JSON_BAIL = "done_json_bail"
     CALL_AS_TEXT = "call_as_text"
     DEGENERATE_OUTPUT = "degenerate_output"
+    CALL_FRAGMENT_REPLY = "call_fragment_reply"
     TOOL_CALL_LEAK = "tool_call_leak"
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────
     HALF_FORMED_SEND = "half_formed_send"
@@ -163,6 +164,11 @@ _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     _condition(
         ConditionKey.TOOL_CALL_LEAK,
         "Tool call leaked as raw Harmony envelope text instead of a parsed call",
+        live=True,
+    ),
+    _condition(
+        ConditionKey.CALL_FRAGMENT_REPLY,
+        "Final text was a bare JSON call fragment, not a reply",
         live=True,
     ),
     # ── Caught live AND flagged post-hoc ─────────────────────────────────────

@@ -146,6 +146,32 @@ _HARMONY_ENVELOPE_RE = re.compile(
 )
 
 
+def is_call_fragment_reply(content: str) -> bool:
+    """True if a would-be user-facing reply is a bare JSON-ish call fragment.
+
+    The observed leak (#1570 field audit): the model emits something like
+    ``{"memory":"rip? wait we need …"}`` as its final TEXT — a mangled slice of a
+    tool call's argument object — and, being neither the full call envelope
+    (``CallAsTextValidator``'s shape) nor a punctuation collapse, it sailed
+    through every guard and was SENT to the user verbatim.  The agent-loop
+    reroll guard treats it like the other unusable-output conditions: discard
+    and re-draw on the unchanged context.
+
+    Zero-false-positive discipline: only a reply that IS the fragment matches —
+    the stripped text must OPEN with ``{"`` (no prose before it).  Penny's voice
+    never opens a message with a JSON object; a reply that merely CONTAINS a
+    quoted/embedded snippet mid-prose does not match.  A full call ENVELOPE
+    (``{"name": …, "arguments": …}``) is deliberately excluded: that shape
+    belongs to the TEACHING validators (``CallAsTextValidator`` in chat, the
+    done-JSON nudge in collectors), which re-elicit the real call — a reroll
+    here would preempt them.
+    """
+    stripped = content.lstrip()
+    if not stripped.startswith('{"'):
+        return False
+    return not ('"name"' in stripped and '"arguments"' in stripped)
+
+
 def has_leaked_harmony_envelope(content: str) -> bool:
     """True if ``content`` carries a leaked Harmony tool-call envelope.
 

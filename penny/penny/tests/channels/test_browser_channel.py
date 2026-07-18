@@ -205,7 +205,11 @@ class TestBrowseTool:
     def _make_tool(request_fn, permission_manager=None):
         """Create a BrowseTool wired to a mock browse provider."""
         perm = permission_manager or MagicMock(check_domain=AsyncMock())
-        tool = BrowseTool(max_calls=3, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=3,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
         tool.set_browse_provider(lambda: (request_fn, perm))
         return tool
 
@@ -216,7 +220,7 @@ class TestBrowseTool:
             return_value=("Title: Example\nURL: https://example.com\n\nPage content.", None)
         )
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"])
+        result = await tool.execute(queries=["https://example.com"], extract="the page content")
 
         assert isinstance(result, ToolResult)
         assert "Page content." in result.message
@@ -235,10 +239,14 @@ class TestBrowseTool:
             return_value=("Title: Tasty Recipe\nURL: https://ex.com/r\n\nContent.", _data_uri(raw))
         )
         tool = BrowseTool(
-            max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()), author="penny"
+            max_calls=3,
+            db=db,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+            author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://ex.com/r"])
+        result = await tool.execute(queries=["https://ex.com/r"], extract="the page content")
 
         assert isinstance(result, ToolResult)
         assert not hasattr(result, "image_base64")
@@ -282,7 +290,9 @@ class TestBrowseTool:
         )
         request_fn = AsyncMock(return_value=(kagi_content, None))
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://kagi.com/search?q=test"])
+        result = await tool.execute(
+            queries=["https://kagi.com/search?q=test"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         # Signal preserved
@@ -305,10 +315,14 @@ class TestBrowseTool:
         db = _make_db(tmp_path)
         request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
         tool = BrowseTool(
-            max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()), author="penny"
+            max_calls=3,
+            db=db,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+            author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
-        result = await tool.execute(queries=["https://example.com"])
+        result = await tool.execute(queries=["https://example.com"], extract="the page content")
 
         assert isinstance(result, ToolResult)
         assert _all_media(db) == []
@@ -322,7 +336,7 @@ class TestBrowseTool:
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
         request_fn = AsyncMock(side_effect=RuntimeError("extraction failed after 10 retries"))
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://example.com"])
+        result = await tool.execute(queries=["https://example.com"], extract="the page content")
 
         assert isinstance(result, ToolResult)
         # The only query errored, so the call did nothing: success=False makes that
@@ -347,7 +361,9 @@ class TestBrowseTool:
             return ("Title: Good\nURL: https://good.com\n\nUseful content.", None)
 
         tool = self._make_tool(request_fn)
-        result = await tool.execute(queries=["https://good.com", "https://bad.com"])
+        result = await tool.execute(
+            queries=["https://good.com", "https://bad.com"], extract="the page content"
+        )
 
         assert result.success is True
         assert PennyConstants.BROWSE_PAGE_HEADER + "https://good.com" in result.message
@@ -362,7 +378,8 @@ class TestBrowseTool:
         tool = self._make_tool(request_fn)  # max_calls=3
 
         result = await tool.execute(
-            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"]
+            queries=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
+            extract="the page content",
         )
 
         assert result.success is True
@@ -380,7 +397,7 @@ class TestBrowseTool:
         mock_perm.check_domain = AsyncMock()
         request_fn = AsyncMock(return_value=("Title: Ex\nURL: https://ex.com\n\nContent.", None))
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
-        await tool.execute(queries=["https://example.com"])
+        await tool.execute(queries=["https://example.com"], extract="the page content")
 
         mock_perm.check_domain.assert_called_once_with("https://example.com")
         request_fn.assert_called_once()
@@ -396,7 +413,7 @@ class TestBrowseTool:
         request_fn = AsyncMock()
         tool = self._make_tool(request_fn, permission_manager=mock_perm)
 
-        result = await tool.execute(queries=["https://blocked.com"])
+        result = await tool.execute(queries=["https://blocked.com"], extract="the page content")
 
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://blocked.com" in result.message
         assert "blocked" in result.message
@@ -414,7 +431,7 @@ class TestBrowseTool:
             return ("", None)
 
         tool = self._make_tool(hanging_request_fn)
-        result = await tool.execute(queries=["https://example.com"])
+        result = await tool.execute(queries=["https://example.com"], extract="the page content")
 
         assert isinstance(result, ToolResult)
         assert PennyConstants.BROWSE_ERROR_HEADER + "https://example.com" in result.message
@@ -436,11 +453,17 @@ class TestBrowseToolMediaCapture:
             return pages[params["url"]]
 
         tool = BrowseTool(
-            max_calls=3, db=db, embedding_client=cast(Any, MockLlmClient()), author="penny"
+            max_calls=3,
+            db=db,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+            author="penny",
         )
         tool.set_browse_provider(lambda: (request_fn, MagicMock(check_domain=AsyncMock())))
 
-        result = await tool.execute(queries=["https://a.com", "https://b.com"])
+        result = await tool.execute(
+            queries=["https://a.com", "https://b.com"], extract="the page content"
+        )
         assert isinstance(result, ToolResult)
         rows = sorted(_all_media(db), key=lambda r: r.source_url or "")
         assert [r.source_url for r in rows] == ["https://a.com", "https://b.com"]
