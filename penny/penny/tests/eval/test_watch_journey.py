@@ -713,10 +713,7 @@ _BEAT2B_TURNS = [
         "or injuries — skip game scores 3. remember the title plus a short "
         "blurb for each"
     ),
-    (
-        "perfect — now do that every morning and evening and let me know when "
-        "something new shows up."
-    ),
+    ("perfect — now do that twice a day and let me know when something new shows up."),
 ]
 
 # Page-mechanics demands — the observed stall vocabulary.  Present in a SENT
