@@ -276,6 +276,29 @@ class TestLastStepToolRemoval:
         await agent.close()
 
 
+def _tool_result_messages(mock_llm, needle: str) -> list[str]:
+    """All TOOL-role message contents (across recorded requests) containing ``needle``.
+
+    The same rejection/result appears in every subsequent request's history, so callers
+    read ``[0]`` — the identical copies collapse to one expected string.
+    """
+    return [
+        message["content"]
+        for request in mock_llm.requests
+        for message in request["messages"]
+        if message.get("role") == MessageRole.TOOL and needle in message["content"]
+    ]
+
+
+def _failed_dedup_frame(tool_name: str, first_line: str) -> str:
+    """The whole OUTCOME-FIRST FAILED dedup-rejection render (#1673) for assertions —
+    narration + the ``(<tool> result)`` machine tag + the FAILED body quoting the
+    prior failure's first line."""
+    narration = Prompt.DUPLICATE_CALL_NARRATION_FAILED.format(tool_name=tool_name)
+    body = Prompt.DUPLICATE_CALL_REJECTION_FAILED.format(tool_name=tool_name, first_line=first_line)
+    return f"{narration} ({tool_name} result)\n{body}"
+
+
 class TestRepeatCallGuard:
     """Test that repeat tool calls are blocked by args, not just name."""
 
@@ -325,26 +348,235 @@ class TestRepeatCallGuard:
         # Only first call should have executed
         assert len(response.tool_calls) == 1
 
-        # The repeat rejection carries the same tagged first-person envelope every real
-        # tool result gets (via Agent._frame_injected_result), so the model reads it as
-        # the response to its own call, not a fresh instruction.
-        repeat_tool_messages = [
-            message
-            for request in mock_llm.requests
-            for message in request["messages"]
-            if message.get("role") == MessageRole.TOOL
-            and "You already made this exact tool call" in message["content"]
-        ]
-        assert repeat_tool_messages
-        # Bespoke narration for the dedup site (#1485): the framing names the repeat,
-        # the retained (<tool> result) tag stays, and the actionable DUPLICATE_CALL_
-        # REJECTION body is preserved verbatim — narration + tag + preserved body.
-        assert repeat_tool_messages[0]["content"] == (
-            f"{Prompt.DUPLICATE_CALL_NARRATION.format(tool_name='search')} (search result)\n"
-            f"{Prompt.DUPLICATE_CALL_REJECTION}"
+        # The prior search SUCCEEDED, so the repeat is rejected with the OUTCOME-FIRST
+        # SUCCEEDED frame (#1673): the narration states it succeeded and its result is
+        # above, the retained (<tool> result) tag stays, and the reuse-the-result body
+        # is preserved verbatim — narration + tag + preserved body.
+        repeat_tool_messages = _tool_result_messages(
+            mock_llm, "You already made this exact tool call"
         )
-        assert "already ran earlier this run" in repeat_tool_messages[0]["content"]
-        assert "(search result)" in repeat_tool_messages[0]["content"]
+        assert repeat_tool_messages
+        narration = Prompt.DUPLICATE_CALL_NARRATION_SUCCEEDED.format(tool_name="search")
+        assert repeat_tool_messages[0] == (
+            f"{narration} (search result)\n{Prompt.DUPLICATE_CALL_REJECTION_SUCCEEDED}"
+        )
+        assert "it succeeded" in repeat_tool_messages[0]
+        assert "(search result)" in repeat_tool_messages[0]
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_retry_after_remediation_runs(self, test_db, mock_llm):
+        """A FAILED write, a successful mutating remediation, then the IDENTICAL retry
+        RUNS again (#1673) — and its result is the executed tool's, not a rejection."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=6)
+
+        state = {"created": False}
+
+        async def execute(tool_call):
+            if tool_call.tool == "collection_create":
+                state["created"] = True
+                return ToolResult(message="Created collection widget-log", mutated=True)
+            if tool_call.tool == "collection_write":
+                if state["created"]:
+                    return ToolResult(message="Wrote entry to widget-log", mutated=True)
+                return ToolResult(
+                    message="Memory widget-log not found — create it first", success=False
+                )
+            return ToolResult(message="ok")
+
+        agent._tool_executor.execute = execute
+
+        write_args = {"name": "widget-log", "content": "x"}
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            if count == 2:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_create", {"name": "widget-log"}
+                )
+            if count == 3:
+                # Byte-identical to count 1 — normally blocked, but the create mutated
+                # since the failure, clearing the seen-calls cache, so the retry runs.
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "done"
+
+        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        # The retry EXECUTED (two write records), rather than being blocked (one).
+        assert len(writes) == 2
+        assert writes[0].failed is True
+        # The retry ran the real tool: its record is the executed result, not a rejection.
+        assert writes[1].failed is False
+        assert writes[1].mutated is True
+        assert writes[1].result == "Wrote entry to widget-log"
+        # No duplicate-rejection frame was injected for the write — it ran.
+        assert _tool_result_messages(mock_llm, "nothing was saved") == []
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_reread_after_write_runs(self, test_db, mock_llm):
+        """The cache clears in the READ direction too (#1673): a read that FAILED, then
+        a successful write to that key, then the IDENTICAL read RUNS again and succeeds —
+        the mutation makes the previously-seen read forgettable, not just a failed write."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=6)
+
+        state = {"written": False}
+
+        async def execute(tool_call):
+            if tool_call.tool == "collection_write":
+                state["written"] = True
+                return ToolResult(message="Wrote entry to widget-log", mutated=True)
+            if tool_call.tool == "collection_read_latest":
+                if state["written"]:
+                    return ToolResult(message="1 entry: the value")
+                return ToolResult(
+                    message="Memory widget-log has no entry for key foo", success=False
+                )
+            return ToolResult(message="ok")
+
+        agent._tool_executor.execute = execute
+
+        read_args = {"name": "widget-log", "key": "foo"}
+        write_args = {"name": "widget-log", "key": "foo", "content": "x"}
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_read_latest", dict(read_args)
+                )
+            if count == 2:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            if count == 3:
+                # Byte-identical to count 1 — the write mutated since, clearing the cache,
+                # so the re-read RUNS instead of being blocked.
+                return mock_llm._make_tool_call_response(
+                    request, "collection_read_latest", dict(read_args)
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "done"
+
+        reads = [r for r in response.tool_calls if r.tool == "collection_read_latest"]
+        # The re-read EXECUTED (two read records), rather than being blocked (one).
+        assert len(reads) == 2
+        assert reads[0].failed is True
+        assert reads[1].failed is False
+        assert reads[1].result == "1 entry: the value"
+        # No duplicate-rejection frame — the re-read ran.
+        assert _tool_result_messages(mock_llm, "nothing was saved") == []
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_retry_without_remediation_blocked_states_failure(self, test_db, mock_llm):
+        """A FAILED call repeated with NO intervening mutation is blocked (#1673), and
+        the rejection frame states the prior FAILURE and quotes its first line."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
+
+        failure = "Memory widget-log not found — create it first"
+
+        async def execute(tool_call):
+            if tool_call.tool == "collection_write":
+                return ToolResult(message=failure, success=False)
+            return ToolResult(message="ok")
+
+        agent._tool_executor.execute = execute
+
+        write_args = {"name": "widget-log", "content": "x"}
+
+        def handler(request, count):
+            if count <= 2:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "done"
+
+        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        # No mutation intervened, so the identical retry was blocked — one write only.
+        assert len(writes) == 1
+
+        rejections = _tool_result_messages(mock_llm, "nothing was saved")
+        assert rejections
+        # Whole-render: OUTCOME-FIRST FAILED frame quoting the prior failure's first line.
+        assert rejections[0] == _failed_dedup_frame("collection_write", failure)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_retry_after_remediation_is_loop_safe(self, test_db, mock_llm):
+        """Loop-safety (#1673): an allowed retry that FAILS AGAIN adds no mutation, so a
+        third identical attempt is blocked — the allowance can't drive an infinite loop."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=8)
+
+        failure = "Memory widget-log not found — create it first"
+
+        async def execute(tool_call):
+            if tool_call.tool == "collection_create":
+                return ToolResult(message="Created collection widget-log", mutated=True)
+            if tool_call.tool == "collection_write":
+                # The write keeps failing even after the create (a still-unmet precondition).
+                return ToolResult(message=failure, success=False)
+            return ToolResult(message="ok")
+
+        agent._tool_executor.execute = execute
+
+        write_args = {"name": "widget-log", "content": "x"}
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            if count == 2:
+                return mock_llm._make_tool_call_response(
+                    request, "collection_create", {"name": "widget-log"}
+                )
+            if count == 3:
+                # Allowed retry (prior failed + create mutated) — runs, fails again.
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            if count == 4:
+                # Third identical attempt: prior (the retry) failed, NO mutation since → blocked.
+                return mock_llm._make_tool_call_response(
+                    request, "collection_write", dict(write_args)
+                )
+            return mock_llm._make_text_response(request, "done")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "done"
+
+        writes = [r for r in response.tool_calls if r.tool == "collection_write"]
+        # W1 and the allowed retry executed; the THIRD attempt was blocked — two records.
+        assert len(writes) == 2
+        assert all(w.failed for w in writes)
+
+        rejections = _tool_result_messages(mock_llm, "nothing was saved")
+        assert rejections
+        assert rejections[0] == _failed_dedup_frame("collection_write", failure)
 
         await agent.close()
 

@@ -231,27 +231,36 @@ class Prompt:
     )
 
     # Returned (framed as this call's tool result, via Tool.format_result) when a
-    # tool call is byte-identical to one already made earlier in the SAME run — the
-    # agent-loop dedup guard in ``Agent._dedup_tool_calls`` (tool name + args match;
-    # the repeat is NOT executed).  The guard's BEHAVIOUR is unchanged; only this
-    # message is reworked.  The old bare "Try a different query or tool." moved the
-    # model on ~83% of the time, but the runs that hit it failed at ~8x the baseline
-    # rate: traces show the model over-generalizing the terse rejection into "the
-    # policy forbids repeated calls" and then SUPPRESSING legitimate follow-up work
-    # (a verify re-read after a write) for the rest of the run.  So the message now
-    # follows the actionable-failure template — state the why-now (this exact call
-    # already ran and its result is above) AND the legitimate path (reuse that
-    # result; this flags only a byte-for-byte repeat, and a call with NEW arguments
-    # — the verify-read after a write among them — still runs).  Deliberately does
-    # NOT claim the result "hasn't changed": the guard is purely syntactic (it
-    # blocks an identical call for the whole run regardless of intervening writes),
-    # so an "unchanged" claim would be false in exactly the post-write verify case,
-    # and the fix is to steer that case to a non-identical call, not to promise the
-    # identical one is safe to reuse blindly.
-    # Agent-neutral by design: no ``done()`` / "cycle" wording, because the chat
-    # agent shares this guard and has no ``done`` tool.  Shipped with the live-model
-    # recovery contract in ``tests/eval/test_dedup_call_recovery.py``.
-    DUPLICATE_CALL_REJECTION = (
+    # tool call is byte-identical to one already made earlier in the SAME run and the
+    # loop refuses to re-run it — the agent-loop dedup guard in
+    # ``Agent._dedup_tool_calls`` (tool name + args match).  Two forms, one per PRIOR
+    # OUTCOME (#1673), selected from the prior matching ``ToolCallRecord.failed``: the
+    # rejection now states what actually happened to the ACTION, not the procedural
+    # "you already made this call".  That generic framing was an honesty bug — for a
+    # prior that FAILED, "already ran, use its result" reads as "it worked", and the
+    # model went on to narrate a write that never happened (the rational-actor
+    # doctrine's cleanest specimen: the false "wrote entry" belief followed rationally
+    # from the false state it was shown).  A legitimate repeat RUNS instead of hitting
+    # either form: a successful MUTATING call clears the seen-calls cache
+    # (``_process_tool_calls``), so a retry-after-remediation or a re-read-after-write
+    # is no longer "seen" the next time it appears.
+    #
+    # SUCCEEDED form — today's actionable-failure guidance (kept verbatim; the
+    # SUCCEEDED narration now carries the "it succeeded" fact).  History: the old bare
+    # "Try a different query or tool." moved the model on ~83% of the time, but the
+    # runs that hit it failed at ~8x baseline — traces show the model over-generalizing
+    # the terse rejection into "the policy forbids repeated calls" and SUPPRESSING
+    # legitimate follow-up work (a verify re-read after a write).  So it states the
+    # why-now (this exact call already ran, its result is above) AND the legitimate
+    # path (reuse that result; this flags only a byte-for-byte repeat, and a call with
+    # NEW arguments — the verify-read after a write among them — still runs).
+    # Deliberately does NOT claim the result "hasn't changed": the guard is purely
+    # syntactic, so an "unchanged" claim would be false in exactly the post-write
+    # verify case; steer that case to a non-identical call instead.  Agent-neutral (no
+    # ``done()`` / "cycle" wording — chat shares this guard and has no ``done``).
+    # Shipped with the live-model recovery contract in
+    # ``tests/eval/test_dedup_call_recovery.py``.
+    DUPLICATE_CALL_REJECTION_SUCCEEDED = (
         "You already made this exact tool call earlier in this run (same tool, same "
         "arguments), so it was not run again — its result is already in the messages "
         "above. Use that result rather than repeating the identical call. This flags "
@@ -259,6 +268,18 @@ class Prompt:
         "— a different query, a different key, or fetching the specific entry you "
         "just wrote — is a different call and will run. To move forward: use the "
         "result already above, or make that different call."
+    )
+    # FAILED form — OUTCOME-FIRST (#1673).  The prior identical call FAILED and (given
+    # the retry-after-remediation allowance) no successful mutating call has
+    # intervened, so it was not re-run.  Leads with the failure and quotes the first
+    # line of the prior error, then prescribes the actionable path (fix the precondition
+    # or change the arguments) — NEVER "use its result", because there is no successful
+    # result to use and implying one is what manufactured the false write-narration.
+    # The dedup fact ("not retried") is the supporting clause, never the headline.
+    DUPLICATE_CALL_REJECTION_FAILED = (
+        "This `{tool_name}` call already FAILED earlier this run: {first_line}. It was "
+        "not retried. Fix the failing precondition or change the arguments, then call "
+        "again."
     )
 
     # First-person narration for the three tool-SHAPED injection sites that carry the
@@ -273,11 +294,16 @@ class Prompt:
     PAGE_CONTEXT_NARRATION = (
         "You looked at the page the user is currently viewing, so here's what's on it:"
     )
-    # A duplicate tool call the loop refused to re-run (``Agent._dedup_tool_calls``);
-    # the body is DUPLICATE_CALL_REJECTION.
-    DUPLICATE_CALL_NARRATION = (
-        "You made the `{tool_name}` call again, but it already ran earlier this run so "
-        "it wasn't repeated:"
+    # A duplicate tool call the loop refused to re-run (``Agent._dedup_tool_calls``),
+    # narrated OUTCOME-FIRST (#1673): the narration states what happened to the ACTION,
+    # not the procedural "you already called this", so the model can't read a failed
+    # call as a completed one.  Two forms selected by the prior record's outcome; the
+    # matching body is DUPLICATE_CALL_REJECTION_FAILED / _SUCCEEDED.
+    DUPLICATE_CALL_NARRATION_FAILED = (
+        "You tried this exact `{tool_name}` call before and it failed — nothing was saved:"
+    )
+    DUPLICATE_CALL_NARRATION_SUCCEEDED = (
+        "You already did this exact `{tool_name}` call and it succeeded — its result is above:"
     )
     # A tool call the run-shape chain rejected before it ran (``Agent._append_rejected_tool_calls``,
     # e.g. a premature first-move ``done()``); the body is the rejection message.
