@@ -460,19 +460,20 @@ class TestCollectionCreateFrontDoor:
         assert result.success is False
         assert result.message == (
             "I don't know how to \"xyzzy flibbertigibbet quux\" yet — there's no skill for "
-            "it, so there's nothing to instantiate. Here's how we teach one:\n"
-            "1. Set up the container first: collection_create(name=<slug>, "
-            'description="xyzzy flibbertigibbet quux") with NO skill — a storage-only '
-            "collection nothing runs against yet.\n"
-            "2. Walk me through getting the data ONCE, here in chat, so I actually do it: "
-            "browse, extract just the ONE value you want watched (pull out only the price, "
-            "not a whole name+hook+price blob — a multi-field blob changes whenever any "
-            "part does and would false-alarm every cycle), and collection_write that value "
-            "into the collection.\n"
-            "3. That's the save step — I learn the routine automatically as a skill from "
-            "what we just did (no separate command).\n"
-            "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
-            'skill=<title>, params={…}, trigger="every <seconds>", notify=<true/false>).'
+            "it, so there's nothing to instantiate, and no container or schedule should be "
+            "set up before the routine is learned.\n"
+            "FIRST, reply to the user now — no more tool calls this turn: tell them you'll "
+            "learn it from one complete pass, and ask for the whole routine in ONE message "
+            "(where to look, what to pull out, what to keep), modelling the example from "
+            "what they already said.\n"
+            "THEN, when their routine arrives, do it in that turn: create the collection "
+            "it needs (name + description, nothing else), browse, extract just the ONE "
+            "value they want watched (only the price, not a whole name+hook+price blob — "
+            "a multi-field blob changes whenever any part does and would false-alarm every "
+            "cycle), and collection_write what you actually found. The routine is learned "
+            "automatically as a skill from that round and attached — a learned notice "
+            "will tell you, and any schedule or notify they asked for gets set right "
+            "then, as the notice directs."
         )
         assert db.memories.get("mystery") is None
 
@@ -1411,10 +1412,11 @@ _INERT_ECHO_LITERAL = (
     "Set up collection 'deals-watch' — storage only, no job yet:\n"
     "  description: track the trail-runner shoe deals\n"
     "  status: inert (no skill attached)\n"
-    "It'll hold whatever gets written to it, but nothing runs against it until you give it "
-    "a skill. Teach me the routine once here in chat — I learn it automatically as a "
-    "skill — then attach it with collection_update(name='deals-watch', skill=<title>, "
-    'trigger="every <seconds>") to make it do something.'
+    "It'll hold whatever gets written to it, but nothing runs against it until it has a "
+    "skill. Next: run one round into it — read the source, then collection_write what "
+    "you actually find into 'deals-watch'; the routine is learned automatically as a "
+    "skill from that round. If you don't have the routine yet, reply and ask the user "
+    "for it in one message — don't guess."
 )
 
 # The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it

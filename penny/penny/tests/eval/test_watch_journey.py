@@ -705,7 +705,7 @@ _BEAT2B_TURNS = [
     (
         "hey can you set up news alerts for my favourite teams? the ridgeline "
         f"foxes and the harbor seals — their news pages are {FOXES_URL} and "
-        f"{SEALS_URL}. check them morning and evening, and alert me about "
+        f"{SEALS_URL}. check them twice a day, and alert me about "
         "notable stuff like trades, signings, and injuries — not game scores."
     ),
     (
@@ -724,7 +724,15 @@ _BEAT2B_TURNS = [
 # "snippet" deliberately absent: live replies use it benignly ("scan the
 # headlines or snippets for keywords") — the field regression's demand shape is
 # structural vocabulary (selectors/xpath/css/parse patterns), which never is.
-_MECHANICS_DEMANDS = ("selector", "xpath", "css", "html pattern", "parse pattern")
+_MECHANICS_DEMANDS = (
+    "selector",
+    "xpath",
+    "css",
+    "html pattern",
+    "parse pattern",
+    "laid out",
+    "layout",
+)
 
 
 def _demanded_mechanics(replies: list[str]) -> bool:
@@ -852,7 +860,7 @@ async def test_beat2b_fused_ask_decomposes(chat_eval: ChatEval):
 # words as the trigger + notify.  Terminal state = a live watch in ONE turn.
 
 _BEAT2C_TURN = (
-    "hey penny — every morning and evening, check the ridgeline foxes and "
+    "hey penny — twice a day, check the ridgeline foxes and "
     f"harbor seals news pages ({FOXES_URL} and {SEALS_URL}): 1. go to both "
     "pages 2. pull out any trades, signings, or injuries — skip game scores "
     "3. remember the title plus a short blurb for each — and let me know when "
