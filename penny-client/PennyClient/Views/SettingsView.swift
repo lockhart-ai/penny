@@ -34,8 +34,8 @@ struct SettingsView: View {
                             Text("30 minutes").tag(1800)
                             Text("1 hour").tag(3600)
                         }
-                        ForEach(settings.categories) { category in
-                            VStack(alignment: .leading, spacing: 6) {
+                        ForEach(settings.categories.filter(\.isEditable)) { category in
+                            HStack(alignment: .center, spacing: 6) {
                                 Toggle(category.displayName, isOn: categoryBinding(id: category.id, settings: settings))
                                 if category.id != "chat" && category.enabled {
                                     Picker("Grouping interval", selection: categoryIntervalBinding(id: category.id, settings: settings)) {
@@ -50,9 +50,6 @@ struct SettingsView: View {
                                 }
                             }
                         }
-                        Text("Disabled categories remain available as unread messages; they do not show a banner or sound.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -280,13 +277,16 @@ struct SettingsView: View {
 }
 
 private extension NotificationCategorySetting {
+    var isEditable: Bool {
+        id != "test_push"
+    }
+
     var displayName: String {
         switch id {
         case "chat": return "Chat replies"
         case "collector": return "Collector updates"
         case "thoughts": return "Thoughts"
         case "startup": return "Startup messages"
-        case "test_push": return "Test pushes"
         default: return id.capitalized
         }
     }
