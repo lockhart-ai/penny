@@ -71,19 +71,20 @@ _AMBIGUOUS_TAIL = (
 
 _NO_SKILL_FOUND = (
     "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
-    "instantiate, and no container or schedule should be set up before the routine is "
-    "learned.\n"
-    "FIRST, reply to the user now — no more tool calls this turn: tell them you'll learn "
-    "it from one complete pass, and ask for the whole routine in ONE message (where to "
-    "look, what to pull out, what to keep), modelling the example from what they already "
-    "said.\n"
-    "THEN, when their routine arrives, do it in that turn: create the collection it needs "
+    "instantiate. No schedule can be set up before the routine is learned. Two cases:\n"
+    "a. The user already told you what one round needs — where to look, what to pull "
+    "out, what to keep — then DO IT NOW, in this turn: create the collection it needs "
     "(name + description, nothing else), browse, extract just the ONE value they want "
     "watched (only the price, not a whole name+hook+price blob — a multi-field blob "
     "changes whenever any part does and would false-alarm every cycle), and "
-    "collection_write what you actually found. The routine is learned automatically as a "
-    "skill from that round and attached — a learned notice will tell you, and any "
-    "schedule or notify they asked for gets set right then, as the notice directs."
+    "collection_write what you actually found.\n"
+    "b. They haven't — reply to the user now, no more tool calls this turn: tell them "
+    "you'll learn it from one complete pass, and ask for the whole routine in ONE "
+    "message (where to look, what to pull out, what to keep), modelling the example "
+    "from what they already said. When it arrives, run case a.\n"
+    "Either way the routine is learned automatically as a skill from that round and "
+    "attached — a learned notice will tell you, and any schedule or notify they asked "
+    "for gets set right then, as the notice directs."
 )
 
 

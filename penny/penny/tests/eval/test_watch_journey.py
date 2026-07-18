@@ -804,9 +804,20 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
         or watch.run_at is not None
         or watch.source_log is not None
     )
+    # The chain completing WITHOUT an ask is spontaneous one-shot success — the
+    # end goal, not a failure.  The ask is scored as the fallback: required only
+    # when she could not run the routine herself; the modelled-example facet
+    # applies only to an ask that actually happened.
+    chain_complete = _notable_written(db, before) and bool(watches)
     return [
-        Check("she recognized she can't act yet and asked to be taught the round", one_message),
-        Check("the decompose example is modelled from THEIR sources", modelled),
+        Check(
+            "she asked to be taught the round OR ran it herself to completion",
+            one_message or chain_complete,
+        ),
+        Check(
+            "an ask that happened was modelled from THEIR sources",
+            modelled if one_message else True,
+        ),
         Check("the routine ran on arrival (browsed the given sites)", _round_ran(db)),
         Check(
             "the round's write landed (page-derived content stored)", _notable_written(db, before)
