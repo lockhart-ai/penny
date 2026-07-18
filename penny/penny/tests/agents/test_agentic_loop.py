@@ -374,7 +374,7 @@ class TestRepeatCallGuard:
         state = {"created": False}
 
         async def execute(tool_call):
-            if tool_call.tool == "collection_create":
+            if tool_call.tool == "collection_set":
                 state["created"] = True
                 return ToolResult(message="Created collection widget-log", mutated=True)
             if tool_call.tool == "collection_write":
@@ -396,7 +396,7 @@ class TestRepeatCallGuard:
                 )
             if count == 2:
                 return mock_llm._make_tool_call_response(
-                    request, "collection_create", {"name": "widget-log"}
+                    request, "collection_set", {"name": "widget-log"}
                 )
             if count == 3:
                 # Byte-identical to count 1 — normally blocked, but the create mutated
@@ -532,7 +532,7 @@ class TestRepeatCallGuard:
         failure = "Memory widget-log not found — create it first"
 
         async def execute(tool_call):
-            if tool_call.tool == "collection_create":
+            if tool_call.tool == "collection_set":
                 return ToolResult(message="Created collection widget-log", mutated=True)
             if tool_call.tool == "collection_write":
                 # The write keeps failing even after the create (a still-unmet precondition).
@@ -550,7 +550,7 @@ class TestRepeatCallGuard:
                 )
             if count == 2:
                 return mock_llm._make_tool_call_response(
-                    request, "collection_create", {"name": "widget-log"}
+                    request, "collection_set", {"name": "widget-log"}
                 )
             if count == 3:
                 # Allowed retry (prior failed + create mutated) — runs, fails again.

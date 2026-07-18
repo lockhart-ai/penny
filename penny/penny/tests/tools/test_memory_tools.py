@@ -63,6 +63,7 @@ from penny.tools.memory_tools import (
     CollectionMergeTool,
     CollectionReadLatestTool,
     CollectionReadRandomTool,
+    CollectionSetTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
@@ -177,7 +178,7 @@ class _KeyOnlyFailingEmbedClient:
 
 # ── Seeding helpers ───────────────────────────────────────────────────────────
 #
-# ``collection_create`` is now the skill-instantiation front door (#1591): it no
+# ``collection_set`` is now the skill-instantiation front door (#1591): it no
 # longer takes an ``extraction_prompt`` and refuses a near-duplicate.  Tests that
 # only need a collection to EXIST (to exercise writes/reads/mutations/etc.) seed it
 # directly through the store (``_seed_collection``) — the honest, idempotency-free
@@ -417,7 +418,7 @@ class TestCollectionCreateFrontDoor:
             "params.peak: a skill parameter binds one value, but got a list of 2 — pass a "
             "single value per parameter (a one-item list is unwrapped for you; more than "
             "one isn't). Expected shape: params={'<parameter>': '<value>'}. "
-            "Call collection_create(<valid arguments>) again."
+            "Call collection_set(<valid arguments>) again."
         )
         assert db.memories.get("multi-peak") is None
 
@@ -439,7 +440,7 @@ class TestCollectionCreateFrontDoor:
             "Can't instantiate 'Watch elevation': these required parameters aren't bound:\n"
             "  - peak\n"
             "Pass them in params (e.g. params={'peak': <value>}), then call "
-            "collection_create again."
+            "collection_set again."
         )
         assert db.memories.get("no-peak") is None
 
@@ -448,7 +449,7 @@ class TestCollectionCreateFrontDoor:
         """A skill query matching nothing returns the reshaped #1471/#1629/#1631
         elicitation — it NARRATES the two-step teach bootstrap (set up the container →
         walk me through once, extracting ONE value → learned automatically → attach
-        via collection_update), asserted whole."""
+        via collection_set), asserted whole."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -495,7 +496,7 @@ class TestCollectionCreateFrontDoor:
             'I know a few skills close to "watch elevation save" — I won\'t guess which '
             "you mean:\n"
             "1. Watch elevation — watch a peak's elevation and save it\n"
-            "To use one, call collection_create again with skill='<its exact name>'. If "
+            "To use one, call collection_set again with skill='<its exact name>'. If "
             "none of these is the process you mean, walk me through it once and I'll learn "
             "it as a new skill."
         )
@@ -520,8 +521,8 @@ class TestCollectionCreateFrontDoor:
             "Already have a collection for this: 'jacket-price' (active) — it covers the "
             "same thing, so I didn't create a second one. Reuse it: read it with "
             "collection_read_latest('jacket-price'), or adjust it with "
-            "collection_update(name='jacket-price', ...). If this really is a distinct "
-            "task, create it deliberately with collection_create(..., create_anyway=true)."
+            "collection_set(name='jacket-price', ...). If this really is a distinct "
+            "task, create it deliberately with collection_set(..., create_anyway=true)."
         )
         assert db.memories.get("jacket-monitor") is None
 
@@ -1359,7 +1360,7 @@ class TestCollectionUpdateReinstantiation:
 
     @pytest.mark.asyncio
     async def test_plain_update_never_touches_the_prompt_or_provenance(self, tmp_path):
-        """The pinned invariant: a plain collection_update (no skill/params/prompt)
+        """The pinned invariant: a plain collection_set (no skill/params/prompt)
         changes only the metadata it names — the routine and skill provenance are
         untouched."""
         db = _make_db(tmp_path)
@@ -1751,7 +1752,7 @@ class TestTwoStepTeachBootstrap:
 
 
 class TestCollectionUpdateTriggerAtApply:
-    """Trigger + notify are apply-time properties on collection_update (#1629, the full
+    """Trigger + notify are apply-time properties on collection_set (#1629, the full
     union: interval | run_at+max_runs | on_advance + expires_at + notify) — recorded in
     the mutation event's changed fields."""
 
@@ -1912,6 +1913,35 @@ class TestCollectionWritesAndReads:
         # Each rendered entry carries an absolute UTC timestamp so the model can
         # place it in time — read-tool output was previously timeless.
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
+
+    @pytest.mark.asyncio
+    async def test_collection_set_dispatches_on_existence(self, tmp_path, mock_llm):
+        """The ONE idempotent entry point (the code-owner fusion): a missing name
+        CREATES with full birth validation; an existing name UPDATES only the set
+        fields — the model never reasons about which case applies.  Birth without
+        a description, and birth with a hand-written extraction_prompt, are both
+        actionable refusals."""
+        db = _make_db(tmp_path)
+        tool = CollectionSetTool(db, _make_llm_client(mock_llm), run_id="run-set")
+        # Birth needs a description.
+        result = await tool.execute(name="trip-plans")
+        assert result.success is False and "needs a `description`" in result.message
+        # Birth with a hand-authored prompt is refused (routines enter by demonstration).
+        result = await tool.execute(
+            name="trip-plans", description="trip planning notes", extraction_prompt="1. x" * 10
+        )
+        assert result.success is False and "DEMONSTRATED" in result.message
+        # Create path: inert storage, provenance stamped.
+        result = await tool.execute(name="trip-plans", description="trip planning notes")
+        assert result.success is True
+        row = db.memories.get("trip-plans")
+        assert row is not None and row.created_by_run_id == "run-set"
+        assert row.extraction_prompt is None and row.notify is False
+        # Update path: same verb, only the set field changes.
+        result = await tool.execute(name="trip-plans", notify=True)
+        assert result.success is True
+        row = db.memories.get("trip-plans")
+        assert row.notify is True and row.description == "trip planning notes"
 
     @pytest.mark.asyncio
     async def test_write_target_materialization(self, tmp_path, mock_llm):
@@ -2510,7 +2540,7 @@ class TestDidYouMeanSuggestions:
             "name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_create(name='aurora-deone') / "
+            "with collection_set(name='aurora-deone') / "
             "log_create(name='aurora-deone') if it should exist."
         )
 
@@ -2526,7 +2556,7 @@ class TestDidYouMeanSuggestions:
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
             "it by meaning with find(query=<what it's about>) — it resolves your "
             "collections, logs, and skills (archived included) and names the exact tool "
-            "for each. Or create it with collection_create(name='xyzzy') / "
+            "for each. Or create it with collection_set(name='xyzzy') / "
             "log_create(name='xyzzy') if it should exist."
         )
 
@@ -2545,7 +2575,7 @@ class TestDidYouMeanSuggestions:
             "Check the name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_create(name='oil changes and tire rotations') / "
+            "with collection_set(name='oil changes and tire rotations') / "
             "log_create(name='oil changes and tire rotations') if it should exist."
         )
 
@@ -3546,8 +3576,7 @@ class TestFactory:
         "exists",
         "find",
         # Lifecycle (shape)
-        "collection_create",
-        "collection_update",
+        "collection_set",
         "collection_merge",
         "collection_archive",
         "collection_unarchive",
@@ -3649,7 +3678,7 @@ class TestScopedFactory:
 
 
 class TestRegistryProvenanceAndLifecycle:
-    """Operational registry (#1566): ``collection_create`` stamps the spawning
+    """Operational registry (#1566): ``collection_set`` stamps the spawning
     message + creating run; ``collection_catalog`` (archived-inclusive) and
     ``memory_metadata`` render a status / expires / created-from-message block —
     so any mechanism can state who asked for it, what created it, whether it's
@@ -3698,7 +3727,7 @@ class TestRegistryProvenanceAndLifecycle:
     @pytest.mark.asyncio
     async def test_create_stamps_run_then_channel_links_message(self, tmp_path):
         db = _make_db(tmp_path)
-        # collection_create stamps only the creating run — the spawning message
+        # collection_set stamps only the creating run — the spawning message
         # isn't known until the run returns, and there's no end condition.
         await self._create(db, "espresso-reviews", created_by_run_id="run-espresso-01")
         row = db.memories.get("espresso-reviews")
@@ -4019,7 +4048,7 @@ class TestFind:
         'Found 4 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
         "   how to use it: read it with collection_read_latest('aurora-watch'), "
-        "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+        "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
         "   how to use it: read it with skill_read('escalate-aurora'); to change it, "
@@ -4093,7 +4122,7 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('solo-watch'), "
-            "reconfigure it with collection_update(name='solo-watch', ...), archive it "
+            "reconfigure it with collection_set(name='solo-watch', ...), archive it "
             "with collection_archive('solo-watch')"
         )
 
@@ -4110,11 +4139,11 @@ class TestFind:
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('watch-primary'), "
-            "reconfigure it with collection_update(name='watch-primary', ...), archive it "
+            "reconfigure it with collection_set(name='watch-primary', ...), archive it "
             "with collection_archive('watch-primary')\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
             "   how to use it: read it with collection_read_latest('watch-secondary'), "
-            "reconfigure it with collection_update(name='watch-secondary', ...), archive it "
+            "reconfigure it with collection_set(name='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
@@ -4185,7 +4214,7 @@ class TestFind:
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('aurora-watch'), "
-            "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
             "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"

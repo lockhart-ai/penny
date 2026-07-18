@@ -637,11 +637,11 @@ REPLY_ANCHOR = "__reply__"
 def _anchor_hits(needle: str, content: str) -> bool:
     """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_metadata(``)
     matches that call; a keyword anchor (``designer``, ``"published": false``) must live inside
-    a ``collection_update`` call — the row that made the edit — never another tool's reasoning
+    a ``collection_set`` call — the row that made the edit — never another tool's reasoning
     field that merely mentions the word."""
     if needle.endswith("("):
         return needle in content
-    return "collection_update(" in content and needle in content
+    return "collection_set(" in content and needle in content
 
 
 def _place_checks(
@@ -1116,14 +1116,14 @@ class _InjectDoneBail(_InjectingClient):
 
 
 class _InjectFictitiousToolPrompt(_InjectingClient):
-    """Forces ONE ``collection_update`` whose ``extraction_prompt`` names a tool no
+    """Forces ONE ``collection_set`` whose ``extraction_prompt`` names a tool no
     collector has, as the model's FIRST response.
 
     Reproduces — deterministically against the live model — the chat agent writing a
     hallucinated tool into a collection's recipe (observed: a made-up ``extract_text``
     for a "read the page" step).  The write-time gate refuses it with the
     correction-teaching message, and the live model must recover: re-issue a
-    ``collection_update`` whose prompt uses only real tools (``browse`` for the read),
+    ``collection_set`` whose prompt uses only real tools (``browse`` for the read),
     which then persists.  ``bail_injected`` records the scenario actually fired."""
 
     def __init__(self, real: LlmClient, collection: str, prompt: str) -> None:
@@ -1141,7 +1141,7 @@ class _InjectFictitiousToolPrompt(_InjectingClient):
                         LlmToolCall(
                             id="bail-fictitious-tool",
                             function=LlmToolCallFunction(
-                                name="collection_update",
+                                name="collection_set",
                                 arguments={
                                     "name": self._collection,
                                     "extraction_prompt": self._prompt,

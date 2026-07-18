@@ -397,7 +397,7 @@ class TestMemoryLifecycleNarration:
     """Success + failure narration for the collection/log-lifecycle and
     introspection tools — every registered tool speaks (epic #1478)."""
 
-    def test_collection_create(self):
+    def test_collection_set(self):
         args = {"name": "games"}
         assert (
             CollectionCreateTool.to_result_narration(args, ToolResult(message="ok"))
@@ -426,7 +426,7 @@ class TestMemoryLifecycleNarration:
             == "You restored `games` from the archive:"
         )
 
-    def test_collection_update_settings(self):
+    def test_collection_set_settings(self):
         args = {"name": "games"}
         assert (
             CollectionUpdateTool.to_result_narration(args, ToolResult(message="ok"))

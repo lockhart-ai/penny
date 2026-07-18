@@ -89,6 +89,7 @@ from penny.tools.memory_args import (
     CollectionEntrySpec,
     CollectionGetArgs,
     CollectionMergeArgs,
+    CollectionSetArgs,
     CollectionUpdateArgs,
     CollectionWriteArgs,
     ExistsArgs,
@@ -530,7 +531,7 @@ def render_skill_prompt(
     An unbound required parameter → the actionable naming error; a rendered prompt that is
     too short or names an unrunnable tool → the same authoring-time rejection.  The
     re-render preserves the steps-1..A / no-stored-``done()`` invariant by construction — it
-    is the same render fn ``collection_create`` stamps at birth.
+    is the same render fn ``collection_set`` stamps at birth.
 
     Every scoped-write step's ``memory`` argument is retargeted to ``target_name`` at
     this seam (#1629): applying a skill to a collection is what DEFINES where its writes
@@ -551,8 +552,8 @@ def render_skill_prompt(
 def _once_form_interval() -> int:
     """The cadence a once-shaped (``run_at``) or on_advance trigger is paced at — the
     dispatcher tick from runtime config (eligible each tick, its real gate deciding when
-    it runs), reused rather than a new invented default.  Shared by ``collection_create``
-    and ``collection_update``'s trigger parse."""
+    it runs), reused rather than a new invented default.  Shared by ``collection_set``
+    and ``collection_set``'s trigger parse."""
     return int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
 
 
@@ -591,7 +592,7 @@ _INERT_JOB_ARGS_REFUSAL = (
     "Can't set a trigger, notify, or expiry on '{name}' without a skill — those describe a "
     "JOB, and a skill-less collection is inert storage with no job to run. Create it as "
     "storage now (name + description only), then once you've taught the skill attach it with "
-    "collection_update(name='{name}', skill=<title>, trigger=\"every <seconds>\", "
+    "collection_set(name='{name}', skill=<title>, trigger=\"every <seconds>\", "
     "notify=<true/false>)."
 )
 
@@ -619,7 +620,7 @@ class CollectionCreateTool(MemoryTool):
     existing collection unless creation is made deliberate (``create_anyway``).
     """
 
-    name = "collection_create"
+    name = "collection_set"
     description = (
         "Set up a background collection. A collection is storage plus an OPTIONAL job.\n"
         "\n"
@@ -631,7 +632,7 @@ class CollectionCreateTool(MemoryTool):
         "runs against it yet. Use this to set up the container first when you're about "
         "to TEACH a skill: create it (name + description only), demonstrate the routine "
         "once here in chat — you learn it automatically as a skill — then attach that "
-        "skill with collection_update to make it do the job. Don't pass a trigger / "
+        "skill with collection_set to make it do the job. Don't pass a trigger / "
         "notify / expiry with a skill-less create — an inert collection has no job to "
         "schedule.\n"
         "\n"
@@ -815,7 +816,7 @@ class CollectionCreateTool(MemoryTool):
     def _reject_job_args(args: CollectionCreateArgs) -> ToolResult | None:
         """A skill-less (inert) create describes storage, not a job — a trigger /
         notify / expiry passed alongside has nothing to attach to, so it's refused
-        naming the fix (attach a skill via collection_update once one's taught) rather
+        naming the fix (attach a skill via collection_set once one's taught) rather
         than silently dropped (visible degradation over silent success)."""
         has_job = any((args.trigger is not None, args.expires_at is not None, args.notify))
         if not has_job:
@@ -1727,7 +1728,7 @@ _SKILL_GONE = (
 # cadence, so it won't dispatch until one is set (#1629 — visible over silent).
 _NO_TRIGGER_NOTE = (
     "\n\nHeads up: this collection now has a routine but no trigger, so it won't run yet. "
-    "Set one with collection_update(name='{name}', trigger=\"every <seconds>\") (or "
+    "Set one with collection_set(name='{name}', trigger=\"every <seconds>\") (or "
     '"once at <ISO> [xN]", "on advance of <log>", or "cron <5-field expression>").'
 )
 
@@ -1737,6 +1738,113 @@ def _current_skill_params(row: MemoryRow) -> dict[str, str]:
     or ``{}`` when it has none — the refresh/rebind default when no new params are
     passed, so a plain ``skill=<same>`` refresh keeps the existing bindings."""
     return json.loads(row.skill_params) if row.skill_params else {}
+
+
+class CollectionSetTool(MemoryTool):
+    """The ONE idempotent create-or-update entry point for a collection (the
+    code-owner fusion): existence is dispatched HERE, in python — the model never
+    reasons about whether the collection already exists.
+
+    Missing name → the create path (birth idempotency-dedup unless
+    ``create_anyway``, skill instantiation, the inert/job-arg refusal).  Existing
+    name → the update path (adopt/rebind/swap/refresh re-render, atomic trigger
+    replace, raw prompt edit).  Both inner paths keep their full validation —
+    this class is a dispatcher, not a re-implementation."""
+
+    name = "collection_set"
+    description = (
+        "Create or reconfigure a collection in ONE idempotent call. If `name` "
+        "doesn't exist it comes into being with this config; if it does, only "
+        "the fields you set change — you never need to know which. "
+        "`description` = what it's for, in the user's words (required the first "
+        "time). `skill` (+ `params`) attaches a learned skill — its steps become "
+        'the collection\'s routine. `trigger` schedules it: "every <seconds>" | '
+        '"once at <ISO> [xN]" | "on advance of <log>". `notify`=true tells the '
+        "user about new/changed entries. Plain storage needs no call at all — "
+        "collection_write creates storage automatically; use collection_set for "
+        "jobs and config."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "skill": {"type": "string"},
+            "params": {"type": "object"},
+            "trigger": {"type": "string"},
+            "expires_at": {"type": "string"},
+            "notify": {"type": "boolean"},
+            "create_anyway": {"type": "boolean"},
+            "extraction_prompt": {"type": "string"},
+        },
+        "required": ["name"],
+    }
+    args_model = CollectionSetArgs
+
+    @classmethod
+    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
+        name = _memory_name(arguments, "a collection")
+        if not result.success:
+            return f"You tried to set up {name} but it didn't work:"
+        return f"You set up {name}:"
+
+    def __init__(self, db: Database, llm_client: LlmClient, run_id: str | None = None) -> None:
+        self._db = db
+        self._llm_client = llm_client
+        self._create = CollectionCreateTool(db, llm_client, created_by_run_id=run_id)
+        self._update = CollectionUpdateTool(db, llm_client, run_id=run_id)
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        return await embed_text(self._llm_client, name)
+
+    async def _run(self, **kwargs: Any) -> ToolResult:
+        args = CollectionSetArgs(**kwargs)
+        if self._db.memories.get(args.name) is not None:
+            return await self._update._run(
+                name=args.name,
+                description=args.description,
+                extraction_prompt=args.extraction_prompt,
+                notify=args.notify,
+                skill=args.skill,
+                params=args.params,
+                trigger=args.trigger,
+                expires_at=args.expires_at,
+            )
+        if args.extraction_prompt is not None:
+            return ToolResult(
+                message=_SET_BIRTH_PROMPT_REFUSAL.format(name=args.name), success=False
+            )
+        if args.description is None:
+            return ToolResult(
+                message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.name), success=False
+            )
+        return await self._create._run(
+            name=args.name,
+            description=args.description,
+            skill=args.skill,
+            params=args.params or {},
+            trigger=args.trigger,
+            expires_at=args.expires_at,
+            notify=bool(args.notify),
+            create_anyway=args.create_anyway,
+        )
+
+
+_SET_BIRTH_PROMPT_REFUSAL = (
+    "'{name}' doesn't exist yet, and a new collection can't be born with a "
+    "hand-written extraction_prompt — a routine enters by being DEMONSTRATED once "
+    "(do it in chat: browse, extract, collection_write) and is learned as a skill "
+    "automatically. Then collection_set(name='{name}', skill=<its name>, ...) "
+    "attaches it. The raw extraction_prompt edit is only for an EXISTING "
+    "collection's routine."
+)
+
+_SET_BIRTH_NEEDS_DESCRIPTION = (
+    "'{name}' doesn't exist yet, so this call would create it — but a new "
+    "collection needs a `description` (what it's for, in the user's words; it's "
+    "how the collection is found by meaning later). Call collection_set again "
+    "with description=<what it holds>."
+)
 
 
 class CollectionUpdateTool(MemoryTool):
@@ -1752,7 +1860,7 @@ class CollectionUpdateTool(MemoryTool):
     and records a mutation event); omitting both leaves the prompt untouched.
     """
 
-    name = "collection_update"
+    name = "collection_set"
     description = (
         "Update an existing collection's metadata. Only supplied fields "
         "are changed.\n"
@@ -1774,7 +1882,7 @@ class CollectionUpdateTool(MemoryTool):
         "of it. Don't combine with `skill`/`params` — a re-render owns the prompt.\n"
         "- `skill` — re-render the collection's routine from a skill's CURRENT "
         "steps (by exact name or a paraphrase, resolved the same way as "
-        "`collection_create`). Use the SAME skill name to refresh after re-teaching "
+        "`collection_set`). Use the SAME skill name to refresh after re-teaching "
         "it, or a DIFFERENT skill to swap. On a legacy hand-authored collection this "
         "adopts a skill for the first time (its old text is replaced by the render).\n"
         "- `params` — rebind the skill's fill-in-the-blank parameters to new values and "
@@ -1906,7 +2014,7 @@ class CollectionUpdateTool(MemoryTool):
         self, args: CollectionUpdateArgs
     ) -> ToolResult | tuple[Trigger | None, datetime | None]:
         """Parse the optional ``trigger`` arg + end condition at apply time (#1631/#1684,
-        the same one-arg four-form trigger collection_create uses).  Returns
+        the same one-arg four-form trigger collection_set uses).  Returns
         ``(None, expires)`` when no trigger is set (cadence untouched) or the parsed
         ``(Trigger, expires)``; an unparseable trigger surfaces ``parse_trigger``'s
         teaching rejection verbatim."""
@@ -2801,7 +2909,7 @@ def _find_addressing(match: ResolvedMatch) -> str:
         )
     return (
         f"read it with collection_read_latest('{name}'), reconfigure it with "
-        f"collection_update(name='{name}', ...), archive it with "
+        f"collection_set(name='{name}', ...), archive it with "
         f"collection_archive('{name}')"
     )
 
@@ -3118,7 +3226,7 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
     at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
     surface (#1556): the registry-shape tools are absent from a cadence run, so an
-    ``extraction_prompt`` that names ``collection_create`` / ``collection_update`` /
+    ``extraction_prompt`` that names ``collection_set`` / ``collection_set`` /
     archive / merge is rejected at authoring time rather than persisted into a prompt
     the collector could never run.  ``BrowseTool`` / ``SendMessageTool`` are imported
     lazily: ``send_message`` imports ``DoneTool`` from this module, so a top-level
@@ -3142,8 +3250,8 @@ def _reject_unknown_extraction_tools(
 ) -> ToolResult | None:
     """A failed ``ToolResult`` if ``extraction_prompt`` names a tool no collector can
     run (a hallucinated ``extract_text``), else ``None``.  A ``None`` prompt — an
-    update leaving it unchanged — is nothing to check.  Runs at ``collection_create`` /
-    ``collection_update`` time so a fictitious call is never persisted into a prompt the
+    update leaving it unchanged — is nothing to check.  Runs at ``collection_set`` /
+    ``collection_set`` time so a fictitious call is never persisted into a prompt the
     collector would then fail to run every cycle."""
     if extraction_prompt is None:
         return None
@@ -3202,15 +3310,15 @@ def build_memory_tools(
     or the collector cycle's — passed as an explicit parameter, never ambient state
     (#1560).  It threads to every write- and mutation-capable tool as the executing
     run: entry writes stamp it as ``created_by_run_id`` / ``last_written_by_run_id``
-    on the rows they add or rewrite; ``collection_create`` records it as the new
+    on the rows they add or rewrite; ``collection_set`` records it as the new
     mechanism's ``created_by_run_id`` (#1566); and create / update / archive /
     unarchive record it on the durable mutation event they emit (the ledger's
     provenance closure).  ``None`` for a non-run caller, which leaves the columns
     NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
     since the message id isn't known until the run returns.)
 
-    ``include_lifecycle`` gates the registry-shape tier — ``collection_create`` /
-    ``collection_update`` / ``collection_merge`` / ``collection_archive`` /
+    ``include_lifecycle`` gates the registry-shape tier — ``collection_set`` /
+    ``collection_set`` / ``collection_merge`` / ``collection_archive`` /
     ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
     evolves collections through them); a cadence-fired collector run passes
     ``False`` (#1556), so those tools are structurally ABSENT from its surface — a
@@ -3234,8 +3342,7 @@ def build_memory_tools(
         FindTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionCreateTool(db, llm_client, created_by_run_id=run_id),
-        CollectionUpdateTool(db, llm_client, run_id=run_id),
+        CollectionSetTool(db, llm_client, run_id=run_id),
         CollectionMergeTool(db, agent_name, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),
@@ -3243,7 +3350,7 @@ def build_memory_tools(
         # Skill INSPECTION rides the chat (lifecycle) surface.  There is no
         # skill_create tool — skills are distilled automatically at chat-run end
         # (#1658); the model only reads them (skill_read) and instantiates them
-        # (collection_create / collection_update).  A cadence collector follows the
+        # (collection_set / collection_set).  A cadence collector follows the
         # rendered text prompt and never touches the skill registry.
         SkillReadTool(db),
     ]

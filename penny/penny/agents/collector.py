@@ -170,7 +170,7 @@ class Collector(BackgroundAgent):
             return (
                 False,
                 f"Collection '{collection_name}' has no extraction_prompt — "
-                f"set one with collection_update before testing.",
+                f"set one with collection_set before testing.",
             )
         if error := check_extraction_prompt(collection.extraction_prompt):
             return False, error
@@ -509,7 +509,7 @@ class Collector(BackgroundAgent):
         """System prompt for the bound target — re-fetched each cycle.
 
         Reading from the DB instead of caching means a chat-side
-        ``collection_update`` call that changes ``extraction_prompt`` is
+        ``collection_set`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
         """
         target = self._require_target()
@@ -551,7 +551,7 @@ class Collector(BackgroundAgent):
         Penny when she authors the extraction_prompt.  This guarantees the
         rules apply on every cycle regardless of how the prompt was written
         (or whether Penny remembered to include them).  The chat-facing
-        ``collection_create`` description only carries authoring-shape
+        ``collection_set`` description only carries authoring-shape
         guidance; the runtime invariants live here.
 
         The stored prompt is steps ``1..A`` with NO ``done()`` — a skill render
@@ -630,7 +630,7 @@ class Collector(BackgroundAgent):
         if check_extraction_prompt(memory.extraction_prompt) is not None:
             logger.warning(
                 "Skipping collection '%s': extraction_prompt too short (%d chars, minimum 25) "
-                "— update it via collection_update to enable collection",
+                "— update it via collection_set to enable collection",
                 memory.name,
                 len(memory.extraction_prompt),
             )
@@ -638,7 +638,7 @@ class Collector(BackgroundAgent):
         if memory.collector_interval_seconds is None:
             logger.warning(
                 "Skipping collection '%s': no collector_interval_seconds set — "
-                "set a cadence via collection_update to enable collection",
+                "set a cadence via collection_set to enable collection",
                 memory.name,
             )
             return False

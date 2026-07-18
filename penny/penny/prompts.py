@@ -94,11 +94,11 @@ class Prompt:
         "ignore scheduling entirely — cadence words in their ask ('morning and "
         "evening', 'daily') bind at that later step, not in the round.\n"
         "2. A skill fits → set up the whole thing in ONE call: "
-        "collection_create(name=<slug>, description=<the ask>, skill=<its name>, "
+        "collection_set(name=<slug>, description=<the ask>, skill=<its name>, "
         'params=<bind its parameters>, trigger="every <seconds>", notify=<true '
         "when they asked to hear about it>).\n"
         "NEVER fake the job: no hand-built extraction_prompt, and never claim a "
-        "watch or schedule exists unless collection_create confirmed it. The "
+        "watch or schedule exists unless collection_set confirmed it. The "
         "demonstration round in 1a is NOT faking — one honest pass, done in front "
         "of the user, is exactly how a skill gets learned. And never ask to "
         "be RE-taught one your Skills section already lists: when the user asks "
@@ -269,7 +269,7 @@ class Prompt:
         "It is already attached to the collection '{collection}' you created this "
         "round — but it has NO trigger yet, so it will not run on its own.\n\n"
         "If the user asked for this to recur or to be told about changes, set that "
-        "up FIRST with one call — collection_update(name='{collection}', "
+        "up FIRST with one call — collection_set(name='{collection}', "
         'trigger="every <seconds>", notify=<true when they asked to hear about '
         "it>) — their own words (morning and evening, daily, hourly) are the "
         "trigger. If they asked for nothing recurring, make no call.\n\n"
@@ -277,7 +277,7 @@ class Prompt:
         "outcome of this round — the value you found and where you stored it — "
         "since this reply is the only one they receive. THEN tell them, in your "
         "own words, that you've learned this routine and what will happen next — "
-        "and never claim a schedule exists unless your collection_update call "
+        "and never claim a schedule exists unless your collection_set call "
         "confirmed it."
     )
 

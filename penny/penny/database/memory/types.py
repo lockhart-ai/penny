@@ -87,7 +87,7 @@ def render_memory_not_found(name: str, suggestion: str | None = None) -> str:
         f"{lead} Check the name (it may be misspelled), or find "
         f"it by meaning with find(query=<what it's about>) — it resolves your "
         f"collections, logs, and skills (archived included) and names the exact tool "
-        f"for each. Or create it with collection_create(name='{name}') / "
+        f"for each. Or create it with collection_set(name='{name}') / "
         f"log_create(name='{name}') if it should exist."
     )
 

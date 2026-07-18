@@ -187,7 +187,7 @@ async def test_beat0_remember_and_recall(chat_eval: ChatEval):
 # Every seeded collection is deleted before the conversation: the store map is
 # empty — post-0097 this is nearly the DEFAULT world (no catch-alls).  "Remember X"
 # must drive CREATION (the #1630 skill-optional inert create) + the write —
-# the create arm of remember → collection_create-or-collection_write.
+# the create arm of remember → collection_set-or-collection_write.
 
 
 def _delete_all_collections(db: Database) -> None:

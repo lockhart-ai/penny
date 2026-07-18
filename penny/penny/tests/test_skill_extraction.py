@@ -167,11 +167,11 @@ async def test_read_write_run_qualifies_and_distils_correctly(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
+async def test_auto_attach_to_collection_setd_by_the_same_run(tmp_path):
     """The demonstrated round created its own write target → the skill auto-attaches
     framework-side: the collection's prompt is the rendered skill, provenance is
     stamped, params bind to the DEMONSTRATED values, and the job stays trigger-less
-    (nothing dispatches until the schedule binds via collection_update).  A round
+    (nothing dispatches until the schedule binds via collection_set).  A round
     that wrote into a PRE-EXISTING collection attaches nothing — the join is the
     ``created_by_run_id`` stamp, never a guess."""
     db = _make_db(tmp_path)
@@ -691,21 +691,19 @@ async def test_semantic_names_are_hardened_slugged_and_deduped(tmp_path):
 
 # ── #1668: a skill captures ONLY collector-runnable steps ──────────────────────
 
-_CREATE_OK = (
-    "You set up a collection: (collection_create result)\nCreated collection 'widget-prices'."
-)
+_CREATE_OK = "You set up a collection: (collection_set result)\nCreated collection 'widget-prices'."
 
 
 @pytest.mark.asyncio
 async def test_lifecycle_call_is_dropped_from_the_recipe(tmp_path):
-    """A demo that sets up a container mid-run (collection_create — a lifecycle call
+    """A demo that sets up a container mid-run (collection_set — a lifecycle call
     a collector can never run) has that step DROPPED from the captured skill (#1668):
     a skill renders into a collector prompt, so only collector-runnable steps belong
     in it.  The create's args (name/description) never become nonsense parameters,
     and the create doesn't count toward the read/write taxonomy."""
     db = _make_db(tmp_path)
     create = (
-        "collection_create",
+        "collection_set",
         {"name": "widget-prices", "description": "watch the widget price"},
         _CREATE_OK,
         True,

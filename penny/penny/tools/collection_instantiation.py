@@ -1,7 +1,7 @@
 """The front door of collector creation (#1591, stage ⑤ of #1562 / epic #1554).
 
 A collection is never authored with an inline procedure any more — it is an
-*instantiation of a skill*: ``collection_create`` takes a ``skill`` (resolved by
+*instantiation of a skill*: ``collection_set`` takes a ``skill`` (resolved by
 name or meaning), binds its parameters from ``params``, renders the skill's
 steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
 it at creation.  This module holds the pure, DB-free pieces of that flow so they
@@ -65,7 +65,7 @@ class SkillResolution(BaseModel):
 
 _AMBIGUOUS_HEADER = 'I know a few skills close to "{query}" — I won\'t guess which you mean:'
 _AMBIGUOUS_TAIL = (
-    "To use one, call collection_create again with skill='<its exact name>'. If none of "
+    "To use one, call collection_set again with skill='<its exact name>'. If none of "
     "these is the process you mean, walk me through it once and I'll learn it as a new skill."
 )
 
@@ -108,7 +108,7 @@ def render_no_skill_found(query: str) -> str:
 
 _UNBOUND_PARAMETERS = (
     "Can't instantiate '{skill}': these required parameters aren't bound:\n{listed}\n"
-    "Pass them in params (e.g. params={{{example}}}), then call collection_create again."
+    "Pass them in params (e.g. params={{{example}}}), then call collection_set again."
 )
 
 
@@ -135,14 +135,14 @@ def render_unbound_parameters(skill_name: str, missing: list[SkillParameter]) ->
 _ACTIVE_DUPLICATE = (
     "Already have a collection for this: '{name}' (active) — it covers the same thing, so I "
     "didn't create a second one. Reuse it: read it with collection_read_latest('{name}'), or "
-    "adjust it with collection_update(name='{name}', ...). If this really is a distinct task, "
-    "create it deliberately with collection_create(..., create_anyway=true)."
+    "adjust it with collection_set(name='{name}', ...). If this really is a distinct task, "
+    "create it deliberately with collection_set(..., create_anyway=true)."
 )
 
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
     "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, or "
-    "start a fresh one deliberately with collection_create(..., create_anyway=true)."
+    "start a fresh one deliberately with collection_set(..., create_anyway=true)."
 )
 
 
@@ -503,7 +503,7 @@ def render_inert_echo(row: MemoryRow) -> str:
     """The skill-less creation echo (#1629): a collection with no ``extraction_prompt``
     is INERT — a container that holds entries but has no job, so it never dispatches.
     The echo is honest about that (storage only, no skill) and names the two-step
-    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_update``)
+    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_set``)
     — never claiming a routine that doesn't exist (visible degradation over silent
     success)."""
     return _INERT_ECHO.format(name=row.name, description=row.description)

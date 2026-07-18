@@ -174,7 +174,7 @@ async def test_basic_message_flow(
 
 
 @pytest.mark.asyncio
-async def test_collection_create_stamps_chat_provenance(
+async def test_collection_set_stamps_chat_provenance(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """A collection created from a chat message records that message as its
@@ -182,7 +182,7 @@ async def test_collection_create_stamps_chat_provenance(
 
     Proves the provenance is threaded end-to-end — the channel logs the incoming
     message first, ``handle`` mints the run_id and passes both down to
-    ``collection_create`` — rather than reconstructed after the fact.
+    ``collection_set`` — rather than reconstructed after the fact.
     """
     ask = "can you keep a running list of new indie platformers for me?"
 
@@ -209,7 +209,7 @@ async def test_collection_create_stamps_chat_provenance(
                     LlmToolCall(
                         id="call_0",
                         function=LlmToolCallFunction(
-                            name="collection_create",
+                            name="collection_set",
                             arguments={
                                 "name": "indie-platformers",
                                 "description": "a running list of new indie platformers",
@@ -719,8 +719,8 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "log_append" in names
 
         # Lifecycle / shape.
-        assert "collection_create" in names
-        assert "collection_update" in names
+        assert "collection_set" in names
+        assert "collection_set" in names
         assert "log_create" in names
         assert "collection_archive" in names
         assert "collection_unarchive" in names
@@ -1064,11 +1064,11 @@ _BASIC_FLOW_EXPECTED = (
     "entirely — cadence words in their ask ('morning and evening', 'daily') bind "
     "at that later step, not in the round.\n"
     "2. A skill fits → set up the whole thing in ONE call: "
-    "collection_create(name=<slug>, description=<the ask>, skill=<its name>, "
+    "collection_set(name=<slug>, description=<the ask>, skill=<its name>, "
     'params=<bind its parameters>, trigger="every <seconds>", notify=<true when '
     "they asked to hear about it>).\n"
     "NEVER fake the job: no hand-built extraction_prompt, and never claim a watch or "
-    "schedule exists unless collection_create confirmed it. The demonstration round "
+    "schedule exists unless collection_set confirmed it. The demonstration round "
     "in 1a is NOT faking — one honest pass, done in front of the user, is exactly "
     "how a skill gets learned. And never ask to be RE-taught one your "
     "Skills section already lists: when the user asks for the ongoing version of "

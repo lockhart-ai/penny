@@ -93,7 +93,7 @@ def _score_update_source(db: Database, before: set[str], *, url_token: str) -> l
     """The new source URL must land in the collection's extraction_prompt.
 
     Changing where a collection gathers from (the source URL the collector browses)
-    is a ``collection_update`` of the ``extraction_prompt`` — the same field a scope
+    is a ``collection_set`` of the ``extraction_prompt`` — the same field a scope
     change rewrites.  The contract is the PERSISTED prompt now names the new source;
     a model that only says "done" (no tool call), confabulates the change, or rewrites
     the prompt while dropping the URL all fail this — exactly the production failure
@@ -196,7 +196,7 @@ async def test_update_source_url(chat_eval: ChatEval) -> None:
     to find good games") it reads the request as "go browse that now" — a one-shot
     action — and never reconfigures the collector.  Before the skill this case was
     0/8; the skill (seeded by the migration the eval DB runs, so this drives the
-    SHIPPED text) frames "point X at this url" as a collection_update and lifts it.
+    SHIPPED text) frames "point X at this url" as a collection_set and lifts it.
     Only the board-games collection is seeded here — the skill comes from the
     migration, the single source of truth."""
     await chat_eval(
