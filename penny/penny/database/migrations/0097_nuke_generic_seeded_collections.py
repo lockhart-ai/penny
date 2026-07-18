@@ -17,14 +17,23 @@ tombstones even" applies to the already-archived shells too (``notifier`` /
 ``notified-thoughts`` pair): a generic catch-all only gets in the way, archived or
 not.
 
+Scope extension (code owner: "let's add thought and preference to the deletion"):
+the legacy ``thought`` and ``preference`` TABLES drop too.  They were the
+pre-memory-framework stores the thoughts pipeline ran on — 0027 long ago migrated
+their contents into the collections this migration deletes, and nuking that
+pipeline killed their last real consumers (the startup preference-embedding
+backfill and the profile onboarding check, both removed with this migration).
+``messagelog.thought_id`` — the FK into the dropped ``thought`` table — drops
+with them (its index first; historical rows lose only that link).  Row counts
+are logged before each drop.
+
 What deliberately STAYS:
   * ``dislikes`` — its collector + entries (code owner: "very narrow and specific
     — still holds water").
   * All four logs — ``user-messages`` / ``penny-messages`` / ``browse-results`` /
     ``collector-runs``.
-  * ``messagelog`` / ``mutation_event`` / ``send_queue`` / ``thought`` /
-    ``preference`` (history; the ``preference`` table's fate is the separate #1301
-    legacy) — untouched.
+  * ``messagelog`` / ``mutation_event`` / ``send_queue`` (history) — untouched
+    beyond the ``thought_id`` column drop.
 
 Every name below is a MIGRATION-SEEDED row referenced by its known key, so this is
 universal (present identically on every deployment) and safe per the house
@@ -62,9 +71,13 @@ def up(conn: sqlite3.Connection) -> None:
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
-    if "memory" not in tables:
-        return
+    if "memory" in tables:
+        _delete_collections(conn, tables)
+    _drop_legacy_thought_preference(conn, tables)
+    conn.commit()
 
+
+def _delete_collections(conn: sqlite3.Connection, tables: set[str]) -> None:
     placeholders = ", ".join("?" for _ in REMOVED_COLLECTIONS)
 
     # 1. Entries — every stored row scoped to a removed collection.
@@ -92,8 +105,6 @@ def up(conn: sqlite3.Connection) -> None:
         REMOVED_COLLECTIONS,
     ).rowcount
 
-    conn.commit()
-
     logger.info(
         "0097 nuked generic seeded collections %s: %d memory rows, %d entries, %d cursors deleted",
         list(REMOVED_COLLECTIONS),
@@ -101,3 +112,28 @@ def up(conn: sqlite3.Connection) -> None:
         entries,
         cursors,
     )
+
+
+def _drop_legacy_thought_preference(conn: sqlite3.Connection, tables: set[str]) -> None:
+    """Drop the legacy pre-memory-framework tables + the FK column into them.
+
+    Row counts are logged BEFORE each drop — the deletion is diagnosable, never
+    silent.  Guarded on existence at every step, so a re-run (or a fresh DB whose
+    ``create_tables`` no longer materialises these models) is a no-op.
+    """
+    # The FK column first: its index blocks SQLite's DROP COLUMN, so the index
+    # (created by 0006) goes, then the column.  Historical rows lose only this
+    # link — the messages themselves are untouched.
+    if "messagelog" in tables:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(messagelog)").fetchall()}
+        if "thought_id" in columns:
+            conn.execute("DROP INDEX IF EXISTS ix_messagelog_thought_id")
+            conn.execute("ALTER TABLE messagelog DROP COLUMN thought_id")
+            logger.info("0097 dropped messagelog.thought_id (the FK into the dropped tables)")
+
+    for table in ("thought", "preference"):
+        if table not in tables:
+            continue
+        rows = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        conn.execute(f"DROP TABLE {table}")
+        logger.info("0097 dropped legacy table %r (%d rows)", table, rows)

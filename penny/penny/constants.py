@@ -279,18 +279,6 @@ class PennyConstants:
     SIGNAL_VALIDATE_RETRY_DELAY = 5.0
     SIGNAL_VALIDATE_HTTP_TIMEOUT = 5.0
 
-    class PreferenceValence(StrEnum):
-        """Valence of a user preference."""
-
-        POSITIVE = "positive"
-        NEGATIVE = "negative"
-
-    class PreferenceSource(StrEnum):
-        """How a preference was created."""
-
-        MANUAL = "manual"
-        EXTRACTED = "extracted"
-
     POSITIVE_REACTION_EMOJIS = frozenset(
         {
             "\U0001f44d",  # 👍

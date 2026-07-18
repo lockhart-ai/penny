@@ -341,7 +341,6 @@ class MessageChannel(ABC):
         author: str,
         attachments: list[str] | None = None,
         quote_message: MessageLog | None = None,
-        thought_id: int | None = None,
         media_ids: list[int] | None = None,
         mechanism: str | None = None,
     ) -> int | None:
@@ -358,7 +357,6 @@ class MessageChannel(ABC):
                 so attribution is correct without ambient state.
             attachments: Optional list of base64-encoded image attachments
             quote_message: Optional message to quote-reply to
-            thought_id: Optional FK to the thought that triggered this message
             media_ids: Media rows this run generated (``generate_image``) that must
                 be attached deterministically to *this* reply — the exact rows,
                 not an embedding-nearest guess.
@@ -382,7 +380,6 @@ class MessageChannel(ABC):
             attachments,
             quote_message,
             parent_id=parent_id,
-            thought_id=thought_id,
             embedding=embedding,
             source_name=author,
             mechanism=mechanism,
@@ -398,7 +395,6 @@ class MessageChannel(ABC):
         quote_message: MessageLog | None,
         *,
         parent_id: int | None = None,
-        thought_id: int | None = None,
         embedding: list[float] | None = None,
         source_name: str | None = None,
         mechanism: str | None = None,
@@ -423,7 +419,6 @@ class MessageChannel(ABC):
             prepared,
             parent_id=parent_id,
             recipient=recipient,
-            thought_id=thought_id,
             device_id=device_id,
             embedding=serialize_embedding(embedding) if embedding is not None else None,
             mechanism=mechanism,

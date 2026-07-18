@@ -391,37 +391,16 @@ class Penny:
             return self.channel.default_channel_type
         return self.config.channel_type
 
-    async def _backfill_preference_embeddings(self, batch_limit: int) -> int:
-        """Backfill preferences with missing embeddings. Returns count embedded."""
-        total = 0
-        while True:
-            prefs = self.db.preferences.get_without_embeddings(limit=batch_limit)
-            if not prefs:
-                break
-            try:
-                texts = [p.content for p in prefs]
-                vecs = await self.embedding_model_client.embed(texts)
-                for pref, vec in zip(prefs, vecs, strict=True):
-                    assert pref.id is not None
-                    self.db.preferences.update_embedding(pref.id, serialize_embedding(vec))
-                    logger.info("Embedded preference %d: %s", pref.id, pref.content[:120])
-                total += len(prefs)
-            except Exception as e:
-                logger.warning("Startup embedding backfill failed for preferences: %s", e)
-                break
-        return total
-
     async def _backfill_memory_embeddings(self, batch_limit: int) -> int:
         """Backfill memory entries missing embeddings. Returns count embedded.
 
         Covers the unified memory framework (skills, ``user-messages``, any
-        migration-seeded collection content) that the preference backfill
-        doesn't reach.  Scoped by the store to non-archived, non-``off``
-        memories so recall-relevant entries get vectors while bulk ``off``
-        logs (``collector-runs``) are skipped.  Fills whichever vector each
-        entry is missing — content, key, or both — so a keyed entry whose key
-        never embedded is matchable by ``read_similar``, not just one whose
-        content is null.
+        migration-seeded collection content).  Scoped by the store to
+        non-archived, non-``off`` memories so recall-relevant entries get
+        vectors while bulk ``off`` logs (``collector-runs``) are skipped.
+        Fills whichever vector each entry is missing — content, key, or both —
+        so a keyed entry whose key never embedded is matchable by
+        ``read_similar``, not just one whose content is null.
         """
         total = 0
         while True:
@@ -571,13 +550,10 @@ class Penny:
         """Vectorize any embedding-less rows across the embedding-bearing tables.
 
         The embedding model is a required prerequisite, so this always runs —
-        preferences, memory entries, description anchors, and message rows all
-        get vectors at startup rather than lazily.
+        memory entries, description anchors, and message rows all get vectors at
+        startup rather than lazily.
         """
         batch_limit = int(self.config.runtime.EMBEDDING_BACKFILL_BATCH_LIMIT)
-        total_prefs = await self._backfill_preference_embeddings(batch_limit)
-        if total_prefs:
-            logger.info("Startup embedding backfill complete: %d preferences", total_prefs)
         total_entries = await self._backfill_memory_embeddings(batch_limit)
         if total_entries:
             logger.info("Startup embedding backfill complete: %d memory entries", total_entries)

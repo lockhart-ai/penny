@@ -99,8 +99,6 @@ class TestMigrate:
             "command_logs",
             "runtime_config",
             "mutestate",
-            "thought",
-            "preference",
             "device",
         }
         assert expected.issubset(tables)
@@ -111,6 +109,9 @@ class TestMigrate:
         assert "conversationhistory" not in tables
         # schedule should NOT exist (mechanism retired, dropped by 0082)
         assert "schedule" not in tables
+        # thought and preference should NOT exist (legacy pipeline, dropped by 0097)
+        assert "thought" not in tables
+        assert "preference" not in tables
         conn.close()
 
     def test_idempotent(self, tmp_path):
@@ -674,8 +675,11 @@ class TestMigrate:
         catch-all seeded collections ENTIRELY — rows, entries, AND the read cursors
         they own — with NO tombstone.  This is the terminal state that supersedes
         the earlier 0086/0089/0092 retirements (which left archived shells): the
-        catch-alls now simply do not exist at end-of-chain.  ``dislikes`` (narrow +
-        specific) and all four logs deliberately survive."""
+        catch-alls now simply do not exist at end-of-chain.  The legacy ``thought``
+        + ``preference`` TABLES drop with them (the nuked pipeline was their last
+        consumer), as does ``messagelog.thought_id`` — the FK into the dropped
+        ``thought`` table (its 0006 index first).  ``dislikes`` (narrow + specific)
+        and all four logs deliberately survive."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE _bootstrap (id INTEGER PRIMARY KEY)")
@@ -722,6 +726,19 @@ class TestMigrate:
                 "('user-messages', 'penny-messages', 'browse-results', 'collector-runs')"
             ).fetchall()
         }
+        remaining_tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        messagelog_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messagelog)").fetchall()
+        }
+        messagelog_indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messagelog'"
+            ).fetchall()
+        }
         conn.close()
 
         # No tombstones — the removed collections leave nothing behind.
@@ -735,6 +752,13 @@ class TestMigrate:
         assert prompt is not None
         # All four logs stay.
         assert logs == {"user-messages", "penny-messages", "browse-results", "collector-runs"}
+        # The legacy tables are DROPPED (0001 created them mid-chain; 0027 read
+        # them; nothing needs them after) — and the FK column into ``thought``
+        # is gone from messagelog along with its 0006 index.
+        assert "thought" not in remaining_tables
+        assert "preference" not in remaining_tables
+        assert "thought_id" not in messagelog_columns
+        assert "ix_messagelog_thought_id" not in messagelog_indexes
 
     def test_0086_drops_published_column_for_notify(self, tmp_path):
         """Migration 0086 retires the pub/sub layer over the full chain: it drops the

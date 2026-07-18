@@ -198,9 +198,11 @@ class ProfileCommand(Command):
 
             response = PennyResponse.PROFILE_CREATED.format(name=parsed.name)
 
-            # Prompt for interests if no preferences exist yet (onboarding)
-            if not context.db.preferences.get_for_user(context.user):
-                response += "\n\n" + PennyResponse.ONBOARDING_INTERESTS_PROMPT
+            # Onboarding: a new profile always gets the interests prompt.  (This
+            # was gated on "no stored preferences yet", but the legacy
+            # ``preference`` table dropped with migration 0097/#1676 — profile
+            # creation IS onboarding, so the prompt now always accompanies it.)
+            response += "\n\n" + PennyResponse.ONBOARDING_INTERESTS_PROMPT
 
             return CommandResult(text=response)
 

@@ -64,15 +64,6 @@ async def test_basic_message_flow(
         # Verify we have a WebSocket connection
         assert len(signal_server._websockets) == 1, "Penny should have connected to WebSocket"
 
-        # Seed full context: notified thought, dislike, active memory
-        thought = penny.db.thoughts.add(TEST_SENDER, "Recent thought about amps")
-        if thought:
-            penny.db.thoughts.mark_notified(thought.id)
-        penny.db.preferences.add(
-            user=TEST_SENDER,
-            content="Country music",
-            valence="negative",
-        )
         # Memory seed: exercise every rendering path in one verbatim assertion.
         # Test-only names avoid colliding with system memories created by
         # migrations 0026/0027 (user-messages, penny-messages, browse-results,
@@ -177,14 +168,6 @@ async def test_basic_message_flow(
         # Mock browse provider is wired in conftest; the tool was invoked once.
         assert len(browse_entries) >= 1
         assert all(e.author == "chat" for e in browse_entries)
-
-        # No conversation echo thoughts should be logged
-        # (old _log_conversation_thought is removed; thoughts come from tool reasoning only)
-        thoughts = penny.db.thoughts.get_recent(TEST_SENDER, limit=10)
-        conversation_echoes = [
-            t for t in thoughts if t.content.startswith("Conversation: user said")
-        ]
-        assert len(conversation_echoes) == 0, "Conversation echo thoughts should not be logged"
 
 
 # ── 1b. Provenance stamping ─────────────────────────────────

@@ -56,9 +56,6 @@ class MessageLog(SQLModel, table=True):
     processed: bool = Field(
         default=False
     )  # True if this message has been processed by extraction pipeline
-    thought_id: int | None = Field(
-        default=None, foreign_key="thought.id", index=True
-    )  # FK to thought that triggered this notification
     device_id: int | None = Field(
         default=None, foreign_key="device.id", index=True
     )  # FK to device that sent/received this message
@@ -145,37 +142,6 @@ class MuteState(SQLModel, table=True):
 
     user: str = Field(primary_key=True)
     muted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
-class Thought(SQLModel, table=True):
-    """A persistent inner monologue entry — Penny's stream of consciousness."""
-
-    id: int | None = Field(default=None, primary_key=True)
-    user: str = Field(index=True)
-    content: str
-    preference_id: int | None = Field(default=None, foreign_key="preference.id", index=True)
-    run_id: str | None = Field(default=None, index=True)  # Links to PromptLog.run_id
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
-    notified_at: datetime | None = None  # When this thought was shared with the user
-    embedding: bytes | None = None  # Serialized float32 content embedding (novelty/sentiment)
-    title: str | None = None  # Short topic name for dedup and image search
-    title_embedding: bytes | None = None  # Serialized float32 title embedding (dedup)
-    image: str | None = None  # Base64 data URI for feed display
-    valence: int | None = None  # User reaction: 1 = positive, -1 = negative, None = unreacted
-
-
-class Preference(SQLModel, table=True):
-    """A user preference extracted from conversation sentiment or emoji reactions."""
-
-    id: int | None = Field(default=None, primary_key=True)
-    user: str = Field(index=True)
-    content: str  # The preference topic (e.g., "dark roast coffee", "cold weather")
-    valence: str = Field(index=True)  # PreferenceValence enum value
-    embedding: bytes | None = None  # Serialized float32 embedding vector
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
-    last_thought_at: datetime | None = None  # When this preference was last used as a thinking seed
-    mention_count: int = Field(default=1)  # Times this topic was mentioned in conversation
-    source: str = Field(default="extracted", index=True)  # PreferenceSource enum value
 
 
 class DomainPermission(SQLModel, table=True):

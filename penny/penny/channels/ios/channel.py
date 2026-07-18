@@ -1224,10 +1224,6 @@ def _history_record(
         source_hint = "Chat"
         source_type = None
         source_name = None
-    elif message.thought_id is not None:
-        source_hint = "Notifier"
-        source_type = "collector"
-        source_name = None
     else:
         source_hint = "Penny"
         source_type = None

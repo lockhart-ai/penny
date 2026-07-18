@@ -10,6 +10,11 @@ nukes those generic catch-all collections entirely downstream — so their
 end-of-chain state is verified by ``test_0097_nukes_generic_seeded_collections``
 in ``test_migrations.py``, and the surviving witness of 0027's split here is
 ``dislikes`` (narrow + specific, deliberately retained).
+
+The legacy ``preference`` table 0027 reads from is itself dropped by 0097 (and its
+model removed, so ``create_tables`` no longer materialises it) — the seeding
+helper recreates it as it existed pre-0097, which is honest: 0027's input IS a
+legacy table from an old deployment.
 """
 
 from __future__ import annotations
@@ -36,14 +41,12 @@ def _seed_message(
     content: str,
     timestamp: datetime,
     embedding: bytes | None = None,
-    thought_id: int | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO messagelog"
-        " (direction, sender, content, timestamp, is_reaction, processed,"
-        "  embedding, thought_id)"
-        " VALUES (?, '+15551234567', ?, ?, 0, 0, ?, ?)",
-        (direction, content, timestamp.isoformat(), embedding, thought_id),
+        " (direction, sender, content, timestamp, is_reaction, processed, embedding)"
+        " VALUES (?, '+15551234567', ?, ?, 0, 0, ?)",
+        (direction, content, timestamp.isoformat(), embedding),
     )
 
 
@@ -54,6 +57,21 @@ def _seed_preference(
     created_at: datetime,
     embedding: bytes | None = None,
 ) -> None:
+    """Insert a legacy ``preference`` row, creating the pre-0097 table if needed.
+
+    The ``Preference`` model is gone (0097 drops the table), so ``create_tables``
+    no longer materialises it — recreate the legacy shape 0027 reads from, exactly
+    as an old deployment would carry it (migration 0001's CREATE IF NOT EXISTS
+    then leaves it alone, and 0097 drops it at end-of-chain).
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS preference ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL,"
+        " content TEXT NOT NULL, valence TEXT NOT NULL, embedding BLOB,"
+        " created_at TIMESTAMP NOT NULL, last_thought_at TIMESTAMP,"
+        " mention_count INTEGER NOT NULL DEFAULT 1,"
+        " source TEXT NOT NULL DEFAULT 'extracted')"
+    )
     conn.execute(
         "INSERT INTO preference"
         " (user, content, valence, embedding, created_at, mention_count, source)"
@@ -83,24 +101,7 @@ def test_messages_split_into_user_and_penny_logs(tmp_path):
     with sqlite3.connect(db.db_path) as conn:
         _seed_message(conn, "incoming", "hey penny", base, embedding=incoming_vec)
         _seed_message(conn, "outgoing", "hey back", base + timedelta(seconds=1))
-        _seed_message(
-            conn, "outgoing", "thinking about jazz", base + timedelta(seconds=2), thought_id=None
-        )
-        # An outgoing message tied to a thought → author "notify"
-        conn.execute(
-            "INSERT INTO thought"
-            " (user, content, title, created_at)"
-            " VALUES ('+15551234567', 'jazz musings', 'jazz', ?)",
-            (base.isoformat(),),
-        )
-        thought_id = conn.execute("SELECT MAX(id) FROM thought").fetchone()[0]
-        _seed_message(
-            conn,
-            "outgoing",
-            "did you see this jazz article?",
-            base + timedelta(seconds=3),
-            thought_id=thought_id,
-        )
+        _seed_message(conn, "outgoing", "thinking about jazz", base + timedelta(seconds=2))
         conn.commit()
 
     migrate(db.db_path)
@@ -118,7 +119,6 @@ def test_messages_split_into_user_and_penny_logs(tmp_path):
     assert [(e.content, e.author) for e in penny_rows] == [
         ("hey back", "penny"),
         ("thinking about jazz", "penny"),
-        ("did you see this jazz article?", "penny"),
     ]
     # The incoming message's embedding survives the facade (read from messagelog).
     assert user_rows[0].content_embedding == incoming_vec
@@ -167,12 +167,15 @@ def test_running_migration_twice_does_not_duplicate_entries(tmp_path):
 
     migrate(db.db_path)
     # Force-re-run 0027 by clearing its migration record so the runner re-applies
-    # it.  0027 seeds into the legacy ``recall`` column, which migration 0091 has
-    # since DROPPED (#1583) — re-provision it (matching the pre-0091 window) so the
-    # isolated re-run exercises 0027's block-empty guards, the point of this test.
+    # it.  0027 reads columns later migrations have since DROPPED — it seeds into
+    # the legacy ``recall`` column (dropped by 0091, #1583) and selects
+    # ``messagelog.thought_id`` (dropped by 0097, #1676) — so re-provision both
+    # (matching the pre-drop window) so the isolated re-run exercises 0027's
+    # block-empty guards, the point of this test.
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("DELETE FROM _migrations WHERE name = '0027_memory_data_migration'")
         conn.execute("ALTER TABLE memory ADD COLUMN recall TEXT NOT NULL DEFAULT 'recent'")
+        conn.execute("ALTER TABLE messagelog ADD COLUMN thought_id INTEGER")
         conn.commit()
     migrate(db.db_path)
 

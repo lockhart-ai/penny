@@ -14,10 +14,8 @@ from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
 from penny.database.message_store import MessageStore
 from penny.database.mutation_store import MutationStore
-from penny.database.preference_store import PreferenceStore
 from penny.database.send_queue_store import SendQueueStore
 from penny.database.skill_store import SkillStore
-from penny.database.thought_store import ThoughtStore
 from penny.database.user_store import UserStore
 
 logger = logging.getLogger(__name__)
@@ -34,10 +32,8 @@ class Database:
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries
         mutations: Registry-mutation event ledger (create/update/archive provenance)
-        preferences: User preference CRUD and dedup
         send_queue: Durable outbound message queue, drained on the send cooldown
         skills: Versionless skill registry (certified-by-execution tool-call scripts)
-        thoughts: Inner monologue persistence (append-only thought log)
         users: UserInfo, sender queries, mute state
     """
 
@@ -65,9 +61,7 @@ class Database:
             send_queue=self.send_queue,
         )
         self.messages = MessageStore(self.engine)
-        self.preferences = PreferenceStore(self.engine)
         self.skills = SkillStore(self.engine)
-        self.thoughts = ThoughtStore(self.engine)
         self.users = UserStore(self.engine)
 
         logger.info("Database initialized: %s", db_path)
