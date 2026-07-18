@@ -3,17 +3,22 @@
 A content tool (``browse``) that carries a micro-instruction runs the fetched
 page content through a FRESH, scoped single-shot model call — content +
 instruction, no tools — and returns a small typed result to the main loop.  The
-bulk page body never enters the parent run's context: only the one-line
-extracted value (or an honest enumerated failure) plus the fetch handle to the
-stored full content come back (the anchor discipline).  A micro-context is
-structurally incapable of confabulating a stored value it has never seen.
+bulk page body never enters the parent run's context: only the extracted value
+(or an honest enumerated failure) plus the fetch handle to the stored full
+content come back (the anchor discipline).  A micro-context is structurally
+incapable of confabulating a stored value it has never seen.
 
 The output contract is ENUMERATED on both sides of the interface: the prompt
 names the two tagged forms (``EXTRACTED: <value>`` / ``NOT_PRESENT: <reason>``)
 and classification is a deterministic tag parse — the label is the interface
 between model-space and Python-space, so a not-present apology can never be
-promoted to an extracted value.  Untagged output is a contract violation: one
-reroll of the unchanged context, then an honest ``EXTRACTION_FAILED``.
+promoted to an extracted value.  The tag must OPEN the output (its first line);
+after ``EXTRACTED:`` the value is EVERYTHING that follows — as long as the
+instruction requires (a single value, a paragraph, or an item-per-line list), so
+a digest-shaped instruction is served whole — while the ``NOT_PRESENT:`` reason
+stays a single line (it can never be multi-line-promoted into a value).  Untagged
+output is a contract violation: one reroll of the unchanged context, then an
+honest ``EXTRACTION_FAILED``.
 
 The single call is screened by the same degeneracy / leaked-Harmony-envelope
 detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`): poison
@@ -58,16 +63,22 @@ NOT_PRESENT_TAG = "NOT_PRESENT:"
 # world-question ("what's on the page?"), never a machine-question, forbids
 # inventing a value not in the content, and enumerates the closed set of output
 # forms so classification downstream is a deterministic tag parse, never a
-# judgment over free prose.
+# judgment over free prose.  The value may be as long as the instruction requires
+# (a digest, a list) — the TAG must open the output; only its shape is fixed, not
+# its length.
 MICRO_CONTEXT_SYSTEM_PROMPT = (
     "You are an extraction step. You are given the full text of one or more web "
     "pages and a single instruction naming exactly what to pull out of them. "
-    "Respond with exactly one line, in one of these two forms:\n"
-    f"{EXTRACTED_TAG} <the extracted value, as briefly as the instruction allows>\n"
+    "The FIRST LINE of your output must open with one of these two tags:\n"
+    f"{EXTRACTED_TAG} <the value — it may begin on this same line>\n"
     f"{NOT_PRESENT_TAG} <one short line naming what is missing>\n"
-    "Use NOT_PRESENT when the requested information is not in the content. "
-    "Never invent a value that is not in the content, and write nothing else — "
-    "no preamble, no explanation, no restating the instruction."
+    f"After {EXTRACTED_TAG}, the extracted value is EVERYTHING that follows — as "
+    "long as the instruction requires: a single value, one or more paragraphs, or "
+    "a list (put one item per line). Use "
+    f"{NOT_PRESENT_TAG}, on a single line, when the requested information is not in "
+    "the content. Never invent a value that is not in the content, and write "
+    "nothing outside the value itself — no preamble, no explanation, no restating "
+    "the instruction."
 )
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
@@ -219,11 +230,14 @@ class MicroContext:
 
     @staticmethod
     def _parse_tagged(draw: str) -> MicroContextResult | None:
-        """Deterministic classification of one clean draw by its output tag.
+        """Deterministic classification of one clean draw by its OPENING tag.
 
-        ``EXTRACTED:`` with a non-blank payload → the value; ``NOT_PRESENT:``
-        with a non-blank payload → the not-present outcome carrying the reason.
-        Anything else — no tag, or a tag with a blank payload — is ``None``
+        The tag must open the stripped output (its first line).  ``EXTRACTED:`` →
+        the value is EVERYTHING after the tag (the whole remainder, trimmed) — a
+        multi-line digest, an item-per-line list, or a single value.
+        ``NOT_PRESENT:`` → the reason is the FIRST LINE only, so a not-present
+        apology can never be multi-line-promoted into an extracted value.  Anything
+        else — no opening tag, or a tag with a blank payload — is ``None``
         (invalid), which the caller rerolls once and then fails honestly.
         """
         text = draw.strip()
@@ -232,7 +246,7 @@ class MicroContext:
             if not is_blank(value):
                 return MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=value)
         if text.startswith(NOT_PRESENT_TAG):
-            reason = text[len(NOT_PRESENT_TAG) :].strip()
+            reason = text[len(NOT_PRESENT_TAG) :].split("\n", 1)[0].strip()
             if not is_blank(reason):
                 return MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason=reason)
         return None

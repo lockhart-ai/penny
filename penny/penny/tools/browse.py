@@ -298,7 +298,7 @@ class BrowseTool(Tool):
         # partial failure keeps ``success=True``: the model works from what succeeded.
         all_failed = bool(results) and all(isinstance(r, BaseException) for r in results)
         if args.extract is not None and not all_failed:
-            return await self._extract_result(sections, args.extract, stored)
+            return await self._extract_result(sections, stored, args.extract)
         return ToolResult(
             message=PennyConstants.SECTION_SEPARATOR.join(sections),
             success=not all_failed,
@@ -307,32 +307,59 @@ class BrowseTool(Tool):
     # ── Micro-context (extract) path ──────────────────────────────────────────
 
     async def _extract_result(
-        self, sections: list[str], instruction: str, stored: list[MemoryEntry]
+        self, sections: list[str], stored: list[MemoryEntry], instruction: str
     ) -> ToolResult:
-        """Run the fetched content through the micro-context, returning the typed
-        value + fetch handle — never the page body — to the main loop.
-
-        The bulk content (page + search sections) feeds the micro-context; the
-        short signal sections (read errors, dropped-query notes) stay visible to
-        the main loop after the extracted value, so a read failure never hides
-        behind a clean extraction (visible degradation)."""
-        if self._micro_context is None:
+        """One micro-context call PER successfully-fetched page (#1682) — each result
+        rendered UNDER that page's own ``## browse …:`` section header, so a
+        multi-source digest keeps items attributed to their source and a NOT_PRESENT
+        page renders honestly in its own section without masking another page's
+        extracted value.  Signal sections (read errors, dropped-query notes, channel
+        outage) stay verbatim in place; a failed fetch keeps its ``## browse error:``
+        section with no micro-context.  Each stored page-read carries its OWN fetch
+        handle (a search section carries none — it was never stored)."""
+        micro_context = self._micro_context
+        if micro_context is None:
             return self._extract_unavailable_result(instruction, stored)
-        content = PennyConstants.SECTION_SEPARATOR.join(
-            s for s in sections if self._is_content_section(s)
+        handles = iter(stored)  # aligned 1:1 with the page-read sections, in order
+        rendered: list[str] = []
+        succeeded_any = False
+        for section in sections:
+            if not self._is_content_section(section):
+                rendered.append(section)  # error / dropped / outage — kept verbatim
+                continue
+            page_read = section.startswith(PennyConstants.BROWSE_PAGE_HEADER)
+            entry = next(handles, None) if page_read else None
+            page_section, ok = await self._extract_one_page(
+                micro_context, section, instruction, entry
+            )
+            rendered.append(page_section)
+            succeeded_any = succeeded_any or ok
+        return ToolResult(
+            message=PennyConstants.SECTION_SEPARATOR.join(rendered), success=succeeded_any
         )
-        signals = [s for s in sections if not self._is_content_section(s)]
-        micro = await self._micro_context.extract(content, instruction, run_target=self._author)
+
+    async def _extract_one_page(
+        self,
+        micro_context: MicroContext,
+        section: str,
+        instruction: str,
+        entry: MemoryEntry | None,
+    ) -> tuple[str, bool]:
+        """Extract ONE fetched page's content and render the typed result under that
+        page's own section header — the extracted value (or an honest NOT_PRESENT /
+        failure) plus this page's fetch handle.  Returns the rendered section and
+        whether it was a successful read: NOT_PRESENT is a *successful read of an
+        absent fact* (the page was fetched and read; the fact isn't there), so only
+        the failure outcomes (no usable tagged output / poison) report False."""
+        header_line = section.partition("\n")[0]
+        micro = await micro_context.extract(section, instruction, run_target=self._author)
+        stored = [entry] if entry is not None else []
         body = self._render_micro_result(micro, instruction, stored)
-        # NOT_PRESENT is a *successful read of an absent fact* — the page was
-        # fetched and read; the fact isn't there.  Only the failure outcomes
-        # (no usable tagged output / poison) report success=False.
         succeeded = micro.outcome in (
             MicroExtractOutcome.EXTRACTED,
             MicroExtractOutcome.NOT_PRESENT,
         )
-        message = PennyConstants.SECTION_SEPARATOR.join([body, *signals])
-        return ToolResult(message=message, success=succeeded)
+        return f"{header_line}\n{body}", succeeded
 
     def _render_micro_result(
         self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
