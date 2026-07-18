@@ -3028,10 +3028,13 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     extractor filters captured steps to (#1668: a skill renders into a collector
     prompt, so only collector-runnable steps belong in the recipe).
 
-    Discovered from the *real* assembly (``build_memory_tools`` + browse + done +
-    send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so
-    it can never drift from what a collector actually runs — add a collector tool and
-    it's covered for free.  ``include_lifecycle=False`` mirrors the collector's masked
+    Discovered from the *real* assembly (``build_memory_tools`` + browse + choose +
+    done + send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded
+    list, so it can never drift from what a collector actually runs — add a collector
+    tool and it's covered for free.  ``choose`` rides here so a demonstrated
+    ``choose`` step is capture-eligible for a skill (it is not orientation and not a
+    write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
+    at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
     surface (#1556): the registry-shape tools are absent from a cadence run, so an
     ``extraction_prompt`` that names ``collection_create`` / ``collection_update`` /
     archive / merge is rejected at authoring time rather than persisted into a prompt
@@ -3040,13 +3043,16 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     import here would close that cycle.
     """
     from penny.tools.browse import BrowseTool
+    from penny.tools.choose import ChooseTool
     from penny.tools.send_message import SendMessageTool
 
     memory_names = {
         tool.name
         for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
     }
-    return frozenset(memory_names | {BrowseTool.name, DoneTool.name, SendMessageTool.name})
+    return frozenset(
+        memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name, SendMessageTool.name}
+    )
 
 
 def _reject_unknown_extraction_tools(

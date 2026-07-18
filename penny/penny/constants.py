@@ -156,6 +156,7 @@ class ProgressEmoji(StrEnum):
     THINKING = "\U0001f4ad"  # 💭 — initial state, before any tool calls
     SEARCHING = "\U0001f50d"  # 🔍 — running a text search
     READING = "\U0001f4d6"  # 📖 — reading a specific URL
+    ROLLING = "\U0001f3b2"  # 🎲 — making a fair random choice
     WORKING = "\u2699\ufe0f"  # ⚙️ — generic fallback for other tools
 
 

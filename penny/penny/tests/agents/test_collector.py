@@ -33,7 +33,7 @@ from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
-from penny.tools.memory_tools import LogReadTool, build_memory_tools
+from penny.tools.memory_tools import LogReadTool, build_memory_tools, collector_tool_surface
 
 
 def _llm_client() -> LlmClient:
@@ -309,8 +309,21 @@ def test_collector_surface_excludes_lifecycle_tools(test_config, tmp_path):
     assert names.isdisjoint(_LIFECYCLE_TOOL_NAMES), (
         f"collector surface leaked lifecycle tools: {names & _LIFECYCLE_TOOL_NAMES}"
     )
-    # It keeps its actual job: reads, scoped entry writes, browse, notify, done.
-    assert {"collection_write", "collection_read_latest", "browse", "done"} <= names
+    # It keeps its actual job: reads, scoped entry writes, browse, choose, notify, done.
+    # ``choose`` rides the collector surface so a demonstrated random-pick step renders
+    # into a runnable collector program (skill capture).
+    assert {"collection_write", "collection_read_latest", "browse", "choose", "done"} <= names
+
+
+def test_choose_is_capture_eligible_on_the_collector_surface(test_config, tmp_path):
+    """``collector_tool_surface`` — the set the skill extractor filters captured steps
+    to (#1668) — includes ``choose``, so a demonstrated ``choose`` step survives into a
+    skill instead of being dropped as an un-runnable call.  It is neither a lifecycle
+    tool (which the collector can't run) nor a write, just a read-shaped picker."""
+    _, db = _make_collector(test_config, tmp_path)
+    surface = collector_tool_surface(db, _llm_client())
+    assert "choose" in surface
+    assert surface.isdisjoint(_LIFECYCLE_TOOL_NAMES)
 
 
 def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):

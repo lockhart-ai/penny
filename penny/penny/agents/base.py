@@ -28,6 +28,7 @@ from penny.text_validity import (
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
+from penny.tools.choose import ChooseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
 from penny.tools.send_message import SendMessageTool
 from penny.validation import (
@@ -1020,6 +1021,12 @@ class Agent:
             include_lifecycle=self._include_lifecycle_tools(),
         )
         tools.append(self._build_browse_tool(author=self.name))
+        # ``choose`` — the fair random picker — is on every agent surface, like
+        # browse: chat dispatches it from the user's "pick one at random", and a
+        # collector needs it at runtime so a demonstrated ``choose`` step captured
+        # into a skill (#1590) renders into a runnable collector program.  It holds
+        # no state, so one shared instance built per cycle is fine.
+        tools.append(ChooseTool())
         return tools
 
     def _include_lifecycle_tools(self) -> bool:

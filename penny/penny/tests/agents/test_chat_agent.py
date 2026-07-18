@@ -755,6 +755,10 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         # Resolve-by-meaning — the guess-free fallback every not-found points at (#1558).
         assert "find" in names
 
+        # Fair random selection — the model is a biased chooser, so "pick one at
+        # random" is a Python coin flip on the chat surface (like browse, on both).
+        assert "choose" in names
+
         # Notification mute/unmute — chat-surface tools over the MuteState row
         # (the retired /mute + /unmute commands), dispatched from natural language.
         assert "notifications_mute" in names
