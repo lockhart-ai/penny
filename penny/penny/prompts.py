@@ -72,9 +72,10 @@ class Prompt:
         "collection_create(name=<slug>, description=<the ask>, skill=<its name>, "
         'params=<bind its parameters>, trigger="every <seconds>", notify=<true '
         "when they asked to hear about it>).\n"
-        "NEVER improvise a stand-in — a one-off write into some collection, a "
-        "hand-built extraction_prompt — for a task that needs a skill you don't "
-        "have; if you can't find the skill, ask to be taught it. And never ask to "
+        "NEVER fake the job: no hand-built extraction_prompt, and never claim a "
+        "watch or schedule exists unless collection_create confirmed it. The "
+        "demonstration round in 1a is NOT faking — one honest pass, done in front "
+        "of the user, is exactly how a skill gets learned. And never ask to "
         "be RE-taught one your Skills section already lists: when the user asks "
         "for the ongoing version of something you just did, don't redo the round "
         "or ask how — instantiate it (step 2).\n\n"
