@@ -463,11 +463,11 @@ class TestCollectionCreateFrontDoor:
             "it, so there's nothing to instantiate. No schedule can be set up before the "
             "routine is learned. Two cases:\n"
             "a. The user already told you what one round needs — where to look, what to "
-            "pull out, what to keep — then DO IT NOW, in this turn: create the collection "
-            "it needs (name + description, nothing else), browse, extract just the ONE "
-            "value they want watched (only the price, not a whole name+hook+price blob — "
+            "pull out, what to keep — then DO IT NOW, in this turn: browse, extract just "
+            "the ONE value they want watched (only the price, not a whole name+hook+price blob — "
             "a multi-field blob changes whenever any part does and would false-alarm every "
-            "cycle), and collection_write what you actually found.\n"
+            "cycle), and collection_write what you actually found — storage is created "
+            "for you if it doesn't exist.\n"
             "b. They haven't — reply to the user now, no more tool calls this turn: tell "
             "them you'll learn it from one complete pass, and ask for the whole routine "
             "in ONE message (where to look, what to pull out, what to keep), modelling "
@@ -1912,6 +1912,60 @@ class TestCollectionWritesAndReads:
         # Each rendered entry carries an absolute UTC timestamp so the model can
         # place it in time — read-tool output was previously timeless.
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
+
+    @pytest.mark.asyncio
+    async def test_write_target_materialization(self, tmp_path, mock_llm):
+        """A chat write never dies on a name miss (#1570): a near-certain name
+        variant REDIRECTS — narrated, never silent — (typo/char leg AND the
+        same-intent full-token-containment leg), the ambiguous middle band keeps
+        the did-you-mean refusal, and nothing-close AUTO-CREATES the collection
+        (placeholder description + created_by_run_id stamp).  A collector-scoped
+        write is never materialized."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="gear-notes", description="gear notes")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", run_id="run-materialize"
+        )
+        # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
+        result = await write.execute(
+            memory="gear-ntoes", entries=[{"key": "tent", "content": "3kg tent"}]
+        )
+        assert result.mutated is True
+        assert result.message.startswith(
+            "Note: no collection named 'gear-ntoes' exists — 'gear-notes' is the same "
+            "name in a different spelling, so this write went there.\n"
+        )
+        assert db.memories.get("gear-ntoes") is None
+        assert "tent" in (await CollectionReadLatestTool(db).execute(memory="gear-notes")).message
+        # Same-intent extension (TCR leg): 'gear' ⊂ 'gear-notes'.
+        result = await write.execute(
+            memory="gear", entries=[{"key": "stove", "content": "canister stove"}]
+        )
+        assert result.mutated is True and "'gear-notes'" in result.message
+        assert db.memories.get("gear") is None
+        # Nothing close → auto-create, narrated, provenance stamped.
+        result = await write.execute(
+            memory="trail-recipes", entries=[{"key": "oats", "content": "overnight oats"}]
+        )
+        assert result.mutated is True
+        assert result.message.startswith(
+            "Note: no collection named 'trail-recipes' existed and nothing close "
+            "matched, so it was created (storage only, no job) and your entries "
+            "went in.\n"
+        )
+        row = db.memories.get("trail-recipes")
+        assert row is not None and row.created_by_run_id == "run-materialize"
+        assert row.description == "auto-created to hold 'oats'"
+        assert row.extraction_prompt is None
+        # A collector-scoped write is pinned — no materialization, plain refusal.
+        scoped = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="gear-notes"
+        )
+        result = await scoped.execute(
+            memory="something-else", entries=[{"key": "x", "content": "y"}]
+        )
+        assert result.success is False
+        assert db.memories.get("something-else") is None
 
     @pytest.mark.asyncio
     async def test_write_empty_entries_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):

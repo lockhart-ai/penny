@@ -181,7 +181,7 @@ async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
     result = await extractor.extract("run-A")
     assert isinstance(result, SkillExtracted)
 
-    attached = extractor.attach_to_created_collection(result.skill, "run-A")
+    attached = await extractor.attach_to_created_collection(result.skill, "run-A")
 
     assert attached is not None and attached.collection == "aurora-prices"
     row = db.memories.get("aurora-prices")
@@ -199,7 +199,7 @@ async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
     later = await extractor.extract("run-B")
     assert isinstance(later, SkillExtracted)
-    assert extractor.attach_to_created_collection(later.skill, "run-B") is None
+    assert await extractor.attach_to_created_collection(later.skill, "run-B") is None
 
 
 # ── Excluded: pure read, pure write, failed-write-only, bail, no-calls ─────────

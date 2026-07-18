@@ -188,7 +188,7 @@ class ChatAgent(Agent):
         result = await self._skill_extractor.extract(run_id)
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
-                attached = self._skill_extractor.attach_to_created_collection(skill, run_id)
+                attached = await self._skill_extractor.attach_to_created_collection(skill, run_id)
                 if attached is not None:
                     return Prompt.SKILL_LEARNED_ATTACHED_NARRATION.format(
                         skill=render_skill_full(skill),

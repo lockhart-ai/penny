@@ -268,7 +268,7 @@ class SkillExtractor:
         draft = await self._draft(run_id, projection, certified)
         return await self._persist(draft, projection.origin_message)
 
-    def attach_to_created_collection(self, skill: Skill, run_id: str) -> AutoAttached | None:
+    async def attach_to_created_collection(self, skill: Skill, run_id: str) -> AutoAttached | None:
         """Auto-attach: when the demonstrated round's certified writes targeted a
         collection CREATED BY THIS SAME RUN, attach the skill framework-side —
         the skill↔collection join is a ledger read, not a model decision.
@@ -296,9 +296,25 @@ class SkillExtractor:
             skill_name=skill.name,
             skill_params=params,
             run_id=run_id,
+            **await self._description_backfill(target, skill),
         )
         logger.info("Auto-attached skill '%s' to collection '%s'", skill.name, target)
         return AutoAttached(collection=target, params=params)
+
+    async def _description_backfill(self, target: str, skill: Skill) -> dict:
+        """An auto-created collection carries a placeholder description (the write
+        tool's ``auto-created to hold …`` stamp) — the skill's GENERIC description
+        is the real meaning anchor, so the attach backfills it (embedding included).
+        An explicitly-described collection is never clobbered."""
+        row = self._db.memories.get(target)
+        if row is None or not row.description.startswith(
+            PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX
+        ):
+            return {}
+        return {
+            "description": skill.description,
+            "description_embedding": await embed_text(self._embedding, skill.description),
+        }
 
     def _created_write_target(self, steps: list[SkillStep], run_id: str) -> str | None:
         """The single collection the round's certified scoped writes targeted that

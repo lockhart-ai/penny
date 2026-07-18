@@ -403,6 +403,25 @@ class PennyConstants:
     # the ticket); the meaning leg reuses the dedup thresholds instead of a new
     # number.  0.6 is ``difflib``'s own documented default cutoff for close matches.
     DID_YOU_MEAN_STRING_CUTOFF = 0.6
+    # Write-target REDIRECT gates (#1570 journey): a chat collection_write whose
+    # target name doesn't exist is silently-but-NARRATEDLY redirected into an
+    # existing collection when the miss is near-certainly a name variant of it.
+    # Calibrated against the archived journey-eval run DBs (every missed write
+    # target + every same-sample distinct-collection pair):
+    #   distinct collections (different teams) cap at char 0.727 / TCR 0.667;
+    #   observed typo class (transpositions, hyphen joins) lands char 0.90-0.92;
+    #   same-intent extension ('team-news' → 'team-news-alerts') is TCR 1.0 at
+    #   char 0.72.  So: char ≥ 0.85 (margin above 0.727, slack under 0.90) OR
+    #   full token containment (TCR == 1.0, vs ≤ 0.667 for negatives) redirects;
+    #   anything between falls to the did-you-mean refusal; nothing close at all
+    #   AUTO-CREATES the collection (the dominant observed miss: no collection
+    #   existed yet).
+    MEMORY_NAME_REDIRECT_CHAR_RATIO = 0.85
+    MEMORY_NAME_REDIRECT_TCR = 1.0
+    # The auto-created collection's placeholder description prefix — shared by the
+    # write tool (which stamps it) and the run-end auto-attach (which recognizes it
+    # and backfills the skill's generic description as the real meaning anchor).
+    AUTO_CREATED_DESCRIPTION_PREFIX = "auto-created to hold"
     # Self-state header caps (#1555).  The chat agent's system prompt opens with a
     # deterministically-rendered header of Penny's own operational situation
     # (mechanisms · recent activity · the store map · durable user facts).  Each

@@ -26,6 +26,8 @@ from abc import abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from similarity.embeddings import token_containment_ratio
+
 from penny.config_params import RuntimeParams
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
@@ -1221,6 +1223,38 @@ class CollectionKeysTool(MemoryTool):
 
 _SCOPE_REFUSAL_MESSAGE = "Refused: this collector can only write to '{scope}', not '{memory}'."
 
+# Write-target materialization (#1570): a chat write never dies on a name miss.
+# A near-certain name variant REDIRECTS (narrated, never silent); nothing close
+# AUTO-CREATES the collection (narrated).  The middle band keeps the
+# did-you-mean refusal.  Gates calibrated in ``PennyConstants`` (see the
+# MEMORY_NAME_REDIRECT_* comment for the archive-derived table).
+_WRITE_REDIRECT_NOTE = (
+    "Note: no collection named '{asked}' exists — '{match}' is the same name in a "
+    "different spelling, so this write went there.\n"
+)
+_WRITE_AUTOCREATE_NOTE = (
+    "Note: no collection named '{name}' existed and nothing close matched, so it was "
+    "created (storage only, no job) and your entries went in.\n"
+)
+_AUTO_CREATED_DESCRIPTION = PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX + " '{key}'"
+
+
+def _is_name_variant(asked: str, existing: str) -> bool:
+    """Near-certain 'same collection, different spelling': a high character ratio
+    (typos, hyphen joins) OR full token containment ('team-news' ⊂
+    'team-news-alerts').  Token overlap via the similarity package's TCR; the
+    char leg shares did-you-mean's stdlib measure."""
+    if (
+        difflib.SequenceMatcher(None, asked, existing).ratio()
+        >= PennyConstants.MEMORY_NAME_REDIRECT_CHAR_RATIO
+    ):
+        return True
+    return (
+        token_containment_ratio(asked.replace("-", " "), existing.replace("-", " "))
+        >= PennyConstants.MEMORY_NAME_REDIRECT_TCR
+    )
+
+
 # A duplicate rejection binds the matched existing key straight into an
 # ``update_entry`` call PER ENTRY (see ``_format_duplicate``), not as a placeholder —
 # so the model refreshes the row that already exists instead of re-using its OWN
@@ -1409,13 +1443,49 @@ class CollectionWriteTool(MemoryTool):
                 message=_SCOPE_REFUSAL_MESSAGE.format(scope=self._scope, memory=args.memory),
                 success=False,
             )
-        memory = _resolve(self._db, args.memory)
+        target, note = await self._materialize_target(args)
+        memory = _resolve(self._db, target)
         entries = [await self._build_entry(spec) for spec in args.entries]
-        embed_failure = self._embed_failure(args.memory, entries)
+        embed_failure = self._embed_failure(target, entries)
         if embed_failure is not None:
             return embed_failure
         results = memory.write(entries, author=self._author, run_id=self._run_id)
-        return self._format_results(args.memory, results)
+        result = self._format_results(target, results)
+        if note:
+            return result.model_copy(update={"message": note + result.message})
+        return result
+
+    async def _materialize_target(self, args: CollectionWriteArgs) -> tuple[str, str]:
+        """Resolve the write target, materializing on a miss (#1570): a
+        near-certain name variant REDIRECTS to the existing collection; nothing
+        close AUTO-CREATES it (chat surface only — a scoped write is pinned to a
+        collection that exists).  Both narrate; the middle band re-raises into
+        the did-you-mean refusal.  Returns (actual target, note-or-empty)."""
+        if self._scope is not None or self._db.memories.get(args.memory) is not None:
+            return args.memory, ""
+        variants = [
+            row.name
+            for row in self._db.memories.list_all()
+            if row.type == MemoryType.COLLECTION.value
+            and not row.archived
+            and _is_name_variant(args.memory, row.name)
+        ]
+        if len(variants) == 1:
+            logger.info("collection_write: redirected '%s' → '%s'", args.memory, variants[0])
+            return variants[0], _WRITE_REDIRECT_NOTE.format(asked=args.memory, match=variants[0])
+        if variants:
+            # Two-plus near-variants is genuine ambiguity — the did-you-mean
+            # refusal (raised by _resolve on the original name) owns it.
+            return args.memory, ""
+        description = _AUTO_CREATED_DESCRIPTION.format(key=args.entries[0].key)
+        self._db.memories.create_collection(
+            args.memory,
+            description,
+            description_embedding=await embed_text(self._llm, description),
+            created_by_run_id=self._run_id,
+        )
+        logger.info("collection_write: auto-created collection '%s'", args.memory)
+        return args.memory, _WRITE_AUTOCREATE_NOTE.format(name=args.memory)
 
     def _embed_failure(self, memory: str, entries: list[EntryInput]) -> ToolResult | None:
         """Refuse the write, atomically, if any entry lost a vector to a transient
