@@ -93,6 +93,11 @@ WRITE_SHAPED_TOOLS = frozenset(
 # qualifying CONTENT read: a find + write run is a pure write (the storage atom),
 # not a skill.  The qualifying read must be a content read (browse, log_read,
 # collection_read_latest, read_similar, collection_get, entry reads).
+# Preceding conversation turns fed to the naming step — the user's instigating
+# ask ('can you watch …') usually sits a turn or two before the demonstration,
+# and the skill's name/description must carry that INTENT (#1658).
+_NAMING_CONVERSATION_TURNS = 6
+
 ORIENTATION_TOOLS = frozenset({"find", "skill_read", "memory_metadata", "collection_catalog"})
 
 # The resolve-by-meaning verb (and its arg): its ``query`` phrases seed the run-end
@@ -300,7 +305,8 @@ class SkillExtractor:
         semantic name/description per parameter (poison-screened + one reroll, its own
         ledger attribution).  ``None`` on any failure — the caller falls back to the
         slug + arg-derived names."""
-        content = _naming_content(steps, parameters, projection)
+        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
+        content = _naming_content(steps, parameters, projection, conversation)
         return await self._micro_context.label_skill(content, run_target=self._agent_name)
 
     @staticmethod
@@ -374,7 +380,10 @@ class SkillExtractor:
 
 
 def _naming_content(
-    steps: list[SkillStep], parameters: list[SkillParameter], projection: RunProjection
+    steps: list[SkillStep],
+    parameters: list[SkillParameter],
+    projection: RunProjection,
+    conversation: list[tuple[str, str]],
 ) -> str:
     """The naming micro-context's content (#1665/#1668): the numbered recipe
     (parameters as ``{variables}``, so the model treats them as user-supplied), the
@@ -382,7 +391,14 @@ def _naming_content(
     generic task phrases the step-1 doctrine sends to find — a naming signal), and the
     parameter list — each parameter's current arg-derived name, demonstrated value,
     and the arg site(s) it fills — so the model can relabel each semantically."""
-    parts = [
+    parts = []
+    if conversation:
+        turns = "\n".join(
+            f"{'user' if direction == 'incoming' else 'penny'}: {content}"
+            for direction, content in conversation
+        )
+        parts.append(f"Conversation that led to the construction of this routine:\n{turns}")
+    parts += [
         f"Routine steps:\n{render_skill(steps)}",
         f"First demonstrated by this message:\n{projection.origin_message}",
     ]

@@ -528,6 +528,15 @@ async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(t
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
+    # The instigating ask precedes the demonstration in the conversation — the
+    # naming step must SEE it (#1658 intent grounding: the description carries the
+    # WHY, so a later re-statement of intent maps to the skill).
+    db.messages.log_message(
+        direction="incoming",
+        sender="user",
+        content="can you keep an eye on the zephyr lamp listing for me?",
+    )
+
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
@@ -535,6 +544,11 @@ async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(t
     assert result.skill.description == "Look up a price on a listing page and record it."
     assert result.skill.intent == "Look up a price on a listing page and record it."
     assert result.origin_message == _UTTERANCE
+    # The naming micro-context's content led with the conversation, oldest first.
+    naming_request = model.requests[-1]
+    naming_content = " ".join(m.get("content", "") for m in naming_request["messages"])
+    assert "Conversation that led to the construction of this routine:" in naming_content
+    assert "user: can you keep an eye on the zephyr lamp listing for me?" in naming_content
 
 
 @pytest.mark.asyncio
