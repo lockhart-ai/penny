@@ -403,6 +403,17 @@ class PennyConstants:
     # top candidates without flooding the model; the model narrows further by
     # exact name or type.  All candidates are ranked; only the head is shown.
     FIND_MATCH_LIMIT = 5
+    # Did-you-mean suggestion gate (#1674): the minimum stdlib string similarity
+    # (``difflib.SequenceMatcher`` ratio, 0..1) between a missed memory name / entry
+    # key and an EXISTING one for the miss to lead its error with "did you mean
+    # '<it>'?".  Conservative — a suggestion must be a near spelling of a real
+    # name/key, so a genuinely-unrelated guess gets NO misleading suggestion and the
+    # message stays byte-identical to before.  'aurora-deone' → 'aurora-deck-2'
+    # (the motivating typo) clears it (ratio ≈ 0.72); two unrelated names don't.  No
+    # house string-distance constant existed to reuse, so this one is named here (per
+    # the ticket); the meaning leg reuses the dedup thresholds instead of a new
+    # number.  0.6 is ``difflib``'s own documented default cutoff for close matches.
+    DID_YOU_MEAN_STRING_CUTOFF = 0.6
     # Self-state header caps (#1555).  The chat agent's system prompt opens with a
     # deterministically-rendered header of Penny's own operational situation
     # (mechanisms · recent activity · the store map · durable user facts).  Each

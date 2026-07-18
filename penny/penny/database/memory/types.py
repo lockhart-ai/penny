@@ -66,22 +66,44 @@ class ReadOnlyMemoryError(MemoryAccessError):
     """
 
 
+def render_memory_not_found(name: str, suggestion: str | None = None) -> str:
+    """The single model-facing message for a memory-name miss (#1674).
+
+    When ``suggestion`` names the nearest EXISTING memory (a typo of it, or a
+    semantically-close-but-differently-worded name), the message LEADS with
+    ``— did you mean '<suggestion>'?`` — the render carries the anchor so the fix
+    is a copy, not another lookup (n≤1) — then the existing find/create guidance
+    follows.  When there is no close candidate (``None``) the message is
+    byte-identical to before the suggestion existed, so a miss with nothing close
+    renders exactly today's text (no empty "did you mean" artifact).  The store
+    raises with no suggestion (kept pure — it can't embed); the tool layer, where
+    the db + embedding client live, recomputes the enriched form.
+    """
+    if suggestion is not None:
+        lead = f"Memory '{name}' not found — did you mean '{suggestion}'?"
+    else:
+        lead = f"Memory '{name}' not found."
+    return (
+        f"{lead} Check the name (it may be misspelled), or find "
+        f"it by meaning with find(query=<what it's about>) — it resolves your "
+        f"collections, logs, and skills (archived included) and names the exact tool "
+        f"for each. Or create it with collection_create(name='{name}') / "
+        f"log_create(name='{name}') if it should exist."
+    )
+
+
 class MemoryNotFoundError(MemoryAccessError):
     """Raised when an operation targets a memory that doesn't exist.
 
     Carries the ``name`` and renders a readable message, so a tool can surface
     ``str(self)`` directly (``db.memory(name)`` returning ``None`` becomes this
-    via ``_resolve``).
+    via ``_resolve``).  The base message names no did-you-mean suggestion — the
+    store can't embed and stays pure; the tool layer recomposes with the nearest
+    match via :func:`render_memory_not_found` (#1674).
     """
 
     def __init__(self, name: str) -> None:
-        super().__init__(
-            f"Memory '{name}' not found. Check the name (it may be misspelled), or find "
-            f"it by meaning with find(query=<what it's about>) — it resolves your "
-            f"collections, logs, and skills (archived included) and names the exact tool "
-            f"for each. Or create it with collection_create(name='{name}') / "
-            f"log_create(name='{name}') if it should exist."
-        )
+        super().__init__(render_memory_not_found(name))
         self.name = name
 
 

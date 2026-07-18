@@ -13,6 +13,7 @@ branch on a name or shape themselves.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from collections.abc import Callable
@@ -780,6 +781,71 @@ class MemoryStore:
             if len(ranked) >= limit:
                 break
         return ranked
+
+    def nearest_memory_name(self, name: str, embedding: list[float] | None = None) -> str | None:
+        """The closest EXISTING (active) memory name to a missed ``name`` — the
+        did-you-mean candidate a not-found error leads with (#1674), or ``None``
+        when nothing is close (the error then stays exactly as before).
+
+        Two legs, string first — it caught the motivating ``aurora-deone`` →
+        ``aurora-deck-2`` typo and needs no embedding: a stdlib
+        ``difflib`` close-match over the active names, gated on the conservative
+        ``DID_YOU_MEAN_STRING_CUTOFF``.  When the string leg finds nothing AND an
+        ``embedding`` of the missed name is supplied (only the embedding-capable
+        tools compute it — most misses hit a plain read that passes ``None``), the
+        MEANING leg ranks the active rows' description anchors by plain cosine and
+        takes the best clearing the house ``MEMORY_DEDUP_CONTENT_SIM_RELAXED``
+        threshold — catching a semantically-close-but-differently-worded name.
+        Reuses existing numbers: the string cutoff is the one named constant (no
+        house string-distance constant existed); the meaning gate is the dedup
+        threshold.  The candidate excludes ``name`` itself and every archived row.
+        """
+        active = [
+            row for row in self.list_all() if not row.archived and slug(row.name) != slug(name)
+        ]
+        typo = self._nearest_name_by_string(name, active)
+        if typo is not None:
+            return typo
+        if embedding is not None:
+            return self._nearest_name_by_meaning(embedding, active)
+        return None
+
+    @staticmethod
+    def _nearest_name_by_string(name: str, active: list[MemoryRow]) -> str | None:
+        """The string (typo) leg of :meth:`nearest_memory_name`: the closest active
+        name by ``difflib`` ratio over slugs, or ``None`` below the cutoff.  Matches
+        on the normalized slug (so casing / dash variants don't hide a typo) but
+        returns the row's DISPLAY name — what the model copies back."""
+        by_slug = {slug(row.name): row.name for row in active}
+        matches = difflib.get_close_matches(
+            slug(name),
+            list(by_slug),
+            n=1,
+            cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF,
+        )
+        return by_slug[matches[0]] if matches else None
+
+    def _nearest_name_by_meaning(
+        self, embedding: list[float], active: list[MemoryRow]
+    ) -> str | None:
+        """The meaning leg of :meth:`nearest_memory_name`: the active memory whose
+        description anchor is closest (plain cosine) to the missed name's
+        ``embedding``, when it clears ``MEMORY_DEDUP_CONTENT_SIM_RELAXED`` — else
+        ``None``.  Rows without a description anchor are skipped (the backfill fills
+        them); reuses the same ``cosine_scores`` pass ``resolve_objects`` uses."""
+        candidates = [
+            (row.name, row.description_embedding)
+            for row in active
+            if row.description_embedding is not None
+        ]
+        if not candidates:
+            return None
+        scores = sim.cosine_scores([blob for _, blob in candidates], embedding)
+        best = int(np.argmax(scores))
+        threshold = RuntimeParams().MEMORY_DEDUP_CONTENT_SIM_RELAXED
+        if float(scores[best]) >= threshold:
+            return candidates[best][0]
+        return None
 
     def _resolution_candidates(self) -> list[tuple[ResolvedHit, bytes]]:
         """Every (hit, embedding-blob) pair eligible for ``resolve_objects`` —

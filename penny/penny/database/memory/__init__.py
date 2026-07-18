@@ -47,6 +47,7 @@ from penny.database.memory.types import (
     WrongShapeError,
     render_key,
     render_key_value,
+    render_memory_not_found,
     slug,
     strip_display_brackets,
 )
@@ -98,5 +99,6 @@ __all__ = [
     "slug",
     "render_key",
     "render_key_value",
+    "render_memory_not_found",
     "strip_display_brackets",
 ]

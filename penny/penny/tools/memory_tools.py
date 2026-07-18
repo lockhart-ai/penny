@@ -19,6 +19,7 @@ same transient failure.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from abc import abstractmethod
@@ -48,6 +49,7 @@ from penny.database.memory import (
     ResolvedMatch,
     WriteResult,
     render_key,
+    render_memory_not_found,
     render_run_calls,
     strip_display_brackets,
 )
@@ -237,6 +239,25 @@ def _bracket_key_rejection(memory: Memory, memory_name: str, key: str) -> ToolRe
     )
 
 
+def _key_did_you_mean(memory: Memory, key: str) -> str:
+    """The `` — did you mean key '<nearest>'?`` lead for an entry-key miss (#1674),
+    or ``""`` when no existing key in the collection is close (the message then
+    stays byte-identical to before — no empty artifact).
+
+    The tools that hit a key miss (``update_entry`` / ``collection_delete_entry``)
+    carry no embedding client, so this is the string (typo) leg: a stdlib
+    ``difflib`` close-match over the collection's OWN keys, gated on the same
+    conservative ``DID_YOU_MEAN_STRING_CUTOFF`` the name suggestion uses.  Same
+    lexical intent as the write-gate dedup's key signal, without an async embed."""
+    keys = memory.keys()
+    if not keys:
+        return ""
+    matches = difflib.get_close_matches(
+        key, keys, n=1, cutoff=PennyConstants.DID_YOU_MEAN_STRING_CUTOFF
+    )
+    return f" — did you mean key '{matches[0]}'?" if matches else ""
+
+
 class MemoryTool(Tool):
     """Base for tools that operate on a memory.
 
@@ -246,14 +267,45 @@ class MemoryTool(Tool):
     exception renders its own message, so the handling is uniformly
     ``return str(exc)`` and lives here once: a tool body just calls the op and
     lets the error propagate — no per-tool try/except, no format strings.
+
+    A **name miss** (``MemoryNotFoundError``) is the one exception the base
+    enriches rather than passing through verbatim (#1674): it recomputes the
+    message here, where the db + (for embedding-capable tools) the embedding
+    client live, so the render LEADS with the nearest existing memory — a typo
+    of it (string leg, universal) or a semantically-close name (meaning leg,
+    where a client is available).  ``_suggestion_embedding`` is the hook an
+    embedding-capable name-dispatch tool overrides to add the meaning leg; the
+    default (string leg only) fits every read tool with no client.
     """
+
+    # Set by every subclass ``__init__`` — the base reads it to compute a
+    # did-you-mean suggestion on a name miss (#1674).
+    _db: Database
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         try:
             return await self._run(**kwargs)
+        except MemoryNotFoundError as exc:
+            return await self._suggest_and_fail(exc)
         except (MemoryAccessError, MemoryAlreadyExistsError) as exc:
-            # Wrong-shape / read-only / missing-memory refusals are failed calls.
+            # Wrong-shape / read-only refusals are failed calls.
             return ToolResult(message=str(exc), success=False)
+
+    async def _suggest_and_fail(self, exc: MemoryNotFoundError) -> ToolResult:
+        """Re-render a name miss leading with the nearest existing memory (#1674).
+
+        The string (typo) leg always runs (no embedding); the meaning leg runs only
+        when this tool supplied an embedding of the missed name.  No close candidate
+        → ``suggestion`` is ``None`` and the message is byte-identical to before."""
+        embedding = await self._suggestion_embedding(exc.name)
+        suggestion = self._db.memories.nearest_memory_name(exc.name, embedding)
+        return ToolResult(message=render_memory_not_found(exc.name, suggestion), success=False)
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        """The embedding of a missed name for the MEANING leg of a did-you-mean
+        suggestion, or ``None`` (string leg only) for a tool with no embedding
+        client.  Overridden by the embedding-capable name-dispatch tools (#1674)."""
+        return None
 
     @abstractmethod
     async def _run(self, **kwargs: Any) -> ToolResult:
@@ -1104,6 +1156,10 @@ class ReadSimilarTool(MemoryTool):
         self._db = db
         self._llm = llm_client
 
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        # This tool embeds, so a name miss gets the MEANING leg too (#1674).
+        return await embed_text(self._llm, name)
+
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = ReadSimilarArgs(**kwargs)
         vec = await embed_text(self._llm, args.anchor)
@@ -1334,6 +1390,11 @@ class CollectionWriteTool(MemoryTool):
         # stored value cites the run that produced it (#1560).
         self._run_id = run_id
 
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        # This tool embeds, so a write to a mistyped collection gets the MEANING
+        # leg too (#1674) — the motivating 'aurora-deone' write path.
+        return await embed_text(self._llm, name)
+
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = CollectionWriteArgs(**kwargs)
         if self._scope is not None and args.memory != self._scope:
@@ -1536,9 +1597,21 @@ class UpdateEntryTool(MemoryTool):
             rejection = _bracket_key_rejection(memory, args.memory, args.key)
             if rejection is not None:
                 return rejection
+            # Lead with the nearest existing key (typo leg) when one is close (#1674),
+            # else the message is byte-identical to before.
+            did_you_mean = _key_did_you_mean(memory, args.key)
+            if did_you_mean:
+                lead = (
+                    f"Key '{args.key}' not found in '{args.memory}'{did_you_mean} "
+                    f"Update only replaces existing entries."
+                )
+            else:
+                lead = (
+                    f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
+                    f"existing entries."
+                )
             return ToolResult(
-                message=f"Key '{args.key}' not found in '{args.memory}' — update only replaces "
-                f"existing entries. Write it as a new entry with "
+                message=f"{lead} Write it as a new entry with "
                 f"collection_write(memory='{args.memory}', entries=<the new key and content>), "
                 f"or list the current keys with collection_keys('{args.memory}') if you "
                 f"expected it to exist."
@@ -1725,6 +1798,11 @@ class CollectionUpdateTool(MemoryTool):
         # The chat run making this config change — recorded as the update
         # mutation's cause (#1560).
         self._run_id = run_id
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        # This tool embeds, so an update to a mistyped collection gets the MEANING
+        # leg too (#1674).
+        return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         """Parse the apply-time trigger union (#1629), then re-render from a skill when
@@ -2178,8 +2256,18 @@ class CollectionDeleteEntryTool(MemoryTool):
             rejection = _bracket_key_rejection(memory, args.memory, args.key)
             if rejection is not None:
                 return rejection
+            # Lead with the nearest existing key (typo leg) when one is close (#1674),
+            # else the message is byte-identical to before.
+            did_you_mean = _key_did_you_mean(memory, args.key)
+            if did_you_mean:
+                lead = (
+                    f"No entry with key '{args.key}' in '{args.memory}'{did_you_mean} "
+                    f"Nothing to delete."
+                )
+            else:
+                lead = f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete."
             return ToolResult(
-                message=f"No entry with key '{args.key}' in '{args.memory}' — nothing to delete. "
+                message=f"{lead} "
                 f"List the current keys with collection_keys('{args.memory}') to find it."
             )
         return ToolResult(message=f"Deleted '{args.key}' from '{args.memory}'.", mutated=True)
@@ -2528,6 +2616,10 @@ class LogAppendTool(MemoryTool):
         self._author = author
         # The appending run — stamped on the new log entry (#1560).
         self._run_id = run_id
+
+    async def _suggestion_embedding(self, name: str) -> list[float] | None:
+        # This tool embeds, so an append to a mistyped log gets the MEANING leg too (#1674).
+        return await embed_text(self._llm, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
         args = LogAppendArgs(**kwargs)

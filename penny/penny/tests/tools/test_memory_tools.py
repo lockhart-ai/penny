@@ -2356,6 +2356,124 @@ class TestCollectionMutations:
         )
 
 
+class TestDidYouMeanSuggestions:
+    """Every miss leads with its nearest match — did-you-mean on memory-name and
+    entry-key lookups (#1674).  The suggestion carries the anchor into the render
+    so the fix is a copy, not another lookup; a miss with nothing close renders
+    byte-identically to before, so no empty "did you mean" artifact appears."""
+
+    @pytest.mark.asyncio
+    async def test_memory_name_miss_leads_with_the_nearest_by_typo(self, tmp_path):
+        """A mistyped memory name (the motivating 'aurora-deone' → 'aurora-deck-2')
+        leads the not-found render with the nearest existing name — the string
+        (typo) leg, universal because it needs no embedding client."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="aurora-deck-2", description="a listening deck")
+        result = await CollectionReadLatestTool(db).execute(memory="aurora-deone")
+        assert result.success is False
+        assert result.message == (
+            "Memory 'aurora-deone' not found — did you mean 'aurora-deck-2'? Check the "
+            "name (it may be misspelled), or find it by meaning with "
+            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "skills (archived included) and names the exact tool for each. Or create it "
+            "with collection_create(name='aurora-deone') / "
+            "log_create(name='aurora-deone') if it should exist."
+        )
+
+    @pytest.mark.asyncio
+    async def test_memory_name_miss_with_no_close_candidate_is_byte_identical(self, tmp_path):
+        """A miss with nothing close renders EXACTLY today's message — no empty
+        'did you mean' artifact, no changed punctuation."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="aurora-deck-2", description="a listening deck")
+        result = await CollectionReadLatestTool(db).execute(memory="xyzzy")
+        assert result.success is False
+        assert result.message == (
+            "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
+            "it by meaning with find(query=<what it's about>) — it resolves your "
+            "collections, logs, and skills (archived included) and names the exact tool "
+            "for each. Or create it with collection_create(name='xyzzy') / "
+            "log_create(name='xyzzy') if it should exist."
+        )
+
+    @pytest.mark.asyncio
+    async def test_memory_name_miss_leads_with_the_nearest_by_meaning(self, tmp_path, mock_llm):
+        """When the typo leg finds nothing, an embedding-capable tool (read_similar)
+        falls back to the MEANING leg — the collection whose description anchor is
+        closest to the missed name, clearing the reused dedup threshold."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
+        tool = ReadSimilarTool(db, _make_llm_client(mock_llm))
+        result = await tool.execute(memory="oil changes and tire rotations", anchor="my car")
+        assert result.success is False
+        assert result.message == (
+            "Memory 'oil changes and tire rotations' not found — did you mean 'garage'? "
+            "Check the name (it may be misspelled), or find it by meaning with "
+            "find(query=<what it's about>) — it resolves your collections, logs, and "
+            "skills (archived included) and names the exact tool for each. Or create it "
+            "with collection_create(name='oil changes and tire rotations') / "
+            "log_create(name='oil changes and tire rotations') if it should exist."
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_entry_key_miss_leads_with_the_nearest_key(self, tmp_path, mock_llm):
+        """A mistyped entry key on update_entry leads with the nearest existing key
+        in that collection (the key typo leg), then the existing guidance."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="notes")
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(
+            memory="notes",
+            entries=[
+                {"key": "quarterly-report", "content": "q3 numbers"},
+                {"key": "annual-summary", "content": "year in review"},
+            ],
+        )
+        result = await UpdateEntryTool(db, author="test").execute(
+            memory="notes", key="quarterly-reprot", content="q4 numbers"
+        )
+        assert result.mutated is False
+        assert result.message == (
+            "Key 'quarterly-reprot' not found in 'notes' — did you mean key "
+            "'quarterly-report'? Update only replaces existing entries. Write it as a "
+            "new entry with collection_write(memory='notes', entries=<the new key and "
+            "content>), or list the current keys with collection_keys('notes') if you "
+            "expected it to exist."
+        )
+        # No close key → byte-identical to today's message (no 'did you mean' artifact).
+        far = await UpdateEntryTool(db, author="test").execute(
+            memory="notes", key="zzzzz", content="x"
+        )
+        assert far.message == (
+            "Key 'zzzzz' not found in 'notes' — update only replaces existing entries. "
+            "Write it as a new entry with collection_write(memory='notes', "
+            "entries=<the new key and content>), or list the current keys with "
+            "collection_keys('notes') if you expected it to exist."
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_entry_key_miss_leads_with_the_nearest_key(self, tmp_path, mock_llm):
+        """Same key suggestion on collection_delete_entry — the nearest key leads,
+        the existing 'nothing to delete' guidance follows."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="notes")
+        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
+        await write.execute(memory="notes", entries=[{"key": "quarterly-report", "content": "x"}])
+        result = await CollectionDeleteEntryTool(db).execute(memory="notes", key="quarterly-reprot")
+        assert result.mutated is False
+        assert result.message == (
+            "No entry with key 'quarterly-reprot' in 'notes' — did you mean key "
+            "'quarterly-report'? Nothing to delete. List the current keys with "
+            "collection_keys('notes') to find it."
+        )
+        # No close key → byte-identical to today's message.
+        far = await CollectionDeleteEntryTool(db).execute(memory="notes", key="zzzzz")
+        assert far.message == (
+            "No entry with key 'zzzzz' in 'notes' — nothing to delete. "
+            "List the current keys with collection_keys('notes') to find it."
+        )
+
+
 class TestLogTools:
     @pytest.mark.asyncio
     async def test_collection_read_latest_refuses_a_log(self, tmp_path, mock_llm):
