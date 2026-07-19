@@ -411,12 +411,9 @@ async def test_fresh_migrated_registry_stays_empty_without_a_qualifying_run(tmp_
 
 _FIND_RESULT = "You searched your memory: (find result)\nNo matching skill — nothing saved yet."
 # The REAL browse-with-extract frame shape: a narration line carrying the
-# ``(browse result)`` machine tag, the payload, then the fetch-handle tail.
-_REAL_BROWSE_FRAME = (
-    "You opened the Aurora Deck 2 listing (browse result)\n"
-    "$499\n\n"
-    "Full page content saved to browse-results#1 — read it there for anything more."
-)
+# ``(browse result)`` machine tag, then the payload alone (success renders no
+# fetch-handle tail — the "saved" phrasing read as the remembering being done).
+_REAL_BROWSE_FRAME = "You opened the Aurora Deck 2 listing (browse result)\n$499"
 # A write whose content WRAPS the browse payload ('$499') and whose key is a topic
 # name (a real parameter that must NOT false-bind to the payload).
 _WRAP_WRITE_ARGS = {

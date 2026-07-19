@@ -77,7 +77,14 @@ NARRATION_FAILURE_SUFFIX = "but couldn't read anything"
 # (the extractor never produced a usable tagged line).
 _EXTRACT_HANDLE_CLAUSE = "Full page content saved to {handles} — read it there for anything more."
 _EXTRACT_NO_HANDLE_CLAUSE = "The full page content was not separately stored."
-_EXTRACT_SUCCESS = "{value}\n\n{handle_clause}"
+# A SUCCESSFUL extraction renders the value alone — no handle clause.  The
+# "saved to browse-results#N" phrasing, read at the moment a chat teach round
+# holds the extracted value, answered the wrong question: it claimed a save
+# had happened (true of the raw page) in words the model read as the
+# remembering being done (false — the value is ephemeral), and the planned
+# collection_write never fired (2026-07-19 beat-1b transcripts).  The failure
+# renders below KEEP the clause: there the handle is the remedy.
+_EXTRACT_SUCCESS = "{value}"
 _EXTRACT_NOT_PRESENT = "The page doesn't contain {instruction!r} — {reason} {handle_clause}"
 _EXTRACT_FAILED = (
     "Couldn't extract {instruction!r} from the page — the extractor returned nothing "
@@ -365,12 +372,12 @@ class BrowseTool(Tool):
         self, micro: MicroContextResult, instruction: str, stored: list[MemoryEntry]
     ) -> str:
         """The main-loop body for one micro-context outcome — the extracted value
-        or not-present reason (each byte-identical to the micro-context's return)
-        or an honest enumerated failure, all carrying the fetch handle to the
-        stored full content."""
-        handle_clause = self._handle_clause(stored)
+        alone on success (no handle clause — see _EXTRACT_SUCCESS), or the
+        not-present reason / an honest enumerated failure, each carrying the
+        fetch handle to the stored full content as its remedy."""
         if micro.outcome == MicroExtractOutcome.EXTRACTED:
-            return _EXTRACT_SUCCESS.format(value=micro.value, handle_clause=handle_clause)
+            return _EXTRACT_SUCCESS.format(value=micro.value)
+        handle_clause = self._handle_clause(stored)
         if micro.outcome == MicroExtractOutcome.NOT_PRESENT:
             return _EXTRACT_NOT_PRESENT.format(
                 instruction=instruction, reason=micro.reason, handle_clause=handle_clause
