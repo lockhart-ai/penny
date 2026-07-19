@@ -292,12 +292,11 @@ async def test_micro_result_render_forms(tmp_path):
     extracted, not-present, failed-after-reroll (untagged), and poison-then-failed."""
     header = f"{PennyConstants.BROWSE_PAGE_HEADER}{_PAGE_URL}\n"
 
-    result, handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
-    assert result.message == (
-        f"{header}"
-        f"{_EXTRACTED_VALUE}\n\n"
-        f"Full page content saved to browse-results#{handle_id} — read it there for anything more."
-    )
+    # Success renders the VALUE ALONE — no fetch-handle tail ("saved to
+    # browse-results#N" read as the remembering being done on the chat teach
+    # round; the failure renders below keep the handle as their remedy).
+    result, _handle_id = await _execute_extract(tmp_path, "ok", _TAGGED_VALUE)
+    assert result.message == f"{header}{_EXTRACTED_VALUE}"
     assert result.success is True
 
     result, handle_id = await _execute_extract(tmp_path, "absent", _TAGGED_NOT_PRESENT)
@@ -578,14 +577,25 @@ async def test_micro_context_poison_is_discarded_and_rerolled():
 
 
 def test_micro_result_render_by_handle_is_a_typed_id(tmp_path):
-    """The fetch handle is a typed ``<memory>#<id>`` anchor (rendered directly)."""
+    """The fetch handle is a typed ``<memory>#<id>`` anchor (rendered directly) —
+    on the FAILURE renders, where it is the remedy.  A successful extraction
+    renders the value alone: the old "saved to browse-results#N" tail read as
+    the remembering being done at exactly the moment a chat teach round held
+    the value (2026-07-19), so success carries no handle clause."""
     tool = BrowseTool(max_calls=1, embedding_client=cast(Any, MockLlmClient()))
+    stored = [cast(Any, SimpleNamespace(id=7))]
     body = tool._render_micro_result(
         MicroContextResult(outcome=MicroExtractOutcome.EXTRACTED, value=_EXTRACTED_VALUE),
         _INSTRUCTION,
-        [cast(Any, SimpleNamespace(id=7))],
+        stored,
+    )
+    assert body == _EXTRACTED_VALUE
+    body = tool._render_micro_result(
+        MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason="no bid listed."),
+        _INSTRUCTION,
+        stored,
     )
     assert body == (
-        f"{_EXTRACTED_VALUE}\n\n"
+        "The page doesn't contain 'the current bid amount' — no bid listed. "
         "Full page content saved to browse-results#7 — read it there for anything more."
     )
