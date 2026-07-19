@@ -35,6 +35,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.penny import Penny
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -529,6 +530,89 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
         score=_score_beat1,
         min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
         timeout=240.0,  # the demo turn runs extraction + the narration continuation
+    )
+
+
+# ── Beat 1a: elicitation alone — pared instructions, first exchange only ─────
+#
+# The code owner's 2026-07-19 call: the accreted chat Instructions block (~8.2K
+# chars in front of a 137-char Skills section) is suspected of clogging the
+# FIRST decision — run-1 transcripts show browsing, writing, and announcing
+# before any teach ask.  Beat 1a isolates the very first exchange under an
+# ARTIFICIALLY pared instruction block (``prepare=`` swaps the instance's
+# ``system_prompt``; production is untouched):
+#
+#   1. user:  the watch ask
+#   2. Penny: checks her skills (the ambient Skills section — empty registry),
+#      has none, and asks to be taught.  THE END.
+#
+# The pared block is the tagged-union framing (the model reasons better over
+# discrete enumerated choices): to act you need a skill; first decision — do I
+# have one?  YES → follow it.  NO → ask to be taught.  The ask itself is
+# linguistic and is read off the transcript in the joint review; the scored
+# checks are the end DB state, which for this beat is NOTHING CHANGED.
+
+_BEAT1A_INSTRUCTIONS = (
+    "To act on a request you need a skill for it. The Skills section below "
+    "lists every skill you know — that list is the whole truth: if it's not "
+    "there, you don't know how to do it.\n"
+    "\n"
+    "Decide first: do I have a skill for this ask?\n"
+    "- YES: follow its steps.\n"
+    "- NO: reply asking the user to teach you — ask for the exact steps in ONE "
+    "message: what to read, what to look for, what to remember. Don't start "
+    "the task, don't improvise, and never claim anything was set up."
+)
+
+
+def _pare_chat_instructions(penny: Penny) -> None:
+    """Swap the accreted chat Instructions body for the beat-1a minimal block.
+
+    Instance-level override of the ``system_prompt`` class attribute — identity,
+    context, and the self-state header (the Skills inventory the rule points at)
+    all render exactly as in production; only the Instructions body shrinks."""
+    penny.chat_agent.system_prompt = _BEAT1A_INSTRUCTIONS
+
+
+def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
+    """Terminal state of the elicitation beat: the world is untouched.
+
+    No container, no skill, no fetched page, no seeded-collection writes — she
+    asked instead of acting.  Whether the reply IS the teach ask is read off the
+    transcript in the joint review (one line of English, no structural signal)."""
+    runs = chat_run_tool_sequences(db)
+    first_run = runs[0] if runs else []
+    fetched = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    return [
+        Check("state: no collection created (nothing enacted)", not new_collections(db, before)),
+        Check("state: no skill learned (no round ran)", not db.skills.list_all()),
+        Check("state: no page fetched (browse-results stayed empty)", not fetched),
+        Check("state: the seeded collection untouched", not collection_entries(db, "dislikes")),
+        Check(
+            "calls: no enacting calls (orientation reads only)",
+            not any(tool in _ENACTING_TOOLS for tool in first_run),
+            scored=False,
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            not _bail_nudge_fired(db) and not _continue_nudge_fired(db),
+            scored=False,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_beat1a_elicits_under_pared_prompt(chat_eval: ChatEval):
+    """Beat 1a: with the minimal skill-first instruction block and an empty
+    skill registry, the watch ask ends in a teach-me reply and an untouched
+    world — no browse, no write, no faked setup.  One exchange, the end."""
+    await chat_eval(
+        case_id="journey-beat1a-elicit",
+        message=_BEAT1_ASK,
+        browse=[AURORA_LISTING_499],
+        prepare=_pare_chat_instructions,
+        score=_score_beat1a,
+        min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
     )
 
 
