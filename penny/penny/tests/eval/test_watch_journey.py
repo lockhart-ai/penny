@@ -574,6 +574,12 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
 #     the capability — both danced around the banned selector-ask in other
 #     words because nothing said browse's extract does the finding from
 #     plain language).  Capability first, prohibition second, one paragraph.
+#   • RECOGNITION + the round/schedule boundary (beat-1b run 3, mean 0.17:
+#     with 'daily' in the turns, all five samples stopped treating the demo
+#     reply as instructions — re-asking for anchors/formats, announcing a
+#     fake collector, or stopping before the write).  The third case now says
+#     the reply IS the instructions, complete as-is, and schedule/notify
+#     words are not steps — they bind after the round via the learned notice.
 
 _BEAT1A_INSTRUCTIONS = (
     "To act on a request you need a skill for it. The Skills section below "
@@ -586,9 +592,13 @@ _BEAT1A_INSTRUCTIONS = (
     "you — ask for the exact steps in ONE message: what to read, what to look "
     "for, what to remember. Don't start the task, don't improvise, and never "
     "claim anything was set up.\n"
-    "- NO, but they just gave me the steps: DO them, once, right now — that "
-    "one round IS the teaching, and you'll learn it as a skill from it "
-    "automatically.\n"
+    "- NO, but their message gives the steps ('first read X, then look for Y, "
+    "then remember it' — that IS the instructions, complete as-is; their plain "
+    "words are enough, never ask for more detail): DO them, once, right now — "
+    "that one round IS the teaching, and you'll learn it as a skill from it "
+    "automatically. Schedule and notify words in their message ('daily', 'let "
+    "me know') are not steps — they bind after the round, exactly as the "
+    "learned notice directs; the round is only the doing.\n"
     "\n"
     "browse(queries=[<url>], extract=<what to pull out, in plain language>) "
     "returns just that value — the user's words ARE the extract instruction "
