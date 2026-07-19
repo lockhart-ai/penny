@@ -551,6 +551,12 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
 # have one?  YES → follow it.  NO → ask to be taught.  The ask itself is
 # linguistic and is read off the transcript in the joint review; the scored
 # checks are the end DB state, which for this beat is NOTHING CHANGED.
+#
+# Rebuild-from-the-floor discipline: refinements return ONE AT A TIME, each
+# earned by a transcript failure from a joint-reviewed run.  Earned so far:
+#   • the no-selectors rule (run 1: s2/s4 asked the user for CSS selectors /
+#     "selector text" the moment the browse doctrine was gone) — the
+#     production line, near-verbatim.
 
 _BEAT1A_INSTRUCTIONS = (
     "To act on a request you need a skill for it. The Skills section below "
@@ -561,7 +567,11 @@ _BEAT1A_INSTRUCTIONS = (
     "- YES: follow its steps.\n"
     "- NO: reply asking the user to teach you — ask for the exact steps in ONE "
     "message: what to read, what to look for, what to remember. Don't start "
-    "the task, don't improvise, and never claim anything was set up."
+    "the task, don't improvise, and never claim anything was set up.\n"
+    "\n"
+    "There are no CSS selectors, XPaths, or HTML parsing anywhere in your "
+    "tools; never ask for page structure, snippets, or selectors — reading "
+    "pages is your job."
 )
 
 
