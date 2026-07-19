@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
+    chat_run_tool_sequences,
     collection_entries,
+    is_ordered_subsequence,
     new_collections,
 )
 from penny.tests.eval.fixtures import CannedPage
@@ -373,25 +376,51 @@ async def test_beat0_cold_recall(chat_eval: ChatEval):
     )
 
 
-# ── Beat 1: elicit ───────────────────────────────────────────────────────────
+# ── Beat 1: the teach loop — no skill → elicit → demonstrate → live watch ────
 #
-# The user asks in natural language with NO skill in the registry (fresh DB —
-# the skill table ships empty).  The teach loop breaks into three beats, each
-# with its own terminal state (one-beat-at-a-time): beat 1 ELICITS (she
-# recognizes the gap and asks to be taught, full stop), beat 2 DEMONSTRATES (the
-# user walks her through one cycle; she browses, extracts, writes a baseline),
-# beat 3 PROMOTES (skill_create over that run + attach — where the from_run
-# distillation lives).  This case is beat 1 only.
+# The instigating ask ("watch X and let me know when the price changes") names a
+# WANT, not a routine, and the skill registry is EMPTY — so the designed shape is
+# the full teach loop in one conversation (the code owner's canonical script,
+# 2026-07-19):
+#
+#   1. user:  the watch ask
+#   2. Penny: "I don't have a skill for that — teach me: what to read, what to
+#      look for, what to remember"  (elicit; nothing enacted yet)
+#   3. user:  the routine in ONE message ("first read <url>, then look for the
+#      current price, then remember it")
+#   4. Penny: enacts it — browse(url, extract) → collection_write(baseline) —
+#      the framework auto-extracts + auto-attaches the skill at run end (#1658),
+#      and she operationalizes the watch (collection_set: trigger + notify) and
+#      reports honestly what now exists.
+#
+# Scoring follows the state-is-core doctrine: the SCORED checks are END DB STATE
+# (what exists when the conversation ends); the call-spine checks are advisory
+# flavour (scored=False — visible in the report, excluded from the score).  The
+# reply's honesty — she claims exactly what the DB shows — is read off the dumped
+# transcript in the joint review, never keyword-matched.
 
-# The INSTIGATING ask — deliberately unfulfillable as stated: "watch this"
-# requires a job, a job's prompt only exists as a skill render, and no skill
-# exists.  THIS BEAT'S TERMINAL STATE (one-beat-at-a-time): she recognizes she
-# needs a skill she doesn't have and asks to be taught.  Full stop.  The
-# teaching walkthrough and the promotion are LATER beats with their own cases.
-_BEAT1_TURN = (
+_BEAT1_ASK = (
     f"can you watch the aurora deck 2 listing at {LISTING_URL} "
-    "and let me know if the price ever changes?"
+    "and let me know when the price changes?"
 )
+_BEAT1_DEMO = f"sure — first read {LISTING_URL}, then look for the current price, then remember it"
+
+# Turn 1 is the elicitation: orientation reads are fine (checking for a matching
+# skill is the right first instinct), but nothing may be enacted or configured
+# before the user has taught the routine.
+_ENACTING_TOOLS = (
+    "browse",
+    "collection_write",
+    "collection_set",
+    "update_entry",
+    "collection_delete_entry",
+    "log_append",
+)
+
+# The chat empty-response retry (Prompt.CONTINUE_NUDGE) — a routing-health
+# marker like the bail markers: an ASCII, newline-free slice that survives the
+# JSON-escaping of row.messages.
+_CONTINUE_NUDGE_MARKER = "Please provide your response"
 
 
 def _outgoing(db: Database) -> list[str]:
@@ -400,54 +429,106 @@ def _outgoing(db: Database) -> list[str]:
     return [entry.content for entry in entries]
 
 
+def _continue_nudge_fired(db: Database) -> bool:
+    """True when any prompt's message array carries the empty-response retry nudge."""
+    for row in db.messages.recent_prompts(limit=200):
+        if row.messages and _CONTINUE_NUDGE_MARKER in row.messages:
+            return True
+    return False
+
+
+def _browse_extract_attributed(db: Database) -> bool:
+    """The mechanism fingerprint: the price came through a browse-extract
+    micro-context — an attributed ledger row, never page text the model pasted."""
+    return any(
+        row.agent_name == PennyConstants.BROWSE_EXTRACT_AGENT_NAME
+        for row in db.messages.recent_prompts(limit=200)
+    )
+
+
 def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The four OBJECTIVE facts of the terminal state — she didn't fake it.
+    """State is the pass/fail; the call spine is flavour.
 
-    The fifth, linguistic fact — "she voices the gap and asks to be taught" — is
-    NOT scored here: it's one line of English with no structural DB signal, and a
-    keyword matcher can't track the model's paraphrasing ("walking through it
-    once", "quick demo together", "give me a quick example").  The harness dumps
-    every reply verbatim (EVAL_REPORT_DIR), so that facet is read off the
-    transcript by the reviewer, not approximated by a scorer that emits false red.
-    What's automated here is exactly what's objective: no improvisation, no faked
-    watch — the durable regression net that a future "she faked it" break trips."""
+    Scored checks read the END DB STATE — the durable facts of an operational
+    watch (container, learned skill, attachment, trigger, notify, baseline entry,
+    the browse-extract attribution).  scored=False checks read the per-run call
+    sequences for phase discipline and routing health; they annotate the report
+    without moving the score."""
     created = new_collections(db, before)
-
-    # Only collections SHE created this sample must be prompt-less (seeded
-    # system collections legitimately carry prompts).
-    no_watch_faked = all(row.extraction_prompt is None for row in created)
-    seeded_writes = sum(len(collection_entries(db, name)) for name in ("dislikes",))
-
+    watch = created[0] if len(created) == 1 else None
+    entries = collection_entries(db, watch.name) if watch is not None else {}
+    runs = chat_run_tool_sequences(db)
+    first_run = runs[0] if runs else []
+    demo_run = runs[1] if len(runs) > 1 else []
+    trigger_set = watch is not None and (
+        watch.collector_interval_seconds is not None
+        or watch.cron_expression is not None
+        or watch.run_at is not None
+    )
     return [
+        Check("state: exactly one collection created", len(created) == 1),
         Check(
-            "no improvised stand-in writes (the surviving seeded collection untouched)",
-            seeded_writes == 0,
+            "state: a skill was learned (browse+write, parameterized)",
+            _extracted_skill_shape_ok(db),
         ),
         Check(
-            "no dispatchable watch faked (her collections, if any, are inert)",
-            no_watch_faked,
+            "state: the skill is attached (collection carries skill + rendered prompt)",
+            watch is not None
+            and watch.skill_name is not None
+            and watch.extraction_prompt is not None,
+            anchor="collection_set(",
+        ),
+        Check("state: a trigger is set (the watch can actually run)", trigger_set),
+        Check(
+            "state: notify is on (the user asked to hear about changes)",
+            watch is not None and bool(watch.notify),
         ),
         Check(
-            "at most one container created (the elicitation's step 1 is fine)", len(created) <= 1
+            "state: the baseline entry holds the browsed price",
+            any("499" in content for content in entries.values()),
+            anchor="collection_write(",
         ),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "state: the price came through browse-extract (attributed ledger row)",
+            _browse_extract_attributed(db),
+            anchor="browse(",
+        ),
+        Check(
+            "state: the seeded collection untouched",
+            not collection_entries(db, "dislikes"),
+        ),
+        Check(
+            "calls: turn 1 enacts nothing (elicit before the routine is taught)",
+            not any(tool in _ENACTING_TOOLS for tool in first_run),
+            scored=False,
+        ),
+        Check(
+            "calls: demo-turn spine browse → collection_write → collection_set",
+            is_ordered_subsequence(["browse", "collection_write", "collection_set"], demo_run),
+            scored=False,
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            not _bail_nudge_fired(db) and not _continue_nudge_fired(db),
+            scored=False,
+        ),
     ]
 
 
 @pytest.mark.asyncio
-async def test_beat1_recognizes_the_skill_gap(chat_eval: ChatEval):
-    """Beat 1, terminal state: an instigating watch request with no skill in
-    the registry ends with Penny voicing the gap and asking to be taught —
-    no improvisation, no faked watch.  Teaching and promotion are later beats.
-
-    The scored checks cover the objective half (she didn't fake it); the "asks
-    to be taught" verdict is read off the dumped transcript (see _score_beat1)."""
+async def test_beat1_teach_loop(chat_eval: ChatEval):
+    """Beat 1, the teach loop end-to-end: empty skill registry + a watch ask →
+    Penny elicits the routine, the user demonstrates it in one message, she
+    enacts it (the skill auto-extracts + auto-attaches at run end), and the
+    watch goes live (trigger + notify).  See the canonical script above; the
+    reply's honesty is reviewed off the transcript, not keyword-matched."""
     await chat_eval(
-        case_id="journey-beat1-skill-gap",
-        message=_BEAT1_TURN,
+        case_id="journey-beat1-teach-loop",
+        messages=[_BEAT1_ASK, _BEAT1_DEMO],
         browse=[AURORA_LISTING_499],
         score=_score_beat1,
-        min_pass_rate=None,  # report-only until the scorer is sample-verified
+        min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
+        timeout=240.0,  # the demo turn runs extraction + the narration continuation
     )
 
 
@@ -581,7 +662,7 @@ async def test_beat2_demonstrates_the_routine(chat_eval: ChatEval):
 # trigger set, notify on.  The user never says "skill" or "collection".
 
 _BEAT3_TURNS = [
-    _BEAT1_TURN,
+    _BEAT1_ASK,
     _BEAT2_TURN,
     "perfect — keep watching it and let me know if the price ever changes.",
 ]

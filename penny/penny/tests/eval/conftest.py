@@ -23,7 +23,7 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.config import Config
-from penny.constants import ChannelType
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
@@ -69,11 +69,17 @@ class Check:
     A scorer can return a list of these instead of a list of failure strings; the sample
     then scores as (checks that passed) / (checks total) — partial credit — instead of
     all-or-nothing.  ``label`` names the expectation so the report shows exactly which
-    check missed (e.g. "turn-1 memory_metadata called")."""
+    check missed (e.g. "turn-1 memory_metadata called").
+
+    ``scored=False`` marks an ADVISORY check — flavour: it renders in the report
+    (✅/❌ beside its row or in the footer) but is excluded from the sample's score.
+    The state-is-core doctrine uses this split: end DB state is the pass/fail;
+    call-sequencing checks annotate how the state came to be."""
 
     label: str
     ok: bool
     anchor: str | None = None  # substring of the transcript row this check marks (None = no row)
+    scored: bool = True  # False = advisory flavour, visible in the report, not in the score
 
 
 @dataclass
@@ -102,9 +108,12 @@ class SampleResult:
     def graded(cls, checks: list[Check]) -> SampleResult:
         if not checks:
             return cls(1.0, [], 1)
-        passed = sum(1 for check in checks if check.ok)
+        # Score over the SCORED checks only (advisory flavour renders but doesn't
+        # count); an all-advisory list degenerates to scoring everything.
+        scored = [check for check in checks if check.scored] or checks
+        passed = sum(1 for check in scored if check.ok)
         return cls(
-            passed / len(checks), [c.label for c in checks if not c.ok], len(checks), list(checks)
+            passed / len(scored), [c.label for c in checks if not c.ok], len(scored), list(checks)
         )
 
 
@@ -350,6 +359,39 @@ def tool_call_sequence(db: Database) -> list[str]:
             if isinstance(name, str):
                 names.append(name)
     return names
+
+
+def chat_run_tool_sequences(db: Database) -> list[list[str]]:
+    """Tool names per CHAT run, in chronological run order — one list per user turn
+    of a scripted conversation.  The per-run split is what lets a multi-turn
+    contract assert phase discipline (an elicitation turn must not enact; the
+    demonstration turn must carry the call spine) — ``tool_call_sequence`` flattens
+    the whole sample into one list.  Micro-context calls (browse-extract, skill
+    naming) carry no tool calls and other agents' rows are excluded, so each list
+    is exactly one chat turn's calls, in emission order."""
+    rows = sorted(
+        (
+            row
+            for row in db.messages.recent_prompts(limit=200)
+            if row.agent_name == PennyConstants.CHAT_AGENT_NAME
+        ),
+        key=lambda row: row.timestamp,
+    )
+    order: list[str] = []
+    sequences: dict[str, list[str]] = {}
+    for row in rows:
+        run_id = row.run_id
+        if run_id is None:
+            continue
+        if run_id not in sequences:
+            order.append(run_id)
+            sequences[run_id] = []
+        sequences[run_id] += [
+            name
+            for call in _response_tool_calls(row)
+            if isinstance(name := call.get("function", {}).get("name"), str)
+        ]
+    return [sequences[run_id] for run_id in order]
 
 
 def is_ordered_subsequence(expected: list[str], actual: list[str]) -> bool:
