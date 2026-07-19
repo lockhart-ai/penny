@@ -213,7 +213,7 @@ class BrowseTool(Tool):
                     ),
                 },
             },
-            "required": ["queries"],
+            "required": ["queries", "extract"],
         }
 
     def set_browse_provider(

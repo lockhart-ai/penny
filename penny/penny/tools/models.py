@@ -178,15 +178,16 @@ class BrowseArgs(ToolArgs):
     silently, so it's rejected at the arg gate with an actionable message rather
     than reaching ``execute`` and no-op'ing.
 
-    ``extract`` is the optional micro-instruction: when set, the fetched page
-    content is read in a fresh scoped micro-context and only the extracted value
-    (plus a fetch handle) returns to the main loop — the page body never enters
-    the run context.  Absent (chat's usage today), the page content is returned
-    directly, unchanged.
+    ``extract`` is REQUIRED (#1570 — the point of the micro-context, on every
+    surface): the fetched page content is read in a fresh scoped micro-context
+    and only the extracted value (plus a fetch handle) returns to the main loop
+    — bulk page content NEVER enters the run context, chat included.  A blank
+    extract is rejected at the arg gate with the fix (say, in plain language,
+    what to pull out), never silently treated as "return the whole page".
     """
 
     queries: QueryList
-    extract: str | None = None
+    extract: NonBlankText
     reasoning: str | None = None
 
 

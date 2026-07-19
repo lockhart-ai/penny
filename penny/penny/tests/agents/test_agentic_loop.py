@@ -37,7 +37,7 @@ from penny.text_validity import (
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
 from penny.tools.memory_tools import DoneTool
-from penny.tools.models import ToolArgs, ToolResult
+from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -1377,10 +1377,14 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=5,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
-        await tool.execute(queries=["best pizza toronto"])
+        await tool.execute(queries=["best pizza toronto"], extract="the page content")
 
         assert len(browsed_urls) == 1
         search_url = list(browsed_urls.keys())[0]
@@ -1396,10 +1400,15 @@ class TestParallelToolCalls:
         is visible to structural accounting, not just the error text."""
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRIES", 0)
         monkeypatch.setattr(PennyConstants, "BROWSE_RETRY_DELAY", 0.0)
-        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=5,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
 
         result = await tool.execute(
-            queries=["best pizza toronto", "https://example.test/a", "https://example.test/b"]
+            queries=["best pizza toronto", "https://example.test/a", "https://example.test/b"],
+            extract="the page content",
         )
 
         assert result.success is False
@@ -1446,13 +1455,26 @@ class TestParallelToolCalls:
         """An empty ``queries`` list is rejected by ``BrowseArgs`` at the ``run``
         gate before ``execute`` runs — so an empty browse can't silently no-op —
         with an actionable message pointing at queries."""
-        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=5,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
 
-        result = await tool.run(queries=[])
+        result = await tool.run(queries=[], extract="the page content")
 
         assert result.success is False
         assert "queries" in result.message
         assert "search query or URL" in result.message
+
+        # extract is REQUIRED (#1570 — every browse routes through a micro-context;
+        # the page never enters the main context whole).  A missing or blank extract
+        # is rejected at the same gate with the fix, never treated as "whole page".
+        missing = await tool.run(queries=["https://x.test"])
+        assert missing.success is False and "extract" in missing.message
+        blank = await tool.run(queries=["https://x.test"], extract="   ")
+        assert blank.success is False and "extract" in blank.message
+        assert BrowseArgs(queries=["q"], extract="the price").extract == "the price"
 
     @pytest.mark.asyncio
     async def test_urls_always_route_to_browse(self, test_db, mock_llm):
@@ -1466,10 +1488,17 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=fake_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=5,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
-        await tool.execute(queries=["https://example.com/page", "https://other.com"])
+        await tool.execute(
+            queries=["https://example.com/page", "https://other.com"],
+            extract="the page content",
+        )
 
         assert len(browsed_urls) == 2
         assert "https://example.com/page" in browsed_urls
@@ -1493,10 +1522,16 @@ class TestParallelToolCalls:
         request_fn = AsyncMock(side_effect=timed_out_request)
         mock_perm = MagicMock(check_domain=AsyncMock())
 
-        tool = BrowseTool(max_calls=5, embedding_client=cast(Any, MockLlmClient()))
+        tool = BrowseTool(
+            max_calls=5,
+            embedding_client=cast(Any, MockLlmClient()),
+            model_client=cast(Any, MockLlmClient()),
+        )
         tool.set_browse_provider(lambda: (request_fn, mock_perm))
 
-        result = await tool.execute(queries=["https://slow.example.com"])
+        result = await tool.execute(
+            queries=["https://slow.example.com"], extract="the page content"
+        )
 
         assert isinstance(result, ToolResult)
         assert result.success is False

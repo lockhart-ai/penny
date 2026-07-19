@@ -59,6 +59,9 @@ class MockLlmClient:
         self._request_count = 0
         self._embed_handler: Callable[[str, str | list[str]], list[list[float]]] | None = None
         self.embed_requests: list[dict] = []
+        # Browse micro-context calls answered by the built-in intercept — kept off
+        # ``requests`` so per-call-count assertions in flow tests stay stable.
+        self.micro_requests: list[dict] = []
 
     def set_response_handler(self, handler: Callable[[dict, int], LlmResponse]) -> None:
         """Set a custom response handler.
@@ -75,9 +78,12 @@ class MockLlmClient:
 
         def handler(request: dict, count: int) -> LlmResponse:
             if count == 1:
-                return self._make_tool_call_response(request, "browse", {"queries": [search_query]})
+                return self._make_tool_call_response(
+                    request, "browse", {"queries": [search_query], "extract": "the page content"}
+                )
             return self._make_text_response(request, final_response)
 
+        handler.answers_micro_contexts = False  # default flow: let the intercept serve them
         self._response_handler = handler
 
     async def chat(
@@ -99,6 +105,26 @@ class MockLlmClient:
             "prompt_type": prompt_type,
             "run_target": run_target,
         }
+        # A browse micro-context call (#1588/#1570 — extract is required, so EVERY
+        # browse routes page content through one): answer deterministically with the
+        # page text tagged EXTRACTED, and do NOT count it toward the flow counter —
+        # response handlers keyed on call ordinals (set_default_flow) stay stable.
+        # Only when no custom handler claims micro-context calls: a test that sets
+        # its own handler (the micro-context contract tests) keeps full control.
+        handler_defers = self._response_handler is None or not getattr(
+            self._response_handler, "answers_micro_contexts", True
+        )
+        system = messages[0].get("content", "") if messages else ""
+        if (
+            handler_defers
+            and isinstance(system, str)
+            and system.startswith("You are an extraction step.")
+        ):
+            self.micro_requests.append(request_data)
+            user_content = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+            )
+            return self._make_text_response(request_data, f"EXTRACTED: {user_content}")
         self.requests.append(request_data)
         self._request_count += 1
 
