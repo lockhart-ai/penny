@@ -400,11 +400,19 @@ async def test_beat0_cold_recall(chat_eval: ChatEval):
 # reply's honesty — she claims exactly what the DB shows — is read off the dumped
 # transcript in the joint review, never keyword-matched.
 
+# Both turns carry the user's cadence word ('daily') — the learned notice's
+# rule is "their own words are the trigger", so the words must exist to bind
+# (2026-07-19: the run-2 s1 near-miss showed the notice correctly makes no
+# call when the ask contains no cadence words).  The demo is FOUR steps:
+# read the page, find the price, remember it, notify me if it changes daily.
 _BEAT1_ASK = (
-    f"can you watch the aurora deck 2 listing at {LISTING_URL} "
+    f"can you watch the aurora deck 2 listing at {LISTING_URL} daily "
     "and let me know when the price changes?"
 )
-_BEAT1_DEMO = f"sure — first read {LISTING_URL}, then look for the current price, then remember it"
+_BEAT1_DEMO = (
+    f"sure — first read {LISTING_URL}, then look for the current price, "
+    "then remember it, and notify me if it changes daily"
+)
 
 # Turn 1 is the elicitation: orientation reads are fine (checking for a matching
 # skill is the right first instinct), but nothing may be enacted or configured
@@ -562,6 +570,10 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
 #     said its arrival changes the state and "don't start the task" made
 #     enacting read forbidden).  "Don't start the task" is now scoped to the
 #     not-yet-taught case by the case labels themselves.
+#   • the extract CAPABILITY (beat-1b run 2, s4/s5: the prohibition without
+#     the capability — both danced around the banned selector-ask in other
+#     words because nothing said browse's extract does the finding from
+#     plain language).  Capability first, prohibition second, one paragraph.
 
 _BEAT1A_INSTRUCTIONS = (
     "To act on a request you need a skill for it. The Skills section below "
@@ -578,9 +590,11 @@ _BEAT1A_INSTRUCTIONS = (
     "one round IS the teaching, and you'll learn it as a skill from it "
     "automatically.\n"
     "\n"
-    "There are no CSS selectors, XPaths, or HTML parsing anywhere in your "
-    "tools; never ask for page structure, snippets, or selectors — reading "
-    "pages is your job."
+    "browse(queries=[<url>], extract=<what to pull out, in plain language>) "
+    "returns just that value — the user's words ARE the extract instruction "
+    "('the current price' is complete). There are no CSS selectors, XPaths, "
+    "or HTML parsing anywhere in your tools; never ask for page structure, "
+    "snippets, or selectors — reading pages is your job."
 )
 
 
