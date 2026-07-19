@@ -23,7 +23,7 @@ import pytest
 from sqlmodel import Session, select
 
 from penny.config import Config
-from penny.constants import ChannelType
+from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
@@ -69,11 +69,17 @@ class Check:
     A scorer can return a list of these instead of a list of failure strings; the sample
     then scores as (checks that passed) / (checks total) — partial credit — instead of
     all-or-nothing.  ``label`` names the expectation so the report shows exactly which
-    check missed (e.g. "turn-1 memory_metadata called")."""
+    check missed (e.g. "turn-1 memory_metadata called").
+
+    ``scored=False`` marks an ADVISORY check — flavour: it renders in the report
+    (✅/❌ beside its row or in the footer) but is excluded from the sample's score.
+    The state-is-core doctrine uses this split: end DB state is the pass/fail;
+    call-sequencing checks annotate how the state came to be."""
 
     label: str
     ok: bool
     anchor: str | None = None  # substring of the transcript row this check marks (None = no row)
+    scored: bool = True  # False = advisory flavour, visible in the report, not in the score
 
 
 @dataclass
@@ -102,9 +108,12 @@ class SampleResult:
     def graded(cls, checks: list[Check]) -> SampleResult:
         if not checks:
             return cls(1.0, [], 1)
-        passed = sum(1 for check in checks if check.ok)
+        # Score over the SCORED checks only (advisory flavour renders but doesn't
+        # count); an all-advisory list degenerates to scoring everything.
+        scored = [check for check in checks if check.scored] or checks
+        passed = sum(1 for check in scored if check.ok)
         return cls(
-            passed / len(checks), [c.label for c in checks if not c.ok], len(checks), list(checks)
+            passed / len(scored), [c.label for c in checks if not c.ok], len(scored), list(checks)
         )
 
 
@@ -350,6 +359,39 @@ def tool_call_sequence(db: Database) -> list[str]:
             if isinstance(name, str):
                 names.append(name)
     return names
+
+
+def chat_run_tool_sequences(db: Database) -> list[list[str]]:
+    """Tool names per CHAT run, in chronological run order — one list per user turn
+    of a scripted conversation.  The per-run split is what lets a multi-turn
+    contract assert phase discipline (an elicitation turn must not enact; the
+    demonstration turn must carry the call spine) — ``tool_call_sequence`` flattens
+    the whole sample into one list.  Micro-context calls (browse-extract, skill
+    naming) carry no tool calls and other agents' rows are excluded, so each list
+    is exactly one chat turn's calls, in emission order."""
+    rows = sorted(
+        (
+            row
+            for row in db.messages.recent_prompts(limit=200)
+            if row.agent_name == PennyConstants.CHAT_AGENT_NAME
+        ),
+        key=lambda row: row.timestamp,
+    )
+    order: list[str] = []
+    sequences: dict[str, list[str]] = {}
+    for row in rows:
+        run_id = row.run_id
+        if run_id is None:
+            continue
+        if run_id not in sequences:
+            order.append(run_id)
+            sequences[run_id] = []
+        sequences[run_id] += [
+            name
+            for call in _response_tool_calls(row)
+            if isinstance(name := call.get("function", {}).get("name"), str)
+        ]
+    return [sequences[run_id] for run_id in order]
 
 
 def is_ordered_subsequence(expected: list[str], actual: list[str]) -> bool:
@@ -637,11 +679,11 @@ REPLY_ANCHOR = "__reply__"
 def _anchor_hits(needle: str, content: str) -> bool:
     """Does this tool-call row satisfy the anchor? A tool-name anchor (``memory_metadata(``)
     matches that call; a keyword anchor (``designer``, ``"published": false``) must live inside
-    a ``collection_update`` call — the row that made the edit — never another tool's reasoning
+    a ``collection_set`` call — the row that made the edit — never another tool's reasoning
     field that merely mentions the word."""
     if needle.endswith("("):
         return needle in content
-    return "collection_update(" in content and needle in content
+    return "collection_set(" in content and needle in content
 
 
 def _place_checks(
@@ -677,6 +719,17 @@ def _place_checks(
         else:
             marks[hit] = marks.get(hit, "") + ("✅" if check.ok else "❌")
     return marks, leftover
+
+
+def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
+    """Where a sample's hermetic DB lives.  When ``EVAL_REPORT_DIR`` is set the DB
+    persists BESIDE the reports (the mounted dir survives the ``--rm`` container),
+    so a run's raw promptlog can be re-read after the fact — same doctrine as the
+    transcripts: the evidence always survives the run.  Unset → tmp_path as before."""
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    base = Path(report_dir) if report_dir else tmp_path
+    Path(base).mkdir(parents=True, exist_ok=True)
+    return str(Path(base) / f"{case_id}-{sample_index}.db")
 
 
 def _write_sample_report(
@@ -780,7 +833,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -867,7 +920,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1045,7 +1098,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1105,14 +1158,14 @@ class _InjectDoneBail(_InjectingClient):
 
 
 class _InjectFictitiousToolPrompt(_InjectingClient):
-    """Forces ONE ``collection_update`` whose ``extraction_prompt`` names a tool no
+    """Forces ONE ``collection_set`` whose ``extraction_prompt`` names a tool no
     collector has, as the model's FIRST response.
 
     Reproduces — deterministically against the live model — the chat agent writing a
     hallucinated tool into a collection's recipe (observed: a made-up ``extract_text``
     for a "read the page" step).  The write-time gate refuses it with the
     correction-teaching message, and the live model must recover: re-issue a
-    ``collection_update`` whose prompt uses only real tools (``browse`` for the read),
+    ``collection_set`` whose prompt uses only real tools (``browse`` for the read),
     which then persists.  ``bail_injected`` records the scenario actually fired."""
 
     def __init__(self, real: LlmClient, collection: str, prompt: str) -> None:
@@ -1130,7 +1183,7 @@ class _InjectFictitiousToolPrompt(_InjectingClient):
                         LlmToolCall(
                             id="bail-fictitious-tool",
                             function=LlmToolCallFunction(
-                                name="collection_update",
+                                name="collection_set",
                                 arguments={
                                     "name": self._collection,
                                     "extraction_prompt": self._prompt,
@@ -1363,7 +1416,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
@@ -1426,7 +1479,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
                 config = _real_model_config(
                     make_config,
                     signal_api_url=f"http://localhost:{server.port}",
-                    db_path=str(tmp_path / f"{case_id}-{sample_index}.db"),
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
                     seed_user(penny.db)
