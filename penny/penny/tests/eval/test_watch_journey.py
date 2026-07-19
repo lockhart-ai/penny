@@ -35,7 +35,6 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.penny import Penny
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -541,100 +540,20 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
     )
 
 
-# ── Beat 1a: elicitation alone — pared instructions, first exchange only ─────
+# ── Beat 1a: elicitation alone — the first exchange, REAL prompt ─────────────
 #
-# The code owner's 2026-07-19 call: the accreted chat Instructions block (~8.2K
-# chars in front of a 137-char Skills section) is suspected of clogging the
-# FIRST decision — run-1 transcripts show browsing, writing, and announcing
-# before any teach ask.  Beat 1a isolates the very first exchange under an
-# ARTIFICIALLY pared instruction block (``prepare=`` swaps the instance's
-# ``system_prompt``; production is untouched):
+# One exchange: the watch ask against an empty skill registry.  Terminal state:
+# Penny voices the gap and asks to be taught — and the WORLD IS UNTOUCHED (no
+# collection, no skill, no fetched page).  The ask itself is linguistic and is
+# read off the transcript in the joint review; the scored checks are the end DB
+# state, which for this beat is NOTHING CHANGED.
 #
-#   1. user:  the watch ask
-#   2. Penny: checks her skills (the ambient Skills section — empty registry),
-#      has none, and asks to be taught.  THE END.
-#
-# The pared block is the tagged-union framing (the model reasons better over
-# discrete enumerated choices): to act you need a skill; first decision — do I
-# have one?  YES → follow it.  NO → ask to be taught.  The ask itself is
-# linguistic and is read off the transcript in the joint review; the scored
-# checks are the end DB state, which for this beat is NOTHING CHANGED.
-#
-# Rebuild-from-the-floor discipline: refinements return ONE AT A TIME, each
-# earned by a transcript failure from a joint-reviewed run.  Earned so far:
-#   • the no-selectors rule (beat-1a run 1: s2/s4 asked the user for CSS
-#     selectors / "selector text" the moment the browse doctrine was gone) —
-#     the production line, near-verbatim.
-#   • the union's THIRD CASE (beat-1b run 1, mean 0.12: the two-case union
-#     ask-looped — 5/5 re-asked after the teaching arrived, because nothing
-#     said its arrival changes the state and "don't start the task" made
-#     enacting read forbidden).  "Don't start the task" is now scoped to the
-#     not-yet-taught case by the case labels themselves.
-#   • the extract CAPABILITY (beat-1b run 2, s4/s5: the prohibition without
-#     the capability — both danced around the banned selector-ask in other
-#     words because nothing said browse's extract does the finding from
-#     plain language).  Capability first, prohibition second, one paragraph.
-#   • RECOGNITION + the round/schedule boundary (beat-1b run 3, mean 0.17:
-#     with 'daily' in the turns, all five samples stopped treating the demo
-#     reply as instructions — re-asking for anchors/formats, announcing a
-#     fake collector, or stopping before the write).  The third case now says
-#     the reply IS the instructions, complete as-is, and schedule/notify
-#     words are not steps — they bind after the round via the learned notice.
-#   • GROUNDED DEFERRAL (beat-1b run 4, mean 0.40: the thinking traces showed
-#     the write intention forming and then drowning in an unresolvable
-#     scheduling deliberation — "learned notice" was an ungrounded forward
-#     reference, so the model kept owning the 'daily' problem and one sample
-#     confabulated having written).  The case now grounds the deferral with
-#     the two missing facts: scheduling is IMPOSSIBLE during the round (the
-#     skill doesn't exist yet) and the notice WILL arrive with the exact
-#     call; the round ends with the write.
-#   • BOTH CONCEPT FAMILIES deferred (beat-1b run 5, mean 0.53: the thinking
-#     showed 'daily' deferring correctly but 'notify me' NOT — the model read
-#     notification as an untaught capability (asked to be taught it) or as a
-#     collection_set flag to set mid-round; either reading displaced the
-#     write).  The deferral now enumerates the two families — trigger/
-#     schedule/timing words AND notification words — both settings on the
-#     collection, one call, after the skill exists.
-
-_BEAT1A_INSTRUCTIONS = (
-    "To act on a request you need a skill for it. The Skills section below "
-    "lists every skill you know — that list is the whole truth: if it's not "
-    "there, you don't know how to do it.\n"
-    "\n"
-    "Decide first: do I have a skill for this ask?\n"
-    "- YES: follow its steps.\n"
-    "- NO, and they haven't shown me how yet: reply asking the user to teach "
-    "you — ask for the exact steps in ONE message: what to read, what to look "
-    "for, what to remember. Don't start the task, don't improvise, and never "
-    "claim anything was set up.\n"
-    "- NO, but their message gives the steps ('first read X, then look for Y, "
-    "then remember it' — that IS the instructions, complete as-is; their plain "
-    "words are enough, never ask for more detail): DO them, once, right now — "
-    "that one round IS the teaching, and you'll learn it as a skill from it "
-    "automatically. TWO kinds of words in their message are NOT steps — both "
-    "defer to collection-update time, after the round: (1) trigger, schedule, "
-    "or timing words ('daily', 'every morning', 'hourly'); (2) notification "
-    "words ('notify me', 'let me know', 'send me a message'). Both are "
-    "settings on the collection, set in ONE call after the skill exists — and "
-    "the skill only exists after the round ends. A notice will arrive here "
-    "with that exact call; follow it then. During the round, follow the "
-    "doing-steps only; the round ends with the write.\n"
-    "\n"
-    "browse(queries=[<url>], extract=<what to pull out, in plain language>) "
-    "returns just that value — the user's words ARE the extract instruction "
-    "('the current price' is complete). There are no CSS selectors, XPaths, "
-    "or HTML parsing anywhere in your tools; never ask for page structure, "
-    "snippets, or selectors — reading pages is your job."
-)
-
-
-def _pare_chat_instructions(penny: Penny) -> None:
-    """Swap the accreted chat Instructions body for the beat-1a minimal block.
-
-    Instance-level override of the ``system_prompt`` class attribute — identity,
-    context, and the self-state header (the Skills inventory the rule points at)
-    all render exactly as in production; only the Instructions body shrinks."""
-    penny.chat_agent.system_prompt = _BEAT1A_INSTRUCTIONS
+# HISTORY (2026-07-19): this case briefly ran under an ARTIFICIAL pared
+# instruction block via the ``prepare`` hook.  The code owner's ruling ended
+# that: the eval harness exists to test REAL Penny — real code, real prompts —
+# and results under a synthetic prompt say nothing about production ("no more
+# artificial prompt, that will never help us").  The levers learned in that
+# detour inform the REAL prompt's clause review; nothing here swaps prompts.
 
 
 def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
@@ -665,48 +584,16 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
 
 
 @pytest.mark.asyncio
-async def test_beat1a_elicits_under_pared_prompt(chat_eval: ChatEval):
-    """Beat 1a: with the minimal skill-first instruction block and an empty
-    skill registry, the watch ask ends in a teach-me reply and an untouched
-    world — no browse, no write, no faked setup.  One exchange, the end."""
+async def test_beat1a_elicits(chat_eval: ChatEval):
+    """Beat 1a, REAL prompt: with an empty skill registry, the watch ask ends
+    in a teach-me reply and an untouched world — no browse, no write, no faked
+    setup.  One exchange, the end."""
     await chat_eval(
         case_id="journey-beat1a-elicit",
         message=_BEAT1_ASK,
         browse=[AURORA_LISTING_499],
-        prepare=_pare_chat_instructions,
         score=_score_beat1a,
         min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
-    )
-
-
-# ── Beat 1b: the teach loop under the pared prompt — the A/B ─────────────────
-#
-# Beat 1a proved the pared block gets clean elicitation (5/5, zero enactment).
-# Beat 1b puts the USER'S INSTRUCTIONS back in — the demonstration turn from
-# the canonical script — and runs the SAME two-turn conversation with the SAME
-# scorer as beat 1: the instructions block is the only variable, so this is a
-# direct A/B against the full-prompt run (mean 0.80).
-#
-# Run 1 (two-case union, no rule for the teaching ARRIVING) measured the
-# ask-loop: mean 0.12, 0/5 enacted, 5/5 re-asked — the model was rationally
-# compliant with a block whose NO branch terminates at the ask and forbids
-# starting the task.  That failure EARNED the union's third case ("they just
-# gave me the steps: DO them, once, right now"), now in the block above.
-
-
-@pytest.mark.asyncio
-async def test_beat1b_teach_loop_under_pared_prompt(chat_eval: ChatEval):
-    """Beat 1b: the beat-1 teach-loop contract (elicit → demonstrate → enact →
-    auto-extract + attach → trigger + notify), run under the beat-1a pared
-    instruction block.  Same turns, same scorer — the prompt is the lever."""
-    await chat_eval(
-        case_id="journey-beat1b-teach-pared",
-        messages=[_BEAT1_ASK, _BEAT1_DEMO],
-        browse=[AURORA_LISTING_499],
-        prepare=_pare_chat_instructions,
-        score=_score_beat1,
-        min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
-        timeout=240.0,  # the demo turn runs extraction + the narration continuation
     )
 
 
