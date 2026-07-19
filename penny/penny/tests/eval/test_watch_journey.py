@@ -580,6 +580,14 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
 #     fake collector, or stopping before the write).  The third case now says
 #     the reply IS the instructions, complete as-is, and schedule/notify
 #     words are not steps — they bind after the round via the learned notice.
+#   • GROUNDED DEFERRAL (beat-1b run 4, mean 0.40: the thinking traces showed
+#     the write intention forming and then drowning in an unresolvable
+#     scheduling deliberation — "learned notice" was an ungrounded forward
+#     reference, so the model kept owning the 'daily' problem and one sample
+#     confabulated having written).  The case now grounds the deferral with
+#     the two missing facts: scheduling is IMPOSSIBLE during the round (the
+#     skill doesn't exist yet) and the notice WILL arrive with the exact
+#     call; the round ends with the write.
 
 _BEAT1A_INSTRUCTIONS = (
     "To act on a request you need a skill for it. The Skills section below "
@@ -596,9 +604,12 @@ _BEAT1A_INSTRUCTIONS = (
     "then remember it' — that IS the instructions, complete as-is; their plain "
     "words are enough, never ask for more detail): DO them, once, right now — "
     "that one round IS the teaching, and you'll learn it as a skill from it "
-    "automatically. Schedule and notify words in their message ('daily', 'let "
-    "me know') are not steps — they bind after the round, exactly as the "
-    "learned notice directs; the round is only the doing.\n"
+    "automatically. DEFER any schedule or timing instruction ('daily', 'let "
+    "me know') — scheduling needs the skill, and the skill only exists after "
+    "the round ends, so there is nothing to schedule yet. Follow the other "
+    "instructions now; the round ends with the write. When the skill is "
+    "learned, a notice will arrive here with the exact call for the schedule "
+    "part — follow it then.\n"
     "\n"
     "browse(queries=[<url>], extract=<what to pull out, in plain language>) "
     "returns just that value — the user's words ARE the extract instruction "
