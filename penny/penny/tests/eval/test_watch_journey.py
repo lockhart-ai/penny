@@ -626,6 +626,39 @@ async def test_beat1a_elicits_under_pared_prompt(chat_eval: ChatEval):
     )
 
 
+# ── Beat 1b: the teach loop under the pared prompt — the A/B ─────────────────
+#
+# Beat 1a proved the pared block gets clean elicitation (5/5, zero enactment).
+# Beat 1b puts the USER'S INSTRUCTIONS back in — the demonstration turn from
+# the canonical script — and runs the SAME two-turn conversation with the SAME
+# scorer as beat 1: the instructions block is the only variable, so this is a
+# direct A/B against the full-prompt run (mean 0.80).
+#
+# Deliberately absent from the pared block: any rule about what to do when the
+# teaching ARRIVES (production case (a): "run it RIGHT NOW").  The tagged union
+# says acting needs a skill and the NO branch ends at the ask — whether the
+# model infers that a demonstrated routine is the teaching happening (and
+# enacts, letting the learned notice carry the attach/trigger step) or loops
+# back into asking again is exactly what this run measures.  A failure here
+# EARNS the teach-enact line; it is not pre-added.
+
+
+@pytest.mark.asyncio
+async def test_beat1b_teach_loop_under_pared_prompt(chat_eval: ChatEval):
+    """Beat 1b: the beat-1 teach-loop contract (elicit → demonstrate → enact →
+    auto-extract + attach → trigger + notify), run under the beat-1a pared
+    instruction block.  Same turns, same scorer — the prompt is the lever."""
+    await chat_eval(
+        case_id="journey-beat1b-teach-pared",
+        messages=[_BEAT1_ASK, _BEAT1_DEMO],
+        browse=[AURORA_LISTING_499],
+        prepare=_pare_chat_instructions,
+        score=_score_beat1,
+        min_pass_rate=None,  # report-only until the rubric is jointly sample-verified
+        timeout=240.0,  # the demo turn runs extraction + the narration continuation
+    )
+
+
 # ── Beat 2: demonstrate ──────────────────────────────────────────────────────
 #
 # The user gives her the routine as three bare, enact-able steps — "read this
