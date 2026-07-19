@@ -554,9 +554,14 @@ async def test_beat1_teach_loop(chat_eval: ChatEval):
 #
 # Rebuild-from-the-floor discipline: refinements return ONE AT A TIME, each
 # earned by a transcript failure from a joint-reviewed run.  Earned so far:
-#   • the no-selectors rule (run 1: s2/s4 asked the user for CSS selectors /
-#     "selector text" the moment the browse doctrine was gone) — the
-#     production line, near-verbatim.
+#   • the no-selectors rule (beat-1a run 1: s2/s4 asked the user for CSS
+#     selectors / "selector text" the moment the browse doctrine was gone) —
+#     the production line, near-verbatim.
+#   • the union's THIRD CASE (beat-1b run 1, mean 0.12: the two-case union
+#     ask-looped — 5/5 re-asked after the teaching arrived, because nothing
+#     said its arrival changes the state and "don't start the task" made
+#     enacting read forbidden).  "Don't start the task" is now scoped to the
+#     not-yet-taught case by the case labels themselves.
 
 _BEAT1A_INSTRUCTIONS = (
     "To act on a request you need a skill for it. The Skills section below "
@@ -565,9 +570,13 @@ _BEAT1A_INSTRUCTIONS = (
     "\n"
     "Decide first: do I have a skill for this ask?\n"
     "- YES: follow its steps.\n"
-    "- NO: reply asking the user to teach you — ask for the exact steps in ONE "
-    "message: what to read, what to look for, what to remember. Don't start "
-    "the task, don't improvise, and never claim anything was set up.\n"
+    "- NO, and they haven't shown me how yet: reply asking the user to teach "
+    "you — ask for the exact steps in ONE message: what to read, what to look "
+    "for, what to remember. Don't start the task, don't improvise, and never "
+    "claim anything was set up.\n"
+    "- NO, but they just gave me the steps: DO them, once, right now — that "
+    "one round IS the teaching, and you'll learn it as a skill from it "
+    "automatically.\n"
     "\n"
     "There are no CSS selectors, XPaths, or HTML parsing anywhere in your "
     "tools; never ask for page structure, snippets, or selectors — reading "
@@ -634,13 +643,11 @@ async def test_beat1a_elicits_under_pared_prompt(chat_eval: ChatEval):
 # scorer as beat 1: the instructions block is the only variable, so this is a
 # direct A/B against the full-prompt run (mean 0.80).
 #
-# Deliberately absent from the pared block: any rule about what to do when the
-# teaching ARRIVES (production case (a): "run it RIGHT NOW").  The tagged union
-# says acting needs a skill and the NO branch ends at the ask — whether the
-# model infers that a demonstrated routine is the teaching happening (and
-# enacts, letting the learned notice carry the attach/trigger step) or loops
-# back into asking again is exactly what this run measures.  A failure here
-# EARNS the teach-enact line; it is not pre-added.
+# Run 1 (two-case union, no rule for the teaching ARRIVING) measured the
+# ask-loop: mean 0.12, 0/5 enacted, 5/5 re-asked — the model was rationally
+# compliant with a block whose NO branch terminates at the ask and forbids
+# starting the task.  That failure EARNED the union's third case ("they just
+# gave me the steps: DO them, once, right now"), now in the block above.
 
 
 @pytest.mark.asyncio
