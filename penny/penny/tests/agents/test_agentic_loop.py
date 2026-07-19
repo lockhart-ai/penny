@@ -31,6 +31,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import (
     half_formed_send_reason,
     has_leaked_harmony_envelope,
+    is_call_fragment_reply,
     is_degenerate_run,
 )
 from penny.tools.base import Tool
@@ -784,6 +785,43 @@ class TestDegenerateOutputGuard:
 
         response = await agent.run("test", max_steps=max_steps)
         assert response.answer == "here is the real answer"
+        assert len(mock_llm.requests) == 2
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_call_fragment_reply_discarded_and_rerolled(self, test_db, mock_llm):
+        """A would-be final reply that is a bare JSON call fragment
+        (``{"memory": "rip? wait …"}`` — the #1570 field audit's observed leak)
+        is discarded and re-rolled on the unchanged context, exactly like the
+        other unusable-output conditions — it must never be SENT verbatim.
+
+        Chat-only polarity: ``ChatAgent`` opts in via ``_reroll_call_fragments``;
+        the base agent leaves the flag off so a collector's call-shaped text
+        keeps its TEACHING nudge chain.  The full ``{"name": …, "arguments": …}``
+        envelope is excluded — that shape belongs to ``CallAsTextValidator``."""
+        assert ChatAgent._reroll_call_fragments is True
+        assert Agent._reroll_call_fragments is False
+        # Predicate edges: bare fragment matches; the full call envelope and
+        # mid-prose JSON do not (zero-false-positive discipline).
+        assert is_call_fragment_reply('{"memory": "rip? wait we need entries"}') is True
+        assert is_call_fragment_reply('{"name": "done", "arguments": {}}') is False
+        assert is_call_fragment_reply('I saved it as {"key": "price"} for you') is False
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._reroll_call_fragments = True  # the ChatAgent polarity, on the test agent
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_text_response(request, '{"memory": "rip? wait we need"}')
+            return mock_llm._make_text_response(request, "here is the real answer")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test", max_steps=max_steps)
+        assert response.answer == "here is the real answer"
+        # Exactly one reroll on the unchanged context — the fragment never appended.
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
 
