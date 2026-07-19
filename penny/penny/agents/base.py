@@ -1017,7 +1017,7 @@ class Agent:
 
         ``run_id`` is the id of the run building this surface — the chat turn's or
         the collector cycle's — threaded to every write/mutation-capable tool as
-        the executing run (#1560): entry writes stamp it, ``collection_create``
+        the executing run (#1560): entry writes stamp it, ``collection_set``
         records it as the new mechanism's creating run (#1566), and each registry
         mutation records it as the change's cause.  Passed as an explicit
         parameter, never ambient state.

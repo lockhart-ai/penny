@@ -401,7 +401,7 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     """Render a skill's steps + bound ``params`` into a numbered TEXT recipe — the
     same numbered-tool-call dialect production ``extraction_prompt``s use.
 
-    The load-bearing deliverable (#1590): #1591's ``collection_create`` calls this
+    The load-bearing deliverable (#1590): #1591's ``collection_set`` calls this
     to stamp the collection's ``extraction_prompt`` at creation.  Parameters present
     in ``params`` are substituted with their value verbatim; parameters NOT in
     ``params`` render as ``{name}`` (the with-params form the read surface shows);
@@ -416,7 +416,7 @@ def unbound_required_parameters(
     parameters: list[SkillParameter], params: dict[str, str]
 ) -> list[SkillParameter]:
     """The required parameters ``params`` doesn't bind — the validation #1591's
-    ``collection_create`` runs before rendering (an unbound required parameter is an
+    ``collection_set`` runs before rendering (an unbound required parameter is an
     error).  Returns the whole :class:`SkillParameter` (name + description) so the
     refusal can name each parameter AND what to supply (#1668).  Shipped here so the
     rule lives with the skill, tested standalone."""
@@ -442,7 +442,7 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
     demo-run constant (or a stray parameter/binding) on the ``memory`` argument is
     replaced by ``target`` — the collection's own name.  This runs at the
     render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
-    ``collection_create(skill=…)`` and the ``collection_update`` adopt paths, so the
+    ``collection_set(skill=…)`` and the ``collection_set`` adopt paths, so the
     rendered ``extraction_prompt`` never lies about its write target.  Pure — the
     skill's STORED steps keep their demo constant (a skill is target-agnostic); only
     the rendered-into-a-collection copy is retargeted.  A step that isn't a scoped

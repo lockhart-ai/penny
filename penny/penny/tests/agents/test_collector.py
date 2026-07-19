@@ -284,8 +284,7 @@ async def test_get_tools_raises_outside_cycle(test_config, tmp_path):
 
 _LIFECYCLE_TOOL_NAMES = frozenset(
     {
-        "collection_create",
-        "collection_update",
+        "collection_set",
         "collection_merge",
         "collection_archive",
         "collection_unarchive",
@@ -1331,7 +1330,7 @@ async def test_run_for_collection_not_found(test_config, tmp_path):
     assert "does-not-exist" in message
     assert "not found" in message
     # matches the house memory-not-found wording (str(MemoryNotFoundError))
-    assert "collection_create" in message
+    assert "collection_set" in message
 
 
 @pytest.mark.asyncio
@@ -1353,7 +1352,7 @@ async def test_run_for_no_extraction_prompt(test_config, tmp_path):
     success, message = await collector.run_for("bare-col")
     assert success is False
     assert "extraction_prompt" in message
-    assert "collection_update" in message
+    assert "collection_set" in message
 
 
 @pytest.mark.asyncio

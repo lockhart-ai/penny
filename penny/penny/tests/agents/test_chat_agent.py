@@ -174,7 +174,7 @@ async def test_basic_message_flow(
 
 
 @pytest.mark.asyncio
-async def test_collection_create_stamps_chat_provenance(
+async def test_collection_set_stamps_chat_provenance(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
     """A collection created from a chat message records that message as its
@@ -182,7 +182,7 @@ async def test_collection_create_stamps_chat_provenance(
 
     Proves the provenance is threaded end-to-end — the channel logs the incoming
     message first, ``handle`` mints the run_id and passes both down to
-    ``collection_create`` — rather than reconstructed after the fact.
+    ``collection_set`` — rather than reconstructed after the fact.
     """
     ask = "can you keep a running list of new indie platformers for me?"
 
@@ -209,7 +209,7 @@ async def test_collection_create_stamps_chat_provenance(
                     LlmToolCall(
                         id="call_0",
                         function=LlmToolCallFunction(
-                            name="collection_create",
+                            name="collection_set",
                             arguments={
                                 "name": "indie-platformers",
                                 "description": "a running list of new indie platformers",
@@ -719,8 +719,10 @@ async def test_chat_tool_surface_excludes_entry_mutations(
         assert "log_append" in names
 
         # Lifecycle / shape.
-        assert "collection_create" in names
-        assert "collection_update" in names
+        assert "collection_set" in names
+        # The fused surface: the two prior lifecycle verbs are GONE.
+        assert "collection_create" not in names
+        assert "collection_update" not in names
         assert "log_create" in names
         assert "collection_archive" in names
         assert "collection_unarchive" in names
@@ -1027,9 +1029,9 @@ _BASIC_FLOW_EXPECTED = (
     "generic task phrase — what KIND of task, e.g. 'watch a page price for changes'>) "
     "to double-check. If find also misses, tell the user you don't have a skill for "
     "that yet and ask them to walk you through it once; do it together here — you'll "
-    "learn it automatically as a skill — then collection_update(name=<slug>, "
+    "learn it automatically as a skill — then collection_set(name=<slug>, "
     "skill=<its name>) to attach it.\n"
-    "2. A skill matches → instantiate it directly: collection_create(name=<slug>, "
+    "2. A skill matches → instantiate it directly: collection_set(name=<slug>, "
     "description=<the ask>, skill=<its name>, params=<bind its parameters>).\n"
     "NEVER improvise a stand-in — a one-off write into some collection, a hand-built "
     "extraction_prompt — for a task that needs a skill you don't have; if you can't "

@@ -207,7 +207,7 @@ OptionalExtractionPrompt = Annotated[
 
 
 class CollectionCreateArgs(ToolArgs):
-    """Args for ``collection_create`` — the skill-instantiation front door (#1591),
+    """Args for ``collection_set`` — the skill-instantiation front door (#1591),
     or a skill-less INERT container (#1629).
 
     A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
@@ -215,7 +215,7 @@ class CollectionCreateArgs(ToolArgs):
     ``extraction_prompt``, ``params`` binds the skill's parameters, and a
     ``trigger`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
     — no ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it
-    until a skill is attached later via ``collection_update`` (the two-step teach
+    until a skill is attached later via ``collection_set`` (the two-step teach
     bootstrap).  A job-shaped arg (a ``trigger`` / ``notify`` / ``expires_at``) alongside
     a skill-less create is refused, since an inert container has no job to describe.
 
@@ -224,7 +224,7 @@ class CollectionCreateArgs(ToolArgs):
     ``name`` is the unique slug.
 
     **A blank string on an optional arg counts as "not set"** — the same rule
-    ``collection_update`` documents, missed on create before #1646.  ``skill`` /
+    ``collection_set`` documents, missed on create before #1646.  ``skill`` /
     ``trigger`` / ``expires_at`` coerce ``""`` to ``None`` (``OptionalSkill`` /
     ``OptionalText``) BEFORE any routing or parsing, so a model that fills an optional
     field it means to omit with ``""`` (a chronic gpt-oss habit) gets the omitted
@@ -241,8 +241,7 @@ class CollectionCreateArgs(ToolArgs):
     the four forms.  ``expires_at`` (optional) is the end condition — the
     watch archives itself when it passes.  ``notify`` (default false) makes the collection
     tell the user about new/changed entries; an omission stays silent, so it can never
-    accidentally notify.  ``create_anyway`` (default false) is the reactive idempotency
-    override — set only when a near-duplicate refusal tells you to.
+    accidentally notify.
     """
 
     name: MemoryName
@@ -269,10 +268,6 @@ class CollectionCreateArgs(ToolArgs):
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
     notify: bool = False
-    # The reactive idempotency override (#1567) — default false so an omission never
-    # silently creates a near-duplicate; set true ONLY in response to a near-duplicate
-    # refusal (that refusal is the sole place it's explained).
-    create_anyway: bool = False
 
 
 class LogCreateArgs(ToolArgs):
@@ -297,6 +292,35 @@ class CatalogArgs(ToolArgs):
     """No-field args for ``collection_catalog`` — it spans every collection."""
 
 
+class CollectionSetArgs(ToolArgs):
+    """Args for ``collection_set`` — the ONE idempotent create-or-update entry
+    point for a collection's existence and job config (the fusion the code owner
+    specified: "a single entry point the model can call idempotently for all
+    create/update cases").
+
+    ``name`` missing → the collection comes into being with this config (the
+    create path, all its validation intact: birth idempotency-dedup unless
+    skill resolution, the inert/job-arg refusal).  ``name``
+    exists → only the fields explicitly set change (the update path: adopt /
+    rebind / swap / refresh re-render, atomic trigger replace, raw
+    ``extraction_prompt`` edit).  The model never reasons about which case it is.
+
+    ``description`` is required the FIRST time (it's the meaning anchor);
+    optional after.  ``notify`` is tri-state: ``None`` = leave unchanged (birth
+    default: silent).  There is NO ``extraction_prompt`` argument anywhere on the
+    model surface: a collection's routine is only ever a RENDER of a demonstrated
+    skill (#1658) — a wrong routine is fixed by re-teaching, never by editing
+    prompt text."""
+
+    name: MemoryName
+    description: OptionalText = None
+    skill: OptionalSkill = None
+    params: dict[str, SkillParamValue] | None = None
+    trigger: OptionalText = None
+    expires_at: OptionalText = None
+    notify: bool | None = None
+
+
 class CollectionUpdateArgs(ToolArgs):
     """Update a collection's metadata.
 
@@ -317,7 +341,7 @@ class CollectionUpdateArgs(ToolArgs):
     exclusive with ``skill`` / ``params``).
 
     The **trigger** is the apply-time job axis — the SAME one-arg, four-form trigger
-    ``collection_create`` accepts (``parse_trigger``, #1631/#1684): ``"every <seconds>"`` |
+    ``collection_set`` accepts (``parse_trigger``, #1631/#1684): ``"every <seconds>"`` |
     ``"once at <ISO> [xN]"`` | ``"on advance of <log>"`` | ``"cron <5-field expression>"``.
     Present → the whole trigger is replaced atomically (the members the new form doesn't
     use clear); absent → the cadence is left untouched.  So a collection's schedule is
@@ -327,7 +351,6 @@ class CollectionUpdateArgs(ToolArgs):
 
     name: MemoryName
     description: OptionalText = None
-    extraction_prompt: OptionalExtractionPrompt = None
     notify: bool | None = None  # flip notify-on-new on/off; None = leave unchanged
     # Re-render axis (#1620): re-render the prompt from a skill's CURRENT steps.
     skill: OptionalSkill = None  # skill to (re-)instantiate from; None = leave prompt as-is
@@ -335,7 +358,7 @@ class CollectionUpdateArgs(ToolArgs):
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
     # Trigger — one arg, four enumerated forms (parse_trigger, #1631/#1684), mirroring
-    # collection_create.  Present → replaces the whole trigger atomically; a blank/omit
+    # collection_set.  Present → replaces the whole trigger atomically; a blank/omit
     # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of
     # <log>" | "cron <5-field expression>".
     trigger: OptionalText = None

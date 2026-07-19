@@ -612,7 +612,7 @@ class MemoryStore:
     def link_source_message(self, run_id: str, source_message_id: int) -> None:
         """Stamp the spawning message on every mechanism a chat run created (#1566).
 
-        ``collection_create`` records ``created_by_run_id`` at creation, but the
+        ``collection_set`` records ``created_by_run_id`` at creation, but the
         triggering message's id isn't known until the run returns (the channel
         logs it afterward).  The
         channel then calls this to link the two structurally — matching by the

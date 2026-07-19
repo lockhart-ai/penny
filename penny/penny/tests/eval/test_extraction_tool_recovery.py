@@ -1,6 +1,6 @@
 """extraction_prompt fictitious-tool recovery contract (#1529, epic #1528).
 
-When ``collection_update`` / ``collection_create`` refuses an ``extraction_prompt``
+When ``collection_set`` / ``collection_set`` refuses an ``extraction_prompt``
 that names a tool no collector can run, the correction-teaching rejection must be
 load-bearing: the live model reads it and REWRITES the prompt using only real tools,
 rather than re-emitting the hallucination or giving up.  The deterministic gate
@@ -8,7 +8,7 @@ rather than re-emitting the hallucination or giving up.  The deterministic gate
 ``tests/tools/test_memory_tools.py``; this owns the live model-behaviour contract.
 
 The slip — a hallucinated tool in an authored prompt — is occasional, so we FORCE one
-``collection_update`` carrying a made-up ``extract_text`` for the "read the page" step
+``collection_set`` carrying a made-up ``extract_text`` for the "read the page" step
 (``_InjectFictitiousToolPrompt``) and let the REAL model drive the recovery off the
 production rejection.  The contract is STRUCTURAL, never wording:
 

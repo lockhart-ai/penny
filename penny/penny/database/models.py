@@ -226,7 +226,7 @@ class MemoryRow(SQLModel, table=True):
     # (NULL until backfilled at startup).
     description_embedding: bytes | None = None
     archived: bool = Field(default=False, index=True)
-    # Emission-as-property (#1557, exposed by #1591's ``collection_create``): when
+    # Emission-as-property (#1557, exposed by #1591's ``collection_set``): when
     # true the collection notifies the user of new/changed entries — assembly
     # appends the run-time notify steps (``Prompt.COLLECTOR_NOTIFY_STEPS``) to the
     # collector's composed prompt, numbered continuously before the injected
@@ -274,7 +274,7 @@ class MemoryRow(SQLModel, table=True):
     # reminder (``run_at`` + ``max_runs=1``) retires itself.  NULL = unlimited.
     run_at: datetime | None = Field(default=None)
     max_runs: int | None = Field(default=None)
-    # On_advance trigger (#1604, model-facing via #1591's ``collection_create``):
+    # On_advance trigger (#1604, model-facing via #1591's ``collection_set``):
     # the declared source LOG whose advance wakes this collection.  When set, the
     # collector gates readiness on the source's high-water mark passing this
     # collection's read cursor (source head > cursor) — the declared-input variant
@@ -381,7 +381,7 @@ class Skill(SQLModel, table=True):
     — a value from a prior step's result becomes a binding, the scoped-write target a
     retarget-owned constant, every other string leaf a required parameter (#1658/
     #1659), semantically named + described by the run-end naming micro-context
-    (#1668).  #1591's ``collection_create`` renders ``steps`` + bound params into the
+    (#1668).  #1591's ``collection_set`` renders ``steps`` + bound params into the
     collection's numbered TEXT ``extraction_prompt`` at creation.
 
     **One row per name — no versioning.**  Collections carry the rendered text
