@@ -34,8 +34,15 @@ from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
+from penny.tests.eval.artifacts import FailureCause
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
+from penny.text_validity import (
+    has_leaked_harmony_envelope,
+    is_call_fragment_reply,
+    is_degenerate_run,
+    is_degenerate_tool_name,
+)
 from penny.tools.browse import BrowseChannelUnavailableError
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -111,6 +118,10 @@ class SampleResult:
     failed: list[str]
     total: int = 1
     checks: list[Check] = field(default_factory=list)  # full graded checks (empty = binary)
+    # The structural failure cause (#1695), stamped by the runner after scoring: ``None`` for
+    # a pass; ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate
+    # defaults an unstamped failure to behavioral, so a directly-constructed result is safe.
+    cause: FailureCause | None = None
 
     @property
     def passed(self) -> bool:
@@ -364,6 +375,64 @@ def sample_is_fragile(db: Database) -> bool:
         if any(frame in content for frame in _RECOVERY_FRAMES):
             return True
     return False
+
+
+def _response_text(prompt_log) -> str:
+    """The visible text content of a persisted model response (``choices[0].message.content``)."""
+    response = json.loads(prompt_log.response) if prompt_log.response else {}
+    choices = response.get("choices") or []
+    return (choices[0].get("message", {}).get("content") or "") if choices else ""
+
+
+def _response_is_poison(prompt_log) -> bool:
+    """Did THIS persisted model response trip the agent-loop reroll guard — a punctuation
+    collapse, a leaked Harmony envelope, a collapse-shaped tool NAME, or a bare call-fragment
+    reply?  Mirrors ``Agent._unusable_output_condition`` over the persisted OUTPUT: the text
+    content, each serialised tool-call argument, and each tool-call name."""
+    calls = _response_tool_calls(prompt_log)
+    parts = [_response_text(prompt_log)]
+    for call in calls:
+        function = call.get("function", {})
+        name = function.get("name")
+        if isinstance(name, str) and is_degenerate_tool_name(name):
+            return True
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            parts.append(arguments)
+    if any(has_leaked_harmony_envelope(part) for part in parts):
+        return True
+    if not calls and is_call_fragment_reply(_response_text(prompt_log)):
+        return True
+    return any(is_degenerate_run(part) for part in parts)
+
+
+def run_exhibited_pathology(db: Database) -> bool:
+    """Did the model produce reroll-guard POISON this run — the structural ``pathology`` signal
+    for the failure-cause partition (#1695)?
+
+    Scans the persisted promptlog's RESPONSE fields (the model's own OUTPUT) with the SAME
+    ``text_validity`` detectors the agent-loop reroll guard runs live
+    (``Agent._unusable_output_condition``): a punctuation collapse (``DEGENERATE_OUTPUT``), a
+    leaked Harmony envelope (``TOOL_CALL_LEAK``), a collapse-shaped tool name, or a bare
+    call-fragment reply.  Reading only the ``response`` (never the input ``messages``) is what
+    makes this immune to a DELIBERATELY-injected recovery trigger: an ``_Inject*`` bail is
+    returned as a SYNTHETIC ``LlmResponse`` that bypasses the persisting real client, so it
+    never lands in a persisted ``response`` — a ``bail_injected`` sample is tagged pathology
+    only if the LIVE model additionally produced its own poison, never for the forced trigger."""
+    return any(_response_is_poison(row) for row in db.messages.recent_prompts(limit=200))
+
+
+def _stamp_cause(db: Database, result: SampleResult, *, timed_out: bool = False) -> None:
+    """Stamp the sample's structural failure cause (#1695) in place — ``None`` for a pass.
+
+    Scans for the pathology signal only when the sample actually failed (a pass carries no
+    cause, so the scan is skipped).  Called at every runner's per-sample append site so the
+    cause rides into the ``results.jsonl`` record and the RESULT-line cause tally."""
+    result.cause = eval_artifacts.classify_cause(
+        passed=result.passed,
+        timed_out=timed_out,
+        pathology=not result.passed and run_exhibited_pathology(db),
+    )
 
 
 def gave_up_mid_run(db: Database) -> bool:
@@ -687,6 +756,16 @@ def _assert_threshold(
     # the all-pass count (samples that passed EVERY applicable check — ``SampleResult.passed``)
     # is the strict companion beside it, so a mean propped up by partial credit is visible.
     metric = f"mean {mean:.2f} · all-pass {all_pass}/{total}"
+    # Failure-cause read (#1695): the pathology-excluded mean + the behavioral/pathology/harness
+    # tally, on a second line, so a score sunk by model NOISE (a degeneracy spike) reads distinctly
+    # from a score sunk by the model getting it WRONG (the signal the loop chases).
+    causes = [result.cause for result in results]
+    excluded_mean, kept = eval_artifacts.pathology_excluded(
+        [result.score for result in results], causes
+    )
+    cause_line = eval_artifacts.render_cause_summary(
+        eval_artifacts.count_causes(causes), excluded_mean, kept
+    )
     # Per-sample detail: the score (1.0/0.0 for binary, the check fraction for graded) and
     # what missed — for every sample that wasn't perfect.
     detail = "\n".join(
@@ -697,10 +776,12 @@ def _assert_threshold(
     )
     if min_pass_rate is None:
         print(f"\nRESULT [{case_id}] {metric} across {total} samples (report-only)")
+        print(f"  {cause_line}")
         if detail:
             print(detail)
         return
     print(f"\nRESULT [{case_id}] {metric} across {total} samples (need mean >={min_pass_rate})")
+    print(f"  {cause_line}")
     if mean < min_pass_rate:
         pytest.fail(f"{case_id}: mean {mean:.2f} < {min_pass_rate}:\n{detail}")
 
@@ -1034,11 +1115,14 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                                 fails.append("forced bail never fired — contract not exercised")
                             result = SampleResult.binary(fails)
                         results.append(result)
+                        _stamp_cause(penny.db, result)
                         _write_sample_report(
                             penny.db, case_id, sample_index, result=result, reply=reply
                         )
                     except TimeoutError:
-                        results.append(SampleResult.binary(["no reply within timeout"]))
+                        timed_out = SampleResult.binary(["no reply within timeout"])
+                        _stamp_cause(penny.db, timed_out, timed_out=True)
+                        results.append(timed_out)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
@@ -1113,6 +1197,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
                     ]
                     fails = score(penny.db, before, sent)
                     results.append(SampleResult.binary(fails))
+                    _stamp_cause(penny.db, results[-1])
                     _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
@@ -1300,6 +1385,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
                     elif not success:
                         fails.append("cycle did not recover to a successful close after the nudge")
                     results.append(SampleResult.binary(fails))
+                    _stamp_cause(penny.db, results[-1])
                     _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
@@ -1626,6 +1712,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
                     if not wrapper.bail_injected:
                         fails.append("forced bail never fired — contract not exercised")
                     results.append(SampleResult.binary(fails))
+                    _stamp_cause(penny.db, results[-1])
                     _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
                     _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
                     perf.add(penny.db.messages.prompt_perf())
@@ -1693,6 +1780,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
                             os.environ["GIT_COMMIT_MESSAGE"] = prior
                     fails = score(announcement)
                     results.append(SampleResult.binary(fails))
+                    _stamp_cause(penny.db, results[-1])
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

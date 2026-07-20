@@ -30,6 +30,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -69,6 +70,84 @@ class MissingLeverError(RuntimeError):
     """A report run (``EVAL_REPORT_DIR`` set) declared no lever (``EVAL_LEVER``)."""
 
 
+# ── Failure-cause partition (#1695): every FAILED sample is one of these ──────
+class FailureCause(StrEnum):
+    """Why a failed sample failed, derived STRUCTURALLY (never a model judgment).
+
+    The partition separates the real signal the loop chases from the noise:
+
+    - ``behavioral`` — the model simply got it wrong (the signal).
+    - ``pathology``  — a known model pathology fired (a reroll-guard poison signal in
+      the run's persisted output — a punctuation collapse, a leaked Harmony envelope,
+      a collapse-shaped tool name, or a bare call-fragment reply). Noise, not
+      comprehension; excluded from the pathology-excluded score.
+    - ``harness``    — a timeout / infrastructure fault, not the model at all.
+    """
+
+    BEHAVIORAL = "behavioral"
+    PATHOLOGY = "pathology"
+    HARNESS = "harness"
+
+
+class CauseCounts(BaseModel):
+    """Per-case tally of failed samples by cause (passing samples carry no cause)."""
+
+    behavioral: int = 0
+    pathology: int = 0
+    harness: int = 0
+
+
+def classify_cause(*, passed: bool, timed_out: bool, pathology: bool) -> FailureCause | None:
+    """The structural cause of a sample's outcome — ``None`` when it passed.
+
+    Order is the documented rule: a passing sample has no cause; a **pathology** signal
+    outranks a timeout (the poison is the root cause, a downstream timeout its symptom);
+    a clean timeout is **harness**; everything else is **behavioral**. Pure — the three
+    inputs are the structural facts, computed by the caller from the persisted state.
+    """
+    if passed:
+        return None
+    if pathology:
+        return FailureCause.PATHOLOGY
+    if timed_out:
+        return FailureCause.HARNESS
+    return FailureCause.BEHAVIORAL
+
+
+def count_causes(causes: Sequence[FailureCause | None]) -> CauseCounts:
+    """Tally a case's per-sample causes (``None`` — a pass — counts toward nothing)."""
+    return CauseCounts(
+        behavioral=sum(1 for cause in causes if cause == FailureCause.BEHAVIORAL),
+        pathology=sum(1 for cause in causes if cause == FailureCause.PATHOLOGY),
+        harness=sum(1 for cause in causes if cause == FailureCause.HARNESS),
+    )
+
+
+def pathology_excluded(
+    scores: Sequence[float], causes: Sequence[FailureCause | None]
+) -> tuple[float, int]:
+    """The honest read of model behaviour: ``(mean, kept)`` over every sample that is NOT
+    a pathology failure (passing + behavioral + harness). Pathology samples drop out of the
+    denominator so their noise can't sink the score; an all-pathology case is ``(0.0, 0)``."""
+    kept = [
+        score
+        for score, cause in zip(scores, causes, strict=True)
+        if cause != FailureCause.PATHOLOGY
+    ]
+    return (sum(kept) / len(kept), len(kept)) if kept else (0.0, 0)
+
+
+def render_cause_summary(counts: CauseCounts, excluded_mean: float, kept: int) -> str:
+    """The one-line failure-cause read (§4 of the format spec) — the pathology-excluded mean
+    beside the behavioral/pathology/harness tally. Single-sourced so the console RESULT area
+    and the PR-comment renderer (#1693) render one shape."""
+    return (
+        f"pathology-excluded mean {excluded_mean:.2f} ({kept} samples) · "
+        f"causes — behavioral {counts.behavioral} · "
+        f"pathology {counts.pathology} · harness {counts.harness}"
+    )
+
+
 # ── Structured inputs read off a scored case (Protocols avoid a conftest cycle) ──
 class GradedCheck(Protocol):
     """The subset of a ``Check`` the per-check aggregate reads."""
@@ -82,9 +161,14 @@ class ScoredSample(Protocol):
 
     ``checks`` / ``passed`` are read-only members (covariant), so a ``SampleResult``
     whose ``checks`` is a ``list[Check]`` structurally satisfies the protocol.
+
+    ``cause`` is the structurally-classified failure cause the runner stamped (``None``
+    for a pass, or an unstamped sample — the aggregate defaults an unstamped *failure*
+    to ``behavioral``, never inventing a pathology/harness it can't observe).
     """
 
     score: float
+    cause: FailureCause | None
 
     @property
     def passed(self) -> bool: ...
@@ -128,8 +212,11 @@ class CaseArtifact(BaseModel):
     family: str
     mean: float
     all_pass_rate: float
+    pathology_excluded_mean: float
     samples: int
     sample_scores: list[float]
+    sample_causes: list[FailureCause | None]
+    cause_counts: CauseCounts
     checks: list[CheckOutcome]
     timings: CaseTimings
 
@@ -169,6 +256,15 @@ def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
     return [CheckOutcome(label=label, passed=passed[label], total=total[label]) for label in order]
 
 
+def _sample_cause(sample: ScoredSample) -> FailureCause | None:
+    """The per-sample cause for the record: ``None`` for a pass; the runner-stamped cause
+    for a failure, defaulting an UNSTAMPED failure to ``behavioral`` (the aggregate never
+    invents a pathology/harness the runner didn't observe — it only fills the honest default)."""
+    if sample.passed:
+        return None
+    return sample.cause or FailureCause.BEHAVIORAL
+
+
 def build_case_artifact(
     *,
     run_id: str,
@@ -181,14 +277,20 @@ def build_case_artifact(
     count = len(results)
     mean = sum(result.score for result in results) / count if count else 0.0
     all_pass = sum(1 for result in results if result.passed) / count if count else 0.0
+    scores = [result.score for result in results]
+    causes = [_sample_cause(result) for result in results]
+    excluded_mean, _kept = pathology_excluded(scores, causes)
     return CaseArtifact(
         run_id=run_id,
         case_id=case_id,
         family=family,
         mean=mean,
         all_pass_rate=all_pass,
+        pathology_excluded_mean=excluded_mean,
         samples=count,
-        sample_scores=[result.score for result in results],
+        sample_scores=scores,
+        sample_causes=causes,
+        cause_counts=count_causes(causes),
         checks=aggregate_checks(results),
         timings=timings,
     )

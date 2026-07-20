@@ -19,12 +19,18 @@ from penny.tests.eval.artifacts import (
     MANIFEST_FILENAME,
     RESULTS_FILENAME,
     CaseTimings,
+    CauseCounts,
     EvalRun,
+    FailureCause,
     MissingLeverError,
     RunManifest,
     build_case_artifact,
     build_manifest,
+    classify_cause,
+    count_causes,
     default_family,
+    pathology_excluded,
+    render_cause_summary,
     render_manifest_header,
     run_from_env,
 )
@@ -109,6 +115,74 @@ def test_binary_case_records_empty_check_outcomes() -> None:
     assert artifact.all_pass_rate == 0.5
     assert artifact.sample_scores == [1.0, 0.0]
     assert artifact.checks == []
+
+
+# ── Failure-cause partition (#1695) ──────────────────────────────────────────
+
+
+def test_classify_cause_is_the_documented_partition() -> None:
+    assert classify_cause(passed=True, timed_out=False, pathology=False) is None
+    # A pass is never given a cause even if a (stray) signal is present.
+    assert classify_cause(passed=True, timed_out=True, pathology=True) is None
+    assert classify_cause(passed=False, timed_out=False, pathology=False) == FailureCause.BEHAVIORAL
+    assert classify_cause(passed=False, timed_out=True, pathology=False) == FailureCause.HARNESS
+    # Pathology outranks a timeout — the poison is the root cause, the timeout its symptom.
+    assert classify_cause(passed=False, timed_out=True, pathology=True) == FailureCause.PATHOLOGY
+
+
+def test_pathology_excluded_drops_only_pathology_samples() -> None:
+    scores = [1.0, 0.5, 0.0, 0.0]
+    causes = [None, FailureCause.BEHAVIORAL, FailureCause.PATHOLOGY, FailureCause.HARNESS]
+    mean, kept = pathology_excluded(scores, causes)
+    assert kept == 3  # the pathology sample is out of the denominator
+    assert mean == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+    # An all-pathology case has an empty kept set — a defined (0.0, 0), never a divide-by-zero.
+    assert pathology_excluded([0.0], [FailureCause.PATHOLOGY]) == (0.0, 0)
+
+
+def test_count_causes_tallies_by_cause() -> None:
+    counts = count_causes(
+        [None, FailureCause.BEHAVIORAL, FailureCause.PATHOLOGY, FailureCause.PATHOLOGY]
+    )
+    assert counts == CauseCounts(behavioral=1, pathology=2, harness=0)
+
+
+def test_render_cause_summary_whole_render() -> None:
+    counts = CauseCounts(behavioral=1, pathology=1, harness=0)
+    assert render_cause_summary(counts, 0.83, 3) == (
+        "pathology-excluded mean 0.83 (3 samples) · causes — behavioral 1 · pathology 1 · harness 0"
+    )
+
+
+def test_case_artifact_carries_per_sample_causes_and_pathology_excluded() -> None:
+    passed = SampleResult.graded([Check("a", ok=True)])
+    behavioral = SampleResult.binary(["wrong"])  # unstamped failure → behavioral default
+    pathological = SampleResult.binary(["poison"])
+    pathological.cause = FailureCause.PATHOLOGY
+    harness = SampleResult.binary(["timeout"])
+    harness.cause = FailureCause.HARNESS
+    artifact = build_case_artifact(
+        run_id="run-x",
+        case_id="causes",
+        family="fam",
+        results=[passed, behavioral, pathological, harness],
+        timings=_TIMINGS,
+    )
+    assert artifact.sample_scores == [1.0, 0.0, 0.0, 0.0]
+    assert artifact.sample_causes == [
+        None,
+        FailureCause.BEHAVIORAL,
+        FailureCause.PATHOLOGY,
+        FailureCause.HARNESS,
+    ]
+    assert artifact.cause_counts == CauseCounts(behavioral=1, pathology=1, harness=1)
+    assert artifact.mean == 0.25  # (1 + 0 + 0 + 0) / 4
+    # Excluding the pathology sample: (1.0 + 0.0 + 0.0) / 3.
+    assert artifact.pathology_excluded_mean == pytest.approx((1.0 + 0.0 + 0.0) / 3)
+    # Round-trips through the serialized JSONL record (causes as their string values).
+    record = json.loads(artifact.model_dump_json())
+    assert record["sample_causes"] == [None, "behavioral", "pathology", "harness"]
+    assert record["pathology_excluded_mean"] == pytest.approx((1.0 + 0.0 + 0.0) / 3)
 
 
 def test_run_from_env_off_report_returns_none() -> None:

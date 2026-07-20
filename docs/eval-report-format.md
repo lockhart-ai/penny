@@ -101,14 +101,22 @@ its cause (#1695), and the tally renders:
 
 - **behavioral** — the model got it wrong (the real signal the loop chases).
 - **pathology** — a known failure mode fired: degeneracy reroll exhausted,
-  leaked-Harmony-envelope, a detected collapse. Noise, not comprehension.
+  leaked-Harmony-envelope, a detected collapse, a bare call-fragment reply. Noise,
+  not comprehension. Detected structurally off the persisted RESPONSE with the same
+  `text_validity` detectors the agent-loop reroll guard runs live — an eval-injected
+  recovery trigger (a synthetic response that never reaches the persisted `response`)
+  is structurally excluded, so a forced bail is never mistaken for a pathology.
 - **harness** — a timeout or infrastructure fault, not the model at all.
 
+A cause is only assigned to a **failed** sample, and pathology outranks a timeout
+(the poison is the root cause, a downstream timeout its symptom).
+
 The case reports the score **two ways**: raw (all samples) and
-**pathology-excluded** (behavioral + harness denominator only). The
-pathology-excluded score is the honest read of model behaviour; the raw score
-and the pathology **count** stay visible so a spike in pathology is itself
-legible (it usually means context got too large, not that the prompt is wrong).
+**pathology-excluded** — the mean over every sample that is NOT a pathology
+failure (passing + behavioral + harness; only pathology drops out of the
+denominator). The pathology-excluded score is the honest read of model behaviour;
+the raw score and the pathology **count** stay visible so a spike in pathology is
+itself legible (it usually means context got too large, not that the prompt is wrong).
 
 ### 5. Sample transcript table (the base format)
 
@@ -207,8 +215,9 @@ rendered comment read as the same run.
 | `family` | artifact (#1692) | family tag (explicit param, module-derived default) |
 | `mean` | artifact (#1692) | mean of per-sample scores |
 | `all_pass` | artifact (#1692) | fraction of samples scoring 1.0 |
-| `pathology_excluded_mean` | #1695 | mean over behavioral+harness samples only |
-| `cause` | #1695 | `behavioral` \| `pathology` \| `harness`, per failed sample |
+| `pathology_excluded_mean` | #1695 | mean over every NON-pathology sample (passing + behavioral + harness) — pathology failures drop out of the denominator |
+| `sample_causes[]` | #1695 | per-sample cause aligned with `sample_scores`: `behavioral` \| `pathology` \| `harness`, or `null` for a pass |
+| `cause_counts` | #1695 | failed-sample tally `{behavioral, pathology, harness}` (derived, render-ready) |
 | `checks[]` | #1694 | per-check `label` · `ok` · `scored` · `ignored` · `expected` · `observed` |
 | `regressed` | #1693 | check flipped ok→fail vs the prior run's artifact |
 | `fragile` | #1694 | sample passed with rejected calls / retries / recoveries |

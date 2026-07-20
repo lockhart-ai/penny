@@ -13,11 +13,14 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.tests.eval.artifacts import FailureCause
 from penny.tests.eval.conftest import (
     Check,
     SampleResult,
     _assert_threshold,
+    _stamp_cause,
     _write_sample_report,
+    run_exhibited_pathology,
     sample_is_fragile,
     tool_call_rejected,
     tool_not_called,
@@ -25,8 +28,8 @@ from penny.tests.eval.conftest import (
 )
 
 
-def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "harness.db"))
+def _make_db(tmp_path, name: str = "harness") -> Database:
+    db = Database(str(tmp_path / f"{name}.db"))
     db.create_tables()
     return db
 
@@ -40,9 +43,13 @@ def _log_prompt(db: Database, *, messages=None, response=None) -> None:
     )
 
 
-def _tool_call_response(name: str) -> dict:
-    call = {"function": {"name": name, "arguments": "{}"}}
+def _tool_call_response(name: str, arguments: str = "{}") -> dict:
+    call = {"function": {"name": name, "arguments": arguments}}
     return {"choices": [{"message": {"tool_calls": [call]}}]}
+
+
+def _content_response(text: str) -> dict:
+    return {"choices": [{"message": {"content": text}}]}
 
 
 def _tool_frame(content: str) -> list[dict]:
@@ -216,3 +223,93 @@ def test_result_line_gated_pass_names_mean_threshold(capsys) -> None:
 def test_result_line_gate_fails_below_threshold() -> None:
     with pytest.raises(pytest.fail.Exception):
         _assert_threshold("red-case", [SampleResult.binary(["boom"])], 0.75)
+
+
+# ── Failure-cause partition (#1695): the structural pathology scan + stamping ──
+
+
+def test_run_exhibited_pathology_detects_reroll_guard_signals(tmp_path) -> None:
+    # Each of the four reroll-guard conditions the loop discards + re-rolls on, read
+    # post-hoc off the persisted RESPONSE (the same text_validity detectors run live).
+    degenerate = _make_db(tmp_path, "degen")
+    _log_prompt(degenerate, response=_content_response("winter watering......???"))
+    assert run_exhibited_pathology(degenerate)  # DEGENERATE_OUTPUT in content
+
+    harmony = _make_db(tmp_path, "harmony")
+    _log_prompt(harmony, response=_content_response("leaked <|call|> to=functions.browse"))
+    assert run_exhibited_pathology(harmony)  # TOOL_CALL_LEAK
+
+    fragment = _make_db(tmp_path, "fragment")
+    _log_prompt(fragment, response=_content_response('{"memory": "notes"}'))
+    assert run_exhibited_pathology(fragment)  # bare call-fragment reply (no tool calls)
+
+    bad_name = _make_db(tmp_path, "name")
+    _log_prompt(bad_name, response=_tool_call_response("Functions?????"))
+    assert run_exhibited_pathology(bad_name)  # collapse-shaped tool NAME
+
+    poison_arg = _make_db(tmp_path, "arg")
+    _log_prompt(
+        poison_arg, response=_tool_call_response("collection_write", '{"content": "..???.."}')
+    )
+    assert run_exhibited_pathology(poison_arg)  # collapse in a serialised tool-call argument
+
+
+def test_run_exhibited_pathology_ignores_clean_and_input_only_poison(tmp_path) -> None:
+    # A healthy run — a real tool call + a clean reply — carries no pathology signal.
+    clean = _make_db(tmp_path, "clean")
+    _log_prompt(clean, response=_tool_call_response("collection_write"))
+    _log_prompt(clean, response=_content_response("Here's your answer."))
+    assert not run_exhibited_pathology(clean)
+    # Poison in the INPUT messages (e.g. an injected bail echoed into history) is NOT the
+    # model's output — the scan reads only the response, so an injected trigger stays invisible.
+    injected = _make_db(tmp_path, "injected")
+    _log_prompt(
+        injected,
+        messages=[{"role": "assistant", "content": "Hi there! ......???"}],
+        response=_tool_call_response("collection_write"),
+    )
+    assert not run_exhibited_pathology(injected)
+
+
+def test_stamp_cause_partitions_pass_pathology_harness_behavioral(tmp_path) -> None:
+    # Pass → no cause, regardless of the DB.
+    passed_db = _make_db(tmp_path, "pass")
+    passed = SampleResult.binary([])
+    _stamp_cause(passed_db, passed)
+    assert passed.cause is None
+
+    # Failed + poison in the response → pathology.
+    poison_db = _make_db(tmp_path, "poison")
+    _log_prompt(poison_db, response=_content_response("collapse...???"))
+    pathological = SampleResult.binary(["wrong end state"])
+    _stamp_cause(poison_db, pathological)
+    assert pathological.cause == FailureCause.PATHOLOGY
+
+    # Failed, clean output → behavioral (the model simply got it wrong).
+    clean_db = _make_db(tmp_path, "behav")
+    _log_prompt(clean_db, response=_content_response("A confident but wrong answer."))
+    behavioral = SampleResult.binary(["wrong end state"])
+    _stamp_cause(clean_db, behavioral)
+    assert behavioral.cause == FailureCause.BEHAVIORAL
+
+    # Timeout on a clean DB → harness; but poison outranks the timeout symptom.
+    timeout = SampleResult.binary(["no reply within timeout"])
+    _stamp_cause(clean_db, timeout, timed_out=True)
+    assert timeout.cause == FailureCause.HARNESS
+    poison_timeout = SampleResult.binary(["no reply within timeout"])
+    _stamp_cause(poison_db, poison_timeout, timed_out=True)
+    assert poison_timeout.cause == FailureCause.PATHOLOGY
+
+
+def test_result_line_renders_cause_summary(capsys) -> None:
+    passed = SampleResult.binary([])
+    pathological = SampleResult.binary(["poison"])
+    pathological.cause = FailureCause.PATHOLOGY
+    _assert_threshold("cause-case", [passed, pathological], None)
+    out = capsys.readouterr().out
+    assert "RESULT [cause-case] mean 0.50 · all-pass 1/2 across 2 samples (report-only)" in out
+    # The pathology sample drops out of the excluded denominator, so the honest read is 1.00.
+    assert (
+        "  pathology-excluded mean 1.00 (1 samples) · "
+        "causes — behavioral 0 · pathology 1 · harness 0" in out
+    )

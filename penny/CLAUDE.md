@@ -581,6 +581,29 @@ SHA + dirty diff are computed **host-side** in the Makefile (`EVAL_COMMIT`/`EVAL
 because `.git` is not mounted in the eval container. The `family` tag defaults from the test
 module name (`test_<x>` → `<x>`) or is set explicitly via a `family=` arg on a runner call.
 
+**Failure-cause partition (#1695).** Every FAILED sample is tagged with its cause, derived
+STRUCTURALLY (never a model judgment): **harness** (a `TimeoutError`), **pathology** (a known
+model pathology fired), or **behavioral** (the model simply got it wrong — the real signal the
+loop chases). Pathology is read post-hoc off the persisted promptlog by `run_exhibited_pathology`
+(in `tests/eval/conftest.py`), which scans each row's RESPONSE with the SAME `text_validity`
+detectors the agent-loop reroll guard runs live (`Agent._unusable_output_condition`): a punctuation
+collapse (`DEGENERATE_OUTPUT`), a leaked Harmony envelope (`TOOL_CALL_LEAK`), a collapse-shaped
+tool NAME, or a bare call-fragment reply. **The distinguishing rule** — an eval `_Inject*` recovery
+trigger is NOT a pathology failure: an injected bail is returned as a synthetic `LlmResponse` that
+bypasses the persisting client, so it never lands in a persisted `response`; reading only the output
+(never the input `messages`) makes the scan structurally immune to it, so a `bail_injected` sample is
+tagged pathology only if the LIVE model additionally produced its own poison. Cause ordering:
+pathology outranks a timeout (the poison is the root cause, the timeout its symptom), then harness,
+then behavioral. `classify_cause` (pure, in `artifacts.py`) encodes the partition. The runner stamps
+each sample's `cause`, and the `CaseArtifact` (`results.jsonl`) carries `sample_causes` (per-sample,
+aligned with `sample_scores`; `null` = passed), `cause_counts`, and `pathology_excluded_mean` — the
+honest read of model behaviour, the mean over every sample that is NOT a pathology failure, so a
+degeneracy spike can't sink a case's score while its raw mean + pathology count stay visible. The
+console RESULT line carries a second line with the same tally (`render_cause_summary`, single-sourced
+so the PR-comment renderer renders one shape). Deterministic contracts (no live model): the pathology
+scan + stamping + render in `tests/test_eval_harness.py`, the artifact fields + pure classifier in
+`tests/eval/test_artifacts.py`.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,
