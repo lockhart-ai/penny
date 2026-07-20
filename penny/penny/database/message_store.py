@@ -761,6 +761,23 @@ class MessageStore:
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
 
+    def recent_conversation(self, limit: int) -> list[tuple[str, str]]:
+        """The last ``limit`` conversational messages (both directions, reactions
+        excluded) as ``(direction, content)``, OLDEST first — the turns that led
+        up to the present run.  The skill-naming step reads the user's INTENT
+        from these (why the routine exists), not just the demonstration's how
+        (#1658 intent grounding)."""
+        with self._session() as session:
+            rows = list(
+                session.exec(
+                    select(MessageLog)
+                    .where(MessageLog.is_reaction == False)  # noqa: E712
+                    .order_by(MessageLog.timestamp.desc())
+                    .limit(limit)
+                ).all()
+            )
+        return [(row.direction, row.content) for row in reversed(rows)]
+
     def recent_run_outcomes(self, run_target: str, limit: int) -> list[tuple[datetime, str]]:
         """A collector's own most recent completed runs as ``(timestamp, outcome)``,
         newest first — what its previous invocations did, and when (#1569).

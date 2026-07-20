@@ -215,10 +215,37 @@ class Prompt:
         "it's saved automatically, and here is exactly what it captured:\n\n"
         "{skill}\n\n"
         "You demonstrated it on: {demonstrated_on}\n\n"
-        "Tell the user, in your own words, that you've learned this routine: name it "
-        "by what it does generally (not just this one instance), say plainly what it "
-        "does (the steps), and name what you'd need from them to run it again (its "
-        "required parameters). Then offer to set it running on a schedule if they'd like."
+        "Reply to the user now. FIRST answer what they actually asked: report the "
+        "outcome of this round — the value you found and where you stored it — since "
+        "this reply is the only one they receive. THEN tell them, in your own words, "
+        "that you've learned this routine: name it by what it does generally (not "
+        "just this one instance), say plainly what it does (the steps), and name "
+        "what you'd need from them to run it again (its required parameters). Then "
+        "offer to set it running on a schedule if they'd like."
+    )
+
+    # The auto-attach variant (#1687 split 6): the demonstrated round's certified
+    # writes targeted a collection CREATED BY THIS SAME RUN, so the framework
+    # attached the just-learned skill to it — the notice hands the model its one
+    # remaining decision: bind the user's schedule/notify words, or make no call.
+    SKILL_LEARNED_ATTACHED_NARRATION = (
+        "You just learned a reusable skill from what you did in this conversation — "
+        "it's saved automatically, and here is exactly what it captured:\n\n"
+        "{skill}\n\n"
+        "You demonstrated it on: {demonstrated_on}\n\n"
+        "It is already attached to the collection '{collection}' you created this "
+        "round — but it has NO trigger yet, so it will not run on its own.\n\n"
+        "If the user asked for this to recur or to be told about changes, set that "
+        "up FIRST with one call — collection_set(name='{collection}', "
+        'trigger="every <seconds>", notify=<true when they asked to hear about '
+        "it>) — their own words (morning and evening, daily, hourly) are the "
+        "trigger. If they asked for nothing recurring, make no call.\n\n"
+        "Then reply to the user. FIRST answer what they actually asked: report the "
+        "outcome of this round — the value you found and where you stored it — "
+        "since this reply is the only one they receive. THEN tell them, in your "
+        "own words, that you've learned this routine and what will happen next — "
+        "and never claim a schedule exists unless your collection_set call "
+        "confirmed it."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

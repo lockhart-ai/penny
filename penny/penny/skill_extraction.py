@@ -58,6 +58,7 @@ from penny.database.memory.types import DedupThresholds
 from penny.database.models import PromptLog, Skill
 from penny.database.skill_store import steps_from_json
 from penny.database.skills import (
+    SCOPED_WRITE_TOOLS,
     DistillInput,
     SkillDraft,
     SkillParameter,
@@ -65,9 +66,11 @@ from penny.database.skills import (
     SkillSubKind,
     distill_steps,
     render_skill,
+    retarget_writes,
 )
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
+from penny.text_validity import check_extraction_prompt
 from penny.tools.micro_context import MicroContext, SkillLabel
 
 if TYPE_CHECKING:
@@ -93,6 +96,11 @@ WRITE_SHAPED_TOOLS = frozenset(
 # qualifying CONTENT read: a find + write run is a pure write (the storage atom),
 # not a skill.  The qualifying read must be a content read (browse, log_read,
 # collection_read_latest, read_similar, collection_get, entry reads).
+# Preceding conversation turns fed to the naming step — the user's instigating
+# ask ('can you watch …') usually sits a turn or two before the demonstration,
+# and the skill's name/description must carry that INTENT (#1658).
+_NAMING_CONVERSATION_TURNS = 6
+
 ORIENTATION_TOOLS = frozenset({"find", "skill_read", "memory_metadata", "collection_catalog"})
 
 # The resolve-by-meaning verb (and its arg): its ``query`` phrases seed the run-end
@@ -145,9 +153,43 @@ class NoExtraction(BaseModel):
 SkillExtractionResult = SkillExtracted | NoExtraction
 
 
+class AutoAttached(BaseModel):
+    """The framework attached the just-learned skill to the collection the
+    demonstrated round created: which collection, and the demonstrated parameter
+    bindings the render used.  The join is a ledger READ (the round's certified
+    write target + the collection's ``created_by_run_id`` stamp), so python-space
+    owns it — the model is told what happened, never asked to reason through the
+    create→learn→attach dependency chain."""
+
+    collection: str
+    params: dict[str, str]
+
+
 def _runnable_steps(projection: RunProjection) -> list[RunProjectionStep]:
     """Every non-``done`` step of the run (the demonstration's real tool calls)."""
     return [step for step in projection.steps if step.call.name != _DONE_TOOL]
+
+
+def _leaf_at(arguments: dict, path: list[str | int]):
+    """The argument leaf a substitution's JSON path addresses (the step carries the
+    call's VERBATIM arguments, so the demonstrated value is still in place)."""
+    node = arguments
+    for key in path:
+        node = node[key]
+    return node
+
+
+def _demonstrated_params(steps: list[SkillStep]) -> dict[str, str]:
+    """Each parameter's DEMONSTRATED value, read off the steps' verbatim arguments
+    by the substitution paths — the honest auto-attach binding: the instantiated
+    watch watches exactly what the demonstration used (shared-leaf parameters
+    collapse to one value by construction)."""
+    params: dict[str, str] = {}
+    for step in steps:
+        for sub in step.substitutions:
+            if sub.kind == SkillSubKind.HOLE and sub.parameter is not None:
+                params[sub.parameter] = str(_leaf_at(step.arguments, sub.path))
+    return params
 
 
 def _certified_steps(
@@ -226,6 +268,75 @@ class SkillExtractor:
         draft = await self._draft(run_id, projection, certified)
         return await self._persist(draft, projection.origin_message)
 
+    async def attach_to_created_collection(self, skill: Skill, run_id: str) -> AutoAttached | None:
+        """Auto-attach: when the demonstrated round's certified writes targeted a
+        collection CREATED BY THIS SAME RUN, attach the skill framework-side —
+        the skill↔collection join is a ledger read, not a model decision.
+
+        The demonstrated parameter values bind the render (the watch watches what
+        was demonstrated); the job stays TRIGGER-LESS, so nothing dispatches until
+        the model binds the user's schedule words via ``collection_set`` (the
+        dispatcher skips a collection with no ``collector_interval_seconds``).
+        ``None`` = no qualifying target (the round wrote into a pre-existing
+        collection, or into several new ones) — the plain narration frame applies.
+        The mutation rides the store chokepoint, so it is ledger-recorded, never
+        silent."""
+        steps = steps_from_json(skill.steps)
+        target = self._created_write_target(steps, run_id)
+        if target is None:
+            return None
+        params = _demonstrated_params(steps)
+        prompt = render_skill(retarget_writes(steps, target), params)
+        if (too_short := check_extraction_prompt(prompt)) is not None:
+            logger.warning("Auto-attach of '%s' to '%s' refused: %s", skill.name, target, too_short)
+            return None
+        self._db.memories.update_collection_metadata(
+            target,
+            extraction_prompt=prompt,
+            skill_name=skill.name,
+            skill_params=params,
+            run_id=run_id,
+            **await self._description_backfill(target, skill),
+        )
+        logger.info("Auto-attached skill '%s' to collection '%s'", skill.name, target)
+        return AutoAttached(collection=target, params=params)
+
+    async def _description_backfill(self, target: str, skill: Skill) -> dict:
+        """An auto-created collection carries a placeholder description (the write
+        tool's ``auto-created to hold …`` stamp) — the skill's GENERIC description
+        is the real meaning anchor, so the attach backfills it (embedding included).
+        An explicitly-described collection is never clobbered."""
+        row = self._db.memories.get(target)
+        if row is None or not row.description.startswith(
+            PennyConstants.AUTO_CREATED_DESCRIPTION_PREFIX
+        ):
+            return {}
+        return {
+            "description": skill.description,
+            "description_embedding": await embed_text(self._embedding, skill.description),
+        }
+
+    def _created_write_target(self, steps: list[SkillStep], run_id: str) -> str | None:
+        """The single collection the round's certified scoped writes targeted that
+        THIS run also created (``created_by_run_id``, #1566).  Several distinct
+        new targets → ambiguous, no auto-attach (a skill renders into ONE
+        collection's prompt)."""
+        names = {
+            str(step.arguments["memory"])
+            for step in steps
+            if step.tool in SCOPED_WRITE_TOOLS and "memory" in step.arguments
+        }
+        created = {
+            name
+            for name in names
+            if (row := self._db.memories.get(name)) is not None
+            and row.created_by_run_id == run_id
+            and not row.archived
+        }
+        if len(created) != 1:
+            return None
+        return next(iter(created))
+
     # ── Qualify (all structural) ──────────────────────────────────────────────
 
     def _disqualify(
@@ -300,7 +411,8 @@ class SkillExtractor:
         semantic name/description per parameter (poison-screened + one reroll, its own
         ledger attribution).  ``None`` on any failure — the caller falls back to the
         slug + arg-derived names."""
-        content = _naming_content(steps, parameters, projection)
+        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
+        content = _naming_content(steps, parameters, projection, conversation)
         return await self._micro_context.label_skill(content, run_target=self._agent_name)
 
     @staticmethod
@@ -374,7 +486,10 @@ class SkillExtractor:
 
 
 def _naming_content(
-    steps: list[SkillStep], parameters: list[SkillParameter], projection: RunProjection
+    steps: list[SkillStep],
+    parameters: list[SkillParameter],
+    projection: RunProjection,
+    conversation: list[tuple[str, str]],
 ) -> str:
     """The naming micro-context's content (#1665/#1668): the numbered recipe
     (parameters as ``{variables}``, so the model treats them as user-supplied), the
@@ -382,7 +497,14 @@ def _naming_content(
     generic task phrases the step-1 doctrine sends to find — a naming signal), and the
     parameter list — each parameter's current arg-derived name, demonstrated value,
     and the arg site(s) it fills — so the model can relabel each semantically."""
-    parts = [
+    parts = []
+    if conversation:
+        turns = "\n".join(
+            f"{'user' if direction == 'incoming' else 'penny'}: {content}"
+            for direction, content in conversation
+        )
+        parts.append(f"Conversation that led to the construction of this routine:\n{turns}")
+    parts += [
         f"Routine steps:\n{render_skill(steps)}",
         f"First demonstrated by this message:\n{projection.origin_message}",
     ]
