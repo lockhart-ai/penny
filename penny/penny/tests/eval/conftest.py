@@ -67,19 +67,34 @@ class Check:
     """One graded expectation of a sample — an expected tool call or an outcome.
 
     A scorer can return a list of these instead of a list of failure strings; the sample
-    then scores as (checks that passed) / (checks total) — partial credit — instead of
+    then scores as (checks that passed) / (checks that applied) — partial credit — instead of
     all-or-nothing.  ``label`` names the expectation so the report shows exactly which
     check missed (e.g. "turn-1 memory_metadata called").
 
     ``scored=False`` marks an ADVISORY check — flavour: it renders in the report
     (✅/❌ beside its row or in the footer) but is excluded from the sample's score.
     The state-is-core doctrine uses this split: end DB state is the pass/fail;
-    call-sequencing checks annotate how the state came to be."""
+    call-sequencing checks annotate how the state came to be.
+
+    ``rationale`` is the optional observed-vs-expected note rendered beside the outcome
+    ("expected 3 reads, saw 1"), so a ❌ is never bare.  ``ignored`` is the NOT-APPLICABLE
+    third state — this sample's branch never exercised the check — excluded from the graded
+    denominator (counts as neither pass nor fail), yet still rendered (as ➖) so a skipped
+    expectation reads as skipped, not forgotten.  Build one with ``Check.na(...)``."""
 
     label: str
     ok: bool
     anchor: str | None = None  # substring of the transcript row this check marks (None = no row)
     scored: bool = True  # False = advisory flavour, visible in the report, not in the score
+    rationale: str | None = None  # observed-vs-expected note rendered beside the outcome
+    ignored: bool = False  # not-applicable: rendered (➖) but out of the graded denominator
+
+    @classmethod
+    def na(cls, label: str, *, rationale: str | None = None, anchor: str | None = None) -> Check:
+        """A not-applicable check — this sample's branch didn't run, so it's excluded from the
+        graded denominator (neither pass nor fail).  Still rendered (➖) so a skipped expectation
+        reads as skipped, not forgotten."""
+        return cls(label=label, ok=True, anchor=anchor, rationale=rationale, ignored=True)
 
 
 @dataclass
@@ -108,13 +123,24 @@ class SampleResult:
     def graded(cls, checks: list[Check]) -> SampleResult:
         if not checks:
             return cls(1.0, [], 1)
-        # Score over the SCORED checks only (advisory flavour renders but doesn't
-        # count); an all-advisory list degenerates to scoring everything.
-        scored = [check for check in checks if check.scored] or checks
+        # NOT-APPLICABLE checks (``ignored``) never count; among the rest, score over the
+        # SCORED ones only (advisory flavour renders but doesn't count), with an all-advisory
+        # list degenerating to scoring everything applicable.  Every check applied to this
+        # sample was ignored → a vacuous pass (nothing to grade).
+        applicable = [check for check in checks if not check.ignored]
+        scored = [check for check in applicable if check.scored] or applicable
+        if not scored:
+            return cls(1.0, [], 0, list(checks))
         passed = sum(1 for check in scored if check.ok)
-        return cls(
-            passed / len(scored), [c.label for c in checks if not c.ok], len(scored), list(checks)
-        )
+        failed = [_check_failure_label(check) for check in applicable if not check.ok]
+        return cls(passed / len(scored), failed, len(scored), list(checks))
+
+
+def _check_failure_label(check: Check) -> str:
+    """A failed check's line for the RESULT-line per-sample detail: its label, plus the
+    observed-vs-expected rationale when one was given (so it reads "label — expected 3, saw 1"
+    instead of a bare label)."""
+    return f"{check.label} — {check.rationale}" if check.rationale else check.label
 
 
 @dataclass
@@ -249,6 +275,14 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     )
 
 
+def tool_not_called(db: Database, tool_name: str) -> bool:
+    """The negative-constraint counterpart to ``tool_was_called``: True when the model did NOT
+    invoke ``tool_name`` this run.  Lets a scorer state an avoided-action expectation directly —
+    ``Check("no write on a discuss turn", tool_not_called(db, "collection_write"))`` — instead of
+    hand-negating ``tool_was_called`` at each call site."""
+    return not tool_was_called(db, tool_name)
+
+
 def count_tool_calls(db: Database, tool_name: str) -> int:
     """How many times the model invoked ``tool_name`` this run.
 
@@ -278,20 +312,55 @@ def _iter_prompt_messages(db: Database):
         yield from (json.loads(row.messages) if row.messages else [])
 
 
-def tool_call_rejected(db: Database, tool_name: str) -> bool:
-    """Did any call to ``tool_name`` come back REJECTED (arg-validation / failure)?
+# Tool-result fragments that mean a call the model made was refused.  ``tool_call_rejected``
+# reads the two failure-narration frames (tools/base.py: the generic failure + arg-validation);
+# ``_RECOVERY_FRAMES`` widens that to the framework REFUSAL narrations too (a call rejected
+# before it ran, a duplicate not repeated, a missing / timed-out / errored tool) — the "did the
+# run recover from something?" set the fragile-pass flag reads.
+_REJECTION_FRAMES = ("arguments were wrong", "didn't work")
+_RECOVERY_FRAMES = (
+    *_REJECTION_FRAMES,
+    "rejected before it could run",  # Prompt.REJECTED_CALL_NARRATION (e.g. a premature done())
+    "wasn't repeated",  # Prompt.DUPLICATE_CALL_NARRATION
+    "there's no such tool",  # FRAMEWORK_NARRATION_NOT_FOUND
+    "it timed out",  # FRAMEWORK_NARRATION_TIMEOUT
+    "it errored",  # FRAMEWORK_NARRATION_EXCEPTION
+)
+
+
+def tool_call_rejected(db: Database, tool_name: str | None = None) -> bool:
+    """Did a call to ``tool_name`` — or ANY tool, when ``tool_name`` is None — come back REJECTED
+    (arg-validation / failure)?
 
     The process-fidelity counterpart to ``tool_was_called``: a graded contract that checks
     the final STATE can still pass when an intermediate call was rejected and a *later* turn
     happened to re-land the content — this catches the rejected turn (the tool-result failure
-    frame ``You tried to use `<tool>` but …``)."""
+    frame ``You tried to use `<tool>` but …``).  With no ``tool_name`` it's the run-wide
+    "was any tool refused?" probe."""
     for message in _iter_prompt_messages(db):
         content = message.get("content") or ""
-        if (
-            message.get("role") == "tool"
-            and f"`{tool_name}`" in content
-            and ("arguments were wrong" in content or "didn't work" in content)
-        ):
+        if message.get("role") != "tool":
+            continue
+        if tool_name is not None and f"`{tool_name}`" not in content:
+            continue
+        if any(frame in content for frame in _REJECTION_FRAMES):
+            return True
+    return False
+
+
+def sample_is_fragile(db: Database) -> bool:
+    """Did the run reach its result SHAKILY — through a rejected / refused / recovered tool call?
+
+    Scans the persisted promptlog for any recovery frame (a tool-result failure, a framework
+    refusal narration — the ``_RECOVERY_FRAMES`` set).  A green sample that only got there after
+    the loop refused a call and it retried is 'passed, fragile' in the report: real, but not
+    robust.  Derived from the same promptlog primitives as ``tool_call_rejected``, not a new
+    model judgment."""
+    for message in _iter_prompt_messages(db):
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content") or ""
+        if any(frame in content for frame in _RECOVERY_FRAMES):
             return True
     return False
 
@@ -612,6 +681,11 @@ def _assert_threshold(
     """
     total = len(results)
     mean = sum(result.score for result in results) / total if total else 0.0
+    all_pass = sum(1 for result in results if result.passed)
+    # Dual metric: the MEAN of per-sample scores (partial credit) is what the case gates on;
+    # the all-pass count (samples that passed EVERY applicable check — ``SampleResult.passed``)
+    # is the strict companion beside it, so a mean propped up by partial credit is visible.
+    metric = f"mean {mean:.2f} · all-pass {all_pass}/{total}"
     # Per-sample detail: the score (1.0/0.0 for binary, the check fraction for graded) and
     # what missed — for every sample that wasn't perfect.
     detail = "\n".join(
@@ -621,11 +695,11 @@ def _assert_threshold(
         if result.failed
     )
     if min_pass_rate is None:
-        print(f"\nRESULT [{case_id}] mean {mean:.2f} across {total} samples (report-only)")
+        print(f"\nRESULT [{case_id}] {metric} across {total} samples (report-only)")
         if detail:
             print(detail)
         return
-    print(f"\nRESULT [{case_id}] mean {mean:.2f} across {total} samples (need >={min_pass_rate})")
+    print(f"\nRESULT [{case_id}] {metric} across {total} samples (need mean >={min_pass_rate})")
     if mean < min_pass_rate:
         pytest.fail(f"{case_id}: mean {mean:.2f} < {min_pass_rate}:\n{detail}")
 
@@ -728,6 +802,13 @@ def _anchor_hits(needle: str, content: str) -> bool:
     return "collection_set(" in content and needle in content
 
 
+def _check_mark(check: Check) -> str:
+    """The report marker for a check: ➖ when not-applicable (``ignored``), else ✅ / ❌."""
+    if check.ignored:
+        return "➖"
+    return "✅" if check.ok else "❌"
+
+
 def _place_checks(
     checks: list[Check], turns: list[tuple[str, str]]
 ) -> tuple[dict[int, str], list[Check]]:
@@ -759,7 +840,7 @@ def _place_checks(
         if hit is None:
             leftover.append(check)
         else:
-            marks[hit] = marks.get(hit, "") + ("✅" if check.ok else "❌")
+            marks[hit] = marks.get(hit, "") + _check_mark(check)
     return marks, leftover
 
 
@@ -772,6 +853,49 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
     base = Path(report_dir) if report_dir else tmp_path
     Path(base).mkdir(parents=True, exist_ok=True)
     return str(Path(base) / f"{case_id}-{sample_index}.db")
+
+
+def _sample_verdict(result: SampleResult, *, fragile: bool) -> str:
+    """The sample's header verdict.  Binary → ``✅ PASS`` / ``❌ FAIL``; graded → ``N/M checks``
+    (M = the applicable scored checks — advisory + not-applicable excluded) with a ``· K n/a``
+    tail when any check was not-applicable.  A passed-but-shaky sample (a rejected/recovered tool
+    call in the run) gets a ``· fragile`` tail, so green-via-recovery reads distinctly from clean
+    green."""
+    if not result.checks:
+        core = "✅ PASS" if result.passed else "❌ FAIL"
+    else:
+        passed_checks = round(result.score * result.total)
+        core = f"{'✅' if result.passed else '❌'} {passed_checks}/{result.total} checks"
+        na = sum(1 for check in result.checks if check.ignored)
+        if na:
+            core += f" · {na} n/a"
+    return f"{core} · fragile" if fragile else core
+
+
+def _legend_entry(check: Check) -> str:
+    """One legend line for a check: its marker, label, and the observed-vs-expected rationale
+    when one was given."""
+    tail = f" — {check.rationale}" if check.rationale else ""
+    return f"{_check_mark(check)} {check.label}{tail}"
+
+
+def _report_legend(result: SampleResult, leftover: list[Check]) -> str:
+    """The checks legend below the transcript table.  Names every check that needs words — one
+    with no row (a whole-run / missing-action check), a failed one, a not-applicable one, or any
+    carrying a rationale — as ``<mark> <label> — <rationale>``.  A placed passing check with no
+    rationale is a row-mark only, so a clean pass stays uncluttered.  Binary samples fall back to
+    their failure strings."""
+    if not result.checks:
+        return f"**Failed:** {'; '.join(result.failed)}" if result.failed else ""
+    leftover_ids = {id(check) for check in leftover}
+    spelled = [
+        check
+        for check in result.checks
+        if id(check) in leftover_ids or check.ignored or not check.ok or check.rationale
+    ]
+    if not spelled:
+        return ""
+    return f"_checks: {' · '.join(_legend_entry(check) for check in spelled)}_"
 
 
 def _write_sample_report(
@@ -788,12 +912,8 @@ def _write_sample_report(
         return
     with Session(db.engine) as session:
         rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
-    passed_checks = round(result.score * result.total)
-    verdict = (
-        ("✅ PASS" if result.passed else "❌ FAIL")
-        if result.total == 1
-        else f"{'✅' if result.passed else '❌'} {passed_checks}/{result.total} checks"
-    )
+    fragile = result.passed and sample_is_fragile(db)
+    verdict = _sample_verdict(result, fragile=fragile)
     lines = [
         f"#### sample {sample_index + 1} — {verdict}",
         "",
@@ -805,11 +925,9 @@ def _write_sample_report(
     for index, (actor, content) in enumerate(turns, start=1):
         mark = f" {marks[index - 1]}" if index - 1 in marks else ""
         lines.append(f"| {index} | {actor}{mark} | {_report_cell(content)} |")
-    if result.checks and leftover:  # checks with no single row (whole-run / missing action)
-        legend = " · ".join(f"{'✅' if check.ok else '❌'} {check.label}" for check in leftover)
-        lines += ["", f"_whole-run / missing-action checks: {legend}_"]
-    elif not result.checks and result.failed:  # binary sample: the failure reasons
-        lines += ["", f"**Failed:** {'; '.join(result.failed)}"]
+    legend = _report_legend(result, leftover)  # rationale + ignored + failed, beyond the row marks
+    if legend:
+        lines += ["", legend]
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:

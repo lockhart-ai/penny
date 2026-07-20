@@ -539,11 +539,24 @@ exercise read-failure honesty (a cycle that browsed a lot, read nothing, and mus
 not confabulate a write/success at `done()`). See `docs/self-improvement-loop.md`.
 
 **Scoring is graded, not binary.** A chat scorer returns either failure strings (binary:
-empty = pass) or a list of `Check`s (partial credit: the sample scores checks-passed/total;
+empty = pass) or a list of `Check`s (partial credit: the sample scores passed / applicable;
 the case metric is the mean). Prefer graded `Check`s for a multi-step contract — each
 expected tool call and outcome is its own named check, so the report shows exactly which
 expectation missed (e.g. a discuss turn answered from ambient recall dings the
-"memory_metadata called" check instead of hiding behind a green PASS).
+"memory_metadata called" check instead of hiding behind a green PASS). A `Check` carries
+three axes beyond its `ok`: `scored=False` (advisory flavour — renders but out of the score),
+an optional `rationale` (the observed-vs-expected note rendered beside the outcome —
+"expected 3 reads, saw 1" instead of a bare ❌), and the not-applicable third state
+`Check.na(...)` (`ignored`, rendered as ➖) — excluded from the graded denominator when a
+sample's branch never exercised it, neither pass nor fail. `tool_not_called(db, name)` is the
+negative-constraint counterpart to `tool_was_called` for avoided-action checks.
+
+**The RESULT line reports both metrics; a green-via-recovery sample renders "fragile."** Each
+case prints `mean … · all-pass K/N` — the partial-credit mean (what the case gates on) beside
+the strict all-pass count (samples that passed EVERY applicable check). In the per-sample
+report a sample that passed but only after the loop refused/recovered a tool call (derived from
+the promptlog via `sample_is_fragile` / `tool_call_rejected`, no new model judgment) is marked
+`✅ PASS · fragile`, so real-but-shaky reads distinctly from clean green.
 
 **Presenting eval runs on a PR (the report-as-comment process).** The harness emits a
 verbatim per-case markdown report when `EVAL_REPORT_DIR` is set (`make eval` passes it
