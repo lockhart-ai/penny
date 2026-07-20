@@ -14,7 +14,7 @@ retired tool produced, now fired by the run finishing instead of a model call.
   acts).  A purely-read run (answering a question) and a purely-write run ('remember
   this' — the storage atom) do NOT qualify; failed calls are FILTERED, so a run whose
   only write failed is a pure read and is excluded.  Lifecycle calls a demo made
-  (e.g. ``collection_create`` to set up the container) are dropped like orientation
+  (e.g. ``collection_set`` to set up the container) are dropped like orientation
   calls — a skill renders into a collector prompt, so only collector-runnable steps
   belong in it, and they count for nothing in the taxonomy (#1668).
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
@@ -161,7 +161,7 @@ def _certified_steps(
     it is not a registry-navigation verb (``ORIENTATION_TOOLS`` — dropped from the recipe
     and not counted as the qualifying read), AND its tool is one a COLLECTOR can run
     (``collector_surface`` — a skill renders into a collector prompt, so a lifecycle call
-    the demo made mid-run, e.g. ``collection_create`` to set up the container, is dropped
+    the demo made mid-run, e.g. ``collection_set`` to set up the container, is dropped
     from the recipe; it's not a step a collector could run and counts for nothing in the
     taxonomy).  So certified-by-execution + routine-only + runnable hold by construction."""
     return [

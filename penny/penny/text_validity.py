@@ -356,7 +356,7 @@ def check_extraction_prompt(prompt: str | None) -> str | None:
     return (
         f"extraction_prompt is too short ({len(prompt)} chars — minimum "
         f"{EXTRACTION_PROMPT_MIN_CHARS}).  Provide a full numbered-step prompt "
-        f"(see the collection_create description for the required shape)."
+        f"(see the collection_set description for the required shape)."
     )
 
 

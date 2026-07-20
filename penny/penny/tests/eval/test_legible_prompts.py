@@ -8,7 +8,7 @@ rest of #1528 (and the #1471 teach-by-example rework) rides on:
   * **Legibility** (prompt -> NL): asked "what does this collection do?", Penny reads
     the recipe (``memory_metadata``) and describes the ORDERED tool families in plain
     words, without inventing a step the recipe doesn't have.
-  * **Editing + echo** (NL -> prompt): an NL edit lands as a valid ``collection_update``
+  * **Editing + echo** (NL -> prompt): an NL edit lands as a valid ``collection_set``
     (the persisted recipe changes, only real tools) AND Penny echoes the change back.
   * **No-overreach**: a casual mention (no imperative) must not silently rewrite a recipe.
   * **Discuss then adjust** (multi-turn, the full loop): the user and Penny discuss the
@@ -154,11 +154,11 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
     print(f"\n[EDIT stored] {stored!r}\n[EDIT reply] {reply.strip()[:240]!r}")
     return [
         Check(
-            "applied the edit (collection_update called)",
-            tool_was_called(db, "collection_update"),
-            anchor="collection_update(",
+            "applied the edit (collection_set called)",
+            tool_was_called(db, "collection_set"),
+            anchor="collection_set(",
         ),
-        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
         Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
         Check("recipe changed from the seed", stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()),
         Check("no fictitious tool persisted", "extract_text" not in stored),
@@ -184,7 +184,7 @@ async def test_editing_lands_and_echoes(chat_eval: ChatEval) -> None:
 # The core of #1528: the user and Penny DISCUSS a collector's behaviour in plain words,
 # then the user ADJUSTS it in plain words — across turns, so the edit rides on the prior
 # discussion (Penny sees turn 1 via the DB history).  Turn 1 is legibility (describe the
-# recipe); turn 2 is editing (an NL edit that must still land as a real collection_update
+# recipe); turn 2 is editing (an NL edit that must still land as a real collection_set
 # and echo).  Graded per expected tool call: BOTH turns should read the recipe (the discuss
 # turn to describe it, the adjust turn before editing) — so a correct run calls
 # memory_metadata twice; a sample that answers the discuss turn from ambient recall (no read)
@@ -204,11 +204,11 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
             anchor="memory_metadata(",
         ),
         Check(
-            "applied the edit (collection_update called)",
-            tool_was_called(db, "collection_update"),
-            anchor="collection_update(",
+            "applied the edit (collection_set called)",
+            tool_was_called(db, "collection_set"),
+            anchor="collection_set(",
         ),
-        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
         Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
         Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
         Check("reply echoes the change", _echoes_designer(reply)),
@@ -252,15 +252,15 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
             anchor="memory_metadata(",
         ),
         Check(
-            "applied edits (collection_update called)",
-            tool_was_called(db, "collection_update"),
-            anchor="collection_update(",
+            "applied edits (collection_set called)",
+            tool_was_called(db, "collection_set"),
+            anchor="collection_set(",
         ),
         # Process fidelity: the final-state checks below can pass when an intermediate
-        # collection_update was REJECTED and a *later* turn re-landed the content (the
+        # collection_set was REJECTED and a *later* turn re-landed the content (the
         # rejected-`intent`-param + give-up sample the graded outcome hid).  These two catch
         # the broken turn — the reason we don't merge a scorer that final-state alone fooled.
-        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
         Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
         Check(
             "modify: designer added to collection_write", "designer" in stored, anchor="designer"
@@ -354,14 +354,14 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
             tool_was_called(db, "memory_metadata"),
             anchor="memory_metadata(",
         ),
-        # A round-trip happened only if Penny RE-ENCODED via collection_update — else the recipe
+        # A round-trip happened only if Penny RE-ENCODED via collection_set — else the recipe
         # is the untouched seed and the family checks pass trivially (describe-in-text false pass).
         Check(
-            "re-encoded it (collection_update called)",
-            tool_was_called(db, "collection_update"),
-            anchor="collection_update(",
+            "re-encoded it (collection_set called)",
+            tool_was_called(db, "collection_set"),
+            anchor="collection_set(",
         ),
-        Check("no collection_update rejected", not tool_call_rejected(db, "collection_update")),
+        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
         Check("browse step preserved", browse_i >= 0),
         Check("collection_write step preserved", write_i >= 0),
         Check("done step preserved", done_i >= 0),

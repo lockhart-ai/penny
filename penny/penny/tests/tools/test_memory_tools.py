@@ -52,7 +52,6 @@ from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_TRIGGER_NOTE,
     _REBIND_NO_SKILL,
-    _REINSTANTIATE_CONFLICT,
     _SKILL_GONE,
     CollectionArchiveTool,
     CollectionCatalogTool,
@@ -63,6 +62,7 @@ from penny.tools.memory_tools import (
     CollectionMergeTool,
     CollectionReadLatestTool,
     CollectionReadRandomTool,
+    CollectionSetTool,
     CollectionUnarchiveTool,
     CollectionUpdateTool,
     CollectionWriteTool,
@@ -177,7 +177,7 @@ class _KeyOnlyFailingEmbedClient:
 
 # ── Seeding helpers ───────────────────────────────────────────────────────────
 #
-# ``collection_create`` is now the skill-instantiation front door (#1591): it no
+# ``collection_set`` is now the skill-instantiation front door (#1591): it no
 # longer takes an ``extraction_prompt`` and refuses a near-duplicate.  Tests that
 # only need a collection to EXIST (to exercise writes/reads/mutations/etc.) seed it
 # directly through the store (``_seed_collection``) — the honest, idempotency-free
@@ -417,7 +417,7 @@ class TestCollectionCreateFrontDoor:
             "params.peak: a skill parameter binds one value, but got a list of 2 — pass a "
             "single value per parameter (a one-item list is unwrapped for you; more than "
             "one isn't). Expected shape: params={'<parameter>': '<value>'}. "
-            "Call collection_create(<valid arguments>) again."
+            "Call collection_set(<valid arguments>) again."
         )
         assert db.memories.get("multi-peak") is None
 
@@ -439,7 +439,7 @@ class TestCollectionCreateFrontDoor:
             "Can't instantiate 'Watch elevation': these required parameters aren't bound:\n"
             "  - peak\n"
             "Pass them in params (e.g. params={'peak': <value>}), then call "
-            "collection_create again."
+            "collection_set again."
         )
         assert db.memories.get("no-peak") is None
 
@@ -448,7 +448,7 @@ class TestCollectionCreateFrontDoor:
         """A skill query matching nothing returns the reshaped #1471/#1629/#1631
         elicitation — it NARRATES the two-step teach bootstrap (set up the container →
         walk me through once, extracting ONE value → learned automatically → attach
-        via collection_update), asserted whole."""
+        via collection_set), asserted whole."""
         db = _make_db(tmp_path)
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -460,19 +460,23 @@ class TestCollectionCreateFrontDoor:
         assert result.success is False
         assert result.message == (
             "I don't know how to \"xyzzy flibbertigibbet quux\" yet — there's no skill for "
-            "it, so there's nothing to instantiate. Here's how we teach one:\n"
-            "1. Set up the container first: collection_create(name=<slug>, "
-            'description="xyzzy flibbertigibbet quux") with NO skill — a storage-only '
-            "collection nothing runs against yet.\n"
-            "2. Walk me through getting the data ONCE, here in chat, so I actually do it: "
-            "browse, extract just the ONE value you want watched (pull out only the price, "
-            "not a whole name+hook+price blob — a multi-field blob changes whenever any "
-            "part does and would false-alarm every cycle), and collection_write that value "
-            "into the collection.\n"
-            "3. That's the save step — I learn the routine automatically as a skill from "
-            "what we just did (no separate command).\n"
-            "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
-            'skill=<title>, params={…}, trigger="every <seconds>", notify=<true/false>).'
+            "it, so there's nothing to instantiate. No schedule can be set up before the "
+            "routine is learned. Two cases:\n"
+            "a. The user already told you what one round needs — where to look, what to "
+            "pull out, what to keep — then DO IT NOW, in this turn: browse, extract just "
+            "the ONE value they want watched (only the price, not a whole name+hook+price blob — "
+            "a multi-field blob changes whenever any part does and would false-alarm every "
+            "cycle), and collection_write what you actually found — storage is created "
+            "for you if it doesn't exist.\n"
+            "b. They haven't — reply to the user now, no more tool calls this turn: tell "
+            "them you'll learn it from one complete pass, and ask for the whole routine "
+            "in ONE message (where to look, what to pull out, what to keep), modelling "
+            "the example from what they already said. When it arrives, run case a.\n"
+            "Either way the routine is learned automatically as a skill from that round "
+            "— a learned notice will tell you the moment it exists; then attach it and "
+            "set any schedule or notify they asked for in ONE call: "
+            "collection_set(name=<the collection>, skill=<its name>, trigger=..., "
+            "notify=...)."
         )
         assert db.memories.get("mystery") is None
 
@@ -493,7 +497,7 @@ class TestCollectionCreateFrontDoor:
             'I know a few skills close to "watch elevation save" — I won\'t guess which '
             "you mean:\n"
             "1. Watch elevation — watch a peak's elevation and save it\n"
-            "To use one, call collection_create again with skill='<its exact name>'. If "
+            "To use one, call collection_set again with skill='<its exact name>'. If "
             "none of these is the process you mean, walk me through it once and I'll learn "
             "it as a new skill."
         )
@@ -518,8 +522,8 @@ class TestCollectionCreateFrontDoor:
             "Already have a collection for this: 'jacket-price' (active) — it covers the "
             "same thing, so I didn't create a second one. Reuse it: read it with "
             "collection_read_latest('jacket-price'), or adjust it with "
-            "collection_update(name='jacket-price', ...). If this really is a distinct "
-            "task, create it deliberately with collection_create(..., create_anyway=true)."
+            "collection_set(name='jacket-price', ...). If this really is a distinct "
+            "task, give it a clearly different name and description and set it up again."
         )
         assert db.memories.get("jacket-monitor") is None
 
@@ -548,26 +552,8 @@ class TestCollectionCreateFrontDoor:
             "There's an archived collection for this: 'jacket-price' (archived " in result.message
         )
         assert "collection_unarchive('jacket-price')" in result.message
-        assert "create_anyway=true" in result.message
+        assert "clearly different name and description" in result.message
         assert db.memories.get("jacket-monitor") is None
-
-    @pytest.mark.asyncio
-    async def test_create_anyway_overrides_the_duplicate_check(self, tmp_path):
-        """The deliberate override creates the near-duplicate the check would refuse —
-        a distinct, explicit act, never a default."""
-        db = _make_db(tmp_path)
-        _seed_watch_skill(db)
-        _seed_collection(db, name="jacket-price", description="watch the blue jacket price")
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="jacket-monitor",
-            description="watch the blue jacket price",
-            skill=_SKILL_NAME,
-            params={"peak": "jacket"},
-            trigger="every 3600",
-            create_anyway=True,
-        )
-        assert result.success and result.mutated
-        assert db.memories.get("jacket-monitor") is not None
 
     @pytest.mark.asyncio
     async def test_one_shot_once_at_trigger_persists(self, tmp_path):
@@ -802,12 +788,11 @@ class TestCollectionCreateFrontDoor:
 
 
 class TestMinimalSurfaceCensus:
-    """The minimal collection surface (#1631): the model reasons about six concepts —
-    name · description · skill(+params) · trigger · notify · expires_at — plus the
-    reactive ``create_anyway`` (create) and the raw-edit ``extraction_prompt`` escape
-    hatch (update).  Pinned so a future field can't silently creep back onto the
-    surface, and so the dropped shrapnel (``intent`` + the six flat trigger fields)
-    stays gone."""
+    """The minimal collection surface (#1631, tightened by #1570): the model reasons
+    about six concepts — name · description · skill(+params) · trigger · notify ·
+    expires_at.  ``create_anyway`` and the raw-edit ``extraction_prompt`` are GONE
+    (dedup always runs; a routine is only ever a skill render).  Pinned so a future
+    field can't silently creep back onto the surface."""
 
     def test_create_accepts_exactly_the_minimal_fields(self):
         assert set(CollectionCreateArgs.model_fields) == {
@@ -818,12 +803,11 @@ class TestMinimalSurfaceCensus:
             "trigger",
             "notify",
             "expires_at",
-            "create_anyway",
         }
 
     def test_update_accepts_exactly_the_minimal_fields(self):
-        # ``extraction_prompt`` is the retained raw-edit escape hatch (it has a live eval
-        # contract, #1529); ``create_anyway`` is create-only (reactive at birth).
+        # No ``extraction_prompt`` — a routine is only ever a skill render (#1570);
+        # the #1529 raw-edit escape hatch is gone with the authoring channel.
         assert set(CollectionUpdateArgs.model_fields) == {
             "name",
             "description",
@@ -832,7 +816,6 @@ class TestMinimalSurfaceCensus:
             "trigger",
             "notify",
             "expires_at",
-            "extraction_prompt",
         }
 
     def test_dropped_shrapnel_is_gone_from_both_surfaces(self):
@@ -913,49 +896,6 @@ class TestCreateAndList:
         assert "events" in result.message
 
     @pytest.mark.asyncio
-    async def test_update_rejects_short_extraction_prompt(self, tmp_path):
-        db = _make_db(tmp_path)
-        original_prompt = "test fixture extraction prompt"
-        _seed_collection(db, name="notes", extraction_prompt=original_prompt)
-        # The optional extraction_prompt rule on CollectionUpdateArgs validates
-        # only when present, via the pre-execute Tool.run gate.
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
-            name="notes", extraction_prompt="yes"
-        )
-        assert result.success is False
-        assert "extraction_prompt" in result.message
-        assert "too short" in result.message
-        # Update rejected — original prompt preserved unchanged
-        assert db.memories.get("notes").extraction_prompt == original_prompt
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_fictitious_tool_call(self, tmp_path):
-        db = _make_db(tmp_path)
-        original_prompt = (
-            'Collect notes.\n1. browse(["x"])\n'
-            '2. collection_write("notes", entries=[{key: "k", content: "c"}])\n3. done()'
-        )
-        _seed_collection(
-            db,
-            name="notes",
-            description="x",
-            extraction_prompt=original_prompt,
-            collector_interval_seconds=3600,
-        )
-        # A rewrite that introduces a fictitious tool is rejected via the pre-execute
-        # Tool.run gate, and the stored prompt is left untouched.
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
-            name="notes",
-            extraction_prompt=(
-                'Collect notes.\n1. browse(["x"])\n2. extract_text(page)\n'
-                '3. collection_write("notes", entries=[{key: "k", content: "c"}])\n4. done()'
-            ),
-        )
-        assert result.success is False
-        assert "extract_text" in result.message
-        assert db.memories.get("notes").extraction_prompt == original_prompt
-
-    @pytest.mark.asyncio
     async def test_update_treats_blank_fields_as_omitted(self, tmp_path, mock_llm):
         # Models emit "" for an optional field they mean to leave alone (gpt-oss
         # was observed passing extraction_prompt="" alongside a recall change).
@@ -972,7 +912,6 @@ class TestCreateAndList:
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="notes",
-            extraction_prompt="",
             description="   ",
             notify=True,
         )
@@ -1357,7 +1296,7 @@ class TestCollectionUpdateReinstantiation:
 
     @pytest.mark.asyncio
     async def test_plain_update_never_touches_the_prompt_or_provenance(self, tmp_path):
-        """The pinned invariant: a plain collection_update (no skill/params/prompt)
+        """The pinned invariant: a plain collection_set (no skill/params/prompt)
         changes only the metadata it names — the routine and skill provenance are
         untouched."""
         db = _make_db(tmp_path)
@@ -1374,19 +1313,20 @@ class TestCollectionUpdateReinstantiation:
         assert stored.notify is True  # the named change landed
 
     @pytest.mark.asyncio
-    async def test_extraction_prompt_alongside_skill_is_a_conflict(self, tmp_path):
-        """A raw extraction_prompt AND skill/params in one call is refused — the render
-        owns the prompt, so the two can't both win; nothing changes."""
+    async def test_extraction_prompt_is_not_a_model_argument(self, tmp_path):
+        """There is NO extraction_prompt argument on the model surface (#1570 —
+        prompts are only ever renders of demonstrated skills): passing one is an
+        unknown-parameter rejection through the arg envelope, and the stored
+        routine is untouched."""
         db = _make_db(tmp_path)
         await _create_watch_collection(db)
         before = db.memories.get("cinder-elevation").extraction_prompt
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
             name="cinder-elevation",
-            skill=_SKILL_NAME,
             extraction_prompt="a full replacement body long enough to pass the length gate",
         )
         assert result.success is False
-        assert result.message == _REINSTANTIATE_CONFLICT  # whole refusal
+        assert "extraction_prompt" in result.message
         assert db.memories.get("cinder-elevation").extraction_prompt == before
 
     @pytest.mark.asyncio
@@ -1411,10 +1351,11 @@ _INERT_ECHO_LITERAL = (
     "Set up collection 'deals-watch' — storage only, no job yet:\n"
     "  description: track the trail-runner shoe deals\n"
     "  status: inert (no skill attached)\n"
-    "It'll hold whatever gets written to it, but nothing runs against it until you give it "
-    "a skill. Teach me the routine once here in chat — I learn it automatically as a "
-    "skill — then attach it with collection_update(name='deals-watch', skill=<title>, "
-    'trigger="every <seconds>") to make it do something.'
+    "It'll hold whatever gets written to it, but nothing runs against it until it has a "
+    "skill. Next: run one round into it — read the source, then collection_write what "
+    "you actually find into 'deals-watch'; the routine is learned automatically as a "
+    "skill from that round. If you don't have the routine yet, reply and ask the user "
+    "for it in one message — don't guess."
 )
 
 # The demo run's utterance — the {peak} value ('Meridian Trail 3') appears verbatim, so it
@@ -1748,7 +1689,7 @@ class TestTwoStepTeachBootstrap:
 
 
 class TestCollectionUpdateTriggerAtApply:
-    """Trigger + notify are apply-time properties on collection_update (#1629, the full
+    """Trigger + notify are apply-time properties on collection_set (#1629, the full
     union: interval | run_at+max_runs | on_advance + expires_at + notify) — recorded in
     the mutation event's changed fields."""
 
@@ -1909,6 +1850,90 @@ class TestCollectionWritesAndReads:
         # Each rendered entry carries an absolute UTC timestamp so the model can
         # place it in time — read-tool output was previously timeless.
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
+
+    @pytest.mark.asyncio
+    async def test_collection_set_dispatches_on_existence(self, tmp_path, mock_llm):
+        """The ONE idempotent entry point (the code-owner fusion): a missing name
+        CREATES with full birth validation; an existing name UPDATES only the set
+        fields — the model never reasons about which case applies.  Birth without
+        a description, and birth with a hand-written extraction_prompt, are both
+        actionable refusals."""
+        db = _make_db(tmp_path)
+        tool = CollectionSetTool(db, _make_llm_client(mock_llm), run_id="run-set")
+        # Birth needs a description.
+        result = await tool.execute(name="trip-plans")
+        assert result.success is False and "needs a `description`" in result.message
+        # extraction_prompt is not a model argument AT ALL (#1570): unknown-parameter
+        # rejection through the arg envelope, on the set tool like everywhere else.
+        result = await tool.run(
+            name="trip-plans", description="trip planning notes", extraction_prompt="1. x" * 10
+        )
+        assert result.success is False and "extraction_prompt" in result.message
+        # Create path: inert storage, provenance stamped.
+        result = await tool.execute(name="trip-plans", description="trip planning notes")
+        assert result.success is True
+        row = db.memories.get("trip-plans")
+        assert row is not None and row.created_by_run_id == "run-set"
+        assert row.extraction_prompt is None and row.notify is False
+        # Update path: same verb, only the set field changes.
+        result = await tool.execute(name="trip-plans", notify=True)
+        assert result.success is True
+        row = db.memories.get("trip-plans")
+        assert row.notify is True and row.description == "trip planning notes"
+
+    @pytest.mark.asyncio
+    async def test_write_target_materialization(self, tmp_path, mock_llm):
+        """A chat write never dies on a name miss (#1570): a near-certain name
+        variant REDIRECTS — narrated, never silent — (typo/char leg AND the
+        same-intent full-token-containment leg), the ambiguous middle band keeps
+        the did-you-mean refusal, and nothing-close AUTO-CREATES the collection
+        (placeholder description + created_by_run_id stamp).  A collector-scoped
+        write is never materialized."""
+        db = _make_db(tmp_path)
+        _seed_collection(db, name="gear-notes", description="gear notes")
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", run_id="run-materialize"
+        )
+        # Typo (char leg): 'gear-ntoes' → 'gear-notes'.
+        result = await write.execute(
+            memory="gear-ntoes", entries=[{"key": "tent", "content": "3kg tent"}]
+        )
+        assert result.mutated is True
+        assert result.message.startswith(
+            "Note: no collection named 'gear-ntoes' exists — 'gear-notes' is the same "
+            "name in a different spelling, so this write went there.\n"
+        )
+        assert db.memories.get("gear-ntoes") is None
+        assert "tent" in (await CollectionReadLatestTool(db).execute(memory="gear-notes")).message
+        # Same-intent extension (TCR leg): 'gear' ⊂ 'gear-notes'.
+        result = await write.execute(
+            memory="gear", entries=[{"key": "stove", "content": "canister stove"}]
+        )
+        assert result.mutated is True and "'gear-notes'" in result.message
+        assert db.memories.get("gear") is None
+        # Nothing close → auto-create, narrated, provenance stamped.
+        result = await write.execute(
+            memory="trail-recipes", entries=[{"key": "oats", "content": "overnight oats"}]
+        )
+        assert result.mutated is True
+        assert result.message.startswith(
+            "Note: no collection named 'trail-recipes' existed and nothing close "
+            "matched, so it was created (storage only, no job) and your entries "
+            "went in.\n"
+        )
+        row = db.memories.get("trail-recipes")
+        assert row is not None and row.created_by_run_id == "run-materialize"
+        assert row.description == "auto-created to hold 'oats'"
+        assert row.extraction_prompt is None
+        # A collector-scoped write is pinned — no materialization, plain refusal.
+        scoped = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="collector", scope="gear-notes"
+        )
+        result = await scoped.execute(
+            memory="something-else", entries=[{"key": "x", "content": "y"}]
+        )
+        assert result.success is False
+        assert db.memories.get("something-else") is None
 
     @pytest.mark.asyncio
     async def test_write_empty_entries_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
@@ -2453,7 +2478,7 @@ class TestDidYouMeanSuggestions:
             "name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_create(name='aurora-deone') / "
+            "with collection_set(name='aurora-deone') / "
             "log_create(name='aurora-deone') if it should exist."
         )
 
@@ -2469,7 +2494,7 @@ class TestDidYouMeanSuggestions:
             "Memory 'xyzzy' not found. Check the name (it may be misspelled), or find "
             "it by meaning with find(query=<what it's about>) — it resolves your "
             "collections, logs, and skills (archived included) and names the exact tool "
-            "for each. Or create it with collection_create(name='xyzzy') / "
+            "for each. Or create it with collection_set(name='xyzzy') / "
             "log_create(name='xyzzy') if it should exist."
         )
 
@@ -2488,7 +2513,7 @@ class TestDidYouMeanSuggestions:
             "Check the name (it may be misspelled), or find it by meaning with "
             "find(query=<what it's about>) — it resolves your collections, logs, and "
             "skills (archived included) and names the exact tool for each. Or create it "
-            "with collection_create(name='oil changes and tire rotations') / "
+            "with collection_set(name='oil changes and tire rotations') / "
             "log_create(name='oil changes and tire rotations') if it should exist."
         )
 
@@ -3489,8 +3514,7 @@ class TestFactory:
         "exists",
         "find",
         # Lifecycle (shape)
-        "collection_create",
-        "collection_update",
+        "collection_set",
         "collection_merge",
         "collection_archive",
         "collection_unarchive",
@@ -3592,7 +3616,7 @@ class TestScopedFactory:
 
 
 class TestRegistryProvenanceAndLifecycle:
-    """Operational registry (#1566): ``collection_create`` stamps the spawning
+    """Operational registry (#1566): ``collection_set`` stamps the spawning
     message + creating run; ``collection_catalog`` (archived-inclusive) and
     ``memory_metadata`` render a status / expires / created-from-message block —
     so any mechanism can state who asked for it, what created it, whether it's
@@ -3641,7 +3665,7 @@ class TestRegistryProvenanceAndLifecycle:
     @pytest.mark.asyncio
     async def test_create_stamps_run_then_channel_links_message(self, tmp_path):
         db = _make_db(tmp_path)
-        # collection_create stamps only the creating run — the spawning message
+        # collection_set stamps only the creating run — the spawning message
         # isn't known until the run returns, and there's no end condition.
         await self._create(db, "espresso-reviews", created_by_run_id="run-espresso-01")
         row = db.memories.get("espresso-reviews")
@@ -3948,7 +3972,6 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
         description=description,
         skill="find-skill",
         trigger="every 3600",
-        create_anyway=True,
     )
 
 
@@ -3962,7 +3985,7 @@ class TestFind:
         'Found 4 things matching "aurora beacon cascade", best first:\n'
         "1. aurora-watch — active collection: aurora beacon cascade\n"
         "   how to use it: read it with collection_read_latest('aurora-watch'), "
-        "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+        "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
         "with collection_archive('aurora-watch')\n"
         "2. escalate-aurora — live taught skill: aurora beacon cascade gamma\n"
         "   how to use it: read it with skill_read('escalate-aurora'); to change it, "
@@ -4036,7 +4059,7 @@ class TestFind:
             'Found 1 thing matching "aurora beacon cascade":\n'
             "1. solo-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('solo-watch'), "
-            "reconfigure it with collection_update(name='solo-watch', ...), archive it "
+            "reconfigure it with collection_set(name='solo-watch', ...), archive it "
             "with collection_archive('solo-watch')"
         )
 
@@ -4053,11 +4076,11 @@ class TestFind:
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. watch-primary — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('watch-primary'), "
-            "reconfigure it with collection_update(name='watch-primary', ...), archive it "
+            "reconfigure it with collection_set(name='watch-primary', ...), archive it "
             "with collection_archive('watch-primary')\n"
             "2. watch-secondary — active collection: aurora beacon delta\n"
             "   how to use it: read it with collection_read_latest('watch-secondary'), "
-            "reconfigure it with collection_update(name='watch-secondary', ...), archive it "
+            "reconfigure it with collection_set(name='watch-secondary', ...), archive it "
             "with collection_archive('watch-secondary')\n"
             "Ranked by closeness — if one is what you meant, use its addressing above; "
             "otherwise narrow by its exact name."
@@ -4128,7 +4151,7 @@ class TestFind:
             'Found 2 things matching "aurora beacon cascade", best first:\n'
             "1. aurora-watch — active collection: aurora beacon cascade\n"
             "   how to use it: read it with collection_read_latest('aurora-watch'), "
-            "reconfigure it with collection_update(name='aurora-watch', ...), archive it "
+            "reconfigure it with collection_set(name='aurora-watch', ...), archive it "
             "with collection_archive('aurora-watch')\n"
             "2. entry key='aurora beacon' in `aurora-watch` — \"cascade gamma\"\n"
             "   read it: collection_get(memory='aurora-watch', key='aurora beacon')\n"

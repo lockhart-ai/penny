@@ -1,7 +1,7 @@
 """The front door of collector creation (#1591, stage ⑤ of #1562 / epic #1554).
 
 A collection is never authored with an inline procedure any more — it is an
-*instantiation of a skill*: ``collection_create`` takes a ``skill`` (resolved by
+*instantiation of a skill*: ``collection_set`` takes a ``skill`` (resolved by
 name or meaning), binds its parameters from ``params``, renders the skill's
 steps into the numbered TEXT ``extraction_prompt`` the collector runs, and stamps
 it at creation.  This module holds the pure, DB-free pieces of that flow so they
@@ -65,23 +65,28 @@ class SkillResolution(BaseModel):
 
 _AMBIGUOUS_HEADER = 'I know a few skills close to "{query}" — I won\'t guess which you mean:'
 _AMBIGUOUS_TAIL = (
-    "To use one, call collection_create again with skill='<its exact name>'. If none of "
+    "To use one, call collection_set again with skill='<its exact name>'. If none of "
     "these is the process you mean, walk me through it once and I'll learn it as a new skill."
 )
 
 _NO_SKILL_FOUND = (
     "I don't know how to \"{query}\" yet — there's no skill for it, so there's nothing to "
-    "instantiate. Here's how we teach one:\n"
-    '1. Set up the container first: collection_create(name=<slug>, description="{query}") '
-    "with NO skill — a storage-only collection nothing runs against yet.\n"
-    "2. Walk me through getting the data ONCE, here in chat, so I actually do it: browse, "
-    "extract just the ONE value you want watched (pull out only the price, not a whole "
-    "name+hook+price blob — a multi-field blob changes whenever any part does and would "
-    "false-alarm every cycle), and collection_write that value into the collection.\n"
-    "3. That's the save step — I learn the routine automatically as a skill from what we "
-    "just did (no separate command).\n"
-    "4. Attach it to make the collection do the job: collection_update(name=<slug>, "
-    'skill=<title>, params={{…}}, trigger="every <seconds>", notify=<true/false>).'
+    "instantiate. No schedule can be set up before the routine is learned. Two cases:\n"
+    "a. The user already told you what one round needs — where to look, what to pull "
+    "out, what to keep — then DO IT NOW, in this turn: browse, extract just the "
+    "ONE value they want "
+    "watched (only the price, not a whole name+hook+price blob — a multi-field blob "
+    "changes whenever any part does and would false-alarm every cycle), and "
+    "collection_write what you actually found — storage is created for you if it "
+    "doesn't exist.\n"
+    "b. They haven't — reply to the user now, no more tool calls this turn: tell them "
+    "you'll learn it from one complete pass, and ask for the whole routine in ONE "
+    "message (where to look, what to pull out, what to keep), modelling the example "
+    "from what they already said. When it arrives, run case a.\n"
+    "Either way the routine is learned automatically as a skill from that round — a "
+    "learned notice will tell you the moment it exists; then attach it and set any "
+    "schedule or notify they asked for in ONE call: collection_set(name=<the "
+    "collection>, skill=<its name>, trigger=..., notify=...)."
 )
 
 
@@ -104,7 +109,7 @@ def render_no_skill_found(query: str) -> str:
 
 _UNBOUND_PARAMETERS = (
     "Can't instantiate '{skill}': these required parameters aren't bound:\n{listed}\n"
-    "Pass them in params (e.g. params={{{example}}}), then call collection_create again."
+    "Pass them in params (e.g. params={{{example}}}), then call collection_set again."
 )
 
 
@@ -131,14 +136,14 @@ def render_unbound_parameters(skill_name: str, missing: list[SkillParameter]) ->
 _ACTIVE_DUPLICATE = (
     "Already have a collection for this: '{name}' (active) — it covers the same thing, so I "
     "didn't create a second one. Reuse it: read it with collection_read_latest('{name}'), or "
-    "adjust it with collection_update(name='{name}', ...). If this really is a distinct task, "
-    "create it deliberately with collection_create(..., create_anyway=true)."
+    "adjust it with collection_set(name='{name}', ...). If this really is a distinct task, "
+    "give it a clearly different name and description and set it up again."
 )
 
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
-    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, or "
-    "start a fresh one deliberately with collection_create(..., create_anyway=true)."
+    "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, "
+    "or set up a fresh one with a clearly different name and description."
 )
 
 
@@ -487,10 +492,11 @@ _INERT_ECHO = (
     "Set up collection '{name}' — storage only, no job yet:\n"
     "  description: {description}\n"
     "  status: inert (no skill attached)\n"
-    "It'll hold whatever gets written to it, but nothing runs against it until you give it "
-    "a skill. Teach me the routine once here in chat — I learn it automatically as a "
-    "skill — then attach it with collection_update(name='{name}', skill=<title>, "
-    'trigger="every <seconds>") to make it do something.'
+    "It'll hold whatever gets written to it, but nothing runs against it until it has a "
+    "skill. Next: run one round into it — read the source, then collection_write what "
+    "you actually find into '{name}'; the routine is learned automatically as a skill "
+    "from that round. If you don't have the routine yet, reply and ask the user for it "
+    "in one message — don't guess."
 )
 
 
@@ -498,7 +504,7 @@ def render_inert_echo(row: MemoryRow) -> str:
     """The skill-less creation echo (#1629): a collection with no ``extraction_prompt``
     is INERT — a container that holds entries but has no job, so it never dispatches.
     The echo is honest about that (storage only, no skill) and names the two-step
-    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_update``)
+    bootstrap that gives it a job (teach a skill, then adopt it via ``collection_set``)
     — never claiming a routine that doesn't exist (visible degradation over silent
     success)."""
     return _INERT_ECHO.format(name=row.name, description=row.description)

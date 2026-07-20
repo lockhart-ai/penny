@@ -5,7 +5,7 @@ distilled deterministically from a qualifying chat run's own ledger at run end
 (``penny.skill_extraction``), certified-by-execution with provenance-inferred
 parameters.
 The model's only skill actions are resolve (``find``), READ (``skill_read``, here),
-and instantiate/attach (``collection_create(skill=…)`` / ``collection_update(skill=…)``).
+and instantiate/attach (``collection_set(skill=…)`` / ``collection_set(skill=…)``).
 ``skill_read`` renders the versionless registry; ``render_skill_full`` is the shared
 whole-skill render (the read surface AND the run-end narration frame use it).
 """
