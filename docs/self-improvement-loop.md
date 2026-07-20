@@ -51,6 +51,39 @@ Whole-system behavioural goals (chat style, identity, the skills collection)
 are not collections and are out of scope here — that's a deliberate boundary,
 not an oversight.
 
+## Running an eval iteration on a live PR (the protocol)
+
+An eval iteration is not a private local loop that publishes a finished result —
+it **runs on a live PR from the get-go**. The PR is opened with (or before) the
+first run, and **every run posts its verbatim report as a new PR comment** —
+never editing the PR body, never overwriting a prior comment. The comment stream
+**is** the durable record of the iteration:
+
+- reports are inspected as **GitHub markdown** (rendered, collapsible, linkable),
+  which reads far better than a local `<case>.md` file;
+- the sequence of comments preserves each round's **before/after** — the whole
+  review trail, not just the latest state;
+- when the reviewer's feedback arrives over chat, that feedback **is** the PR
+  review, and each round is mirrored into a comment (the feedback → the change →
+  the result → the transcript).
+
+The report each run posts follows one format contract, **`docs/eval-report-format.md`**:
+a manifest header (commit · model · config · N · the required **lever** — the
+run's hypothesis), a dual RESULT line (mean-of-scores + all-pass rate), REGRESSED
+marks on checks that flipped vs the prior run, "passed, fragile" flags,
+failure-cause/pathology counts, check rationales, and thinking at failed/regressed
+turns in collapsed `<details>`. Raw JSONL artifacts, archives, and per-sample DBs
+stay **local** — the comment carries the evaluation's key points, not the bulk.
+
+The through-line the format serves:
+
+> **Manifest** says what changed going in → **check-diff** says what regressed
+> coming out → **thinking at regressed turns** says why → **the PR comment stream**
+> keeps the whole iteration inspectable and durable.
+
+The mechanics of opening the PR, minting the token, and posting each comment are
+in **`docs/agent-task-workflow.md` §4** (this is the *why*; that is the *how*).
+
 ## Why this rests on eval
 
 "Penny tunes her own prompts" is only real if there's an **error signal**.
