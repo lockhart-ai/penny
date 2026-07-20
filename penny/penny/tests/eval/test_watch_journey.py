@@ -22,10 +22,23 @@ skill authoring AUTOMATIC — no "save that as a skill" beat exists anymore):
     8. self-termination
 
 Beat-0 cases GATE at 0.8 (promoted 2026-07-16 after the matrix ran clean:
-warm 0.96 · activity-window 1.00 · cold 1.00 · empty-registry 1.00 — a single
-bail-recovery costs exactly one of five checks, so honest recoveries pass and
-real breakage fails).  Later beats start REPORT-ONLY per the promote-later
-discipline and gate once sample-verified.
+warm 0.96 · activity-window 1.00 · cold 1.00 · empty-registry 1.00).  Later
+beats start REPORT-ONLY per the promote-later discipline and gate once
+sample-verified.
+
+UNIFORM CASE PATTERNS (2026-07-20, the code owner's consistency pass): every
+check label carries one of three prefixes — ``state:`` (end DB/ledger facts),
+``reply:`` (SAID==DID / reply-vs-state honesty), ``calls:`` (call provenance +
+sequencing).  Scoring follows the state-is-core doctrine: state/reply checks
+(and call checks that ARE a case's contract, e.g. dispatch fired) are scored;
+sequencing annotations and the uniform loop-health check
+(``routing_clean`` — bail + continue nudges, shared in conftest) are ADVISORY
+(``Check(..., scored=False)`` — rendered in the report, excluded from the
+score).  Since the routing check became advisory, a nudge-recovered beat-0
+sample scores on its state/reply checks alone; real breakage still fails them.
+Cases NEVER override prompts, clients, or tool surfaces — the harness runs the
+real code and real prompts only (the artificial-prompt detour is the recorded
+counter-example).
 """
 
 from __future__ import annotations
@@ -42,6 +55,8 @@ from penny.tests.eval.conftest import (
     collection_entries,
     is_ordered_subsequence,
     new_collections,
+    outgoing_replies,
+    routing_clean,
 )
 from penny.tests.eval.fixtures import CannedPage
 
@@ -92,20 +107,6 @@ def _all_collection_writes(db: Database, before: set[str]) -> dict[str, dict[str
 
 _READ_TOOLS = ("read_similar", "collection_read_latest", "collection_get")
 
-# The chat loop's text-bail nudges (injected as a user turn when the model emits
-# prose OR a call-shaped JSON blob instead of a real tool call) — their presence
-# means the routing slipped, even if recovery then succeeded.  Loop-health
-# visibility, not a behavior score.  TWO distinct nudges cover the family:
-# TOOL_FORMAT_NUDGE (a parse-500 fallback) and CHAT_CALL_AS_TEXT_NUDGE (the
-# call-as-text bail) — an earlier single marker silently missed the second and
-# false-greened a real spiral.  Each marker is an ASCII, newline-free slice of
-# one nudge, so it survives the JSON-escaping of row.messages (a full-string
-# match would break on escaped newlines and — em-dashes).
-_BAIL_NUDGE_MARKERS = (
-    "could not be parsed as a tool call",  # Prompt.TOOL_FORMAT_NUDGE
-    "wrote a tool call as plain text",  # Prompt.CHAT_CALL_AS_TEXT_NUDGE
-)
-
 
 def _final_run_calls(db: Database) -> list[tuple[str, dict]]:
     """(tool, args) for every call in the LAST chat run — the turn-2 answer's
@@ -133,17 +134,9 @@ def _final_run_calls(db: Database) -> list[tuple[str, dict]]:
     return calls
 
 
-def _bail_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries an injected text-bail nudge."""
-    for row in db.messages.recent_prompts(limit=200):
-        if row.messages and any(marker in row.messages for marker in _BAIL_NUDGE_MARKERS):
-            return True
-    return False
-
-
 def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
     created = new_collections(db, before)
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     stored = _all_collection_writes(db, before)
     fact_collections = {
         name
@@ -155,21 +148,25 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
     final_reply = replies[-1] if replies else ""
 
     return [
-        Check("the fact landed durably in a collection (any route)", fact_stored),
-        Check("no runaway creation (at most one new collection)", len(created) <= 1),
+        Check("state: the fact landed durably in a collection (any route)", fact_stored),
+        Check("state: no runaway creation (at most one new collection)", len(created) <= 1),
         Check(
             # A word-list proved brittle (live sample: a valid confirmation
             # phrased outside the list).  The honest signal is the FACT: a
             # turn-1 reply that restates the stored value is an acknowledgment;
             # claiming the fact while storage failed is the dishonest case.
-            "turn-1 reply acknowledges the fact it stored (SAID == DID)",
+            "reply: turn-1 reply acknowledges the fact it stored (SAID == DID)",
             fact_stored == ("499" in first_reply) if replies else False,
         ),
-        Check("read-back states $499", "499" in final_reply),
+        Check("reply: read-back states $499", "499" in final_reply),
         # NOTE: no hard provenance check here — answering a one-turn-old fact
         # from the conversation window is correct behavior (live sample 5).
         # The COLD variant below owns provenance absolutely.
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -215,16 +212,23 @@ def _delete_all_collections(db: Database) -> None:
 
 def _score_beat0_empty(db: Database, before: set[str], reply: str) -> list[Check]:
     created = new_collections(db, before)
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     final_reply = replies[-1] if replies else ""
     entries = collection_entries(db, created[0].name) if len(created) == 1 else {}
     fact_stored = any("499" in content for content in entries.values())
 
     return [
-        Check("exactly one collection created (nowhere existed — she made one)", len(created) == 1),
-        Check("the fact landed in the created collection", fact_stored),
-        Check("read-back states $499", "499" in final_reply),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "state: exactly one collection created (nowhere existed — she made one)",
+            len(created) == 1,
+        ),
+        Check("state: the fact landed in the created collection", fact_stored),
+        Check("reply: read-back states $499", "499" in final_reply),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -296,7 +300,7 @@ def _seed_recent_run_write(db: Database) -> None:
 
 
 def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     final_reply = replies[-1] if replies else ""
     read_backed = any(
         (tool in _READ_TOOLS and args.get("memory") == "gear-notes") or tool == "find"
@@ -304,9 +308,15 @@ def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
     )
 
     return [
-        Check("recall states $499 (the write is ambient, value is not)", "499" in final_reply),
-        Check("answer BACKED by a storage read (any route)", read_backed),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "reply: recall states $499 (the write is ambient, value is not)", "499" in final_reply
+        ),
+        Check("calls: answer BACKED by a storage read (any route)", read_backed),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -348,7 +358,7 @@ def _seed_cold_fact(db: Database) -> None:
 
 
 def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]:
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     final_reply = replies[-1] if replies else ""
     calls = _final_run_calls(db)
     read_backed = any(
@@ -357,9 +367,13 @@ def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]
     )
 
     return [
-        Check("cold recall states $499 (storage is the only route)", "499" in final_reply),
-        Check("answer BACKED by a storage read (find or a scoped read)", read_backed),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check("reply: cold recall states $499 (storage is the only route)", "499" in final_reply),
+        Check("calls: answer BACKED by a storage read (find or a scoped read)", read_backed),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -424,25 +438,6 @@ _ENACTING_TOOLS = (
     "collection_delete_entry",
     "log_append",
 )
-
-# The chat empty-response retry (Prompt.CONTINUE_NUDGE) — a routing-health
-# marker like the bail markers: an ASCII, newline-free slice that survives the
-# JSON-escaping of row.messages.
-_CONTINUE_NUDGE_MARKER = "Please provide your response"
-
-
-def _outgoing(db: Database) -> list[str]:
-    """Every message Penny sent this sample (the per-turn replies), oldest first."""
-    entries = db.memory("penny-messages").read_recent(window_seconds=3600, cap=None)
-    return [entry.content for entry in entries]
-
-
-def _continue_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries the empty-response retry nudge."""
-    for row in db.messages.recent_prompts(limit=200):
-        if row.messages and _CONTINUE_NUDGE_MARKER in row.messages:
-            return True
-    return False
 
 
 def _browse_extract_attributed(db: Database) -> bool:
@@ -517,7 +512,7 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
-            not _bail_nudge_fired(db) and not _continue_nudge_fired(db),
+            routing_clean(db),
             scored=False,
         ),
     ]
@@ -577,7 +572,7 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
-            not _bail_nudge_fired(db) and not _continue_nudge_fired(db),
+            routing_clean(db),
             scored=False,
         ),
     ]
@@ -638,14 +633,15 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
     value_stored = any(
         "499" in content for entries in stored.values() for content in entries.values()
     )
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     return [
         Check(
-            "she browsed the listing (step 1 — the demonstrated fetch happened)",
+            "state: she browsed the listing (step 1 — the demonstrated fetch happened)",
             _browsed_the_listing(db),
         ),
         Check(
-            "the browsed value ($499) landed durably in a collection (steps 2+3, any collection)",
+            "state: the browsed value ($499) landed durably in a collection "
+            "(steps 2+3, any collection)",
             value_stored,
         ),
         Check(
@@ -653,21 +649,26 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
             # brittle three times).  The narration flow sends TWO replies per
             # teach turn (the routine report + the learned-skill narration), so
             # the echo is checked across ALL sent replies, not just the first.
-            "a sent reply reports the browsed value it stored (SAID == DID)",
+            "reply: a sent reply reports the browsed value it stored (SAID == DID)",
             (any("499" in reply for reply in replies) == value_stored) if replies else False,
         ),
         Check(
             # The auto-extraction (#1658): the demonstration run ITSELF yields the
             # skill — deterministically, at the run-end chokepoint, no authoring
             # tool.  The demonstrate turn's terminal state includes it.
-            "a skill was auto-extracted from the demonstration (browse+write, parameterized)",
+            "state: a skill was auto-extracted from the demonstration "
+            "(browse+write, parameterized)",
             _extracted_skill_shape_ok(db),
         ),
         Check(
-            "the learned-skill narration frame fired (she narrates FROM the render)",
+            "state: the learned-skill narration frame fired (she narrates FROM the render)",
             _learned_frame_fired(db),
         ),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -759,17 +760,24 @@ def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
     )
     retargeted = watch is not None and f"memory='{watch.name}'" in (watch.extraction_prompt or "")
     return [
-        Check("the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1),
         Check(
-            "ONE live watch was instantiated (skill attached, prompt rendered)", len(watches) == 1
+            "state: the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1
         ),
-        Check("the watch has a trigger (it will actually run)", has_trigger),
-        Check("notify is on (the ask was 'let me know')", watch.notify if watch else False),
         Check(
-            "writes retargeted to the new collection (the rendered program doesn't lie)",
+            "state: ONE live watch was instantiated (skill attached, prompt rendered)",
+            len(watches) == 1,
+        ),
+        Check("state: the watch has a trigger (it will actually run)", has_trigger),
+        Check("state: notify is on (the ask was 'let me know')", watch.notify if watch else False),
+        Check(
+            "state: writes retargeted to the new collection (the rendered program doesn't lie)",
             retargeted,
         ),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -938,7 +946,7 @@ def _decompose_ask(replies: list[str]) -> tuple[bool, bool]:
 
 
 def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     one_message, modelled = _decompose_ask(replies)
     watches = _live_watches(db, before)
     watch = watches[0] if watches else None
@@ -954,32 +962,37 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
     chain_complete = _notable_written(db, before) and bool(watches)
     return [
         Check(
-            "she asked to be taught the round OR ran it herself to completion",
+            "reply: she asked to be taught the round OR ran it herself to completion",
             one_message or chain_complete,
         ),
         Check(
-            "an ask that happened was modelled from THEIR sources",
+            "reply: an ask that happened was modelled from THEIR sources",
             modelled if one_message else True,
         ),
-        Check("the routine ran on arrival (browsed the given sites)", _round_ran(db)),
+        Check("state: the routine ran on arrival (browsed the given sites)", _round_ran(db)),
         Check(
-            "the round's write landed (page-derived content stored)", _notable_written(db, before)
+            "state: the round's write landed (page-derived content stored)",
+            _notable_written(db, before),
         ),
-        Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
-        Check("a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check("state: a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
+        Check("state: a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
         Check(
-            "the watch has a trigger and notify is on",
+            "state: the watch has a trigger and notify is on",
             has_trigger and bool(watch.notify if watch else False),
         ),
         Check(
-            "no re-teach ask once the skill exists (final reply doesn't re-elicit)",
+            "reply: no re-teach ask once the skill exists (final reply doesn't re-elicit)",
             not (_teach_ask(replies[-1]) if replies else False),
         ),
         Check(
-            "she never demanded page mechanics (snippets/selectors/patterns)",
+            "reply: she never demanded page mechanics (snippets/selectors/patterns)",
             not _demanded_mechanics(replies),
         ),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 
@@ -1023,7 +1036,7 @@ _BEAT2C_TURN = (
 
 
 def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
-    replies = _outgoing(db)
+    replies = outgoing_replies(db)
     watches = _live_watches(db, before)
     watch = watches[0] if watches else None
     has_trigger = watch is not None and (
@@ -1032,21 +1045,26 @@ def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
         or watch.source_log is not None
     )
     return [
-        Check("the routine ran (browsed the given sites)", _round_ran(db)),
+        Check("state: the routine ran (browsed the given sites)", _round_ran(db)),
         Check(
-            "the round's write landed (page-derived content stored)", _notable_written(db, before)
+            "state: the round's write landed (page-derived content stored)",
+            _notable_written(db, before),
         ),
-        Check("a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
-        Check("a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check("state: a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
+        Check("state: a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
         Check(
-            "the watch has a trigger and notify is on",
+            "state: the watch has a trigger and notify is on",
             has_trigger and bool(watch.notify if watch else False),
         ),
         Check(
-            "no teach-ask for a routine already in hand",
+            "reply: no teach-ask for a routine already in hand",
             not any(_teach_ask(r) for r in replies),
         ),
-        Check("clean tool routing (no text-bail nudge fired)", not _bail_nudge_fired(db)),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+        ),
     ]
 
 

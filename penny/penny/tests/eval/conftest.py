@@ -361,6 +361,48 @@ def tool_call_sequence(db: Database) -> list[str]:
     return names
 
 
+# ── Shared loop-health + reply helpers (uniform across the eval case files) ──
+# The chat loop's text-bail nudges (injected as a user turn when the model emits
+# prose OR a call-shaped JSON blob instead of a real tool call) — their presence
+# means the routing slipped, even if recovery then succeeded.  Loop-health
+# visibility, not a behavior score.  TWO distinct markers cover the bail family
+# (an earlier single marker silently missed one and false-greened a spiral);
+# each is an ASCII, newline-free slice that survives row.messages JSON-escaping.
+_BAIL_NUDGE_MARKERS = (
+    "could not be parsed as a tool call",  # Prompt.TOOL_FORMAT_NUDGE
+    "wrote a tool call as plain text",  # Prompt.CHAT_CALL_AS_TEXT_NUDGE
+)
+_CONTINUE_NUDGE_MARKER = "Please provide your response"  # Prompt.CONTINUE_NUDGE
+
+
+def bail_nudge_fired(db: Database) -> bool:
+    """True when any prompt's message array carries an injected text-bail nudge."""
+    for row in db.messages.recent_prompts(limit=200):
+        if row.messages and any(marker in row.messages for marker in _BAIL_NUDGE_MARKERS):
+            return True
+    return False
+
+
+def continue_nudge_fired(db: Database) -> bool:
+    """True when any prompt's message array carries the empty-response retry nudge."""
+    for row in db.messages.recent_prompts(limit=200):
+        if row.messages and _CONTINUE_NUDGE_MARKER in row.messages:
+            return True
+    return False
+
+
+def routing_clean(db: Database) -> bool:
+    """The uniform loop-health verdict every case reports as an ADVISORY check
+    (``Check(..., scored=False)``): no bail nudge AND no continue nudge fired."""
+    return not bail_nudge_fired(db) and not continue_nudge_fired(db)
+
+
+def outgoing_replies(db: Database) -> list[str]:
+    """Every message Penny sent this sample (the per-turn replies), oldest first."""
+    entries = db.memory("penny-messages").read_recent(window_seconds=3600, cap=None)
+    return [entry.content for entry in entries]
+
+
 def chat_run_tool_sequences(db: Database) -> list[list[str]]:
     """Tool names per CHAT run, in chronological run order — one list per user turn
     of a scripted conversation.  The per-run split is what lets a multi-turn

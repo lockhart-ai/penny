@@ -22,7 +22,7 @@ import re
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, Check
+from penny.tests.eval.conftest import ChatEval, Check, routing_clean
 
 pytestmark = pytest.mark.eval
 
@@ -71,13 +71,18 @@ def _score_dispatch(db: Database, before: set[str], reply: str) -> list[Check]:
     )
     picks = _tool_picks(db)
     return [
-        Check("the choose tool was called", bool(calls)),
-        Check("it was given all three options", options_ok),
+        Check("calls: the choose tool was called", bool(calls)),
+        Check("calls: it was given all three options", options_ok),
         Check(
             # SAID == DID on the pick itself: the reply must report the option
             # the TOOL returned — naming a different one means she free-chose.
-            "the reply reports the TOOL'S pick, not her own",
+            "reply: the reply reports the TOOL'S pick, not her own",
             bool(picks) and picks[-1].lower() in reply.lower(),
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
         ),
     ]
 
@@ -104,12 +109,17 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             # An opinion ask is hers to answer — a coin flip here would be the
             # over-firing failure mode (the no-fire guard of the house pattern).
-            "choose was NOT called on a judgment ask",
+            "calls: choose was NOT called on a judgment ask",
             not _choose_calls(db),
         ),
         Check(
-            "she gave an opinion (names at least one wood)",
+            "reply: she gave an opinion (names at least one wood)",
             any(option in reply.lower() for option in _OPTIONS),
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
         ),
     ]
 
