@@ -13,7 +13,14 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.artifacts import FailureCause
+from penny.tests.eval.artifacts import (
+    CaseArtifact,
+    CaseTimings,
+    CauseCounts,
+    CheckOutcome,
+    FailureCause,
+)
+from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     Check,
     SampleResult,
@@ -34,11 +41,12 @@ def _make_db(tmp_path, name: str = "harness") -> Database:
     return db
 
 
-def _log_prompt(db: Database, *, messages=None, response=None) -> None:
+def _log_prompt(db: Database, *, messages=None, response=None, thinking=None) -> None:
     db.messages.log_prompt(
         model="test-model",
         messages=messages if messages is not None else [{"role": "user", "content": "hi"}],
         response=response if response is not None else {},
+        thinking=thinking,
         run_id="r1",
     )
 
@@ -313,3 +321,168 @@ def test_result_line_renders_cause_summary(capsys) -> None:
         "  pathology-excluded mean 1.00 (1 samples) · "
         "causes — behavioral 0 · pathology 1 · harness 0" in out
     )
+
+
+# ── Regression diff: a prior run's results.jsonl → REGRESSED marks (#1693) ──
+
+_BASELINE_RUN_ID = "run-20260719T130500-a1b2c3d4"
+
+
+def _write_baseline(directory, *, case_id: str, checks: list[CheckOutcome]) -> None:
+    """Write a one-case ``results.jsonl`` — the prior run the report diffs against."""
+    directory.mkdir(parents=True, exist_ok=True)
+    artifact = CaseArtifact(
+        run_id=_BASELINE_RUN_ID,
+        case_id=case_id,
+        family="extractors",
+        mean=1.0,
+        all_pass_rate=1.0,
+        samples=4,
+        sample_scores=[1.0, 1.0, 1.0, 1.0],
+        checks=checks,
+        # An all-green prior run (#1695 fields): every sample passed, so no causes and a
+        # pathology-excluded mean equal to the raw mean.
+        pathology_excluded_mean=1.0,
+        sample_causes=[None, None, None, None],
+        cause_counts=CauseCounts(),
+        timings=CaseTimings(calls=0, duration_ms=0, input_tokens=0, output_tokens=0),
+    )
+    (directory / "results.jsonl").write_text(artifact.model_dump_json() + "\n")
+
+
+def test_baseline_flags_only_a_fully_green_flip(tmp_path) -> None:
+    _write_baseline(
+        tmp_path / "prior",
+        case_id="watch-fern",
+        checks=[
+            CheckOutcome(
+                label="send queued", passed=4, total=4
+            ),  # fully green → a flip if it fails
+            CheckOutcome(label="write happened", passed=2, total=4),  # already flaky → not a flip
+        ],
+    )
+    baseline = load_baseline(str(tmp_path / "prior"))
+    assert baseline is not None
+    assert baseline.was_passing("watch-fern", "send queued")
+    assert not baseline.was_passing("watch-fern", "write happened")  # 2/4 was not fully green
+    assert not baseline.was_passing("watch-fern", "unknown check")  # absent → no flip
+    assert not baseline.was_passing("other-case", "send queued")  # absent case → no flip
+    assert baseline.run_id_for("watch-fern") == _BASELINE_RUN_ID
+
+
+def test_baseline_absent_or_empty_is_none(tmp_path) -> None:
+    assert load_baseline(str(tmp_path / "does-not-exist")) is None  # missing → graceful None
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "empty" / "results.jsonl").write_text("\n")  # blank lines only
+    assert load_baseline(str(tmp_path / "empty")) is None
+
+
+def _done_bail_sample(db: Database) -> None:
+    """A collector-style run that closed with ``done()`` instead of sending — the promptlog row
+    carries the model's thinking, so a failed/regressed done turn can surface it."""
+    done_call = {"function": {"name": "done", "arguments": "{}"}}
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "user", "content": "run the fern watch"},
+            {"role": "assistant", "tool_calls": [done_call]},
+        ],
+        response={"choices": [{"message": {"tool_calls": [done_call]}}]},
+        thinking="The entry is already written, so I'll close with done() rather than notify.",
+    )
+
+
+def test_report_marks_regressed_and_renders_thinking(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.setenv("EVAL_BASELINE", str(tmp_path / "prior"))
+    _write_baseline(
+        tmp_path / "prior",
+        case_id="watch-fern",
+        checks=[CheckOutcome(label="send queued", passed=4, total=4)],
+    )
+    db = _make_db(tmp_path)
+    _done_bail_sample(db)
+    result = SampleResult.graded(
+        [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
+    )
+    _write_sample_report(db, "watch-fern", 2, result=result, reply="")
+    expected = (
+        "#### sample 3 — ❌ 0/1 checks\n"
+        "\n"
+        "| # | Actor | Content |\n"
+        "|---|---|---|\n"
+        "| 1 | 👤 user | run the fern watch |\n"
+        "| 2 | 🔧 Penny → tool ❌ 🔻 REGRESSED | done({}) |\n"
+        "\n"
+        "_checks: ❌ 🔻 REGRESSED send queued — expected 1 send, saw 0 "
+        "(was passing in `run-20260719T130500-a1b2c3d4`)_\n"
+        "\n"
+        "<details><summary>💭 thinking · turn 2 (done) — ❌ 🔻 REGRESSED</summary>\n"
+        "\n"
+        "> The entry is already written, so I'll close with done() rather than notify.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )
+    assert (tmp_path / "watch-fern.md").read_text() == expected
+
+
+def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)  # first run — nothing to flip against
+    db = _make_db(tmp_path)
+    _done_bail_sample(db)
+    result = SampleResult.graded(
+        [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
+    )
+    _write_sample_report(db, "watch-fern", 0, result=result, reply="")
+    expected = (
+        "#### sample 1 — ❌ 0/1 checks\n"
+        "\n"
+        "| # | Actor | Content |\n"
+        "|---|---|---|\n"
+        "| 1 | 👤 user | run the fern watch |\n"
+        "| 2 | 🔧 Penny → tool ❌ | done({}) |\n"
+        "\n"
+        "_checks: ❌ send queued — expected 1 send, saw 0_\n"
+        "\n"
+        "<details><summary>💭 thinking · turn 2 (done) — ❌</summary>\n"
+        "\n"
+        "> The entry is already written, so I'll close with done() rather than notify.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )
+    assert (tmp_path / "watch-fern.md").read_text() == expected
+
+
+def test_report_omits_thinking_at_a_passing_turn(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    write_call = {"function": {"name": "collection_write", "arguments": "{}"}}
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "user", "content": "save it"},
+            {"role": "assistant", "tool_calls": [write_call]},
+        ],
+        response={"choices": [{"message": {"tool_calls": [write_call]}}]},
+        thinking="Writing the entry now.",
+    )
+    result = SampleResult.graded([Check("write happened", ok=True, anchor="collection_write(")])
+    _write_sample_report(db, "pass-case", 0, result=result, reply="done")
+    # Whole-render: a passing tool-call turn carries its ✅ row-mark and NOTHING else — no
+    # thinking <details> (even though the row has thinking) and no REGRESSED, so the comment
+    # doesn't bloat on clean passes.
+    expected = (
+        "#### sample 1 — ✅ 1/1 checks\n"
+        "\n"
+        "| # | Actor | Content |\n"
+        "|---|---|---|\n"
+        "| 1 | 👤 user | save it |\n"
+        "| 2 | 🔧 Penny → tool ✅ | collection_write({}) |\n"
+        "| 3 | 🤖 Penny | done |\n"
+        "\n"
+    )
+    assert (tmp_path / "pass-case.md").read_text() == expected

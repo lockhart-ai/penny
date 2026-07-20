@@ -153,6 +153,7 @@ eval: $(if $(LOCAL),,build)
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
 		EVAL_REPORT_DIR="$${EVAL_REPORT_DIR}" \
+		EVAL_BASELINE="$${EVAL_BASELINE}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
 		EVAL_LEVER="$${EVAL_LEVER}" \
 		EVAL_COMMIT="$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \

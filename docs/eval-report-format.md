@@ -198,6 +198,32 @@ Thinking at a *passing* turn is omitted (available in the local per-sample DB if
 ever needed). On a first run with no baseline, thinking renders at **failed**
 turns only (there are no regressed ones yet).
 
+### 9. How the baseline is supplied, and where the flip is named (#1693)
+
+The prior run the report diffs against is named by **`EVAL_BASELINE`** — a path to a
+prior run's **report directory** (its `results.jsonl` is used) or that `results.jsonl`
+directly. The Makefile forwards it into the eval container exactly like
+`EVAL_REPORT_DIR` / `EVAL_LEVER`. Unset (or a path with no `results.jsonl` — a first
+run) → no baseline, no REGRESSED marks, no error.
+
+The diff is **per-check, per-case** against the prior run's `CaseArtifact` records
+(#1692, consumed unchanged). A now-failing check is **REGRESSED** only when it was
+**fully green** in the prior run — passed in *every* prior sample (`passed == total`);
+a check that was already flaky (`2/4`) is not a flip. The comparison is by
+`(case_id, label)`.
+
+Implementation deltas from the sketch above:
+
+- **The prior run id is surfaced inline on the regressed check**, not (yet) as a
+  manifest-header `prior:` line — #1692's `render_manifest_header` / `RunManifest`
+  carry no baseline reference, so a cross-region edit to add one is deferred. Each
+  regressed check names its baseline run in the checks legend:
+  `❌ 🔻 REGRESSED  <label> — <rationale> (was passing in \`<run-id>\`)`.
+- **Thinking renders at failed/regressed *tool-call* turns.** A tool-call turn maps
+  cleanly to the promptlog row whose response emitted it (and carries its thinking); a
+  reply-anchored or whole-run (footer) failed check has no single producing turn, so it
+  renders its rationale in the legend but no thinking block.
+
 ---
 
 ## Field glossary (names shared across #1692 / #1694 / #1695)

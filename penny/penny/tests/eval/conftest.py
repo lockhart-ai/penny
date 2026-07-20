@@ -35,6 +35,7 @@ from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
 from penny.tests.eval.artifacts import FailureCause
+from penny.tests.eval.baseline import Baseline, baseline_from_env
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
@@ -884,23 +885,46 @@ def _anchor_hits(needle: str, content: str) -> bool:
     return "collection_set(" in content and needle in content
 
 
-def _check_mark(check: Check) -> str:
-    """The report marker for a check: ➖ when not-applicable (``ignored``), else ✅ / ❌."""
+# The REGRESSED suffix on a failing check that was green in the prior run (#1693) — a
+# flip, distinct from a check that was already red.  Only ever appended to a ❌.
+_REGRESSED_MARK = "❌ 🔻 REGRESSED"
+
+
+def _check_mark(check: Check, *, regressed: bool = False) -> str:
+    """The report marker for a check: ➖ when not-applicable (``ignored``), ✅ when passed,
+    else ❌ — or ``❌ 🔻 REGRESSED`` when this failing check was fully green in the baseline
+    run (``regressed``, #1693)."""
     if check.ignored:
         return "➖"
-    return "✅" if check.ok else "❌"
+    if check.ok:
+        return "✅"
+    return _REGRESSED_MARK if regressed else "❌"
+
+
+def _regressed_ids(checks: list[Check], baseline: Baseline | None, case_id: str) -> set[int]:
+    """The ``id()`` of every check that FAILED this sample but was fully green in the baseline
+    run — a flip (#1693).  Empty with no baseline, so a first run marks failures as plain ❌."""
+    if baseline is None:
+        return set()
+    return {
+        id(check)
+        for check in checks
+        if not check.ignored and not check.ok and baseline.was_passing(case_id, check.label)
+    }
 
 
 def _place_checks(
     checks: list[Check], turns: list[tuple[str, str]]
-) -> tuple[dict[int, str], list[Check]]:
+) -> tuple[dict[int, list[Check]], list[Check]]:
     """Bind each anchored check to the FIRST turn whose content contains its anchor.
 
     A ``REPLY_ANCHOR`` check stamps the final Penny-reply row (it tests the reply's text, not
-    a tool call).  Returns ``(turn_index -> concatenated ✅/❌ marks, leftover checks)``.  A
-    check with no anchor — or whose anchor matches no turn (a *missing* expected action, a tool
-    call that never happened) — has no row to sit on, so it falls to ``leftover`` (a footer)."""
-    marks: dict[int, str] = {}
+    a tool call).  Returns ``(turn_index -> the checks placed there, leftover checks)`` — the
+    per-turn check lists (not pre-rendered marks) so a caller can both stamp the row (via
+    ``_row_mark``) and decide whether that turn needs a thinking block (#1693).  A check with no
+    anchor — or whose anchor matches no turn (a *missing* expected action, a tool call that never
+    happened) — has no row to sit on, so it falls to ``leftover`` (a footer)."""
+    placed: dict[int, list[Check]] = {}
     leftover: list[Check] = []
     reply_row = max(  # the final NL reply row — where a REPLY_ANCHOR check lands
         (i for i, (actor, _c) in enumerate(turns) if actor == _ACTOR["penny"]), default=None
@@ -922,8 +946,17 @@ def _place_checks(
         if hit is None:
             leftover.append(check)
         else:
-            marks[hit] = marks.get(hit, "") + _check_mark(check)
-    return marks, leftover
+            placed.setdefault(hit, []).append(check)
+    return placed, leftover
+
+
+def _row_mark(placed_checks: list[Check], regressed_ids: set[int]) -> str:
+    """The stamp appended to a turn's actor cell — the placed checks' marks concatenated (with
+    a leading space), or ``""`` for an unmarked row.  A regressed failing check renders its
+    REGRESSED form (#1693)."""
+    if not placed_checks:
+        return ""
+    return " " + "".join(_check_mark(c, regressed=id(c) in regressed_ids) for c in placed_checks)
 
 
 def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
@@ -954,14 +987,24 @@ def _sample_verdict(result: SampleResult, *, fragile: bool) -> str:
     return f"{core} · fragile" if fragile else core
 
 
-def _legend_entry(check: Check) -> str:
+def _legend_entry(
+    check: Check, *, regressed: bool = False, baseline_run_id: str | None = None
+) -> str:
     """One legend line for a check: its marker, label, and the observed-vs-expected rationale
-    when one was given."""
+    when one was given.  A regressed check (#1693) renders its REGRESSED marker and names the
+    prior run it was green in, so the flip is self-explaining."""
     tail = f" — {check.rationale}" if check.rationale else ""
-    return f"{_check_mark(check)} {check.label}{tail}"
+    note = f" (was passing in `{baseline_run_id}`)" if regressed and baseline_run_id else ""
+    return f"{_check_mark(check, regressed=regressed)} {check.label}{tail}{note}"
 
 
-def _report_legend(result: SampleResult, leftover: list[Check]) -> str:
+def _report_legend(
+    result: SampleResult,
+    leftover: list[Check],
+    regressed_ids: set[int],
+    baseline: Baseline | None,
+    case_id: str,
+) -> str:
     """The checks legend below the transcript table.  Names every check that needs words — one
     with no row (a whole-run / missing-action check), a failed one, a not-applicable one, or any
     carrying a rationale — as ``<mark> <label> — <rationale>``.  A placed passing check with no
@@ -977,7 +1020,52 @@ def _report_legend(result: SampleResult, leftover: list[Check]) -> str:
     ]
     if not spelled:
         return ""
-    return f"_checks: {' · '.join(_legend_entry(check) for check in spelled)}_"
+    baseline_run_id = baseline.run_id_for(case_id) if baseline is not None else None
+    entries = [
+        _legend_entry(check, regressed=id(check) in regressed_ids, baseline_run_id=baseline_run_id)
+        for check in spelled
+    ]
+    return f"_checks: {' · '.join(entries)}_"
+
+
+def _thinking_by_call(rows: list[PromptLog]) -> dict[str, str]:
+    """Map each tool-call turn's content (``name(args)``) to the thinking of the promptlog row
+    whose RESPONSE emitted it — so a failed turn can show the model's own reasoning (#1693).
+
+    The tool-call content string is byte-identical to what ``_sample_turns`` renders for that
+    call (it appears verbatim in the next row's ``messages`` history), so a turn matches its
+    producing row's thinking.  First non-empty thinking per content wins (turns de-dupe the same
+    way); rows with no thinking or no tool call contribute nothing."""
+    mapping: dict[str, str] = {}
+    for row in rows:
+        thinking = (row.thinking or "").strip()
+        if not thinking:
+            continue
+        for call in _response_tool_calls(row):
+            function = call.get("function", {})
+            content = f"{function.get('name')}({function.get('arguments')})"
+            mapping.setdefault(content, thinking)
+    return mapping
+
+
+def _thinking_block(
+    turn_number: int, content: str, failing: list[Check], regressed_ids: set[int], thinking: str
+) -> list[str]:
+    """A collapsed ``<details>`` carrying the model's thinking at ONE failed/regressed tool-call
+    turn (#1693).  The summary names the turn, its tool, and the failing checks' marks; the body
+    is the verbatim thinking as a blockquote.  Passing turns never reach here, so the comment
+    doesn't bloat."""
+    tool = content.split("(", 1)[0]
+    marks = " ".join(_check_mark(check, regressed=id(check) in regressed_ids) for check in failing)
+    quoted = "\n".join(f"> {line}" if line else ">" for line in thinking.splitlines())
+    return [
+        "",
+        f"<details><summary>💭 thinking · turn {turn_number} ({tool}) — {marks}</summary>",
+        "",
+        quoted,
+        "",
+        "</details>",
+    ]
 
 
 def _write_sample_report(
@@ -994,6 +1082,8 @@ def _write_sample_report(
         return
     with Session(db.engine) as session:
         rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+    baseline = baseline_from_env()  # a prior run's results.jsonl → REGRESSED marks (#1693)
+    regressed_ids = _regressed_ids(result.checks, baseline, case_id)
     fragile = result.passed and sample_is_fragile(db)
     verdict = _sample_verdict(result, fragile=fragile)
     lines = [
@@ -1003,17 +1093,40 @@ def _write_sample_report(
         "|---|---|---|",
     ]
     turns = _sample_turns(rows, reply)
-    marks, leftover = _place_checks(result.checks, turns)  # ✅/❌ onto the row each check tests
+    placed, leftover = _place_checks(result.checks, turns)  # checks onto the row each one tests
     for index, (actor, content) in enumerate(turns, start=1):
-        mark = f" {marks[index - 1]}" if index - 1 in marks else ""
-        lines.append(f"| {index} | {actor}{mark} | {_report_cell(content)} |")
-    legend = _report_legend(result, leftover)  # rationale + ignored + failed, beyond the row marks
+        lines.append(
+            f"| {index} | {actor}{_row_mark(placed.get(index - 1, []), regressed_ids)} "
+            f"| {_report_cell(content)} |"
+        )
+    legend = _report_legend(result, leftover, regressed_ids, baseline, case_id)
     if legend:
         lines += ["", legend]
+    lines += _thinking_sections(turns, placed, regressed_ids, _thinking_by_call(rows))
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:
         handle.write("\n".join(lines) + "\n\n")
+
+
+def _thinking_sections(
+    turns: list[tuple[str, str]],
+    placed: dict[int, list[Check]],
+    regressed_ids: set[int],
+    thinking: dict[str, str],
+) -> list[str]:
+    """The collapsed thinking ``<details>`` blocks, one per FAILED/REGRESSED tool-call turn that
+    has captured thinking (#1693).  Passing turns are omitted (no bloat); a failed turn with no
+    thinking recorded contributes nothing.  Rendered after the checks legend, in turn order."""
+    blocks: list[str] = []
+    for index, (actor, content) in enumerate(turns, start=1):
+        if actor != _ACTOR["call"]:
+            continue
+        failing = [c for c in placed.get(index - 1, []) if not c.ignored and not c.ok]
+        note = thinking.get(content)
+        if failing and note:
+            blocks += _thinking_block(index, content, failing, regressed_ids, note)
+    return blocks
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.

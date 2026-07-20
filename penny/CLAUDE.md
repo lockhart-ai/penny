@@ -604,6 +604,18 @@ so the PR-comment renderer renders one shape). Deterministic contracts (no live 
 scan + stamping + render in `tests/test_eval_harness.py`, the artifact fields + pure classifier in
 `tests/eval/test_artifacts.py`.
 
+**Regression-aware reports + thinking at failed turns (#1693).** When `EVAL_BASELINE` names a
+prior run's report directory (or its `results.jsonl`), the per-sample report diffs each graded
+check against that prior run and marks a NOW-FAILING check **REGRESSED** (`❌ 🔻 REGRESSED`) when
+it was FULLY GREEN there (`passed == total`) — a flip, distinct from a check that was already red.
+The flip is per-check, per-`(case_id, label)`, reading the prior `CaseArtifact` records unchanged
+(`penny/tests/eval/baseline.py`); the regressed check names its baseline run inline in the checks
+legend. `EVAL_BASELINE` is forwarded into the container like `EVAL_REPORT_DIR`/`EVAL_LEVER`; unset
+(or a missing file — a first run) → no REGRESSED marks, no error. The report also lifts each LLM
+call's **thinking** (already persisted on `promptlog.thinking`) into a collapsed `<details>` at
+the failed/regressed **tool-call** turns only — passing turns are omitted so the comment never
+bloats. On a first run with no baseline, thinking still renders at failed turns.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,
