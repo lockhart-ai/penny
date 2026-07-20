@@ -552,6 +552,22 @@ commit and ADDS A NEW COMMENT** with that run's report — never rewrite the bod
 overwrite a prior comment — so the iteration history (each review round's before/after)
 survives. See `docs/agent-task-workflow.md` §4.
 
+**Per-run artifacts + the required lever (#1692).** When `EVAL_REPORT_DIR` is set, the run
+also writes three durable artifacts into that directory (beside the `<case_id>.md`
+transcripts), emitted by `penny/tests/eval/artifacts.py`: a `manifest.json` (the run's
+input identity — commit SHA, dirty-diff filename, model + embedding model + `EVAL_SAMPLES`,
+and the run's one-line **lever**), a `dirty.diff` (the working-tree diff saved verbatim,
+only when dirty), and a `results.jsonl` (one mechanically-diffable record per case: run id,
+case id, family tag, mean, all-pass rate, per-check outcomes, N, timings). The manifest also
+renders as a markdown header (`commit · model · N · lever`) atop each `<case_id>.md` report.
+**The lever is required**: `make eval` forwards `EVAL_LEVER` (the run's hypothesis, e.g.
+`EVAL_LEVER='moved instruction X from skill to prompt'`) alongside `EVAL_REPORT_DIR`, and a
+report run with no lever **fails fast** with an actionable message before any sample runs —
+the lever is what makes a score shift attributable to the change that caused it. The commit
+SHA + dirty diff are computed **host-side** in the Makefile (`EVAL_COMMIT`/`EVAL_DIRTY_DIFF`)
+because `.git` is not mounted in the eval container. The `family` tag defaults from the test
+module name (`test_<x>` → `<x>`) or is set explicitly via a `family=` arg on a runner call.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,

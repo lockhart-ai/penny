@@ -1,0 +1,357 @@
+"""Per-run eval artifacts: the input manifest + per-case JSONL results.
+
+When ``EVAL_REPORT_DIR`` is set, a ``make eval`` run emits three durable
+artifacts into that directory, beside the per-case transcript reports
+(``<case_id>.md``):
+
+  ``manifest.json``  — the run's input identity: commit SHA, dirty-diff filename,
+                       model + embedding model + ``EVAL_SAMPLES``, and the
+                       REQUIRED one-line lever (the run's hypothesis, from
+                       ``EVAL_LEVER``).
+  ``dirty.diff``     — the working-tree diff, saved verbatim (omitted when clean).
+  ``results.jsonl``  — one JSON record per case: run id, case id, family, mean,
+                       all-pass rate, per-check outcomes, N, timings.
+
+The manifest also renders as a markdown header atop each ``<case_id>.md`` report
+(commit · model · N · lever) — the #1711 PR-comment report header.
+
+A report run (``EVAL_REPORT_DIR`` set) with no lever (``EVAL_LEVER``) fails fast
+with an actionable message: the lever is what makes a score shift attributable to
+the change that caused it, so it is not optional.
+
+The whole surface is driven from the environment by the ``make eval`` wiring, but
+the pure builders take their inputs explicitly so ``make check`` can exercise them
+with synthetic fixture data — no git, no model, no container.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol
+
+from pydantic import BaseModel
+
+# ── Environment contract (forwarded by the Makefile `eval` target) ───────────
+EVAL_REPORT_DIR_ENV = "EVAL_REPORT_DIR"
+EVAL_LEVER_ENV = "EVAL_LEVER"
+EVAL_COMMIT_ENV = "EVAL_COMMIT"
+EVAL_DIRTY_DIFF_ENV = "EVAL_DIRTY_DIFF"
+EVAL_SAMPLES_ENV = "EVAL_SAMPLES"
+LLM_MODEL_ENV = "LLM_MODEL"
+LLM_EMBEDDING_MODEL_ENV = "LLM_EMBEDDING_MODEL"
+
+# ── Artifact filenames (all live under EVAL_REPORT_DIR) ──────────────────────
+MANIFEST_FILENAME = "manifest.json"
+RESULTS_FILENAME = "results.jsonl"
+DIRTY_DIFF_FILENAME = "dirty.diff"
+
+# Defaults mirror `_real_model_config` / the Makefile so a manifest records the
+# same model the run actually used even if the env var is somehow absent.
+UNKNOWN_COMMIT = "unknown"
+DEFAULT_MODEL = "gpt-oss:20b"
+DEFAULT_EMBEDDING_MODEL = "embeddinggemma"
+DEFAULT_SAMPLES = 5
+
+MISSING_LEVER_MESSAGE = (
+    "EVAL_REPORT_DIR is set but EVAL_LEVER is empty. Every report run must state its "
+    "hypothesis in one line so a score shift is attributable to the change that caused "
+    "it. Set EVAL_LEVER, e.g.\n"
+    "    EVAL_LEVER='moved instruction X from skill to prompt' "
+    "EVAL_REPORT_DIR=/penny/data/eval-reports make eval"
+)
+
+
+class MissingLeverError(RuntimeError):
+    """A report run (``EVAL_REPORT_DIR`` set) declared no lever (``EVAL_LEVER``)."""
+
+
+# ── Structured inputs read off a scored case (Protocols avoid a conftest cycle) ──
+class GradedCheck(Protocol):
+    """The subset of a ``Check`` the per-check aggregate reads."""
+
+    label: str
+    ok: bool
+
+
+class ScoredSample(Protocol):
+    """The subset of a ``SampleResult`` the case artifact reads.
+
+    ``checks`` / ``passed`` are read-only members (covariant), so a ``SampleResult``
+    whose ``checks`` is a ``list[Check]`` structurally satisfies the protocol.
+    """
+
+    score: float
+
+    @property
+    def passed(self) -> bool: ...
+
+    @property
+    def checks(self) -> Sequence[GradedCheck]: ...
+
+
+class PerfTotals(Protocol):
+    """The subset of ``_Perf`` the timings block reads."""
+
+    calls: int
+    duration_ms: int
+    input_tokens: int
+    output_tokens: int
+
+
+# ── Serialized shapes ────────────────────────────────────────────────────────
+class CheckOutcome(BaseModel):
+    """One check's aggregate across a case's samples — passed / present."""
+
+    label: str
+    passed: int
+    total: int
+
+
+class CaseTimings(BaseModel):
+    """Per-case model-call totals, summed over its samples (from the promptlog)."""
+
+    calls: int
+    duration_ms: int
+    input_tokens: int
+    output_tokens: int
+
+
+class CaseArtifact(BaseModel):
+    """One case's line in ``results.jsonl`` — the mechanically-diffable record."""
+
+    run_id: str
+    case_id: str
+    family: str
+    mean: float
+    all_pass_rate: float
+    samples: int
+    sample_scores: list[float]
+    checks: list[CheckOutcome]
+    timings: CaseTimings
+
+
+class RunManifest(BaseModel):
+    """The run's input identity — one ``manifest.json`` per ``make eval`` run."""
+
+    run_id: str
+    created_at: str
+    commit: str
+    dirty: bool
+    diff_file: str | None
+    model: str
+    embedding_model: str
+    samples: int
+    lever: str
+
+
+# ── Pure builders (no env, no filesystem — the make check test drives these) ──
+def default_family(module: str) -> str:
+    """Derive a family tag from a test module's name (``test_<x>`` → ``<x>``)."""
+    leaf = module.rsplit(".", 1)[-1]
+    return leaf[len("test_") :] if leaf.startswith("test_") else leaf
+
+
+def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
+    """Fold every sample's checks into per-label passed/present totals (in order)."""
+    order: list[str] = []
+    passed: dict[str, int] = {}
+    total: dict[str, int] = {}
+    for result in results:
+        for check in result.checks:
+            if check.label not in total:
+                order.append(check.label)
+            total[check.label] = total.get(check.label, 0) + 1
+            passed[check.label] = passed.get(check.label, 0) + (1 if check.ok else 0)
+    return [CheckOutcome(label=label, passed=passed[label], total=total[label]) for label in order]
+
+
+def build_case_artifact(
+    *,
+    run_id: str,
+    case_id: str,
+    family: str,
+    results: Sequence[ScoredSample],
+    timings: CaseTimings,
+) -> CaseArtifact:
+    """Aggregate a case's samples into its ``results.jsonl`` record."""
+    count = len(results)
+    mean = sum(result.score for result in results) / count if count else 0.0
+    all_pass = sum(1 for result in results if result.passed) / count if count else 0.0
+    return CaseArtifact(
+        run_id=run_id,
+        case_id=case_id,
+        family=family,
+        mean=mean,
+        all_pass_rate=all_pass,
+        samples=count,
+        sample_scores=[result.score for result in results],
+        checks=aggregate_checks(results),
+        timings=timings,
+    )
+
+
+def timings_from_perf(perf: PerfTotals) -> CaseTimings:
+    """Project a case's ``_Perf`` totals onto the serialized timings shape."""
+    return CaseTimings(
+        calls=perf.calls,
+        duration_ms=perf.duration_ms,
+        input_tokens=perf.input_tokens,
+        output_tokens=perf.output_tokens,
+    )
+
+
+def build_manifest(
+    *,
+    commit: str,
+    dirty_diff: str,
+    model: str,
+    embedding_model: str,
+    samples: int,
+    lever: str,
+    now: datetime,
+) -> RunManifest:
+    """Assemble the run manifest from explicit inputs (``now`` fixes the run id)."""
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    short = commit[:8] if commit and commit != UNKNOWN_COMMIT else UNKNOWN_COMMIT
+    return RunManifest(
+        run_id=f"run-{stamp}-{short}",
+        created_at=now.isoformat(),
+        commit=commit or UNKNOWN_COMMIT,
+        dirty=bool(dirty_diff),
+        diff_file=DIRTY_DIFF_FILENAME if dirty_diff else None,
+        model=model,
+        embedding_model=embedding_model,
+        samples=samples,
+        lever=lever,
+    )
+
+
+def render_manifest_header(manifest: RunManifest) -> str:
+    """The markdown header atop each per-case report (commit · model · N · lever)."""
+    dirty = " (dirty)" if manifest.dirty else ""
+    return "\n".join(
+        [
+            f"### {manifest.run_id}",
+            "",
+            f"- commit: `{manifest.commit}`{dirty}",
+            f"- model: `{manifest.model}`",
+            f"- N: {manifest.samples}",
+            f"- lever: {manifest.lever}",
+            "",
+        ]
+    )
+
+
+# ── The run: manifest + dirty diff + the results.jsonl append point ───────────
+@dataclass
+class EvalRun:
+    """One ``make eval`` run's report directory, resolved manifest, and diff."""
+
+    report_dir: Path
+    manifest: RunManifest
+    dirty_diff: str
+
+    def write_inputs(self) -> None:
+        """Write ``manifest.json`` + the verbatim ``dirty.diff`` (idempotent)."""
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        if self.dirty_diff:
+            (self.report_dir / DIRTY_DIFF_FILENAME).write_text(self.dirty_diff)
+        (self.report_dir / MANIFEST_FILENAME).write_text(
+            self.manifest.model_dump_json(indent=2) + "\n"
+        )
+
+    def write_case_header(self, case_id: str) -> None:
+        """Stamp the manifest header atop this case's report, once (before sample 1)."""
+        report = self.report_dir / f"{case_id}.md"
+        if report.exists():
+            return
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        report.write_text(render_manifest_header(self.manifest) + "\n")
+
+    def append_case(self, artifact: CaseArtifact) -> None:
+        """Append one case's record as a line to ``results.jsonl``."""
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        with (self.report_dir / RESULTS_FILENAME).open("a") as handle:
+            handle.write(artifact.model_dump_json() + "\n")
+
+
+def run_from_env(env: Mapping[str, str], *, now: datetime | None = None) -> EvalRun | None:
+    """Resolve the active run from the environment, or ``None`` off-report.
+
+    Fails fast with :class:`MissingLeverError` when a report is requested
+    (``EVAL_REPORT_DIR`` set) but no lever is declared.
+    """
+    report_dir = env.get(EVAL_REPORT_DIR_ENV)
+    if not report_dir:
+        return None
+    lever = (env.get(EVAL_LEVER_ENV) or "").strip()
+    if not lever:
+        raise MissingLeverError(MISSING_LEVER_MESSAGE)
+    dirty_diff = env.get(EVAL_DIRTY_DIFF_ENV) or ""
+    manifest = build_manifest(
+        commit=(env.get(EVAL_COMMIT_ENV) or UNKNOWN_COMMIT).strip(),
+        dirty_diff=dirty_diff,
+        model=env.get(LLM_MODEL_ENV, DEFAULT_MODEL),
+        embedding_model=env.get(LLM_EMBEDDING_MODEL_ENV, DEFAULT_EMBEDDING_MODEL),
+        samples=int(env.get(EVAL_SAMPLES_ENV, str(DEFAULT_SAMPLES))),
+        lever=lever,
+        now=now or datetime.now(UTC),
+    )
+    return EvalRun(Path(report_dir), manifest, dirty_diff)
+
+
+# ── Live singleton: one manifest/run_id shared across every case in the process ──
+_active_run: EvalRun | None = None
+_resolved = False
+
+
+def active_run() -> EvalRun | None:
+    """The process-wide run, resolved once from the environment.
+
+    Fails fast on the first call if a report was requested without a lever;
+    writes the manifest + dirty diff once on the first successful resolution.
+    """
+    global _active_run, _resolved
+    if not _resolved:
+        _active_run = run_from_env(os.environ)
+        _resolved = True
+        if _active_run is not None:
+            _active_run.write_inputs()
+    return _active_run
+
+
+def begin_case(case_id: str) -> None:
+    """Per-case entry point: resolve the run (fail-fast) and stamp the report header.
+
+    No-op off-report. Called at the top of each runner ``_run`` so a missing lever
+    trips before any sample executes.
+    """
+    run = active_run()
+    if run is not None:
+        run.write_case_header(case_id)
+
+
+def record_case(
+    *,
+    case_id: str,
+    family: str | None,
+    module: str,
+    results: Sequence[ScoredSample],
+    perf: PerfTotals,
+) -> None:
+    """Append the case's ``results.jsonl`` record. No-op off-report."""
+    run = active_run()
+    if run is None:
+        return
+    artifact = build_case_artifact(
+        run_id=run.manifest.run_id,
+        case_id=case_id,
+        family=family or default_family(module),
+        results=results,
+        timings=timings_from_perf(perf),
+    )
+    run.append_case(artifact)

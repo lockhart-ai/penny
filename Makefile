@@ -154,6 +154,9 @@ eval: $(if $(LOCAL),,build)
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
 		EVAL_REPORT_DIR="$${EVAL_REPORT_DIR}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
+		EVAL_LEVER="$${EVAL_LEVER}" \
+		EVAL_COMMIT="$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
 		pytest $(EVAL_PYTEST_ARGS)
 
 migrate-test: $(if $(LOCAL),,build)

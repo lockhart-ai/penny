@@ -33,6 +33,7 @@ from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFu
 from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
+from penny.tests.eval import artifacts as eval_artifacts
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.tools.browse import BrowseChannelUnavailableError
@@ -835,7 +836,7 @@ def _conversation_turns(message: str | None, messages: Sequence[str] | None) -> 
 
 
 @pytest.fixture
-def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
+def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval:
     """Drive the real chat flow N times for one user message (or a multi-turn
     conversation) and score each run.
 
@@ -864,7 +865,9 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
+        family: str | None = None,
     ) -> None:
+        eval_artifacts.begin_case(case_id)
         turns = _conversation_turns(message, messages)
         results: list[SampleResult] = []
         perf = _Perf()
@@ -922,6 +925,13 @@ def chat_eval(make_config: Callable[..., Config], tmp_path) -> ChatEval:
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+        )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
 
@@ -933,7 +943,7 @@ CollectorEval = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture
-def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEval:
+def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> CollectorEval:
     """Drive a real collector cycle (``run_for``) N times for one collection.
 
     Each sample is hermetic.  Seeds run first (the collection under test + any
@@ -952,7 +962,9 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
         browse: list[CannedPage] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
+        family: str | None = None,
     ) -> None:
+        eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
         for sample_index in range(samples):
@@ -988,6 +1000,13 @@ def collector_eval(make_config: Callable[..., Config], tmp_path) -> CollectorEva
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+        )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
 
@@ -1097,7 +1116,7 @@ NudgeEval = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture
-def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
+def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEval:
     """Contract test for a collector user-turn nudge that recovers a bad response.
 
     Drives a real collector cycle but forces one bad response right after the
@@ -1129,7 +1148,9 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
         snapshot: Snapshotter | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
+        family: str | None = None,
     ) -> None:
+        eval_artifacts.begin_case(case_id)
         make_wrapper = _nudge_injector(wrap, bail_text)
         results: list[SampleResult] = []
         perf = _Perf()
@@ -1166,6 +1187,13 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path) -> NudgeEval:
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+        )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
 
@@ -1428,7 +1456,7 @@ GuardRecoveryEval = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture
-def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRecoveryEval:
+def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -> GuardRecoveryEval:
     """Contract test for a runtime guard that refuses a bad tool call.
 
     Drives a real collector cycle but forces one bad tool call via an injector
@@ -1448,7 +1476,9 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
         browse: list[CannedPage] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
+        family: str | None = None,
     ) -> None:
+        eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
         for sample_index in range(samples):
@@ -1483,6 +1513,13 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path) -> GuardRe
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+        )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
 
@@ -1494,7 +1531,7 @@ StartupEval = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture
-def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
+def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> StartupEval:
     """Drive the real startup-announcement prompt N times and score its text.
 
     ``get_restart_message`` transforms the latest commit (read from the
@@ -1511,7 +1548,9 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
         score: TextScorer,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
+        family: str | None = None,
     ) -> None:
+        eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
         for sample_index in range(samples):
@@ -1539,6 +1578,13 @@ def startup_eval(make_config: Callable[..., Config], tmp_path) -> StartupEval:
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+        )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
 
