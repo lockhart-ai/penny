@@ -364,6 +364,59 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "fragile-case.md").read_text() == expected
 
 
+def test_report_sample_verdict_carries_the_failure_cause(tmp_path, monkeypatch) -> None:
+    # The per-sample header verdict gains the structural cause tag (#1725): a failed sample the
+    # runner stamped ``behavioral`` reads ``❌ 0/1 checks · behavioral`` so a reader triages the
+    # sample before unfolding — the whole render otherwise identical to the plain-fail case.
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    _done_bail_sample(db)
+    result = SampleResult.graded(
+        [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
+    )
+    result.cause = FailureCause.BEHAVIORAL  # the runner stamps this before _write_sample_report
+    _write_sample_report(db, "watch-fern", 0, result=result, reply="")
+    expected = (
+        "#### sample 1 — ❌ 0/1 checks · behavioral\n"
+        "\n"
+        "| # | Actor | Content |\n"
+        "|---|---|---|\n"
+        "| 1 | 👤 user | run the fern watch |\n"
+        "| 2 | 🔧 Penny → tool ❌ | done({}) |\n"
+        "\n"
+        "_checks: ❌ send queued — expected 1 send, saw 0_\n"
+        "\n"
+        "<details><summary>💭 thinking · turn 2 (done) — ❌</summary>\n"
+        "\n"
+        "> The entry is already written, so I'll close with done() rather than notify.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )
+    assert (tmp_path / "watch-fern.md").read_text() == expected
+
+
+def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) -> None:
+    # A harness timeout produces no completed turn, so the transcript would otherwise silently omit
+    # the sample.  It gets an explicit placeholder block (#1725/F2) — its verdict names the harness
+    # cause and the body says why there is no table — so the report's sample count always matches N.
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)  # no promptlog rows — the sample timed out before any completed call
+    timed = SampleResult.binary(["no reply within timeout"])
+    _stamp_cause(db, timed, timed_out=True)
+    _write_sample_report(db, "timeout-case", 2, result=timed)
+    expected = (
+        "#### sample 3 — ❌ FAIL · harness\n"
+        "\n"
+        "_(no completed turns recorded — the sample produced no finished model call, "
+        "e.g. a harness timeout)_\n"
+        "\n"
+    )
+    assert (tmp_path / "timeout-case.md").read_text() == expected
+
+
 # ── The dual strict+partial RESULT line ──
 
 

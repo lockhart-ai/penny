@@ -8,23 +8,24 @@ run — ``manifest.json`` + ``results.jsonl`` (``artifacts.py``) and one
 (``docs/eval-report-format.md``) specifies. This module is that step.
 
 Given a completed run's report directory it emits one markdown comment, in the
-format-spec's section order:
+format-spec's section order (v2, #1725):
 
   1. the manifest header (commit · model · N · lever), via ``render_manifest_header``.
   2. the run totals — the run-level aggregate across every case (mean-of-scores,
-     all-pass rate, and the failure-cause tally), computed by flattening every
-     case's per-sample scores/causes.
-  3. one block per case: its dual RESULT line (mean + all-pass) and cause summary
-     (``render_cause_summary`` — this is where the per-case aggregates finally
-     render; the incremental per-sample flow in ``conftest.py`` cannot, since a
-     cause tally is a whole-case aggregate), then the case's transcript report
-     folded into a collapsed ``<details>``.
+     all-pass rate, the failure-cause tally, and the per-family rollup), computed
+     by flattening every case's per-sample scores/causes.
+  3. one block per case: the RESULT line (mean + all-pass + timings), the **check
+     summary table** (one row per check, a column per sample, rendered from the
+     ``CaseArtifact``'s per-check cells so the graded mechanics are visible without
+     unfolding), the **miss-rationale** legend, the per-**sample** index (verdict ·
+     score · cause · fragile), then the case's transcript folded into a ``<details>``.
 
-Pure artifact consumption: no model, no git, no network. The per-case metrics
-are derived from each ``CaseArtifact``'s ``sample_scores`` / ``sample_causes``
-so a case's RESULT line and the run totals are computed the same way (a passed
-sample carries no cause, so the all-pass count is the count of ``None`` causes —
-see ``_sample_cause`` in ``artifacts.py``).
+The check table's REGRESSED cells and the miss legend's regressed-from note read the
+baseline (``EVAL_BASELINE`` via ``baseline_from_env``), the same flip source the
+per-sample transcript marks (#1693). Pure artifact consumption: no model, no git, no
+network. Per-case metrics derive from each ``CaseArtifact``'s ``sample_scores`` /
+``sample_causes`` / ``checks`` so a case's line and the run totals compute the same way
+(a passed sample carries no cause, so the all-pass count is the count of ``None`` causes).
 
 Run it via ``python -m penny.tests.eval.assemble <report_dir>`` (the assembled
 comment is written to stdout).
@@ -39,6 +40,8 @@ from penny.tests.eval.artifacts import (
     MANIFEST_FILENAME,
     RESULTS_FILENAME,
     CaseArtifact,
+    CheckCell,
+    CheckOutcome,
     FailureCause,
     RunManifest,
     count_causes,
@@ -46,11 +49,25 @@ from penny.tests.eval.artifacts import (
     render_cause_summary,
     render_manifest_header,
 )
+from penny.tests.eval.baseline import Baseline, baseline_from_env
 
 # ── Section literals (no magic strings) ──────────────────────────────────────
 RUN_TOTALS_HEADING = "## Run totals"
+CHECKS_HEADING = "**Checks**"
+MISS_HEADING = "**Miss rationales**"
+SAMPLES_HEADING = "**Samples**"
 NO_TRANSCRIPT = "_(no transcript recorded)_"
+ADVISORY_MARK = " _(advisory)_"
 SECTION_SEPARATOR = "\n\n"
+
+# Per-sample cell glyphs in the check summary table (a REGRESSED fail carries 🔻).
+_CELL_MARK = {
+    CheckCell.PASSED: "✅",
+    CheckCell.FAILED: "❌",
+    CheckCell.NA: "➖",
+    CheckCell.ABSENT: " ",
+}
+_REGRESSED_CELL = "❌🔻"
 
 USAGE = "usage: python -m penny.tests.eval.assemble <report_dir>"
 
@@ -62,11 +79,14 @@ def assemble_run_comment(report_dir: Path) -> str:
     manifest header, the run totals, and one folded block per case, in spec order."""
     manifest = load_manifest(report_dir)
     artifacts = load_case_artifacts(report_dir)
+    baseline = baseline_from_env()  # a prior run's results.jsonl → REGRESSED cells (#1693/#1725)
     sections = [
         render_manifest_header(manifest).rstrip("\n"),
         render_run_totals(artifacts),
     ]
-    sections += [render_case_block(report_dir, manifest, artifact) for artifact in artifacts]
+    sections += [
+        render_case_block(report_dir, manifest, artifact, baseline) for artifact in artifacts
+    ]
     return SECTION_SEPARATOR.join(sections) + "\n"
 
 
@@ -98,33 +118,197 @@ def load_case_artifacts(report_dir: Path) -> list[CaseArtifact]:
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 def render_run_totals(artifacts: list[CaseArtifact]) -> str:
-    """The run-level aggregate across every case — the dual metrics line then the cause tally,
-    parallel to a per-case block (and each line stays skimmable rather than one long run-on)."""
+    """The run-level aggregate across every case — the dual metrics line, the cause tally, and
+    (when the run spans cases) the per-family rollup, each on its own skimmable line."""
     scores, causes = _flatten(artifacts)
     result_body, cause_line = _result_metrics(scores, causes)
-    return f"{RUN_TOTALS_HEADING}\n\n{result_body}\n{cause_line}"
+    lines = [RUN_TOTALS_HEADING, "", result_body, cause_line]
+    families = _family_rollup_line(artifacts)
+    if families:
+        lines.append(families)
+    return "\n".join(lines)
 
 
-def render_case_block(report_dir: Path, manifest: RunManifest, artifact: CaseArtifact) -> str:
-    """One case's block: heading, the dual RESULT line, its cause summary, and the folded
-    transcript. The RESULT line and cause summary are the per-case aggregates that the
-    incremental per-sample flow could not render."""
-    result_body, cause_line = _result_metrics(artifact.sample_scores, artifact.sample_causes)
-    transcripts = _transcript_block(report_dir, manifest, artifact.case_id)
+def _family_rollup_line(artifacts: list[CaseArtifact]) -> str:
+    """The compact per-family rollup — ``families: <fam> <mean> (<k> case[s]) · …`` — over the
+    families the run spans (each family's mean is the mean of its samples). Empty for no cases."""
+    groups: dict[str, list[CaseArtifact]] = {}
+    for artifact in artifacts:
+        groups.setdefault(artifact.family, []).append(artifact)
+    if not groups:
+        return ""
+    parts = []
+    for family, group in groups.items():
+        scores, _causes = _flatten(group)
+        mean = sum(scores) / len(scores) if scores else 0.0
+        cases = len(group)
+        parts.append(f"{family} {mean:.2f} ({cases} {'case' if cases == 1 else 'cases'})")
+    return f"families: {' · '.join(parts)}"
+
+
+def render_case_block(
+    report_dir: Path, manifest: RunManifest, artifact: CaseArtifact, baseline: Baseline | None
+) -> str:
+    """One case's block (the summary method): heading, the RESULT line with timings, the check
+    summary table, the miss-rationale legend, the per-sample index, then the folded transcript."""
+    blocks = [
+        render_check_table(artifact, baseline),
+        render_miss_rationales(artifact, baseline),
+        render_samples(artifact),
+    ]
+    lines = [f"### `{artifact.case_id}` — {artifact.family}", "", _case_result_line(artifact)]
+    for block in blocks:
+        if block:
+            lines += ["", block]
+    lines += [
+        "",
+        f"<details><summary>transcripts — {artifact.case_id}</summary>",
+        "",
+        _transcript_block(report_dir, manifest, artifact.case_id),
+        "",
+        "</details>",
+    ]
+    return "\n".join(lines)
+
+
+def _case_result_line(artifact: CaseArtifact) -> str:
+    """The per-case RESULT line: ``mean … · all-pass k/n`` then the run's timings (calls · wall ·
+    tokens), so the cost of the case reads beside its score. All-pass = the count of ``None``
+    causes."""
+    total = len(artifact.sample_scores)
+    mean = sum(artifact.sample_scores) / total if total else 0.0
+    all_pass = sum(1 for cause in artifact.sample_causes if cause is None)
+    return f"**RESULT:** mean {mean:.2f} · all-pass {all_pass}/{total}{_timings_suffix(artifact)}"
+
+
+def _timings_suffix(artifact: CaseArtifact) -> str:
+    """The ``· <calls> calls · <s>s · <in>K in / <out>K out`` tail on the RESULT line (empty when
+    the case logged no model call)."""
+    timings = artifact.timings
+    if not timings.calls:
+        return ""
+    seconds = timings.duration_ms / 1000
+    return (
+        f" · {timings.calls} calls · {seconds:.0f}s · "
+        f"{timings.input_tokens / 1000:.1f}K in / {timings.output_tokens / 1000:.1f}K out"
+    )
+
+
+def render_check_table(artifact: CaseArtifact, baseline: Baseline | None) -> str:
+    """The per-case check summary table (#1725): one row per check (numbered, keying the miss
+    legend), a column per sample (pass / fail / n-a / regressed / blank when the check was absent
+    that sample), advisory checks marked, and a ``pass`` column of passed/present. Empty when the
+    case has no graded checks (a binary case renders its transcript alone)."""
+    if not artifact.checks:
+        return ""
+    samples = artifact.samples
+    headers = ["#", "check", *[f"s{i + 1}" for i in range(samples)], "pass"]
+    rows = [
+        _check_row(index, outcome, artifact.case_id, baseline, samples)
+        for index, outcome in enumerate(artifact.checks, start=1)
+    ]
     return "\n".join(
         [
-            f"### `{artifact.case_id}` — {artifact.family}",
+            CHECKS_HEADING,
             "",
-            f"**RESULT:** {result_body}",
-            cause_line,
-            "",
-            f"<details><summary>transcripts — {artifact.case_id}</summary>",
-            "",
-            transcripts,
-            "",
-            "</details>",
+            "| " + " | ".join(headers) + " |",
+            "|" + "---|" * len(headers),
+            *rows,
         ]
     )
+
+
+def _check_row(
+    index: int, outcome: CheckOutcome, case_id: str, baseline: Baseline | None, samples: int
+) -> str:
+    """One check's table row: its number, label (advisory-marked), the per-sample cells, and the
+    ``passed/present`` pass column. A regressed check renders its failing cells as ❌🔻."""
+    regressed = baseline is not None and baseline.was_passing(case_id, outcome.label)
+    cells = [_cell_mark(_cell_at(outcome, i), regressed=regressed) for i in range(samples)]
+    label = outcome.label + ("" if outcome.scored else ADVISORY_MARK)
+    return f"| {index} | {label} | " + " | ".join(cells) + f" | {outcome.passed}/{outcome.total} |"
+
+
+def _cell_mark(cell: CheckCell, *, regressed: bool) -> str:
+    """The glyph for one sample's cell — ❌🔻 for a regressed failure, else the plain mark."""
+    if cell == CheckCell.FAILED and regressed:
+        return _REGRESSED_CELL
+    return _CELL_MARK[cell]
+
+
+def _cell_at(outcome: CheckOutcome, index: int) -> CheckCell:
+    """The check's cell for sample ``index`` — ``absent`` when the scorer emitted no such check
+    that sample (a shorter/empty cells list, e.g. an artifact built before per-sample cells)."""
+    return outcome.cells[index] if index < len(outcome.cells) else CheckCell.ABSENT
+
+
+def render_miss_rationales(artifact: CaseArtifact, baseline: Baseline | None) -> str:
+    """The miss legend under the table: one bullet per check that failed any sample, keyed by its
+    table number, naming the failing samples and its observed-vs-expected rationale (#1725). A
+    regressed check names the prior run it flipped from. Empty when nothing missed."""
+    lines = [
+        _miss_line(index, outcome, artifact, baseline)
+        for index, outcome in enumerate(artifact.checks, start=1)
+        if any(_cell_at(outcome, i) == CheckCell.FAILED for i in range(artifact.samples))
+    ]
+    return "\n".join([MISS_HEADING, *lines]) if lines else ""
+
+
+def _miss_line(
+    index: int, outcome: CheckOutcome, artifact: CaseArtifact, baseline: Baseline | None
+) -> str:
+    """One miss bullet: ``- (n) <label> — *<rationale>* (<samples>)`` plus a regressed-from note
+    when the check flipped from a fully-green baseline."""
+    samples = artifact.samples
+    failed = [i for i in range(samples) if _cell_at(outcome, i) == CheckCell.FAILED]
+    where = "all" if len(failed) == samples else ", ".join(f"s{i + 1}" for i in failed)
+    rationale = f" — *{'; '.join(outcome.rationales)}*" if outcome.rationales else ""
+    note = ""
+    if baseline is not None and baseline.was_passing(artifact.case_id, outcome.label):
+        prior = baseline.run_id_for(artifact.case_id)
+        note = f" · 🔻 regressed from `{prior}`" if prior else " · 🔻 regressed"
+    return f"- ({index}) {outcome.label}{rationale} ({where}){note}"
+
+
+def render_samples(artifact: CaseArtifact) -> str:
+    """The per-sample index above the folded transcript: one bullet per sample with its verdict,
+    check fraction + score, fragile flag, and cause — so a reader triages before unfolding (#1725).
+    Always present (it names every sample, so the report's sample count matches N)."""
+    total = len(artifact.sample_scores)
+    if not total:
+        return ""
+    return "\n".join([SAMPLES_HEADING, *[_sample_line(artifact, i) for i in range(total)]])
+
+
+def _sample_line(artifact: CaseArtifact, index: int) -> str:
+    """``- sN — <verdict> · <k/m> (<score>) · [fragile ·] <cause>`` for one sample, from the
+    artifact alone (the check fraction reconstructed from the per-sample cells)."""
+    score = artifact.sample_scores[index]
+    parts = [f"s{index + 1} — {'✅ pass' if score >= 1.0 else '❌ fail'}"]
+    fraction = _sample_checks(artifact, index)
+    parts.append(f"{fraction[0]}/{fraction[1]} ({score:.2f})" if fraction else f"{score:.2f}")
+    if index < len(artifact.sample_fragile) and artifact.sample_fragile[index]:
+        parts.append("fragile")
+    cause = artifact.sample_causes[index]
+    if cause is not None:
+        parts.append("pathology (excluded)" if cause == FailureCause.PATHOLOGY else cause.value)
+    return "- " + " · ".join(parts)
+
+
+def _sample_checks(artifact: CaseArtifact, index: int) -> tuple[int, int] | None:
+    """This sample's ``(passed, scored)`` check counts, reconstructed from the per-sample cells the
+    same way ``SampleResult.graded`` scores: not-applicable/absent cells drop, then the scored ones
+    (or all applicable when none are scored). ``None`` when the sample exercised no check."""
+    applicable = [
+        outcome
+        for outcome in artifact.checks
+        if _cell_at(outcome, index) in (CheckCell.PASSED, CheckCell.FAILED)
+    ]
+    if not applicable:
+        return None
+    scored = [outcome for outcome in applicable if outcome.scored] or applicable
+    passed = sum(1 for outcome in scored if _cell_at(outcome, index) == CheckCell.PASSED)
+    return passed, len(scored)
 
 
 def _result_metrics(scores: list[float], causes: list[FailureCause | None]) -> tuple[str, str]:

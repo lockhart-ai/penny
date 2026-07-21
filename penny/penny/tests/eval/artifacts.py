@@ -34,7 +34,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ── Environment contract (forwarded by the Makefile `eval` target) ───────────
 EVAL_REPORT_DIR_ENV = "EVAL_REPORT_DIR"
@@ -150,10 +150,18 @@ def render_cause_summary(counts: CauseCounts, excluded_mean: float, kept: int) -
 
 # ── Structured inputs read off a scored case (Protocols avoid a conftest cycle) ──
 class GradedCheck(Protocol):
-    """The subset of a ``Check`` the per-check aggregate reads."""
+    """The subset of a ``Check`` the per-check aggregate reads.
+
+    Beyond ``ok``, the v2 per-case check table (#1725) reads ``scored`` (advisory flavour vs.
+    a scored check), ``ignored`` (the not-applicable third state → a ➖ cell), and ``rationale``
+    (the observed-vs-expected note surfaced on a miss). A ``Check`` structurally satisfies all four.
+    """
 
     label: str
     ok: bool
+    scored: bool
+    ignored: bool
+    rationale: str | None
 
 
 class ScoredSample(Protocol):
@@ -169,6 +177,7 @@ class ScoredSample(Protocol):
 
     score: float
     cause: FailureCause | None
+    fragile: bool
 
     @property
     def passed(self) -> bool: ...
@@ -187,12 +196,36 @@ class PerfTotals(Protocol):
 
 
 # ── Serialized shapes ────────────────────────────────────────────────────────
+class CheckCell(StrEnum):
+    """One sample's outcome for a check, in the v2 per-case check summary table (#1725).
+
+    ``absent`` is distinct from ``na``: ``na`` is a not-applicable check the scorer *emitted*
+    for the sample (its branch didn't run → a ➖ cell); ``absent`` means the scorer emitted no
+    such check for that sample at all (a blank cell), so the two never conflate.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    NA = "na"
+    ABSENT = "absent"
+
+
 class CheckOutcome(BaseModel):
-    """One check's aggregate across a case's samples — passed / present."""
+    """One check's aggregate across a case's samples — passed / present, plus the per-sample
+    outcome cells + rationales the v2 check summary table renders from the artifact alone (#1725).
+
+    ``passed``/``total`` are unchanged (ok-count / present-count). ``scored`` is the advisory
+    flag (False → the check renders but is out of the score). ``cells`` carries one outcome per
+    sample (aligned with ``sample_scores``); ``rationales`` collects the distinct
+    observed-vs-expected notes from the samples that failed the check.
+    """
 
     label: str
     passed: int
     total: int
+    scored: bool = True
+    cells: list[CheckCell] = Field(default_factory=list)
+    rationales: list[str] = Field(default_factory=list)
 
 
 class CaseTimings(BaseModel):
@@ -216,6 +249,7 @@ class CaseArtifact(BaseModel):
     samples: int
     sample_scores: list[float]
     sample_causes: list[FailureCause | None]
+    sample_fragile: list[bool] = Field(default_factory=list)
     cause_counts: CauseCounts
     checks: list[CheckOutcome]
     timings: CaseTimings
@@ -242,18 +276,51 @@ def default_family(module: str) -> str:
     return leaf[len("test_") :] if leaf.startswith("test_") else leaf
 
 
+def _check_cell(check: GradedCheck) -> CheckCell:
+    """One sample's outcome for a check: ➖ when not-applicable, ✅ when passed, else ❌."""
+    if check.ignored:
+        return CheckCell.NA
+    return CheckCell.PASSED if check.ok else CheckCell.FAILED
+
+
 def aggregate_checks(results: Sequence[ScoredSample]) -> list[CheckOutcome]:
-    """Fold every sample's checks into per-label passed/present totals (in order)."""
+    """Fold every sample's checks into per-label totals AND per-sample outcome cells (in order).
+
+    ``passed``/``total`` are unchanged (ok-count / present-count). ``cells`` records each sample's
+    outcome (passed/failed/na, or ``absent`` when the scorer emitted no such check that sample), so
+    the v2 summary table renders one row per label with a column per sample; ``rationales`` collects
+    the distinct observed-vs-expected notes from the samples that failed the check."""
     order: list[str] = []
     passed: dict[str, int] = {}
     total: dict[str, int] = {}
-    for result in results:
+    scored: dict[str, bool] = {}
+    cells: dict[str, list[CheckCell]] = {}
+    rationales: dict[str, list[str]] = {}
+    sample_count = len(results)
+    for index, result in enumerate(results):
         for check in result.checks:
             if check.label not in total:
                 order.append(check.label)
+                scored[check.label] = check.scored
+                cells[check.label] = [CheckCell.ABSENT] * sample_count
+                rationales[check.label] = []
             total[check.label] = total.get(check.label, 0) + 1
             passed[check.label] = passed.get(check.label, 0) + (1 if check.ok else 0)
-    return [CheckOutcome(label=label, passed=passed[label], total=total[label]) for label in order]
+            cells[check.label][index] = _check_cell(check)
+            missed = not check.ignored and not check.ok
+            if missed and check.rationale and check.rationale not in rationales[check.label]:
+                rationales[check.label].append(check.rationale)
+    return [
+        CheckOutcome(
+            label=label,
+            passed=passed[label],
+            total=total[label],
+            scored=scored[label],
+            cells=cells[label],
+            rationales=rationales[label],
+        )
+        for label in order
+    ]
 
 
 def _sample_cause(sample: ScoredSample) -> FailureCause | None:
@@ -290,6 +357,7 @@ def build_case_artifact(
         samples=count,
         sample_scores=scores,
         sample_causes=causes,
+        sample_fragile=[bool(result.fragile) for result in results],
         cause_counts=count_causes(causes),
         checks=aggregate_checks(results),
         timings=timings,

@@ -125,6 +125,10 @@ class SampleResult:
     # a pass; ``behavioral`` / ``pathology`` / ``harness`` for a failure.  The artifact aggregate
     # defaults an unstamped failure to behavioral, so a directly-constructed result is safe.
     cause: FailureCause | None = None
+    # Passed-but-shaky (#1725, #1694): the sample passed only after the loop refused/recovered a
+    # tool call.  Stamped by ``_write_sample_report`` (same ``EVAL_REPORT_DIR`` gate as the artifact
+    # write) so it rides into the ``CaseArtifact.sample_fragile`` list the assembler reads.
+    fragile: bool = False
 
     @property
     def passed(self) -> bool:
@@ -1062,12 +1066,23 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
     return str(Path(base) / f"{case_id}-{sample_index}.db")
 
 
+def _cause_tag(cause: FailureCause | None) -> str:
+    """The failure-cause suffix on a sample's verdict (#1725): empty for a pass; ``· pathology
+    (excluded)`` for a pathology sample (it drops from the pathology-excluded mean); else the plain
+    cause word (``· behavioral`` / ``· harness``)."""
+    if cause is None:
+        return ""
+    if cause == FailureCause.PATHOLOGY:
+        return " · pathology (excluded)"
+    return f" · {cause.value}"
+
+
 def _sample_verdict(result: SampleResult, *, fragile: bool) -> str:
     """The sample's header verdict.  Binary → ``✅ PASS`` / ``❌ FAIL``; graded → ``N/M checks``
     (M = the applicable scored checks — advisory + not-applicable excluded) with a ``· K n/a``
-    tail when any check was not-applicable.  A passed-but-shaky sample (a rejected/recovered tool
-    call in the run) gets a ``· fragile`` tail, so green-via-recovery reads distinctly from clean
-    green."""
+    tail when any check was not-applicable.  A failed sample carries its cause tag (#1725), and a
+    passed-but-shaky sample (a rejected/recovered tool call in the run) gets a ``· fragile`` tail,
+    so green-via-recovery reads distinctly from clean green."""
     if not result.checks:
         core = "✅ PASS" if result.passed else "❌ FAIL"
     else:
@@ -1076,6 +1091,7 @@ def _sample_verdict(result: SampleResult, *, fragile: bool) -> str:
         na = sum(1 for check in result.checks if check.ignored)
         if na:
             core += f" · {na} n/a"
+    core += _cause_tag(result.cause)
     return f"{core} · fragile" if fragile else core
 
 
@@ -1160,6 +1176,14 @@ def _thinking_block(
     ]
 
 
+# The transcript block for a sample that produced no completed turn (a harness timeout) — an
+# honest placeholder so the report never silently omits a sample (#1725/F2).
+NO_TURNS_PLACEHOLDER = (
+    "_(no completed turns recorded — the sample produced no finished model call, "
+    "e.g. a harness timeout)_"
+)
+
+
 def _write_sample_report(
     db: Database, case_id: str, sample_index: int, *, result: SampleResult, reply: str = ""
 ) -> None:
@@ -1176,25 +1200,29 @@ def _write_sample_report(
         rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
     baseline = baseline_from_env()  # a prior run's results.jsonl → REGRESSED marks (#1693)
     regressed_ids = _regressed_ids(result.checks, baseline, case_id)
-    fragile = result.passed and sample_is_fragile(db)
-    verdict = _sample_verdict(result, fragile=fragile)
-    lines = [
-        f"#### sample {sample_index + 1} — {verdict}",
-        "",
-        "| # | Actor | Content |",
-        "|---|---|---|",
-    ]
+    # Stamp fragile on the result (same EVAL_REPORT_DIR gate as the artifact write) so it rides
+    # into CaseArtifact.sample_fragile for the assembler's per-sample line (#1725).
+    result.fragile = result.passed and sample_is_fragile(db)
+    verdict = _sample_verdict(result, fragile=result.fragile)
+    lines = [f"#### sample {sample_index + 1} — {verdict}", ""]
     turns = _sample_turns(rows, reply)
-    placed, leftover = _place_checks(result.checks, turns)  # checks onto the row each one tests
-    for index, (actor, content) in enumerate(turns, start=1):
-        lines.append(
-            f"| {index} | {actor}{_row_mark(placed.get(index - 1, []), regressed_ids)} "
-            f"| {_report_cell(content)} |"
-        )
-    legend = _report_legend(result, leftover, regressed_ids, baseline, case_id)
-    if legend:
-        lines += ["", legend]
-    lines += _thinking_sections(turns, placed, regressed_ids, _thinking_by_call(rows))
+    if not turns:
+        # A sample that produced no completed turn (e.g. a harness timeout) still gets a block, so
+        # the report's sample count always matches N — a silently-dropped sample is invisible
+        # degradation (#1725/F2).  The verdict's cause tag already names the harness timeout.
+        lines.append(NO_TURNS_PLACEHOLDER)
+    else:
+        lines += ["| # | Actor | Content |", "|---|---|---|"]
+        placed, leftover = _place_checks(result.checks, turns)  # checks onto the row each tests
+        for index, (actor, content) in enumerate(turns, start=1):
+            lines.append(
+                f"| {index} | {actor}{_row_mark(placed.get(index - 1, []), regressed_ids)} "
+                f"| {_report_cell(content)} |"
+            )
+        legend = _report_legend(result, leftover, regressed_ids, baseline, case_id)
+        if legend:
+            lines += ["", legend]
+        lines += _thinking_sections(turns, placed, regressed_ids, _thinking_by_call(rows))
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:
@@ -1331,6 +1359,10 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                         timed_out = SampleResult.binary(["no reply within timeout"])
                         _stamp_cause(penny.db, timed_out, timed_out=True)
                         results.append(timed_out)
+                        # Emit the timeout sample's block too, so the transcript's sample count
+                        # always matches N — a silently-dropped sample is invisible degradation
+                        # (#1725/F2). No completed turn → the placeholder block.
+                        _write_sample_report(penny.db, case_id, sample_index, result=timed_out)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:

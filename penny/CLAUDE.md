@@ -637,6 +637,21 @@ run totals and each per-case line are computed identically. (The header carries 
 and no gate verdict, since a `CaseArtifact` carries no `min_pass_rate`; the RESULT line reports the
 two metrics the artifacts hold.)
 
+**Report format v2 (#1725).** The assembler now surfaces the graded-check mechanics *outside* the
+folded transcripts, so a reader sees them at a glance instead of unfolding: each case block renders a
+**check summary table** (one row per check, a column per sample — ✅ / ❌ / ➖ n-a / ❌🔻 regressed /
+blank-when-absent — advisory checks marked, a passed/present `pass` column), a **miss-rationale**
+legend keyed by check number (failing samples + observed-vs-expected note + regressed-from), and a
+**per-sample index** (verdict · check fraction + score · fragile · cause). The RESULT line carries
+timings; run totals carry a `families:` rollup; the per-case cause line is gone (cause now lives in
+run totals + the sample index). This rides on additive artifact fields: `CheckOutcome` gained
+`scored` · `cells[]` (per-sample `passed`/`failed`/`na`/`absent`) · `rationales[]`, and `CaseArtifact`
+gained `sample_fragile[]`, so the table renders from `results.jsonl` alone (the baseline supplies the
+REGRESSED cells). A harness-timeout sample gets an explicit placeholder block rather than being
+silently omitted, so the report's sample count always matches N. Spec + worked example:
+`docs/eval-report-format.md`; whole-render tests in `test_assemble.py` / `test_eval_harness.py` /
+`test_artifacts.py`.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,

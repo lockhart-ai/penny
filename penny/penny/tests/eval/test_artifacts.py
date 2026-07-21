@@ -20,6 +20,7 @@ from penny.tests.eval.artifacts import (
     RESULTS_FILENAME,
     CaseTimings,
     CauseCounts,
+    CheckCell,
     EvalRun,
     FailureCause,
     MissingLeverError,
@@ -88,21 +89,42 @@ def test_default_family_strips_test_prefix() -> None:
 
 
 def test_build_case_artifact_aggregates_scores_and_checks() -> None:
+    # A rationale on the failing c2 + a fragile s2 exercise the v2 per-sample cells, the advisory
+    # flag, and the fragile list the summary table renders from the artifact alone (#1725).
+    fragile_sample = SampleResult.graded(
+        [
+            Check("c1", ok=True),
+            Check("c2", ok=False, rationale="expected 3 reads, saw 1"),
+            Check("advice", ok=True, scored=False),
+        ]
+    )
+    fragile_sample.fragile = True
     results = [
-        SampleResult.graded([Check("c1", ok=True), Check("c2", ok=True)]),
-        SampleResult.graded([Check("c1", ok=True), Check("c2", ok=False)]),
+        SampleResult.graded(
+            [Check("c1", ok=True), Check("c2", ok=True), Check("advice", ok=True, scored=False)]
+        ),
+        fragile_sample,
     ]
     artifact = build_case_artifact(
         run_id="run-x", case_id="case-x", family="fam", results=results, timings=_TIMINGS
     )
-    assert artifact.mean == 0.75  # (1.0 + 0.5) / 2
+    assert artifact.mean == 0.75  # (1.0 + 0.5) / 2 — the advisory check is out of the score
     assert artifact.all_pass_rate == 0.5  # one of two samples fully passed
     assert artifact.samples == 2
     assert artifact.sample_scores == [1.0, 0.5]
+    assert artifact.sample_fragile == [False, True]
     assert [(c.label, c.passed, c.total) for c in artifact.checks] == [
         ("c1", 2, 2),
         ("c2", 1, 2),
+        ("advice", 2, 2),
     ]
+    # Per-sample cells (aligned with sample_scores), the advisory flag, and the miss rationale.
+    by_label = {c.label: c for c in artifact.checks}
+    assert by_label["c1"].cells == [CheckCell.PASSED, CheckCell.PASSED]
+    assert by_label["c2"].cells == [CheckCell.PASSED, CheckCell.FAILED]
+    assert by_label["c2"].rationales == ["expected 3 reads, saw 1"]
+    assert by_label["c2"].scored is True
+    assert by_label["advice"].scored is False
     assert artifact.timings == _TIMINGS
 
 
@@ -114,6 +136,7 @@ def test_binary_case_records_empty_check_outcomes() -> None:
     assert artifact.mean == 0.5
     assert artifact.all_pass_rate == 0.5
     assert artifact.sample_scores == [1.0, 0.0]
+    assert artifact.sample_fragile == [False, False]  # a binary sample carries no fragile flag
     assert artifact.checks == []
 
 
@@ -176,6 +199,7 @@ def test_case_artifact_carries_per_sample_causes_and_pathology_excluded() -> Non
         FailureCause.HARNESS,
     ]
     assert artifact.cause_counts == CauseCounts(behavioral=1, pathology=1, harness=1)
+    assert artifact.sample_fragile == [False, False, False, False]  # none stamped fragile here
     assert artifact.mean == 0.25  # (1 + 0 + 0 + 0) / 4
     # Excluding the pathology sample: (1.0 + 0.0 + 0.0) / 3.
     assert artifact.pathology_excluded_mean == pytest.approx((1.0 + 0.0 + 0.0) / 3)
