@@ -31,7 +31,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, _InjectTextBail
+from penny.tests.eval.conftest import ChatEval, Check, _InjectTextBail, tool_was_called
 from penny.tests.eval.fixtures import TOPIC_PAGES
 from penny.validation.response_validators import is_call_as_text_bail
 
@@ -45,18 +45,34 @@ _CALL_AS_TEXT = (
 )
 
 
-def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
-    """Pass iff the forced call-as-text bail did NOT reach the user as raw JSON and
-    the reply is substantive prose (the model recovered into a real answer or an
-    honest dead-end, rather than the loop finalizing the JSON blob)."""
-    fails: list[str] = []
-    if is_call_as_text_bail(reply):
-        fails.append(
-            f"reply is a serialized tool call, not prose — bail reached the user: {reply[:120]!r}"
-        )
-    if sum(1 for character in reply if character.isalpha()) < 15:
-        fails.append(f"reply is not substantive prose: {reply[:120]!r}")
-    return fails
+def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
+    """Graded: the forced call-as-text bail did NOT reach the user as raw JSON and the
+    reply is substantive prose (the model recovered into a real answer or an honest
+    dead-end, rather than the loop finalizing the JSON blob).
+
+    The first check is the recovery-contract guard the graded path would otherwise drop
+    (``chat_eval`` only appends its ``bail_injected`` guard on the binary branch): the
+    injector fires right after the model's first real tool call, so a persisted browse
+    call is the structural proof the bail fired and was recovered from — a run that never
+    browsed never triggered the contract and must not pass on a normal answer."""
+    alpha = sum(1 for character in reply if character.isalpha())
+    return [
+        Check(
+            "issued the real browse the bail interrupts",
+            tool_was_called(db, "browse"),
+            rationale="no real browse call — the injected call-as-text bail never fired",
+        ),
+        Check(
+            "reply is prose, not a serialized tool call",
+            not is_call_as_text_bail(reply),
+            rationale=f"reply is a serialized tool call — bail reached the user: {reply[:120]!r}",
+        ),
+        Check(
+            "reply is substantive prose",
+            alpha >= 15,
+            rationale=f"reply is not substantive prose ({alpha} alpha chars): {reply[:120]!r}",
+        ),
+    ]
 
 
 async def test_call_as_text_is_caught_and_recovers(chat_eval: ChatEval) -> None:

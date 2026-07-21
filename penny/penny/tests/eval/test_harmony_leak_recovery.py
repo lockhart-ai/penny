@@ -34,7 +34,7 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval, _InjectTextBail
+from penny.tests.eval.conftest import ChatEval, Check, _InjectTextBail, tool_was_called
 from penny.tests.eval.fixtures import TOPIC_PAGES
 from penny.text_validity import has_leaked_harmony_envelope
 
@@ -46,18 +46,35 @@ pytestmark = pytest.mark.eval
 _HARMONY_LEAK = "<|start|>assistant<|channel|>analysis to=functions.browse code<|message|><|call|>"
 
 
-def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
-    """Pass iff the forced Harmony-envelope leak did NOT reach the user as raw
-    control-token text and the reply is substantive prose (the model re-drew into a
-    real answer rather than the loop finalizing the leaked envelope)."""
-    fails: list[str] = []
-    if has_leaked_harmony_envelope(reply):
-        fails.append(
-            f"reply carries a raw Harmony envelope — leak reached the user: {reply[:120]!r}"
-        )
-    if sum(1 for character in reply if character.isalpha()) < 15:
-        fails.append(f"reply is not substantive prose: {reply[:120]!r}")
-    return fails
+def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
+    """Graded: the forced Harmony-envelope leak did NOT reach the user as raw
+    control-token text and the reply is substantive prose (the model re-drew into a real
+    answer rather than the loop finalizing the leaked envelope).
+
+    The first check is the recovery-contract guard the graded path would otherwise drop
+    (``chat_eval`` only appends its ``bail_injected`` guard on the binary branch): the
+    injector fires right after the model's first real tool call, so a persisted browse
+    call is the structural proof the leak fired and was recovered from — a run that never
+    browsed never triggered the contract and must not pass on a normal answer."""
+    alpha = sum(1 for character in reply if character.isalpha())
+    return [
+        Check(
+            "issued the real browse the leak interrupts",
+            tool_was_called(db, "browse"),
+            rationale="no real browse call — the injected Harmony-envelope leak never fired",
+        ),
+        Check(
+            "reply carries no raw Harmony envelope",
+            not has_leaked_harmony_envelope(reply),
+            rationale=f"reply carries a raw Harmony envelope — leak reached the user: "
+            f"{reply[:120]!r}",
+        ),
+        Check(
+            "reply is substantive prose",
+            alpha >= 15,
+            rationale=f"reply is not substantive prose ({alpha} alpha chars): {reply[:120]!r}",
+        ),
+    ]
 
 
 async def test_harmony_envelope_leak_is_caught_and_recovers(chat_eval: ChatEval) -> None:
