@@ -100,6 +100,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
 async def test_fictitious_extraction_tool_is_rejected_and_recovers(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="extraction-tool-recovery",
+        family="chat-recovery",
         message=_USER_MESSAGE,
         seed=_seed,
         wrap_client=lambda real: _InjectFictitiousToolPrompt(real, _COLLECTION, _FICTITIOUS_PROMPT),

@@ -152,6 +152,7 @@ def _score_no_flailing_on_channel_outage(suspect: str):
 async def test_honest_close_when_sources_unreadable(collector_eval) -> None:
     await collector_eval(
         case_id="collector-honest-failure",
+        family="collector-honesty",
         collection=ROUNDUP.name,
         seed=_seed_roundup,
         browse=[ALL_BROWSES_FAIL],
@@ -163,6 +164,7 @@ async def test_honest_close_when_sources_unreadable(collector_eval) -> None:
 async def test_writes_when_source_works(collector_eval) -> None:
     await collector_eval(
         case_id="collector-writes-working-source",
+        family="collector-honesty",
         collection=ROUNDUP.name,
         seed=_seed_roundup,
         browse=[ROUNDUP_PAGE],
@@ -174,6 +176,7 @@ async def test_writes_when_source_works(collector_eval) -> None:
 async def test_no_flailing_when_browser_disconnected(collector_eval) -> None:
     await collector_eval(
         case_id="collector-channel-outage-no-flailing",
+        family="collector-honesty",
         collection=ROUNDUP.name,
         seed=_seed_roundup,
         browse=[BROWSER_DISCONNECTED],

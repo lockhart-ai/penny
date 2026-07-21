@@ -91,6 +91,7 @@ async def test_key_not_found_recovers_to_update_not_write(guard_recovery_eval) -
     rather than ``collection_write``-ing a duplicate."""
     await guard_recovery_eval(
         case_id="key-not-found-write-vs-update",
+        family="collector-guard-recovery",
         collection=RECIPE_BOX.name,
         seed=_seed_recipe_box,
         wrap_client=lambda real: _InjectKeyMiss(real, RECIPE_BOX.name, RECIPE_BOX_NEAR_MISS_KEY),

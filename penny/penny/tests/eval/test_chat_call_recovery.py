@@ -62,6 +62,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[str]:
 async def test_call_as_text_is_caught_and_recovers(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="chat-call-as-text-recovery",
+        family="chat-recovery",
         message="what's the deepest lake in the world?",
         browse=list(TOPIC_PAGES),
         wrap_client=lambda real: _InjectTextBail(real, _CALL_AS_TEXT),

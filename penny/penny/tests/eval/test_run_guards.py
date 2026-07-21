@@ -107,6 +107,7 @@ async def test_premature_done_is_refused_and_recovers(guard_recovery_eval) -> No
     then reads its inputs and writes the summary."""
     await guard_recovery_eval(
         case_id="guard-premature-done",
+        family="collector-guard-recovery",
         collection=WEEKLY_DIGEST.name,
         seed=_seed_digest_with_messages,
         wrap_client=lambda real: _InjectDoneBail(real),
@@ -120,6 +121,7 @@ async def test_half_formed_send_is_refused_and_recovers(guard_recovery_eval) -> 
     then resends a complete message."""
     await guard_recovery_eval(
         case_id="guard-half-formed-send",
+        family="collector-guard-recovery",
         collection=SEND_DIGEST.name,
         seed=_seed_send_digest,
         wrap_client=lambda real: _InjectSendBail(real, HALF_FORMED_SEND),

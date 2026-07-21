@@ -84,6 +84,7 @@ async def test_duplicate_call_is_rejected_and_recovers(guard_recovery_eval) -> N
     model reuses the earlier result and still writes the summary it owes."""
     await guard_recovery_eval(
         case_id="duplicate-call-recovery",
+        family="collector-guard-recovery",
         collection=WEEKLY_DIGEST.name,
         seed=_seed_digest_with_messages,
         wrap_client=lambda real: _InjectDuplicateCall(real),

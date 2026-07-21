@@ -174,6 +174,7 @@ def _score_research(db: Database, before: object, sent: list[str]) -> list[str]:
 async def test_extract_likes(collector_eval) -> None:
     await collector_eval(
         case_id="extract-likes",
+        family="extractors",
         collection="likes",
         seed=_seed_user_messages(
             "honestly i've been obsessed with single-origin pour-over coffee lately",
@@ -187,6 +188,7 @@ async def test_extract_likes(collector_eval) -> None:
 async def test_extract_likes_quiet(collector_eval) -> None:
     await collector_eval(
         case_id="extract-likes-quiet",
+        family="extractors",
         collection="likes",
         seed=_seed_user_messages(
             "what's the capital of australia?",
@@ -201,6 +203,7 @@ async def test_extract_likes_quiet(collector_eval) -> None:
 async def test_extract_dislikes(collector_eval) -> None:
     await collector_eval(
         case_id="extract-dislikes",
+        family="extractors",
         collection="dislikes",
         seed=_seed_user_messages(
             "ugh i really can't stand cilantro, it ruins every dish for me",
@@ -214,6 +217,7 @@ async def test_extract_dislikes(collector_eval) -> None:
 async def test_extract_knowledge(collector_eval) -> None:
     await collector_eval(
         case_id="extract-knowledge",
+        family="extractors",
         collection="knowledge",
         seed=_seed_browse_results(KNOWLEDGE_PAGE_CONTENT),
         snapshot=_snapshot("knowledge"),
@@ -227,6 +231,7 @@ async def test_extract_knowledge(collector_eval) -> None:
 async def test_collector_research_browse(collector_eval) -> None:
     await collector_eval(
         case_id="collector-research-browse",
+        family="extractors",
         collection=RESEARCH_WATCHER.name,
         seed=_seed_research_watcher,
         snapshot=_snapshot(RESEARCH_WATCHER.name),
@@ -260,6 +265,7 @@ async def test_collector_recovers_from_text_bail(nudge_eval) -> None:
     ``test_agentic_loop.TestCollectorTextNudge``)."""
     await nudge_eval(
         case_id="collector-text-bail-recovery",
+        family="collector-nudge-recovery",
         collection=WATCHLIST.name,
         seed=_seed_watchlist,
         bail_text=COLLECTOR_PROSE_BAIL,
@@ -296,6 +302,7 @@ async def test_collector_taught_out_of_args_only_json_bail(nudge_eval) -> None:
     ``test_agentic_loop.TestCollectorDoneJsonBailNudge``)."""
     await nudge_eval(
         case_id="collector-done-json-bail-teaching",
+        family="collector-nudge-recovery",
         collection=WATCHLIST.name,
         seed=_seed_watchlist,
         bail_text=COLLECTOR_DONE_JSON_BAIL,
@@ -325,6 +332,7 @@ async def test_collector_recovers_from_empty_response(nudge_eval) -> None:
     covered deterministically by ``test_agentic_loop.TestCollectorEmptyNudge``)."""
     await nudge_eval(
         case_id="collector-empty-response-recovery",
+        family="collector-nudge-recovery",
         collection=WATCHLIST.name,
         seed=_seed_watchlist,
         wrap=_InjectEmptyResponse,
@@ -335,6 +343,7 @@ async def test_collector_recovers_from_empty_response(nudge_eval) -> None:
 async def test_thinking_generate(collector_eval) -> None:
     await collector_eval(
         case_id="thinking-generate",
+        family="extractors",
         collection="thoughts",
         seed=_seed_like,
         snapshot=_snapshot("thoughts"),

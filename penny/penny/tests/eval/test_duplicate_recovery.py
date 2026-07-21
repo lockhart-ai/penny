@@ -98,6 +98,7 @@ async def test_duplicate_write_hands_back_key_and_recovers(guard_recovery_eval) 
     bound key) without re-using its own rejected key."""
     await guard_recovery_eval(
         case_id="duplicate-write-recovery",
+        family="collector-guard-recovery",
         collection=RECIPE_BOX.name,
         seed=_seed_recipe_box,
         wrap_client=lambda real: _InjectDuplicateWrite(
@@ -115,6 +116,7 @@ async def test_multi_entry_duplicate_write_binds_every_key(guard_recovery_eval) 
     multi-entry gap (some rejected keys previously left with no match named)."""
     await guard_recovery_eval(
         case_id="duplicate-write-recovery-multi",
+        family="collector-guard-recovery",
         collection=RECIPE_BOX.name,
         seed=_seed_recipe_box,
         wrap_client=lambda real: _InjectDuplicateWrite(
