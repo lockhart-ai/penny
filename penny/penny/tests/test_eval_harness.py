@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import pytest
 
+# Importing the memory-tools module registers those tools (``Tool.__init_subclass__``) so
+# ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
+# tests below build frames from the PRODUCTION templates, never hand-invented text.
+import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.database import Database
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -27,6 +31,7 @@ from penny.tests.eval.conftest import (
     _assert_threshold,
     _bail_fired_check,
     _cycle_recovered_check,
+    _frame_attributes_to,
     _guarded_graded,
     _scorer_is_graded,
     _stamp_cause,
@@ -37,6 +42,8 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
+from penny.tools.models import ToolResult
 
 
 def _make_db(tmp_path, name: str = "harness") -> Database:
@@ -66,6 +73,22 @@ def _content_response(text: str) -> dict:
 
 def _tool_frame(content: str) -> list[dict]:
     return [{"role": "tool", "content": content}]
+
+
+def _framed_result(
+    tool_name: str,
+    arguments: dict,
+    *,
+    ok: bool,
+    mutated: bool = False,
+    narration: str | None = None,
+) -> list[dict]:
+    """A tool-role turn carrying the REAL production frame ``Tool.format_result`` emits for a
+    call to ``tool_name`` — the registry-dispatched narration + the ``(<tool> result)`` tag +
+    body — so the rejection probe is tested against the shapes it must actually recognise,
+    never hand-invented text (#1726)."""
+    result = ToolResult(message="body", success=ok, mutated=mutated, narration=narration)
+    return _tool_frame(Tool.format_result(tool_name, arguments, result))
 
 
 # ── Scoring: the not-applicable (ignored) third state + rationale in failed labels ──
@@ -120,19 +143,69 @@ def test_tool_not_called_reads_the_promptlog(tmp_path) -> None:
     assert tool_not_called(db, "send_message")
 
 
-def test_tool_call_rejected_named_and_any(tmp_path) -> None:
+def test_tool_call_rejected_matches_backticked_tool_name_form(tmp_path) -> None:
+    # The framework arg-validation failure leads with the backticked TOOL name
+    # (`FRAMEWORK_NARRATION_INVALID_ARGS`) — the shape the per-tool probe already matched.
     db = _make_db(tmp_path)
-    _log_prompt(db, messages=_tool_frame("You tried to use `update_entry` but it didn't work: no"))
+    frame = _framed_result(
+        "update_entry",
+        {"memory": "trip-notes", "key": "hotel"},
+        ok=False,
+        narration=FRAMEWORK_NARRATION_INVALID_ARGS.format(tool_name="update_entry"),
+    )
+    assert "`update_entry`" in frame[0]["content"]  # the tool name IS backticked in this form
+    _log_prompt(db, messages=frame)
     assert tool_call_rejected(db, "update_entry")
     assert tool_call_rejected(db)  # any-tool probe
     assert not tool_call_rejected(db, "collection_write")
 
 
+def test_tool_call_rejected_matches_memory_tool_target_backticked_form(tmp_path) -> None:
+    # A memory-tool execute-time failure backticks the TARGET, not the tool — the tool is
+    # named only in the `(<tool> result)` tag.  Before #1726 a per-tool probe matched solely
+    # the backticked tool name and went blind to these, false-greening every memory-surface
+    # rejection check.  Frames are the PRODUCTION templates (via `Tool.format_result`).
+    db = _make_db(tmp_path)
+    write_frame = _framed_result("collection_write", {"memory": "trip-notes"}, ok=False)
+    update_frame = _framed_result(
+        "update_entry", {"memory": "trip-notes", "key": "hotel"}, ok=False
+    )
+    _log_prompt(db, messages=write_frame)
+    _log_prompt(db, messages=update_frame)
+
+    # The bug's signature: the tool name is NOT backticked — only the tag names it.
+    assert "`collection_write`" not in write_frame[0]["content"]
+    assert "(collection_write result)" in write_frame[0]["content"]
+    assert "`update_entry`" not in update_frame[0]["content"]
+    assert "(update_entry result)" in update_frame[0]["content"]
+
+    # The fix: attributed by the tag, each rejection is visible to its per-tool probe again.
+    assert tool_call_rejected(db, "collection_write")
+    assert tool_call_rejected(db, "update_entry")
+    assert tool_call_rejected(db)  # any-tool probe
+    assert not tool_call_rejected(db, "log_append")  # a tag names exactly one tool
+
+    # The attribution primitive recognises the tag shape and never cross-attributes.
+    assert _frame_attributes_to(write_frame[0]["content"], "collection_write")
+    assert not _frame_attributes_to(write_frame[0]["content"], "update_entry")
+
+
 def test_sample_is_fragile_detects_recovery_frames(tmp_path) -> None:
     db = _make_db(tmp_path)
-    _log_prompt(db, messages=_tool_frame("You used `browse` and here's the result: ok"))
+    _log_prompt(
+        db,
+        messages=_framed_result(
+            "collection_write",
+            {"memory": "trip-notes", "entries": [{"key": "hotel"}]},
+            ok=True,
+            mutated=True,
+        ),
+    )
     assert not sample_is_fragile(db)
-    _log_prompt(db, messages=_tool_frame("You tried to use `browse` but it didn't work: down"))
+    # A memory-tool target-backticked rejection is a recovery frame too: `sample_is_fragile`
+    # filters no tool name, so its `_RECOVERY_FRAMES` set catches "didn't work" regardless of
+    # which (target-backticked) tool produced it — no attribution gap here (#1726 audit).
+    _log_prompt(db, messages=_framed_result("collection_write", {"memory": "trip-notes"}, ok=False))
     assert sample_is_fragile(db)
 
 

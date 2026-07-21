@@ -44,6 +44,7 @@ from penny.text_validity import (
     is_degenerate_run,
     is_degenerate_tool_name,
 )
+from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -342,6 +343,28 @@ _RECOVERY_FRAMES = (
 )
 
 
+def _frame_attributes_to(content: str, tool_name: str) -> bool:
+    """Does this framed tool-result name ``tool_name`` as the tool that produced it?
+
+    ``Tool.format_result`` (``penny/tools/base.py``) wraps EVERY result as
+    ``<narration> (<tool> result)\\n<body>`` — one narration line plus the retained
+    ``(<tool> result)`` machine tag.  A call attributes to its tool through EITHER of
+    two shapes, and both must be recognised:
+
+    * the **backticked tool name** in the narration — the generic frame
+      (``You tried to use `browse` but it didn't work:``) and the framework-synthesised
+      failures (arg-validation / timeout / not-found), which lead with `` `<tool>` ``; and
+    * the **parenthesized result tag** ``(<tool> result)`` — the SOLE attribution when
+      the narration backticks the *target* instead of the tool, which is the whole
+      memory-tool execute-time-failure family (``You tried to update `<collection>`'s
+      settings but it didn't work: (collection_set result)``, ``You tried to save to
+      `<collection>` but it didn't work: (collection_write result)``, …).  There the
+      tool name never appears backticked, so matching only `` `<tool>` `` misses it —
+      the latent false-green this fixes (#1726).
+    """
+    return f"`{tool_name}`" in content or RESULT_TAG.format(tool_name=tool_name) in content
+
+
 def tool_call_rejected(db: Database, tool_name: str | None = None) -> bool:
     """Did a call to ``tool_name`` — or ANY tool, when ``tool_name`` is None — come back REJECTED
     (arg-validation / failure)?
@@ -349,13 +372,16 @@ def tool_call_rejected(db: Database, tool_name: str | None = None) -> bool:
     The process-fidelity counterpart to ``tool_was_called``: a graded contract that checks
     the final STATE can still pass when an intermediate call was rejected and a *later* turn
     happened to re-land the content — this catches the rejected turn (the tool-result failure
-    frame ``You tried to use `<tool>` but …``).  With no ``tool_name`` it's the run-wide
-    "was any tool refused?" probe."""
+    frame).  Attribution matches BOTH narration shapes ``Tool.format_result`` emits — the
+    backticked tool name AND the ``(<tool> result)`` tag (``_frame_attributes_to``) — so a
+    memory-tool rejection whose narration backticks the *target* (``collection_set`` /
+    ``collection_write`` / …) is no longer invisible to a per-tool probe (#1726).  With no
+    ``tool_name`` it's the run-wide "was any tool refused?" probe."""
     for message in _iter_prompt_messages(db):
         content = message.get("content") or ""
         if message.get("role") != "tool":
             continue
-        if tool_name is not None and f"`{tool_name}`" not in content:
+        if tool_name is not None and not _frame_attributes_to(content, tool_name):
             continue
         if any(frame in content for frame in _REJECTION_FRAMES):
             return True
@@ -369,7 +395,13 @@ def sample_is_fragile(db: Database) -> bool:
     refusal narration — the ``_RECOVERY_FRAMES`` set).  A green sample that only got there after
     the loop refused a call and it retried is 'passed, fragile' in the report: real, but not
     robust.  Derived from the same promptlog primitives as ``tool_call_rejected``, not a new
-    model judgment."""
+    model judgment.
+
+    Unlike ``tool_call_rejected`` this filters on NO tool name — it asks "did the run recover
+    from *anything*?" — so it carries none of that probe's target-vs-tool-name attribution gap
+    (#1726): a memory-tool execute-time failure narrates ``… but it didn't work:``, whose
+    ``didn't work`` fragment is already in ``_RECOVERY_FRAMES``, so it is caught regardless of
+    which tool (target-backticked) produced it.  The audit found no frame-set gap here."""
     for message in _iter_prompt_messages(db):
         if message.get("role") != "tool":
             continue
