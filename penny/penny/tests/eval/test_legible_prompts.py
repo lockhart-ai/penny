@@ -115,6 +115,7 @@ def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]
     print(f"\n[LEGIBILITY reply] {reply.strip()!r}")
     search_i = _first_index(reply, _SEARCH)
     save_i = _first_index(reply, _SAVE)
+    read_recipe = tool_was_called(db, "memory_metadata")
     return [
         # Expected tool call: she must READ the recipe (memory_metadata), not answer from
         # the ambient recall block — which surfaces entries + description but NOT the recipe,
@@ -122,11 +123,22 @@ def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]
         # report surfaced).  Making the read a scored check is what catches that.
         Check(
             "read the recipe (memory_metadata called)",
-            tool_was_called(db, "memory_metadata"),
+            read_recipe,
             anchor="memory_metadata(",
+            rationale=None if read_recipe else "memory_metadata not called — answered from recall",
         ),
-        Check("reply reflects the search/browse step", search_i >= 0, anchor=REPLY_ANCHOR),
-        Check("reply reflects the save/write step", save_i >= 0, anchor=REPLY_ANCHOR),
+        Check(
+            "reply reflects the search/browse step",
+            search_i >= 0,
+            anchor=REPLY_ANCHOR,
+            rationale=None if search_i >= 0 else "no search/browse family described in the reply",
+        ),
+        Check(
+            "reply reflects the save/write step",
+            save_i >= 0,
+            anchor=REPLY_ANCHOR,
+            rationale=None if save_i >= 0 else "no save/write family described in the reply",
+        ),
     ]
 
 
@@ -138,6 +150,7 @@ async def test_legibility_describes_the_recipe(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_legibility,
         min_pass_rate=0.80,  # N=5 baseline 1.00 — Ticket C threshold (#1531)
+        family="legibility",
     )
 
 
@@ -152,17 +165,41 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[EDIT stored] {stored!r}\n[EDIT reply] {reply.strip()[:240]!r}")
+    applied = tool_was_called(db, "collection_set")
+    rejected = tool_call_rejected(db, "collection_set")
+    designer = "designer" in stored
+    changed = stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()
+    echoed = _echoes_designer(reply)
     return [
         Check(
             "applied the edit (collection_set called)",
-            tool_was_called(db, "collection_set"),
+            applied,
             anchor="collection_set(",
+            rationale=None if applied else "collection_set never called — nothing persisted",
         ),
-        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
-        Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
-        Check("recipe changed from the seed", stored != BOARD_GAMES_EXTRACTION_PROMPT.lower()),
+        # Process fidelity (fragile-pass): a rejected-then-relanded call reads as a wobble.
+        Check(
+            "no collection_set rejected",
+            not rejected,
+            rationale="a collection_set call was rejected mid-run" if rejected else None,
+        ),
+        Check(
+            "designer landed in the recipe",
+            designer,
+            anchor="designer",
+            rationale=None if designer else "'designer' absent from the stored recipe",
+        ),
+        Check(
+            "recipe changed from the seed",
+            changed,
+            rationale=None if changed else "recipe still byte-identical to the seed",
+        ),
         Check("no fictitious tool persisted", "extract_text" not in stored),
-        Check("reply echoes the change", _echoes_designer(reply)),
+        Check(
+            "reply echoes the change",
+            echoed,
+            rationale=None if echoed else "reply doesn't mention the designer change",
+        ),
     ]
 
 
@@ -177,6 +214,7 @@ async def test_editing_lands_and_echoes(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_edit_and_echo,
         min_pass_rate=0.80,  # N=5 baseline 0.97 — Ticket C threshold (#1531)
+        family="editing",
     )
 
 
@@ -195,23 +233,49 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "").lower() if row is not None else ""
     print(f"\n[DISCUSS stored] {stored!r}\n[DISCUSS reply] {reply.strip()[:240]!r}")
+    reads = count_tool_calls(db, "memory_metadata")
+    applied = tool_was_called(db, "collection_set")
+    rejected = tool_call_rejected(db, "collection_set")
+    gave_up = gave_up_mid_run(db)
+    designer = "designer" in stored
+    echoed = _echoes_designer(reply)
     return [
         # Every turn expects a read: the discuss turn AND the adjust turn — count >= 2 catches
         # a discuss turn answered from recall (the gap the full report surfaced).
         Check(
             "read the recipe each turn (memory_metadata >=2)",
-            count_tool_calls(db, "memory_metadata") >= 2,
+            reads >= 2,
             anchor="memory_metadata(",
+            rationale=f"expected >=2 reads, saw {reads}",
         ),
         Check(
             "applied the edit (collection_set called)",
-            tool_was_called(db, "collection_set"),
+            applied,
             anchor="collection_set(",
+            rationale=None if applied else "collection_set never called — nothing persisted",
         ),
-        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
-        Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
-        Check("designer landed in the recipe", "designer" in stored, anchor="designer"),
-        Check("reply echoes the change", _echoes_designer(reply)),
+        # Process fidelity (fragile-pass): a rejected call or a give-up reply reads as a wobble.
+        Check(
+            "no collection_set rejected",
+            not rejected,
+            rationale="a collection_set call was rejected mid-run" if rejected else None,
+        ),
+        Check(
+            "no give-up reply mid-conversation",
+            not gave_up,
+            rationale="Penny gave up mid-conversation" if gave_up else None,
+        ),
+        Check(
+            "designer landed in the recipe",
+            designer,
+            anchor="designer",
+            rationale=None if designer else "'designer' absent from the stored recipe",
+        ),
+        Check(
+            "reply echoes the change",
+            echoed,
+            rationale=None if echoed else "reply doesn't mention the designer change",
+        ),
     ]
 
 
@@ -226,6 +290,7 @@ async def test_discuss_then_adjust(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_discuss_then_adjust,
         min_pass_rate=0.75,  # N=5 baseline 0.90 — Ticket C threshold (#1531)
+        family="editing",
     )
 
 
@@ -245,41 +310,76 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
     # REMOVE: the log_read call is gone iff neither its name nor its target survive.
     # NOTIFY-OFF: the notify flag flips false.
     log_read_gone = "log_read" not in stored and "user-messages" not in stored
+    read_recipe = tool_was_called(db, "memory_metadata")
+    applied = tool_was_called(db, "collection_set")
+    rejected = tool_call_rejected(db, "collection_set")
+    gave_up = gave_up_mid_run(db)
+    designer = "designer" in stored
+    priced = "amazon" in stored or "price" in stored
+    notify_off = row is not None and not row.notify
+    spawned = new_collections(db, before)
     checks = [
         Check(
             "read the recipe (memory_metadata called)",
-            tool_was_called(db, "memory_metadata"),
+            read_recipe,
             anchor="memory_metadata(",
+            rationale=None if read_recipe else "memory_metadata not called",
         ),
         Check(
             "applied edits (collection_set called)",
-            tool_was_called(db, "collection_set"),
+            applied,
             anchor="collection_set(",
+            rationale=None if applied else "collection_set never called — nothing persisted",
         ),
-        # Process fidelity: the final-state checks below can pass when an intermediate
-        # collection_set was REJECTED and a *later* turn re-landed the content (the
-        # rejected-`intent`-param + give-up sample the graded outcome hid).  These two catch
-        # the broken turn — the reason we don't merge a scorer that final-state alone fooled.
-        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
-        Check("no give-up reply mid-conversation", not gave_up_mid_run(db)),
+        # Process fidelity (fragile-pass): the final-state checks below can pass when an
+        # intermediate collection_set was REJECTED and a *later* turn re-landed the content
+        # (the rejected-`intent`-param + give-up sample the graded outcome hid).  These two
+        # catch the broken turn — the reason we don't merge a scorer final-state alone fooled.
         Check(
-            "modify: designer added to collection_write", "designer" in stored, anchor="designer"
+            "no collection_set rejected",
+            not rejected,
+            rationale="a collection_set call was rejected mid-run" if rejected else None,
+        ),
+        Check(
+            "no give-up reply mid-conversation",
+            not gave_up,
+            rationale="Penny gave up mid-conversation" if gave_up else None,
+        ),
+        Check(
+            "modify: designer added to collection_write",
+            designer,
+            anchor="designer",
+            rationale=None if designer else "'designer' absent from the recipe",
         ),
         Check(
             "add: Amazon-price browse call",
-            "amazon" in stored or "price" in stored,
+            priced,
             anchor="amazon",
+            rationale=None if priced else "neither 'amazon' nor 'price' in the recipe",
         ),
-        Check('remove: log_read("user-messages") gone', log_read_gone),
+        Check(
+            'remove: log_read("user-messages") gone',
+            log_read_gone,
+            rationale=None if log_read_gone else "log_read/user-messages still in the recipe",
+        ),
         Check(
             "notify-off: notify set false",
-            row is not None and not row.notify,
+            notify_off,
             anchor='"notify": false',
+            rationale=None if notify_off else "notify still on",
         ),
-        Check("closer spawned no collection", not new_collections(db, before)),
+        Check(
+            "closer spawned no collection",
+            not spawned,
+            rationale=None if not spawned else f"spawned {[m.name for m in spawned]}",
+        ),
     ]
     checks += [
-        Check(f"spine intact: {family}", family in stored)
+        Check(
+            f"spine intact: {family}",
+            family in stored,
+            rationale=None if family in stored else f"'{family}' missing from the recipe",
+        )
         for family in ("browse", "collection_write", "done")
     ]
     return checks
@@ -301,6 +401,7 @@ async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_edit_operations,
         min_pass_rate=0.80,  # N=5 baseline 0.95 — Ticket C threshold (#1531)
+        family="editing",
     )
 
 
@@ -311,15 +412,23 @@ async def test_edit_operations_across_turns(chat_eval: ChatEval) -> None:
 # browse fixture can make a passing remark look like a "tool maze" that isn't a real regression.
 
 
-def _score_no_silent_edit(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_no_silent_edit(db: Database, before: set[str], reply: str) -> list[Check]:
     row = db.memories.get(_COLLECTION)
     stored = (row.extraction_prompt or "") if row is not None else ""
-    fails: list[str] = []
-    if stored != BOARD_GAMES_EXTRACTION_PROMPT:
-        fails.append(f"rewrote the recipe on a casual mention (no imperative): {stored!r}")
-    if created := new_collections(db, before):
-        fails.append(f"created a collection on a casual mention: {[m.name for m in created]}")
-    return fails
+    unchanged = stored == BOARD_GAMES_EXTRACTION_PROMPT
+    created = new_collections(db, before)
+    return [
+        Check(
+            "recipe untouched on a casual mention (no imperative)",
+            unchanged,
+            rationale=None if unchanged else f"rewrote the recipe: {stored!r}",
+        ),
+        Check(
+            "no collection spawned on a casual mention",
+            not created,
+            rationale=None if not created else f"created {[m.name for m in created]}",
+        ),
+    ]
 
 
 async def test_no_silent_recipe_edit_on_casual_mention(chat_eval: ChatEval) -> None:
@@ -331,6 +440,7 @@ async def test_no_silent_recipe_edit_on_casual_mention(chat_eval: ChatEval) -> N
         seed=_seed,
         score=_score_no_silent_edit,
         min_pass_rate=0.75,
+        family="no-overreach",
     )
 
 
@@ -348,24 +458,55 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
     browse_i = stored.find("browse")
     write_i = stored.find("collection_write")
     done_i = stored.rfind("done")
+    described = tool_was_called(db, "memory_metadata")
+    reencoded = tool_was_called(db, "collection_set")
+    rejected = tool_call_rejected(db, "collection_set")
+    order_ok = 0 <= browse_i < write_i < done_i
     return [
         Check(
             "described the recipe (memory_metadata called)",
-            tool_was_called(db, "memory_metadata"),
+            described,
             anchor="memory_metadata(",
+            rationale=None if described else "memory_metadata not called",
         ),
         # A round-trip happened only if Penny RE-ENCODED via collection_set — else the recipe
         # is the untouched seed and the family checks pass trivially (describe-in-text false pass).
         Check(
             "re-encoded it (collection_set called)",
-            tool_was_called(db, "collection_set"),
+            reencoded,
             anchor="collection_set(",
+            rationale=None if reencoded else "collection_set never called — no re-encode",
         ),
-        Check("no collection_set rejected", not tool_call_rejected(db, "collection_set")),
-        Check("browse step preserved", browse_i >= 0),
-        Check("collection_write step preserved", write_i >= 0),
-        Check("done step preserved", done_i >= 0),
-        Check("family order preserved (browse < write < done)", 0 <= browse_i < write_i < done_i),
+        # Process fidelity (fragile-pass): a rejected re-encode reads as a wobble.
+        Check(
+            "no collection_set rejected",
+            not rejected,
+            rationale="a collection_set call was rejected mid-run" if rejected else None,
+        ),
+        Check(
+            "browse step preserved",
+            browse_i >= 0,
+            rationale=None if browse_i >= 0 else "browse missing from the re-encoded recipe",
+        ),
+        Check(
+            "collection_write step preserved",
+            write_i >= 0,
+            rationale=None
+            if write_i >= 0
+            else "collection_write missing from the re-encoded recipe",
+        ),
+        Check(
+            "done step preserved",
+            done_i >= 0,
+            rationale=None if done_i >= 0 else "done missing from the re-encoded recipe",
+        ),
+        Check(
+            "family order preserved (browse < write < done)",
+            order_ok,
+            rationale=None
+            if order_ok
+            else f"order broken — browse@{browse_i}, write@{write_i}, done@{done_i}",
+        ),
     ]
 
 
@@ -382,4 +523,5 @@ async def test_roundtrip_preserves_the_sequence(chat_eval: ChatEval) -> None:
         seed=_seed,
         score=_score_roundtrip,
         min_pass_rate=0.80,  # N=5 baseline 0.97 — Ticket C threshold (#1531)
+        family="round-trip",
     )
