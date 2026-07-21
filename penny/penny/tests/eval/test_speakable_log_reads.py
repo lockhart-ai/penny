@@ -46,13 +46,18 @@ from penny.database import Database
 from penny.database.memory import LogEntryInput
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
+    REPLY_ANCHOR,
     ChatEval,
+    Check,
     collection_entries,
     tool_call_arg_values,
     tool_was_called,
 )
 
 pytestmark = pytest.mark.eval
+
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "speakable-logread"
 
 # ── Tool + log names (constants, never magic strings) ────────────────────────
 _LOG_READ = "log_read"
@@ -113,15 +118,14 @@ def _saved_text(db: Database, name: str) -> str:
     return _normalize(" ".join([*entries.keys(), *entries.values()]))
 
 
-def _reply_reflects(reply: str, tokens: list[str]) -> list[str]:
+def _reply_reflects(reply: str, tokens: list[str]) -> list[Check]:
     """The final reply must REFLECT what was read/done (the #1478 recap prong):
-    it names each subject it acted on.  Normalized for typography, checked as
-    substrings, never on exact wording."""
+    it names each subject it acted on.  One graded Check per token, anchored to the
+    reply row; normalized for typography, checked as substrings, never exact wording."""
     normalized = _normalize(reply)
     return [
-        f"reply doesn't reflect '{token}' from what was read"
+        Check(f"reply reflects '{token}'", _normalize(token) in normalized, anchor=REPLY_ANCHOR)
         for token in tokens
-        if _normalize(token) not in normalized
     ]
 
 
@@ -365,53 +369,64 @@ def _seed_collector_activity(db: Database) -> None:
 # ── Scorers ──────────────────────────────────────────────────────────────────
 
 
-def _score_user_messages_act(db: Database, _before: set[str], reply: str) -> list[str]:
+def _score_user_messages_act(db: Database, _before: set[str], reply: str) -> list[Check]:
     """ "Look back over everything I've told you and save what I'm into" must read
     the user-messages log and land the out-of-window hobby in ``likes``."""
-    fails: list[str] = []
-    if not _dispatched(db, _LOG_READ, "memory", _USER_MESSAGES):
-        fails.append("did not log_read the user-messages log to look back over past messages")
-    if _HOBBY_TOKEN not in _saved_text(db, _LIKES):
-        fails.append(f"the hobby wasn't saved to likes: {collection_entries(db, _LIKES)}")
-    return fails + _reply_reflects(reply, [_HOBBY_TOKEN])
+    read_ok = _dispatched(db, _LOG_READ, "memory", _USER_MESSAGES)
+    saved = _HOBBY_TOKEN in _saved_text(db, _LIKES)
+    return [
+        Check("log_read the user-messages log", read_ok, anchor=f"{_LOG_READ}("),
+        Check(
+            "hobby saved to likes",
+            saved,
+            rationale=None if saved else f"{collection_entries(db, _LIKES)}",
+        ),
+    ] + _reply_reflects(reply, [_HOBBY_TOKEN])
 
 
-def _score_penny_messages_recall(db: Database, _before: set[str], reply: str) -> list[str]:
+def _score_penny_messages_recall(db: Database, _before: set[str], reply: str) -> list[Check]:
     """ "Scroll way back and remind me what you suggested" must read the
     penny-messages log and relay the out-of-window recommendation."""
-    fails: list[str] = []
-    if not _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES):
-        fails.append("did not log_read the penny-messages log to recall the past suggestion")
-    return fails + _reply_reflects(reply, [_SUGGESTION_TOKEN])
+    read_ok = _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES)
+    return [
+        Check("log_read the penny-messages log", read_ok, anchor=f"{_LOG_READ}("),
+    ] + _reply_reflects(reply, [_SUGGESTION_TOKEN])
 
 
-def _score_browse_results(db: Database, _before: set[str], reply: str) -> list[str]:
+def _score_browse_results(db: Database, _before: set[str], reply: str) -> list[Check]:
     """ "What have you been looking up lately" must read the browse-results log and
     name at least one thing that was browsed."""
-    fails: list[str] = []
-    if not _dispatched(db, _LOG_READ, "memory", _BROWSE_RESULTS):
-        fails.append("did not log_read the browse-results log for what was looked up")
-    normalized = _normalize(reply)
-    if not any(token in normalized for token in _BROWSE_TOPIC_TOKENS):
-        fails.append(f"reply named none of the browsed topics {list(_BROWSE_TOPIC_TOKENS)}")
-    return fails
+    read_ok = _dispatched(db, _LOG_READ, "memory", _BROWSE_RESULTS)
+    named = any(token in _normalize(reply) for token in _BROWSE_TOPIC_TOKENS)
+    return [
+        Check("log_read the browse-results log", read_ok, anchor=f"{_LOG_READ}("),
+        Check(
+            "reply names a browsed topic",
+            named,
+            anchor=REPLY_ANCHOR,
+            rationale=None if named else f"named none of {list(_BROWSE_TOPIC_TOKENS)}",
+        ),
+    ]
 
 
-def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[str]:
+def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[Check]:
     """ "How have your background collectors been doing" must read the cross-collector
     collector-runs index."""
-    if not _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS):
-        return ["did not log_read the collector-runs index for how the collectors are doing"]
-    return []
+    return [
+        Check(
+            "log_read the collector-runs index",
+            _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS),
+            anchor=f"{_LOG_READ}(",
+        ),
+    ]
 
 
-def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[str]:
+def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[Check]:
     """A wistful aside about rereading old chats must fire NO log read, browse, or
     mutation — the false-positive guard for speakable log reads."""
     return [
-        f"{tool} fired on a message that only mused, without asking for anything"
+        Check(f"{tool} not fired", not tool_was_called(db, tool), anchor=f"{tool}(")
         for tool in (*_READ_TOOLS, *_ACTION_TOOLS)
-        if tool_was_called(db, tool)
     ]
 
 
@@ -437,6 +452,7 @@ async def test_user_messages_act(chat_eval: ChatEval) -> None:
     OUTCOME (hobby in likes) instead of the tool."""
     await chat_eval(
         case_id="speak-logread-user-messages-act",
+        family=_FAMILY,
         message="look back over everything I've told you and save what I said I'm into to my likes",
         seed=_seed_hobby,
         score=_score_user_messages_act,
@@ -455,6 +471,7 @@ async def test_penny_messages_recall(chat_eval: ChatEval) -> None:
     → penny-messages."""
     await chat_eval(
         case_id="speak-logread-penny-messages-recall",
+        family=_FAMILY,
         message="dig back through our old messages — what exactly did you tell me "
         "to use for my moss terrarium?",
         seed=_seed_suggestion,
@@ -466,6 +483,7 @@ async def test_penny_messages_recall(chat_eval: ChatEval) -> None:
 async def test_browse_results(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="speak-logread-browse-results",
+        family=_FAMILY,
         message="what have you been looking up lately? give me the gist",
         seed=_seed_browse_history,
         score=_score_browse_results,
@@ -476,6 +494,7 @@ async def test_browse_results(chat_eval: ChatEval) -> None:
 async def test_collector_runs(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="speak-logread-collector-runs",
+        family=_FAMILY,
         message="how have your background collectors been doing lately?",
         seed=_seed_collector_activity,
         score=_score_collector_runs,
@@ -488,6 +507,7 @@ async def test_no_fire(chat_eval: ChatEval) -> None:
     imperative-gating clause in ``Prompt.CONVERSATION_PROMPT``; gated at 0.6."""
     await chat_eval(
         case_id="speak-logread-no-fire",
+        family=_FAMILY,
         message="man, I really should reread our old chats sometime",
         score=_score_no_fire,
         min_pass_rate=0.6,

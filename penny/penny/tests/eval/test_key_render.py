@@ -28,6 +28,7 @@ import pytest
 from penny.database import Database
 from penny.tests.eval.conftest import (
     ChatEval,
+    Check,
     _InjectBracketKey,
     bracket_wrapped_key_calls,
     collection_entries,
@@ -36,6 +37,9 @@ from penny.tests.eval.conftest import (
 from penny.tests.eval.fixtures import BOARD_GAMES, BOARD_GAMES_EXTRACTION_PROMPT
 
 pytestmark = pytest.mark.eval
+
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "prompt-render"
 
 # The entry the cases correct by key — a realistic multi-word key, seeded verbatim
 # by ``seed_collection`` (key = text before ' — ').
@@ -65,17 +69,19 @@ def _target_mutated(db: Database) -> bool:
     return _TARGET_KEY in entries and entries[_TARGET_KEY] != _TARGET_SEED_CONTENT
 
 
-def _score_copythrough(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check]:
     """Case A: the intended entry was mutated AND no bracket-wrapped key was ever
     passed.  The bracket-call count is the load-bearing signal — the render must
     not tempt the model into pasting display brackets into a ``key=`` argument."""
-    fails = []
-    if not _target_mutated(db):
-        fails.append(f"{_TARGET_KEY!r} not updated by key — content unchanged from seed")
     brackets = bracket_wrapped_key_calls(db)
-    if brackets:
-        fails.append(f"pasted display brackets into a key arg (render regressed): {brackets}")
-    return fails
+    return [
+        Check(f"{_TARGET_KEY!r} updated by key", _target_mutated(db)),
+        Check(
+            "no bracket-wrapped key pasted into an argument",
+            not brackets,
+            rationale=None if not brackets else f"{brackets}",
+        ),
+    ]
 
 
 def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[str]:
@@ -83,7 +89,12 @@ def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[s
     despite the teaching rejection.  The "did the sabotage fire?" check lives in
     the harness (``chat_eval`` asserts the wrapper's ``bail_injected``): the raw
     response is persisted inside the real client BEFORE the injector mutates it,
-    so the promptlog never shows the injected bracket form and can't be probed."""
+    so the promptlog never shows the injected bracket form and can't be probed.
+
+    This scorer stays BINARY (not graded ``Check``s): ``chat_eval`` asserts
+    ``wrapper.bail_injected`` ONLY on its binary-scoring branch, so a wrap_client
+    case must return failure strings to keep its forced-sabotage guard — a graded
+    return would silently drop it (a false green if the sabotage never fired)."""
     if not _target_mutated(db):
         return [f"did not recover — {_TARGET_KEY!r} never updated after the rejection"]
     return []
@@ -96,6 +107,7 @@ async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:
     render; see the PR body for the arm-by-arm bracket-call table)."""
     await chat_eval(
         case_id="key-render-copythrough",
+        family=_FAMILY,
         message=_UPDATE_MESSAGE,
         seed=_seed_board_games,
         score=_score_copythrough,
@@ -108,6 +120,7 @@ async def test_forced_bracket_key_recovery(chat_eval: ChatEval) -> None:
     and land the mutation within the run's step budget (a spiral → timeout → fail)."""
     await chat_eval(
         case_id="key-render-forced-recovery",
+        family=_FAMILY,
         message=_UPDATE_MESSAGE,
         seed=_seed_board_games,
         wrap_client=_InjectBracketKey,

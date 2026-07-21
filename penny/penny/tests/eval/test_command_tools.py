@@ -19,9 +19,12 @@ import pytest
 
 from penny.penny import Penny
 from penny.tests.conftest import ONE_PX_PNG_B64
-from penny.tests.eval.conftest import ChatEval, last_tool_args, tool_was_called
+from penny.tests.eval.conftest import ChatEval, Check, last_tool_args, tool_not_called
 
 pytestmark = pytest.mark.eval
+
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "nl-dispatch"
 
 _GENERATE_IMAGE = "generate_image"
 
@@ -41,26 +44,43 @@ def _score_drew(subject_token: str):
     """The utterance must dispatch to generate_image with a description that
     faithfully carries the requested subject (a salient token of it)."""
 
-    def score(db, before, reply) -> list[str]:
-        fails: list[str] = []
+    def score(db, before, reply) -> list[Check]:
+        anchor = f"{_GENERATE_IMAGE}("
         args = last_tool_args(db, _GENERATE_IMAGE)
         if args is None:
-            return ["did not call generate_image for an explicit draw request"]
+            # No dispatch — the description checks have nothing to inspect (not-applicable).
+            return [
+                Check("generate_image called", False, anchor=anchor),
+                Check.na("description is non-empty", anchor=anchor),
+                Check.na(f"description carries the subject '{subject_token}'", anchor=anchor),
+            ]
         description = str(args.get("description") or "")
-        if not description.strip():
-            fails.append("called generate_image with an empty description")
-        elif subject_token not in description.lower():
-            fails.append(f"description {description!r} dropped the subject '{subject_token}'")
-        return fails
+        has_subject = subject_token in description.lower()
+        return [
+            Check("generate_image called", True, anchor=anchor),
+            Check("description is non-empty", bool(description.strip()), anchor=anchor),
+            Check(
+                f"description carries the subject '{subject_token}'",
+                has_subject,
+                anchor=anchor,
+                rationale=None
+                if has_subject
+                else f"description {description!r} dropped '{subject_token}'",
+            ),
+        ]
 
     return score
 
 
-def _score_no_draw(db, before, reply) -> list[str]:
+def _score_no_draw(db, before, reply) -> list[Check]:
     """A casual mention of art/drawing must NOT trigger image generation."""
-    if tool_was_called(db, _GENERATE_IMAGE):
-        return ["generate_image fired on a casual mention of a painting"]
-    return []
+    return [
+        Check(
+            "generate_image not fired on a casual mention",
+            tool_not_called(db, _GENERATE_IMAGE),
+            anchor=f"{_GENERATE_IMAGE}(",
+        ),
+    ]
 
 
 # ── Cases ───────────────────────────────────────────────────────────────────
@@ -69,6 +89,7 @@ def _score_no_draw(db, before, reply) -> list[str]:
 async def test_draw_request_dispatches(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="tool-generate-image-draw",
+        family=_FAMILY,
         message="can you draw me a teal origami dragon perched on a coffee mug?",
         prepare=_mock_image_client,
         score=_score_drew("dragon"),
@@ -78,6 +99,7 @@ async def test_draw_request_dispatches(chat_eval: ChatEval) -> None:
 async def test_make_a_picture_dispatches(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="tool-generate-image-picture",
+        family=_FAMILY,
         message="make a picture of a neon cactus wearing tiny sunglasses",
         prepare=_mock_image_client,
         score=_score_drew("cactus"),
@@ -87,6 +109,7 @@ async def test_make_a_picture_dispatches(chat_eval: ChatEval) -> None:
 async def test_casual_art_mention_does_not_dispatch(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="tool-generate-image-nofire",
+        family=_FAMILY,
         message="i saw a really nice watercolor painting at the gallery today, it was lovely",
         prepare=_mock_image_client,
         score=_score_no_draw,

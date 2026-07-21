@@ -43,6 +43,9 @@ from penny.tests.eval.fixtures import (
 
 pytestmark = pytest.mark.eval
 
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "prompt-format"
+
 _INCOMING = PennyConstants.MessageDirection.INCOMING
 
 
@@ -125,6 +128,7 @@ async def test_numbered_prompt_engages(collector_eval) -> None:
     """GATED: a numbered collector reliably does its work (the contract to hold)."""
     await collector_eval(
         case_id="format-numbered-engages",
+        family=_FAMILY,
         collection=WATCHLIST.name,
         seed=_seed_watchlist(WATCHLIST_NUMBERED_PROMPT),
         snapshot=_snapshot(WATCHLIST.name),
@@ -141,6 +145,7 @@ async def test_prose_prompt_bails(collector_eval) -> None:
     """
     await collector_eval(
         case_id="format-prose-bails",
+        family=_FAMILY,
         collection=WATCHLIST.name,
         seed=_seed_watchlist(WATCHLIST_PROSE_PROMPT),
         snapshot=_snapshot(WATCHLIST.name),
@@ -153,6 +158,7 @@ async def test_numbered_reads_empty_log_first(collector_eval) -> None:
     """REPORT-ONLY: faithful reproduction of the production bailout on an empty log."""
     await collector_eval(
         case_id="format-reads-empty-first",
+        family=_FAMILY,
         collection=WEEKLY_DIGEST.name,
         seed=_seed_digest_empty,
         snapshot=_snapshot(WEEKLY_DIGEST.name),

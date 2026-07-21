@@ -233,6 +233,46 @@ def test_result_line_gate_fails_below_threshold() -> None:
         _assert_threshold("red-case", [SampleResult.binary(["boom"])], 0.75)
 
 
+# ── Honest-threshold restoration: gate on the pathology-excluded mean (#1698) ──
+
+
+def test_gate_pathology_excluded_gates_on_the_honest_mean(capsys) -> None:
+    # One clean pass + one pathology failure: the raw mean is 0.50, but the pathology sample
+    # drops out of the pathology-excluded denominator, so the honest read is 1.00.  Opting in
+    # (gate_pathology_excluded=True) gates on that honest 1.00 and clears an 0.8 bar the raw
+    # mean would miss — the mechanism behind the speakable sequence cases' 0.6→0.8 restore.
+    passed = SampleResult.binary([])
+    pathological = SampleResult.binary(["collapse"])
+    pathological.cause = FailureCause.PATHOLOGY
+    _assert_threshold("honest-case", [passed, pathological], 0.8, gate_pathology_excluded=True)
+    out = capsys.readouterr().out
+    assert (
+        "RESULT [honest-case] mean 0.50 · all-pass 1/2 across 2 samples "
+        "(need pathology-excluded mean >=0.8)" in out
+    )
+
+
+def test_gate_pathology_excluded_still_fails_on_a_behavioral_miss() -> None:
+    # A BEHAVIORAL failure stays in the pathology-excluded denominator, so the honest mean is
+    # 0.50 — the opt-in gate is not a free pass; only reroll-guard pathology noise is excluded.
+    passed = SampleResult.binary([])
+    behavioral = SampleResult.binary(["wrong end state"])
+    behavioral.cause = FailureCause.BEHAVIORAL
+    with pytest.raises(pytest.fail.Exception):
+        _assert_threshold("behav-case", [passed, behavioral], 0.8, gate_pathology_excluded=True)
+
+
+def test_pathology_noise_sinks_the_raw_gate_without_the_opt_in() -> None:
+    # The flag is load-bearing: the SAME clean-pass + pathology-fail pair FAILS the default
+    # raw-mean gate (0.50 < 0.8) — exactly the flake the honest-threshold restoration removes
+    # by opting the case into the pathology-excluded gate above.
+    passed = SampleResult.binary([])
+    pathological = SampleResult.binary(["collapse"])
+    pathological.cause = FailureCause.PATHOLOGY
+    with pytest.raises(pytest.fail.Exception):
+        _assert_threshold("raw-gate-case", [passed, pathological], 0.8)
+
+
 # ── Failure-cause partition (#1695): the structural pathology scan + stamping ──
 
 

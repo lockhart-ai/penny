@@ -17,6 +17,9 @@ from penny.tests.eval.conftest import StartupEval
 
 pytestmark = pytest.mark.eval
 
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "peripheral"
+
 
 def _score_startup(announcement: str) -> list[str]:
     fails = []
@@ -33,6 +36,7 @@ def _score_startup(announcement: str) -> list[str]:
 async def test_startup_announcement(startup_eval: StartupEval) -> None:
     await startup_eval(
         case_id="startup-announcement",
+        family=_FAMILY,
         commit_message="feat: add /recap command to summarize the week's chats",
         score=_score_startup,
     )
