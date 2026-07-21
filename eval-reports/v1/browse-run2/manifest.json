@@ -1,0 +1,11 @@
+{
+  "run_id": "run-20260721T051512Z-abba710a",
+  "created_at": "2026-07-21T05:15:12.130990+00:00",
+  "commit": "abba710a03ae3555148fea6a86712e9af020499a",
+  "dirty": true,
+  "diff_file": "dirty.diff",
+  "model": "gpt-oss:20b",
+  "embedding_model": "embeddinggemma",
+  "samples": 3,
+  "lever": "no change — exercising the baseline diff path"
+}

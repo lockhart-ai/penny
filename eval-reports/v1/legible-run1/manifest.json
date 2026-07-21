@@ -1,0 +1,11 @@
+{
+  "run_id": "run-20260721T020028Z-abba710a",
+  "created_at": "2026-07-21T02:00:28.417918+00:00",
+  "commit": "abba710a03ae3555148fea6a86712e9af020499a",
+  "dirty": false,
+  "diff_file": null,
+  "model": "gpt-oss:20b",
+  "embedding_model": "embeddinggemma",
+  "samples": 3,
+  "lever": "framework baseline"
+}
