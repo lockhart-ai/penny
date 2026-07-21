@@ -740,7 +740,11 @@ async def _embed_seeds(penny: Penny) -> None:
 
 
 def _assert_threshold(
-    case_id: str, results: list[SampleResult], min_pass_rate: float | None
+    case_id: str,
+    results: list[SampleResult],
+    min_pass_rate: float | None,
+    *,
+    gate_pathology_excluded: bool = False,
 ) -> None:
     """Print the case's X/Y pass rate, and — unless report-only — gate on it.
 
@@ -749,6 +753,15 @@ def _assert_threshold(
     inherently stochastic behaviours we want to *observe* rather than gate (the
     self-correction cases — the model can't clear every cross-run repeat, and a
     flaky red adds no signal beyond the printed rate).
+
+    ``gate_pathology_excluded=True`` gates on the **pathology-excluded** mean
+    (#1695) instead of the raw mean — the honest read of model behaviour, over
+    every sample that is NOT a pathology failure (a reroll-guard collapse can't
+    sink the bar).  This is what lets a case that dispatches reliably but for the
+    known gpt-oss degeneracy collapse carry its true bar (e.g. the speakable
+    sequence cases restored to 0.8, #1698) rather than a bar lowered to absorb
+    that pathology.  The raw mean + the pathology count stay visible in the
+    printed cause line, so a pathology spike remains legible.
     """
     total = len(results)
     mean = sum(result.score for result in results) / total if total else 0.0
@@ -781,10 +794,15 @@ def _assert_threshold(
         if detail:
             print(detail)
         return
-    print(f"\nRESULT [{case_id}] {metric} across {total} samples (need mean >={min_pass_rate})")
+    # Which metric the gate compares: the pathology-excluded mean when the case opts in
+    # (#1698 — model NOISE can't sink the bar), else the raw mean.
+    gated_value = excluded_mean if gate_pathology_excluded else mean
+    gated_label = "pathology-excluded mean" if gate_pathology_excluded else "mean"
+    need = f"need {gated_label} >={min_pass_rate}"
+    print(f"\nRESULT [{case_id}] {metric} across {total} samples ({need})")
     print(f"  {cause_line}")
-    if mean < min_pass_rate:
-        pytest.fail(f"{case_id}: mean {mean:.2f} < {min_pass_rate}:\n{detail}")
+    if gated_value < min_pass_rate:
+        pytest.fail(f"{case_id}: {gated_label} {gated_value:.2f} < {min_pass_rate}:\n{detail}")
 
 
 def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: bool) -> None:
@@ -1178,6 +1196,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         min_pass_rate: float | None = 0.75,
         timeout: float = 120.0,
         family: str | None = None,
+        gate_pathology_excluded: bool = False,
     ) -> None:
         eval_artifacts.begin_case(case_id)
         turns = _conversation_turns(message, messages)
@@ -1248,7 +1267,9 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
             perf=perf,
         )
         perf.report(case_id, samples)
-        _assert_threshold(case_id, results, min_pass_rate)
+        _assert_threshold(
+            case_id, results, min_pass_rate, gate_pathology_excluded=gate_pathology_excluded
+        )
 
     return _run
 

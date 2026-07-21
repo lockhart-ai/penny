@@ -29,10 +29,13 @@ import pytest
 
 from penny.database import Database
 from penny.database.memory import EntryInput
-from penny.tests.eval.conftest import ChatEval, collection_entries
+from penny.tests.eval.conftest import ChatEval, Check, collection_entries
 from penny.tests.eval.conftest import _response_tool_calls as response_tool_calls
 
 pytestmark = pytest.mark.eval
+
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "nl-dispatch"
 
 _LIKES = "likes"
 _DISLIKES = "dislikes"
@@ -93,15 +96,21 @@ def _score_add(memory: str, other: str, token: str):
     """The utterance must write the preference into ``memory`` (carrying the topic)
     and leave the opposite-valence collection untouched."""
 
-    def score(db: Database, before: set[str], reply: str) -> list[str]:
-        fails: list[str] = []
-        if memory not in _memory_args(db, _WRITE):
-            fails.append(f"{_WRITE} was not called on '{memory}'")
-        if not _has_entry_mentioning(db, memory, token):
-            fails.append(f"'{memory}' has no entry mentioning '{token}' after the write")
-        if collection_entries(db, other):
-            fails.append(f"opposite collection '{other}' was written to")
-        return fails
+    def score(db: Database, before: set[str], reply: str) -> list[Check]:
+        has_token = _has_entry_mentioning(db, memory, token)
+        return [
+            Check(
+                f"collection_write on '{memory}'",
+                memory in _memory_args(db, _WRITE),
+                anchor=f"{_WRITE}(",
+            ),
+            Check(
+                f"'{memory}' has an entry mentioning '{token}'",
+                has_token,
+                rationale=None if has_token else f"entries: {collection_entries(db, memory)}",
+            ),
+            Check(f"opposite collection '{other}' untouched", not collection_entries(db, other)),
+        ]
 
     return score
 
@@ -110,39 +119,56 @@ def _score_remove(memory: str, key: str, token: str):
     """The retraction must delete the seeded entry from ``memory`` by its key —
     matched by meaning (the user names the topic, not the exact key)."""
 
-    def score(db: Database, before: set[str], reply: str) -> list[str]:
-        fails: list[str] = []
-        if memory not in _memory_args(db, _DELETE):
-            fails.append(f"{_DELETE} was not called on '{memory}'")
-        if key in collection_entries(db, memory):
-            fails.append(f"entry '{key}' still present in '{memory}' — not removed")
-        return fails
+    def score(db: Database, before: set[str], reply: str) -> list[Check]:
+        return [
+            Check(
+                f"collection_delete_entry on '{memory}'",
+                memory in _memory_args(db, _DELETE),
+                anchor=f"{_DELETE}(",
+            ),
+            Check(
+                f"entry '{key}' removed from '{memory}'", key not in collection_entries(db, memory)
+            ),
+        ]
 
     return score
 
 
-def _score_list(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_list(db: Database, before: set[str], reply: str) -> list[Check]:
     """A "what do I like?" query reads the likes collection and mutates nothing."""
-    fails: list[str] = []
-    if _LIKES not in _memory_args(db, _READ):
-        fails.append(f"{_READ} was not called on '{_LIKES}'")
-    if _memory_args(db, _WRITE) or _memory_args(db, _DELETE):
-        fails.append("a listing request mutated the preference collections")
-    if len(collection_entries(db, _LIKES)) != 2:
-        fails.append("seeded likes entries changed on a listing request")
-    return fails
+    entry_count = len(collection_entries(db, _LIKES))
+    mutated = bool(_memory_args(db, _WRITE) or _memory_args(db, _DELETE))
+    return [
+        Check(
+            f"collection_read_latest on '{_LIKES}'",
+            _LIKES in _memory_args(db, _READ),
+            anchor=f"{_READ}(",
+        ),
+        Check("no write/delete on a listing request", not mutated),
+        Check(
+            "seeded likes entries unchanged",
+            entry_count == 2,
+            rationale=None if entry_count == 2 else f"expected 2 entries, saw {entry_count}",
+        ),
+    ]
 
 
-def _score_no_fire(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
     """A passing opinion must not write a preference to likes/dislikes."""
-    fails: list[str] = []
-    if _LIKES in _memory_args(db, _WRITE) or _DISLIKES in _memory_args(db, _WRITE):
-        fails.append(f"{_WRITE} fired on a passing opinion")
-    if _LIKES in _memory_args(db, _DELETE) or _DISLIKES in _memory_args(db, _DELETE):
-        fails.append(f"{_DELETE} fired on a passing opinion")
-    if collection_entries(db, _LIKES) or collection_entries(db, _DISLIKES):
-        fails.append("a preference was recorded from a passing opinion")
-    return fails
+    write_targets = _memory_args(db, _WRITE)
+    delete_targets = _memory_args(db, _DELETE)
+    wrote_pref = _LIKES in write_targets or _DISLIKES in write_targets
+    deleted_pref = _LIKES in delete_targets or _DISLIKES in delete_targets
+    recorded = bool(collection_entries(db, _LIKES) or collection_entries(db, _DISLIKES))
+    return [
+        Check("no collection_write on a passing opinion", not wrote_pref, anchor=f"{_WRITE}("),
+        Check(
+            "no collection_delete_entry on a passing opinion",
+            not deleted_pref,
+            anchor=f"{_DELETE}(",
+        ),
+        Check("no preference recorded", not recorded),
+    ]
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────
@@ -151,6 +177,7 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[str]:
 async def test_add_like(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="likes-add-like",
+        family=_FAMILY,
         message="I'm really into competitive kite flying these days, love it",
         score=_score_add(_LIKES, _DISLIKES, "kite"),
     )
@@ -159,6 +186,7 @@ async def test_add_like(chat_eval: ChatEval) -> None:
 async def test_add_like_fan_of(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="likes-add-like-fan",
+        family=_FAMILY,
         message="add matcha lattes to my likes, I'm a big fan",
         score=_score_add(_LIKES, _DISLIKES, "matcha"),
     )
@@ -167,6 +195,7 @@ async def test_add_like_fan_of(chat_eval: ChatEval) -> None:
 async def test_add_dislike(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="dislikes-add-dislike",
+        family=_FAMILY,
         message="ugh, I really can't stand soggy cereal",
         score=_score_add(_DISLIKES, _LIKES, "cereal"),
     )
@@ -175,6 +204,7 @@ async def test_add_dislike(chat_eval: ChatEval) -> None:
 async def test_remove_like_by_meaning(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="likes-remove-by-meaning",
+        family=_FAMILY,
         message="eh, you can forget about the typewriters",
         seed=lambda db: _seed_like(
             db,
@@ -188,6 +218,7 @@ async def test_remove_like_by_meaning(chat_eval: ChatEval) -> None:
 async def test_remove_dislike_by_meaning(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="dislikes-remove-by-meaning",
+        family=_FAMILY,
         message="actually I don't mind being on hold anymore, drop that one",
         seed=lambda db: _seed_dislike(
             db, "waiting on hold", "I really hate waiting on hold with customer service"
@@ -203,6 +234,7 @@ async def test_list_likes(chat_eval: ChatEval) -> None:
 
     await chat_eval(
         case_id="likes-list",
+        family=_FAMILY,
         message="what do you think I'm into?",
         seed=seed,
         score=_score_list,
@@ -212,6 +244,7 @@ async def test_list_likes(chat_eval: ChatEval) -> None:
 async def test_no_fire_passing_opinion(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="likes-no-fire",
+        family=_FAMILY,
         message="the documentary last night was pretty forgettable, nothing worth noting",
         score=_score_no_fire,
     )

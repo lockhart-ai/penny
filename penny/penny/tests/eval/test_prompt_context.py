@@ -24,9 +24,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from penny.database import Database
-from penny.tests.eval.conftest import ChatEval
+from penny.tests.eval.conftest import ChatEval, Check
 
 pytestmark = pytest.mark.eval
+
+# Family tag (explicit, meaningful grouping) for every case in this module.
+_FAMILY = "prompt-render"
 
 # The zone the eval user is seeded in (``seed_user``).
 _PROFILE_TIMEZONE = "America/Los_Angeles"
@@ -46,23 +49,36 @@ def _datetime_anchor(db: Database) -> str | None:
     return None
 
 
-def _score_datetime_anchor(db: Database, before: set[str], reply: str) -> list[str]:
-    anchor = _datetime_anchor(db)
-    if anchor is None:
-        return ["no system prompt with a date/time anchor was logged"]
-    fails: list[str] = []
+def _score_datetime_anchor(db: Database, before: set[str], reply: str) -> list[Check]:
     # The profile zone's own label (PST/PDT), never a hardcoded UTC.
     local_abbrev = datetime.now(ZoneInfo(_PROFILE_TIMEZONE)).strftime("%Z")
-    if not anchor.endswith(f" {local_abbrev}"):
-        fails.append(f"anchor not in profile timezone ({local_abbrev}): {anchor!r}")
-    if "UTC" in anchor:
-        fails.append(f"anchor still rendered in UTC: {anchor!r}")
-    return fails
+    rendered = _datetime_anchor(db)
+    if rendered is None:
+        # No prompt logged — nothing to inspect for the two timezone checks (not-applicable).
+        return [
+            Check("date/time anchor logged in the system prompt", False),
+            Check.na(f"anchor rendered in the profile timezone ({local_abbrev})"),
+            Check.na("anchor not rendered in UTC"),
+        ]
+    in_zone = rendered.endswith(f" {local_abbrev}")
+    not_utc = "UTC" not in rendered
+    return [
+        Check("date/time anchor logged in the system prompt", True),
+        Check(
+            f"anchor rendered in the profile timezone ({local_abbrev})",
+            in_zone,
+            rationale=None if in_zone else f"{rendered!r}",
+        ),
+        Check(
+            "anchor not rendered in UTC", not_utc, rationale=None if not_utc else f"{rendered!r}"
+        ),
+    ]
 
 
 async def test_datetime_anchor_in_profile_timezone(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="prompt-datetime-timezone",
+        family=_FAMILY,
         message="hey! what's up?",
         score=_score_datetime_anchor,
     )
