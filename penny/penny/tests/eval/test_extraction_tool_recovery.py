@@ -28,7 +28,6 @@ from penny.tests.eval.conftest import (
     Check,
     _InjectFictitiousToolPrompt,
     seed_collection,
-    tool_call_rejected,
 )
 from penny.tests.eval.fixtures import SynthCollection
 
@@ -83,34 +82,34 @@ def _seed(db: Database) -> None:
 
 
 def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
-    """Graded: a corrected update landed — the stored prompt has no fictitious call and
-    differs from the seed (the rejected ``extract_text`` update never persists, so a
-    changed prompt is proof the model recovered with a valid rewrite).
+    """Graded: a corrected update landed — the stored prompt has no fictitious call and differs
+    from the seed (the rejected ``extract_text`` update never persists, so a changed prompt is
+    proof the model recovered with a valid rewrite).
 
-    The first check is the recovery-contract guard the graded path would otherwise drop
-    (``chat_eval`` only appends its ``bail_injected`` guard on the binary branch): the
-    forced fictitious-tool update is refused by the extraction-prompt gate as an error
-    tool response, so a persisted rejection frame is the structural proof the injection
-    fired and was gated — a run with no rejection never triggered the contract."""
+    The 'forced bail fired — contract exercised' guard is PREPENDED by ``chat_eval``'s graded path
+    (#1697) — the forced fictitious-tool update is refused by the extraction-prompt gate, so a run
+    that never triggered it can't pass — and this scorer owns only the recovery outcome."""
     row = db.memories.get(_COLLECTION)
     stored = row.extraction_prompt if row is not None else ""
+    has_fictitious = stored is not None and "extract_text" in stored
+    changed = stored != _SEED_PROMPT
     return [
         Check(
-            "the fictitious-tool update was refused",
-            tool_call_rejected(db),
-            rationale="no rejection frame — the injected fictitious-tool update never "
-            "fired / was not gated",
-        ),
-        Check(
             "no fictitious tool persisted in the prompt",
-            not (stored is not None and "extract_text" in stored),
-            rationale=f"extract_text persisted in the prompt: {(stored or '')[:160]!r}",
+            not has_fictitious,
+            rationale=f"extract_text persisted in the prompt: {(stored or '')[:160]!r}"
+            if has_fictitious
+            else None,
         ),
         Check(
             "a corrected update landed (prompt changed from the seed)",
-            stored != _SEED_PROMPT,
-            rationale="prompt unchanged from the seed — the model gave up or kept "
-            "re-emitting the fictitious call",
+            changed,
+            rationale=None
+            if changed
+            else (
+                "prompt unchanged from the seed — the model gave up or kept re-emitting "
+                "the fictitious call"
+            ),
         ),
     ]
 

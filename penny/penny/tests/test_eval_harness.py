@@ -25,6 +25,10 @@ from penny.tests.eval.conftest import (
     Check,
     SampleResult,
     _assert_threshold,
+    _bail_fired_check,
+    _cycle_recovered_check,
+    _guarded_graded,
+    _scorer_is_graded,
     _stamp_cause,
     _write_sample_report,
     run_exhibited_pathology,
@@ -130,6 +134,77 @@ def test_sample_is_fragile_detects_recovery_frames(tmp_path) -> None:
     assert not sample_is_fragile(db)
     _log_prompt(db, messages=_tool_frame("You tried to use `browse` but it didn't work: down"))
     assert sample_is_fragile(db)
+
+
+# ── The graded runner paths: dispatch + framework guard-as-Check (#1697) ──
+
+
+def test_scorer_is_graded_dispatches_on_return_type() -> None:
+    # A graded scorer returns Checks; a binary one returns failure strings; empty → binary (pass).
+    assert _scorer_is_graded([Check("wrote entry", ok=True)])
+    assert not _scorer_is_graded(["did not write the entry"])
+    assert not _scorer_is_graded([])
+
+
+def test_bail_fired_and_cycle_recovered_guard_checks() -> None:
+    # Each guard is a scored Check: it passes silently (no rationale) when the contract fired, and
+    # fails with a rationale naming the vacuous contract when it did not — so a run the injected
+    # trigger never reached can't score green off the scorer's own checks alone.
+    fired = _bail_fired_check(True)
+    assert fired.ok and fired.scored and fired.rationale is None
+    missed = _bail_fired_check(False)
+    assert not missed.ok and missed.rationale is not None
+    recovered = _cycle_recovered_check(True)
+    assert recovered.ok and recovered.rationale is None
+    stalled = _cycle_recovered_check(False)
+    assert not stalled.ok and stalled.rationale is not None
+
+
+def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:
+    # A scorer whose own check PASSES but whose injected bail never fired: the prepended guard
+    # (leading the list) drags the sample below a full pass — the vacuous-contract catch.
+    vacuous = _guarded_graded([Check("wrote the entry", ok=True)], [_bail_fired_check(False)])
+    assert vacuous.total == 2  # guard + scorer check, both scored
+    assert vacuous.score == 0.5 and not vacuous.passed
+    assert vacuous.checks[0].label == "forced bail fired — contract exercised"  # guard leads
+    # With the bail fired, the same scorer sample is a clean full pass.
+    clean = _guarded_graded([Check("wrote the entry", ok=True)], [_bail_fired_check(True)])
+    assert clean.passed and clean.total == 2
+
+
+def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    write_call = {"function": {"name": "collection_write", "arguments": "{}"}}
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "user", "content": "save X"},
+            {"role": "assistant", "tool_calls": [write_call]},
+        ],
+    )
+    # The scorer's own check passed (anchored to the write row), but the injected bail-fired guard
+    # failed — so the guard-as-Check lands in the footer with its vacuous-contract rationale.
+    result = _guarded_graded(
+        [Check("wrote the entry", ok=True, anchor="collection_write(")],
+        [_bail_fired_check(False)],
+    )
+    _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
+    expected = (
+        "#### sample 1 — ❌ 1/2 checks\n"
+        "\n"
+        "| # | Actor | Content |\n"
+        "|---|---|---|\n"
+        "| 1 | 👤 user | save X |\n"
+        "| 2 | 🔧 Penny → tool ✅ | collection_write({}) |\n"
+        "| 3 | 🤖 Penny | saved |\n"
+        "\n"
+        "_checks: ❌ forced bail fired — contract exercised — "
+        "the injected bail never fired — the recovery contract was not exercised_\n"
+        "\n"
+    )
+    assert (tmp_path / "guard-case.md").read_text() == expected
 
 
 # ── Whole-render assertions for the new report shapes ──

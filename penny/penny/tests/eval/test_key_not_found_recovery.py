@@ -32,6 +32,7 @@ import pytest
 
 from penny.database import Database
 from penny.tests.eval.conftest import (
+    Check,
     _InjectKeyMiss,
     collection_entries,
     seed_collection,
@@ -58,31 +59,49 @@ def _seed_recipe_box(db: Database) -> None:
     )
 
 
-def _score_reached_update_not_write(db: Database, sent: list[str]) -> list[str]:
-    """Pass iff the model recovered from the key-not-found rejection to the right
-    write path: it called ``update_entry`` (not ``collection_write``), left the
-    box's keys unchanged (no proliferated / duplicate key), and the enrichment
-    landed on the existing fajitas entry."""
-    fails: list[str] = []
+def _score_reached_update_not_write(db: Database, sent: list[str]) -> list[Check]:
+    """The model recovered from the key-not-found rejection to the right write path: it called
+    ``update_entry`` (not ``collection_write``), left the box's keys unchanged (no proliferated /
+    duplicate key), and the enrichment landed on the existing fajitas entry.
+    (``guard_recovery_eval`` injects the bail-fired guard check.)"""
     entries = collection_entries(db, RECIPE_BOX.name)
     keys = set(entries)
-    if keys != set(RECIPE_BOX_SEED_KEYS):
-        fails.append(
-            "box keys changed — the model created a fresh/duplicate key via "
-            f"collection_write instead of update_entry: {sorted(keys)} vs seeded "
-            f"{sorted(RECIPE_BOX_SEED_KEYS)}"
-        )
-    if not tool_was_called(db, "update_entry"):
-        fails.append(
-            "did not reach update_entry after the key-not-found rejection — picked "
-            "collection_write (→ duplicate-rejected) or gave up"
-        )
-    if entries.get(RECIPE_BOX_FAJITAS_KEY, "") == RECIPE_BOX_FAJITAS_SEED_CONTENT:
-        fails.append(
-            "the existing fajitas entry was not refreshed — update_entry did not "
-            "land the enrichment on the found key"
-        )
-    return fails
+    keys_unchanged = keys == set(RECIPE_BOX_SEED_KEYS)
+    reached_update = tool_was_called(db, "update_entry")
+    refreshed = entries.get(RECIPE_BOX_FAJITAS_KEY, "") != RECIPE_BOX_FAJITAS_SEED_CONTENT
+    return [
+        Check(
+            "box keys unchanged (no fresh/duplicate key)",
+            keys_unchanged,
+            rationale=None
+            if keys_unchanged
+            else (
+                "box keys changed — created a fresh/duplicate key via collection_write instead "
+                f"of update_entry: {sorted(keys)} vs seeded {sorted(RECIPE_BOX_SEED_KEYS)}"
+            ),
+        ),
+        Check(
+            "reached update_entry (not collection_write)",
+            reached_update,
+            anchor="update_entry(",
+            rationale=None
+            if reached_update
+            else (
+                "did not reach update_entry after the key-not-found rejection — picked "
+                "collection_write (→ duplicate-rejected) or gave up"
+            ),
+        ),
+        Check(
+            "the existing fajitas entry was refreshed",
+            refreshed,
+            rationale=None
+            if refreshed
+            else (
+                "the existing fajitas entry was not refreshed — update_entry did not land the "
+                "enrichment on the found key"
+            ),
+        ),
+    ]
 
 
 async def test_key_not_found_recovers_to_update_not_write(guard_recovery_eval) -> None:

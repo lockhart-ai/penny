@@ -29,6 +29,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import half_formed_send_reason
 from penny.tests.eval.conftest import (
+    Check,
     _InjectDoneBail,
     _InjectSendBail,
     collection_entries,
@@ -76,30 +77,50 @@ def _seed_send_digest(db: Database) -> None:
         db.messages.log_message(_INCOMING, "user", message)
 
 
-def _score_recovered_with_work(db: Database, sent: list[str]) -> list[str]:
-    """Pass iff the cycle recovered from the forced first-move done(): it read its
-    inputs and wrote the summary entry the seeded messages clearly warrant."""
-    if collection_entries(db, WEEKLY_DIGEST.name):
-        return []
-    read = tool_was_called(db, "log_read")
-    wrote = tool_was_called(db, "collection_write")
+def _score_recovered_with_work(db: Database, sent: list[str]) -> list[Check]:
+    """The cycle recovered from the forced first-move done(): it read its inputs and wrote the
+    summary entry the seeded messages clearly warrant.  (``guard_recovery_eval`` injects the
+    bail-fired guard check; this owns the recovered-work outcome.)"""
+    wrote = bool(collection_entries(db, WEEKLY_DIGEST.name))
     return [
-        "did not recover after the refused first-move done() — no summary written "
-        f"(log_read={read}, collection_write={wrote})"
+        Check(
+            "recovered and wrote the summary the messages warrant",
+            wrote,
+            anchor="collection_write(",
+            rationale=None
+            if wrote
+            else (
+                "no summary written after the refused first-move done() "
+                f"(log_read={tool_was_called(db, 'log_read')}, "
+                f"collection_write={tool_was_called(db, 'collection_write')})"
+            ),
+        )
     ]
 
 
-def _score_resent_complete_message(db: Database, sent: list[str]) -> list[str]:
-    """Pass iff a COMPLETE message was sent and NO half-formed one slipped through.
-
-    Pre-fix the forced ``"Hi there! ......???"`` was enqueued (it shows up in
-    ``sent``); post-fix the gate refuses it and the model resends a real message."""
+def _score_resent_complete_message(db: Database, sent: list[str]) -> list[Check]:
+    """A COMPLETE message was sent and NO half-formed one slipped through.  Pre-fix the forced
+    ``"Hi there! ......???"`` was enqueued (it shows up in ``sent``); post-fix the gate refuses it
+    and the model resends a real message.  (``guard_recovery_eval`` injects the bail-fired guard
+    check; this owns the resend outcome.)"""
     half_formed = [body for body in sent if half_formed_send_reason(body) is not None]
-    if half_formed:
-        return [f"a half-formed message was sent (gate let it through): {half_formed[0]!r}"]
-    if not sent:
-        return ["no message sent after the gate refused the half-formed body — no recovery"]
-    return []
+    return [
+        Check(
+            "no half-formed message slipped through the gate",
+            not half_formed,
+            rationale=f"a half-formed message was sent (gate let it through): {half_formed[0]!r}"
+            if half_formed
+            else None,
+        ),
+        Check(
+            "resent a complete message after the refusal",
+            bool(sent),
+            anchor="send_message(",
+            rationale=None
+            if sent
+            else "no message sent after the gate refused the half-formed body — no recovery",
+        ),
+    ]
 
 
 async def test_premature_done_is_refused_and_recovers(guard_recovery_eval) -> None:

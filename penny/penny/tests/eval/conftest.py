@@ -65,7 +65,7 @@ Preparer = Callable[[Penny], None]
 # A collector scorer also sees the pre-cycle snapshot and the messages the cycle
 # sent the user.  ``snapshot`` is whatever the case's ``snapshot`` callback returned.
 Snapshotter = Callable[[Database], object]
-CollectorScorer = Callable[[Database, object, list[str]], list[str]]
+CollectorScorer = Callable[[Database, object, list[str]], "list[str] | list[Check]"]
 # A text scorer sees only a returned string (e.g. a generated announcement) and
 # returns failure strings — empty means the sample passed.
 TextScorer = Callable[[str], list[str]]
@@ -433,6 +433,47 @@ def _stamp_cause(db: Database, result: SampleResult, *, timed_out: bool = False)
         passed=result.passed,
         timed_out=timed_out,
         pathology=not result.passed and run_exhibited_pathology(db),
+    )
+
+
+# ── Graded-scorer dispatch + framework guard-as-Check (the runners' scoring seam) ──
+def _scorer_is_graded(scored: list[Check | str]) -> bool:
+    """Did the scorer return graded ``Check``s (partial credit) rather than binary failure
+    strings?  The runners dispatch on this: a graded return scores as passed/total with the
+    framework guard Checks prepended, a binary one keeps the all-or-nothing string path."""
+    return bool(scored) and isinstance(scored[0], Check)
+
+
+def _guarded_graded(scored: list[Check | str], guards: list[Check]) -> SampleResult:
+    """A graded sample result with the runner's framework guard Checks PREPENDED (guard-as-Check):
+    a recovery runner's 'the injected bail fired' / 'the cycle recovered' contract rides as a
+    scored ``Check`` a scorer author can't omit, so a vacuous run — the injected trigger never
+    fired — can't score green off the scorer's own checks alone."""
+    checks = [check for check in scored if isinstance(check, Check)]
+    return SampleResult.graded([*guards, *checks])
+
+
+def _bail_fired_check(bail_injected: bool) -> Check:
+    """The 'the forced bail actually fired' contract guard as a scored ``Check`` — the graded-path
+    twin of the binary path's ``forced bail never fired — contract not exercised`` failure."""
+    return Check(
+        "forced bail fired — contract exercised",
+        bail_injected,
+        rationale=None
+        if bail_injected
+        else "the injected bail never fired — the recovery contract was not exercised",
+    )
+
+
+def _cycle_recovered_check(success: bool) -> Check:
+    """The 'the cycle recovered to a successful close' guard as a scored ``Check`` — the graded-path
+    twin of ``nudge_eval``'s binary ``cycle did not recover to a successful close`` failure."""
+    return Check(
+        "cycle recovered to a successful close",
+        success,
+        rationale=None
+        if success
+        else "the cycle did not recover to a successful close after the nudge",
     )
 
 
@@ -1218,10 +1259,12 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                             await server.push_message(sender=TEST_SENDER, content=turn)
                             response = await server.wait_for_message(timeout=timeout)
                             reply = str(response.get("message", ""))
-                        scored = score(penny.db, before, reply)
-                        if scored and isinstance(scored[0], Check):
-                            checks = [c for c in scored if isinstance(c, Check)]  # partial credit
-                            result = SampleResult.graded(checks)
+                        scored = list(score(penny.db, before, reply))
+                        if _scorer_is_graded(scored):
+                            guards: list[Check] = []
+                            if wrapper is not None:
+                                guards = [_bail_fired_check(wrapper.bail_injected)]
+                            result = _guarded_graded(scored, guards)
                         else:
                             fails = [s for s in scored if isinstance(s, str)]  # binary scorer
                             if wrapper is not None and not wrapper.bail_injected:
@@ -1308,11 +1351,15 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
                         str(message.get("message", ""))
                         for message in server.outgoing_messages[sent_before:]
                     ]
-                    fails = score(penny.db, before, sent)
-                    results.append(SampleResult.binary(fails))
-                    _stamp_cause(penny.db, results[-1])
-                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
-                    _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
+                    scored = list(score(penny.db, before, sent))
+                    if _scorer_is_graded(scored):
+                        result = _guarded_graded(scored, [])
+                    else:
+                        result = SampleResult.binary([s for s in scored if isinstance(s, str)])
+                    results.append(result)
+                    _stamp_cause(penny.db, result)
+                    _write_sample_report(penny.db, case_id, sample_index, result=result)
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
@@ -1492,15 +1539,26 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
                         str(message.get("message", ""))
                         for message in server.outgoing_messages[sent_before:]
                     ]
-                    fails = list(score(penny.db, before, sent)) if score is not None else []
-                    if not wrapper.bail_injected:
-                        fails.append("forced bail never fired — contract not exercised")
-                    elif not success:
-                        fails.append("cycle did not recover to a successful close after the nudge")
-                    results.append(SampleResult.binary(fails))
-                    _stamp_cause(penny.db, results[-1])
-                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
-                    _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
+                    scored = list(score(penny.db, before, sent)) if score is not None else []
+                    if _scorer_is_graded(scored):
+                        guards = [
+                            _bail_fired_check(wrapper.bail_injected),
+                            _cycle_recovered_check(success),
+                        ]
+                        result = _guarded_graded(scored, guards)
+                    else:
+                        fails = [s for s in scored if isinstance(s, str)]
+                        if not wrapper.bail_injected:
+                            fails.append("forced bail never fired — contract not exercised")
+                        elif not success:
+                            fails.append(
+                                "cycle did not recover to a successful close after the nudge"
+                            )
+                        result = SampleResult.binary(fails)
+                    results.append(result)
+                    _stamp_cause(penny.db, result)
+                    _write_sample_report(penny.db, case_id, sample_index, result=result)
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
@@ -1789,7 +1847,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
         collection: str,
         seed: Seeder,
         wrap_client: Callable[[object], _InjectingClient],
-        score: Callable[[Database, list[str]], list[str]],
+        score: Callable[[Database, list[str]], list[str] | list[Check]],
         browse: list[CannedPage] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
@@ -1821,13 +1879,18 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
                         str(message.get("message", ""))
                         for message in server.outgoing_messages[sent_before:]
                     ]
-                    fails = list(score(penny.db, sent))
-                    if not wrapper.bail_injected:
-                        fails.append("forced bail never fired — contract not exercised")
-                    results.append(SampleResult.binary(fails))
-                    _stamp_cause(penny.db, results[-1])
-                    _write_sample_report(penny.db, case_id, sample_index, result=results[-1])
-                    _dump_thinking(penny.db, case_id, sample_index, failed=bool(fails))
+                    scored = list(score(penny.db, sent))
+                    if _scorer_is_graded(scored):
+                        result = _guarded_graded(scored, [_bail_fired_check(wrapper.bail_injected)])
+                    else:
+                        fails = [s for s in scored if isinstance(s, str)]
+                        if not wrapper.bail_injected:
+                            fails.append("forced bail never fired — contract not exercised")
+                        result = SampleResult.binary(fails)
+                    results.append(result)
+                    _stamp_cause(penny.db, result)
+                    _write_sample_report(penny.db, case_id, sample_index, result=result)
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

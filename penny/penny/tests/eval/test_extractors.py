@@ -34,6 +34,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.tests.eval.conftest import (
+    Check,
     CollectorScorer,
     _InjectEmptyResponse,
     collection_entries,
@@ -112,60 +113,120 @@ def _snapshot(name: str):
 
 
 def _score_wrote_entry(name: str) -> CollectorScorer:
-    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+    def _score(db: Database, before: object, sent: list[str]) -> list[Check]:
         before_entries = cast("dict[str, str]", before)
-        after = collection_entries(db, name)
-        if set(after) - set(before_entries):
-            return []
-        return [f"expected a new {name!r} entry, none added"]
+        wrote = bool(set(collection_entries(db, name)) - set(before_entries))
+        return [
+            Check(
+                f"wrote a new {name!r} entry",
+                wrote,
+                anchor="collection_write(",
+                rationale=None if wrote else f"no new {name!r} entry was added",
+            )
+        ]
 
     return _score
 
 
 def _score_no_op(name: str) -> CollectorScorer:
-    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+    def _score(db: Database, before: object, sent: list[str]) -> list[Check]:
         before_entries = cast("dict[str, str]", before)
-        if collection_entries(db, name) != before_entries:
-            return [f"wrote a {name!r} entry on a no-signal batch (false positive)"]
-        return []
+        unchanged = collection_entries(db, name) == before_entries
+        return [
+            Check(
+                f"no {name!r} entry written on a no-signal batch",
+                unchanged,
+                rationale=None
+                if unchanged
+                else f"wrote a {name!r} entry on a no-signal batch (false positive)",
+            )
+        ]
 
     return _score
 
 
-def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[str]:
+def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[Check]:
     before_entries = cast("dict[str, str]", before)
     after = collection_entries(db, "knowledge")
     new_keys = set(after) - set(before_entries)
-    if not new_keys:
-        return ["no knowledge entry written from the browse-results page"]
-    fails = []
+    wrote = bool(new_keys)
     body = " ".join(after[key].lower() for key in new_keys)
-    if "antikythera" not in body:
-        fails.append("summary missing the page's subject (antikythera)")
-    if "http" not in body:
-        fails.append("summary missing the source URL (should lead with it)")
-    # The cycle must close with a real done() call — a run that writes the entry
-    # then narrates "Done. Summary: ..." as prose instead of calling done() is
-    # marked failed and leaves its cursor uncommitted (re-run next tick).  The
-    # text-step nudge exists to keep that slip from ending the cycle.
-    if not tool_was_called(db, "done"):
-        fails.append("wrote the entry but never closed the cycle with done()")
-    return fails
+    closed = tool_was_called(db, "done")
+    checks = [
+        Check(
+            "wrote a knowledge entry from the browse-results page",
+            wrote,
+            anchor="collection_write(",
+            rationale=None if wrote else "no knowledge entry written from the browse-results page",
+        )
+    ]
+    # The subject/URL content checks only apply to an entry that WAS written — with no
+    # write there is no summary to inspect, so they are not-applicable (n/a), not failures.
+    if wrote:
+        has_subject = "antikythera" in body
+        has_url = "http" in body
+        checks.append(
+            Check(
+                "summary names the page's subject",
+                has_subject,
+                rationale=None
+                if has_subject
+                else "summary missing the page's subject (antikythera)",
+            )
+        )
+        checks.append(
+            Check(
+                "summary leads with the source URL",
+                has_url,
+                rationale=None
+                if has_url
+                else "summary missing the source URL (should lead with it)",
+            )
+        )
+    else:
+        checks.append(Check.na("summary names the page's subject", rationale="no entry written"))
+        checks.append(Check.na("summary leads with the source URL", rationale="no entry written"))
+    # The cycle must close with a real done() call — a run that writes the entry then
+    # narrates "Done. Summary: ..." as prose leaves its cursor uncommitted (re-run next tick).
+    checks.append(
+        Check(
+            "closed the cycle with done()",
+            closed,
+            anchor="done(",
+            rationale=None if closed else "wrote the entry but never closed the cycle with done()",
+        )
+    )
+    return checks
 
 
-def _score_research(db: Database, before: object, sent: list[str]) -> list[str]:
+def _score_research(db: Database, before: object, sent: list[str]) -> list[Check]:
     before_entries = cast("dict[str, str]", before)
     after = collection_entries(db, RESEARCH_WATCHER.name)
-    fails = []
-    if not (set(after) - set(before_entries)):
-        fails.append("did not write the browsed find to the collection")
-    # A silent (``notify=False``) gatherer writes only — with no notify suffix in
-    # its prompt it must NOT send.
-    if sent:
-        fails.append("silent collector sent a message — a notify=False cycle never emits")
-    if not tool_was_called(db, "done"):
-        fails.append("cycle did not close with done()")
-    return fails
+    wrote = bool(set(after) - set(before_entries))
+    closed = tool_was_called(db, "done")
+    # A silent (``notify=False``) gatherer writes only — with no notify suffix in its
+    # prompt it must NOT send.
+    return [
+        Check(
+            "wrote the browsed find to the collection",
+            wrote,
+            anchor="collection_write(",
+            rationale=None if wrote else "did not write the browsed find to the collection",
+        ),
+        Check(
+            "silent collector sent nothing",
+            not sent,
+            rationale=None
+            if not sent
+            else "silent collector sent a message — a notify=False cycle never emits",
+        ),
+        Check(
+            "closed the cycle with done()",
+            closed,
+            anchor="done(",
+            rationale=None if closed else "cycle did not close with done()",
+        ),
+    ]
 
 
 # ── Cases: read memory/log → write ───────────────────────────────────────────
@@ -272,16 +333,23 @@ async def test_collector_recovers_from_text_bail(nudge_eval) -> None:
     )
 
 
-def _score_taught_real_done(db: Database, before: object, sent: list[str]) -> list[str]:
+def _score_taught_real_done(db: Database, before: object, sent: list[str]) -> list[Check]:
     """The teaching worked: the live model MADE the real done() tool call after the
     nudge (the promptlog records the model's own emission — the injected bail was
     text, so any logged done() call is the model's recovery move).  ``nudge_eval``
-    separately asserts the cycle closed successfully; this pins that the close came
-    from the model's own tool call, i.e. the taught behaviour, not any absorption
-    by the system."""
-    if tool_was_called(db, "done"):
-        return []
-    return ["no real done() call was logged — the model never re-emitted the taught call"]
+    separately injects the bail-fired + cycle-recovered guard checks; this pins that
+    the close came from the model's own tool call, i.e. the taught behaviour."""
+    made_done = tool_was_called(db, "done")
+    return [
+        Check(
+            "model re-emitted the taught done() call",
+            made_done,
+            anchor="done(",
+            rationale=None
+            if made_done
+            else "no real done() call was logged — the model never re-emitted the taught call",
+        )
+    ]
 
 
 async def test_collector_taught_out_of_args_only_json_bail(nudge_eval) -> None:
@@ -310,14 +378,28 @@ async def test_collector_taught_out_of_args_only_json_bail(nudge_eval) -> None:
     )
 
 
-def _score_watchlist_recovered(db: Database, before: object, sent: list[str]) -> list[str]:
-    """Pass iff the cycle recovered from the forced empty response with a REAL tool
-    call — it wrote the watchlist entries the seeded messages clearly warrant, not
-    just any close.  (``nudge_eval`` separately asserts the cycle closed with a
-    genuine ``done()``; this proves the recovery move was real work, not prose.)"""
-    if collection_entries(db, WATCHLIST.name) and tool_was_called(db, "collection_write"):
-        return []
-    return ["did not recover with a real write after the forced empty response"]
+def _score_watchlist_recovered(db: Database, before: object, sent: list[str]) -> list[Check]:
+    """The cycle recovered from the forced empty response with a REAL tool call — it wrote the
+    watchlist entries the seeded messages clearly warrant, not just any close.  (``nudge_eval``
+    separately injects the bail-fired + cycle-recovered guard checks; this proves the recovery
+    move was real work, not prose.)"""
+    wrote_entry = bool(collection_entries(db, WATCHLIST.name))
+    called_write = tool_was_called(db, "collection_write")
+    return [
+        Check(
+            "wrote a watchlist entry after the forced empty response",
+            wrote_entry,
+            rationale=None if wrote_entry else "no watchlist entry after the forced empty response",
+        ),
+        Check(
+            "recovered via a real collection_write call",
+            called_write,
+            anchor="collection_write(",
+            rationale=None
+            if called_write
+            else "no collection_write — did not recover with a real write",
+        ),
+    ]
 
 
 async def test_collector_recovers_from_empty_response(nudge_eval) -> None:

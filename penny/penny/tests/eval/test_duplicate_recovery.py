@@ -30,6 +30,7 @@ import pytest
 
 from penny.database import Database
 from penny.tests.eval.conftest import (
+    Check,
     _InjectDuplicateWrite,
     collection_entries,
     seed_collection,
@@ -58,38 +59,54 @@ def _seed_recipe_box(db: Database) -> None:
     )
 
 
-def _score_recovered_from_duplicate(db: Database, sent: list[str]) -> list[str]:
-    """Pass iff the forced duplicate write was rejected (keys unchanged) AND the
-    cycle recovered — closed via ``done()`` or pivoted to ``update_entry`` on the
-    BOUND matched key — rather than key-hunting to the step ceiling.
+def _score_recovered_from_duplicate(db: Database, sent: list[str]) -> list[Check]:
+    """The forced duplicate write was rejected (keys unchanged) AND the cycle recovered — closed
+    via ``done()`` or pivoted to ``update_entry`` on the BOUND matched key — rather than
+    key-hunting to the step ceiling.  (``guard_recovery_eval`` injects the bail-fired guard.)
 
-    The load-bearing check for #1405 is the last one: every ``update_entry`` must
-    target an EXISTING (matched) key.  The 47%-recovery failure was the model
-    re-using its OWN rejected candidate key (``"sheet pan chicken fajitas"``, not a
-    real entry key) → key-not-found → ping-pong.  A call whose key isn't a seed key
-    IS that ping-pong, so it fails the case."""
-    fails: list[str] = []
+    The load-bearing check for #1405 is the last one: every ``update_entry`` must target an
+    EXISTING (matched) key.  The 47%-recovery failure was the model re-using its OWN rejected
+    candidate key (``"sheet pan chicken fajitas"``, not a real entry key) → key-not-found →
+    ping-pong.  A call whose key isn't a seed key IS that ping-pong, so it fails the case."""
     keys = set(collection_entries(db, RECIPE_BOX.name))
-    if keys != set(RECIPE_BOX_SEED_KEYS):
-        fails.append(
-            "collection keys changed on an all-duplicate cycle "
-            f"(confabulated/proliferated writes): {sorted(keys)} vs seeded "
-            f"{sorted(RECIPE_BOX_SEED_KEYS)}"
-        )
-    if not (tool_was_called(db, "done") or tool_was_called(db, "update_entry")):
-        fails.append(
-            "did not recover after the duplicate rejection — no done()/update_entry "
-            "(key-hunted / spiraled to the step ceiling)"
-        )
+    keys_unchanged = keys == set(RECIPE_BOX_SEED_KEYS)
+    recovered = tool_was_called(db, "done") or tool_was_called(db, "update_entry")
     stray_keys = [
         key for key in tool_call_keys(db, "update_entry") if key not in RECIPE_BOX_SEED_KEYS
     ]
-    if stray_keys:
-        fails.append(
-            f"update_entry targeted non-existent key(s) {stray_keys} instead of the "
-            "bound matched key — the key-not-found ping-pong the binding fixes"
-        )
-    return fails
+    return [
+        Check(
+            "collection keys unchanged on an all-duplicate cycle",
+            keys_unchanged,
+            rationale=None
+            if keys_unchanged
+            else (
+                "collection keys changed (confabulated/proliferated writes): "
+                f"{sorted(keys)} vs seeded {sorted(RECIPE_BOX_SEED_KEYS)}"
+            ),
+        ),
+        Check(
+            "recovered via done() or update_entry",
+            recovered,
+            rationale=None
+            if recovered
+            else (
+                "no done()/update_entry after the duplicate rejection "
+                "(key-hunted / spiraled to the step ceiling)"
+            ),
+        ),
+        Check(
+            "update_entry targeted only existing bound keys",
+            not stray_keys,
+            anchor="update_entry(",
+            rationale=(
+                f"update_entry targeted non-existent key(s) {stray_keys} instead of the bound "
+                "matched key — the key-not-found ping-pong the binding fixes"
+            )
+            if stray_keys
+            else None,
+        ),
+    ]
 
 
 async def test_duplicate_write_hands_back_key_and_recovers(guard_recovery_eval) -> None:
