@@ -67,8 +67,9 @@ Preparer = Callable[[Penny], None]
 Snapshotter = Callable[[Database], object]
 CollectorScorer = Callable[[Database, object, list[str]], "list[str] | list[Check]"]
 # A text scorer sees only a returned string (e.g. a generated announcement) and
-# returns failure strings — empty means the sample passed.
-TextScorer = Callable[[str], list[str]]
+# returns either failure strings (binary: empty = pass) or a list of graded ``Check``s
+# (partial credit) — the same dual return as the other scorer types, dispatched by the runner.
+TextScorer = Callable[[str], "list[str] | list[Check]"]
 
 
 @dataclass
@@ -1975,9 +1976,16 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
                             os.environ.pop("GIT_COMMIT_MESSAGE", None)
                         else:
                             os.environ["GIT_COMMIT_MESSAGE"] = prior
-                    fails = score(announcement)
-                    results.append(SampleResult.binary(fails))
-                    _stamp_cause(penny.db, results[-1])
+                    # Same graded/binary dispatch as the other runners.  Startup has no
+                    # injection (no wrapper, no framework guard), so a graded return grades
+                    # over the scorer's own Checks with an empty guard list.
+                    scored = list(score(announcement))
+                    if _scorer_is_graded(scored):
+                        result = _guarded_graded(scored, [])
+                    else:
+                        result = SampleResult.binary([s for s in scored if isinstance(s, str)])
+                    results.append(result)
+                    _stamp_cause(penny.db, result)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()

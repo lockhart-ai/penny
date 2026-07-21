@@ -31,7 +31,12 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.tests.eval.conftest import CollectorScorer, collection_entries, tool_was_called
+from penny.tests.eval.conftest import (
+    Check,
+    CollectorScorer,
+    collection_entries,
+    tool_was_called,
+)
 from penny.tests.eval.fixtures import (
     WATCHLIST,
     WATCHLIST_MESSAGES,
@@ -98,27 +103,39 @@ def _snapshot(name: str):
 
 
 def _score_wrote(name: str) -> CollectorScorer:
-    """Pass iff the cycle wrote a new entry; on miss, surface the bailout shape."""
+    """Graded: one end-state check — the cycle wrote a new entry — with the bailout shape
+    carried in the rationale on a miss (state-is-core; the read/write/done trace annotates
+    HOW the state came to be)."""
 
-    def _score(db: Database, before: object, sent: list[str]) -> list[str]:
+    def _score(db: Database, before: object, sent: list[str]) -> list[Check]:
         before_entries = cast("dict[str, str]", before)
-        if set(collection_entries(db, name)) - set(before_entries):
-            return []
+        wrote_new = bool(set(collection_entries(db, name)) - set(before_entries))
         read = tool_was_called(db, "log_read")
         wrote = tool_was_called(db, "collection_write")
         done = tool_was_called(db, "done")
-        if done and not read and not wrote:
-            return ["bailout: called done() without reading the log (empty-user-turn)"]
-        return [f"no entry written (log_read={read}, collection_write={wrote}, done={done})"]
+        if wrote_new:
+            rationale = None
+        elif done and not read and not wrote:
+            rationale = "bailout: called done() without reading the log (empty-user-turn)"
+        else:
+            rationale = f"no entry written (log_read={read}, collection_write={wrote}, done={done})"
+        return [Check("wrote a new entry", wrote_new, rationale=rationale)]
 
     return _score
 
 
-def _score_read_before_giving_up(db: Database, before: object, sent: list[str]) -> list[str]:
-    """Pass iff the cycle READ the log before concluding no-work (process, not outcome)."""
-    if tool_was_called(db, "log_read"):
-        return []
-    return ["bailout: concluded no-work and called done() without ever reading the log"]
+def _score_read_before_giving_up(db: Database, before: object, sent: list[str]) -> list[Check]:
+    """Graded: the cycle READ the log before concluding no-work (process, not outcome)."""
+    read = tool_was_called(db, "log_read")
+    return [
+        Check(
+            "read the log before concluding no-work",
+            read,
+            rationale=None
+            if read
+            else "concluded no-work and called done() without ever reading the log",
+        )
+    ]
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────────

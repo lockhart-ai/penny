@@ -84,20 +84,24 @@ def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check
     ]
 
 
-def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[str]:
+def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[Check]:
     """Case B: the model recovered — the intended entry landed under its bare key
-    despite the teaching rejection.  The "did the sabotage fire?" check lives in
-    the harness (``chat_eval`` asserts the wrapper's ``bail_injected``): the raw
-    response is persisted inside the real client BEFORE the injector mutates it,
-    so the promptlog never shows the injected bracket form and can't be probed.
-
-    This scorer stays BINARY (not graded ``Check``s): ``chat_eval`` asserts
-    ``wrapper.bail_injected`` ONLY on its binary-scoring branch, so a wrap_client
-    case must return failure strings to keep its forced-sabotage guard — a graded
-    return would silently drop it (a false green if the sabotage never fired)."""
-    if not _target_mutated(db):
-        return [f"did not recover — {_TARGET_KEY!r} never updated after the rejection"]
-    return []
+    despite the teaching rejection.  The "did the sabotage fire?" check is the
+    framework-injected guard ``chat_eval``'s graded path PREPENDS on a ``wrap_client``
+    case (#1718: ``_bail_fired_check(wrapper.bail_injected)`` via ``_guarded_graded``),
+    so a graded return no longer drops the forced-sabotage contract — the guard is
+    preserved automatically, and a run where the sabotage never fired can't score
+    green off this scorer alone.  The raw response is persisted inside the real client
+    BEFORE the injector mutates it, so the promptlog never shows the injected bracket
+    form and can't be probed — hence the harness-side guard rather than a scorer check."""
+    mutated = _target_mutated(db)
+    return [
+        Check(
+            f"{_TARGET_KEY!r} recovered to its bare key",
+            mutated,
+            rationale=None if mutated else f"{_TARGET_KEY!r} never updated after the rejection",
+        )
+    ]
 
 
 async def test_copythrough_update_by_key(chat_eval: ChatEval) -> None:

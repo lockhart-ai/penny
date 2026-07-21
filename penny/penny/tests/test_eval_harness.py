@@ -172,6 +172,24 @@ def test_guarded_graded_prepends_guard_and_gates_a_vacuous_contract() -> None:
     assert clean.passed and clean.total == 2
 
 
+def test_guarded_graded_no_guards_is_the_startup_peripheral_path() -> None:
+    # startup_eval (and the peripheral / prompt-format runners) dispatch with NO framework
+    # guards — no injection — so _guarded_graded(scored, []) grades purely over the scorer's
+    # own Checks.  A 2-of-3 graded text scorer scores 0.67 where the old binary scorer scored
+    # 0.0 on the same miss: the monotonicity the conversion buys (graded mean >= binary mean).
+    result = _guarded_graded(
+        [Check("generated", ok=True), Check("length", ok=True), Check("voice", ok=False)], []
+    )
+    assert result.total == 3
+    assert round(result.score, 2) == 0.67
+    assert not result.passed
+    assert result.failed == ["voice"]
+    # A clean all-pass graded text scorer is a full pass, and a binary text scorer's failure
+    # strings still route through the binary path (a text scorer that returns strings).
+    assert _guarded_graded([Check("only", ok=True)], []).passed
+    assert not _scorer_is_graded(["fell back to the canned message"])
+
+
 def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)

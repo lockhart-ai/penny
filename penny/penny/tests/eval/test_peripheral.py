@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from penny.responses import PennyResponse
-from penny.tests.eval.conftest import StartupEval
+from penny.tests.eval.conftest import Check, StartupEval
 
 pytestmark = pytest.mark.eval
 
@@ -21,16 +21,31 @@ pytestmark = pytest.mark.eval
 _FAMILY = "peripheral"
 
 
-def _score_startup(announcement: str) -> list[str]:
-    fails = []
-    if announcement == PennyResponse.RESTART_FALLBACK:
-        fails.append("fell back to the canned message instead of generating one")
-    if len(announcement) > 150:
-        fails.append(f"announcement too long ({len(announcement)} chars)")
+def _score_startup(announcement: str) -> list[Check]:
+    """Graded: each structural expectation of the announcement is its own named check —
+    non-fallback, one-line length, first-person voice — so a miss shows exactly which
+    property failed instead of collapsing the whole sample to 0."""
+    generated = announcement != PennyResponse.RESTART_FALLBACK
+    within_length = len(announcement) <= 150
     lowered = announcement.lower()
-    if "i " not in lowered and "i'" not in lowered:
-        fails.append("not first-person (the announcement speaks as Penny)")
-    return fails
+    first_person = "i " in lowered or "i'" in lowered
+    return [
+        Check(
+            "generated (not the canned fallback)",
+            generated,
+            rationale=None if generated else "fell back to the canned restart message",
+        ),
+        Check(
+            "within one-line length",
+            within_length,
+            rationale=None if within_length else f"{len(announcement)} chars > 150",
+        ),
+        Check(
+            "first-person voice (speaks as Penny)",
+            first_person,
+            rationale=None if first_person else "no first-person 'I' in the announcement",
+        ),
+    ]
 
 
 async def test_startup_announcement(startup_eval: StartupEval) -> None:
