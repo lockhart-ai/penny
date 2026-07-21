@@ -8,7 +8,7 @@ EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # FIFO ticket directory for serializing make eval on the single-tenant GPU.
 EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -159,6 +159,16 @@ eval: $(if $(LOCAL),,build)
 		EVAL_COMMIT="$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
 		EVAL_DIRTY_DIFF="$$(git diff HEAD 2>/dev/null)" \
 		pytest $(EVAL_PYTEST_ARGS)
+
+# Assemble a completed eval run's artifacts (manifest.json + results.jsonl + the
+# per-case <case_id>.md transcripts) into THE postable PR comment (#1717) and
+# print it to stdout. Pure artifact consumption — no model, no GPU, no queue — so
+# it runs straight through without the eval queue. EVAL_REPORT_DIR is the same
+# dir `make eval` wrote to (defaults to the standard bind-mounted report dir);
+# it's read from the recipe's shell env (`$${…}`), not a make `=` var, so
+# `EVAL_REPORT_DIR=… make assemble` takes effect.
+assemble: $(if $(LOCAL),,build)
+	$(RUN) python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-/penny/data/eval-reports}"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test

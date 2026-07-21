@@ -616,6 +616,27 @@ call's **thinking** (already persisted on `promptlog.thinking`) into a collapsed
 the failed/regressed **tool-call** turns only — passing turns are omitted so the comment never
 bloats. On a first run with no baseline, thinking still renders at failed turns.
 
+**Run-comment assembler (#1717).** The per-run artifacts and per-case transcripts all exist after
+a run, but no step composes them into THE ONE markdown comment the protocol
+(`docs/eval-report-format.md`) specifies. `penny/tests/eval/assemble.py` is that step: given a
+completed run's report directory it emits one document in the spec's section order — the manifest
+header (`render_manifest_header`: commit · model · N · lever), the **run totals** (the run-level
+aggregate across every case — mean · all-pass · the cause tally, from flattening every case's
+`sample_scores`/`sample_causes`), then one block per case: its **dual RESULT line** (mean + all-pass)
+and **cause summary** (`render_cause_summary` — this is where the per-case aggregates finally render;
+the incremental per-sample flow in `conftest.py` cannot, a whole-case tally not existing yet at
+sample-write time), above the case's `<case_id>.md` transcript folded into a collapsed `<details>`
+(its own manifest-header prefix stripped, since the assembler renders that header once atop the
+comment). Pure artifact consumption — no model, no git, no network — so it's exercised by plain
+(non-eval) whole-render tests (`tests/eval/test_assemble.py`), not a GPU run. Run it via
+`python -m penny.tests.eval.assemble <report_dir>` (prints the comment to stdout) or
+`EVAL_REPORT_DIR=… make assemble` (the same dir `make eval` wrote to). A passed sample carries no
+cause (`_sample_cause` in `artifacts.py`), so the all-pass count is the count of `None` causes —
+run totals and each per-case line are computed identically. (The header carries no `embedding`/
+`prior` line — `render_manifest_header` omits them, the `prior:` line deferred per `baseline.py` —
+and no gate verdict, since a `CaseArtifact` carries no `min_pass_rate`; the RESULT line reports the
+two metrics the artifacts hold.)
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,
