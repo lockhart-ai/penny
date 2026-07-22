@@ -253,6 +253,10 @@ class CaseArtifact(BaseModel):
     cause_counts: CauseCounts
     checks: list[CheckOutcome]
     timings: CaseTimings
+    # The gate this case ran under (#1725): the threshold + which score it compares
+    # ("mean" | "pathology-excluded mean"). Both None for a report-only case.
+    min_pass_rate: float | None = None
+    gate_metric: str | None = None
 
 
 class RunManifest(BaseModel):
@@ -332,6 +336,14 @@ def _sample_cause(sample: ScoredSample) -> FailureCause | None:
     return sample.cause or FailureCause.BEHAVIORAL
 
 
+def gate_metric_label(min_pass_rate: float | None, *, gate_pathology_excluded: bool) -> str | None:
+    """Which score a gated case compares — ``None`` when report-only (no ``min_pass_rate``), else
+    ``pathology-excluded mean`` (the honest-threshold opt-in, #1698) or plain ``mean``."""
+    if min_pass_rate is None:
+        return None
+    return "pathology-excluded" if gate_pathology_excluded else "mean"
+
+
 def build_case_artifact(
     *,
     run_id: str,
@@ -339,6 +351,8 @@ def build_case_artifact(
     family: str,
     results: Sequence[ScoredSample],
     timings: CaseTimings,
+    min_pass_rate: float | None = None,
+    gate_pathology_excluded: bool = False,
 ) -> CaseArtifact:
     """Aggregate a case's samples into its ``results.jsonl`` record."""
     count = len(results)
@@ -347,6 +361,7 @@ def build_case_artifact(
     scores = [result.score for result in results]
     causes = [_sample_cause(result) for result in results]
     excluded_mean, _kept = pathology_excluded(scores, causes)
+    metric = gate_metric_label(min_pass_rate, gate_pathology_excluded=gate_pathology_excluded)
     return CaseArtifact(
         run_id=run_id,
         case_id=case_id,
@@ -361,6 +376,8 @@ def build_case_artifact(
         cause_counts=count_causes(causes),
         checks=aggregate_checks(results),
         timings=timings,
+        min_pass_rate=min_pass_rate,
+        gate_metric=metric,
     )
 
 
@@ -512,8 +529,11 @@ def record_case(
     module: str,
     results: Sequence[ScoredSample],
     perf: PerfTotals,
+    min_pass_rate: float | None = None,
+    gate_pathology_excluded: bool = False,
 ) -> None:
-    """Append the case's ``results.jsonl`` record. No-op off-report."""
+    """Append the case's ``results.jsonl`` record. No-op off-report. The gate the case ran under
+    (``min_pass_rate`` + which score it compares, #1725) rides into the record for the gate line."""
     run = active_run()
     if run is None:
         return
@@ -523,5 +543,7 @@ def record_case(
         family=family or default_family(module),
         results=results,
         timings=timings_from_perf(perf),
+        min_pass_rate=min_pass_rate,
+        gate_pathology_excluded=gate_pathology_excluded,
     )
     run.append_case(artifact)

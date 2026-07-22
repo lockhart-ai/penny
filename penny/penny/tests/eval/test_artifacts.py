@@ -140,6 +140,42 @@ def test_binary_case_records_empty_check_outcomes() -> None:
     assert artifact.checks == []
 
 
+def test_case_artifact_carries_the_gate() -> None:
+    """The gate (#1725): a gated case records ``min_pass_rate`` + which score it compares; the
+    pathology-excluded opt-in changes the metric; a report-only case carries neither."""
+    from penny.tests.eval.artifacts import build_case_artifact, gate_metric_label
+
+    results = [SampleResult.binary([]), SampleResult.binary(["x"])]
+    honest = build_case_artifact(
+        run_id="r",
+        case_id="c",
+        family="f",
+        results=results,
+        timings=_TIMINGS,
+        min_pass_rate=0.8,
+        gate_pathology_excluded=True,
+    )
+    assert (honest.min_pass_rate, honest.gate_metric) == (0.8, "pathology-excluded")
+    plain = build_case_artifact(
+        run_id="r",
+        case_id="c",
+        family="f",
+        results=results,
+        timings=_TIMINGS,
+        min_pass_rate=0.75,
+    )
+    assert (plain.min_pass_rate, plain.gate_metric) == (0.75, "mean")
+    report_only = build_case_artifact(
+        run_id="r",
+        case_id="c",
+        family="f",
+        results=results,
+        timings=_TIMINGS,
+    )
+    assert (report_only.min_pass_rate, report_only.gate_metric) == (None, None)
+    assert gate_metric_label(None, gate_pathology_excluded=True) is None
+
+
 # ── Failure-cause partition (#1695) ──────────────────────────────────────────
 
 

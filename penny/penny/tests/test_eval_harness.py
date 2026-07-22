@@ -17,6 +17,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.database import Database
+from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
     CaseTimings,
@@ -282,20 +283,13 @@ def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) ->
         [_bail_fired_check(False)],
     )
     _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
-    expected = (
-        "#### sample 1 — ❌ 1/2 checks\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | save X |\n"
-        "| 2 | 🔧 Penny → tool ✅ | collection_write({}) |\n"
-        "| 3 | 🤖 Penny | saved |\n"
-        "\n"
-        "_checks: ❌ forced bail fired — contract exercised — "
-        "the injected bail never fired — the recovery contract was not exercised_\n"
-        "\n"
-    )
-    assert (tmp_path / "guard-case.md").read_text() == expected
+    text = (tmp_path / "guard-case.md").read_text()
+    assert text.startswith("#### sample 1 — ❌ fail · 1/2 (0.50) ·")  # the guard failed → 1/2
+    assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
+    assert (
+        "| expected | G1 [guard]⚖ forced bail fired — contract exercised | "
+        "❌ G1 — the injected bail never fired — the recovery contract was not exercised |"
+    ) in text
 
 
 # ── Whole-render assertions for the new report shapes ──
@@ -320,20 +314,11 @@ def test_report_renders_rationale_and_ignored(tmp_path, monkeypatch) -> None:
         ]
     )
     _write_sample_report(db, "rationale-case", 0, result=result, reply="saved")
-    expected = (
-        "#### sample 1 — ❌ 1/2 checks · 1 n/a\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | save X |\n"
-        "| 2 | 🔧 Penny → tool ✅ | collection_write({}) |\n"
-        "| 3 | 🤖 Penny | saved |\n"
-        "\n"
-        "_checks: ❌ read count — expected 3 reads, saw 1 · "
-        "➖ browse branch — no browse this sample_\n"
-        "\n"
-    )
-    assert (tmp_path / "rationale-case.md").read_text() == expected
+    text = (tmp_path / "rationale-case.md").read_text()
+    assert text.startswith("#### sample 1 — ❌ fail · 1/2 (0.50) ·")
+    assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
+    assert "| expected | C2 ⚖ read count | ❌ C2 — expected 3 reads, saw 1 |" in text
+    assert "| expected | C3 browse branch | ➖ n/a — no browse this sample |" in text
 
 
 def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
@@ -350,24 +335,17 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
         ],
     )
     _write_sample_report(db, "fragile-case", 0, result=SampleResult.binary([]), reply="found it")
-    expected = (
-        "#### sample 1 — ✅ PASS · fragile\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | look it up |\n"
-        "| 2 | 🔧 Penny → tool | browse({}) |\n"
-        "| 3 | 📥 tool result | You tried to use `browse` but it didn't work: down |\n"
-        "| 4 | 🤖 Penny | found it |\n"
-        "\n"
-    )
-    assert (tmp_path / "fragile-case.md").read_text() == expected
+    text = (tmp_path / "fragile-case.md").read_text()
+    # fragile → not folded; banner carries the fragile flag
+    assert text.startswith("#### sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
+    assert "| actual | 🔧 browse({}) |" in text
+    assert "| actual | 📥 You tried to use `browse` but it didn't work: down |" in text
 
 
-def test_report_sample_verdict_carries_the_failure_cause(tmp_path, monkeypatch) -> None:
-    # The per-sample header verdict gains the structural cause tag (#1725): a failed sample the
-    # runner stamped ``behavioral`` reads ``❌ 0/1 checks · behavioral`` so a reader triages the
-    # sample before unfolding — the whole render otherwise identical to the plain-fail case.
+def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch) -> None:
+    # The banner + the failed check's verdict carry the structural cause (#1725): a behavioral
+    # miss reads ``❌ fail · 0/1 (0.00) · behavioral`` on the banner and ``· behavioral`` on the
+    # done-turn verdict, so a reader triages before unfolding.
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
@@ -377,24 +355,10 @@ def test_report_sample_verdict_carries_the_failure_cause(tmp_path, monkeypatch) 
     )
     result.cause = FailureCause.BEHAVIORAL  # the runner stamps this before _write_sample_report
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
-    expected = (
-        "#### sample 1 — ❌ 0/1 checks · behavioral\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | run the fern watch |\n"
-        "| 2 | 🔧 Penny → tool ❌ | done({}) |\n"
-        "\n"
-        "_checks: ❌ send queued — expected 1 send, saw 0_\n"
-        "\n"
-        "<details><summary>💭 thinking · turn 2 (done) — ❌</summary>\n"
-        "\n"
-        "> The entry is already written, so I'll close with done() rather than notify.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-    )
-    assert (tmp_path / "watch-fern.md").read_text() == expected
+    text = (tmp_path / "watch-fern.md").read_text()
+    assert text.startswith("#### sample 1 — ❌ fail · 0/1 (0.00) · behavioral ·")
+    assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 · behavioral |" in text
+    assert "<details><summary>thinking</summary>The entry is already written" in text
 
 
 def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) -> None:
@@ -407,14 +371,9 @@ def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) 
     timed = SampleResult.binary(["no reply within timeout"])
     _stamp_cause(db, timed, timed_out=True)
     _write_sample_report(db, "timeout-case", 2, result=timed)
-    expected = (
-        "#### sample 3 — ❌ FAIL · harness\n"
-        "\n"
-        "_(no completed turns recorded — the sample produced no finished model call, "
-        "e.g. a harness timeout)_\n"
-        "\n"
-    )
-    assert (tmp_path / "timeout-case.md").read_text() == expected
+    text = (tmp_path / "timeout-case.md").read_text()
+    assert text.startswith("#### sample 3 — ❌ fail · harness ·")  # no k/n: the scorer never ran
+    assert report.NO_TURNS_PLACEHOLDER in text
 
 
 # ── The dual strict+partial RESULT line ──
@@ -665,25 +624,11 @@ def test_report_marks_regressed_and_renders_thinking(tmp_path, monkeypatch) -> N
         [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
     )
     _write_sample_report(db, "watch-fern", 2, result=result, reply="")
-    expected = (
-        "#### sample 3 — ❌ 0/1 checks\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | run the fern watch |\n"
-        "| 2 | 🔧 Penny → tool ❌ 🔻 REGRESSED | done({}) |\n"
-        "\n"
-        "_checks: ❌ 🔻 REGRESSED send queued — expected 1 send, saw 0 "
-        "(was passing in `run-20260719T130500-a1b2c3d4`)_\n"
-        "\n"
-        "<details><summary>💭 thinking · turn 2 (done) — ❌ 🔻 REGRESSED</summary>\n"
-        "\n"
-        "> The entry is already written, so I'll close with done() rather than notify.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-    )
-    assert (tmp_path / "watch-fern.md").read_text() == expected
+    text = (tmp_path / "watch-fern.md").read_text()
+    assert text.startswith("#### sample 3 — ❌ fail · 0/1 (0.00) ·")
+    assert '| step 1 · 👤 | "run the fern watch" | ✅→❌ |' in text  # the flip on the step header
+    assert "| actual | 🔧 done({}) | ✅→❌ **REGRESSED** C1 — expected 1 send, saw 0 |" in text
+    assert "<details><summary>thinking</summary>The entry is already written" in text
 
 
 def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatch) -> None:
@@ -695,27 +640,14 @@ def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatc
         [Check("send queued", ok=False, anchor="done(", rationale="expected 1 send, saw 0")]
     )
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
-    expected = (
-        "#### sample 1 — ❌ 0/1 checks\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | run the fern watch |\n"
-        "| 2 | 🔧 Penny → tool ❌ | done({}) |\n"
-        "\n"
-        "_checks: ❌ send queued — expected 1 send, saw 0_\n"
-        "\n"
-        "<details><summary>💭 thinking · turn 2 (done) — ❌</summary>\n"
-        "\n"
-        "> The entry is already written, so I'll close with done() rather than notify.\n"
-        "\n"
-        "</details>\n"
-        "\n"
-    )
-    assert (tmp_path / "watch-fern.md").read_text() == expected
+    text = (tmp_path / "watch-fern.md").read_text()
+    assert text.startswith("#### sample 1 — ❌ fail · 0/1 (0.00) ·")
+    assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 |" in text
+    assert "<details><summary>thinking</summary>The entry is already written" in text
+    assert "REGRESSED" not in text  # first run — nothing to flip against
 
 
-def test_report_omits_thinking_at_a_passing_turn(tmp_path, monkeypatch) -> None:
+def test_report_renders_thinking_for_every_action(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
     monkeypatch.delenv("EVAL_BASELINE", raising=False)
     db = _make_db(tmp_path)
@@ -731,17 +663,13 @@ def test_report_omits_thinking_at_a_passing_turn(tmp_path, monkeypatch) -> None:
     )
     result = SampleResult.graded([Check("write happened", ok=True, anchor="collection_write(")])
     _write_sample_report(db, "pass-case", 0, result=result, reply="done")
-    # Whole-render: a passing tool-call turn carries its ✅ row-mark and NOTHING else — no
-    # thinking <details> (even though the row has thinking) and no REGRESSED, so the comment
-    # doesn't bloat on clean passes.
-    expected = (
-        "#### sample 1 — ✅ 1/1 checks\n"
-        "\n"
-        "| # | Actor | Content |\n"
-        "|---|---|---|\n"
-        "| 1 | 👤 user | save it |\n"
-        "| 2 | 🔧 Penny → tool ✅ | collection_write({}) |\n"
-        "| 3 | 🤖 Penny | done |\n"
-        "\n"
+    # #1725 supersedes the failed-turns-only capture: thinking renders for EVERY model action,
+    # including a passing one (in its own collapsed <details> above the action). A clean pass
+    # folds the whole block into a <details>.
+    text = (tmp_path / "pass-case.md").read_text()
+    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) ·")
+    assert (
+        "| 💭 | <details><summary>thinking</summary>Writing the entry now.</details> |  |" in text
     )
-    assert (tmp_path / "pass-case.md").read_text() == expected
+    assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
+    assert "REGRESSED" not in text

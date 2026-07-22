@@ -34,6 +34,7 @@ from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
+from penny.tests.eval import report
 from penny.tests.eval.artifacts import FailureCause
 from penny.tests.eval.baseline import Baseline, baseline_from_env
 from penny.tests.eval.fixtures import CannedPage, SynthCollection
@@ -99,6 +100,7 @@ class Check:
     scored: bool = True  # False = advisory flavour, visible in the report, not in the score
     rationale: str | None = None  # observed-vs-expected note rendered beside the outcome
     ignored: bool = False  # not-applicable: rendered (➖) but out of the graded denominator
+    kind: str | None = None  # class label rendered `[kind]` (spine/reply/state/proc/guard)
 
     @classmethod
     def na(cls, label: str, *, rationale: str | None = None, anchor: str | None = None) -> Check:
@@ -496,6 +498,7 @@ def _bail_fired_check(bail_injected: bool) -> Check:
     return Check(
         "forced bail fired — contract exercised",
         bail_injected,
+        kind="guard",
         rationale=None
         if bail_injected
         else "the injected bail never fired — the recovery contract was not exercised",
@@ -508,6 +511,7 @@ def _cycle_recovered_check(success: bool) -> Check:
     return Check(
         "cycle recovered to a successful close",
         success,
+        kind="guard",
         rationale=None
         if success
         else "the cycle did not recover to a successful close after the nudge",
@@ -926,12 +930,6 @@ _ACTOR = {
 }
 
 
-def _report_cell(text: str, limit: int = 1500) -> str:
-    """One markdown table cell: escape pipes, newlines → <br>, truncate a long result."""
-    cell = str(text).strip().replace("|", "\\|").replace("\n", "<br>")
-    return cell if len(cell) <= limit else cell[:limit] + " …[truncated]"
-
-
 def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
@@ -981,34 +979,6 @@ def _anchor_hits(needle: str, content: str) -> bool:
     return "collection_set(" in content and needle in content
 
 
-# The REGRESSED suffix on a failing check that was green in the prior run (#1693) — a
-# flip, distinct from a check that was already red.  Only ever appended to a ❌.
-_REGRESSED_MARK = "❌ 🔻 REGRESSED"
-
-
-def _check_mark(check: Check, *, regressed: bool = False) -> str:
-    """The report marker for a check: ➖ when not-applicable (``ignored``), ✅ when passed,
-    else ❌ — or ``❌ 🔻 REGRESSED`` when this failing check was fully green in the baseline
-    run (``regressed``, #1693)."""
-    if check.ignored:
-        return "➖"
-    if check.ok:
-        return "✅"
-    return _REGRESSED_MARK if regressed else "❌"
-
-
-def _regressed_ids(checks: list[Check], baseline: Baseline | None, case_id: str) -> set[int]:
-    """The ``id()`` of every check that FAILED this sample but was fully green in the baseline
-    run — a flip (#1693).  Empty with no baseline, so a first run marks failures as plain ❌."""
-    if baseline is None:
-        return set()
-    return {
-        id(check)
-        for check in checks
-        if not check.ignored and not check.ok and baseline.was_passing(case_id, check.label)
-    }
-
-
 def _place_checks(
     checks: list[Check], turns: list[tuple[str, str]]
 ) -> tuple[dict[int, list[Check]], list[Check]]:
@@ -1016,10 +986,9 @@ def _place_checks(
 
     A ``REPLY_ANCHOR`` check stamps the final Penny-reply row (it tests the reply's text, not
     a tool call).  Returns ``(turn_index -> the checks placed there, leftover checks)`` — the
-    per-turn check lists (not pre-rendered marks) so a caller can both stamp the row (via
-    ``_row_mark``) and decide whether that turn needs a thinking block (#1693).  A check with no
-    anchor — or whose anchor matches no turn (a *missing* expected action, a tool call that never
-    happened) — has no row to sit on, so it falls to ``leftover`` (a footer)."""
+    per-turn check lists so a caller can bind each check to the event it anchors to (#1725).  A
+    check with no anchor — or whose anchor matches no turn (a *missing* expected action, a tool
+    call that never happened) — has no row to sit on, so it falls to ``leftover`` (run-close)."""
     placed: dict[int, list[Check]] = {}
     leftover: list[Check] = []
     reply_row = max(  # the final NL reply row — where a REPLY_ANCHOR check lands
@@ -1046,15 +1015,6 @@ def _place_checks(
     return placed, leftover
 
 
-def _row_mark(placed_checks: list[Check], regressed_ids: set[int]) -> str:
-    """The stamp appended to a turn's actor cell — the placed checks' marks concatenated (with
-    a leading space), or ``""`` for an unmarked row.  A regressed failing check renders its
-    REGRESSED form (#1693)."""
-    if not placed_checks:
-        return ""
-    return " " + "".join(_check_mark(c, regressed=id(c) in regressed_ids) for c in placed_checks)
-
-
 def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
     """Where a sample's hermetic DB lives.  When ``EVAL_REPORT_DIR`` is set the DB
     persists BESIDE the reports (the mounted dir survives the ``--rm`` container),
@@ -1066,84 +1026,49 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
     return str(Path(base) / f"{case_id}-{sample_index}.db")
 
 
-def _cause_tag(cause: FailureCause | None) -> str:
-    """The failure-cause suffix on a sample's verdict (#1725): empty for a pass; ``· pathology
-    (excluded)`` for a pathology sample (it drops from the pathology-excluded mean); else the plain
-    cause word (``· behavioral`` / ``· harness``)."""
-    if cause is None:
-        return ""
-    if cause == FailureCause.PATHOLOGY:
-        return " · pathology (excluded)"
-    return f" · {cause.value}"
+# ── Transcript extraction: promptlog → report.SampleTranscript (#1725 iteration-6) ──
+_BROWSE_EXTRACT_AGENT = "browse-extract"
+_NUDGE_FRAMES = (
+    "Please provide your response",  # Prompt.CONTINUE_NUDGE
+    "could not be parsed as a tool call",  # the parse-failure recovery nudge
+    "you MUST respond with a valid tool call",
+    "make the real, argless",  # COLLECTOR_DONE_JSON_NUDGE
+    "respond with a tool call",  # COLLECTOR_CONTINUE_NUDGE / COLLECTOR_TOOL_CALL_NUDGE
+)
 
 
-def _sample_verdict(result: SampleResult, *, fragile: bool) -> str:
-    """The sample's header verdict.  Binary → ``✅ PASS`` / ``❌ FAIL``; graded → ``N/M checks``
-    (M = the applicable scored checks — advisory + not-applicable excluded) with a ``· K n/a``
-    tail when any check was not-applicable.  A failed sample carries its cause tag (#1725), and a
-    passed-but-shaky sample (a rejected/recovered tool call in the run) gets a ``· fragile`` tail,
-    so green-via-recovery reads distinctly from clean green."""
-    if not result.checks:
-        core = "✅ PASS" if result.passed else "❌ FAIL"
-    else:
-        passed_checks = round(result.score * result.total)
-        core = f"{'✅' if result.passed else '❌'} {passed_checks}/{result.total} checks"
-        na = sum(1 for check in result.checks if check.ignored)
-        if na:
-            core += f" · {na} n/a"
-    core += _cause_tag(result.cause)
-    return f"{core} · fragile" if fragile else core
+def _is_nudge(content: str) -> bool:
+    """A user-role turn that is a framework RECOVERY nudge (not a real user ask) — it renders as a
+    ``⚠ recovery event`` inside the step, never as a step boundary."""
+    return any(frame in content for frame in _NUDGE_FRAMES)
 
 
-def _legend_entry(
-    check: Check, *, regressed: bool = False, baseline_run_id: str | None = None
-) -> str:
-    """One legend line for a check: its marker, label, and the observed-vs-expected rationale
-    when one was given.  A regressed check (#1693) renders its REGRESSED marker and names the
-    prior run it was green in, so the flip is self-explaining."""
-    tail = f" — {check.rationale}" if check.rationale else ""
-    note = f" (was passing in `{baseline_run_id}`)" if regressed and baseline_run_id else ""
-    return f"{_check_mark(check, regressed=regressed)} {check.label}{tail}{note}"
+def _turn_kind(actor: str, content: str) -> report.EventKind:
+    """Map a ``_sample_turns`` (actor, content) pair to a report event kind (a recovery-nudge user
+    turn becomes ``NUDGE`` so it renders inside its step, not as a new step)."""
+    if actor == _ACTOR["user"]:
+        return report.EventKind.NUDGE if _is_nudge(content) else report.EventKind.USER
+    if actor == _ACTOR["call"]:
+        return report.EventKind.CALL
+    if actor == _ACTOR["tool"]:
+        return report.EventKind.RESULT
+    return report.EventKind.REPLY
 
 
-def _report_legend(
-    result: SampleResult,
-    leftover: list[Check],
-    regressed_ids: set[int],
-    baseline: Baseline | None,
-    case_id: str,
-) -> str:
-    """The checks legend below the transcript table.  Names every check that needs words — one
-    with no row (a whole-run / missing-action check), a failed one, a not-applicable one, or any
-    carrying a rationale — as ``<mark> <label> — <rationale>``.  A placed passing check with no
-    rationale is a row-mark only, so a clean pass stays uncluttered.  Binary samples fall back to
-    their failure strings."""
-    if not result.checks:
-        return f"**Failed:** {'; '.join(result.failed)}" if result.failed else ""
-    leftover_ids = {id(check) for check in leftover}
-    spelled = [
-        check
-        for check in result.checks
-        if id(check) in leftover_ids or check.ignored or not check.ok or check.rationale
-    ]
-    if not spelled:
-        return ""
-    baseline_run_id = baseline.run_id_for(case_id) if baseline is not None else None
-    entries = [
-        _legend_entry(check, regressed=id(check) in regressed_ids, baseline_run_id=baseline_run_id)
-        for check in spelled
-    ]
-    return f"_checks: {' · '.join(entries)}_"
+def _event_body(kind: report.EventKind, content: str) -> str:
+    """The rendered body for an event (the glyph is prepended by the renderer): a reply is quoted,
+    a nudge tagged ``*(nudge)*``, a call/result rendered verbatim."""
+    if kind == report.EventKind.REPLY:
+        return f'"{content}"'
+    if kind == report.EventKind.NUDGE:
+        return f"*(nudge)* {content}"
+    return content
 
 
-def _thinking_by_call(rows: list[PromptLog]) -> dict[str, str]:
-    """Map each tool-call turn's content (``name(args)``) to the thinking of the promptlog row
-    whose RESPONSE emitted it — so a failed turn can show the model's own reasoning (#1693).
-
-    The tool-call content string is byte-identical to what ``_sample_turns`` renders for that
-    call (it appears verbatim in the next row's ``messages`` history), so a turn matches its
-    producing row's thinking.  First non-empty thinking per content wins (turns de-dupe the same
-    way); rows with no thinking or no tool call contribute nothing."""
+def _thinking_by_content(rows: list[PromptLog]) -> dict[str, str]:
+    """Map each model ACTION's content (a ``name(args)`` call string or a reply's text) to the
+    thinking of the promptlog row whose RESPONSE produced it — so EVERY model call can show its
+    own reasoning (#1725, superseding the failed-turns-only capture). First non-empty per key."""
     mapping: dict[str, str] = {}
     for row in rows:
         thinking = (row.thinking or "").strip()
@@ -1151,102 +1076,219 @@ def _thinking_by_call(rows: list[PromptLog]) -> dict[str, str]:
             continue
         for call in _response_tool_calls(row):
             function = call.get("function", {})
-            content = f"{function.get('name')}({function.get('arguments')})"
-            mapping.setdefault(content, thinking)
+            mapping.setdefault(f"{function.get('name')}({function.get('arguments')})", thinking)
+        text = _response_text(row)
+        if text:
+            mapping.setdefault(text, thinking)
     return mapping
 
 
-def _thinking_block(
-    turn_number: int, content: str, failing: list[Check], regressed_ids: set[int], thinking: str
-) -> list[str]:
-    """A collapsed ``<details>`` carrying the model's thinking at ONE failed/regressed tool-call
-    turn (#1693).  The summary names the turn, its tool, and the failing checks' marks; the body
-    is the verbatim thinking as a blockquote.  Passing turns never reach here, so the comment
-    doesn't bloat."""
-    tool = content.split("(", 1)[0]
-    marks = " ".join(_check_mark(check, regressed=id(check) in regressed_ids) for check in failing)
-    quoted = "\n".join(f"> {line}" if line else ">" for line in thinking.splitlines())
+def _micro_events(row: PromptLog) -> list[report.Event]:
+    """One ``browse-extract`` promptlog row → its two micro-context events: the instruction+content
+    INTO the sub-model (🧩 ←) and the extracted value OUT of it (🧩 →, carrying its thinking)."""
+    messages = json.loads(row.messages) if row.messages else []
+    user = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
     return [
-        "",
-        f"<details><summary>💭 thinking · turn {turn_number} ({tool}) — {marks}</summary>",
-        "",
-        quoted,
-        "",
-        "</details>",
+        report.Event(report.EventKind.MICRO_IN, f"micro-context ← {user}"),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            f"micro-context → {_response_text(row)}",
+            thinking=row.thinking or "",
+        ),
     ]
 
 
-# The transcript block for a sample that produced no completed turn (a harness timeout) — an
-# honest placeholder so the report never silently omits a sample (#1725/F2).
-NO_TURNS_PLACEHOLDER = (
-    "_(no completed turns recorded — the sample produced no finished model call, "
-    "e.g. a harness timeout)_"
-)
+def _micro_batches(rows: list[PromptLog]) -> list[list[report.Event]]:
+    """The micro-context events grouped by browse call, in order: each contiguous run of
+    ``browse-extract`` rows (the pages one ``extract`` browse fetched) is one batch, FIFO-matched
+    to the extract-browse calls as the transcript walk reaches them."""
+    batches: list[list[report.Event]] = []
+    current: list[report.Event] = []
+    for row in rows:
+        if row.agent_name == _BROWSE_EXTRACT_AGENT:
+            current.extend(_micro_events(row))
+        elif current:
+            batches.append(current)
+            current = []
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _is_extract_browse(content: str) -> bool:
+    """A ``browse(...)`` call that carried an ``extract`` micro-instruction — the calls that spawn
+    the browse-extract micro-context rows."""
+    return content.startswith("browse(") and '"extract"' in content
+
+
+def _turns_to_events(
+    turns: list[tuple[str, str]], thinking: dict[str, str], micro_batches: list[list[report.Event]]
+) -> tuple[list[report.Event], dict[int, int]]:
+    """Turn the de-duped ``(actor, content)`` turns into report events, splicing each extract-browse
+    call's micro-context batch right after it (ledger order). Returns the events and a ``turn index
+    → event index`` map so a check placed on a turn resolves to its event."""
+    events: list[report.Event] = []
+    turn_to_event: dict[int, int] = {}
+    for turn_index, (actor, content) in enumerate(turns):
+        kind = _turn_kind(actor, content)
+        action = kind in (report.EventKind.CALL, report.EventKind.REPLY)
+        thought = (thinking.get(content) or "") if action else None
+        turn_to_event[turn_index] = len(events)
+        events.append(report.Event(kind, _event_body(kind, content), thinking=thought))
+        if kind == report.EventKind.CALL and _is_extract_browse(content) and micro_batches:
+            events.extend(micro_batches.pop(0))
+    return events, turn_to_event
+
+
+def _assign_check_ids(checks: list[Check]) -> dict[int, str]:
+    """Assign each check its ``Cn`` id (or ``Gn`` for a framework guard), in scorer order."""
+    ids: dict[int, str] = {}
+    counters = {"C": 0, "G": 0}
+    for check in checks:
+        prefix = "G" if check.kind == "guard" else "C"
+        counters[prefix] += 1
+        ids[id(check)] = f"{prefix}{counters[prefix]}"
+    return ids
+
+
+def _cause_word(cause: FailureCause | None) -> str | None:
+    """The banner/verdict cause word: ``None`` for a pass; ``pathology (degenerate output)`` for a
+    pathology sample; else the plain cause value (``behavioral`` / ``harness``)."""
+    if cause is None:
+        return None
+    if cause == FailureCause.PATHOLOGY:
+        return "pathology (degenerate output)"
+    return cause.value
+
+
+def _build_check_views(
+    result: SampleResult,
+    turn_of_check: dict[int, int],
+    turn_to_event: dict[int, int],
+    baseline: Baseline | None,
+    case_id: str,
+) -> list[report.CheckView]:
+    """Resolve each ``Check`` into a ``report.CheckView`` — its id, class, anchor event (``None`` →
+    run-close), rationale/cause, and baseline flip — in scorer order."""
+    ids = _assign_check_ids(result.checks)
+    cause = _cause_word(result.cause)
+    views: list[report.CheckView] = []
+    for check in result.checks:
+        turn_index = turn_of_check.get(id(check))
+        anchor = turn_to_event.get(turn_index) if turn_index is not None else None
+        regressed = (
+            baseline is not None
+            and not check.ignored
+            and not check.ok
+            and baseline.was_passing(case_id, check.label)
+        )
+        views.append(
+            report.CheckView(
+                check_id=ids[id(check)],
+                label=check.label,
+                kind=check.kind,
+                scored=check.scored,
+                ignored=check.ignored,
+                ok=check.ok,
+                rationale=check.rationale,
+                cause=cause if (not check.ok and not check.ignored) else None,
+                anchor_index=anchor,
+                regressed=regressed,
+            )
+        )
+    return views
+
+
+def _scored_counts(result: SampleResult) -> tuple[int, int]:
+    """This sample's ``(passed, scored)`` check counts — the same partition ``SampleResult.graded``
+    scores over (n/a excluded, then the scored ones or all applicable). Binary = 1 check."""
+    if not result.checks:
+        return (1 if result.passed else 0), 1
+    applicable = [check for check in result.checks if not check.ignored]
+    scored = [check for check in applicable if check.scored] or applicable
+    return sum(1 for check in scored if check.ok), len(scored)
+
+
+def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> str:
+    """The per-sample banner tail from the sample's promptlog perf + its scored result."""
+    perf = db.messages.prompt_perf()
+    passed_checks, total = _scored_counts(result)
+    return report.render_banner(
+        passed=result.passed,
+        score=result.score,
+        passed_checks=passed_checks,
+        total_checks=total,
+        cause=_cause_word(result.cause),
+        fragile=result.fragile,
+        duration_s=round(perf.duration_ms / 1000),
+        calls=perf.calls,
+        checks_evaluated=evaluated,
+    )
+
+
+def _sample_prompt_rows(db: Database) -> list[PromptLog]:
+    """Every promptlog row for the sample (main + browse-extract), oldest first."""
+    with Session(db.engine) as session:
+        return list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+
+
+def _build_transcript(
+    db: Database,
+    result: SampleResult,
+    turns: list[tuple[str, str]],
+    main_rows: list[PromptLog],
+    rows: list[PromptLog],
+    baseline: Baseline | None,
+    case_id: str,
+    sample_index: int,
+) -> report.SampleTranscript:
+    """Assemble the ``report.SampleTranscript`` for one sample from its turns + scored result."""
+    if not turns:
+        banner = _sample_banner(db, result, evaluated=False)
+        return report.SampleTranscript(
+            sample_index + 1, banner, [], placeholder=report.NO_TURNS_PLACEHOLDER
+        )
+    events, turn_to_event = _turns_to_events(
+        turns, _thinking_by_content(main_rows), _micro_batches(rows)
+    )
+    placed, _leftover = _place_checks(result.checks, turns)
+    turn_of_check = {id(check): turn for turn, checks in placed.items() for check in checks}
+    checks = _build_check_views(result, turn_of_check, turn_to_event, baseline, case_id)
+    passed_checks, total = _scored_counts(result)
+    return report.build_sample(
+        number=sample_index + 1,
+        banner=_sample_banner(db, result, evaluated=True),
+        events=events,
+        checks=checks,
+        run_close_score=f"{passed_checks}/{total}",
+        folded=result.passed and not result.fragile,
+    )
 
 
 def _write_sample_report(
     db: Database, case_id: str, sample_index: int, *, result: SampleResult, reply: str = ""
 ) -> None:
-    """Append one sample's verbatim transcript to ``EVAL_REPORT_DIR/<case_id>.md``.
-
-    No-op unless ``EVAL_REPORT_DIR`` is set.  ``reply`` is the chat agent's final text
-    (appended as the last turn); a collector run passes none — its ``done()`` / sends are
-    already tool-call turns in the transcript.  The header shows PASS/FAIL for a binary
-    sample, or ``N/M checks`` for a graded one, so the partial credit is visible."""
+    """Append one sample's transcript-integrated block to ``EVAL_REPORT_DIR/<case_id>.md`` (#1725
+    iteration-6). No-op off-report. Builds the report model from the persisted promptlog + the
+    scored result, then renders it via ``report.render_sample``: a clean pass folds whole, a
+    failed/fragile/regressed sample renders unfolded, and a no-turns (timeout) sample gets the
+    honest placeholder so the report's sample count always matches N (F2)."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
-    with Session(db.engine) as session:
-        rows = list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
-    baseline = baseline_from_env()  # a prior run's results.jsonl → REGRESSED marks (#1693)
-    regressed_ids = _regressed_ids(result.checks, baseline, case_id)
-    # Stamp fragile on the result (same EVAL_REPORT_DIR gate as the artifact write) so it rides
-    # into CaseArtifact.sample_fragile for the assembler's per-sample line (#1725).
+    rows = _sample_prompt_rows(db)
+    main_rows = [row for row in rows if row.agent_name != _BROWSE_EXTRACT_AGENT]
+    baseline = baseline_from_env()
+    # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
     result.fragile = result.passed and sample_is_fragile(db)
-    verdict = _sample_verdict(result, fragile=result.fragile)
-    lines = [f"#### sample {sample_index + 1} — {verdict}", ""]
-    turns = _sample_turns(rows, reply)
-    if not turns:
-        # A sample that produced no completed turn (e.g. a harness timeout) still gets a block, so
-        # the report's sample count always matches N — a silently-dropped sample is invisible
-        # degradation (#1725/F2).  The verdict's cause tag already names the harness timeout.
-        lines.append(NO_TURNS_PLACEHOLDER)
-    else:
-        lines += ["| # | Actor | Content |", "|---|---|---|"]
-        placed, leftover = _place_checks(result.checks, turns)  # checks onto the row each tests
-        for index, (actor, content) in enumerate(turns, start=1):
-            lines.append(
-                f"| {index} | {actor}{_row_mark(placed.get(index - 1, []), regressed_ids)} "
-                f"| {_report_cell(content)} |"
-            )
-        legend = _report_legend(result, leftover, regressed_ids, baseline, case_id)
-        if legend:
-            lines += ["", legend]
-        lines += _thinking_sections(turns, placed, regressed_ids, _thinking_by_call(rows))
+    turns = _sample_turns(main_rows, reply)
+    transcript = _build_transcript(
+        db, result, turns, main_rows, rows, baseline, case_id, sample_index
+    )
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / f"{case_id}.md").open("a") as handle:
-        handle.write("\n".join(lines) + "\n\n")
-
-
-def _thinking_sections(
-    turns: list[tuple[str, str]],
-    placed: dict[int, list[Check]],
-    regressed_ids: set[int],
-    thinking: dict[str, str],
-) -> list[str]:
-    """The collapsed thinking ``<details>`` blocks, one per FAILED/REGRESSED tool-call turn that
-    has captured thinking (#1693).  Passing turns are omitted (no bloat); a failed turn with no
-    thinking recorded contributes nothing.  Rendered after the checks legend, in turn order."""
-    blocks: list[str] = []
-    for index, (actor, content) in enumerate(turns, start=1):
-        if actor != _ACTOR["call"]:
-            continue
-        failing = [c for c in placed.get(index - 1, []) if not c.ignored and not c.ok]
-        note = thinking.get(content)
-        if failing and note:
-            blocks += _thinking_block(index, content, failing, regressed_ids, note)
-    return blocks
+        handle.write(report.render_sample(transcript) + "\n\n")
 
 
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
@@ -1373,6 +1415,8 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
             module=request.module.__name__,
             results=results,
             perf=perf,
+            min_pass_rate=min_pass_rate,
+            gate_pathology_excluded=gate_pathology_excluded,
         )
         perf.report(case_id, samples)
         _assert_threshold(
@@ -1455,6 +1499,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
             module=request.module.__name__,
             results=results,
             perf=perf,
+            min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
@@ -1654,6 +1699,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
             module=request.module.__name__,
             results=results,
             perf=perf,
+            min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
@@ -1986,6 +2032,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
             module=request.module.__name__,
             results=results,
             perf=perf,
+            min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)
@@ -2059,6 +2106,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
             module=request.module.__name__,
             results=results,
             perf=perf,
+            min_pass_rate=min_pass_rate,
         )
         perf.report(case_id, samples)
         _assert_threshold(case_id, results, min_pass_rate)

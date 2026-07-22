@@ -637,20 +637,26 @@ run totals and each per-case line are computed identically. (The header carries 
 and no gate verdict, since a `CaseArtifact` carries no `min_pass_rate`; the RESULT line reports the
 two metrics the artifacts hold.)
 
-**Report format v2 (#1725).** The assembler now surfaces the graded-check mechanics *outside* the
-folded transcripts, so a reader sees them at a glance instead of unfolding: each case block renders a
-**check summary table** (one row per check, a column per sample — ✅ / ❌ / ➖ n-a / ❌🔻 regressed /
-blank-when-absent — advisory checks marked, a passed/present `pass` column), a **miss-rationale**
-legend keyed by check number (failing samples + observed-vs-expected note + regressed-from), and a
-**per-sample index** (verdict · check fraction + score · fragile · cause). The RESULT line carries
-timings; run totals carry a `families:` rollup; the per-case cause line is gone (cause now lives in
-run totals + the sample index). This rides on additive artifact fields: `CheckOutcome` gained
-`scored` · `cells[]` (per-sample `passed`/`failed`/`na`/`absent`) · `rationales[]`, and `CaseArtifact`
-gained `sample_fragile[]`, so the table renders from `results.jsonl` alone (the baseline supplies the
-REGRESSED cells). A harness-timeout sample gets an explicit placeholder block rather than being
-silently omitted, so the report's sample count always matches N. Spec + worked example:
-`docs/eval-report-format.md`; whole-render tests in `test_assemble.py` / `test_eval_harness.py` /
-`test_artifacts.py`.
+**Report format v3 — transcript-integrated (#1725).** The graded-check mechanics live *inside* the
+transcript, in causal order (contract → thinking → action → verdict-on-action), rendered by the pure
+`penny/tests/eval/report.py` from a `SampleTranscript` the `conftest.py` extractor builds off the
+persisted promptlog. Each sample is a series of **per-step tables** (a user turn opens each step):
+one `expected` row per check (`Cn [class]⚖/ℹ label`), an ALWAYS-collapsed `💭 <details>` directly
+above **every** model action (thinking for every call now, not only failed turns; `💭 (empty)` when
+none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 micro-context` — the
+browse-extract sub-model is an official actor, both directions) with the check verdict on its anchor
+row. Whole-run / missing-action checks fall to a trailing **run-close** table. Each sample opens with
+a **banner** (`verdict · k/n (score) · fragile · cause · duration · calls`); a clean pass folds whole,
+a failed/fragile/regressed sample renders unfolded; a harness-timeout sample gets an honest placeholder
+(F2). The **run header** carries the identity line, a one-line RESULT (mean · all-pass ·
+pathology-excluded · cause tally · `families:` rollup · timings), a **gate** line per gated case
+(`⚖ threshold on mean|pathology-excluded → PASS/FAIL`, from the new `CaseArtifact.min_pass_rate` /
+`gate_metric`), and — in diff mode — a **flips** index. Additive artifact fields carry it:
+`CheckOutcome` gained `scored`/`cells[]`/`rationales[]`, `Check` gained `kind`, `CaseArtifact` gained
+`sample_fragile[]` + `min_pass_rate`/`gate_metric`. **No artifact is committed** — the PR comment is
+the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
+`EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
+whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
 
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
