@@ -1,8 +1,9 @@
 """Zoho plugin for Penny.
 
-Provides calendar and project management via Zoho APIs on the chat tool
-surface. Email is handled by the existing penny.zoho client; this plugin adds
-calendar and project tools when Zoho credentials are configured.
+Provides email, calendar, and project management via Zoho APIs on the chat
+tool surface. Email organisation tools (move, label, folders, rules) are
+included alongside calendar and project tools when Zoho credentials are
+configured.
 
 Required environment variables:
     ZOHO_API_ID       — Zoho OAuth client ID
@@ -15,21 +16,30 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from penny.config import Config
-from penny.plugins import CAPABILITY_CALENDAR, CAPABILITY_PROJECT, Plugin
+from penny.plugins import CAPABILITY_CALENDAR, CAPABILITY_EMAIL, CAPABILITY_PROJECT, Plugin
 from penny.plugins.zoho.calendar_client import ZohoCalendarClient
 from penny.plugins.zoho.calendar_tools import calendar_tools as calendar_tools
+from penny.plugins.zoho.email_tools import (
+    ApplyLabelTool,
+    CreateEmailRuleTool,
+    CreateFolderTool,
+    ListEmailRulesTool,
+    ListLabelsTool,
+    MoveEmailsTool,
+)
 from penny.plugins.zoho.project_tools import project_tools as project_tools
 from penny.plugins.zoho.projects_client import ZohoProjectsClient
+from penny.zoho.client import ZohoClient
 
 if TYPE_CHECKING:
     from penny.tools.base import Tool
 
 
 class ZohoPlugin(Plugin):
-    """Zoho integration plugin for calendar and projects."""
+    """Zoho integration plugin for email, calendar, and projects."""
 
     name = "zoho"
-    capabilities = [CAPABILITY_CALENDAR, CAPABILITY_PROJECT]
+    capabilities = [CAPABILITY_EMAIL, CAPABILITY_CALENDAR, CAPABILITY_PROJECT]
 
     def __init__(self, config: Config) -> None:
         self._client_id = config.zoho_api_id
@@ -39,6 +49,15 @@ class ZohoPlugin(Plugin):
             raise ValueError(
                 "ZohoPlugin requires ZOHO_API_ID, ZOHO_API_SECRET, and ZOHO_REFRESH_TOKEN"
             )
+        self._email_client = ZohoClient(
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            refresh_token=self._refresh_token,
+            timeout=config.runtime.JMAP_REQUEST_TIMEOUT,
+            max_body_length=int(config.runtime.EMAIL_BODY_MAX_LENGTH),
+            search_limit=int(config.runtime.EMAIL_SEARCH_LIMIT),
+            list_limit=int(config.runtime.EMAIL_LIST_LIMIT),
+        )
         self._calendar_client = ZohoCalendarClient(
             client_id=self._client_id,
             client_secret=self._client_secret,
@@ -49,6 +68,8 @@ class ZohoPlugin(Plugin):
             client_secret=self._client_secret,
             refresh_token=self._refresh_token,
         )
+        self._db = config.runtime._db
+        self._user_id = config.signal_number or "default"
 
     @classmethod
     def is_configured(cls, config: Config) -> bool:
@@ -56,13 +77,20 @@ class ZohoPlugin(Plugin):
         return bool(config.zoho_api_id and config.zoho_api_secret and config.zoho_refresh_token)
 
     def get_tools(self) -> list[Tool]:
-        """Return Zoho calendar and project tools."""
+        """Return Zoho email, calendar, and project tools."""
         return [
+            MoveEmailsTool(self._email_client),
+            CreateFolderTool(self._email_client),
+            ApplyLabelTool(self._email_client),
+            ListLabelsTool(self._email_client),
+            CreateEmailRuleTool(self._db, self._user_id),
+            ListEmailRulesTool(self._db, self._user_id),
             *calendar_tools(self._calendar_client),
             *project_tools(self._projects_client),
         ]
 
     async def close(self) -> None:
+        await self._email_client.close()
         await self._calendar_client.close()
         await self._projects_client.close()
 

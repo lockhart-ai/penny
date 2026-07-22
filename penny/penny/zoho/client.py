@@ -189,6 +189,7 @@ class ZohoClient:
     async def list_emails(
         self,
         folder_name: str | None = None,
+        limit: int | None = None,
     ) -> list[EmailSummary]:
         """List emails from a specific folder."""
         account = await self._ensure_account()
@@ -212,7 +213,7 @@ class ZohoClient:
         url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/messages/view"
         params = {
             "folderId": folder_id,
-            "limit": self._list_limit,
+            "limit": limit if limit is not None else self._list_limit,
             "includeto": "true",
         }
 
@@ -314,7 +315,7 @@ class ZohoClient:
             ts_int = int(ts)
             dt = datetime.fromtimestamp(ts_int / 1000, tz=UTC)
             return dt.isoformat()
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             return str(ts)
 
     @staticmethod
@@ -339,7 +340,7 @@ class ZohoClient:
             if not (1 <= month <= 12):
                 return None
             return f"{day}-{_MONTH_ABBREVS[month - 1]}-{year}"
-        except ValueError, IndexError:
+        except (ValueError, IndexError):
             return None
 
     def _to_zoho_date(self, date_str: str) -> str | None:
@@ -485,6 +486,195 @@ class ZohoClient:
 
         logger.warning("Draft saved but no messageId returned: %s", data)
         return None
+
+    async def create_folder(
+        self,
+        name: str,
+        parent_folder_id: str | None = None,
+    ) -> ZohoFolder | None:
+        """Create a new email folder, optionally nested under a parent."""
+        account = await self._ensure_account()
+        headers = await self._get_headers()
+
+        url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/folders"
+        payload: dict[str, Any] = {"folderName": name}
+        if parent_folder_id:
+            payload["parentFolderId"] = parent_folder_id
+
+        logger.info("Creating folder: %s (parent: %s)", name, parent_folder_id)
+        resp = await self._http.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        folder_data = data.get("data", {})
+        if folder_data.get("folderId"):
+            self._folders = None
+            return ZohoFolder(
+                folder_id=str(folder_data["folderId"]),
+                folder_name=folder_data.get("folderName", name),
+                folder_type=folder_data.get("folderType", ""),
+                path=folder_data.get("path", ""),
+                is_archived=False,
+            )
+        logger.warning("Folder creation returned no folderId: %s", data)
+        return None
+
+    async def create_nested_folder(self, path: str) -> ZohoFolder | None:
+        """Create a folder path, creating parent folders as needed.
+
+        Args:
+            path: Folder path like "Clients/John Smith" or "Accounting/Expenses/AWS"
+
+        Returns:
+            The final (deepest) folder, or None if creation failed.
+        """
+        parts = [p.strip() for p in path.split("/") if p.strip()]
+        if not parts:
+            return None
+
+        parent_id: str | None = None
+        current_folder: ZohoFolder | None = None
+
+        for part in parts:
+            existing = await self.get_folder_by_name(part)
+            if existing:
+                parent_id = existing.folder_id
+                current_folder = existing
+                continue
+
+            current_folder = await self.create_folder(part, parent_folder_id=parent_id)
+            if not current_folder:
+                logger.error("Failed to create folder: %s", part)
+                return None
+            parent_id = current_folder.folder_id
+
+        return current_folder
+
+    async def move_messages(
+        self,
+        message_ids: list[str],
+        dest_folder_id: str,
+    ) -> bool:
+        """Move messages to a destination folder."""
+        if not message_ids:
+            return True
+
+        account = await self._ensure_account()
+        headers = await self._get_headers()
+
+        url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/updatemessage"
+
+        pure_message_ids = []
+        for mid in message_ids:
+            if ":" in mid:
+                _, msg_id = mid.split(":", 1)
+                pure_message_ids.append(msg_id)
+            else:
+                pure_message_ids.append(mid)
+
+        payload = {
+            "mode": "moveMessage",
+            "messageId": pure_message_ids,
+            "destfolderId": dest_folder_id,
+        }
+
+        logger.info("Moving %d message(s) to folder %s", len(pure_message_ids), dest_folder_id)
+        resp = await self._http.put(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        status = data.get("status", {}).get("code", 0)
+        if status == 200:
+            logger.info("Successfully moved %d message(s)", len(pure_message_ids))
+            return True
+
+        logger.warning("Move messages returned status: %s", data)
+        return False
+
+    async def get_labels(self) -> list[dict[str, Any]]:
+        """Get all labels for the account."""
+        account = await self._ensure_account()
+        headers = await self._get_headers()
+
+        url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/labels"
+        params = {"fields": "labelId,displayName,color"}
+
+        resp = await self._http.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+        labels = data.get("data", [])
+        logger.info("Loaded %d labels", len(labels))
+        return labels
+
+    async def get_label_by_name(self, name: str) -> dict[str, Any] | None:
+        """Get a label by name (case-insensitive)."""
+        labels = await self.get_labels()
+        name_lower = name.lower()
+        for label in labels:
+            if label.get("displayName", "").lower() == name_lower:
+                return label
+        return None
+
+    async def create_label(self, name: str, color: str = "#4285f4") -> dict[str, Any] | None:
+        """Create a new label."""
+        account = await self._ensure_account()
+        headers = await self._get_headers()
+
+        url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/labels"
+        payload = {"displayName": name, "color": color}
+
+        logger.info("Creating label: %s", name)
+        resp = await self._http.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        label_data = data.get("data", {})
+        if label_data.get("labelId"):
+            return label_data
+        logger.warning("Label creation returned no labelId: %s", data)
+        return None
+
+    async def apply_label(
+        self,
+        message_ids: list[str],
+        label_id: str,
+    ) -> bool:
+        """Apply a label to messages."""
+        if not message_ids:
+            return True
+
+        account = await self._ensure_account()
+        headers = await self._get_headers()
+
+        url = f"{PennyConstants.ZOHO_API_BASE}/accounts/{account.account_id}/updatemessage"
+
+        pure_message_ids = []
+        for mid in message_ids:
+            if ":" in mid:
+                _, msg_id = mid.split(":", 1)
+                pure_message_ids.append(msg_id)
+            else:
+                pure_message_ids.append(mid)
+
+        payload = {
+            "mode": "applyLabel",
+            "messageId": pure_message_ids,
+            "labelId": [label_id],
+        }
+
+        logger.info("Applying label %s to %d message(s)", label_id, len(pure_message_ids))
+        resp = await self._http.put(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        status = data.get("status", {}).get("code", 0)
+        if status == 200:
+            logger.info("Successfully applied label to %d message(s)", len(pure_message_ids))
+            return True
+
+        logger.warning("Apply label returned status: %s", data)
+        return False
 
     async def close(self) -> None:
         """Close the HTTP client."""
