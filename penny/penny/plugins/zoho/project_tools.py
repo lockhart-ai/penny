@@ -110,7 +110,7 @@ class ListProjectsTool(Tool):
             if proj.owner_name:
                 lines.append(f"  Owner: {proj.owner_name}")
             if proj.start_date or proj.end_date:
-                dates = f"{proj.start_date or '?'} to {proj.end_date or '?' }"
+                dates = f"{proj.start_date or '?'} to {proj.end_date or '?'}"
                 lines.append(f"  Dates: {dates}")
         return ToolResult(message="\n".join(lines))
 

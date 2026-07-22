@@ -119,8 +119,7 @@ class MoveEmailsTool(Tool):
         if success:
             return ToolResult(
                 message=(
-                    f"Successfully moved {len(args.message_ids)} email(s) to "
-                    f"'{args.folder_path}'"
+                    f"Successfully moved {len(args.message_ids)} email(s) to '{args.folder_path}'"
                 ),
                 mutated=True,
             )

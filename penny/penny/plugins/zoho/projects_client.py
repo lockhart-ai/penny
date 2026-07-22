@@ -168,9 +168,7 @@ class ZohoProjectsClient:
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}/projects/{project_id}"
-        )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}/projects/{project_id}"
 
         resp = await self._http.get(url, headers=headers)
         if resp.status_code == 404:
@@ -469,9 +467,7 @@ class ZohoProjectsClient:
         if completion_percentage is not None:
             payload["completion_percentage"] = completion_percentage
         if owner_zpuids is not None:
-            payload["owners_and_work"] = {
-                "owners": [{"add": [{"zpuid": z} for z in owner_zpuids]}]
-            }
+            payload["owners_and_work"] = {"owners": [{"add": [{"zpuid": z} for z in owner_zpuids]}]}
 
         if not payload:
             logger.warning("No fields to update for task %s", task_id)

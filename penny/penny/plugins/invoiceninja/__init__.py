@@ -33,9 +33,15 @@ class InvoiceNinjaPlugin(Plugin):
     capabilities = [CAPABILITY_INVOICING]
 
     def __init__(self, config: Config) -> None:
+        api_token = config.invoiceninja_api_token
+        base_url = config.invoiceninja_url
+        if not api_token or not base_url:
+            raise ValueError(
+                "InvoiceNinjaPlugin requires INVOICENINJA_API_TOKEN and INVOICENINJA_URL"
+            )
         self._client = InvoiceNinjaClient(
-            api_token=config.invoiceninja_api_token,
-            base_url=config.invoiceninja_url,
+            api_token=api_token,
+            base_url=base_url,
         )
 
     @classmethod

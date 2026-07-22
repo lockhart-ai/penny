@@ -68,9 +68,7 @@ def load_plugins(config: Config) -> list[Plugin]:
         try:
             module = importlib.import_module(f"penny.plugins.{name}")
         except ImportError:
-            logger.error(
-                "Plugin '%s' not found — no module penny.plugins.%s", name, name
-            )
+            logger.error("Plugin '%s' not found — no module penny.plugins.%s", name, name)
             continue
 
         plugin_cls = getattr(module, "PLUGIN_CLASS", None)
@@ -79,9 +77,7 @@ def load_plugins(config: Config) -> list[Plugin]:
             continue
 
         if not plugin_cls.is_configured(config):
-            logger.warning(
-                "Plugin '%s' is not configured (missing credentials), skipping", name
-            )
+            logger.warning("Plugin '%s' is not configured (missing credentials), skipping", name)
             continue
 
         try:

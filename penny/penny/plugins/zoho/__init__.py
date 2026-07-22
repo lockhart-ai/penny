@@ -68,7 +68,10 @@ class ZohoPlugin(Plugin):
             client_secret=self._client_secret,
             refresh_token=self._refresh_token,
         )
-        self._db = config.runtime._db
+        db = config.runtime._db
+        if db is None:
+            raise ValueError("ZohoPlugin requires a database")
+        self._db = db
         self._user_id = config.signal_number or "default"
 
     @classmethod

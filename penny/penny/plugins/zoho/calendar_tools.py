@@ -457,9 +457,7 @@ class FindFreeSlotsTool(Tool):
                 f"in the next {args.days_ahead} days."
             )
 
-        lines = [
-            f"Found {len(free_slots)} available slot(s) of {args.duration_minutes} minutes:\n"
-        ]
+        lines = [f"Found {len(free_slots)} available slot(s) of {args.duration_minutes} minutes:\n"]
         for slot in free_slots[:10]:
             slot_start = slot["start"]
             slot_end = slot["end"]

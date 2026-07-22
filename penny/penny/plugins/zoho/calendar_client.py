@@ -425,10 +425,7 @@ class ZohoCalendarClient:
         repeat = event_data.get("repeat")
         recurrenceid = event_data.get("recurrenceid")
         is_recurring = (
-            event_data.get("isrep", False)
-            or bool(rrule)
-            or bool(repeat)
-            or bool(recurrenceid)
+            event_data.get("isrep", False) or bool(rrule) or bool(repeat) or bool(recurrenceid)
         )
 
         logger.info(

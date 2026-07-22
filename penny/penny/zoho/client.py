@@ -315,7 +315,7 @@ class ZohoClient:
             ts_int = int(ts)
             dt = datetime.fromtimestamp(ts_int / 1000, tz=UTC)
             return dt.isoformat()
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return str(ts)
 
     @staticmethod
@@ -340,7 +340,7 @@ class ZohoClient:
             if not (1 <= month <= 12):
                 return None
             return f"{day}-{_MONTH_ABBREVS[month - 1]}-{year}"
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             return None
 
     def _to_zoho_date(self, date_str: str) -> str | None:
