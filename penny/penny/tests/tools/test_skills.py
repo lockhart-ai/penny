@@ -10,7 +10,6 @@ import json
 import pytest
 
 from penny.database import Database
-from penny.database.migrate import migrate
 from penny.database.skills import (
     DistillInput,
     SkillDraft,
@@ -23,6 +22,7 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
+from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.skill_tools import SkillReadTool
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
@@ -63,17 +63,14 @@ _BROWSE_FAILED = (
 
 
 def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     return db
 
 
 def _migrated_db(tmp_path) -> Database:
     """A DB built exactly like prod (create_tables then migrate) — what a fresh
     install's skill registry actually contains (migration 0084: table, no rows)."""
-    db = Database(str(tmp_path / "seeded.db"))
-    db.create_tables()
-    migrate(db.db_path)
+    db = migrated_db(str(tmp_path / "seeded.db"))
     return db
 
 

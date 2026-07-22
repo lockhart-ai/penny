@@ -6,6 +6,7 @@ from penny.agents.base import Agent
 from penny.config import Config
 from penny.database import Database
 from penny.llm import LlmClient
+from penny.tests.schema_template import schema_only_db
 from penny.tools.base import Tool, ToolExecutor, ToolRegistry
 from penny.tools.memory_tools import UpdateEntryTool
 from penny.tools.models import ToolArgs
@@ -331,10 +332,8 @@ class TestMissingRequiredParameters:
     async def test_update_entry_error_includes_collection_and_key_descriptions(self, tmp_path):
         """update_entry validation error names 'Collection name' and 'Entry key' so the
         LLM understands which identifier each parameter represents."""
-        from penny.database import Database
 
-        db = Database(str(tmp_path / "test.db"))
-        db.create_tables()
+        db = schema_only_db(str(tmp_path / "test.db"))
         tool = UpdateEntryTool(db=db, author="test")
 
         result = await tool.run(content="new value")

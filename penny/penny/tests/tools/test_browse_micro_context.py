@@ -30,11 +30,11 @@ from sqlmodel import Session, select
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory.objects import render_tool_call
-from penny.database.migrate import migrate
 from penny.database.models import PromptLog
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tests.schema_template import migrated_db
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.micro_context import (
@@ -75,9 +75,7 @@ _MARKER_2 = "Brass Orrery"  # page 2's body phrase
 
 def _make_db(tmp_path, name: str = "test") -> Database:
     """A migrated test DB (so the browse-results log exists)."""
-    db = Database(str(tmp_path / f"{name}.db"))
-    db.create_tables()
-    migrate(str(tmp_path / f"{name}.db"))
+    db = migrated_db(str(tmp_path / f"{name}.db"))
     return db
 
 

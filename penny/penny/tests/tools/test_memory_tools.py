@@ -42,6 +42,7 @@ from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
 from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
     parse_trigger,
     render_trigger_clause,
@@ -92,8 +93,7 @@ def _make_db(tmp_path) -> Database:
     memories they need.
     """
     db_path = str(tmp_path / "test.db")
-    db = Database(db_path)
-    db.create_tables()
+    db = schema_only_db(db_path)
     return db
 
 

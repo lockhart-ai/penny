@@ -496,6 +496,11 @@ Strongly prefer end-to-end integration tests over unit tests. Test through publi
 - `running_penny`: Async context manager for running Penny with cleanup (uses WebSocket detection, not sleep)
 - `setup_llm_flow`: Factory to configure mock LLM for message + background task flow
 - `wait_until(condition, timeout, interval)`: Polls a condition every 50ms until true or timeout (10s default)
+- **`db`: the default database for a test — just add it as an argument.** A ready-to-use `Database` with the real startup schema (`create_tables()` + every migration, the state Penny boots with). No setup, no boilerplate — this is the naive-correct way to get a database in a test.
+- `bare_db`: like `db` but a bare current-models schema with **no** migration-seeded rows — for low-level store tests that declare exactly the memories they need (migration 0026 would otherwise seed system log memories)
+- `test_db`: a per-test SQLite **path** (string) pre-seeded with the full post-migration schema — used by fixtures/tests that construct their own `Penny`/`Config` and need a db_path, not a `Database`
+
+**Why they're fast — schema templates** (`tests/schema_template.py`): building a test DB's schema is expensive (`create_tables()` issues the DDL for every table, `migrate()` replays the whole ~100-file migration stack — ~110ms together), and the suite builds hundreds of fresh databases, which was the single largest chunk of `make check`. The schema is deterministic, so the module builds each template **once per process** and the fixtures hand out ~1ms file copies (byte-identical to building from scratch, so tests see no behavioural difference). **Don't hand-roll `Database(path)` + `create_tables()` + `migrate()` — reach for the `db`/`bare_db` fixture instead**, so a test writer gets the fast path by default rather than by remembering a rule. The building-block functions `schema_only_db(path)` / `migrated_db(path)` back the fixtures and are there for the few helpers that need a custom filename, a `runtime=` override, or more than one database. This is what cut `make check`'s test phase from ~52s to ~18s.
 
 **Test Timing** — never use `asyncio.sleep(N)` in tests:
 - Use `wait_until(lambda: <condition>)` to poll for expected side effects (DB state, message count, etc.)
@@ -511,7 +516,7 @@ Strongly prefer end-to-end integration tests over unit tests. Test through publi
 5. `wait_until` the expected side effect (outgoing message, DB change, etc.)
 6. Assert on captured messages, LLM requests, DB state
 
-**Performance**: Test suite runs in ~30s (`scheduler_tick_interval` set to 0.05s in tests)
+**Performance**: The non-eval suite runs in ~18s. Two levers: `scheduler_tick_interval` is 0.05s in tests (vs 1.0s prod), and the schema templates (above) build the DB schema once per process and copy it per test instead of re-running `create_tables()` + all migrations each time (which was the single largest chunk of the runtime — ~34s).
 
 ### Live-model eval suite (`tests/eval/`)
 

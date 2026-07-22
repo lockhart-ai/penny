@@ -4,14 +4,12 @@ from datetime import UTC, datetime, timedelta
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.migrate import migrate
+from penny.tests.schema_template import migrated_db
 
 
 def _make_db(tmp_path) -> Database:
     db_path = str(tmp_path / "test.db")
-    db = Database(db_path)
-    db.create_tables()
-    migrate(db_path)
+    db = migrated_db(db_path)
     return db
 
 

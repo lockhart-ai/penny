@@ -2,9 +2,10 @@
 
 import asyncio
 import contextlib
+import shutil
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,6 +17,16 @@ from penny.penny import Penny
 # Re-export LLM mock fixture so it can be used directly in tests
 from penny.tests.mocks.llm_patches import mock_llm  # noqa: F401
 from penny.tests.mocks.signal_server import MockSignalServer
+from penny.tests.schema_template import (
+    migrated_db,
+    migrated_template_path,
+    schema_only_db,
+)
+
+if TYPE_CHECKING:
+    # Imported lazily for annotations only — a top-level ``penny.database`` import
+    # here runs before ``penny.penny`` primes the package and hits a circular import.
+    from penny.database import Database
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -91,9 +102,42 @@ async def signal_server():
 
 
 @pytest.fixture
-def test_db(tmp_path):
-    """Create a temporary test database path."""
-    return str(tmp_path / "test.db")
+def test_db(tmp_path) -> str:
+    """Per-test database path, pre-seeded with the full post-migration schema.
+
+    A fresh copy of the process-cached migrated schema template (see
+    ``penny.tests.schema_template``), so every test starts from the real startup
+    schema (the ``create_tables()`` + ``migrate()`` state) without paying to
+    rebuild it. Downstream ``create_tables()``/``migrate()`` calls (Penny startup,
+    ``test_user_info``) then collapse to fast idempotent no-ops because the schema
+    and applied-migration records are already present.
+    """
+    destination = str(tmp_path / "test.db")
+    shutil.copy(migrated_template_path(), destination)
+    return destination
+
+
+@pytest.fixture
+def db(tmp_path) -> Database:
+    """A ready-to-use database with the real startup schema — the default for a test.
+
+    Just add ``db`` as a test argument; no setup needed. It's a fast (~1ms) copy of a
+    process-cached template carrying the schema plus every migration — the same state
+    Penny boots with — so a test never pays to rebuild the schema. Reach for this
+    whenever a test needs a database; use ``bare_db`` only when you specifically need
+    a schema with no migration-seeded rows.
+    """
+    return migrated_db(str(tmp_path / "test.db"))
+
+
+@pytest.fixture
+def bare_db(tmp_path) -> Database:
+    """Like ``db``, but a bare current-models schema with NO migration-seeded rows.
+
+    For low-level store tests that declare exactly the memories they need (migration
+    0026 would otherwise seed system log memories). Same fast cached-template copy.
+    """
+    return schema_only_db(str(tmp_path / "test.db"))
 
 
 @pytest.fixture

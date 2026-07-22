@@ -16,10 +16,10 @@ from penny.config_params import RUNTIME_CONFIG_PARAMS, RuntimeParams
 from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
-from penny.database.migrate import migrate
 from penny.database.models import Media, PromptLog, RuntimeConfig
 from penny.tests.conftest import wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tests.schema_template import migrated_db
 from penny.tools.browse import BrowseTool
 from penny.tools.models import ToolResult
 from penny.tools.read_emails import ReadEmailsTool
@@ -28,9 +28,7 @@ from penny.tools.search_emails import SearchEmailsTool
 
 def _make_db(tmp_path) -> Database:
     db_path = str(tmp_path / "test.db")
-    db = Database(db_path)
-    db.create_tables()
-    migrate(db_path)
+    db = migrated_db(db_path)
     return db
 
 

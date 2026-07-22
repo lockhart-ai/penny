@@ -1,12 +1,11 @@
 """Tests for the database facade's startup maintenance operations."""
 
-from penny.database import Database
+from penny.tests.schema_template import schema_only_db
 
 
 def test_analyze_refreshes_sqlite_statistics_and_logs_completion(tmp_path, caplog):
     caplog.set_level("INFO", logger="penny.database.database")
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     with db.engine.begin() as connection:
         connection.exec_driver_sql(
             "INSERT INTO messagelog "

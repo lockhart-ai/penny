@@ -42,13 +42,13 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.models import ToolResult
 
 
 def _make_db(tmp_path, name: str = "harness") -> Database:
-    db = Database(str(tmp_path / f"{name}.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / f"{name}.db"))
     return db
 
 

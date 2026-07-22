@@ -24,6 +24,7 @@ from penny.database import Database
 from penny.database.models import SendQueueItem
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.scheduler.send_queue_drainer import SendQueueDrainer
+from penny.tests.schema_template import schema_only_db
 
 _PENNY_LOG = PennyConstants.MEMORY_PENNY_MESSAGES_LOG
 _USER_LOG = PennyConstants.MEMORY_USER_MESSAGES_LOG
@@ -39,8 +40,7 @@ _COLLECTION = "notified-thoughts"
 
 
 def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     # Marker rows so db.memory(...) dispatches the messagelog facades the
     # cooldown helpers read.
     db.memories.create_log(_PENNY_LOG, "outbound")

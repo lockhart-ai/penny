@@ -39,14 +39,14 @@ from penny.database.mutation_store import MutationDetail
 from penny.database.skill_store import parameters_to_json, steps_to_json
 from penny.database.skills import SkillParameter, SkillStep, SkillSubKind, SkillSubstitution
 from penny.prompts import Prompt
+from penny.tests.schema_template import schema_only_db
 
 USER = "+15550001111"
 
 
 def _db(tmp_path) -> Database:
     """A fresh, empty database (schema only — no migration-seeded system rows)."""
-    db = Database(str(tmp_path / "self_state.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "self_state.db"))
     return db
 
 

@@ -18,14 +18,14 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
+from penny.tests.schema_template import schema_only_db
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
 _RECIPIENT = "+15551234567"
 
 
 def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     return db
 
 

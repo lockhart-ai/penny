@@ -30,6 +30,7 @@ from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.embeddings import deserialize_embedding, serialize_embedding
+from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
 
@@ -41,8 +42,7 @@ def _make_db(tmp_path) -> Database:
     they need.
     """
     db_path = str(tmp_path / "test.db")
-    db = Database(db_path)
-    db.create_tables()
+    db = schema_only_db(db_path)
     return db
 
 

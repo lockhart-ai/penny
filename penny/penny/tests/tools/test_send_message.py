@@ -23,6 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 from penny.database import Database
+from penny.tests.schema_template import schema_only_db
 from penny.tools.models import SendMessageArgs
 from penny.tools.send_message import SendMessageTool
 
@@ -31,8 +32,7 @@ _AGENT = "notify"
 
 
 def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     return db
 
 

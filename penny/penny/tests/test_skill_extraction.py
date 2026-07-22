@@ -24,7 +24,6 @@ import pytest
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.migrate import migrate
 from penny.database.models import Skill
 from penny.database.skill_store import (
     parameters_from_json,
@@ -49,6 +48,7 @@ from penny.skill_extraction import (
     SkillExtractor,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
+from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.skill_tools import render_skill_full
 
@@ -70,8 +70,7 @@ _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
 
 
 def _make_db(tmp_path) -> Database:
-    db = Database(str(tmp_path / "test.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "test.db"))
     return db
 
 
@@ -434,9 +433,7 @@ async def test_collector_run_is_not_extracted(tmp_path):
 async def test_fresh_migrated_registry_stays_empty_without_a_qualifying_run(tmp_path):
     """A prod-identical DB (create_tables + migrate) ships the skill table EMPTY; a
     non-qualifying turn leaves it empty (no seeds, no accidental extraction)."""
-    db = Database(str(tmp_path / "seeded.db"))
-    db.create_tables()
-    migrate(db.db_path)
+    db = migrated_db(str(tmp_path / "seeded.db"))
     _log_run(db, "run-A", "hi there", [])
     result = await _extractor(db).extract("run-A")
     assert isinstance(result, NoExtraction)

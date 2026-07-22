@@ -9,16 +9,6 @@ from penny.channels.discord import DiscordChannel
 from penny.channels.ios import IosChannel
 from penny.channels.signal import SignalChannel
 from penny.constants import ChannelType
-from penny.database import Database
-from penny.database.migrate import migrate
-
-
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = Database(db_path)
-    db.create_tables()
-    migrate(db_path)
-    return db
 
 
 @pytest.mark.asyncio
@@ -48,11 +38,10 @@ async def test_ios_primary_does_not_register_signal_sidecar(make_config):
 
 
 @pytest.mark.asyncio
-async def test_discord_primary_seeds_default_device(make_config, tmp_path):
+async def test_discord_primary_seeds_default_device(make_config, db):
     """Discord primary seeds a default device (mirrors Signal) so proactive sends
     resolve to Discord structurally via ``is_default`` — not by registration
     order — and can never be captured by a browser addon (#1298)."""
-    db = _make_db(tmp_path)
     config = make_config(
         channel_type=ChannelType.DISCORD,
         discord_bot_token="test-token",

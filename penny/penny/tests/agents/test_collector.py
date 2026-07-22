@@ -33,6 +33,7 @@ from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
+from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import LogReadTool, build_memory_tools, collector_tool_surface
 
 
@@ -46,8 +47,7 @@ def _llm_client() -> LlmClient:
 
 
 def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
-    db = Database(str(tmp_path / "t.db"))
-    db.create_tables()
+    db = schema_only_db(str(tmp_path / "t.db"))
     collector = Collector(
         model_client=_llm_client(),
         db=db,
