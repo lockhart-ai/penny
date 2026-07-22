@@ -492,3 +492,275 @@ async def test_search_emails_uses_constructor_search_limit():
             assert search_call.kwargs["params"]["limit"] == 27
 
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_folder():
+    """Test creating a new email folder."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    create_response = {
+        "status": {"code": 200, "description": "success"},
+        "data": {
+            "folderId": "F003",
+            "folderName": "Invoices",
+            "folderType": "Custom",
+            "path": "/Invoices",
+        },
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [
+            _make_response(TOKEN_RESPONSE),
+            _make_response(create_response),
+        ]
+
+        with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = [
+                _make_response(ACCOUNTS_RESPONSE),
+            ]
+
+            folder = await client.create_folder("Invoices")
+
+    assert folder is not None
+    assert folder.folder_id == "F003"
+    assert folder.folder_name == "Invoices"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_nested_folder_creates_parent_then_child():
+    """Test creating a nested folder path with parents created on demand."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    responses = [
+        {"folderId": "F100", "folderName": "Clients", "folderType": "Custom", "path": "/Clients"},
+        {
+            "folderId": "F101",
+            "folderName": "Acme",
+            "folderType": "Custom",
+            "path": "/Clients/Acme",
+        },
+    ]
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [
+            _make_response(TOKEN_RESPONSE),
+            *(_make_response({"status": {"code": 200}, "data": resp}) for resp in responses),
+        ]
+
+        with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = [
+                _make_response(ACCOUNTS_RESPONSE),
+                _make_response(FOLDERS_RESPONSE),
+                _make_response(FOLDERS_RESPONSE),
+            ]
+
+            folder = await client.create_nested_folder("Clients/Acme")
+
+    assert folder is not None
+    assert folder.folder_id == "F101"
+    assert folder.folder_name == "Acme"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_move_messages_strips_composite_ids():
+    """Test moving messages strips composite folder:message IDs."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    move_response = {
+        "status": {"code": 200, "description": "success"},
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = _make_response(TOKEN_RESPONSE)
+
+        with patch.object(client._http, "put", new_callable=AsyncMock) as mock_put:
+            mock_put.return_value = _make_response(move_response)
+
+            with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = _make_response(ACCOUNTS_RESPONSE)
+
+                success = await client.move_messages(
+                    ["F001:M001", "F001:M002"],
+                    "F003",
+                )
+
+    assert success is True
+    call_args = mock_put.call_args
+    assert call_args.kwargs["json"]["messageId"] == ["M001", "M002"]
+    assert call_args.kwargs["json"]["destfolderId"] == "F003"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_labels():
+    """Test fetching all labels."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    labels_response = {
+        "status": {"code": 200, "description": "success"},
+        "data": [
+            {"labelId": "L001", "displayName": "Work", "color": "#4285f4"},
+            {"labelId": "L002", "displayName": "Personal", "color": "#34a853"},
+        ],
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = _make_response(TOKEN_RESPONSE)
+
+        with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = [
+                _make_response(ACCOUNTS_RESPONSE),
+                _make_response(labels_response),
+            ]
+
+            labels = await client.get_labels()
+
+    assert len(labels) == 2
+    assert labels[0]["displayName"] == "Work"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_label_by_name_is_case_insensitive():
+    """Test fetching a label by name is case-insensitive."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    labels_response = {
+        "status": {"code": 200, "description": "success"},
+        "data": [
+            {"labelId": "L001", "displayName": "Work", "color": "#4285f4"},
+        ],
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = _make_response(TOKEN_RESPONSE)
+
+        with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = [
+                _make_response(ACCOUNTS_RESPONSE),
+                _make_response(labels_response),
+            ]
+
+            label = await client.get_label_by_name("work")
+
+    assert label is not None
+    assert label["labelId"] == "L001"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_label():
+    """Test creating a new label."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    create_response = {
+        "status": {"code": 200, "description": "success"},
+        "data": {"labelId": "L003", "displayName": "Urgent", "color": "#4285f4"},
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [
+            _make_response(TOKEN_RESPONSE),
+            _make_response(create_response),
+        ]
+
+        with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.side_effect = [
+                _make_response(ACCOUNTS_RESPONSE),
+            ]
+
+            label = await client.create_label("Urgent")
+
+    assert label is not None
+    assert label["labelId"] == "L003"
+    assert label["displayName"] == "Urgent"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_apply_label():
+    """Test applying a label to messages."""
+    client = ZohoClient(
+        FAKE_CLIENT_ID,
+        FAKE_CLIENT_SECRET,
+        FAKE_REFRESH_TOKEN,
+        timeout=_ZOHO_TIMEOUT,
+        max_body_length=_EMAIL_MAX_LENGTH,
+        search_limit=_EMAIL_SEARCH_LIMIT,
+        list_limit=_EMAIL_LIST_LIMIT,
+    )
+
+    apply_response = {
+        "status": {"code": 200, "description": "success"},
+    }
+
+    with patch.object(client._http, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = _make_response(TOKEN_RESPONSE)
+
+        with patch.object(client._http, "put", new_callable=AsyncMock) as mock_put:
+            mock_put.return_value = _make_response(apply_response)
+
+            with patch.object(client._http, "get", new_callable=AsyncMock) as mock_get:
+                mock_get.return_value = _make_response(ACCOUNTS_RESPONSE)
+
+                success = await client.apply_label(
+                    ["F001:M001", "F001:M002"],
+                    "L001",
+                )
+
+    assert success is True
+    call_args = mock_put.call_args
+    assert call_args.kwargs["json"]["messageId"] == ["M001", "M002"]
+    assert call_args.kwargs["json"]["labelId"] == ["L001"]
+    await client.close()

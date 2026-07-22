@@ -28,9 +28,21 @@ def test_zoho_plugin_provides_tools():
     config.zoho_api_id = "id"
     config.zoho_api_secret = "secret"
     config.zoho_refresh_token = "token"
+    config.signal_number = "+15551234567"
+    config.runtime.JMAP_REQUEST_TIMEOUT = 30.0
+    config.runtime.EMAIL_BODY_MAX_LENGTH = 50000
+    config.runtime.EMAIL_SEARCH_LIMIT = 50
+    config.runtime.EMAIL_LIST_LIMIT = 20
+    config.runtime._db = MagicMock()
     plugin = ZohoPlugin(config)
     tools = plugin.get_tools()
     assert len(tools) > 0
     tool_names = {tool.name for tool in tools}
     assert "list_calendars" in tool_names
     assert "list_projects" in tool_names
+    assert "move_emails" in tool_names
+    assert "create_folder" in tool_names
+    assert "apply_label" in tool_names
+    assert "list_labels" in tool_names
+    assert "create_email_rule" in tool_names
+    assert "list_email_rules" in tool_names

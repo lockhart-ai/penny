@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from penny.database.models import EmailRule
 from penny.tools.base import Tool
+from penny.tools.models import ToolResult
 
 if TYPE_CHECKING:
     from penny.database import Database
@@ -89,27 +90,45 @@ class MoveEmailsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Move emails to a folder."""
         args = MoveEmailsArgs(**kwargs)
 
         if not args.message_ids:
-            return "No message IDs provided."
+            return ToolResult(
+                message="No message IDs provided.",
+                success=False,
+            )
 
         folder = await self._client.get_folder_by_name(args.folder_path.split("/")[-1])
 
         if not folder and args.create_if_missing:
             folder = await self._client.create_nested_folder(args.folder_path)
             if not folder:
-                return f"Failed to create folder: {args.folder_path}"
+                return ToolResult(
+                    message=f"Failed to create folder: {args.folder_path}",
+                    success=False,
+                )
 
         if not folder:
-            return f"Folder not found: {args.folder_path}"
+            return ToolResult(
+                message=f"Folder not found: {args.folder_path}",
+                success=False,
+            )
 
         success = await self._client.move_messages(args.message_ids, folder.folder_id)
         if success:
-            return f"Successfully moved {len(args.message_ids)} email(s) to '{args.folder_path}'"
-        return f"Failed to move emails to '{args.folder_path}'"
+            return ToolResult(
+                message=(
+                    f"Successfully moved {len(args.message_ids)} email(s) to "
+                    f"'{args.folder_path}'"
+                ),
+                mutated=True,
+            )
+        return ToolResult(
+            message=f"Failed to move emails to '{args.folder_path}'",
+            success=False,
+        )
 
 
 class CreateFolderTool(Tool):
@@ -140,14 +159,20 @@ class CreateFolderTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Create a folder."""
         args = CreateFolderArgs(**kwargs)
 
         folder = await self._client.create_nested_folder(args.folder_path)
         if folder:
-            return f"Successfully created folder: {args.folder_path}"
-        return f"Failed to create folder: {args.folder_path}"
+            return ToolResult(
+                message=f"Successfully created folder: {args.folder_path}",
+                mutated=True,
+            )
+        return ToolResult(
+            message=f"Failed to create folder: {args.folder_path}",
+            success=False,
+        )
 
 
 class ApplyLabelTool(Tool):
@@ -187,31 +212,46 @@ class ApplyLabelTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Apply a label to emails."""
         args = ApplyLabelArgs(**kwargs)
 
         if not args.message_ids:
-            return "No message IDs provided."
+            return ToolResult(
+                message="No message IDs provided.",
+                success=False,
+            )
 
         label = await self._client.get_label_by_name(args.label_name)
 
         if not label and args.create_if_missing:
             label = await self._client.create_label(args.label_name)
             if not label:
-                return f"Failed to create label: {args.label_name}"
+                return ToolResult(
+                    message=f"Failed to create label: {args.label_name}",
+                    success=False,
+                )
 
         if not label:
-            return f"Label not found: {args.label_name}"
+            return ToolResult(
+                message=f"Label not found: {args.label_name}",
+                success=False,
+            )
 
         label_id = label.get("labelId", "")
         success = await self._client.apply_label(args.message_ids, label_id)
         if success:
-            return (
-                f"Successfully applied label '{args.label_name}' to "
-                f"{len(args.message_ids)} email(s)"
+            return ToolResult(
+                message=(
+                    f"Successfully applied label '{args.label_name}' to "
+                    f"{len(args.message_ids)} email(s)"
+                ),
+                mutated=True,
             )
-        return f"Failed to apply label '{args.label_name}'"
+        return ToolResult(
+            message=f"Failed to apply label '{args.label_name}'",
+            success=False,
+        )
 
 
 class ListLabelsTool(Tool):
@@ -236,18 +276,18 @@ class ListLabelsTool(Tool):
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """List all labels."""
         labels = await self._client.get_labels()
         if not labels:
-            return "No labels found."
+            return ToolResult(message="No labels found.")
 
         lines = [f"Found {len(labels)} label(s):\n"]
         for label in labels:
             name = label.get("displayName", "Unknown")
             color = label.get("color", "")
             lines.append(f"- {name} ({color})")
-        return "\n".join(lines)
+        return ToolResult(message="\n".join(lines))
 
 
 class CreateEmailRuleTool(Tool):
@@ -294,7 +334,7 @@ class CreateEmailRuleTool(Tool):
         self._db = db
         self._user_id = user_id
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """Create an email rule."""
         from datetime import UTC, datetime
 
@@ -313,11 +353,14 @@ class CreateEmailRuleTool(Tool):
             session.add(rule)
             session.commit()
 
-        return (
-            f"Email rule '{args.name}' created successfully.\n\n"
-            f"Condition: {args.condition}\n"
-            f"Action: {args.action}\n\n"
-            "This rule will be applied automatically during scheduled email checks."
+        return ToolResult(
+            message=(
+                f"Email rule '{args.name}' created successfully.\n\n"
+                f"Condition: {args.condition}\n"
+                f"Action: {args.action}\n\n"
+                "This rule will be applied automatically during scheduled email checks."
+            ),
+            mutated=True,
         )
 
 
@@ -343,7 +386,7 @@ class ListEmailRulesTool(Tool):
         self._db = db
         self._user_id = user_id
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """List all email rules."""
         from sqlmodel import select
 
@@ -358,7 +401,7 @@ class ListEmailRulesTool(Tool):
             )
 
         if not rules:
-            return "No email rules configured."
+            return ToolResult(message="No email rules configured.")
 
         lines = [f"Found {len(rules)} active email rule(s):\n"]
         for idx, rule in enumerate(rules, start=1):
@@ -369,4 +412,4 @@ class ListEmailRulesTool(Tool):
             lines.append(f"   Action: {action}")
             lines.append("")
 
-        return "\n".join(lines)
+        return ToolResult(message="\n".join(lines))
