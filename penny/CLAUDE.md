@@ -658,6 +658,20 @@ the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.
 `EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
 whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
 
+**Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
+`data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative
+to the compose-file dir, so an eval run from a worktree would write artifacts under that worktree —
+where they die when it's swept post-merge. So `make eval` / `make assemble` resolve the primary
+checkout host-side (from the shared git *common* dir — identical from every worktree) and
+bind-mount its `data/eval-artifacts` at `/penny/eval-artifacts`. A report run (one declaring
+`EVAL_LEVER`) with no explicit `EVAL_REPORT_DIR` defaults to a run-stamped
+`/penny/eval-artifacts/run-<stamp>` (= `<primary>/data/eval-artifacts/run-<stamp>` on the host), so
+artifacts **survive the worktree being removed** and `EVAL_BASELINE` can point a later run at a
+prior run's durable path. An explicit `EVAL_REPORT_DIR` is always honored; a lever-less iteration
+run stays ephemeral (no artifacts, no lever requirement). The Makefile derives the mount at parse
+time, so `make -n eval` shows the concrete `-v <primary>/data/eval-artifacts:/penny/eval-artifacts`
+from any worktree.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,

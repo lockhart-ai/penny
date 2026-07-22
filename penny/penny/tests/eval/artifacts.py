@@ -61,8 +61,10 @@ MISSING_LEVER_MESSAGE = (
     "EVAL_REPORT_DIR is set but EVAL_LEVER is empty. Every report run must state its "
     "hypothesis in one line so a score shift is attributable to the change that caused "
     "it. Set EVAL_LEVER, e.g.\n"
-    "    EVAL_LEVER='moved instruction X from skill to prompt' "
-    "EVAL_REPORT_DIR=/penny/data/eval-reports make eval"
+    "    EVAL_LEVER='moved instruction X from skill to prompt' make eval\n"
+    "(the lever alone now defaults EVAL_REPORT_DIR to a run-stamped dir under the "
+    "durable /penny/eval-artifacts mount — the primary checkout's data/eval-artifacts, "
+    "which survives the worktree being swept.)"
 )
 
 

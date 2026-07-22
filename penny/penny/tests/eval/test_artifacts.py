@@ -256,6 +256,8 @@ def test_run_from_env_missing_lever_fails_fast(tmp_path: Path) -> None:
             run_from_env(env)
         assert "EVAL_LEVER" in str(excinfo.value)
         assert "make eval" in str(excinfo.value)  # actionable: names the fix
+        # points at the durable artifact home, not the ephemeral worktree data/ (#1734)
+        assert "eval-artifacts" in str(excinfo.value)
 
 
 def test_run_from_env_decodes_the_makefile_contract(tmp_path: Path) -> None:
