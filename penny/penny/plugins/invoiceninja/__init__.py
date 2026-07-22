@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from penny.config import Config
 from penny.plugins import CAPABILITY_INVOICING, Plugin
 from penny.plugins.invoiceninja.client import InvoiceNinjaClient
-from penny.plugins.invoiceninja.tools import ListInvoicesTool
+from penny.plugins.invoiceninja.tools import ListInvoicesTool, VerifyAuthTool
 
 if TYPE_CHECKING:
     from penny.tools.base import Tool
@@ -38,7 +38,7 @@ class InvoiceNinjaPlugin(Plugin):
 
     def get_tools(self) -> list[Tool]:
         """Return InvoiceNinja tools."""
-        return [ListInvoicesTool(self._client)]
+        return [VerifyAuthTool(self._client), ListInvoicesTool(self._client)]
 
     async def close(self) -> None:
         await self._client.close()

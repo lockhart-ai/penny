@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 class InvoiceNinjaClient:
     """InvoiceNinja v5 API client.
 
-    Requires an API token from Settings → API Tokens in InvoiceNinja.
+    Authenticates with an API token (Settings → Account Management →
+    Integrations → API Tokens) using the ``X-API-TOKEN`` header.
+    InvoiceNinja v5 also requires the ``X-Requested-With: XMLHttpRequest``
+    header on all API requests.
+
     Set INVOICENINJA_API_TOKEN and INVOICENINJA_URL in your .env.
     """
 
@@ -23,10 +27,24 @@ class InvoiceNinjaClient:
         self._http = httpx.AsyncClient(
             timeout=timeout,
             headers={
-                "X-Api-Token": api_token,
+                "X-API-TOKEN": api_token,
+                "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/json",
             },
         )
+
+    async def verify_auth(self) -> bool:
+        """Verify that the API token is valid.
+
+        Hits the authenticated ``/api/v1/health_check`` endpoint. Returns
+        ``True`` on success and raises ``httpx.HTTPStatusError`` on auth or
+        connectivity failures.
+        """
+        url = f"{self._base_url}/api/v1/health_check"
+        resp = await self._http.get(url)
+        resp.raise_for_status()
+        logger.info("InvoiceNinja authentication verified for %s", self._base_url)
+        return True
 
     async def list_invoices(self, status: str | None = None) -> list[Invoice]:
         """List invoices from InvoiceNinja.

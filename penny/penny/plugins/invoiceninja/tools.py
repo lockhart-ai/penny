@@ -23,6 +23,34 @@ class ListInvoicesArgs(ToolArgs):
     )
 
 
+class VerifyAuthTool(Tool):
+    """Verify connectivity and authentication with InvoiceNinja."""
+
+    name = "verify_invoiceninja_auth"
+    description = (
+        "Verify that the InvoiceNinja API token and base URL are configured "
+        "correctly by making an authenticated health-check request."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+    args_model = ToolArgs
+
+    @classmethod
+    def to_action_str(cls, arguments: dict) -> str:
+        return "Verifying InvoiceNinja authentication"
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """Verify auth."""
+        await self._client.verify_auth()
+        return ToolResult(message="InvoiceNinja authentication is working.")
+
+
 class ListInvoicesTool(Tool):
     """List invoices from InvoiceNinja."""
 
