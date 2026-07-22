@@ -12,6 +12,23 @@ class InvoiceNinjaCredentials(BaseModel):
     base_url: str
 
 
+class Expense(BaseModel):
+    """An InvoiceNinja expense."""
+
+    id: str
+    amount: float
+    date: str
+    status: str
+    public_notes: str | None = None
+    private_notes: str | None = None
+    vendor_id: str | None = None
+    category_id: str | None = None
+
+    def __str__(self) -> str:
+        notes = f" — {self.public_notes}" if self.public_notes else ""
+        return f"[{self.id}] {self.date} ${self.amount:.2f} [{self.status}]{notes}"
+
+
 class Invoice(BaseModel):
     """An InvoiceNinja invoice."""
 
