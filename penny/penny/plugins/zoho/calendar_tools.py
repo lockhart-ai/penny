@@ -361,11 +361,15 @@ class CreateEventTool(Tool):
         if args.calendar_name:
             calendar = await self._client.get_calendar_by_name(args.calendar_name)
             if not calendar:
-                return ToolResult(message=f"Calendar not found: {args.calendar_name}")
+                return ToolResult(
+                    message=f"Calendar not found: {args.calendar_name}. "
+                    "Check the calendar name and try again.",
+                    success=False,
+                )
         else:
             calendar = await self._client.get_default_calendar()
             if not calendar:
-                return ToolResult(message="No default calendar found.")
+                return ToolResult(message="No default calendar found.", success=False)
 
         try:
             start = _parse_iso_datetime(args.start)
@@ -458,15 +462,12 @@ class FindFreeSlotsTool(Tool):
             )
 
         lines = [f"Found {len(free_slots)} available slot(s) of {args.duration_minutes} minutes:\n"]
-        for slot in free_slots[:10]:
+        for slot in free_slots:
             slot_start = slot["start"]
             slot_end = slot["end"]
             lines.append(
                 f"- {slot_start.strftime('%Y-%m-%d %H:%M')} to {slot_end.strftime('%H:%M')}"
             )
-
-        if len(free_slots) > 10:
-            lines.append(f"\n... and {len(free_slots) - 10} more slots available.")
 
         return ToolResult(message="\n".join(lines))
 
@@ -540,11 +541,15 @@ class UpdateEventTool(Tool):
         if args.calendar_name:
             calendar = await self._client.get_calendar_by_name(args.calendar_name)
             if not calendar:
-                return ToolResult(message=f"Calendar not found: {args.calendar_name}")
+                return ToolResult(
+                    message=f"Calendar not found: {args.calendar_name}. "
+                    "Check the calendar name and try again.",
+                    success=False,
+                )
         else:
             calendar = await self._client.get_default_calendar()
             if not calendar:
-                return ToolResult(message="No default calendar found.")
+                return ToolResult(message="No default calendar found.", success=False)
 
         start = datetime.now(UTC)
         end = start + timedelta(days=30)
@@ -555,7 +560,8 @@ class UpdateEventTool(Tool):
         if not matching_events:
             return ToolResult(
                 message=f"No event found matching '{args.event_title}' in calendar "
-                f"'{calendar.name}'. Please check the event title and try again."
+                f"'{calendar.name}'. Please check the event title and try again.",
+                success=False,
             )
 
         event = matching_events[0]
@@ -649,7 +655,6 @@ class UpdateEventTool(Tool):
             recurrence_edittype=effective_edittype,
             recurrenceid=recurrenceid,
             rrule=full_event.rrule,
-            is_recurring=full_event.is_recurring,
         )
 
         if updated_event:

@@ -191,6 +191,14 @@ Changes touching `penny-client/` additionally run `make client-check` on a macOS
 - `ZOHO_API_ID`: Zoho OAuth client ID (optional, enables the email tools on the chat surface with the Zoho backend — adds `list_emails`, `list_folders`, `draft_email`)
 - `ZOHO_API_SECRET`: Zoho OAuth client secret (optional, part of the Zoho email-tools credential triple)
 - `ZOHO_REFRESH_TOKEN`: Zoho OAuth refresh token (optional, part of the Zoho email-tools credential triple) — obtain via [OAuth flow](https://www.zoho.com/mail/help/api/using-oauth-2.html)
+
+**Plugins** (optional — first-class integrations that contribute LLM-callable chat tools, loaded at startup from `penny/penny/plugins/`):
+- `PLUGINS`: JSON list (or comma-separated) of plugins to load, e.g. `["zoho", "invoiceninja"]`. Each named plugin loads only when its own credentials are also configured; an unconfigured or unknown plugin is skipped (logged, non-fatal). Unset/empty = no plugins.
+  - `zoho` — adds Zoho Mail organisation tools (`move_emails`, `create_folder`, `apply_label`, `list_labels`, `create_email_rule`, `list_email_rules`), Calendar tools (`list_calendars`, `get_events`, `check_availability`, `create_event`, `find_free_slots`, `update_event`), and Projects tools (`list_projects`, `create_project`, `list_tasks`, `create_task`, `update_task`, …) on top of the config-gated Zoho email tools. Uses the same `ZOHO_API_ID` / `ZOHO_API_SECRET` / `ZOHO_REFRESH_TOKEN` credential triple. (Email rules created via `create_email_rule` are persisted to the `email_rule` table but not yet applied automatically — see the plugin's known-gaps.)
+  - `invoiceninja` — adds InvoiceNinja invoice + expense tools (`list_invoices`, `create_expense`, `list_expenses`, `get_expense`, `update_expense`, `verify_auth`). Requires `INVOICENINJA_API_TOKEN` and `INVOICENINJA_URL`.
+- `INVOICENINJA_API_TOKEN`: InvoiceNinja v5 API token (part of the `invoiceninja` plugin credential pair)
+- `INVOICENINJA_URL`: InvoiceNinja instance base URL, e.g. `https://invoicing.co` (part of the `invoiceninja` plugin credential pair)
+
 **GitHub App** (used by `make token` to mint an installation token for gh CLI):
 - `GITHUB_APP_ID`: GitHub App ID for authenticated API access
 - `GITHUB_APP_PRIVATE_KEY_PATH`: Path to GitHub App private key file

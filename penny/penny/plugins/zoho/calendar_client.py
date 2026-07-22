@@ -142,7 +142,7 @@ class ZohoCalendarClient:
 
         resp = await self._http.get(url, headers=headers, params=params)
         if resp.status_code != 200:
-            logger.error("Calendar events API error: %s - %s", resp.status_code, resp.text[:500])
+            logger.error("Calendar events API error: %s - %s", resp.status_code, resp.text)
         resp.raise_for_status()
         data = resp.json()
 
@@ -193,7 +193,7 @@ class ZohoCalendarClient:
 
         resp = await self._http.get(url, headers=headers, params=params)
         if resp.status_code != 200:
-            logger.error("Freebusy API error: %s - %s", resp.status_code, resp.text[:500])
+            logger.error("Freebusy API error: %s - %s", resp.status_code, resp.text)
         resp.raise_for_status()
         data = resp.json()
 
@@ -257,12 +257,14 @@ class ZohoCalendarClient:
         headers = await self._get_headers()
         url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/{caluid}/events"
 
+        start_utc = start.astimezone(UTC)
+        end_utc = end.astimezone(UTC)
         if is_allday:
-            start_str = start.strftime("%Y%m%d")
-            end_str = end.strftime("%Y%m%d")
+            start_str = start_utc.strftime("%Y%m%d")
+            end_str = end_utc.strftime("%Y%m%d")
         else:
-            start_str = start.strftime("%Y%m%dT%H%M%SZ")
-            end_str = end.strftime("%Y%m%dT%H%M%SZ")
+            start_str = start_utc.strftime("%Y%m%dT%H%M%SZ")
+            end_str = end_utc.strftime("%Y%m%dT%H%M%SZ")
 
         eventdata: dict[str, Any] = {
             "title": title,
@@ -322,7 +324,6 @@ class ZohoCalendarClient:
         recurrence_edittype: str = "all",
         recurrenceid: str | None = None,
         rrule: str | None = None,
-        is_recurring: bool = False,
     ) -> ZohoEvent | None:
         """Update an existing event."""
         headers = await self._get_headers()
@@ -381,7 +382,7 @@ class ZohoCalendarClient:
             logger.error(
                 "Event update failed: %s - %s (eventdata: %s)",
                 resp.status_code,
-                resp.text[:500],
+                resp.text,
                 eventdata_json,
             )
         resp.raise_for_status()

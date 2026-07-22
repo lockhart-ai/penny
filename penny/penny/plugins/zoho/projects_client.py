@@ -97,7 +97,7 @@ class ZohoProjectsClient:
                 "Zoho Projects API error: status=%s, url=%s, response=%s",
                 resp.status_code,
                 url,
-                resp.text[:500],
+                resp.text,
             )
         resp.raise_for_status()
         data = resp.json()
@@ -150,47 +150,12 @@ class ZohoProjectsClient:
                 description=p.get("description"),
                 start_date=p.get("start_date"),
                 end_date=p.get("end_date"),
-                owner_name=p.get("owner", {}).get("name"),
+                owner_name=(p.get("owner") or {}).get("name"),
             )
             for p in projects_data
         ]
         logger.info("Loaded %d projects from portal %s", len(projects), portal_id)
         return projects
-
-    async def get_project(
-        self, project_id: str, portal_id: str | None = None
-    ) -> ZohoProject | None:
-        """Fetch a specific project by ID."""
-        if not portal_id:
-            portal = await self.get_default_portal()
-            if not portal:
-                return None
-            portal_id = portal.id
-
-        headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}/projects/{project_id}"
-
-        resp = await self._http.get(url, headers=headers)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        data = resp.json()
-
-        p = data if isinstance(data, dict) and data.get("id") else {}
-        if not p and isinstance(data, dict) and data.get("projects"):
-            p = data["projects"][0] if data["projects"] else {}
-        if not p.get("id"):
-            return None
-
-        return ZohoProject(
-            id=str(p.get("id", "")),
-            name=p.get("name", ""),
-            status=self._extract_status_name(p.get("status")),
-            description=p.get("description"),
-            start_date=p.get("start_date"),
-            end_date=p.get("end_date"),
-            owner_name=p.get("owner", {}).get("name"),
-        )
 
     async def create_project(
         self,

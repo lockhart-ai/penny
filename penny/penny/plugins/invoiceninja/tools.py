@@ -161,7 +161,11 @@ class ListExpensesArgs(ToolArgs):
         default=None,
         description="Optional status filter (e.g., 'logged', 'pending', 'invoiced', 'paid').",
     )
-    limit: int = Field(default=50, description="Maximum number of expenses to return.")
+    limit: int | None = Field(
+        default=None,
+        description="Optional cap on the number of expenses; the API's default page size applies "
+        "when unset.",
+    )
 
 
 class ListExpensesTool(Tool):
@@ -180,8 +184,8 @@ class ListExpensesTool(Tool):
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of expenses to return.",
-                "default": 50,
+                "description": "Optional cap on the number of expenses; the API's default page "
+                "size applies when unset.",
             },
         },
         "required": [],

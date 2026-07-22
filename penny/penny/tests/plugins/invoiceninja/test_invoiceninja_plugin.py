@@ -158,6 +158,46 @@ async def test_list_expenses_returns_parsed_expenses():
 
 
 @pytest.mark.asyncio
+async def test_list_expenses_omits_per_page_when_no_limit():
+    """No invented default cap — ``per_page`` is sent only when a limit is given."""
+    request = httpx.Request("GET", "https://invoicing.example.com/api/v1/expenses")
+    with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:
+        client = InvoiceNinjaClient(
+            api_token="test-token", base_url="https://invoicing.example.com"
+        )
+        mock_http = mock_client_cls.return_value
+        mock_http.get = AsyncMock(
+            return_value=httpx.Response(200, json={"data": []}, request=request)
+        )
+        await client.list_expenses()
+    mock_http.get.assert_awaited_once_with(
+        "https://invoicing.example.com/api/v1/expenses",
+        params={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_invoices_handles_null_client():
+    """An invoice whose ``client`` relationship is JSON null parses without crashing."""
+    request = httpx.Request("GET", "https://invoicing.example.com/api/v1/invoices")
+    with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:
+        client = InvoiceNinjaClient(
+            api_token="test-token", base_url="https://invoicing.example.com"
+        )
+        mock_http = mock_client_cls.return_value
+        mock_http.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"data": [{"id": "inv1", "number": "0001", "client": None, "amount": 10.0}]},
+                request=request,
+            )
+        )
+        invoices = await client.list_invoices()
+    assert len(invoices) == 1
+    assert invoices[0].client_name == "Unknown"
+
+
+@pytest.mark.asyncio
 async def test_get_expense_fetches_by_id():
     request = httpx.Request("GET", "https://invoicing.example.com/api/v1/expenses/exp1")
     with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:

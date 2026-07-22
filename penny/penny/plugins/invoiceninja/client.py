@@ -85,7 +85,7 @@ class InvoiceNinjaClient:
                 Invoice(
                     id=str(invoice_data.get("id", "")),
                     number=invoice_data.get("number", ""),
-                    client_name=invoice_data.get("client", {}).get("name", "Unknown"),
+                    client_name=(invoice_data.get("client") or {}).get("name", "Unknown"),
                     amount=float(invoice_data.get("amount", 0) or 0),
                     status=invoice_data.get("status", "unknown"),
                     due_date=invoice_data.get("due_date"),
@@ -140,19 +140,22 @@ class InvoiceNinjaClient:
         self,
         *,
         status: str | None = None,
-        limit: int = 50,
+        limit: int | None = None,
     ) -> list[Expense]:
         """List expenses from InvoiceNinja.
 
         Args:
             status: Optional status filter.
-            limit: Maximum number of expenses to return.
+            limit: Optional cap on the number of expenses (``per_page``); the
+                API's own default page size applies when unset.
 
         Returns:
             List of Expense objects.
         """
         url = f"{self._base_url}/api/v1/expenses"
-        params: dict[str, str] = {"per_page": str(limit)}
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["per_page"] = str(limit)
         if status:
             params["status"] = status
 

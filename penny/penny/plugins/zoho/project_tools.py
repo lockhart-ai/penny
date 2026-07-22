@@ -310,7 +310,11 @@ class CreateTaskListTool(Tool):
 
         project = await self._client.get_project_by_name(args.project_name)
         if not project:
-            return ToolResult(message=f"Project not found: {args.project_name}")
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
+            )
 
         tasklist = await self._client.create_task_list(project.id, args.name)
         if tasklist:
@@ -440,7 +444,11 @@ class CreateTaskTool(Tool):
 
         project = await self._client.get_project_by_name(args.project_name)
         if not project:
-            return ToolResult(message=f"Project not found: {args.project_name}")
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
+            )
 
         tasklist_name = args.tasklist_name or "General"
         tasklists = await self._client.get_task_lists(project.id)
@@ -452,7 +460,10 @@ class CreateTaskTool(Tool):
         if not tasklist:
             tasklist = await self._client.create_task_list(project.id, tasklist_name)
             if not tasklist:
-                return ToolResult(message=f"Failed to create task list: {tasklist_name}")
+                return ToolResult(
+                    message=f"Failed to create task list: {tasklist_name}",
+                    success=False,
+                )
 
         task = await self._client.create_task(
             project_id=project.id,
@@ -534,7 +545,11 @@ class UpdateTaskTool(Tool):
 
         project = await self._client.get_project_by_name(args.project_name)
         if not project:
-            return ToolResult(message=f"Project not found: {args.project_name}")
+            return ToolResult(
+                message=f"Project not found: {args.project_name}. "
+                "Check the project name and try again.",
+                success=False,
+            )
 
         tasks = await self._client.get_tasks(project.id)
         task = next(
@@ -543,7 +558,10 @@ class UpdateTaskTool(Tool):
         )
 
         if not task:
-            return ToolResult(message=f"Task not found: {args.task_name}")
+            return ToolResult(
+                message=f"Task not found: {args.task_name}. Check the task name and try again.",
+                success=False,
+            )
 
         updated = await self._client.update_task(
             project_id=project.id,
