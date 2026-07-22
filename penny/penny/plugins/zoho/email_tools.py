@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from penny.database.models import EmailRule
 from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 
@@ -338,6 +337,8 @@ class CreateEmailRuleTool(Tool):
         """Create an email rule."""
         from datetime import UTC, datetime
 
+        from penny.database.models import EmailRule
+
         args = CreateEmailRuleArgs(**kwargs)
 
         rule = EmailRule(
@@ -389,6 +390,8 @@ class ListEmailRulesTool(Tool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all email rules."""
         from sqlmodel import select
+
+        from penny.database.models import EmailRule
 
         with self._db.get_session() as session:
             rules = list(

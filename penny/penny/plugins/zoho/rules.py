@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import select
 
-from penny.database.models import EmailRule
-from penny.email.models import EmailDetail, EmailSummary
+from penny.jmap.models import EmailDetail, EmailSummary
 
 if TYPE_CHECKING:
     from penny.database import Database
@@ -109,6 +108,8 @@ async def apply_email_rules(
     emails: list[EmailSummary],
 ) -> dict[str, list[str]]:
     """Apply all active email rules to a list of emails."""
+    from penny.database.models import EmailRule
+
     results: dict[str, list[str]] = {}
 
     with db.get_session() as session:
