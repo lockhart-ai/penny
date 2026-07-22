@@ -4,13 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.tests.schema_template import migrated_db
-
-
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = migrated_db(db_path)
-    return db
 
 
 def _log_user_message(db: Database, sender: str, content: str) -> int | None:
@@ -50,10 +43,9 @@ class TestGetMessagesSinceIncludesAutonomousOutgoing:
 
     USER = "+15551234567"
 
-    def test_autonomous_send_appears_in_chat_turns(self, tmp_path):
+    def test_autonomous_send_appears_in_chat_turns(self, db):
         """The bug: a collector cycle's ``send_message`` followed by a user
         reply should produce a two-turn history, not a one-turn history."""
-        db = _make_db(tmp_path)
 
         # Penny says something autonomously (collector's send_message).
         _log_autonomous_send(db, self.USER, "your appointment is tomorrow at 2pm")
@@ -69,9 +61,8 @@ class TestGetMessagesSinceIncludesAutonomousOutgoing:
         assert messages[0].direction == PennyConstants.MessageDirection.OUTGOING
         assert messages[1].direction == PennyConstants.MessageDirection.INCOMING
 
-    def test_threaded_replies_still_included(self, tmp_path):
+    def test_threaded_replies_still_included(self, db):
         """Quote-replies (parent_id set) keep working alongside autonomous sends."""
-        db = _make_db(tmp_path)
         incoming_id = _log_user_message(db, self.USER, "hey penny")
         assert incoming_id is not None
         _log_threaded_reply(db, self.USER, "hey there", parent_id=incoming_id)
@@ -79,11 +70,10 @@ class TestGetMessagesSinceIncludesAutonomousOutgoing:
         messages = db.messages.get_messages_since(self.USER, since=datetime.min, limit=20)
         assert [m.content for m in messages] == ["hey penny", "hey there"]
 
-    def test_mixed_autonomous_and_threaded(self, tmp_path):
+    def test_mixed_autonomous_and_threaded(self, db):
         """A real conversation has both shapes — incoming, threaded reply,
         autonomous notification, incoming reply.  All four flow into chat
         turns in chronological order."""
-        db = _make_db(tmp_path)
         msg_id = _log_user_message(db, self.USER, "morning")
         assert msg_id is not None
         _log_threaded_reply(db, self.USER, "morning!", parent_id=msg_id)
@@ -98,14 +88,13 @@ class TestGetMessagesSinceIncludesAutonomousOutgoing:
             "thanks",
         ]
 
-    def test_since_filter_drops_old_autonomous_sends(self, tmp_path):
+    def test_since_filter_drops_old_autonomous_sends(self, db):
         """Stale notifications from before the window don't bleed into
         the current conversation."""
         from sqlmodel import Session
 
         from penny.database.models import MessageLog
 
-        db = _make_db(tmp_path)
         old_id = _log_autonomous_send(db, self.USER, "old notification")
         # Backdate the stale send so it's clearly before our cutoff —
         # ``log_message`` stamps with ``now()`` and the rest of this test
@@ -124,10 +113,9 @@ class TestGetMessagesSinceIncludesAutonomousOutgoing:
         assert "old notification" not in [m.content for m in messages]
         assert "hi" in [m.content for m in messages]
 
-    def test_autonomous_send_to_other_recipient_not_included(self, tmp_path):
+    def test_autonomous_send_to_other_recipient_not_included(self, db):
         """Autonomous sends to a different user don't leak into this user's
         chat turns."""
-        db = _make_db(tmp_path)
         _log_autonomous_send(db, "+15559999999", "for someone else")
         _log_user_message(db, self.USER, "hey")
 

@@ -21,12 +21,14 @@ from penny.database import Database
 from penny.tests.schema_template import schema_only_db
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
+
+@pytest.fixture
+def db(tmp_path):
+    """Schema-only database for this module (no migration-seeded rows)."""
+    return schema_only_db(str(tmp_path / "test.db"))
+
+
 _RECIPIENT = "+15551234567"
-
-
-def _make_db(tmp_path) -> Database:
-    db = schema_only_db(str(tmp_path / "test.db"))
-    return db
 
 
 def _register_user(db: Database) -> None:
@@ -40,9 +42,8 @@ def _register_user(db: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mute_sets_state_and_mirrors_back(tmp_path):
+async def test_mute_sets_state_and_mirrors_back(db):
     """A first mute writes the MuteState row and reports it as a real change."""
-    db = _make_db(tmp_path)
     _register_user(db)
 
     result = await NotificationsMuteTool(db).execute()
@@ -57,9 +58,8 @@ async def test_mute_sets_state_and_mirrors_back(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mute_when_already_muted_is_a_noop(tmp_path):
+async def test_mute_when_already_muted_is_a_noop(db):
     """Muting an already-muted user is a successful no-op (mutated=False), state kept."""
-    db = _make_db(tmp_path)
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
@@ -77,9 +77,8 @@ async def test_mute_when_already_muted_is_a_noop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unmute_clears_state_and_mirrors_back(tmp_path):
+async def test_unmute_clears_state_and_mirrors_back(db):
     """An unmute on a muted user deletes the MuteState row and reports the change."""
-    db = _make_db(tmp_path)
     _register_user(db)
     db.users.set_muted(_RECIPIENT)
 
@@ -96,9 +95,8 @@ async def test_unmute_clears_state_and_mirrors_back(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unmute_when_not_muted_is_a_noop(tmp_path):
+async def test_unmute_when_not_muted_is_a_noop(db):
     """Unmuting a user who isn't muted is a successful no-op (mutated=False)."""
-    db = _make_db(tmp_path)
     _register_user(db)
 
     result = await NotificationsUnmuteTool(db).execute()
@@ -113,11 +111,11 @@ async def test_unmute_when_not_muted_is_a_noop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tools_fail_loudly_with_no_registered_user(tmp_path):
+async def test_tools_fail_loudly_with_no_registered_user(db):
     """With no primary user there is nothing to toggle — both tools fail visibly
-    (no silent no-op), naming the config condition rather than pretending success."""
-    db = _make_db(tmp_path)  # no save_info → no primary sender
+    (no silent no-op), naming the config condition rather than pretending success.
 
+    (No ``save_info`` call → no primary sender.)"""
     mute = await NotificationsMuteTool(db).execute()
     unmute = await NotificationsUnmuteTool(db).execute()
 

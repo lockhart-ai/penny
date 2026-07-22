@@ -6,14 +6,6 @@ import pytest
 
 from penny.channels.manager import ChannelManager
 from penny.constants import ChannelType
-from penny.database import Database
-from penny.tests.schema_template import migrated_db
-
-
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = migrated_db(db_path)
-    return db
 
 
 def _make_mock_channel(channel_type: str) -> MagicMock:
@@ -36,8 +28,7 @@ class TestChannelManagerRouting:
     """Route outgoing messages to the correct channel via device lookup."""
 
     @pytest.mark.asyncio
-    async def test_routes_to_signal_device(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_routes_to_signal_device(self, db):
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
 
@@ -64,12 +55,11 @@ class TestChannelManagerRouting:
         assert outgoing[0].content == "hello"
 
     @pytest.mark.asyncio
-    async def test_browser_device_never_captures_proactive_send(self, tmp_path):
+    async def test_browser_device_never_captures_proactive_send(self, db):
         """#1298: even addressed to the browser device's own identifier, a
         proactive send resolves to the default channel — the addon never captures
         proactive traffic (only the primary channel's receive→reply loop, which
         bypasses the manager, ever reaches the browser)."""
-        db = _make_db(tmp_path)
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
 
@@ -86,12 +76,11 @@ class TestChannelManagerRouting:
         browser_ch._send_raw.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_proactive_prefers_default_over_browser_identifier(self, tmp_path):
+    async def test_proactive_prefers_default_over_browser_identifier(self, db):
         """Regression for #1298: when the onboarding-derived primary sender is a
         browser device label and Discord is the configured primary (its default
         device), a proactive send lands on Discord, not the addon that owns that
         identifier."""
-        db = _make_db(tmp_path)
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         discord_ch = _make_mock_channel("discord")
@@ -108,8 +97,7 @@ class TestChannelManagerRouting:
         browser_ch._send_raw.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unknown_recipient_falls_back_to_default(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_unknown_recipient_falls_back_to_default(self, db):
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
 
@@ -122,11 +110,10 @@ class TestChannelManagerRouting:
         signal_ch._send_raw.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_typing_routes_to_default_channel(self, tmp_path):
+    async def test_typing_routes_to_default_channel(self, db):
         """Typing shares the proactive ``_resolve_channel`` path, so it too
         resolves to the default device's channel rather than the addon whose
         identifier the recipient matches (#1298)."""
-        db = _make_db(tmp_path)
         mock_agent = MagicMock()
         manager = ChannelManager(message_agent=mock_agent, db=db)
 
@@ -146,8 +133,7 @@ class TestChannelManagerRouting:
 class TestChannelManagerDelegation:
     """Forward lifecycle calls to all registered channels."""
 
-    def test_set_scheduler_forwards_to_all(self, tmp_path):
-        db = _make_db(tmp_path)
+    def test_set_scheduler_forwards_to_all(self, db):
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         signal_ch = _make_mock_channel("signal")
@@ -162,8 +148,7 @@ class TestChannelManagerDelegation:
         browser_ch.set_scheduler.assert_called_once_with(mock_scheduler)
 
     @pytest.mark.asyncio
-    async def test_close_closes_all(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_close_closes_all(self, db):
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         signal_ch = _make_mock_channel("signal")
@@ -176,8 +161,7 @@ class TestChannelManagerDelegation:
         signal_ch.close.assert_called_once()
         browser_ch.close.assert_called_once()
 
-    def test_get_channel_returns_registered(self, tmp_path):
-        db = _make_db(tmp_path)
+    def test_get_channel_returns_registered(self, db):
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         signal_ch = _make_mock_channel("signal")
@@ -186,8 +170,7 @@ class TestChannelManagerDelegation:
         assert manager.get_channel(ChannelType.SIGNAL) is signal_ch
         assert manager.get_channel(ChannelType.BROWSER) is None
 
-    def test_sender_id_from_default_channel(self, tmp_path):
-        db = _make_db(tmp_path)
+    def test_sender_id_from_default_channel(self, db):
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         signal_ch = _make_mock_channel("signal")
@@ -195,8 +178,7 @@ class TestChannelManagerDelegation:
 
         assert manager.sender_id == "mock-signal"
 
-    def test_prepare_outgoing_uses_default(self, tmp_path):
-        db = _make_db(tmp_path)
+    def test_prepare_outgoing_uses_default(self, db):
         manager = ChannelManager(message_agent=MagicMock(), db=db)
 
         signal_ch = _make_mock_channel("signal")
@@ -209,9 +191,8 @@ class TestChannelManagerDelegation:
 class TestUserSenderResolution:
     """_resolve_user_sender returns primary sender for any device identifier."""
 
-    def test_resolves_browser_device_to_primary_sender(self, tmp_path):
+    def test_resolves_browser_device_to_primary_sender(self, db):
         """A browser device identifier resolves to the primary user's sender."""
-        db = _make_db(tmp_path)
         db.users.save_info(
             sender="+15551234567",
             name="Test",
@@ -222,9 +203,8 @@ class TestUserSenderResolution:
         manager = ChannelManager(message_agent=MagicMock(), db=db)
         assert manager._resolve_user_sender("firefox-macbook") == "+15551234567"
 
-    def test_resolves_signal_device_to_itself(self, tmp_path):
+    def test_resolves_signal_device_to_itself(self, db):
         """The primary sender resolves to itself."""
-        db = _make_db(tmp_path)
         db.users.save_info(
             sender="+15551234567",
             name="Test",
@@ -235,8 +215,7 @@ class TestUserSenderResolution:
         manager = ChannelManager(message_agent=MagicMock(), db=db)
         assert manager._resolve_user_sender("+15551234567") == "+15551234567"
 
-    def test_falls_back_to_device_when_no_profile(self, tmp_path):
+    def test_falls_back_to_device_when_no_profile(self, db):
         """Without a profile, returns the device identifier as-is."""
-        db = _make_db(tmp_path)
         manager = ChannelManager(message_agent=MagicMock(), db=db)
         assert manager._resolve_user_sender("firefox-macbook") == "firefox-macbook"

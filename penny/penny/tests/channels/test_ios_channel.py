@@ -30,7 +30,6 @@ from penny.channels.ios.models import (
 )
 from penny.constants import ChannelType
 from penny.database import Database
-from penny.tests.schema_template import migrated_db
 
 
 class FakeWs:
@@ -65,12 +64,6 @@ class RejectingApns(FakeApns):
         raise ApnsError(400, "BadDeviceToken")
 
 
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = migrated_db(db_path)
-    return db
-
-
 def _make_channel(db: Database, apns=None, is_primary: bool = True) -> IosChannel:
     return IosChannel(
         host="localhost",
@@ -94,8 +87,7 @@ async def _ios_admin_request(channel: IosChannel, payload: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_embedding_request_returns_correlated_base64_vector(tmp_path):
-    db = _make_db(tmp_path)
+async def test_embedding_request_returns_correlated_base64_vector(db):
     channel = _make_channel(db)
     channel._embedding_model_client = MagicMock()
     channel._embedding_model_client.embed = AsyncMock(return_value=[[1.0, 0.5, -1.0]])
@@ -123,8 +115,7 @@ async def test_embedding_request_returns_correlated_base64_vector(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_embedding_request_without_model_returns_actionable_error(tmp_path):
-    db = _make_db(tmp_path)
+async def test_embedding_request_without_model_returns_actionable_error(db):
     channel = _make_channel(db)
     ws = FakeWs()
 
@@ -150,8 +141,7 @@ async def test_embedding_request_without_model_returns_actionable_error(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_listen_returns_after_close(tmp_path):
-    db = _make_db(tmp_path)
+async def test_listen_returns_after_close(db):
     channel = IosChannel(host="localhost", port=0, message_agent=MagicMock(), db=db)
     task = asyncio.create_task(channel.listen())
     try:
@@ -165,8 +155,7 @@ async def test_listen_returns_after_close(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_progress_is_redacted_and_connection_scoped(tmp_path):
-    db = _make_db(tmp_path)
+async def test_agent_progress_is_redacted_and_connection_scoped(db):
     channel = _make_channel(db)
     foreground = FakeWs()
     other = FakeWs()
@@ -214,8 +203,7 @@ async def _wait_for_server(channel: IosChannel) -> None:
 
 
 @pytest.mark.asyncio
-async def test_register_creates_default_ios_device_and_registration(tmp_path):
-    db = _make_db(tmp_path)
+async def test_register_creates_default_ios_device_and_registration(db):
     channel = _make_channel(db)
     ws = FakeWs()
     server_ws = cast(Any, ws)
@@ -249,9 +237,8 @@ async def test_register_creates_default_ios_device_and_registration(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sidecar_registration_does_not_steal_default_device(tmp_path):
+async def test_sidecar_registration_does_not_steal_default_device(db):
     """In sidecar mode (Signal primary), an iOS register must not claim the default."""
-    db = _make_db(tmp_path)
     db.devices.register(ChannelType.SIGNAL, "+15550000000", "Signal", is_default=True)
     channel = _make_channel(db, is_primary=False)
     ws = FakeWs()
@@ -281,8 +268,7 @@ async def test_sidecar_registration_does_not_steal_default_device(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admin_prompt_logs_request_returns_unfiltered_runs(tmp_path):
-    db = _make_db(tmp_path)
+async def test_admin_prompt_logs_request_returns_unfiltered_runs(db):
     channel = _make_channel(db)
     db.messages.log_prompt(
         model="test-model",
@@ -311,8 +297,7 @@ async def test_admin_prompt_logs_request_returns_unfiltered_runs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admin_memories_request_returns_memory_records(tmp_path):
-    db = _make_db(tmp_path)
+async def test_admin_memories_request_returns_memory_records(db):
     channel = _make_channel(db)
     db.memories.create_collection(
         "recipes",
@@ -327,8 +312,7 @@ async def test_admin_memories_request_returns_memory_records(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admin_config_request_returns_runtime_params(tmp_path):
-    db = _make_db(tmp_path)
+async def test_admin_config_request_returns_runtime_params(db):
     channel = _make_channel(db)
 
     response = await _ios_admin_request(channel, {"type": "config_request"})
@@ -341,8 +325,7 @@ async def test_admin_config_request_returns_runtime_params(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(tmp_path, caplog):
-    db = _make_db(tmp_path)
+async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(db, caplog):
     apns = FakeApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -390,8 +373,7 @@ async def test_send_raw_queues_outbox_and_sends_push_preview_when_disconnected(t
 
 
 @pytest.mark.asyncio
-async def test_history_request_returns_cross_channel_page_without_ack(tmp_path):
-    db = _make_db(tmp_path)
+async def test_history_request_returns_cross_channel_page_without_ack(db):
     channel = _make_channel(db)
     ws = FakeWs()
     await channel._handle_register(
@@ -448,8 +430,7 @@ async def test_history_request_returns_cross_channel_page_without_ack(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_history_cursor_fetches_next_page_without_overlap(tmp_path):
-    db = _make_db(tmp_path)
+async def test_history_cursor_fetches_next_page_without_overlap(db):
     channel = _make_channel(db)
     ws = FakeWs()
     await channel._handle_register(
@@ -490,8 +471,7 @@ async def test_history_cursor_fetches_next_page_without_overlap(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_history_request_can_skip_attachments(tmp_path):
-    db = _make_db(tmp_path)
+async def test_history_request_can_skip_attachments(db):
     channel = _make_channel(db)
     ws = FakeWs()
     await channel._handle_register(
@@ -519,8 +499,7 @@ async def test_history_request_can_skip_attachments(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
-    db = _make_db(tmp_path)
+async def test_history_reconstructs_source_hint_from_ios_outbox(db):
     channel = _make_channel(db)
     ws = FakeWs()
     await channel._handle_register(
@@ -572,8 +551,7 @@ async def test_history_reconstructs_source_hint_from_ios_outbox(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_outbox_record_links_to_message_log_id(tmp_path):
-    db = _make_db(tmp_path)
+async def test_outbox_record_links_to_message_log_id(db):
     channel = _make_channel(db, apns=FakeApns())
     ws = FakeWs()
     await channel._handle_register(
@@ -599,8 +577,7 @@ async def test_outbox_record_links_to_message_log_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_raw_forwards_production_environment_to_apns(tmp_path):
-    db = _make_db(tmp_path)
+async def test_send_raw_forwards_production_environment_to_apns(db):
     apns = FakeApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -736,8 +713,7 @@ def test_apns_provider_token_uses_production_credentials(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_send_raw_logs_and_disables_push_when_apns_rejects_token(tmp_path, caplog):
-    db = _make_db(tmp_path)
+async def test_send_raw_logs_and_disables_push_when_apns_rejects_token(db, caplog):
     apns = RejectingApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -771,8 +747,7 @@ async def test_send_raw_logs_and_disables_push_when_apns_rejects_token(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_test_push_phrase_forces_apns_even_when_websocket_connected(tmp_path):
-    db = _make_db(tmp_path)
+async def test_test_push_phrase_forces_apns_even_when_websocket_connected(db):
     apns = FakeApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -853,8 +828,7 @@ async def test_apns_preview_payload_includes_greeting_summary_and_badge(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_send_raw_notifies_connected_client_without_push(tmp_path):
-    db = _make_db(tmp_path)
+async def test_send_raw_notifies_connected_client_without_push(db):
     apns = FakeApns()
     channel = _make_channel(db, apns=apns)
     ws = FakeWs()
@@ -878,8 +852,7 @@ async def test_send_raw_notifies_connected_client_without_push(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pull_and_ack_messages(tmp_path):
-    db = _make_db(tmp_path)
+async def test_pull_and_ack_messages(db):
     channel = _make_channel(db)
     ws = FakeWs()
     server_ws = cast(Any, ws)
@@ -914,8 +887,7 @@ async def test_pull_and_ack_messages(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sent_message_embedding_reaches_pull_and_history_wire_records(tmp_path):
-    db = _make_db(tmp_path)
+async def test_sent_message_embedding_reaches_pull_and_history_wire_records(db):
     channel = _make_channel(db)
     channel._embedding_model_client = MagicMock()
     channel._embedding_model_client.embed = AsyncMock(return_value=[[1.0, 0.5, -1.0]])

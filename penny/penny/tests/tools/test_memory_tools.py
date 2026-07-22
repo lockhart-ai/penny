@@ -85,6 +85,12 @@ from penny.tools.memory_tools import (
 )
 
 
+@pytest.fixture
+def db(tmp_path):
+    """Schema-only database for this module (no migration-seeded rows)."""
+    return schema_only_db(str(tmp_path / "test.db"))
+
+
 def _make_db(tmp_path) -> Database:
     """Empty test DB with schema only — no migrations.
 
@@ -347,11 +353,10 @@ class TestCollectionCreateFrontDoor:
     renders."""
 
     @pytest.mark.asyncio
-    async def test_instantiates_skill_and_stores_the_rendered_prompt(self, tmp_path):
+    async def test_instantiates_skill_and_stores_the_rendered_prompt(self, db):
         """A clean name match binds the params, renders the skill's steps into the
         collection's extraction_prompt (the money literal), and echoes skill /
         params / trigger / notify / expiry."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation",
@@ -372,14 +377,13 @@ class TestCollectionCreateFrontDoor:
         assert stored.notify is True
 
     @pytest.mark.asyncio
-    async def test_single_element_list_param_renders_identically_to_string(self, tmp_path):
+    async def test_single_element_list_param_renders_identically_to_string(self, db):
         """The #1 live instantiation blocker (#1666): the model binds a hole with a
         one-element LIST — ``params={"peak": ["Cinder Peak"]}`` — mirroring the browse
         tool's list-shaped ``queries`` arg (the {peak} hole fills ``queries[0]``).  The
         value is unwrapped to its element deterministically, so the whole echo, the
         stored ``extraction_prompt``, AND the stored skill_params are byte-identical to
         binding the bare string."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation",
@@ -398,12 +402,11 @@ class TestCollectionCreateFrontDoor:
         assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
 
     @pytest.mark.asyncio
-    async def test_multi_element_list_param_is_refused_actionably(self, tmp_path):
+    async def test_multi_element_list_param_is_refused_actionably(self, db):
         """A hole binds exactly ONE value, so a multi-element list stays a refusal
         (#1666) — but an ACTIONABLE one: the ``loc`` names the offending hole
         (``params.peak``), and the message names the count and the expected one-value
         shape.  Nothing is created (the arg-validation gate fails before ``execute``)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).run(
             name="multi-peak",
@@ -422,10 +425,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("multi-peak") is None
 
     @pytest.mark.asyncio
-    async def test_unbound_required_hole_is_refused_naming_it(self, tmp_path):
+    async def test_unbound_required_hole_is_refused_naming_it(self, db):
         """A skill instantiated without binding a required hole is refused, naming
         the missing parameter and the params shape to supply — nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="no-peak",
@@ -444,12 +446,11 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("no-peak") is None
 
     @pytest.mark.asyncio
-    async def test_no_skill_found_elicits_teaching(self, tmp_path):
+    async def test_no_skill_found_elicits_teaching(self, db):
         """A skill query matching nothing returns the reshaped #1471/#1629/#1631
         elicitation — it NARRATES the two-step teach bootstrap (set up the container →
         walk me through once, extracting ONE value → learned automatically → attach
         via collection_set), asserted whole."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)  # exists, but shares no words with the query
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="mystery",
@@ -481,10 +482,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("mystery") is None
 
     @pytest.mark.asyncio
-    async def test_ambiguous_meaning_returns_candidates_never_picks(self, tmp_path):
+    async def test_ambiguous_meaning_returns_candidates_never_picks(self, db):
         """A paraphrase (not an exact name) that matches a skill by meaning returns
         the ranked candidate(s) + how to narrow — never a silent pick."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)  # description "watch a peak's elevation and save it"
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="some-watch",
@@ -504,10 +504,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("some-watch") is None
 
     @pytest.mark.asyncio
-    async def test_active_near_duplicate_is_refused_naming_reuse(self, tmp_path):
+    async def test_active_near_duplicate_is_refused_naming_reuse(self, db):
         """Instantiating a collection whose description semantically duplicates an active
         one creates nothing and points at reuse + the deliberate override (#1567)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         _seed_collection(db, name="jacket-price", description="watch the blue jacket price")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -528,11 +527,10 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("jacket-monitor") is None
 
     @pytest.mark.asyncio
-    async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, tmp_path):
+    async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, db):
         """A near-duplicate of an ARCHIVED collection surfaces the tombstone + its
         archive time and offers unarchive or a deliberate override — never a silent
         proceed (#1567)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         _seed_collection(
             db,
@@ -556,10 +554,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("jacket-monitor") is None
 
     @pytest.mark.asyncio
-    async def test_one_shot_once_at_trigger_persists(self, tmp_path):
+    async def test_one_shot_once_at_trigger_persists(self, db):
         """The ``once at <ISO>`` form persists the schedule with max_runs defaulting to
         1; the echo reads it back AS the copyable input form (display == invocation)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="one-shot",
@@ -576,9 +573,8 @@ class TestCollectionCreateFrontDoor:
         assert row.run_at is not None
 
     @pytest.mark.asyncio
-    async def test_once_at_with_repeat_count_persists(self, tmp_path):
+    async def test_once_at_with_repeat_count_persists(self, db):
         """``once at <ISO> xN`` runs N times; the echo renders the ``xN`` suffix back."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="thrice",
@@ -592,10 +588,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("thrice").max_runs == 3
 
     @pytest.mark.asyncio
-    async def test_missing_trigger_is_refused(self, tmp_path):
+    async def test_missing_trigger_is_refused(self, db):
         """A skill collection with no trigger would never run (silent degradation) — it's
         refused up front naming the four forms, nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="no-trigger",
@@ -608,12 +603,11 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("no-trigger") is None
 
     @pytest.mark.asyncio
-    async def test_unparseable_trigger_teaches_four_forms(self, tmp_path):
+    async def test_unparseable_trigger_teaches_four_forms(self, db):
         """An unreadable trigger shape is reject-and-teach: the failure names all four
         enumerated forms so the model rewrites to one instead of inventing a fifth
         (#1631/#1684), plus the #1646 omission line (leave the trigger out for a
         storage-only collection) — nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="garbled",
@@ -638,12 +632,11 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("garbled") is None
 
     @pytest.mark.asyncio
-    async def test_cron_trigger_persists_and_echoes(self, tmp_path):
+    async def test_cron_trigger_persists_and_echoes(self, db):
         """The ``cron <5-field expression>`` trigger (#1684) persists the expression on the
         row, paces the collection at the dispatcher tick (the cron next-fire is the real
         gate), and the whole creation echo reads the trigger back AS ``cron <expr>``
         (display form == invocation form)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="twice-daily",
@@ -662,11 +655,10 @@ class TestCollectionCreateFrontDoor:
         assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
 
     @pytest.mark.asyncio
-    async def test_invalid_cron_expression_teaches_four_forms(self, tmp_path):
+    async def test_invalid_cron_expression_teaches_four_forms(self, db):
         """A ``cron`` form croniter rejects is reject-and-teach: it leads with the cron
         diagnosis and names all four forms (#1684, croniter's validation surfaced
         actionably) — nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="bad-cron",
@@ -692,10 +684,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("bad-cron") is None
 
     @pytest.mark.asyncio
-    async def test_bad_expires_at_is_actionable(self, tmp_path):
+    async def test_bad_expires_at_is_actionable(self, db):
         """A malformed end-condition datetime is refused with the accepted shape, not
         a raw parse error — nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="bad-expiry",
@@ -711,11 +702,10 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("bad-expiry") is None
 
     @pytest.mark.asyncio
-    async def test_transient_skill_resolve_embed_failure_is_actionable(self, tmp_path):
+    async def test_transient_skill_resolve_embed_failure_is_actionable(self, db):
         """A fuzzy skill query whose embed fails transiently is refused with a retry —
         never a silent slide into NO_SKILL_FOUND (which would elicit teaching for a
         skill that might already exist)."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
             name="fuzzy",
@@ -729,11 +719,10 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("fuzzy") is None
 
     @pytest.mark.asyncio
-    async def test_on_advance_trigger_persists_source_log(self, tmp_path):
+    async def test_on_advance_trigger_persists_source_log(self, db):
         """The ``on advance of <log>`` trigger (#1604) names a source LOG; it persists on
         the row, the collection is paced at the tick (strict source-only pacing, #1631),
         and the echo reads the trigger back as ``on advance of <log>``."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -752,10 +741,9 @@ class TestCollectionCreateFrontDoor:
         assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
 
     @pytest.mark.asyncio
-    async def test_on_advance_source_must_exist(self, tmp_path):
+    async def test_on_advance_source_must_exist(self, db):
         """A source name that isn't a memory is refused with the fix (copy an exact log
         name), nothing created — a missing source would never advance."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="dangling",
@@ -769,10 +757,9 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("dangling") is None
 
     @pytest.mark.asyncio
-    async def test_on_advance_source_must_be_a_log_not_a_collection(self, tmp_path):
+    async def test_on_advance_source_must_be_a_log_not_a_collection(self, db):
         """The frontier trigger fires on a LOG advancing; naming a collection is refused
         naming the shape mismatch — nothing created."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         _seed_collection(db, name="elevations")  # a collection, not a log
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -842,8 +829,7 @@ class TestTriggerRoundTrip:
         ],
     )
     @pytest.mark.asyncio
-    async def test_trigger_clause_round_trips(self, tmp_path, trigger, clause):
-        db = _make_db(tmp_path)
+    async def test_trigger_clause_round_trips(self, db, trigger, clause):
         _seed_watch_skill(db)
         db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -875,8 +861,7 @@ class TestTriggerRoundTrip:
 
 class TestCreateAndList:
     @pytest.mark.asyncio
-    async def test_create_log_persists(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_create_log_persists(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="user-messages", description="inbound"
         )
@@ -884,8 +869,7 @@ class TestCreateAndList:
         assert memories["user-messages"].type == "log"
 
     @pytest.mark.asyncio
-    async def test_create_log_duplicate_returns_user_friendly_message(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_create_log_duplicate_returns_user_friendly_message(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="events", description="first"
         )
@@ -896,12 +880,11 @@ class TestCreateAndList:
         assert "events" in result.message
 
     @pytest.mark.asyncio
-    async def test_update_treats_blank_fields_as_omitted(self, tmp_path, mock_llm):
+    async def test_update_treats_blank_fields_as_omitted(self, db, mock_llm):
         # Models emit "" for an optional field they mean to leave alone (gpt-oss
         # was observed passing extraction_prompt="" alongside a recall change).
         # A blank must be skipped, not written through: the recall change lands
         # while the existing prompt/description survive untouched.
-        db = _make_db(tmp_path)
         original_prompt = "test fixture extraction prompt that is long enough"
         _seed_collection(
             db,
@@ -923,11 +906,10 @@ class TestCreateAndList:
         assert updated.notify is True
 
     @pytest.mark.asyncio
-    async def test_update_rejects_the_dropped_intent_arg(self, tmp_path, mock_llm):
+    async def test_update_rejects_the_dropped_intent_arg(self, db, mock_llm):
         # ``intent`` was dropped from the surface (#1631 — ``description`` absorbs it),
         # so passing it is an unknown parameter refused by the ``extra="forbid"`` gate,
         # not silently accepted-and-ignored (the old accept-but-ignore ceremony died).
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="notes",
@@ -945,13 +927,12 @@ class TestCreateAndList:
         assert db.memories.get("notes").description == "real description"
 
     @pytest.mark.asyncio
-    async def test_create_surfaces_description_embed_degradation(self, tmp_path):
+    async def test_create_surfaces_description_embed_degradation(self, db):
         """A transient description-embed failure still creates the collection, but the
         result NAMES the degraded routing anchor and leaves it NULL for the startup
         backfill to re-heal (#1468) — a visible degradation, not a silent success.
         (An exact-name skill match needs no resolution embed, so only the anchor
         embed fails.)"""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
             name="notes",
@@ -970,8 +951,7 @@ class TestCreateAndList:
         assert row.description_embedding is None
 
     @pytest.mark.asyncio
-    async def test_log_create_surfaces_description_embed_degradation(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_log_create_surfaces_description_embed_degradation(self, db):
         result = await LogCreateTool(db, cast(Any, _FailingEmbedClient())).execute(
             name="events", description="event stream"
         )
@@ -980,12 +960,11 @@ class TestCreateAndList:
         assert db.memories.get("events").description_embedding is None
 
     @pytest.mark.asyncio
-    async def test_update_failed_description_embed_clears_stale_anchor(self, tmp_path):
+    async def test_update_failed_description_embed_clears_stale_anchor(self, db):
         """Changing a description whose embed fails clears the anchor to NULL — it does
         NOT leave the old, now-mismatched vector in place (a stale anchor the NULL-only
         description backfill could never detect, #1468).  The new text lands, the anchor
         is left for the backfill to re-heal, and the degradation surfaces."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="notes",
@@ -1149,11 +1128,10 @@ class TestCollectionUpdateReinstantiation:
     rendered program (render-at-update mirrors render-at-creation)."""
 
     @pytest.mark.asyncio
-    async def test_refresh_rerenders_from_the_reteught_skill_byte_identical(self, tmp_path):
+    async def test_refresh_rerenders_from_the_reteught_skill_byte_identical(self, db):
         """Acceptance (#1620): create → re-teach (upsert REPLACES) → refresh → the
         stored prompt equals render(current skill, current params) byte-for-byte, the
         provenance is re-stamped, and the mutation event names the run + fields."""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         # Re-teach the SAME skill with reworded steps (upsert replaces the row).
         _seed_watch_skill(db, steps=_watch_skill_steps_reteught())
@@ -1182,10 +1160,9 @@ class TestCollectionUpdateReinstantiation:
         assert "skill" in summary and "extraction_prompt" in summary
 
     @pytest.mark.asyncio
-    async def test_rebind_rerenders_with_new_params_same_skill(self, tmp_path):
+    async def test_rebind_rerenders_with_new_params_same_skill(self, db):
         """New params, same skill: the prompt re-renders with the new bindings and the
         stored params advance, while the skill name stays put."""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation", params={"peak": "Ashfall Ridge"}
@@ -1197,10 +1174,9 @@ class TestCollectionUpdateReinstantiation:
         assert stored.skill_params == json.dumps({"peak": "Ashfall Ridge"})  # rebound
 
     @pytest.mark.asyncio
-    async def test_swap_rerenders_from_a_different_skill(self, tmp_path):
+    async def test_swap_rerenders_from_a_different_skill(self, db):
         """A different skill name renders that skill's steps into the collection and
         re-homes its provenance onto the new skill."""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         _seed_watch_skill(
             db,
@@ -1220,10 +1196,9 @@ class TestCollectionUpdateReinstantiation:
         assert stored.skill_params == json.dumps({"river": "Silt River"})
 
     @pytest.mark.asyncio
-    async def test_swap_without_binding_the_new_hole_is_refused_unchanged(self, tmp_path):
+    async def test_swap_without_binding_the_new_hole_is_refused_unchanged(self, db):
         """Swapping to a skill whose required hole the (reused) params don't bind is
         refused naming the hole — and nothing is mutated (prompt + provenance intact)."""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         _seed_watch_skill(
             db,
@@ -1248,12 +1223,11 @@ class TestCollectionUpdateReinstantiation:
         assert stored.skill_name == _SKILL_NAME  # provenance unchanged
 
     @pytest.mark.asyncio
-    async def test_rebind_when_pinned_skill_is_gone_is_refused_unchanged(self, tmp_path):
+    async def test_rebind_when_pinned_skill_is_gone_is_refused_unchanged(self, db):
         """A params-only rebind whose pinned skill has since been deleted can't
         re-render — refused actionably (re-teach it, or point at another skill via
         skill=), nothing mutated.  (A skill= arg on a missing skill routes to the
         NO_SKILL_FOUND elicitation instead; this is the current-skill branch.)"""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         with Session(db.engine) as session:  # the pinned skill vanishes under it
             session.delete(session.get(Skill, _SKILL_NAME))
@@ -1270,10 +1244,9 @@ class TestCollectionUpdateReinstantiation:
         assert stored.skill_name == _SKILL_NAME  # provenance intact
 
     @pytest.mark.asyncio
-    async def test_adopt_replaces_hand_authored_text_and_stamps_provenance(self, tmp_path):
+    async def test_adopt_replaces_hand_authored_text_and_stamps_provenance(self, db):
         """A legacy skill=NULL collection given a skill for the first time: its
         hand-authored prompt is replaced by the render and its provenance is stamped."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         hand_authored = "1. hand-written prose the user typed themselves, long enough to pass"
         _seed_collection(
@@ -1295,11 +1268,10 @@ class TestCollectionUpdateReinstantiation:
         assert stored.skill_params == json.dumps({"peak": "Cinder Peak"})
 
     @pytest.mark.asyncio
-    async def test_plain_update_never_touches_the_prompt_or_provenance(self, tmp_path):
+    async def test_plain_update_never_touches_the_prompt_or_provenance(self, db):
         """The pinned invariant: a plain collection_set (no skill/params/prompt)
         changes only the metadata it names — the routine and skill provenance are
         untouched."""
-        db = _make_db(tmp_path)
         original = "test fixture extraction prompt that is long enough"
         _seed_collection(db, name="notes", extraction_prompt=original, notify=False)
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1313,12 +1285,11 @@ class TestCollectionUpdateReinstantiation:
         assert stored.notify is True  # the named change landed
 
     @pytest.mark.asyncio
-    async def test_extraction_prompt_is_not_a_model_argument(self, tmp_path):
+    async def test_extraction_prompt_is_not_a_model_argument(self, db):
         """There is NO extraction_prompt argument on the model surface (#1570 —
         prompts are only ever renders of demonstrated skills): passing one is an
         unknown-parameter rejection through the arg envelope, and the stored
         routine is untouched."""
-        db = _make_db(tmp_path)
         await _create_watch_collection(db)
         before = db.memories.get("cinder-elevation").extraction_prompt
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
@@ -1330,10 +1301,9 @@ class TestCollectionUpdateReinstantiation:
         assert db.memories.get("cinder-elevation").extraction_prompt == before
 
     @pytest.mark.asyncio
-    async def test_rebind_on_a_skill_less_collection_is_refused(self, tmp_path):
+    async def test_rebind_on_a_skill_less_collection_is_refused(self, db):
         """params-only on a hand-authored (skill=NULL) collection has no holes to bind —
         refused, pointing at skill= to adopt one; the prompt is untouched."""
-        db = _make_db(tmp_path)
         original = "test fixture extraction prompt that is long enough"
         _seed_collection(db, name="legacy", extraction_prompt=original)
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1425,11 +1395,10 @@ class TestInertCollections:
     idempotency still applies — and a job-shaped arg alongside is refused."""
 
     @pytest.mark.asyncio
-    async def test_skill_less_create_is_inert_storage_only(self, tmp_path):
+    async def test_skill_less_create_is_inert_storage_only(self, db):
         """A create with no skill lands exactly one storage-only row — no
         extraction_prompt, cadence, notify, or skill provenance — and the echo is
         honest about being inert (whole render)."""
-        db = _make_db(tmp_path)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -1444,11 +1413,10 @@ class TestInertCollections:
         assert row.archived is False  # a live, usable container
 
     @pytest.mark.asyncio
-    async def test_inert_collection_is_catalog_visible(self, tmp_path):
+    async def test_inert_collection_is_catalog_visible(self, db):
         """An inert collection enumerates in the catalog, marked as storage with no
         routine — not hidden for lacking a prompt (#1629).  Whole render, so the inert
         recipe marker's position and the unchanged rest are both pinned."""
-        db = _make_db(tmp_path)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -1465,10 +1433,9 @@ class TestInertCollections:
         )
 
     @pytest.mark.asyncio
-    async def test_job_arg_on_skill_less_create_is_refused(self, tmp_path):
+    async def test_job_arg_on_skill_less_create_is_refused(self, db):
         """A trigger / notify / expiry on a skill-less create has no job to attach to —
         refused naming the two-step fix (whole render), nothing created."""
-        db = _make_db(tmp_path)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch",
             description="track the trail-runner shoe deals",
@@ -1479,10 +1446,9 @@ class TestInertCollections:
         assert db.memories.get("deals-watch") is None
 
     @pytest.mark.asyncio
-    async def test_inert_create_still_respects_idempotency(self, tmp_path):
+    async def test_inert_create_still_respects_idempotency(self, db):
         """Idempotency-at-birth (#1567) still applies to an inert create — a
         near-duplicate of an existing collection is refused, nothing created."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="deals",
@@ -1496,7 +1462,7 @@ class TestInertCollections:
         assert db.memories.get("deals-watch") is None
 
     @pytest.mark.asyncio
-    async def test_blank_optional_args_coerce_to_inert_create(self, tmp_path):
+    async def test_blank_optional_args_coerce_to_inert_create(self, db):
         """The live journey beat-0 failing shape (#1646): gpt-oss fills the optional
         args it means to omit with "" — skill="" / trigger="" / expires_at="" — which
         USED to route to the skill path and die in the trigger parser ("I couldn't read
@@ -1504,7 +1470,6 @@ class TestInertCollections:
         OptionalText) turns each "" into omitted BEFORE routing, so the exact call lands
         as an inert storage create — the byte-identical echo of an all-omitted create,
         and a genuinely inert row (no job / cadence / skill / expiry)."""
-        db = _make_db(tmp_path)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch",
             description="track the trail-runner shoe deals",
@@ -1580,10 +1545,9 @@ class TestWriteRetargetAtApply:
     rendered program never lies about where it writes."""
 
     @pytest.mark.asyncio
-    async def test_skill_demoed_against_a_renders_writes_to_b_on_create(self, tmp_path):
+    async def test_skill_demoed_against_a_renders_writes_to_b_on_create(self, db):
         """A skill whose demo wrote into collection A ('elevations'), instantiated into
         collection B, renders its write to B — byte-pinned."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)  # its write step targets 'elevations' (the demo constant)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="target-b",
@@ -1601,10 +1565,9 @@ class TestWriteRetargetAtApply:
         )
 
     @pytest.mark.asyncio
-    async def test_skill_demoed_against_a_renders_writes_to_b_on_adopt(self, tmp_path):
+    async def test_skill_demoed_against_a_renders_writes_to_b_on_adopt(self, db):
         """Adopting a skill (demoed against A) onto a legacy collection B retargets its
         write to B — byte-pinned, proving both apply paths retarget."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)  # write step targets 'elevations'
         _seed_collection(
             db,
@@ -1629,8 +1592,7 @@ class TestTwoStepTeachBootstrap:
     the skill with a trigger + notify → the collection runs the rendered routine."""
 
     @pytest.mark.asyncio
-    async def test_create_inert_teach_adopt_makes_it_run(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_create_inert_teach_adopt_makes_it_run(self, db):
         # 1. Set up the inert container (real tool call).
         created = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
@@ -1694,10 +1656,9 @@ class TestCollectionUpdateTriggerAtApply:
     the mutation event's changed fields."""
 
     @pytest.mark.asyncio
-    async def test_adopt_applies_interval_notify_recorded_in_mutation(self, tmp_path):
+    async def test_adopt_applies_interval_notify_recorded_in_mutation(self, db):
         """Adopting a skill with interval + notify sets both and records them in the
         mutation event's changed fields alongside the re-render."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         _seed_collection(
             db,
@@ -1723,11 +1684,10 @@ class TestCollectionUpdateTriggerAtApply:
         assert "trigger" in summary and "notify" in summary and "skill" in summary
 
     @pytest.mark.asyncio
-    async def test_trigger_replaces_whole_schedule(self, tmp_path):
+    async def test_trigger_replaces_whole_schedule(self, db):
         """Setting a run_at+max_runs trigger on a recurring collection replaces the whole
         schedule (interval → dispatcher tick, run_at/max_runs set); a later interval
         trigger clears the once-shaped overlay (#1629)."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="watch", collector_interval_seconds=3600)
         # Switch to a one-shot schedule.
         once = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1746,10 +1706,9 @@ class TestCollectionUpdateTriggerAtApply:
         assert row.run_at is None and row.max_runs is None
 
     @pytest.mark.asyncio
-    async def test_on_advance_trigger_at_apply_validates_source(self, tmp_path):
+    async def test_on_advance_trigger_at_apply_validates_source(self, db):
         """An on_advance trigger at apply time sets the source_log; a non-existent
         source is refused (the shared validator), nothing changed."""
-        db = _make_db(tmp_path)
         db.memories.create_log("events-log", "an event stream")
         _seed_collection(db, name="watch", collector_interval_seconds=3600)
         ok = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1765,13 +1724,12 @@ class TestCollectionUpdateTriggerAtApply:
         assert "isn't a memory I have" in bad.message
 
     @pytest.mark.asyncio
-    async def test_adopt_without_trigger_warns_it_wont_run(self, tmp_path):
+    async def test_adopt_without_trigger_warns_it_wont_run(self, db):
         """Adopting a skill onto an inert collection with NO trigger leaves it without a
         cadence — the echo renders ``trigger: none`` (never the half-formed ``every
         None``, #1666) and carries a visible no-trigger note (#1629), not a silent
         won't-run.  Whole render, so the honest trigger line and the tail note are both
         pinned."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
@@ -1800,12 +1758,11 @@ class TestCollectionUpdateTriggerAtApply:
         assert db.memories.get("deals-watch").collector_interval_seconds is None
 
     @pytest.mark.asyncio
-    async def test_plain_update_on_trigger_less_collection_echoes_none(self, tmp_path):
+    async def test_plain_update_on_trigger_less_collection_echoes_none(self, db):
         """The live-observed #1666 bug: a plain metadata update (no skill/params) on a
         collection with no cadence echoes ``trigger: none`` — never the half-formed
         ``trigger: every None``.  Whole render off an inert collection (the natural
         trigger-less case)."""
-        db = _make_db(tmp_path)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -1825,8 +1782,7 @@ class TestCollectionUpdateTriggerAtApply:
 
 class TestCollectionWritesAndReads:
     @pytest.mark.asyncio
-    async def test_write_read_roundtrip(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_write_read_roundtrip(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -1852,13 +1808,12 @@ class TestCollectionWritesAndReads:
         assert re.search(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", latest.message)
 
     @pytest.mark.asyncio
-    async def test_collection_set_dispatches_on_existence(self, tmp_path, mock_llm):
+    async def test_collection_set_dispatches_on_existence(self, db, mock_llm):
         """The ONE idempotent entry point (the code-owner fusion): a missing name
         CREATES with full birth validation; an existing name UPDATES only the set
         fields — the model never reasons about which case applies.  Birth without
         a description, and birth with a hand-written extraction_prompt, are both
         actionable refusals."""
-        db = _make_db(tmp_path)
         tool = CollectionSetTool(db, _make_llm_client(mock_llm), run_id="run-set")
         # Birth needs a description.
         result = await tool.execute(name="trip-plans")
@@ -1882,14 +1837,13 @@ class TestCollectionWritesAndReads:
         assert row.notify is True and row.description == "trip planning notes"
 
     @pytest.mark.asyncio
-    async def test_write_target_materialization(self, tmp_path, mock_llm):
+    async def test_write_target_materialization(self, db, mock_llm):
         """A chat write never dies on a name miss (#1570): a near-certain name
         variant REDIRECTS — narrated, never silent — (typo/char leg AND the
         same-intent full-token-containment leg), the ambiguous middle band keeps
         the did-you-mean refusal, and nothing-close AUTO-CREATES the collection
         (placeholder description + created_by_run_id stamp).  A collector-scoped
         write is never materialized."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="gear-notes", description="gear notes")
         write = CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="test", run_id="run-materialize"
@@ -1936,11 +1890,10 @@ class TestCollectionWritesAndReads:
         assert db.memories.get("something-else") is None
 
     @pytest.mark.asyncio
-    async def test_write_empty_entries_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
+    async def test_write_empty_entries_is_actionable_not_bare_pydantic(self, db, mock_llm):
         """An empty ``entries`` batch gets a named, actionable rejection through the
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
-        db = _make_db(tmp_path)
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.run(memory="likes", entries=[])
         assert result.success is False
@@ -1948,11 +1901,10 @@ class TestCollectionWritesAndReads:
         assert "List should have at least 1 item" not in result.message
 
     @pytest.mark.asyncio
-    async def test_write_unknown_key_in_entry_names_nested_path(self, tmp_path, mock_llm):
+    async def test_write_unknown_key_in_entry_names_nested_path(self, db, mock_llm):
         """A misspelled/extraneous key INSIDE a batch entry surfaces the nested loc
         path and suggests the valid sibling, rather than being silently dropped or
         mis-rendered as the whole ``entries`` field (#1416)."""
-        db = _make_db(tmp_path)
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.run(
             memory="likes",
@@ -1979,8 +1931,7 @@ class TestCollectionWritesAndReads:
         assert "update_entry(" not in keyless
 
     @pytest.mark.asyncio
-    async def test_write_reports_duplicate_via_tcr(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_write_reports_duplicate_via_tcr(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2016,8 +1967,7 @@ class TestCollectionWritesAndReads:
         assert "done()" not in result.message
 
     @pytest.mark.asyncio
-    async def test_write_all_duplicates_collector_scope_hints_done(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_write_all_duplicates_collector_scope_hints_done(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2081,11 +2031,10 @@ class TestCollectionWritesAndReads:
         assert multi.mutated is False
 
     @pytest.mark.asyncio
-    async def test_chat_scope_unchanged_write_has_no_stop(self, tmp_path, mock_llm):
+    async def test_chat_scope_unchanged_write_has_no_stop(self, db, mock_llm):
         """The chat surface (scope=None) gets the SAME enumerated UNCHANGED text but
         NEVER a loop-stop — STOP applies to must-act cadence contexts only (#1587).
         Contrast the collector-scope write above, which sets ``stop``."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -2105,7 +2054,7 @@ class TestCollectionWritesAndReads:
         assert unchanged.stop is None
 
     @pytest.mark.asyncio
-    async def test_change_gate_changed_auto_refreshes_baseline(self, tmp_path, mock_llm):
+    async def test_change_gate_changed_auto_refreshes_baseline(self, db, mock_llm):
         """The CHANGED auto-refresh result text (#1633): re-writing an EXACT key with a
         DIFFERENT value refreshes the stored baseline IN PLACE through the shared write
         gate — the result reports the refresh with NO dangling ``update_entry``
@@ -2114,7 +2063,6 @@ class TestCollectionWritesAndReads:
         STOP-worthy so no loop-stop even for a collector-scoped write.  The gate is
         shared, so a chat-surface write (``scope=None``) gets the same auto-refresh and
         stays non-STOP with honest text."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="watch",
@@ -2148,8 +2096,7 @@ class TestCollectionWritesAndReads:
         assert db.memory("watch").get("note")[0].content == "v2"
 
     @pytest.mark.asyncio
-    async def test_get_returns_entry_or_not_found(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_get_returns_entry_or_not_found(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2197,8 +2144,7 @@ class TestCollectionWritesAndReads:
         assert "bracket literal body" in literal.message
 
     @pytest.mark.asyncio
-    async def test_keys_lists_unique_keys_in_order(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_keys_lists_unique_keys_in_order(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2213,10 +2159,9 @@ class TestCollectionWritesAndReads:
         assert listing.message == "- first\n- second"
 
     @pytest.mark.asyncio
-    async def test_keys_empty_collection_names_source_not_bare_sentinel(self, tmp_path):
+    async def test_keys_empty_collection_names_source_not_bare_sentinel(self, db):
         """An empty collection's keys read names the source and marks absence (not an
         error), rather than the bare "(no keys)" sentinel (house wording pass)."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -2228,8 +2173,7 @@ class TestCollectionWritesAndReads:
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
 
     @pytest.mark.asyncio
-    async def test_read_random_returns_all_when_few(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_read_random_returns_all_when_few(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2243,8 +2187,7 @@ class TestCollectionWritesAndReads:
         assert "key='a' 1" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_read_similar_uses_embedding(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_read_similar_uses_embedding(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2262,13 +2205,12 @@ class TestCollectionWritesAndReads:
         assert "coffee" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_read_similar_returns_populated_homogeneous_collection(self, tmp_path, mock_llm):
+    async def test_read_similar_returns_populated_homogeneous_collection(self, db, mock_llm):
         """A populated but homogeneous collection (recipe-shaped entries that all
         cluster together, like the real ``skills`` collection) must return its
         entries for a fuzzy anchor — not "No entries" (#1565).  The old ambient
         cluster/centrality gate on the explicit search suppressed exactly this
         case, removing the model's fuzzy-recovery path when guessing a key."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="playbooks",
@@ -2316,8 +2258,7 @@ class TestEmbedFailureRefusesWrite:
         )
 
     @pytest.mark.asyncio
-    async def test_collection_write_refuses_when_embedding_fails(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_collection_write_refuses_when_embedding_fails(self, db):
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(db, cast(Any, _FailingEmbedClient()), author="test")
         result = await write.execute(
@@ -2336,12 +2277,11 @@ class TestEmbedFailureRefusesWrite:
         assert rows == []
 
     @pytest.mark.asyncio
-    async def test_collection_write_refuses_on_key_only_embed_failure(self, tmp_path):
+    async def test_collection_write_refuses_on_key_only_embed_failure(self, db):
         # Even when only the key embed fails (content vector fine), storing the
         # entry would leave it missing a vector — so the write is still refused
         # atomically and nothing lands.  (The backfill now also repairs a
         # key-null row, #1468, but the write path won't persist one to begin with.)
-        db = _make_db(tmp_path)
         await self._make_relevant_collection(db)
         write = CollectionWriteTool(
             db, cast(Any, _KeyOnlyFailingEmbedClient("dark roast")), author="test"
@@ -2357,8 +2297,7 @@ class TestEmbedFailureRefusesWrite:
         assert rows == []
 
     @pytest.mark.asyncio
-    async def test_log_append_refuses_when_embedding_fails(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_log_append_refuses_when_embedding_fails(self, db):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, cast(Any, _FailingEmbedClient()), author="test")
         result = await append.execute(memory="events", content="something happened")
@@ -2375,8 +2314,7 @@ class TestEmbedFailureRefusesWrite:
 
 class TestCollectionMutations:
     @pytest.mark.asyncio
-    async def test_update_replaces_content(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_update_replaces_content(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2418,8 +2356,7 @@ class TestCollectionMutations:
         assert "new" in (await CollectionGetTool(db).execute(memory="likes", key="k")).message
 
     @pytest.mark.asyncio
-    async def test_update_missing_reports_not_found(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_update_missing_reports_not_found(self, db):
         _seed_collection(
             db,
             name="likes",
@@ -2440,8 +2377,7 @@ class TestCollectionMutations:
         assert "Retry with" not in bracketed.message
 
     @pytest.mark.asyncio
-    async def test_archive_and_unarchive(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_archive_and_unarchive(self, db):
         _seed_collection(
             db,
             name="likes",
@@ -2465,11 +2401,10 @@ class TestDidYouMeanSuggestions:
     byte-identically to before, so no empty "did you mean" artifact appears."""
 
     @pytest.mark.asyncio
-    async def test_memory_name_miss_leads_with_the_nearest_by_typo(self, tmp_path):
+    async def test_memory_name_miss_leads_with_the_nearest_by_typo(self, db):
         """A mistyped memory name (the motivating 'aurora-deone' → 'aurora-deck-2')
         leads the not-found render with the nearest existing name — the string
         (typo) leg, universal because it needs no embedding client."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
         result = await CollectionReadLatestTool(db).execute(memory="aurora-deone")
         assert result.success is False
@@ -2483,10 +2418,9 @@ class TestDidYouMeanSuggestions:
         )
 
     @pytest.mark.asyncio
-    async def test_memory_name_miss_with_no_close_candidate_is_byte_identical(self, tmp_path):
+    async def test_memory_name_miss_with_no_close_candidate_is_byte_identical(self, db):
         """A miss with nothing close renders EXACTLY today's message — no empty
         'did you mean' artifact, no changed punctuation."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="aurora-deck-2", description="a listening deck")
         result = await CollectionReadLatestTool(db).execute(memory="xyzzy")
         assert result.success is False
@@ -2499,11 +2433,10 @@ class TestDidYouMeanSuggestions:
         )
 
     @pytest.mark.asyncio
-    async def test_memory_name_miss_leads_with_the_nearest_by_meaning(self, tmp_path, mock_llm):
+    async def test_memory_name_miss_leads_with_the_nearest_by_meaning(self, db, mock_llm):
         """When the typo leg finds nothing, an embedding-capable tool (read_similar)
         falls back to the MEANING leg — the collection whose description anchor is
         closest to the missed name, clearing the reused dedup threshold."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="garage", description="tracking oil changes and tire rotations")
         tool = ReadSimilarTool(db, _make_llm_client(mock_llm))
         result = await tool.execute(memory="oil changes and tire rotations", anchor="my car")
@@ -2518,10 +2451,9 @@ class TestDidYouMeanSuggestions:
         )
 
     @pytest.mark.asyncio
-    async def test_update_entry_key_miss_leads_with_the_nearest_key(self, tmp_path, mock_llm):
+    async def test_update_entry_key_miss_leads_with_the_nearest_key(self, db, mock_llm):
         """A mistyped entry key on update_entry leads with the nearest existing key
         in that collection (the key typo leg), then the existing guidance."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="notes")
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
@@ -2554,10 +2486,9 @@ class TestDidYouMeanSuggestions:
         )
 
     @pytest.mark.asyncio
-    async def test_delete_entry_key_miss_leads_with_the_nearest_key(self, tmp_path, mock_llm):
+    async def test_delete_entry_key_miss_leads_with_the_nearest_key(self, db, mock_llm):
         """Same key suggestion on collection_delete_entry — the nearest key leads,
         the existing 'nothing to delete' guidance follows."""
-        db = _make_db(tmp_path)
         _seed_collection(db, name="notes")
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="notes", entries=[{"key": "quarterly-report", "content": "x"}])
@@ -2578,10 +2509,9 @@ class TestDidYouMeanSuggestions:
 
 class TestLogTools:
     @pytest.mark.asyncio
-    async def test_collection_read_latest_refuses_a_log(self, tmp_path, mock_llm):
+    async def test_collection_read_latest_refuses_a_log(self, db, mock_llm):
         """Collection reads error on a log instead of silently bypassing the
         cursored log_read/log_get interface (the read_latest-on-a-log footgun)."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="events", content="first"
@@ -2591,11 +2521,10 @@ class TestLogTools:
         assert "log_read" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_read_latest_rejects_zero_count(self, tmp_path, mock_llm):
+    async def test_read_latest_rejects_zero_count(self, db, mock_llm):
         """``k=0`` (a model guessing zero means "unlimited") reads no entries, so
         the tool would look empty — the arg model refuses it before execute with
         an actionable message (omit k for all), via the Tool.run gate."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="notes",
@@ -2615,10 +2544,9 @@ class TestLogTools:
         assert "first" in ok.message
 
     @pytest.mark.asyncio
-    async def test_log_read_window_mode(self, tmp_path, mock_llm):
+    async def test_log_read_window_mode(self, db, mock_llm):
         """A non-collector caller (scope=None) gets window-mode log_read: recent
         entries within the fixed look-back window — no cursor, no count arg."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="hello")
@@ -2632,11 +2560,10 @@ class TestLogTools:
         assert "blank" in blank.message
 
     @pytest.mark.asyncio
-    async def test_collector_runs_log_renders_runs_from_promptlog(self, tmp_path):
+    async def test_collector_runs_log_renders_runs_from_promptlog(self, db):
         """collector-runs is a read facade over promptlog: log_read renders each
         worked run as a record (``[target] summary`` + its tool trace) — no
         stored entries, no keys, no get.  This is the quality collector's review."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="collector-runs", description="audit"
         )
@@ -2681,12 +2608,11 @@ class TestLogTools:
         assert "Found a new grinder, $300." in rendered.message  # the exact message, untruncated
 
     @pytest.mark.asyncio
-    async def test_read_run_calls_renders_by_target(self, tmp_path):
+    async def test_read_run_calls_renders_by_target(self, db):
         """read_run_calls is the SEQUENCE lens over runs, orthogonal to target: a
         collector's name renders its runs as ``[target] -> tools -> done``; ``chat``
         renders conversations as ``user -> tools -> penny``.  The valid targets are
         discovered from the DB into its description."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="espresso-gear",
@@ -2841,13 +2767,12 @@ class TestLogTools:
         )
 
     @pytest.mark.asyncio
-    async def test_get_event_resolves_a_run_id_to_its_canonical_projection(self, tmp_path):
+    async def test_get_event_resolves_a_run_id_to_its_canonical_projection(self, db):
         """``get_event(event_id='run <id>')`` consumes the header's typed run anchor
         VERBATIM and returns exactly the run's canonical tool-call projection — the
         same ``render_run_calls`` view ``read_run_calls`` renders, but for the single
         run the id names (#1580, the run-id ↔ target anchor unification).  The result
         leads with the run's own id, so the rendered anchor and the argument are one."""
-        db = _make_db(tmp_path)
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
@@ -2860,11 +2785,10 @@ class TestLogTools:
         assert "collection_write(memory='ai-news'" in result.message
 
     @pytest.mark.asyncio
-    async def test_get_event_tolerates_the_paren_framed_mutation_anchor(self, tmp_path):
+    async def test_get_event_tolerates_the_paren_framed_mutation_anchor(self, db):
         """The mutation activity line renders its causing run as ``(run <id>)``; the
         parse strips the framing so BOTH rendered forms resolve to the same run — the
         rendered token is consumable verbatim whichever line it came from (#1580)."""
-        db = _make_db(tmp_path)
         await self._create_collection(db, "ai-news")
         self._log_run(db, run_id="news-1", target="ai-news", summary="wrote 1", write_key="mixtral")
 
@@ -2874,34 +2798,31 @@ class TestLogTools:
         assert framed.success is True
 
     @pytest.mark.asyncio
-    async def test_get_event_untyped_id_is_actionable(self, tmp_path):
+    async def test_get_event_untyped_id_is_actionable(self, db):
         """An id with no recognised type tag is refused, not silently emptied — the
         message names what IS addressable and the guess-free fallbacks (find +
         the activity block), never a bare 'not found' (#1580)."""
-        db = _make_db(tmp_path)
         result = await GetEventTool(db).run(event_id="news-1")
         assert result.success is False
         assert "news-1" in result.message
         assert "find(query=" in result.message
 
     @pytest.mark.asyncio
-    async def test_get_event_unknown_run_is_actionable(self, tmp_path):
+    async def test_get_event_unknown_run_is_actionable(self, db):
         """A well-formed run token that matched no recorded run gets a failed,
         actionable refusal naming the id + where valid ids are listed — never an
         empty read that reads as a clean, call-less run (#1580)."""
-        db = _make_db(tmp_path)
         result = await GetEventTool(db).run(event_id="run does-not-exist")
         assert result.success is False
         assert "does-not-exist" in result.message
         assert "read_run_calls" in result.message
 
     @pytest.mark.asyncio
-    async def test_append_to_system_log_is_refused(self, tmp_path, mock_llm):
+    async def test_append_to_system_log_is_refused(self, db, mock_llm):
         """Invariant #1: the four framework-managed system logs are written
         only by Python side-effects.  ``log_append`` from any agent gets a
         readable refusal and writes nothing — guarding the conversation-turn
         reconstruction and the run audit trail from model-authored entries."""
-        db = _make_db(tmp_path)
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         # The reserved-target check is a pure constant lookup, so it lives on
         # LogAppendArgs.memory and the refusal comes from the Tool.run gate.
@@ -2914,8 +2835,7 @@ class TestLogTools:
         assert db.memories.get(PennyConstants.MEMORY_PENNY_MESSAGES_LOG) is None
 
     @pytest.mark.asyncio
-    async def test_log_similar_with_client(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_log_similar_with_client(self, db, mock_llm):
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         client = _make_llm_client(mock_llm)
         await LogAppendTool(db, client, author="test").execute(
@@ -2929,9 +2849,8 @@ class TestLogTools:
         assert "coffee is great" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_read_next_returns_all_entries_when_no_cursor(self, tmp_path, mock_llm):
+    async def test_read_next_returns_all_entries_when_no_cursor(self, db, mock_llm):
         """Without a stored cursor, read_next returns every entry in the log."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
@@ -2944,9 +2863,8 @@ class TestLogTools:
         assert "second" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_commit_pending_advances_cursor_to_max_seen(self, tmp_path, mock_llm):
+    async def test_commit_pending_advances_cursor_to_max_seen(self, db, mock_llm):
         """commit_pending writes the highest timestamp seen during the run."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
@@ -2966,9 +2884,8 @@ class TestLogTools:
         )
 
     @pytest.mark.asyncio
-    async def test_discard_pending_leaves_cursor_unchanged(self, tmp_path, mock_llm):
+    async def test_discard_pending_leaves_cursor_unchanged(self, db, mock_llm):
         """discard_pending drops the in-memory state without touching the DB cursor."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         await append.execute(memory="events", content="first")
@@ -2983,7 +2900,7 @@ class TestLogTools:
         assert "first" in rendered.message
 
     @pytest.mark.asyncio
-    async def test_first_cycle_bounded_to_latest_n_entries(self, tmp_path, mock_llm):
+    async def test_first_cycle_bounded_to_latest_n_entries(self, db, mock_llm):
         """A brand-new collector (no cursor yet) reading a busy log gets the
         most-recent N entries, not every entry since the dawn of time.
 
@@ -2993,7 +2910,6 @@ class TestLogTools:
         """
         from penny.constants import PennyConstants
 
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         # Append more entries than the bound to confirm trimming
@@ -3013,13 +2929,10 @@ class TestLogTools:
         assert "entry-04" not in rendered.message
 
     @pytest.mark.asyncio
-    async def test_first_cycle_advances_cursor_so_next_cycle_sees_only_new(
-        self, tmp_path, mock_llm
-    ):
+    async def test_first_cycle_advances_cursor_so_next_cycle_sees_only_new(self, db, mock_llm):
         """After a bounded first cycle commits, the next cycle picks up
         incrementally — even entries that the first cycle's bound excluded
         stay excluded (since they're older than the cursor)."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
         for i in range(15):
@@ -3039,14 +2952,13 @@ class TestLogTools:
         assert "old-00" not in rendered.message
 
     @pytest.mark.asyncio
-    async def test_cursor_read_is_capped_and_advances_by_batch(self, tmp_path, mock_llm):
+    async def test_cursor_read_is_capped_and_advances_by_batch(self, db, mock_llm):
         """With a cursor established, a backlog larger than the batch bound is
         returned in bounded chunks — read N, cursor advances by N, the next read
         picks up the next N.  The caller never reasons about a count."""
         from penny.constants import PennyConstants
 
         limit = PennyConstants.LOG_READ_LIMIT
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         append = LogAppendTool(db, _make_llm_client(mock_llm), author="test")
 
@@ -3074,9 +2986,8 @@ class TestLogTools:
         assert f"backlog-{backlog - 1:02d}" in rendered_second.message
 
     @pytest.mark.asyncio
-    async def test_per_agent_cursors_are_independent(self, tmp_path, mock_llm):
+    async def test_per_agent_cursors_are_independent(self, db, mock_llm):
         """Two agents reading the same log have independent cursor state."""
-        db = _make_db(tmp_path)
         await LogCreateTool(db, cast(Any, MockLlmClient())).execute(name="events", description="x")
         await LogAppendTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="events", content="hello"
@@ -3130,11 +3041,10 @@ class TestEmissionProvenanceRender:
             session.commit()
 
     @pytest.mark.asyncio
-    async def test_log_read_renders_provenance_whole(self, tmp_path):
+    async def test_log_read_renders_provenance_whole(self, db):
         """The whole log_read render, both shapes pinned: the direct reply line is
         byte-identical to the pre-provenance shape (``N. [stamp] content``); the
         mechanism-stamped line carries the inline marker."""
-        db = _make_db(tmp_path)
         self._seed(db)
         result = await LogReadTool(db, agent_name="reader", scope="reader").execute(
             memory=PennyConstants.MEMORY_PENNY_MESSAGES_LOG
@@ -3145,11 +3055,10 @@ class TestEmissionProvenanceRender:
             "2. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: the price dropped to $42!"
         )
 
-    def test_read_similar_carries_provenance_too(self, tmp_path):
+    def test_read_similar_carries_provenance_too(self, db):
         """The similarity path returns the same synthesized entries, so a
         relevance hit on an autonomous send carries its mechanism inline — one
         call resolves both the message and its source."""
-        db = _make_db(tmp_path)
         self._seed(db)
         facade = db.memory(PennyConstants.MEMORY_PENNY_MESSAGES_LOG)
         assert facade is not None
@@ -3161,8 +3070,7 @@ class TestEmissionProvenanceRender:
 
 class TestExistsAndDone:
     @pytest.mark.asyncio
-    async def test_exists_yes_via_exact_key(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_exists_yes_via_exact_key(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -3180,8 +3088,7 @@ class TestExistsAndDone:
         assert result.message == "yes"
 
     @pytest.mark.asyncio
-    async def test_exists_no(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_exists_no(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -3195,11 +3102,10 @@ class TestExistsAndDone:
         assert result.message == "no"
 
     @pytest.mark.asyncio
-    async def test_exists_unknown_memory_name_is_not_found(self, tmp_path, mock_llm):
+    async def test_exists_unknown_memory_name_is_not_found(self, db, mock_llm):
         """A misspelled memory name must not read as an empty (always-"no")
         memory — that green-lights the write the model was probing for.  The
         probe fails with the actionable not-found refusal naming the bad value."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -3217,23 +3123,21 @@ class TestExistsAndDone:
         assert "find(query=" in result.message
 
     @pytest.mark.asyncio
-    async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, tmp_path, mock_llm):
+    async def test_exists_empty_memories_is_actionable_not_bare_pydantic(self, db, mock_llm):
         """An empty ``memories`` list gets a named, actionable rejection through the
         arg-validation envelope — not Pydantic's bare "List should have at least 1
         item" (the house wording-unification pass)."""
-        db = _make_db(tmp_path)
         result = await ExistsTool(db, _make_llm_client(mock_llm)).run(memories=[], content="x")
         assert result.success is False
         assert "at least one collection name" in result.message
         assert "List should have at least 1 item" not in result.message
 
     @pytest.mark.asyncio
-    async def test_exists_embed_failure_is_inconclusive_not_no(self, tmp_path, mock_llm):
+    async def test_exists_embed_failure_is_inconclusive_not_no(self, db, mock_llm):
         """When the embed service is down the similarity dedup is skipped, so a
         "no" would be a silent degradation that could green-light a near-duplicate
         write.  The probe surfaces the inconclusive state instead (visible
         degradation)."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -3253,12 +3157,11 @@ class TestExistsAndDone:
         assert "inconclusive" in result.message
 
     @pytest.mark.asyncio
-    async def test_unicode_hyphen_in_memory_name_normalized(self, tmp_path, mock_llm):
+    async def test_unicode_hyphen_in_memory_name_normalized(self, db, mock_llm):
         """Regression: gpt-oss occasionally emits Unicode dashes (U+2010,
         U+2011, …) where ASCII hyphen-minus is expected, breaking string
         comparison in tool args.  Memory-name fields normalise on the way
         in so the rest of the stack sees the canonical form."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="board-games",
@@ -3276,14 +3179,13 @@ class TestExistsAndDone:
         assert "Wrote 1 entry to 'board-games'" in result.message
 
     @pytest.mark.asyncio
-    async def test_exists_content_only_uses_content_as_key_probe(self, tmp_path, mock_llm):
+    async def test_exists_content_only_uses_content_as_key_probe(self, db, mock_llm):
         """Regression: ``exists(content="Catan")`` must catch an
         existing entry with ``key="Catan"``, even when the
         existing row's *content* is a long description that doesn't
         cosine-match the short candidate.  The tool now copies content
         into the key slot when the model omits it, letting key-TCR fire
         in the dedup rule."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="board-games",
@@ -3334,9 +3236,8 @@ class TestExistsAndDone:
 
 class TestAuthorAttribution:
     @pytest.mark.asyncio
-    async def test_writes_stamp_constructor_author(self, tmp_path, mock_llm):
+    async def test_writes_stamp_constructor_author(self, db, mock_llm):
         """Author is bound at tool construction (not pulled from ambient state)."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -3354,8 +3255,7 @@ class TestAuthorAttribution:
 
 class TestCollectionMerge:
     @pytest.mark.asyncio
-    async def test_merge_moves_entries_and_archives_source(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_merge_moves_entries_and_archives_source(self, db, mock_llm):
         _seed_collection(
             db,
             name="src",
@@ -3383,8 +3283,7 @@ class TestCollectionMerge:
         assert len(db.memory("src").read_all()) == 0
 
     @pytest.mark.asyncio
-    async def test_merge_drops_colliding_keys(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_merge_drops_colliding_keys(self, db, mock_llm):
         _seed_collection(
             db,
             name="src",
@@ -3417,8 +3316,7 @@ class TestCollectionMerge:
         assert contents["unique"] == "only in src"
 
     @pytest.mark.asyncio
-    async def test_merge_empty_source_archives_it(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_merge_empty_source_archives_it(self, db):
         _seed_collection(
             db,
             name="src",
@@ -3527,17 +3425,15 @@ class TestFactory:
         "log_append",
     }
 
-    def test_chat_surface_is_the_full_set(self, tmp_path, mock_llm):
+    def test_chat_surface_is_the_full_set(self, db, mock_llm):
         """Chat (scope=None) gets every memory tool — entry mutations included,
         unrestricted, since edits are user-directed."""
-        db = _make_db(tmp_path)
         tools = build_memory_tools(db, _make_llm_client(mock_llm), agent_name="chat")
         assert {tool.name for tool in tools} == self._FULL_SURFACE
 
-    def test_collector_surface_is_the_same_full_set(self, tmp_path, mock_llm):
+    def test_collector_surface_is_the_same_full_set(self, db, mock_llm):
         """A bound collector (scope=X) gets the identical surface — scope binds
         its entry mutations to X but does not strip lifecycle/other tools."""
-        db = _make_db(tmp_path)
         tools = build_memory_tools(
             db, _make_llm_client(mock_llm), agent_name="collector", scope="likes"
         )
@@ -3551,10 +3447,9 @@ class TestScopedFactory:
     """
 
     @pytest.mark.asyncio
-    async def test_scoped_write_rejects_other_collection(self, tmp_path, mock_llm):
+    async def test_scoped_write_rejects_other_collection(self, db, mock_llm):
         """A scoped collector that tries to write to a different collection
         gets a clean refusal rather than silently corrupting unrelated data."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="likes",
@@ -3582,8 +3477,7 @@ class TestScopedFactory:
         assert db.memory("dislikes").get("k") == []
 
     @pytest.mark.asyncio
-    async def test_scoped_write_allows_target_collection(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_scoped_write_allows_target_collection(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -3601,15 +3495,13 @@ class TestScopedFactory:
         assert db.memory("likes").get("k")[0].content == "v"
 
     @pytest.mark.asyncio
-    async def test_scoped_update_entry_rejects_other_collection(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_scoped_update_entry_rejects_other_collection(self, db):
         update = UpdateEntryTool(db, author="collector:likes", scope="likes")
         result = await update.execute(memory="dislikes", key="k", content="v")
         assert "Refused" in result.message
 
     @pytest.mark.asyncio
-    async def test_scoped_delete_rejects_other_collection(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_scoped_delete_rejects_other_collection(self, db):
         delete = CollectionDeleteEntryTool(db, scope="likes")
         result = await delete.execute(memory="dislikes", key="k")
         assert "Refused" in result.message
@@ -3663,8 +3555,7 @@ class TestRegistryProvenanceAndLifecycle:
         return message_id
 
     @pytest.mark.asyncio
-    async def test_create_stamps_run_then_channel_links_message(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_create_stamps_run_then_channel_links_message(self, db):
         # collection_set stamps only the creating run — the spawning message
         # isn't known until the run returns, and there's no end condition.
         await self._create(db, "espresso-reviews", created_by_run_id="run-espresso-01")
@@ -3679,8 +3570,7 @@ class TestRegistryProvenanceAndLifecycle:
         assert db.memories.get("espresso-reviews").source_message_id == message_id
 
     @pytest.mark.asyncio
-    async def test_metadata_renders_full_lifecycle(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_metadata_renders_full_lifecycle(self, db):
         await self._create(db, "audiobooks", created_by_run_id="run-audiobooks-01")
         message_id = self._spawn(
             db, "run-audiobooks-01", "keep a running list of good sci-fi audiobooks"
@@ -3695,8 +3585,7 @@ class TestRegistryProvenanceAndLifecycle:
         )
 
     @pytest.mark.asyncio
-    async def test_catalog_is_archived_inclusive_and_marks_status(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_catalog_is_archived_inclusive_and_marks_status(self, db):
         await self._create(db, "kickstarters", created_by_run_id="run-ks-01")
         message_id = self._spawn(db, "run-ks-01", "watch for new board game kickstarters")
         await self._create(db, "trail-conditions")  # no run id (seeded-style)
@@ -3718,8 +3607,7 @@ class TestRegistryProvenanceAndLifecycle:
         )
 
     @pytest.mark.asyncio
-    async def test_long_ask_is_excerpted(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_long_ask_is_excerpted(self, db):
         long_ask = (
             "please keep a really thorough running list of every single new mechanical "
             "keyboard group buy you can find anywhere on the internet, forever"
@@ -3734,8 +3622,7 @@ class TestRegistryProvenanceAndLifecycle:
         assert "…" in result.message
 
     @pytest.mark.asyncio
-    async def test_expires_at_renders_end_condition(self, tmp_path):
-        db = _make_db(tmp_path)
+    async def test_expires_at_renders_end_condition(self, db):
         expiry = datetime(2026, 12, 25, 9, 0, tzinfo=UTC)
         db.memories.create_collection(
             "holiday-watch",
@@ -3749,11 +3636,10 @@ class TestRegistryProvenanceAndLifecycle:
         assert "expires: 2026-12-25 09:00 UTC" in result.message
 
     @pytest.mark.asyncio
-    async def test_on_advance_trigger_renders_in_metadata(self, tmp_path):
+    async def test_on_advance_trigger_renders_in_metadata(self, db):
         """Every collection's metadata carries its trigger AS the copyable clause (#1631):
         an on_advance collection reads ``on advance of <log>``, a recurring one ``every
         <seconds>`` — display form == invocation form."""
-        db = _make_db(tmp_path)
         db.memories.create_log("events-log", "an event stream")
         db.memories.create_collection(
             "chained-watch",
@@ -3785,11 +3671,10 @@ class TestCollectionSkillProvenanceRender:
     — the unmarked case is the quiet default, pinned byte-for-byte."""
 
     @pytest.mark.asyncio
-    async def test_catalog_names_instantiating_skill_and_params_whole(self, tmp_path):
+    async def test_catalog_names_instantiating_skill_and_params_whole(self, db):
         """The catalog render names the instantiating skill + its bound params on a
         ``from skill:`` line right before the recipe it produced — asserted as a whole
         render so the line's position and the unchanged rest are both pinned."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         create = await CollectionCreateTool(
             db, cast(Any, MockLlmClient()), created_by_run_id="run-cinder-01"
@@ -3816,11 +3701,10 @@ class TestCollectionSkillProvenanceRender:
         assert result.message == expected
 
     @pytest.mark.asyncio
-    async def test_metadata_names_instantiating_skill_and_params(self, tmp_path):
+    async def test_metadata_names_instantiating_skill_and_params(self, db):
         """``memory_metadata`` names the skill + bound params, positioned ahead of the
         extraction prompt it produced — so "which skill made this, and with what?" is
         the same call that reads the collection."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(db)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation",
@@ -3835,11 +3719,10 @@ class TestCollectionSkillProvenanceRender:
         assert result.message.index("from skill:") < result.message.index("extraction prompt:")
 
     @pytest.mark.asyncio
-    async def test_hand_authored_collection_renders_byte_identical(self, tmp_path):
+    async def test_hand_authored_collection_renders_byte_identical(self, db):
         """A collection with no skill origin (``skill_name`` NULL — the seeded /
         hand-authored case) renders with NO ``from skill:`` line, byte-for-byte the
         unmarked pre-provenance shape, on both surfaces."""
-        db = _make_db(tmp_path)
         _seed_collection(
             db,
             name="plain-watch",
@@ -3865,10 +3748,9 @@ class TestCollectionSkillProvenanceRender:
         assert "from skill:" not in metadata.message
 
     @pytest.mark.asyncio
-    async def test_holeless_skill_renders_skill_name_only(self, tmp_path):
+    async def test_holeless_skill_renders_skill_name_only(self, db):
         """A skill with no holes binds no params, so the render names just the skill —
         ``from skill: <name>`` with no parenthesised params."""
-        db = _make_db(tmp_path)
         _seed_watch_skill(
             db,
             name="daily-digest",
@@ -4025,10 +3907,9 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_kitchen_sink_fuses_identity_and_affordances(self, tmp_path, mock_llm):
+    async def test_kitchen_sink_fuses_identity_and_affordances(self, db, mock_llm):
         """A query matching a mixed set returns each hit's exact identity, family,
         live/archived state, AND the deterministic addressing — best-first."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
@@ -4036,12 +3917,11 @@ class TestFind:
         assert result.message == self._KITCHEN_SINK
 
     @pytest.mark.asyncio
-    async def test_type_argument_is_rejected(self, tmp_path, mock_llm):
+    async def test_type_argument_is_rejected(self, db, mock_llm):
         """``find`` accepts exactly ``query`` (#1643): a passed ``type`` gets the
         standard unknown-argument rejection (``ToolArgs`` ``extra="forbid"``) — the
         guess-free tool never offers a family filter to guess with.  Rejected before
         ``execute``, so the arg-validation envelope names the offending field."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await self._seed_world(db, client)
         result = await FindTool(db, client).run(query="aurora beacon cascade", type="skill")
@@ -4050,8 +3930,7 @@ class TestFind:
         assert "valid parameters: query" in result.message
 
     @pytest.mark.asyncio
-    async def test_single_confident_match(self, tmp_path, mock_llm):
-        db = _make_db(tmp_path)
+    async def test_single_confident_match(self, db, mock_llm):
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "solo-watch", "aurora beacon cascade")
         result = await FindTool(db, client).execute(query="aurora beacon cascade")
@@ -4064,10 +3943,9 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_ambiguous_returns_all_candidates_ranked(self, tmp_path, mock_llm):
+    async def test_ambiguous_returns_all_candidates_ranked(self, db, mock_llm):
         """Several matches come back ranked with how to narrow — never one silently
         chosen."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "watch-primary", "aurora beacon cascade")
         await _create_collection(db, client, "watch-secondary", "aurora beacon delta")
@@ -4087,10 +3965,9 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_zero_matches_is_honest_empty(self, tmp_path, mock_llm):
+    async def test_zero_matches_is_honest_empty(self, db, mock_llm):
         """A query unrelated to everything returns an honest empty naming the wider
         nets (catalog + self-state header) — not an error, no dead end."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         result = await FindTool(db, client).execute(query="orbit nebula")
@@ -4104,22 +3981,20 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_transient_embed_failure_is_actionable(self, tmp_path):
+    async def test_transient_embed_failure_is_actionable(self, db):
         """A transient query-embed failure returns an actionable retry, not a silent
         empty — the miss is named, the fix bound."""
-        db = _make_db(tmp_path)
         result = await FindTool(db, cast(Any, _FailingEmbedClient())).execute(query="anything")
         assert result.success is False
         assert "Couldn't embed your query" in result.message
         assert "find(query=" in result.message
 
     @pytest.mark.asyncio
-    async def test_stored_entry_carries_content_and_addressing(self, tmp_path, mock_llm):
+    async def test_stored_entry_carries_content_and_addressing(self, db, mock_llm):
         """A fact stored in a collection is found by the meaning of its content/key —
         the hit CARRIES the value plus the collection_get that re-reads it, so for a
         short fact the find IS the answer (#1640).  The collection's OWN description
         is orthogonal, so only the entry surfaces (its container was not guessed)."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "knowledge-notes", "orbit nebula")
         await CollectionWriteTool(db, client, author="test").execute(
@@ -4135,11 +4010,10 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_entry_ranks_beside_its_collection(self, tmp_path, mock_llm):
+    async def test_entry_ranks_beside_its_collection(self, db, mock_llm):
         """The entry and its (also-matching) collection come back in ONE best-first
         list — the object outranks the entry here, both rendered by their own house
         pattern (#1640)."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await _create_collection(db, client, "aurora-watch", "aurora beacon cascade")
         await CollectionWriteTool(db, client, author="test").execute(
@@ -4160,11 +4034,10 @@ class TestFind:
         )
 
     @pytest.mark.asyncio
-    async def test_keyless_log_entry_renders_its_id_handle(self, tmp_path, mock_llm):
+    async def test_keyless_log_entry_renders_its_id_handle(self, db, mock_llm):
         """A keyless log entry renders its ``#<id>`` identity + the ``<log>#<id>``
         handle for entry_by_id-style retrieval — a log has no key to collection_get
         (#1640).  The log's OWN description is orthogonal, so only the entry surfaces."""
-        db = _make_db(tmp_path)
         client = _axis_client(mock_llm)
         await LogCreateTool(db, client).execute(name="aurora-log", description="orbit nebula")
         await LogAppendTool(db, client, author="test").execute(

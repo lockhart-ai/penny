@@ -6,9 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penny.channels.permission_manager import PermissionManager
-from penny.database import Database
 from penny.tests.conftest import wait_until
-from penny.tests.schema_template import migrated_db
 
 
 async def _resolve_pending(mgr: PermissionManager, decision: bool) -> None:
@@ -18,12 +16,6 @@ async def _resolve_pending(mgr: PermissionManager, decision: bool) -> None:
         if not future.done():
             future.set_result(decision)
             return
-
-
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = migrated_db(db_path)
-    return db
 
 
 def _make_manager(db, domain_mode="restrict"):
@@ -42,18 +34,16 @@ class TestDomainCheck:
     """Permission checks for known domains (no prompting needed)."""
 
     @pytest.mark.asyncio
-    async def test_allowed_domain_passes(self, tmp_path):
+    async def test_allowed_domain_passes(self, db):
         """No error raised when domain is allowed."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("example.com", "allowed")
         mgr, _cm = _make_manager(db)
 
         await mgr.check_domain("https://example.com/page")
 
     @pytest.mark.asyncio
-    async def test_blocked_domain_raises(self, tmp_path):
+    async def test_blocked_domain_raises(self, db):
         """RuntimeError raised when domain is blocked."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("blocked.com", "blocked")
         mgr, _cm = _make_manager(db)
 
@@ -61,18 +51,16 @@ class TestDomainCheck:
             await mgr.check_domain("https://blocked.com/")
 
     @pytest.mark.asyncio
-    async def test_parent_domain_matches(self, tmp_path):
+    async def test_parent_domain_matches(self, db):
         """Allowing example.com also allows www.example.com."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("example.com", "allowed")
         mgr, _cm = _make_manager(db)
 
         await mgr.check_domain("https://www.example.com/page")
 
     @pytest.mark.asyncio
-    async def test_domain_extracted_with_port_and_path(self, tmp_path):
+    async def test_domain_extracted_with_port_and_path(self, db):
         """Domain is extracted correctly from URLs with ports and query strings."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("example.com", "blocked")
         mgr, _cm = _make_manager(db)
 
@@ -84,9 +72,8 @@ class TestPromptFlow:
     """Unknown domain triggers prompt, stores result on response."""
 
     @pytest.mark.asyncio
-    async def test_unknown_domain_broadcasts_prompt(self, tmp_path):
+    async def test_unknown_domain_broadcasts_prompt(self, db):
         """Unknown domain broadcasts prompt via channel manager."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         asyncio.create_task(_resolve_pending(mgr, True))
@@ -98,9 +85,8 @@ class TestPromptFlow:
         assert db.domain_permissions.check_domain("newsite.com") == "allowed"
 
     @pytest.mark.asyncio
-    async def test_denial_stores_blocked(self, tmp_path):
+    async def test_denial_stores_blocked(self, db):
         """User denial stores the domain as blocked."""
-        db = _make_db(tmp_path)
         mgr, _cm = _make_manager(db)
 
         asyncio.create_task(_resolve_pending(mgr, False))
@@ -110,9 +96,8 @@ class TestPromptFlow:
         assert db.domain_permissions.check_domain("denied.com") == "blocked"
 
     @pytest.mark.asyncio
-    async def test_handle_decision_resolves_future(self, tmp_path):
+    async def test_handle_decision_resolves_future(self, db):
         """handle_decision from any channel resolves the pending future."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         async def decide_via_handle_decision() -> None:
@@ -132,11 +117,10 @@ class TestTimeout:
     """Permission prompt timeout behavior."""
 
     @pytest.mark.asyncio
-    async def test_timeout_does_not_store_domain(self, tmp_path):
+    async def test_timeout_does_not_store_domain(self, db):
         """Timeout does NOT store the domain — it stays unknown."""
         from unittest.mock import patch
 
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         with (
@@ -148,11 +132,10 @@ class TestTimeout:
         assert db.domain_permissions.check_domain("timeout.com") is None
 
     @pytest.mark.asyncio
-    async def test_timeout_broadcasts_dismiss(self, tmp_path):
+    async def test_timeout_broadcasts_dismiss(self, db):
         """Timeout broadcasts dismiss to all channels."""
         from unittest.mock import patch
 
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         with (
@@ -165,13 +148,12 @@ class TestTimeout:
         cm.broadcast_permission_dismiss.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_real_timeout_sends_dismiss(self, tmp_path):
+    async def test_real_timeout_sends_dismiss(self, db):
         """A real timeout (no response) broadcasts dismiss."""
         from unittest.mock import patch
 
         from penny.constants import PennyConstants
 
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         # Patch timeout to 0.1s
@@ -189,9 +171,8 @@ class TestSerialization:
     """Only one prompt at a time via the queue."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_same_domain_one_prompt(self, tmp_path):
+    async def test_concurrent_same_domain_one_prompt(self, db):
         """Two requests for the same domain produce only one prompt."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         asyncio.create_task(_resolve_pending(mgr, True))
@@ -205,10 +186,9 @@ class TestSerialization:
         assert cm.broadcast_permission_prompt.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_different_domains_queued_sequentially(self, tmp_path):
+    async def test_different_domains_queued_sequentially(self, db):
         """Two different unknown domains are prompted one at a time."""
 
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         async def approve_each() -> None:
@@ -232,9 +212,8 @@ class TestAllowAllMode:
     """allow_all mode auto-approves unknown domains without prompting."""
 
     @pytest.mark.asyncio
-    async def test_unknown_domain_auto_allowed(self, tmp_path):
+    async def test_unknown_domain_auto_allowed(self, db):
         """Unknown domain is auto-approved and stored without prompting."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db, domain_mode="allow_all")
 
         await mgr.check_domain("https://auto-allowed.com/page")
@@ -243,9 +222,8 @@ class TestAllowAllMode:
         cm.broadcast_permission_prompt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_blocked_domain_still_enforced(self, tmp_path):
+    async def test_blocked_domain_still_enforced(self, db):
         """Explicitly blocked domains are still rejected in allow_all mode."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("blocked.com", "blocked")
         mgr, _cm = _make_manager(db, domain_mode="allow_all")
 
@@ -253,9 +231,8 @@ class TestAllowAllMode:
             await mgr.check_domain("https://blocked.com/")
 
     @pytest.mark.asyncio
-    async def test_allowed_domain_still_passes(self, tmp_path):
+    async def test_allowed_domain_still_passes(self, db):
         """Already-allowed domains pass without re-storing."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("known.com", "allowed")
         mgr, cm = _make_manager(db, domain_mode="allow_all")
 
@@ -264,9 +241,8 @@ class TestAllowAllMode:
         cm.broadcast_permission_prompt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_multiple_unknown_domains_all_auto_allowed(self, tmp_path):
+    async def test_multiple_unknown_domains_all_auto_allowed(self, db):
         """Multiple unknown domains are all auto-approved."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db, domain_mode="allow_all")
 
         await mgr.check_domain("https://site-a.com/")
@@ -279,9 +255,8 @@ class TestAllowAllMode:
         cm.broadcast_permission_prompt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_allow_all_syncs_to_channels(self, tmp_path):
+    async def test_allow_all_syncs_to_channels(self, db):
         """Auto-approved domains trigger a domain permissions sync."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db, domain_mode="allow_all")
 
         await mgr.check_domain("https://synced.com/")
@@ -293,9 +268,8 @@ class TestDomainCRUD:
     """Domain CRUD operations store and sync."""
 
     @pytest.mark.asyncio
-    async def test_set_permission_stores_and_syncs(self, tmp_path):
+    async def test_set_permission_stores_and_syncs(self, db):
         """set_permission stores in DB and syncs to channels."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         await mgr.set_permission("example.com", "allowed")
@@ -304,9 +278,8 @@ class TestDomainCRUD:
         cm.sync_domain_permissions.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_delete_permission_removes_and_syncs(self, tmp_path):
+    async def test_delete_permission_removes_and_syncs(self, db):
         """delete_permission removes from DB and syncs to channels."""
-        db = _make_db(tmp_path)
         db.domain_permissions.set_permission("example.com", "allowed")
         mgr, cm = _make_manager(db)
 
@@ -316,9 +289,8 @@ class TestDomainCRUD:
         cm.sync_domain_permissions.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_prompted_approval_syncs(self, tmp_path):
+    async def test_prompted_approval_syncs(self, db):
         """Prompted domain approval syncs to channels."""
-        db = _make_db(tmp_path)
         mgr, cm = _make_manager(db)
 
         asyncio.create_task(_resolve_pending(mgr, True))

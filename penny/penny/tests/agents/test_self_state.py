@@ -44,10 +44,10 @@ from penny.tests.schema_template import schema_only_db
 USER = "+15550001111"
 
 
-def _db(tmp_path) -> Database:
-    """A fresh, empty database (schema only — no migration-seeded system rows)."""
-    db = schema_only_db(str(tmp_path / "self_state.db"))
-    return db
+@pytest.fixture
+def db(tmp_path):
+    """Schema-only database for this module (no migration-seeded rows)."""
+    return schema_only_db(str(tmp_path / "test.db"))
 
 
 def _add_collection(
@@ -443,8 +443,7 @@ def _seed_kitchen_sink(db: Database) -> None:
 # ── 1. Kitchen sink — every shape in one whole-render literal ─────────────
 
 
-def test_self_state_kitchen_sink_render(tmp_path):
-    db = _db(tmp_path)
+def test_self_state_kitchen_sink_render(db):
     _seed_kitchen_sink(db)
     actual = SelfStateHeader(db, USER).render()
     assert actual == _KITCHEN_SINK
@@ -453,11 +452,10 @@ def test_self_state_kitchen_sink_render(tmp_path):
 # ── 1b. on_advance trigger — the mechanisms line reads the source clause ───
 
 
-def test_self_state_on_advance_mechanism_render(tmp_path):
+def test_self_state_on_advance_mechanism_render(db):
     """A source-driven (on_advance) collection renders ``on advance of <log>`` in
     place of a cadence clause on the mechanisms line (#1604), so the trigger reads
     at a glance without a memory_metadata hop."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_log(session, "events-log", "an event stream", when=_t(6))
         _add_collection(
@@ -478,11 +476,10 @@ def test_self_state_on_advance_mechanism_render(tmp_path):
 # ── 1c. cron trigger — the mechanisms line reads the cron clause ───────────
 
 
-def test_self_state_cron_mechanism_render(tmp_path):
+def test_self_state_cron_mechanism_render(db):
     """A cron-scheduled collection renders ``cron <5-field expression>`` as its cadence
     clause on the mechanisms line (#1684, display form == invocation form), so the
     stated schedule reads at a glance and copies straight back as the ``trigger`` arg."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_collection(
             session,
@@ -502,8 +499,7 @@ def test_self_state_cron_mechanism_render(tmp_path):
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────
 
 
-def test_self_state_empty_render(tmp_path):
-    db = _db(tmp_path)
+def test_self_state_empty_render(db):
     actual = SelfStateHeader(db, None).render()
     assert actual == _EMPTY
 
@@ -511,8 +507,7 @@ def test_self_state_empty_render(tmp_path):
 # ── 3. Budget overflow — the cap line is visible ──────────────────────────
 
 
-def test_self_state_activity_overflow_render(tmp_path):
-    db = _db(tmp_path)
+def test_self_state_activity_overflow_render(db):
     with Session(db.engine) as session:
         _add_collection(
             session,
@@ -541,8 +536,7 @@ def test_self_state_activity_overflow_render(tmp_path):
 # ── 4. Archived-heavy — retired tombstones stay enumerable ────────────────
 
 
-def test_self_state_archived_heavy_render(tmp_path):
-    db = _db(tmp_path)
+def test_self_state_archived_heavy_render(db):
     with Session(db.engine) as session:
         _add_collection(
             session,
@@ -578,10 +572,9 @@ def test_self_state_archived_heavy_render(tmp_path):
 # feed retired with the collection (#1624, migration 0092).
 
 
-def test_self_state_taught_skills_only_render(tmp_path):
+def test_self_state_taught_skills_only_render(db):
     """The taught-skill registry renders each skill's FULL recipe (#1665) — name,
     intent, holes, and numbered steps, name order — the section's sole feed."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_skill(
             session,
@@ -620,11 +613,10 @@ def test_self_state_taught_skills_only_render(tmp_path):
 # RunOutcome vocabulary in the run lines when they land.
 
 
-def test_activity_run_lines_every_rendered_outcome(tmp_path):
+def test_activity_run_lines_every_rendered_outcome(db):
     """One run line per rendering RunOutcome — WORKED / FAILED / NO_WORK /
     INCOMPLETE — plus the zero-call form and the singular '1 call' form.
     (CANCELLED is excluded by design; pinned in the exclusion test below.)"""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_run(
             session,
@@ -681,7 +673,7 @@ def test_activity_run_lines_every_rendered_outcome(tmp_path):
 # invocation-form (``'<key>'`` — the value a read tool's ``key=`` receives).
 
 
-def test_activity_run_lines_carry_writes(tmp_path):
+def test_activity_run_lines_carry_writes(db):
     """The four writes-clause shapes in one render: a single-write run names its
     key + collection; a two-write run (exactly the key-sample cap) lists both keys
     with NO ellipsis; a three-write run compacts to a count + a two-key sample WITH
@@ -689,7 +681,6 @@ def test_activity_run_lines_carry_writes(tmp_path):
     was CREATED by an earlier run but LAST WRITTEN by this one, proving the clause
     reports the current-value writer (``last_written_by_run_id``), not the
     creator."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_collection(
             session, "knowledge", description="web-page facts", created_at=_t(6), updated_at=_t(6)
@@ -770,12 +761,11 @@ def test_activity_run_lines_carry_writes(tmp_path):
     assert actual == _RUN_WRITES
 
 
-def test_activity_run_line_multiple_collections(tmp_path):
+def test_activity_run_line_multiple_collections(db):
     """A run that wrote keyed entries to two collections renders one ``· wrote …``
     clause per collection, grouped by name (the join is run-type agnostic — a chat
     turn writing likes + dislikes would render the same way).  Groups render in
     name order (``dislikes`` before ``likes``)."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_collection(
             session, "likes", description="things liked", created_at=_t(6), updated_at=_t(6)
@@ -802,12 +792,11 @@ def test_activity_run_line_multiple_collections(tmp_path):
     assert actual == _RUN_WRITES_MULTI_COLLECTION
 
 
-def test_activity_excludes_cancelled_and_chat_runs(tmp_path):
+def test_activity_excludes_cancelled_and_chat_runs(db):
     """The two by-design exclusions, proven against a rendering sibling: a
     CANCELLED collector run (not a real cycle) and a chat run (no outcome, no
     target — already the conversation) are seeded NEWER than a worked sibling,
     yet only the sibling renders."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_run(
             session,
@@ -833,39 +822,35 @@ def test_activity_excludes_cancelled_and_chat_runs(tmp_path):
     assert actual == _EXCLUSION_RENDER
 
 
-def test_activity_mutation_lines_changed_fields_matrix(tmp_path):
+def test_activity_mutation_lines_changed_fields_matrix(db):
     """Every action × actor cell with a changed-fields detail: the multi-field
     'changed a, b' tail, user-run rows naming their run id, system rows none."""
-    db = _db(tmp_path)
     _seed_mutation_matrix(db, detail_factory=_changed_fields_detail)
     actual = SelfStateHeader(db, None).render()
     assert actual == _MUTATION_CHANGED_FIELDS_MATRIX
 
 
-def test_activity_mutation_lines_note_matrix(tmp_path):
+def test_activity_mutation_lines_note_matrix(db):
     """Every action × actor cell with a cause-note detail (the system-archive
     policy-reason shape, e.g. a max_runs retire)."""
-    db = _db(tmp_path)
     _seed_mutation_matrix(db, detail_factory=_note_detail)
     actual = SelfStateHeader(db, None).render()
     assert actual == _MUTATION_NOTE_MATRIX
 
 
-def test_activity_mutation_lines_no_detail_matrix(tmp_path):
+def test_activity_mutation_lines_no_detail_matrix(db):
     """Every action × actor cell with NO detail payload: the bare line — no
     tail, no dash."""
-    db = _db(tmp_path)
     _seed_mutation_matrix(db, detail_factory=_no_detail)
     actual = SelfStateHeader(db, None).render()
     assert actual == _MUTATION_BARE_MATRIX
 
 
-def test_activity_emission_lines_and_exclusions(tmp_path):
+def test_activity_emission_lines_and_exclusions(db):
     """Delivered autonomous sends (#1568) render as ``sent · …`` lines, interleaved
     by time with a run: a short body renders whole, a long one is snippet-truncated
     with an ellipsis, and a direct reply (no mechanism) seeded NEWER than an
     emission is excluded (it is the conversation, not its complement)."""
-    db = _db(tmp_path)
     with Session(db.engine) as session:
         _add_run(
             session,
@@ -946,10 +931,9 @@ def _seed_mutation_matrix(db: Database, *, detail_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_chat_system_prompt_composition(tmp_path):
+async def test_full_chat_system_prompt_composition(db):
     """The whole chat system prompt: Identity + Instructions + self-state header
     (the dynamic tail), with the speculative recall / profile / inventory gone."""
-    db = _db(tmp_path)
     _seed_kitchen_sink(db)
     agent = ChatAgent.__new__(ChatAgent)
     agent.db = db
