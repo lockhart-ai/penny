@@ -139,8 +139,20 @@ _artifacts (local, never committed): `<report dir>` · per-sample DBs beside the
 record of every run is its **assembled report, posted as a PR comment** (the iteration protocol,
 #1711). ALL raw artifacts — `manifest.json`, `results.jsonl`, the per-case `<case_id>.md`
 transcripts, the per-sample `<case>-<n>.db` files, and `dirty.diff` — live **locally on the eval
-host** under the `data/` tree, and **`EVAL_BASELINE` diffs against those local paths**. The report
-footer points at that local directory for audit. There is no committed-baseline tier.
+host**, and **`EVAL_BASELINE` diffs against those local paths**. The report footer points at that
+local directory for audit. There is no committed-baseline tier.
+
+**Local artifact home = the primary checkout's `data/eval-artifacts/` (#1734).** The `data/` bind
+mount is relative to the compose-file directory, so a `make eval` run from a *worktree* would
+otherwise write its artifacts under that worktree's `data/` — where they die when the worktree is
+swept post-merge. Instead, `make eval` / `make assemble` resolve the primary checkout host-side
+(from the shared git common dir, identical from every worktree) and bind-mount its
+`data/eval-artifacts` at `/penny/eval-artifacts`. A report run (one that declares `EVAL_LEVER`)
+with no explicit `EVAL_REPORT_DIR` defaults to a run-stamped `/penny/eval-artifacts/run-<stamp>` —
+i.e. `<primary-checkout>/data/eval-artifacts/run-<stamp>` on the host — so artifacts **survive the
+worktree that produced them being removed**, and `EVAL_BASELINE` can point a later run at a prior
+run's durable path. An explicit `EVAL_REPORT_DIR` is always honored (point it under
+`/penny/eval-artifacts` to keep it durable).
 
 ## Check-label stability (an authoring note)
 
@@ -182,7 +194,7 @@ so the tables and `<details>` read as source. This is the verbatim markdown a ru
 
 _(no completed turns recorded — the sample produced no finished model call, e.g. a harness timeout)_
 
-_artifacts (local, never committed): `/penny/data/eval-reports/run-20260721T051017Z` · per-sample DBs beside them · re-render: `EVAL_REPORT_DIR=/penny/data/eval-reports/run-20260721T051017Z make assemble`_
+_artifacts (local, never committed): `/penny/eval-artifacts/run-20260721T051017Z` · per-sample DBs beside them · re-render: `EVAL_REPORT_DIR=/penny/eval-artifacts/run-20260721T051017Z make assemble`_
 ````
 
 Sample 2 (a second clean pass) folds the same way and is omitted here. The run reads top-down: the

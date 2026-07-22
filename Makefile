@@ -8,6 +8,21 @@ EVAL_PYTEST_ARGS ?= penny/tests/eval/ -v -m eval -s
 # FIFO ticket directory for serializing make eval on the single-tenant GPU.
 EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 
+# --- Durable eval artifacts (#1734) ------------------------------------------
+# Eval artifacts (per-sample DBs, results.jsonl, manifests, transcripts) must
+# survive the worktree that ran them being swept post-merge. The `./data` bind
+# mount is relative to the compose-file dir (the CWD — a worktree when an agent
+# runs `make eval`), so anything written under it dies with that tree. Resolve
+# the PRIMARY checkout host-side from the shared git *common* dir — identical
+# from the primary checkout and every worktree, since all worktrees share one
+# `.git` — and mount its `data/eval-artifacts` at a stable container path. So
+# eval artifacts always land in the primary tree no matter which worktree ran
+# the eval. (stderr swallowed + `.` fallback so a non-repo/container parse of
+# this Makefile can't error; the mount is only wired onto eval/assemble.)
+EVAL_PRIMARY_CHECKOUT := $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
+EVAL_ARTIFACTS_HOST := $(EVAL_PRIMARY_CHECKOUT)/data/eval-artifacts
+EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
+
 .PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
@@ -92,10 +107,15 @@ token:
 ifdef LOCAL
 # Inside a container — run tools directly
 RUN = cd penny &&
+EVAL_RUN = cd penny &&
 else
 # On host — run tools inside Docker containers
 # --no-deps: dev tools don't need signal-api healthy (would block on first run)
 RUN = docker compose run --rm --no-deps penny
+# eval/assemble additionally bind-mount the primary checkout's durable artifact
+# dir (#1734) at $(EVAL_ARTIFACTS_MOUNT) — the only two targets that read/write
+# it — so their output survives the running worktree being swept.
+EVAL_RUN = docker compose run --rm --no-deps -v "$(EVAL_ARTIFACTS_HOST):$(EVAL_ARTIFACTS_MOUNT)" penny
 endif
 
 fix: $(if $(LOCAL),,build)
@@ -128,8 +148,13 @@ pytest: $(if $(LOCAL),,build)
 # never wedge the line) and no eval container already holds the GPU. The ticket
 # is held until the eval finishes — later arrivals cannot jump the queue. While
 # waiting, prints queue position and the current GPU holder for observability.
+# Durable reports (#1734): a report run (one that declares its EVAL_LEVER) with
+# no explicit EVAL_REPORT_DIR defaults to a run-stamped dir under the primary
+# checkout's mounted data/eval-artifacts, so artifacts survive the worktree that
+# ran the eval. An explicit EVAL_REPORT_DIR is always honored; a lever-less
+# iteration run stays ephemeral (no artifacts, no lever requirement) as before.
 eval: $(if $(LOCAL),,build)
-	@mkdir -p "$(EVAL_QUEUE_DIR)"; \
+	@mkdir -p "$(EVAL_QUEUE_DIR)" "$(EVAL_ARTIFACTS_HOST)"; \
 	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
 	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
 	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
@@ -147,12 +172,17 @@ eval: $(if $(LOCAL),,build)
 		echo "eval queued: $$ahead ahead of us$${busy:+; GPU held by $$busy} (ticket $$ticket)"; \
 		sleep $$((15 + $$$$ % 10)); \
 	done; \
-	$(RUN) env \
+	report_dir="$${EVAL_REPORT_DIR}"; \
+	if [ -z "$$report_dir" ] && [ -n "$${EVAL_LEVER}" ]; then \
+		report_dir="$(EVAL_ARTIFACTS_MOUNT)/run-$$(date -u +%Y%m%dT%H%M%SZ)"; \
+		echo "eval: reports → $$report_dir  (durable host dir: $(EVAL_ARTIFACTS_HOST))"; \
+	fi; \
+	$(EVAL_RUN) env \
 		LLM_API_URL="$${LLM_API_URL:-http://host.docker.internal:11434}" \
 		LLM_MODEL="$${LLM_MODEL:-gpt-oss:20b}" \
 		LLM_EMBEDDING_MODEL="$${LLM_EMBEDDING_MODEL:-embeddinggemma}" \
 		EVAL_SAMPLES="$${EVAL_SAMPLES:-5}" \
-		EVAL_REPORT_DIR="$${EVAL_REPORT_DIR}" \
+		EVAL_REPORT_DIR="$$report_dir" \
 		EVAL_BASELINE="$${EVAL_BASELINE}" \
 		EVAL_DUMP_THINKING="$${EVAL_DUMP_THINKING}" \
 		EVAL_LEVER="$${EVAL_LEVER}" \
@@ -163,12 +193,15 @@ eval: $(if $(LOCAL),,build)
 # Assemble a completed eval run's artifacts (manifest.json + results.jsonl + the
 # per-case <case_id>.md transcripts) into THE postable PR comment (#1717) and
 # print it to stdout. Pure artifact consumption — no model, no GPU, no queue — so
-# it runs straight through without the eval queue. EVAL_REPORT_DIR is the same
-# dir `make eval` wrote to (defaults to the standard bind-mounted report dir);
-# it's read from the recipe's shell env (`$${…}`), not a make `=` var, so
-# `EVAL_REPORT_DIR=… make assemble` takes effect.
+# it runs straight through without the eval queue. Mounts the same durable
+# artifact dir `make eval` writes to (#1734), so it reads a run that outlived its
+# worktree. EVAL_REPORT_DIR names the specific run dir to assemble (a run-stamped
+# subdir under $(EVAL_ARTIFACTS_MOUNT)); it's read from the recipe's shell env
+# (`$${…}`), not a make `=` var, so `EVAL_REPORT_DIR=… make assemble` takes
+# effect. Defaults to the durable mount root.
 assemble: $(if $(LOCAL),,build)
-	$(RUN) python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-/penny/data/eval-reports}"
+	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"
+	$(EVAL_RUN) python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test
