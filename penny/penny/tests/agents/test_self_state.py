@@ -39,15 +39,11 @@ from penny.database.mutation_store import MutationDetail
 from penny.database.skill_store import parameters_to_json, steps_to_json
 from penny.database.skills import SkillParameter, SkillStep, SkillSubKind, SkillSubstitution
 from penny.prompts import Prompt
-from penny.tests.schema_template import schema_only_db
 
 USER = "+15550001111"
 
 
-@pytest.fixture
-def db(tmp_path):
-    """Schema-only database for this module (no migration-seeded rows)."""
-    return schema_only_db(str(tmp_path / "test.db"))
+pytestmark = pytest.mark.bare_db
 
 
 def _add_collection(

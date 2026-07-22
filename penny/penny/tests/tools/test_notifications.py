@@ -18,14 +18,9 @@ from __future__ import annotations
 import pytest
 
 from penny.database import Database
-from penny.tests.schema_template import schema_only_db
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 
-
-@pytest.fixture
-def db(tmp_path):
-    """Schema-only database for this module (no migration-seeded rows)."""
-    return schema_only_db(str(tmp_path / "test.db"))
+pytestmark = pytest.mark.bare_db
 
 
 _RECIPIENT = "+15551234567"

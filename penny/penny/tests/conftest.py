@@ -118,26 +118,21 @@ def test_db(tmp_path) -> str:
 
 
 @pytest.fixture
-def db(tmp_path) -> Database:
-    """A ready-to-use database with the real startup schema — the default for a test.
+def db(request, tmp_path) -> Database:
+    """A ready-to-use database — the default for a test. Just add ``db`` as an argument.
 
-    Just add ``db`` as a test argument; no setup needed. It's a fast (~1ms) copy of a
-    process-cached template carrying the schema plus every migration — the same state
-    Penny boots with — so a test never pays to rebuild the schema. Reach for this
-    whenever a test needs a database; use ``bare_db`` only when you specifically need
-    a schema with no migration-seeded rows.
+    It's a fast (~1ms) copy of a process-cached schema template, so a test never pays
+    to rebuild the schema. By default it carries the real startup schema plus every
+    migration — the same state Penny boots with.
+
+    A ``@pytest.mark.bare_db`` marker (on the test or class, or on a whole module via
+    ``pytestmark = pytest.mark.bare_db``) instead yields a bare current-models schema
+    with NO migration-seeded rows — for low-level store tests that declare exactly the
+    memories they need (migration 0026 would otherwise seed system log memories).
     """
+    if request.node.get_closest_marker("bare_db"):
+        return schema_only_db(str(tmp_path / "test.db"))
     return migrated_db(str(tmp_path / "test.db"))
-
-
-@pytest.fixture
-def bare_db(tmp_path) -> Database:
-    """Like ``db``, but a bare current-models schema with NO migration-seeded rows.
-
-    For low-level store tests that declare exactly the memories they need (migration
-    0026 would otherwise seed system log memories). Same fast cached-template copy.
-    """
-    return schema_only_db(str(tmp_path / "test.db"))
 
 
 @pytest.fixture

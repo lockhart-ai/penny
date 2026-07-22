@@ -26,12 +26,6 @@ from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 
 
-def _make_db(tmp_path) -> Database:
-    db_path = str(tmp_path / "test.db")
-    db = migrated_db(db_path)
-    return db
-
-
 def _data_uri(raw: bytes, mime: str = "image/jpeg") -> str:
     """Wrap raw bytes as the base64 data URI the extension returns for images."""
     return f"data:{mime};base64,{base64.b64encode(raw).decode()}"
@@ -97,7 +91,7 @@ class TestBrowserPrepareOutgoing:
     """prepare_outgoing converts markdown to HTML."""
 
     def _channel(self, tmp_path):
-        db = _make_db(tmp_path)
+        db = migrated_db(str(tmp_path / "test.db"))
         return BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
 
     def test_bold(self, tmp_path):
@@ -475,7 +469,7 @@ class TestBrowserConfigHandlers:
     """config_request and config_update handlers send and persist correctly."""
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
-        db = _make_db(tmp_path)
+        db = migrated_db(str(tmp_path / "test.db"))
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
         # Give channel a real RuntimeParams so DB lookups work after updates
         config = MagicMock()
@@ -854,7 +848,7 @@ class TestBrowserPermissionDelegation:
 
     async def _setup_channel(self, tmp_path):
         """Create a channel with a registered, tool-enabled connection and permission manager."""
-        db = _make_db(tmp_path)
+        db = migrated_db(str(tmp_path / "test.db"))
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
         ws = _MockWs()
         await channel._process_raw_message(
@@ -1002,7 +996,7 @@ class TestBrowserPromptLogHandlers:
     """Prompt log request handlers: filtering, pagination, outcome tracking."""
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
-        db = _make_db(tmp_path)
+        db = migrated_db(str(tmp_path / "test.db"))
         channel = BrowserChannel(host="localhost", port=9999, message_agent=MagicMock(), db=db)
         return channel, db
 
@@ -1341,7 +1335,7 @@ class TestBrowserMemoryHandlers:
     """memories_request / memory_detail_request / memory_changed handlers."""
 
     def _channel(self, tmp_path) -> tuple[BrowserChannel, Database]:
-        db = _make_db(tmp_path)
+        db = migrated_db(str(tmp_path / "test.db"))
         # The create/edit handlers re-embed the description via the agent;
         # no embedding model in tests → an awaitable that returns None.
         agent = MagicMock()

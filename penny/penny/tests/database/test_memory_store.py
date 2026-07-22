@@ -33,23 +33,7 @@ from penny.llm.embeddings import deserialize_embedding, serialize_embedding
 from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import MemoryMetadataTool
 
-
-@pytest.fixture
-def db(tmp_path):
-    """Schema-only database for this module (no migration-seeded rows)."""
-    return schema_only_db(str(tmp_path / "test.db"))
-
-
-def _make_db(tmp_path) -> Database:
-    """Empty test DB with schema only — no migrations.
-
-    Migration 0026 seeds three system log memories; these tests exercise
-    the memory primitive in isolation and declare exactly the memories
-    they need.
-    """
-    db_path = str(tmp_path / "test.db")
-    db = schema_only_db(db_path)
-    return db
+pytestmark = pytest.mark.bare_db
 
 
 def _pin_provenance_timestamps(
@@ -552,7 +536,7 @@ class TestDegenerateContentRejection:
     """Write-time degenerate content guard — empty/punctuation, bare URLs, bail-out phrases."""
 
     def _make_collection(self, tmp_path):
-        db = _make_db(tmp_path)
+        db = schema_only_db(str(tmp_path / "test.db"))
         db.memories.create_collection("knowledge", "web summaries")
         return db
 

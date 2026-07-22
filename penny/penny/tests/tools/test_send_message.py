@@ -22,15 +22,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from penny.tests.schema_template import schema_only_db
 from penny.tools.models import SendMessageArgs
 from penny.tools.send_message import SendMessageTool
 
-
-@pytest.fixture
-def db(tmp_path):
-    """Schema-only database for this module (no migration-seeded rows)."""
-    return schema_only_db(str(tmp_path / "test.db"))
+pytestmark = pytest.mark.bare_db
 
 
 _RECIPIENT = "+15551234567"

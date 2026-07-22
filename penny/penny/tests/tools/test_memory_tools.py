@@ -84,23 +84,7 @@ from penny.tools.memory_tools import (
     collector_tool_surface,
 )
 
-
-@pytest.fixture
-def db(tmp_path):
-    """Schema-only database for this module (no migration-seeded rows)."""
-    return schema_only_db(str(tmp_path / "test.db"))
-
-
-def _make_db(tmp_path) -> Database:
-    """Empty test DB with schema only — no migrations.
-
-    Migration 0026 seeds three system log memories; these tool tests
-    exercise the tool surface in isolation and declare exactly the
-    memories they need.
-    """
-    db_path = str(tmp_path / "test.db")
-    db = schema_only_db(db_path)
-    return db
+pytestmark = pytest.mark.bare_db
 
 
 def _make_llm_client(mock_llm) -> LlmClient:
@@ -1496,7 +1480,10 @@ class TestInertCollections:
         blank_dir, omit_dir = tmp_path / "blank", tmp_path / "omit"
         blank_dir.mkdir()
         omit_dir.mkdir()
-        blank_db, omit_db = _make_db(blank_dir), _make_db(omit_dir)
+        blank_db, omit_db = (
+            schema_only_db(str(blank_dir / "test.db")),
+            schema_only_db(str(omit_dir / "test.db")),
+        )
 
         # CREATE parity: "" for skill/trigger/expires_at == leaving them off.
         blank_create = await CollectionCreateTool(blank_db, cast(Any, MockLlmClient())).execute(
