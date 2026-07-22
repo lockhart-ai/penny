@@ -48,7 +48,7 @@ from penny.skill_extraction import (
     SkillExtractor,
 )
 from penny.tests.mocks.llm_patches import MockLlmClient
-from penny.tests.schema_template import migrated_db, schema_only_db
+from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.skill_tools import render_skill_full
 
@@ -69,9 +69,7 @@ _BROWSE = ("browse", _BROWSE_ARGS, _BROWSE_OK, True)
 _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
 
 
-def _make_db(tmp_path) -> Database:
-    db = schema_only_db(str(tmp_path / "test.db"))
-    return db
+pytestmark = pytest.mark.bare_db
 
 
 def _extractor(
@@ -139,12 +137,11 @@ def _log_run(
 
 
 @pytest.mark.asyncio
-async def test_read_write_run_qualifies_and_distils_correctly(tmp_path):
+async def test_read_write_run_qualifies_and_distils_correctly(db):
     """A browse (read) + collection_write (act) run is a routine: it qualifies and a
     skill is extracted with the query/extract as required holes, the write content
     bound to the browse result, and the write target NOT a hole (retarget owns it).
     The description is the run's bare utterance; the framework ``reasoning`` is gone."""
-    db = _make_db(tmp_path)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db).extract("run-A")
@@ -166,14 +163,13 @@ async def test_read_write_run_qualifies_and_distils_correctly(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
+async def test_auto_attach_to_collection_created_by_the_same_run(db):
     """The demonstrated round created its own write target → the skill auto-attaches
     framework-side: the collection's prompt is the rendered skill, provenance is
     stamped, params bind to the DEMONSTRATED values, and the job stays trigger-less
     (nothing dispatches until the schedule binds via collection_set).  A round
     that wrote into a PRE-EXISTING collection attaches nothing — the join is the
     ``created_by_run_id`` stamp, never a guess."""
-    db = _make_db(tmp_path)
     db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
     extractor = _extractor(db)
@@ -205,10 +201,9 @@ async def test_auto_attach_to_collection_created_by_the_same_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pure_read_run_is_excluded(tmp_path):
+async def test_pure_read_run_is_excluded(db):
     """A run that only READ (answering a question) is not a routine → PURE_READ, no
     skill."""
-    db = _make_db(tmp_path)
     _log_run(db, "run-A", "what does the aurora deck 2 cost?", [_BROWSE])
 
     result = await _extractor(db).extract("run-A")
@@ -218,10 +213,9 @@ async def test_pure_read_run_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pure_write_run_is_excluded(tmp_path):
+async def test_pure_write_run_is_excluded(db):
     """A run that only WROTE ('remember this' — the storage atom) is a plain write,
     not a job → PURE_WRITE, no skill."""
-    db = _make_db(tmp_path)
     _log_run(db, "run-A", "remember the aurora deck 2 is $499", [_WRITE])
 
     result = await _extractor(db).extract("run-A")
@@ -231,11 +225,10 @@ async def test_pure_write_run_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_write_only_run_is_excluded(tmp_path):
+async def test_failed_write_only_run_is_excluded(db):
     """A run whose only write FAILED does not qualify: the failed call is filtered,
     leaving a pure read → PURE_READ, no skill (visible degradation, not a half-baked
     skill)."""
-    db = _make_db(tmp_path)
     failed_write = ("collection_write", _WRITE_ARGS, "write failed", False)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, failed_write])
 
@@ -246,10 +239,9 @@ async def test_failed_write_only_run_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bail_nudged_run_is_excluded(tmp_path):
+async def test_bail_nudged_run_is_excluded(db):
     """A run poisoned by a text-bail nudge (the model failed to route a call through
     the tool channel) is unhealthy → BAILED, no skill — even though it read+wrote."""
-    db = _make_db(tmp_path)
     _log_run(
         db,
         "run-A",
@@ -265,9 +257,8 @@ async def test_bail_nudged_run_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_with_no_tool_calls_is_excluded(tmp_path):
+async def test_run_with_no_tool_calls_is_excluded(db):
     """A pure-conversation turn (no tool calls at all) yields NO_TOOL_CALLS."""
-    db = _make_db(tmp_path)
     _log_run(db, "run-A", "hey how's it going", [])
 
     result = await _extractor(db).extract("run-A")
@@ -276,10 +267,9 @@ async def test_run_with_no_tool_calls_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_with_no_certified_steps_is_excluded(tmp_path):
+async def test_run_with_no_certified_steps_is_excluded(db):
     """When a run had calls but NONE succeeded (or a pre-#1600 run has no stamps),
     nothing certifies → NO_CERTIFIED_STEPS, no skill (never an empty skill)."""
-    db = _make_db(tmp_path)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE], stamp_success=False)
 
     result = await _extractor(db).extract("run-A")
@@ -291,10 +281,9 @@ async def test_run_with_no_certified_steps_is_excluded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_step_is_filtered_from_the_routine(tmp_path):
+async def test_failed_step_is_filtered_from_the_routine(db):
     """A failed exploratory read is DROPPED (#1659 filter-not-refuse); the surviving
     browse + write still qualify and the extracted skill omits the failed call."""
-    db = _make_db(tmp_path)
     failed_read = ("collection_read_latest", {"memory": "notes"}, "read failed", False)
     _log_run(db, "run-A", _UTTERANCE, [failed_read, _BROWSE, _WRITE])
 
@@ -311,12 +300,11 @@ async def test_failed_step_is_filtered_from_the_routine(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(tmp_path):
+async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(db):
     """The deterministic-slug FALLBACK (#1665): with a bare model (no NAME:/DESCRIPTION:
     naming draw), the name falls back to a slug of the triggering message — the URL is
     removed, lowercased, non-alphanumeric collapsed to hyphens, capped at 6 words — and
     the full message stays the description."""
-    db = _make_db(tmp_path)
     utterance = (
         "Read the Aurora Deck 2 listing at https://faux-market.test/aurora-deck-2, "
         "find the current price, and remember it."
@@ -334,10 +322,9 @@ async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reteaching_the_same_utterance_replaces_by_name(tmp_path):
+async def test_reteaching_the_same_utterance_replaces_by_name(db):
     """Re-demonstrating a routine whose message slugs to an existing skill name
     REPLACES that skill in place (one row, the newer steps)."""
-    db = _make_db(tmp_path)
     extractor = _extractor(db)
 
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
@@ -355,11 +342,10 @@ async def test_reteaching_the_same_utterance_replaces_by_name(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_shape_and_meaning_replaces_keeping_existing_name(tmp_path):
+async def test_same_shape_and_meaning_replaces_keeping_existing_name(db):
     """A re-demonstration with a DIFFERENT wording (so a different slug) but the SAME
     tool sequence AND a description embedding within the house dedup threshold
     REPLACES the existing skill, keeping ITS name — the clean/flaky demo collapse."""
-    db = _make_db(tmp_path)
     mock = MockLlmClient()
 
     # Both descriptions embed to the same vector (the aurora topic), so their cosine
@@ -386,10 +372,9 @@ async def test_same_shape_and_meaning_replaces_keeping_existing_name(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_different_meaning_inserts_a_new_skill(tmp_path):
+async def test_different_meaning_inserts_a_new_skill(db):
     """A same-shape run whose meaning differs (embedding below threshold) is a NEW
     skill, never a false-replace — two skills coexist."""
-    db = _make_db(tmp_path)
     mock = MockLlmClient()
 
     def embed_handler(_model: str, texts: str | list[str]) -> list[list[float]]:
@@ -412,10 +397,9 @@ async def test_different_meaning_inserts_a_new_skill(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_collector_run_is_not_extracted(tmp_path):
+async def test_collector_run_is_not_extracted(db):
     """A run whose prompts are NOT the chat agent's (a background collector cycle)
     never yields a skill → NOT_CHAT, so extraction is chat-only by construction."""
-    db = _make_db(tmp_path)
     db.messages.log_prompt(
         model="m",
         messages=[{"role": "user", "content": ""}],
@@ -485,11 +469,10 @@ def _naming_model(content: str) -> MockLlmClient:
 
 
 @pytest.mark.asyncio
-async def test_orientation_find_step_is_dropped_from_the_recipe(tmp_path):
+async def test_orientation_find_step_is_dropped_from_the_recipe(db):
     """A run that ORIENTS (find) then reads + writes is a routine, but the find call
     is registry-navigation, not routine: it is dropped from the distilled steps, and a
     find result echoing the query never manufactures a false binding (#1665)."""
-    db = _make_db(tmp_path)
     find = ("find", {"query": "watch a listing price"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _BROWSE, _WRITE])
 
@@ -503,11 +486,10 @@ async def test_orientation_find_step_is_dropped_from_the_recipe(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_find_plus_write_only_is_a_pure_write_not_a_skill(tmp_path):
+async def test_find_plus_write_only_is_a_pure_write_not_a_skill(db):
     """A find + write run has NO content read once orientation is excluded — a find
     does not count as the qualifying read — so it is a pure write (the storage atom),
     not a skill (#1665)."""
-    db = _make_db(tmp_path)
     find = ("find", {"query": "aurora prices"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _WRITE])
 
@@ -521,13 +503,12 @@ async def test_find_plus_write_only_is_a_pure_write_not_a_skill(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_wrapped_write_value_binds_against_the_result_payload(tmp_path):
+async def test_wrapped_write_value_binds_against_the_result_payload(db):
     """A write value that WRAPS the browse output ('Current price … is $499.') binds
     to the browse step — the comparison strips the tool-result FRAME to its payload
     ('$499'), so the wraps direction fires (#1665/#1661 item 3).  The 'content' leaf
     is a binding, never a nonsense required parameter; a topic-name KEY still doesn't
     bind (it stays a real parameter)."""
-    db = _make_db(tmp_path)
     browse = ("browse", {"queries": ["aurora deck 2 listing"]}, _REAL_BROWSE_FRAME, True)
     write = ("collection_write", _WRAP_WRITE_ARGS, _WRITE_OK, True)
     _log_run(db, "run-A", _UTTERANCE, [browse, write])
@@ -547,12 +528,11 @@ async def test_wrapped_write_value_binds_against_the_result_payload(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(tmp_path):
+async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(db):
     """A qualifying run's skill is named GENERICALLY by the naming micro-context: a
     tagged NAME:/DESCRIPTION: draw becomes the skill's slugged name + generic
     description (which the description_embedding anchors), NOT the instance
     utterance (#1665).  The demonstrated-on instance rides back for the frame."""
-    db = _make_db(tmp_path)
     model = _naming_model(
         "NAME: Watch a listing price\nDESCRIPTION: Look up a price on a listing page and record it."
     )
@@ -582,11 +562,10 @@ async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(t
 
 
 @pytest.mark.asyncio
-async def test_untagged_naming_falls_back_to_the_deterministic_slug(tmp_path):
+async def test_untagged_naming_falls_back_to_the_deterministic_slug(db):
     """When the naming micro-context never produces both tags, extraction does NOT
     block: it falls back to the deterministic slug of the triggering message + that
     message as the description (#1665)."""
-    db = _make_db(tmp_path)
     model = _naming_model("I think this is a price-watching routine of some kind.")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -601,13 +580,12 @@ async def test_untagged_naming_falls_back_to_the_deterministic_slug(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tagged_param_labels_become_semantic_names_and_descriptions(tmp_path):
+async def test_tagged_param_labels_become_semantic_names_and_descriptions(db):
     """The naming micro-context relabels each parameter (#1668): tagged PARAM lines
     (keyed by the CURRENT arg-derived name) become the skill's SEMANTIC parameter
     names + descriptions, they render in the parameters block AND as ``{name}``
     placeholders in the steps, and binding is by the semantic name (display form ==
     invocation form) — the binding key at instantiation."""
-    db = _make_db(tmp_path)
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price on a listing page and record it.\n"
@@ -635,11 +613,10 @@ async def test_tagged_param_labels_become_semantic_names_and_descriptions(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_param_labelling_falls_back_per_parameter(tmp_path):
+async def test_param_labelling_falls_back_per_parameter(db):
     """Per-parameter fallback, not all-or-nothing (#1668): a parameter the model
     labels gets its semantic name + description; one it omits keeps its arg-derived
     name and carries no description."""
-    db = _make_db(tmp_path)
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price and record it.\n"
@@ -658,12 +635,11 @@ async def test_param_labelling_falls_back_per_parameter(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_semantic_names_are_hardened_slugged_and_deduped(tmp_path):
+async def test_semantic_names_are_hardened_slugged_and_deduped(db):
     """Deterministic hardening of returned names (#1668, load-bearing — the name is
     the binding key): 'Page URL' slugs to 'page_url' (lowercase, spaces→underscores),
     and two parameters that slug to the SAME name are disambiguated with a numeric
     suffix so a binding key can never collide."""
-    db = _make_db(tmp_path)
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price and record it.\n"
@@ -689,13 +665,12 @@ _CREATE_OK = "You set up a collection: (collection_set result)\nCreated collecti
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_call_is_dropped_from_the_recipe(tmp_path):
+async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     """A demo that sets up a container mid-run (collection_set — a lifecycle call
     a collector can never run) has that step DROPPED from the captured skill (#1668):
     a skill renders into a collector prompt, so only collector-runnable steps belong
     in it.  The create's args (name/description) never become nonsense parameters,
     and the create doesn't count toward the read/write taxonomy."""
-    db = _make_db(tmp_path)
     create = (
         "collection_set",
         {"name": "widget-prices", "description": "watch the widget price"},

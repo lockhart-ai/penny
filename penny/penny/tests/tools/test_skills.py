@@ -22,7 +22,6 @@ from penny.database.skills import (
     retarget_writes,
     unbound_required_parameters,
 )
-from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.skill_tools import SkillReadTool
 
 # ── Fixtures: a fictional "watch the elevation of a peak" demonstration ────────
@@ -60,18 +59,6 @@ _BROWSE_FAILED = (
     "You searched for 'Zephyr Ridge elevation' but couldn't read anything "
     "(browse result)\n## browse error: unreachable"
 )
-
-
-def _make_db(tmp_path) -> Database:
-    db = schema_only_db(str(tmp_path / "test.db"))
-    return db
-
-
-def _migrated_db(tmp_path) -> Database:
-    """A DB built exactly like prod (create_tables then migrate) — what a fresh
-    install's skill registry actually contains (migration 0084: table, no rows)."""
-    db = migrated_db(str(tmp_path / "seeded.db"))
-    return db
 
 
 def _elevation_steps() -> list[SkillStep]:
@@ -304,11 +291,11 @@ def _seed_skill(db: Database, name: str) -> None:
     )
 
 
+@pytest.mark.bare_db
 @pytest.mark.asyncio
-async def test_skill_read_renders_one_and_lists_all(tmp_path):
+async def test_skill_read_renders_one_and_lists_all(db):
     """``skill_read(name)`` renders one full recipe; bare ``skill_read()`` lists
     every skill; an unknown name is an actionable miss."""
-    db = _make_db(tmp_path)
     _seed_skill(db, "Watch elevation")
     read = SkillReadTool(db)
 
@@ -337,10 +324,9 @@ _EMPTY_LISTING = (
 
 
 @pytest.mark.asyncio
-async def test_fresh_migrated_registry_is_empty_and_reads_honestly(tmp_path):
+async def test_fresh_migrated_registry_is_empty_and_reads_honestly(db):
     """A prod-identical DB (create_tables + migrate) has the skill table and ZERO
     rows — no seeds — and skill_read() renders the honest empty state verbatim."""
-    db = _migrated_db(tmp_path)
     assert db.skills.list_all() == []
     listing = await SkillReadTool(db).execute()
     assert listing.success
