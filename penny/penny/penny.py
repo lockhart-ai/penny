@@ -33,6 +33,7 @@ from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError
+from penny.plugins import Plugin, load_plugins
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
@@ -68,6 +69,7 @@ class Penny:
         self._init_database(config)
         self._init_llm_clients(config)
         self._init_email(config)
+        self._init_plugins(config)
         self._init_agents(config)
         self._init_commands(config)
         self._init_channel(config, channel)
@@ -200,6 +202,24 @@ class Penny:
 
         return build
 
+    def _init_plugins(self, config: Config) -> None:
+        """Load configured plugins and collect their tools for the chat surface.
+
+        Plugins are self-contained integrations (Zoho calendar/projects,
+        InvoiceNinja, etc.) that contribute LLM-callable tools. Only plugins
+        listed in config.plugins and fully configured are loaded.
+        """
+        self.plugins: list[Plugin] = load_plugins(config)
+        self.plugin_tools: list[Tool] = []
+        for plugin in self.plugins:
+            self.plugin_tools.extend(plugin.get_tools())
+        if self.plugin_tools:
+            logger.info(
+                "Loaded %d plugin(s) contributing %d tool(s)",
+                len(self.plugins),
+                len(self.plugin_tools),
+            )
+
     def _init_agents(self, config: Config) -> None:
         """Create chat agent + collector dispatcher + schedule executor.
 
@@ -217,6 +237,7 @@ class Penny:
             embedding_model_client=self.embedding_model_client,
             image_client=self.image_client,
             email_tools_builder=self.email_tools_builder,
+            plugin_tools=self.plugin_tools,
         )
         self.collector = Collector(
             model_client=self.model_client,
@@ -645,6 +666,8 @@ class Penny:
             await self.embedding_model_client.close()
         if self.email_client:
             await self.email_client.close()
+        for plugin in self.plugins:
+            await plugin.close()
         logger.info("Agent shutdown complete")
 
 

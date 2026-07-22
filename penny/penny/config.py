@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import logging.handlers
 import os
@@ -109,6 +110,26 @@ def _validate_channel_config(channel_type: str, ios_enabled: bool) -> None:
         _validate_ios_config()
 
 
+def _parse_plugins_env(value: str | None) -> list[str]:
+    """Parse the PLUGINS env var as a JSON list or comma-separated string.
+
+    Examples:
+        PLUGINS=["zoho", "invoiceninja"]
+        PLUGINS=zoho,invoiceninja
+    """
+    if not value:
+        return []
+    value = value.strip()
+    if value.startswith("["):
+        try:
+            plugins = json.loads(value)
+            if isinstance(plugins, list):
+                return [str(p).strip() for p in plugins if p]
+        except json.JSONDecodeError:
+            pass
+    return [name.strip() for name in value.split(",") if name.strip()]
+
+
 def _validate_embedding_config() -> None:
     """Ensure the required embedding model is configured.
 
@@ -159,6 +180,9 @@ def _collect_env_vars(channel_type: str) -> dict:
         "zoho_api_id": os.getenv("ZOHO_API_ID"),
         "zoho_api_secret": os.getenv("ZOHO_API_SECRET"),
         "zoho_refresh_token": os.getenv("ZOHO_REFRESH_TOKEN"),
+        "invoiceninja_api_token": os.getenv("INVOICENINJA_API_TOKEN"),
+        "invoiceninja_url": os.getenv("INVOICENINJA_URL"),
+        "plugins": _parse_plugins_env(os.getenv("PLUGINS")),
         "browser_enabled": os.getenv("BROWSER_ENABLED", "").lower() in ("1", "true", "yes"),
         "browser_host": os.getenv("BROWSER_HOST", "localhost"),
         "browser_port": int(os.getenv("BROWSER_PORT", "9090")),
@@ -242,13 +266,20 @@ class Config:
     # Scheduler tick interval (seconds)
     scheduler_tick_interval: float = 1.0
 
-    # Zoho Mail (optional) — enables the email tools on the chat surface
+    # Zoho Mail/Calendar/Projects (optional) — enables the email + plugin tools
     zoho_api_id: str | None = None
     zoho_api_secret: str | None = None
     zoho_refresh_token: str | None = None
 
     # Fastmail JMAP (optional) — enables the email tools on the chat surface
     fastmail_api_token: str | None = None
+
+    # InvoiceNinja (optional) — enables the invoice plugin tools
+    invoiceninja_api_token: str | None = None
+    invoiceninja_url: str | None = None
+
+    # Plugin system: list of plugin names to load from penny.plugins
+    plugins: list[str] = field(default_factory=list)
 
     # Browser extension server (runs alongside primary channel)
     browser_enabled: bool = False

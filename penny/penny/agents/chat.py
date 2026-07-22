@@ -80,6 +80,7 @@ class ChatAgent(Agent):
         self,
         image_client: OllamaImageClient | None = None,
         email_tools_builder: Callable[[str, str], list[Tool]] | None = None,
+        plugin_tools: list[Tool] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -88,6 +89,10 @@ class ChatAgent(Agent):
         # per-turn tool builders (email read summarisation) can see what the
         # user just asked.  Set in ``handle`` and cleared in its ``finally``.
         self._current_message: str | None = None
+        # Static plugin tools registered at startup. These are shared integrations
+        # (Zoho calendar/projects, InvoiceNinja, etc.) that do not need per-turn
+        # rebuilding, unlike email tools.
+        self._plugin_tools: list[Tool] = plugin_tools or []
         # Chat replies via final text — tools are stripped on the final
         # agentic step to force the model to produce its reply.  Background
         # agents inherit the True default to keep tools available so they
@@ -139,6 +144,7 @@ class ChatAgent(Agent):
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)
             )
         tools.extend(self._email_tools())
+        tools.extend(self._plugin_tools)
         return tools
 
     def _email_tools(self) -> list[Tool]:
