@@ -107,9 +107,9 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
         "being set up"
     ),
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills states it does exactly what they are asking "
-        "for — mere resemblance to a skill is not coverage — add a second line "
-        f"naming that skill: {SKILL_TAG} <its name, copied exactly from Known "
+        "one of the known skills does what they are asking for — mere "
+        "resemblance to a skill is not coverage — add a second line naming "
+        f"that skill: {SKILL_TAG} <its name, copied exactly from Known "
         "skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (

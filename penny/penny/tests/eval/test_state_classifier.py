@@ -175,18 +175,20 @@ _BOUNDARY_POOL = [
 
 # Mixed-message boundary — chat preamble + a covered ask in ONE message: the
 # routine half wins (apply, with the skill bound); the chat half never
-# suppresses it.
+# suppresses it.  Every ask names the price EXPLICITLY (a contract case tests
+# the transition on clear inputs; paraphrase tolerance is the advisory
+# boundary case's business).
 _MIXED_POOL = [
     "morning! oh and can you watch the price on the den camera kit listing?",
     "bakery ran out of croissants again lol — anyway, watch the espresso grinder price for me?",
-    "that hike was gorgeous. also, track what the spotting scope is going for?",
+    "that hike was gorgeous. also, track the spotting scope's price for me?",
     "thanks, super helpful! one more thing — watch the kayak rental price?",
     "my sister's visiting next weekend. btw can you keep tabs on the surfboard listing price?",
     "what a day. anyway — monitor the modular synth listing price for me, ok?",
     "the ferry was packed this morning. oh — watch the season pass price too?",
     "haha fair enough. hey, can you track the pinball machine's asking price?",
     "good morning! quick one: keep watching the den camera kit price?",
-    "nice, that worked. also can you follow the campsite fee page for rate changes?",
+    "nice, that worked. also can you watch the price on the campsite booking page?",
 ]
 
 
