@@ -803,11 +803,15 @@ class TestDegenerateOutputGuard:
         envelope is excluded — that shape belongs to ``CallAsTextValidator``."""
         assert ChatAgent._reroll_call_fragments is True
         assert Agent._reroll_call_fragments is False
-        # Predicate edges: bare fragment matches; the full call envelope and
-        # mid-prose JSON do not (zero-false-positive discipline).
+        # Predicate edges: a bare fragment and a bare `{}` empty-object reply (the #1732
+        # nudge-loop tail) match; the full call envelope and mid-prose JSON do not
+        # (zero-false-positive discipline).
         assert is_call_fragment_reply('{"memory": "rip? wait we need entries"}') is True
+        assert is_call_fragment_reply("{}") is True
+        assert is_call_fragment_reply("{ }\n") is True
         assert is_call_fragment_reply('{"name": "done", "arguments": {}}') is False
         assert is_call_fragment_reply('I saved it as {"key": "price"} for you') is False
+        assert is_call_fragment_reply("An empty JSON object is {}.") is False
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
         agent._reroll_call_fragments = True  # the ChatAgent polarity, on the test agent

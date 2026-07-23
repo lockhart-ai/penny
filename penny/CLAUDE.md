@@ -624,6 +624,29 @@ so the PR-comment renderer renders one shape). Deterministic contracts (no live 
 scan + stamping + render in `tests/test_eval_harness.py`, the artifact fields + pure classifier in
 `tests/eval/test_artifacts.py`.
 
+**The nudge-loop / bare-`{}` boundary (#1732).** A #1731 spiral — a chat browse-extract run that
+looped on parse-failure recovery nudges (re-browsing the same page each cycle) and died at the turn
+timeout with a bare `{}` reply — was tagged **harness** (a `TimeoutError` ended it) but the *loop*,
+not the clock, was the event. Two boundary questions, resolved to the narrowest honest rule:
+- **The terminal `{}` IS pathology.** `is_call_fragment_reply` (in `text_validity.py`, the *shared*
+  detector the live reroll guard and the scan both use) was widened to catch a reply that is nothing
+  but an empty JSON object (`{}` / `{ }` / `{}\n`, `_EMPTY_OBJECT_REPLY_RE`) — the degenerate tail of
+  a forced tool-call attempt leaked into the text channel. The old `{"`-prefix gate missed it (an
+  empty object has no string key). Anchored to the whole stripped reply → zero-false-positive (a reply
+  *about* `{}` carries prose; Penny never SENDS a bare `{}`), and the full call envelope
+  `{"name":…,"arguments":…}` stays excluded (its teaching validators own it). Widening the *shared*
+  detector — not just the scan — keeps #1695's "same detectors live and post-hoc" invariant: the live
+  chat guard now discards+rerolls a `{}` reply too (a strict improvement — it was being delivered).
+- **Nudge frames are NOT counted.** Repeated recovery nudges are *input* messages; counting them would
+  forfeit the output-only injection-immunity (an `_Inject*` case produces exactly one live nudge by
+  design, so naive counting would false-tag its fail path pathology) and would need an arbitrary
+  threshold. The nudge loop is a *symptom* whose *cause* is the model's own fragment OUTPUT — the
+  terminal `{}` the widened detector now catches — so classifying on that output tags the spiral at the
+  root while the output-only immunity holds. A count threshold and threading the runner's
+  `bail_injected` into classification were both considered and rejected (arbitrary cap / classifier↔runner
+  coupling for a case the output scan already handles). Cause ordering is unchanged: pathology still
+  outranks the timeout, so the spiral reads pathology, not harness.
+
 **Regression-aware reports + thinking at failed turns (#1693).** When `EVAL_BASELINE` names a
 prior run's report directory (or its `results.jsonl`), the per-sample report diffs each graded
 check against that prior run and marks a NOW-FAILING check **REGRESSED** (`❌ 🔻 REGRESSED`) when
