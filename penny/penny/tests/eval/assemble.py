@@ -21,8 +21,11 @@ Given a completed run's report directory it emits one markdown comment (v3, #172
 
 Pure artifact + transcript consumption: no model, no git, no network — so it's exercised by
 plain (non-eval) whole-render tests. The gate value is read from each ``CaseArtifact``'s
-``min_pass_rate`` / ``gate_metric``; the flips index reads the baseline (``EVAL_BASELINE``),
-joining on ``(case_id, label)`` — the same diff key the per-sample REGRESSED marks use.
+``min_pass_rate`` / ``gate_metric``; the flips index resolves the baseline from the run's DURABLE
+manifest reference (``RunManifest.baseline``, recorded at eval time; ``EVAL_BASELINE`` overrides
+for an ad-hoc re-diff), joining on ``(case_id, label)`` — the same diff key the per-sample REGRESSED
+marks use. Reading a durable reference (not a volatile env at assemble time) is what keeps the
+header flips index consistent with the per-row badges baked into the transcripts (#1752).
 
 Run it via ``python -m penny.tests.eval.assemble <report_dir>`` (writes the comment to stdout).
 """
@@ -43,7 +46,7 @@ from penny.tests.eval.artifacts import (
     pathology_excluded,
     render_manifest_header,
 )
-from penny.tests.eval.baseline import Baseline, baseline_from_env
+from penny.tests.eval.baseline import Baseline, resolve_baseline
 
 # ── Section literals (no magic strings) ──────────────────────────────────────
 RESULT_LABEL = "**RESULT:**"
@@ -65,7 +68,11 @@ def assemble_run_comment(report_dir: Path) -> str:
     header, one section per case (heading only when multi-case), and the local-artifacts footer."""
     manifest = load_manifest(report_dir)
     artifacts = load_case_artifacts(report_dir)
-    baseline = baseline_from_env()  # a prior run's results.jsonl → the flips index (#1693/#1725)
+    # The flips index reads the run's DURABLE baseline reference (recorded in the manifest at eval
+    # time), so it survives to assemble time even when `make assemble` carries no EVAL_BASELINE —
+    # the divergence that dropped the flips line while the baked per-row REGRESSED badges stayed
+    # (#1752).
+    baseline = resolve_baseline(manifest.baseline)
     multi = len(artifacts) > 1
     sections = [render_run_header(manifest, artifacts, baseline)]
     sections += [_case_section(report_dir, manifest, artifact, multi) for artifact in artifacts]

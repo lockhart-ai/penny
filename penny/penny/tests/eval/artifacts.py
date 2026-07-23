@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 # ── Environment contract (forwarded by the Makefile `eval` target) ───────────
 EVAL_REPORT_DIR_ENV = "EVAL_REPORT_DIR"
 EVAL_LEVER_ENV = "EVAL_LEVER"
+EVAL_BASELINE_ENV = "EVAL_BASELINE"
 EVAL_COMMIT_ENV = "EVAL_COMMIT"
 EVAL_DIRTY_DIFF_ENV = "EVAL_DIRTY_DIFF"
 EVAL_SAMPLES_ENV = "EVAL_SAMPLES"
@@ -262,7 +263,12 @@ class CaseArtifact(BaseModel):
 
 
 class RunManifest(BaseModel):
-    """The run's input identity — one ``manifest.json`` per ``make eval`` run."""
+    """The run's input identity — one ``manifest.json`` per ``make eval`` run.
+
+    ``baseline`` records the ``EVAL_BASELINE`` this run diffed against, so the flips index is
+    derivable at assemble time from DURABLE run state — not re-read from a volatile environment
+    variable that ``make assemble`` may not carry (#1752). ``None`` when the run had no baseline;
+    an older manifest that predates the field parses it as ``None`` (optional, defaulted)."""
 
     run_id: str
     created_at: str
@@ -273,6 +279,7 @@ class RunManifest(BaseModel):
     embedding_model: str
     samples: int
     lever: str
+    baseline: str | None = None
 
 
 # ── Pure builders (no env, no filesystem — the make check test drives these) ──
@@ -402,8 +409,10 @@ def build_manifest(
     samples: int,
     lever: str,
     now: datetime,
+    baseline: str | None = None,
 ) -> RunManifest:
-    """Assemble the run manifest from explicit inputs (``now`` fixes the run id)."""
+    """Assemble the run manifest from explicit inputs (``now`` fixes the run id). ``baseline`` is
+    the run's ``EVAL_BASELINE``, recorded so the flips index survives to assemble time (#1752)."""
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     short = commit[:8] if commit and commit != UNKNOWN_COMMIT else UNKNOWN_COMMIT
     return RunManifest(
@@ -416,6 +425,7 @@ def build_manifest(
         embedding_model=embedding_model,
         samples=samples,
         lever=lever,
+        baseline=baseline or None,
     )
 
 
@@ -489,6 +499,7 @@ def run_from_env(env: Mapping[str, str], *, now: datetime | None = None) -> Eval
         samples=int(env.get(EVAL_SAMPLES_ENV, str(DEFAULT_SAMPLES))),
         lever=lever,
         now=now or datetime.now(UTC),
+        baseline=(env.get(EVAL_BASELINE_ENV) or "").strip() or None,
     )
     return EvalRun(Path(report_dir), manifest, dirty_diff)
 

@@ -694,9 +694,15 @@ a failed/fragile/regressed sample renders unfolded; a harness-timeout sample get
 (F2). The **run header** carries the identity line, a one-line RESULT (mean · all-pass ·
 pathology-excluded · cause tally · `families:` rollup · timings), a **gate** line per gated case
 (`⚖ threshold on mean|pathology-excluded → PASS/FAIL`, from the new `CaseArtifact.min_pass_rate` /
-`gate_metric`), and — in diff mode — a **flips** index. Additive artifact fields carry it:
+`gate_metric`), and — in diff mode — a **flips** index (`flips: <label> ✅→❌ (s…)`, one entry per
+check fully green in the baseline that failed a sample here). The flips index resolves its baseline
+from the run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE`
+at eval time, #1752) — NOT from a re-read of the volatile env at assemble time — so `make assemble`
+renders the same flips the per-row REGRESSED badges were baked from, even when it carries no
+`EVAL_BASELINE` (an explicit `EVAL_BASELINE` at assemble time still overrides, for an ad-hoc re-diff).
+Additive artifact fields carry it:
 `CheckOutcome` gained `scored`/`cells[]`/`rationales[]`, `Check` gained `kind`, `CaseArtifact` gained
-`sample_fragile[]` + `min_pass_rate`/`gate_metric`. **No artifact is committed** — the PR comment is
+`sample_fragile[]` + `min_pass_rate`/`gate_metric`; `RunManifest` gained `baseline` (#1752). **No artifact is committed** — the PR comment is
 the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
 `EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
 whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).

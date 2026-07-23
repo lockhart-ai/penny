@@ -18,10 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from penny.tests.eval.artifacts import RESULTS_FILENAME, CaseArtifact
-
-# ── Environment contract (forwarded by the Makefile `eval` target) ───────────
-EVAL_BASELINE_ENV = "EVAL_BASELINE"
+from penny.tests.eval.artifacts import EVAL_BASELINE_ENV, RESULTS_FILENAME, CaseArtifact
 
 
 @dataclass
@@ -87,3 +84,18 @@ def baseline_from_env(env: Mapping[str, str] | None = None) -> Baseline | None:
     environ = os.environ if env is None else env
     raw_path = environ.get(EVAL_BASELINE_ENV)
     return load_baseline(raw_path) if raw_path else None
+
+
+def resolve_baseline(recorded: str | None, env: Mapping[str, str] | None = None) -> Baseline | None:
+    """The baseline a completed run diffs against, resolved DURABLY for assemble time (#1752).
+
+    The per-sample REGRESSED badges are baked into the transcripts at eval time (``EVAL_BASELINE``
+    is live then), but ``make assemble`` runs later and need not carry that env — so the run
+    header's flips index must read a durable reference, not re-derive from a volatile variable.
+    Precedence: an explicit ``EVAL_BASELINE`` in ``env`` (an operator override / an ad-hoc re-diff)
+    wins; otherwise the reference the run RECORDED in its manifest (``recorded``). ``None`` when
+    neither is set — off-diff, no flips, no error (a first run, or a pre-#1752 manifest)."""
+    environ = os.environ if env is None else env
+    override = (environ.get(EVAL_BASELINE_ENV) or "").strip()
+    resolved = override or recorded
+    return load_baseline(resolved) if resolved else None

@@ -276,6 +276,111 @@ def test_diff_mode_flips_index_whole_render(
     assert comment.startswith("**run-20260721T051017Z-abba710a** · commit `abba710a`")
 
 
+def _hold_run(
+    report_dir: Path,
+    prior_dir: Path,
+    *,
+    recorded_baseline: str | None,
+) -> RunManifest:
+    """Materialise the real ``idle-elicit-hold`` shape (#1752): a 10-sample classifier run whose
+    scored ``decided idle`` check failed samples 7 and 10 (cells ``…P P F P P F``), diffed against a
+    prior run where it was fully green (10/10). ``recorded_baseline`` is the manifest's durable
+    baseline reference (``None`` reproduces a pre-#1752 manifest). Returns the run's manifest."""
+    prior_dir.mkdir(parents=True, exist_ok=True)
+    prior = CaseArtifact(
+        run_id="run-20260723T013634Z-9a034ca0",
+        case_id="test_conversation_machine.py::idle-elicit-hold",
+        family="state-classifier",
+        mean=1.0,
+        all_pass_rate=1.0,
+        pathology_excluded_mean=1.0,
+        samples=10,
+        sample_scores=[1.0] * 10,
+        sample_causes=[None] * 10,
+        cause_counts=CauseCounts(),
+        checks=[CheckOutcome(label="decided idle", passed=10, total=10)],
+        timings=_TIMINGS,
+    )
+    (prior_dir / "results.jsonl").write_text(prior.model_dump_json() + "\n")
+    manifest = build_manifest(
+        commit="d1429159776f24c038c91e4ea5ffb00addbbabb3",
+        dirty_diff="",
+        model="gpt-oss:20b",
+        embedding_model="embeddinggemma",
+        samples=10,
+        lever="beat 2 baseline",
+        now=datetime(2026, 7, 23, 2, 3, 47, tzinfo=UTC),
+        baseline=recorded_baseline,
+    )
+    cells = [_P, _P, _P, _P, _P, _P, _F, _P, _P, _F]  # decided idle failed s7 + s10
+    artifact = CaseArtifact(
+        run_id=manifest.run_id,
+        case_id="test_conversation_machine.py::idle-elicit-hold",
+        family="state-classifier",
+        mean=0.8,
+        all_pass_rate=0.8,
+        pathology_excluded_mean=0.8,
+        samples=10,
+        sample_scores=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+        sample_causes=[None] * 6 + [FailureCause.BEHAVIORAL, None, None, FailureCause.BEHAVIORAL],
+        sample_fragile=[False] * 10,
+        cause_counts=CauseCounts(behavioral=2),
+        checks=[
+            CheckOutcome(label="decided idle", passed=8, total=10, scored=True, cells=cells),
+            CheckOutcome(
+                label="draw well-formed (tagged, in-union)",
+                passed=10,
+                total=10,
+                scored=False,
+                cells=[_P] * 10,
+            ),
+        ],
+        timings=_TIMINGS,
+        min_pass_rate=0.8,
+        gate_metric="mean",
+    )
+    _write_run(report_dir, manifest, [artifact], {})
+    return manifest
+
+
+def test_flips_index_from_durable_manifest_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run-header flips index resolves the baseline from the run's DURABLE manifest reference
+    (``RunManifest.baseline``), so ``make assemble`` renders it with NO ``EVAL_BASELINE`` in the
+    environment — the exact divergence that dropped the flips line on the real run while the per-row
+    REGRESSED badges (baked into the transcripts at eval time) stayed (#1752). Reconstructed from
+    the real ``idle-elicit-hold`` shape: ``decided idle`` was fully green in the baseline and failed
+    s7/s10 here, so the header carries its ``flips`` index from durable state."""
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    prior = tmp_path / "prior"
+    run = tmp_path / "run"
+    manifest = _hold_run(run, prior, recorded_baseline=str(prior))
+    header = assemble_run_comment(run).split("\n\n", 1)[0]
+    assert header == (
+        f"**{manifest.run_id}** · commit `d1429159` · gpt-oss:20b · N=10 · "
+        "**lever:** beat 2 baseline\n"
+        "**RESULT:** mean 0.80 · all-pass 8/10 · pathology-excluded 0.80 · "
+        "causes — behavioral 2 · pathology 0 · harness 0 · families: state-classifier 0.80 · "
+        "19 calls · 148s · 54.2K in / 5.9K out\n"
+        "**gate:** ⚖ 0.8 on mean → **✅ PASS** (0.80)\n"
+        "flips: decided idle ✅→❌ (s7, s10)"
+    )
+
+
+def test_flips_index_absent_without_a_baseline_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-fix real-run case: a manifest with no recorded baseline AND no ``EVAL_BASELINE`` in
+    the environment is off-diff — no flips line, no error (#1752). This is the buggy state the
+    durable reference cures, pinned so it can't silently return."""
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    prior = tmp_path / "prior"
+    run = tmp_path / "run"
+    _hold_run(run, prior, recorded_baseline=None)
+    assert "flips:" not in assemble_run_comment(run)
+
+
 def test_missing_manifest_raises_actionable(tmp_path: Path) -> None:
     """No ``manifest.json`` → a FileNotFoundError naming the fix (this isn't a completed run)."""
     with pytest.raises(FileNotFoundError) as excinfo:

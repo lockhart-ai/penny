@@ -107,17 +107,24 @@ The comment opens with the run header (no per-sample transcript above it):
   A report-only case (`min_pass_rate=None`) has no gate line.
 - **flips** (diff mode) — `flips: <label> ✅→❌ (s1, s3) · …`, one entry per check that was fully
   green in the baseline but failed a sample here. This is the one cross-sample join the transcript
-  flow can't give you; it joins on `(case_id, label)`.
+  flow can't give you; it joins on `(case_id, label)`. The assembler resolves the baseline from the
+  run's **durable manifest reference** (`RunManifest.baseline`, recorded from `EVAL_BASELINE` at eval
+  time), so the index survives to assemble time even when `make assemble` carries no `EVAL_BASELINE`
+  — the same durable state the per-row REGRESSED badges were baked from, so header and badges agree
+  (#1752). An explicit `EVAL_BASELINE` at assemble time overrides it (an ad-hoc re-diff).
 
 Then one section per case — a `### \`<case_id>\` — <family>` heading **only when the run spans
 multiple cases** — above that case's per-sample blocks. A single-case run needs no divider.
 
-## Diff mode (when `EVAL_BASELINE` is set)
+## Diff mode (when a baseline is set)
 
 Same grammar plus the `baseline` row (the prior run's anchor event, its cell the prior verdict) and
 the flip badges (`✅→❌ REGRESSED` / `❌→✅ FIXED`) in place of the plain glyph; the step header shows
-the step-level flip, and the run header gains the `flips:` index. Off-diff (no baseline, or a first
-run) there are no baseline rows, no flip badges, and no flips line — no error.
+the step-level flip, and the run header gains the `flips:` index. The baseline is set via
+`EVAL_BASELINE` at eval time (baking the per-row badges into the transcripts) and **recorded in the
+manifest** so the flips index re-derives at assemble time from that durable reference, not the live
+env (#1752). Off-diff (no baseline, or a first run) there are no baseline rows, no flip badges, and
+no flips line — no error.
 
 ## Deterministic cell hygiene
 

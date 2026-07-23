@@ -265,6 +265,7 @@ def test_run_from_env_decodes_the_makefile_contract(tmp_path: Path) -> None:
         {
             "EVAL_REPORT_DIR": str(tmp_path),
             "EVAL_LEVER": "sharpen the done() nudge",
+            "EVAL_BASELINE": "/penny/eval-artifacts/run-prior",
             "EVAL_COMMIT": _COMMIT,
             "EVAL_DIRTY_DIFF": "some diff",
             "EVAL_SAMPLES": "3",
@@ -281,6 +282,14 @@ def test_run_from_env_decodes_the_makefile_contract(tmp_path: Path) -> None:
     assert run.manifest.model == "some-model:1b"
     assert run.manifest.embedding_model == "some-embed"
     assert run.manifest.samples == 3
+    # The run RECORDS its baseline so the flips index survives to assemble time (#1752);
+    # absent EVAL_BASELINE it is None (off-diff), never an empty string.
+    assert run.manifest.baseline == "/penny/eval-artifacts/run-prior"
+    off_diff = run_from_env(
+        {"EVAL_REPORT_DIR": str(tmp_path), "EVAL_LEVER": "no baseline"}, now=_NOW
+    )
+    assert off_diff is not None
+    assert off_diff.manifest.baseline is None
 
 
 def test_write_inputs_writes_manifest_and_verbatim_diff(tmp_path: Path) -> None:

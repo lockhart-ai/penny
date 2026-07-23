@@ -198,10 +198,12 @@ eval: $(if $(LOCAL),,build)
 # worktree. EVAL_REPORT_DIR names the specific run dir to assemble (a run-stamped
 # subdir under $(EVAL_ARTIFACTS_MOUNT)); it's read from the recipe's shell env
 # (`$${…}`), not a make `=` var, so `EVAL_REPORT_DIR=… make assemble` takes
-# effect. Defaults to the durable mount root.
+# effect. Defaults to the durable mount root. EVAL_BASELINE is forwarded the same
+# way — an explicit override re-diffs against a different baseline; unset, the run's
+# own manifest-recorded baseline drives the flips index (#1752).
 assemble: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"
-	$(EVAL_RUN) python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
+	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test
