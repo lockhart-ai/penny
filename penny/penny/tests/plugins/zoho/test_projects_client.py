@@ -99,3 +99,7 @@ async def test_get_projects_handles_null_owner():
     assert len(projects) == 1
     assert projects[0].name == "Website"
     assert projects[0].owner_name is None
+    # URL is built from ZOHO_PROJECTS_PROJECTS_PATH — value unchanged by the constant swap.
+    assert mock_http.get.call_args.args[0] == (
+        "https://projectsapi.zoho.com/api/v3/portal/p1/projects"
+    )

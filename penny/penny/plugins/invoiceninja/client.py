@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from penny.constants import PennyConstants
 from penny.plugins.invoiceninja.models import Expense, ExpenseCategory, Invoice
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,8 @@ class InvoiceNinjaClient:
         ``True`` on success and raises ``httpx.HTTPStatusError`` on auth or
         connectivity failures.
         """
-        url = f"{self._base_url}/api/v1/health_check"
+        path = PennyConstants.INVOICENINJA_HEALTH_CHECK_PATH
+        url = f"{self._base_url}{path}"
         resp = await self._http.get(url)
         resp.raise_for_status()
         logger.info("InvoiceNinja authentication verified for %s", self._base_url)
@@ -79,7 +81,8 @@ class InvoiceNinjaClient:
         Returns:
             List of Invoice objects.
         """
-        url = f"{self._base_url}/api/v1/invoices"
+        path = PennyConstants.INVOICENINJA_INVOICES_PATH
+        url = f"{self._base_url}{path}"
         params: dict[str, str] = {}
         if status:
             params["status"] = status
@@ -128,7 +131,8 @@ class InvoiceNinjaClient:
         Returns:
             The created Expense object.
         """
-        url = f"{self._base_url}/api/v1/expenses"
+        path = PennyConstants.INVOICENINJA_EXPENSES_PATH
+        url = f"{self._base_url}{path}"
         payload: dict[str, Any] = {"date": date, "amount": amount}
         if vendor_id:
             payload["vendor_id"] = vendor_id
@@ -161,7 +165,8 @@ class InvoiceNinjaClient:
         Returns:
             List of Expense objects.
         """
-        url = f"{self._base_url}/api/v1/expenses"
+        path = PennyConstants.INVOICENINJA_EXPENSES_PATH
+        url = f"{self._base_url}{path}"
         params: dict[str, str] = {}
         if limit is not None:
             params["per_page"] = str(limit)
@@ -188,7 +193,8 @@ class InvoiceNinjaClient:
         Returns:
             The Expense object.
         """
-        url = f"{self._base_url}/api/v1/expenses/{expense_id}"
+        path = PennyConstants.INVOICENINJA_EXPENSE_PATH.format(expense_id=expense_id)
+        url = f"{self._base_url}{path}"
         resp = await self._http.get(url)
         resp.raise_for_status()
         expense_data = resp.json().get("data", {})
@@ -222,7 +228,8 @@ class InvoiceNinjaClient:
         Returns:
             The updated Expense object.
         """
-        url = f"{self._base_url}/api/v1/expenses/{expense_id}"
+        path = PennyConstants.INVOICENINJA_EXPENSE_PATH.format(expense_id=expense_id)
+        url = f"{self._base_url}{path}"
         payload: dict[str, Any] = {}
         if amount is not None:
             payload["amount"] = amount
@@ -252,7 +259,8 @@ class InvoiceNinjaClient:
         Returns:
             The created ExpenseCategory object.
         """
-        url = f"{self._base_url}/api/v1/expense_categories"
+        path = PennyConstants.INVOICENINJA_EXPENSE_CATEGORIES_PATH
+        url = f"{self._base_url}{path}"
         resp = await self._http.post(url, json={"name": name})
         resp.raise_for_status()
         category_data = resp.json().get("data", {})
@@ -268,7 +276,8 @@ class InvoiceNinjaClient:
         Returns:
             List of ExpenseCategory objects.
         """
-        url = f"{self._base_url}/api/v1/expense_categories"
+        path = PennyConstants.INVOICENINJA_EXPENSE_CATEGORIES_PATH
+        url = f"{self._base_url}{path}"
         params = {"per_page": str(limit)}
         resp = await self._http.get(url, params=params)
         resp.raise_for_status()
@@ -287,7 +296,8 @@ class InvoiceNinjaClient:
         Returns:
             The ExpenseCategory object.
         """
-        url = f"{self._base_url}/api/v1/expense_categories/{category_id}"
+        path = PennyConstants.INVOICENINJA_EXPENSE_CATEGORY_PATH.format(category_id=category_id)
+        url = f"{self._base_url}{path}"
         resp = await self._http.get(url)
         resp.raise_for_status()
         category_data = resp.json().get("data", {})

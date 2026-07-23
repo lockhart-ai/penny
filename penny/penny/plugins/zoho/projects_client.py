@@ -48,7 +48,8 @@ class ZohoProjectsClient(ZohoOAuthClient):
     async def get_portals(self) -> list[ZohoPortal]:
         """Fetch all portals for the user."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portals"
+        path = PennyConstants.ZOHO_PROJECTS_PORTALS_PATH
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         logger.debug("Fetching portals from: %s", url)
         resp = await self._http.get(url, headers=headers)
@@ -95,7 +96,8 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}/projects"
+        path = PennyConstants.ZOHO_PROJECTS_PROJECTS_PATH.format(portal_id=portal_id)
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         resp = await self._http.get(url, headers=headers)
         resp.raise_for_status()
@@ -135,7 +137,8 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}/projects"
+        path = PennyConstants.ZOHO_PROJECTS_PROJECTS_PATH.format(portal_id=portal_id)
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         payload: dict[str, Any] = {"name": name}
         if description:
@@ -175,10 +178,10 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}"
-            f"/projects/{project_id}/tasklists"
+        path = PennyConstants.ZOHO_PROJECTS_TASKLISTS_PATH.format(
+            portal_id=portal_id, project_id=project_id
         )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         resp = await self._http.get(url, headers=headers)
         resp.raise_for_status()
@@ -213,10 +216,10 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}"
-            f"/projects/{project_id}/tasklists"
+        path = PennyConstants.ZOHO_PROJECTS_TASKLISTS_PATH.format(
+            portal_id=portal_id, project_id=project_id
         )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         payload = {"name": name, "flag": flag}
 
@@ -246,10 +249,10 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}"
-            f"/projects/{project_id}/tasks"
+        path = PennyConstants.ZOHO_PROJECTS_TASKS_PATH.format(
+            portal_id=portal_id, project_id=project_id
         )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         resp = await self._http.get(url, headers=headers)
         resp.raise_for_status()
@@ -308,10 +311,10 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}"
-            f"/projects/{project_id}/tasks"
+        path = PennyConstants.ZOHO_PROJECTS_TASKS_PATH.format(
+            portal_id=portal_id, project_id=project_id
         )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         payload: dict[str, Any] = {
             "name": name,
@@ -371,10 +374,10 @@ class ZohoProjectsClient(ZohoOAuthClient):
             portal_id = portal.id
 
         headers = await self._get_headers()
-        url = (
-            f"{PennyConstants.ZOHO_PROJECTS_API_BASE}/portal/{portal_id}"
-            f"/projects/{project_id}/tasks/{task_id}"
+        path = PennyConstants.ZOHO_PROJECTS_TASK_PATH.format(
+            portal_id=portal_id, project_id=project_id, task_id=task_id
         )
+        url = f"{PennyConstants.ZOHO_PROJECTS_API_BASE}{path}"
 
         payload: dict[str, Any] = {}
         if name:

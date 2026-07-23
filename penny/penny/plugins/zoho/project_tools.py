@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import Field
 
+from penny.constants import PennyConstants
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
@@ -450,7 +451,7 @@ class CreateTaskTool(Tool):
                 success=False,
             )
 
-        tasklist_name = args.tasklist_name or "General"
+        tasklist_name = args.tasklist_name or PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST
         tasklists = await self._client.get_task_lists(project.id)
         tasklist = next(
             (tl for tl in tasklists if tl.name.lower() == tasklist_name.lower()),

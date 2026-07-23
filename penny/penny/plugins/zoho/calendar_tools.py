@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import Field
 
+from penny.plugins.zoho.models import ZohoCalendarInfo, ZohoEvent
 from penny.tools.base import Tool
 from penny.tools.models import ToolArgs, ToolResult
 
@@ -533,9 +534,48 @@ class UpdateEventTool(Tool):
         self._client = calendar_client
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """Update a calendar event."""
+        """Update a calendar event: resolve calendar, find event, apply changes."""
         args = UpdateEventArgs(**kwargs)
 
+        calendar = await self._resolve_calendar(args)
+        if isinstance(calendar, ToolResult):
+            return calendar
+
+        event = await self._find_event(calendar, args)
+        if isinstance(event, ToolResult):
+            return event
+
+        full_event = await self._load_full_event(calendar, event)
+        if isinstance(full_event, ToolResult):
+            return full_event
+
+        times = self._resolve_new_times(args, full_event, event)
+        if isinstance(times, ToolResult):
+            return times
+        new_start, new_end = times
+
+        effective_edittype, recurrenceid = self._compute_recurrence(args, full_event, event)
+
+        updated_event = await self._client.update_event(
+            caluid=calendar.caluid,
+            event_uid=event.uid,
+            etag=full_event.etag,
+            title=args.new_title,
+            start=new_start,
+            end=new_end,
+            tz=full_event.timezone,
+            description=args.new_description,
+            location=args.new_location,
+            is_allday=full_event.is_allday,
+            recurrence_edittype=effective_edittype,
+            recurrenceid=recurrenceid,
+            rrule=full_event.rrule,
+        )
+
+        return self._build_update_result(args, updated_event, new_start, new_end)
+
+    async def _resolve_calendar(self, args: UpdateEventArgs) -> ZohoCalendarInfo | ToolResult:
+        """Resolve the target calendar (named or default), else a failure ToolResult."""
         if args.calendar_name:
             calendar = await self._client.get_calendar_by_name(args.calendar_name)
             if not calendar:
@@ -544,11 +584,17 @@ class UpdateEventTool(Tool):
                     "Check the calendar name and try again.",
                     success=False,
                 )
-        else:
-            calendar = await self._client.get_default_calendar()
-            if not calendar:
-                return ToolResult(message="No default calendar found.", success=False)
+            return calendar
 
+        calendar = await self._client.get_default_calendar()
+        if not calendar:
+            return ToolResult(message="No default calendar found.", success=False)
+        return calendar
+
+    async def _find_event(
+        self, calendar: ZohoCalendarInfo, args: UpdateEventArgs
+    ) -> ZohoEvent | ToolResult:
+        """Find the event whose title matches the request, else a failure ToolResult."""
         start = datetime.now(UTC)
         end = start + timedelta(days=30)
 
@@ -569,7 +615,12 @@ class UpdateEventTool(Tool):
             event.title,
             event.start,
         )
+        return event
 
+    async def _load_full_event(
+        self, calendar: ZohoCalendarInfo, event: ZohoEvent
+    ) -> ZohoEvent | ToolResult:
+        """Load the event's full detail (needs its etag), else a failure ToolResult."""
         full_event = await self._client.get_event(calendar.caluid, event.uid)
         if not full_event or not full_event.etag:
             return ToolResult(
@@ -583,7 +634,12 @@ class UpdateEventTool(Tool):
             full_event.recurrenceid,
             full_event.is_recurring,
         )
+        return full_event
 
+    def _resolve_new_times(
+        self, args: UpdateEventArgs, full_event: ZohoEvent, event: ZohoEvent
+    ) -> tuple[datetime, datetime] | ToolResult:
+        """Compute the new start/end (from args or the existing event), else a failure."""
         if args.new_start:
             try:
                 new_start = _parse_iso_datetime(args.new_start)
@@ -610,6 +666,12 @@ class UpdateEventTool(Tool):
                     success=False,
                 )
 
+        return new_start, new_end
+
+    def _compute_recurrence(
+        self, args: UpdateEventArgs, full_event: ZohoEvent, event: ZohoEvent
+    ) -> tuple[str, str | None]:
+        """Derive the effective edit type + recurrence id for a recurring event."""
         effective_edittype = args.recurrence_edittype
 
         if (
@@ -639,22 +701,16 @@ class UpdateEventTool(Tool):
                 effective_edittype,
             )
 
-        updated_event = await self._client.update_event(
-            caluid=calendar.caluid,
-            event_uid=event.uid,
-            etag=full_event.etag,
-            title=args.new_title,
-            start=new_start,
-            end=new_end,
-            tz=full_event.timezone,
-            description=args.new_description,
-            location=args.new_location,
-            is_allday=full_event.is_allday,
-            recurrence_edittype=effective_edittype,
-            recurrenceid=recurrenceid,
-            rrule=full_event.rrule,
-        )
+        return effective_edittype, recurrenceid
 
+    def _build_update_result(
+        self,
+        args: UpdateEventArgs,
+        updated_event: ZohoEvent | None,
+        new_start: datetime,
+        new_end: datetime,
+    ) -> ToolResult:
+        """Render the update outcome — the change summary on success, else a failure."""
         if updated_event:
             changes = []
             if args.new_title:

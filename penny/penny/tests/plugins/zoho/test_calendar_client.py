@@ -206,6 +206,58 @@ async def test_create_event_converts_local_time_to_utc():
             end=datetime(2026, 7, 22, 11, 0, tzinfo=plus_two),
         )
 
+    # URL is built from ZOHO_CALENDAR_EVENTS_PATH — value unchanged by the constant swap.
+    assert mock_http.post.call_args.args[0] == (
+        f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/C1/events"
+    )
     eventdata = json.loads(mock_http.post.call_args.kwargs["params"]["eventdata"])
     assert eventdata["dateandtime"]["start"] == "20260722T080000Z"
     assert eventdata["dateandtime"]["end"] == "20260722T090000Z"
+
+
+@pytest.mark.asyncio
+async def test_update_event_builds_payload_and_targets_event_url():
+    """update_event PUTs to the event URL built from ZOHO_CALENDAR_EVENT_PATH and packs the
+    decomposed ``eventdata`` payload (etag, UTC-converted times, recurrence fields) — the
+    _build_update_eventdata / _event_from_update_response helpers produce the same result."""
+    request = httpx.Request("PUT", "https://calendar.zoho.com/api/v1/calendars/C1/events/E1")
+    with patch("penny.plugins.zoho.base_client.httpx.AsyncClient") as mock_client_cls:
+        client = ZohoCalendarClient(client_id="id", client_secret="secret", refresh_token="token")
+        client._get_headers = AsyncMock(return_value={})
+        mock_http = mock_client_cls.return_value
+        mock_http.put = AsyncMock(
+            return_value=httpx.Response(
+                200, json={"events": [{"uid": "E1", "title": "Sync"}]}, request=request
+            )
+        )
+
+        updated = await client.update_event(
+            caluid="C1",
+            event_uid="E1",
+            etag=5,
+            title="Sync",
+            start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 11, 0, tzinfo=UTC),
+            tz="UTC",
+            recurrence_edittype="following",
+            recurrenceid="20260722T100000Z",
+            rrule="FREQ=WEEKLY",
+        )
+
+    assert updated is not None
+    assert updated.uid == "E1"
+    assert mock_http.put.call_args.args[0] == (
+        f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/C1/events/E1"
+    )
+    eventdata = json.loads(mock_http.put.call_args.kwargs["params"]["eventdata"])
+    assert eventdata["etag"] == 5
+    assert eventdata["title"] == "Sync"
+    assert eventdata["dateandtime"] == {
+        "start": "20260722T100000Z",
+        "end": "20260722T110000Z",
+        "timezone": "UTC",
+    }
+    assert eventdata["recurrence_edittype"] == "following"
+    assert eventdata["recurrenceid"] == "20260722T100000Z"
+    assert eventdata["isrep"] is True
+    assert eventdata["rrule"] == "FREQ=WEEKLY"

@@ -276,9 +276,34 @@ class PennyConstants:
 
     # Zoho Calendar API constants
     ZOHO_CALENDAR_API_BASE = "https://calendar.zoho.com/api/v1"
+    # Calendar endpoint path fragments (relative to ZOHO_CALENDAR_API_BASE);
+    # the ``{...}`` placeholder forms are filled with ``str.format(...)``.
+    ZOHO_CALENDAR_CALENDARS_PATH = "/calendars"
+    ZOHO_CALENDAR_EVENTS_PATH = "/calendars/{caluid}/events"
+    ZOHO_CALENDAR_EVENT_PATH = "/calendars/{caluid}/events/{event_uid}"
+    ZOHO_CALENDAR_FREEBUSY_PATH = "/calendars/freebusy"
+    ZOHO_CALENDAR_FREESLOTS_PATH = "/freebusy/freeslots"
 
     # Zoho Projects API constants (v3)
     ZOHO_PROJECTS_API_BASE = "https://projectsapi.zoho.com/api/v3"
+    # Projects endpoint path fragments (relative to ZOHO_PROJECTS_API_BASE);
+    # the ``{...}`` placeholder forms are filled with ``str.format(...)``.
+    ZOHO_PROJECTS_PORTALS_PATH = "/portals"
+    ZOHO_PROJECTS_PROJECTS_PATH = "/portal/{portal_id}/projects"
+    ZOHO_PROJECTS_TASKLISTS_PATH = "/portal/{portal_id}/projects/{project_id}/tasklists"
+    ZOHO_PROJECTS_TASKS_PATH = "/portal/{portal_id}/projects/{project_id}/tasks"
+    ZOHO_PROJECTS_TASK_PATH = "/portal/{portal_id}/projects/{project_id}/tasks/{task_id}"
+    # Default task list a task is filed under when the caller names none.
+    ZOHO_PROJECTS_DEFAULT_TASKLIST = "General"
+
+    # InvoiceNinja v5 API endpoint path fragments (relative to the configured
+    # base URL); the ``{...}`` placeholder form is filled with ``str.format(...)``.
+    INVOICENINJA_HEALTH_CHECK_PATH = "/api/v1/health_check"
+    INVOICENINJA_INVOICES_PATH = "/api/v1/invoices"
+    INVOICENINJA_EXPENSES_PATH = "/api/v1/expenses"
+    INVOICENINJA_EXPENSE_PATH = "/api/v1/expenses/{expense_id}"
+    INVOICENINJA_EXPENSE_CATEGORIES_PATH = "/api/v1/expense_categories"
+    INVOICENINJA_EXPENSE_CATEGORY_PATH = "/api/v1/expense_categories/{category_id}"
 
     # Default per-request timeout (seconds) for the Zoho Calendar + Projects
     # HTTP clients — the value both hardcoded before it was named here.

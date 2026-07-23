@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.plugins.zoho.project_tools import CreateTaskTool, UpdateTaskTool
 
 
@@ -49,3 +50,28 @@ async def test_update_task_reports_missing_task_as_failure():
 
     assert result.success is False
     assert "Task not found" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_task_defaults_to_general_tasklist():
+    """With no tasklist_name, the task is filed under the default 'General' list — the value
+    now named PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST, unchanged by the constant swap."""
+    assert PennyConstants.ZOHO_PROJECTS_DEFAULT_TASKLIST == "General"
+
+    project = MagicMock(id="P1")
+    project.name = "Acme"
+    tasklist = MagicMock(id="TL1")
+    tasklist.name = "General"
+    task = MagicMock()
+    task.name = "Ship it"
+
+    client = MagicMock()
+    client.get_project_by_name = AsyncMock(return_value=project)
+    client.get_task_lists = AsyncMock(return_value=[])
+    client.create_task_list = AsyncMock(return_value=tasklist)
+    client.create_task = AsyncMock(return_value=task)
+
+    result = await CreateTaskTool(client).execute(project_name="Acme", name="Ship it")
+
+    assert result.success
+    client.create_task_list.assert_awaited_once_with("P1", "General")

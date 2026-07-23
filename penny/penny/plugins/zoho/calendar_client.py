@@ -41,7 +41,8 @@ class ZohoCalendarClient(ZohoOAuthClient):
             return self._calendars_cache
 
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars"
+        path = PennyConstants.ZOHO_CALENDAR_CALENDARS_PATH
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
         resp = await self._http.get(url, headers=headers)
         resp.raise_for_status()
@@ -94,7 +95,8 @@ class ZohoCalendarClient(ZohoOAuthClient):
     ) -> list[ZohoEvent]:
         """Get events from a calendar within a date range."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/{caluid}/events"
+        path = PennyConstants.ZOHO_CALENDAR_EVENTS_PATH.format(caluid=caluid)
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
         start_str = start.strftime("%Y%m%d")
         end_str = end.strftime("%Y%m%d")
@@ -135,7 +137,8 @@ class ZohoCalendarClient(ZohoOAuthClient):
     ) -> list[BusySlot]:
         """Check free/busy status for a time range."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/freebusy"
+        path = PennyConstants.ZOHO_CALENDAR_FREEBUSY_PATH
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
         start_str = start.strftime("%Y%m%dT%H%M%S")
         end_str = end.strftime("%Y%m%dT%H%M%S")
@@ -176,7 +179,8 @@ class ZohoCalendarClient(ZohoOAuthClient):
     ) -> list[FreeSlot]:
         """Find available time slots of a given duration."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/freebusy/freeslots"
+        path = PennyConstants.ZOHO_CALENDAR_FREESLOTS_PATH
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
         start_str = start.strftime("%Y%m%dT%H%M%S")
         end_str = end.strftime("%Y%m%dT%H%M%S")
@@ -205,6 +209,15 @@ class ZohoCalendarClient(ZohoOAuthClient):
         logger.info("Found %d free slots of %d minutes", len(free_slots), duration_minutes)
         return free_slots
 
+    @staticmethod
+    def _format_event_datetimes(start: datetime, end: datetime, is_allday: bool) -> tuple[str, str]:
+        """Format start/end to Zoho's UTC wire strings (date-only for all-day)."""
+        start_utc = start.astimezone(UTC)
+        end_utc = end.astimezone(UTC)
+        if is_allday:
+            return start_utc.strftime("%Y%m%d"), end_utc.strftime("%Y%m%d")
+        return start_utc.strftime("%Y%m%dT%H%M%SZ"), end_utc.strftime("%Y%m%dT%H%M%SZ")
+
     async def create_event(
         self,
         caluid: str,
@@ -220,16 +233,10 @@ class ZohoCalendarClient(ZohoOAuthClient):
     ) -> ZohoEvent | None:
         """Create a new calendar event."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/{caluid}/events"
+        path = PennyConstants.ZOHO_CALENDAR_EVENTS_PATH.format(caluid=caluid)
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
-        if is_allday:
-            start_str = start_utc.strftime("%Y%m%d")
-            end_str = end_utc.strftime("%Y%m%d")
-        else:
-            start_str = start_utc.strftime("%Y%m%dT%H%M%SZ")
-            end_str = end_utc.strftime("%Y%m%dT%H%M%SZ")
+        start_str, end_str = self._format_event_datetimes(start, end, is_allday)
 
         eventdata: dict[str, Any] = {
             "title": title,
@@ -292,22 +299,66 @@ class ZohoCalendarClient(ZohoOAuthClient):
     ) -> ZohoEvent | None:
         """Update an existing event."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/{caluid}/events/{event_uid}"
+        path = PennyConstants.ZOHO_CALENDAR_EVENT_PATH.format(caluid=caluid, event_uid=event_uid)
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
+        eventdata = self._build_update_eventdata(
+            etag=etag,
+            title=title,
+            start=start,
+            end=end,
+            tz=tz,
+            description=description,
+            location=location,
+            is_allday=is_allday,
+            recurrence_edittype=recurrence_edittype,
+            recurrenceid=recurrenceid,
+            rrule=rrule,
+        )
+
+        eventdata_json = json.dumps(eventdata)
+        logger.info(
+            "Updating event %s on calendar %s (edittype=%s)",
+            event_uid,
+            caluid,
+            recurrence_edittype,
+        )
+        logger.debug("Update eventdata: %s", eventdata_json)
+        resp = await self._http.put(url, headers=headers, params={"eventdata": eventdata_json})
+        if resp.status_code != 200:
+            logger.error(
+                "Event update failed: %s - %s (eventdata: %s)",
+                resp.status_code,
+                resp.text,
+                eventdata_json,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+
+        return self._event_from_update_response(data, title)
+
+    def _build_update_eventdata(
+        self,
+        *,
+        etag: int,
+        title: str | None,
+        start: datetime,
+        end: datetime,
+        tz: str | None,
+        description: str | None,
+        location: str | None,
+        is_allday: bool,
+        recurrence_edittype: str,
+        recurrenceid: str | None,
+        rrule: str | None,
+    ) -> dict[str, Any]:
+        """Assemble the ``eventdata`` payload for an event update."""
         eventdata: dict[str, Any] = {"etag": etag}
 
         if title:
             eventdata["title"] = title
 
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
-        if is_allday:
-            start_str = start_utc.strftime("%Y%m%d")
-            end_str = end_utc.strftime("%Y%m%d")
-        else:
-            start_str = start_utc.strftime("%Y%m%dT%H%M%SZ")
-            end_str = end_utc.strftime("%Y%m%dT%H%M%SZ")
-
+        start_str, end_str = self._format_event_datetimes(start, end, is_allday)
         eventdata["dateandtime"] = {"start": start_str, "end": end_str}
         if tz:
             eventdata["dateandtime"]["timezone"] = tz
@@ -334,25 +385,12 @@ class ZohoCalendarClient(ZohoOAuthClient):
                 recurrence_edittype,
             )
 
-        eventdata_json = json.dumps(eventdata)
-        logger.info(
-            "Updating event %s on calendar %s (edittype=%s)",
-            event_uid,
-            caluid,
-            recurrence_edittype,
-        )
-        logger.debug("Update eventdata: %s", eventdata_json)
-        resp = await self._http.put(url, headers=headers, params={"eventdata": eventdata_json})
-        if resp.status_code != 200:
-            logger.error(
-                "Event update failed: %s - %s (eventdata: %s)",
-                resp.status_code,
-                resp.text,
-                eventdata_json,
-            )
-        resp.raise_for_status()
-        data = resp.json()
+        return eventdata
 
+    def _event_from_update_response(
+        self, data: dict[str, Any], title: str | None
+    ) -> ZohoEvent | None:
+        """Build the updated ``ZohoEvent`` from the response (``None`` if no uid)."""
         event_data = data.get("events", [{}])[0] if data.get("events") else {}
         if event_data.get("uid"):
             dateandtime = event_data.get("dateandtime", {})
@@ -374,7 +412,8 @@ class ZohoCalendarClient(ZohoOAuthClient):
     async def get_event(self, caluid: str, event_uid: str) -> ZohoEvent | None:
         """Get a specific event by UID."""
         headers = await self._get_headers()
-        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/{caluid}/events/{event_uid}"
+        path = PennyConstants.ZOHO_CALENDAR_EVENT_PATH.format(caluid=caluid, event_uid=event_uid)
+        url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}{path}"
 
         resp = await self._http.get(url, headers=headers)
         if resp.status_code == 404:
