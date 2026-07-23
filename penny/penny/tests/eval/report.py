@@ -25,6 +25,7 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -63,6 +64,9 @@ NO_TURNS_PLACEHOLDER = (
 )
 TABLE_DIVIDER = "|---|---|---|"
 CELL_TRUNCATE_LIMIT = 500  # an actual cell over this renders head + a nested <details>
+
+# ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
+SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
 
 
 # ── Deterministic cell hygiene ───────────────────────────────────────────────
@@ -193,23 +197,20 @@ class SampleTranscript:
     """One sample rendered end-to-end: the banner, its step tables, and the run-close table.
 
     ``banner`` is the full verdict tail after ``sample N — `` (verdict · k/n (score) · cause ·
-    fragile · duration · calls). A clean pass folds whole (``folded=True``); a failed/fragile/
-    regressed sample renders unfolded. ``placeholder`` (F2) replaces the body for a sample that
-    produced no completed turn (a harness timeout), so the report never silently omits it."""
+    fragile · duration · calls). **Every** sample block folds whole under its banner summary — the
+    uniform-collapse default (#1753), superseding the old density-follows-failure split; the
+    visible skeleton is the banner rows, everything below one click deep. ``placeholder`` (F2)
+    replaces the body for a sample that produced no completed turn (a harness timeout), so the
+    report never silently omits it."""
 
     number: int
     banner: str
     steps: list[Step]
     run_close: RunClose | None = None
-    folded: bool = False
     placeholder: str | None = None
 
     def render(self) -> str:
-        body = self._body()
-        if self.folded:
-            summary = f"sample {self.number} — {self.banner}"
-            return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
-        return f"#### sample {self.number} — {self.banner}\n\n{body}"
+        return fold_sample(self.number, self.banner, self._body())
 
     def _body(self) -> str:
         if self.placeholder is not None:
@@ -221,8 +222,49 @@ class SampleTranscript:
 
 
 def render_sample(sample: SampleTranscript) -> str:
-    """Render one sample's whole block (the module entry point)."""
+    """Render one sample's whole block (the module entry point) — always folded (#1753)."""
     return sample.render()
+
+
+# ── The folded-block primitives + their inverse (the assembler's compaction seam, #1753) ──
+def fold_sample(number: int, banner: str, body: str) -> str:
+    """Collapse a sample's body under its banner summary — the uniform default (#1753): every
+    rendered sample block is one click deep, its ``<summary>`` the banner row."""
+    return f"<details><summary>{SAMPLE_ROW} {number} — {banner}</summary>\n\n{body}\n\n</details>"
+
+
+def sample_banner_line(number: int, banner: str) -> str:
+    """The bare banner row for a sample — no body, nothing to collapse (compact comment mode's
+    clean-pass form, #1753). A markdown heading so it reads as a skeleton row."""
+    return f"#### {SAMPLE_ROW} {number} — {banner}"
+
+
+_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
+_SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={_BLOCK_START})")
+_FOLDED_SAMPLE = re.compile(
+    rf"\A<details><summary>{SAMPLE_ROW} (\d+) — (.*?)</summary>\n\n(.*)\n\n</details>\Z", re.DOTALL
+)
+_HEADING_SAMPLE = re.compile(rf"\A#### {SAMPLE_ROW} (\d+) — (.*?)(?:\n\n(.*))?\Z", re.DOTALL)
+
+
+def split_sample_blocks(transcript: str) -> list[str]:
+    """Split a case's rendered transcript into its per-sample blocks, in order — each either a
+    folded ``<details>`` block or a bare ``#### `` heading (the assembler consumes both: a
+    re-assembled prior run may carry the old unfolded failures)."""
+    text = transcript.strip()
+    return _SAMPLE_BOUNDARY.split(text) if text else []
+
+
+def parse_sample_block(block: str) -> tuple[int, str, str]:
+    """Recover ``(number, banner, body)`` from one rendered sample block — the folded form
+    (``<details><summary>sample …``) or the bare heading (``#### sample …``). Raises on an
+    unrecognized shape (fail loud rather than mangle a real report)."""
+    stripped = block.strip()
+    for pattern in (_FOLDED_SAMPLE, _HEADING_SAMPLE):
+        match = pattern.match(stripped)
+        if match:
+            return int(match.group(1)), match.group(2), match.group(3) or ""
+    raise ValueError(f"unrecognized sample block: {stripped[:60]!r}")
 
 
 # ── The banner (per-sample stats line after ``sample N — ``) ─────────────────
@@ -376,16 +418,16 @@ def build_sample(
     events: list[Event],
     checks: list[CheckView],
     run_close_score: str,
-    folded: bool = False,
     placeholder: str | None = None,
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
     Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
-    event falls to the run-close table. A nudge event renders ``⚠ recovery event``."""
+    event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
+    folds whole at render (#1753) — the builder no longer decides fold-or-not."""
     if placeholder is not None:
-        return SampleTranscript(number, banner, [], folded=folded, placeholder=placeholder)
+        return SampleTranscript(number, banner, [], placeholder=placeholder)
     by_event: dict[int, list[CheckView]] = {}
     run_close_checks: list[CheckView] = []
     for check in checks:
@@ -395,7 +437,7 @@ def build_sample(
             by_event.setdefault(check.anchor_index, []).append(check)
     steps = _build_steps(events, by_event)
     run_close = _build_run_close(run_close_checks, run_close_score) if run_close_checks else None
-    return SampleTranscript(number, banner, steps, run_close=run_close, folded=folded)
+    return SampleTranscript(number, banner, steps, run_close=run_close)
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:

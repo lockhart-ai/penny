@@ -669,8 +669,14 @@ sample-write time), above the case's `<case_id>.md` transcript folded into a col
 (its own manifest-header prefix stripped, since the assembler renders that header once atop the
 comment). Pure artifact consumption — no model, no git, no network — so it's exercised by plain
 (non-eval) whole-render tests (`tests/eval/test_assemble.py`), not a GPU run. Run it via
-`python -m penny.tests.eval.assemble <report_dir>` (prints the comment to stdout) or
-`EVAL_REPORT_DIR=… make assemble` (the same dir `make eval` wrote to). A passed sample carries no
+`python -m penny.tests.eval.assemble [--full] <report_dir>` (prints the comment to stdout) or
+`EVAL_REPORT_DIR=… make assemble [EVAL_FULL=1]` (the same dir `make eval` wrote to). **Compact by
+default (#1753):** a clean-pass sample (a `null` cause AND not fragile, read off the artifact)
+renders its banner line only — no body — while failed/fragile/regressed samples keep their full
+(collapsed) tables; the on-disk `.md` keeps every sample's full transcript, so `--full` /
+`EVAL_FULL=1` re-emits the everything-in form. The assembler re-normalizes each block via
+`report.split_sample_blocks`/`parse_sample_block`/`fold_sample`, so a re-assembled pre-#1753 run
+(unfolded failures) folds uniformly too. A passed sample carries no
 cause (`_sample_cause` in `artifacts.py`), so the all-pass count is the count of `None` causes —
 run totals and each per-case line are computed identically. (The header carries no `embedding`/
 `prior` line — `render_manifest_header` omits them, the `prior:` line deferred per `baseline.py` —
@@ -686,9 +692,10 @@ above **every** model action (thinking for every call now, not only failed turns
 none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 micro-context` — the
 browse-extract sub-model is an official actor, both directions) with the check verdict on its anchor
 row. Whole-run / missing-action checks fall to a trailing **run-close** table. Each sample opens with
-a **banner** (`verdict · k/n (score) · fragile · cause · duration · calls`); a clean pass folds whole,
-a failed/fragile/regressed sample renders unfolded; a harness-timeout sample gets an honest placeholder
-(F2). The **run header** carries the identity line, a one-line RESULT (mean · all-pass ·
+a **banner** (`verdict · k/n (score) · fragile · cause · duration · calls`); **every** sample block
+folds whole under its banner (uniform collapse, #1753 — superseding the old density-follows-failure
+split), and a harness-timeout sample gets an honest placeholder (F2) inside its fold. The **run
+header** carries the identity line, a one-line RESULT (mean · all-pass ·
 pathology-excluded · cause tally · `families:` rollup · timings), a **gate** line per gated case
 (`⚖ threshold on mean|pathology-excluded → PASS/FAIL`, from the new `CaseArtifact.min_pass_rate` /
 `gate_metric`), and — in diff mode — a **flips** index (`flips: <label> ✅→❌ (s…)`, one entry per

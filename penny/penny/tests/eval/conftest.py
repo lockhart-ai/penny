@@ -1328,7 +1328,6 @@ def _build_transcript(
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
-        folded=result.passed and not result.fragile,
     )
 
 
@@ -1337,9 +1336,10 @@ def _write_sample_report(
 ) -> None:
     """Append one sample's transcript-integrated block to ``EVAL_REPORT_DIR/<case_id>.md`` (#1725
     iteration-6). No-op off-report. Builds the report model from the persisted promptlog + the
-    scored result, then renders it via ``report.render_sample``: a clean pass folds whole, a
-    failed/fragile/regressed sample renders unfolded, and a no-turns (timeout) sample gets the
-    honest placeholder so the report's sample count always matches N (F2)."""
+    scored result, then renders it via ``report.render_sample``: EVERY sample folds whole under
+    its banner (uniform collapse, #1753), and a no-turns (timeout) sample gets the honest
+    placeholder so the report's sample count always matches N (F2). The on-disk ``.md`` keeps every
+    sample's FULL transcript; the assembler decides what the posted comment shows (compact/full)."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
@@ -2327,7 +2327,6 @@ def _write_classifier_report(
             events=events,
             checks=checks,
             run_close_score=f"{passed_checks}/{total}",
-            folded=result.passed and not result.fragile,
         )
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)

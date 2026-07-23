@@ -1,11 +1,13 @@
-"""Whole-render tests for the transcript-integrated report grammar (``report.py``, #1725).
+"""Whole-render tests for the transcript-integrated report grammar (``report.py``, #1725/#1753).
 
 NOT eval-marked — they drive the PURE renderer over hand-built ``SampleTranscript``s (no DB, no
 model, no git), so they run inside ``make check`` and pin every form of the iteration-6 grammar
-as a WHOLE-RENDER literal (pr-review-guide §6): the folded clean pass with micro-context, the
-unfolded failure with a nudge + run-close + n/a, the harness-timeout placeholder, the diff-mode
-regressed flip with a baseline row, an advisory check + empty thinking on a fragile pass, and the
-deterministic cell hygiene (truncation + escaping).
+as a WHOLE-RENDER literal (pr-review-guide §6). Every sample folds whole under its banner now
+(uniform collapse, #1753): the clean pass with micro-context, the failure with a nudge +
+run-close + n/a, the harness-timeout placeholder, the diff-mode regressed flip with a baseline
+row, and an advisory check + empty thinking on a fragile pass all render inside a ``<details>``;
+plus the deterministic cell hygiene (truncation + escaping) and the fold/banner-line/parse seam
+the assembler's compaction rides on.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ def test_clean_pass_folds_whole_with_micro_context() -> None:
         passed=True, score=1.0, passed_checks=2, total_checks=2, duration_s=45, calls=8
     )
     sample = report.build_sample(
-        number=1, banner=banner, events=events, checks=checks, run_close_score="2/2", folded=True
+        number=1, banner=banner, events=events, checks=checks, run_close_score="2/2"
     )
     assert report.render_sample(sample) == (
         "<details><summary>sample 1 — ✅ pass · 2/2 (1.00) · 45s · 8 calls</summary>\n"
@@ -64,9 +66,9 @@ def test_clean_pass_folds_whole_with_micro_context() -> None:
 
 
 def test_failed_sample_with_nudge_run_close_and_na() -> None:
-    """An unfolded failure: a recovery nudge renders ``⚠ recovery event`` inside its step, the
-    failed anchor verdict carries its rationale + cause, and whole-run + n/a checks fall to the
-    run-close table (a missing-action check as a ❌ verdict, an n/a as ➖)."""
+    """A failure folds whole under its banner too (#1753): a recovery nudge renders ``⚠ recovery
+    event`` inside its step, the failed anchor verdict carries its rationale + cause, and whole-run
+    + n/a checks fall to the run-close table (a missing-action check as ❌, an n/a as ➖)."""
     events = [
         report.Event(report.EventKind.USER, "drop the read step"),
         report.Event(
@@ -123,7 +125,8 @@ def test_failed_sample_with_nudge_run_close_and_na() -> None:
         number=3, banner=banner, events=events, checks=checks, run_close_score="1/2"
     )
     assert report.render_sample(sample) == (
-        "#### sample 3 — ❌ fail · 1/2 (0.50) · behavioral · 120s · 13 calls\n"
+        "<details><summary>sample 3 — ❌ fail · 1/2 (0.50) · "
+        "behavioral · 120s · 13 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "drop the read step" | ❌ |\n'
         "|---|---|---|\n"
@@ -138,12 +141,14 @@ def test_failed_sample_with_nudge_run_close_and_na() -> None:
         "|---|---|---|\n"
         "| expected | C2 [spine]⚖ applied edits | ❌ C2 — never called · behavioral |\n"
         "| expected | C3 [proc]⚖ no give-up reply | ✅ C3 |\n"
-        "| expected | C8 [state] reminder set | ➖ n/a — no cadence in the ask |"
+        "| expected | C8 [state] reminder set | ➖ n/a — no cadence in the ask |\n"
+        "\n"
+        "</details>"
     )
 
 
 def test_timeout_sample_renders_placeholder() -> None:
-    """A harness-timeout sample (no completed turn) renders its banner + the honest placeholder —
+    """A harness-timeout sample (no completed turn) folds its banner + the honest placeholder —
     never silently omitted (F2). The banner omits ``k/n`` (the scorer never ran)."""
     banner = report.render_banner(
         passed=False,
@@ -164,10 +169,12 @@ def test_timeout_sample_renders_placeholder() -> None:
         placeholder=report.NO_TURNS_PLACEHOLDER,
     )
     assert report.render_sample(sample) == (
-        "#### sample 3 — ❌ fail · harness · 118s · 13 calls\n"
+        "<details><summary>sample 3 — ❌ fail · harness · 118s · 13 calls</summary>\n"
         "\n"
         "_(no completed turns recorded — the sample produced no finished model call, "
-        "e.g. a harness timeout)_"
+        "e.g. a harness timeout)_\n"
+        "\n"
+        "</details>"
     )
 
 
@@ -207,14 +214,16 @@ def test_diff_mode_regressed_flip_with_baseline_row() -> None:
         number=1, banner=banner, events=events, checks=checks, run_close_score="3/4"
     )
     assert report.render_sample(sample) == (
-        "#### sample 1 — ❌ fail · 3/4 (0.75) · behavioral · 60s · 5 calls\n"
+        "<details><summary>sample 1 — ❌ fail · 3/4 (0.75) · behavioral · 60s · 5 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "stop notifying me" | ✅→❌ |\n'
         "|---|---|---|\n"
         "| expected | C8 [state]⚖ notify off |  |\n"
         '| baseline | 🔧 collection_set({"notify":false}) → confirmed | ✅ C8 *(prior run)* |\n'
         "| 💭 | <details><summary>thinking</summary>defer</details> |  |\n"
-        "| actual | 🤖 Turning it off | ✅→❌ **REGRESSED** C8 — notify still on · behavioral |"
+        "| actual | 🤖 Turning it off | ✅→❌ **REGRESSED** C8 — notify still on · behavioral |\n"
+        "\n"
+        "</details>"
     )
 
 
@@ -254,7 +263,7 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
         number=2, banner=banner, events=events, checks=checks, run_close_score="1/1"
     )
     assert report.render_sample(sample) == (
-        "#### sample 2 — ✅ pass · 1/1 (1.00) · fragile · 30s · 4 calls\n"
+        "<details><summary>sample 2 — ✅ pass · 1/1 (1.00) · fragile · 30s · 4 calls</summary>\n"
         "\n"
         '| step 1 · 👤 | "add game and remind me friday" | ✅ |\n'
         "|---|---|---|\n"
@@ -265,7 +274,9 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
         "\n"
         "| run-close | whole-conversation contracts | 1/1 |\n"
         "|---|---|---|\n"
-        "| expected | C3 [state] reminder set | ➖ n/a — no cadence in the ask |"
+        "| expected | C3 [state] reminder set | ➖ n/a — no cadence in the ask |\n"
+        "\n"
+        "</details>"
     )
 
 
@@ -279,3 +290,33 @@ def test_cell_hygiene_escape_and_truncate() -> None:
     assert rendered.endswith("\\| pipe and<br>newline</details>")
     # A short cell is escaped in place with no <details>.
     assert report.truncate_cell("short | cell") == "short \\| cell"
+
+
+def test_fold_banner_line_and_parse_round_trip() -> None:
+    """The assembler's compaction seam (#1753): ``fold_sample`` wraps a body under its banner,
+    ``sample_banner_line`` is the bodiless compact form, and ``parse_sample_block`` recovers
+    ``(number, banner, body)`` from BOTH the folded form and the legacy ``#### `` heading (so a
+    re-assembled prior run's unfolded failures round-trip too)."""
+    body = '| step 1 · 👤 | "hi" |  |\n|---|---|---|\n| actual | 🤖 hey |  |'
+    folded = report.fold_sample(2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
+    assert folded == (
+        "<details><summary>sample 2 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
+        f"\n{body}\n\n"
+        "</details>"
+    )
+    assert report.sample_banner_line(2, "✅ pass · 1/1 (1.00) · 10s · 2 calls") == (
+        "#### sample 2 — ✅ pass · 1/1 (1.00) · 10s · 2 calls"
+    )
+    assert report.parse_sample_block(folded) == (2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
+    heading = f"#### sample 3 — ❌ fail · behavioral · 120s · 5 calls\n\n{body}"
+    assert report.parse_sample_block(heading) == (3, "❌ fail · behavioral · 120s · 5 calls", body)
+
+
+def test_split_sample_blocks_separates_mixed_forms() -> None:
+    """``split_sample_blocks`` splits a case transcript into its per-sample blocks in order, across
+    a folded block followed by a legacy unfolded ``#### `` block (the re-assembly case)."""
+    folded = report.fold_sample(1, "✅ pass · 1/1 (1.00) · 8s · 2 calls", "| a | b |  |")
+    heading = "#### sample 2 — ❌ fail · harness · 120s · 3 calls\n\n_(no completed turns)_"
+    transcript = f"{folded}\n\n{heading}\n\n"
+    assert report.split_sample_blocks(transcript) == [folded, heading]
+    assert report.split_sample_blocks("") == []

@@ -77,10 +77,29 @@ parse-failure nudges the render marks `⚠ recovery event`) — carries `fragile
 sample (no completed turn) omits `k/n` (the scorer never ran) and renders an honest placeholder body
 instead of a table — so the report's sample count always matches N (visible degradation).
 
-**Sample-level folding.** A clean-pass sample folds whole (the entire block inside a `<details>`
-whose summary is its banner); a **failed / fragile / regressed** sample renders **unfolded**.
-Density follows failure at the sample level, so an N=8 mostly-green report stays one screen while
-the step grammar inside stays uniform.
+**Uniform sample-level collapse (#1753).** EVERY sample block folds whole — the entire block
+inside a `<details>` whose `<summary>` is its banner — regardless of verdict (passing, failed,
+fragile, regressed, harness-timeout). The report's visible skeleton is the run header → per-case
+heading + RESULT/gate lines → **sample banner rows**; everything below a banner is one click deep.
+This supersedes the old density-follows-failure split (a clean pass folded, a failure rendered
+unfolded), and applies identically to the per-case `.md` writer and the assembled comment.
+
+## Compact comment mode (the default posted comment, #1753)
+
+The per-case `.md` on disk keeps EVERY sample's full transcript — it is the durable, audit-grade
+record the [footer](#footer) points at. The **assembled comment** the run posts to the PR is, by
+default, **compact**: a clean-pass sample (passed AND not fragile) renders its **banner line only**
+— no transcript body at all — while **failed / fragile / regressed** samples keep their full
+(now-collapsed) step tables. On a green-heavy run (the common case, where most samples pass) this is
+a large size reduction (~85% on the motivating N=10×6-case run) that keeps the comment inside
+GitHub's rendering limits without losing anything: a dropped body is one local hop away in the
+`.md`.
+
+`make assemble EVAL_FULL=1` (CLI `--full`) emits the **everything-in** form instead — every
+sample's full folded body, byte-identical to the on-disk `.md`. Clean-pass is read from the
+artifact (`results.jsonl`: a `null` cause AND `sample_fragile` false), never re-derived from the
+`.md`'s shape — so the assembler re-normalizes even a re-assembled prior run (whose failures may be
+in the pre-#1753 unfolded form) to the uniform collapse.
 
 ## Micro-context (🧩) — an official actor
 
@@ -136,7 +155,10 @@ no flips line — no error.
 
 ## Footer
 
-The n≤1 pointer from the comment back to the raw evidence:
+The n≤1 pointer from the comment back to the raw evidence — and, since the compact comment drops
+clean-pass bodies (#1753), the pointer to where **every** sample's full transcript still lives: the
+per-case `<case_id>.md` in that report dir. Re-assemble with `EVAL_FULL=1` for the everything-in
+form.
 
 ```
 _artifacts (local, never committed): `<report dir>` · per-sample DBs beside them · re-render: `EVAL_REPORT_DIR=<report dir> make assemble`_
@@ -173,9 +195,12 @@ a check is therefore a recorded scorer-semantics change, not a cosmetic edit.
 
 ## Worked example
 
-One complete run comment, rendered by the assembler — a chat-browse case at N=3 (a clean pass folded,
-plus a harness-timeout sample the format makes visible). Entirely synthetic, shown in a fenced block
-so the tables and `<details>` read as source. This is the verbatim markdown a run posts as a comment.
+One complete run comment, rendered by the assembler — a chat-browse case at N=3 (a clean pass, plus a
+harness-timeout sample the format makes visible). Entirely synthetic, shown in a fenced block so the
+tables and `<details>` read as source. Shown here in the **`--full`** form (every sample's body
+present) so the grammar is legible; the **default compact comment** renders sample 1 (a clean pass)
+as its banner line only — `#### sample 1 — ✅ pass · 2/2 (1.00) · 41s · 6 calls` — with no table
+below it (its transcript stays in the `.md`).
 
 ````markdown
 **run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=3 · **lever:** switch the representative case to chat-browse (prior case outmoded)
@@ -199,17 +224,20 @@ so the tables and `<details>` read as source. This is the verbatim markdown a ru
 
 </details>
 
-#### sample 3 — ❌ fail · harness · 120s · 13 calls
+<details><summary>sample 3 — ❌ fail · harness · 120s · 13 calls</summary>
 
 _(no completed turns recorded — the sample produced no finished model call, e.g. a harness timeout)_
+
+</details>
 
 _artifacts (local, never committed): `/penny/eval-artifacts/run-20260721T051017Z` · per-sample DBs beside them · re-render: `EVAL_REPORT_DIR=/penny/eval-artifacts/run-20260721T051017Z make assemble`_
 ````
 
 Sample 2 (a second clean pass) folds the same way and is omitted here. The run reads top-down: the
 gate line says the lever did **not** clear the bar (the timeout sample dragged the mean under 0.75),
-and the F2 placeholder makes the timeout *visible* — its per-sample DB is one local hop away for the
-full parse-failure trace, per the footer.
+and the folded F2 placeholder makes the timeout *visible* — its per-sample DB is one local hop away
+for the full parse-failure trace, per the footer. In the compact comment, sample 1 collapses to its
+banner row while sample 3 (a failure) keeps this collapsed placeholder.
 
 ---
 

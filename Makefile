@@ -201,9 +201,15 @@ eval: $(if $(LOCAL),,build)
 # effect. Defaults to the durable mount root. EVAL_BASELINE is forwarded the same
 # way — an explicit override re-diffs against a different baseline; unset, the run's
 # own manifest-recorded baseline drives the flips index (#1752).
+# The comment is COMPACT by default (#1753): clean-pass samples render banner-only,
+# failures keep their full (collapsed) tables. `make assemble EVAL_FULL=1` passes
+# `--full` to emit every sample's full body. EVAL_FULL is a make var (never a bare
+# `=` default that would shadow it — the env-var-drop gotcha), so both `make
+# assemble EVAL_FULL=1` and `EVAL_FULL=1 make assemble` set the flag; `make -n
+# assemble [EVAL_FULL=1]` shows whether `--full` lands.
 assemble: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"
-	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
+	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble $(if $(EVAL_FULL),--full,) "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test

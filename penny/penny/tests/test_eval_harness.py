@@ -301,7 +301,8 @@ def test_report_renders_injected_guard_check_in_footer(tmp_path, monkeypatch) ->
     )
     _write_sample_report(db, "guard-case", 0, result=result, reply="saved")
     text = (tmp_path / "guard-case.md").read_text()
-    assert text.startswith("#### sample 1 — ❌ fail · 1/2 (0.50) ·")  # the guard failed → 1/2
+    # the guard failed → 1/2
+    assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert (
         "| expected | G1 [guard]⚖ forced bail fired — contract exercised | "
@@ -332,7 +333,7 @@ def test_report_renders_rationale_and_ignored(tmp_path, monkeypatch) -> None:
     )
     _write_sample_report(db, "rationale-case", 0, result=result, reply="saved")
     text = (tmp_path / "rationale-case.md").read_text()
-    assert text.startswith("#### sample 1 — ❌ fail · 1/2 (0.50) ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail · 1/2 (0.50) ·")
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert "| expected | C2 ⚖ read count | ❌ C2 — expected 3 reads, saw 1 |" in text
     assert "| expected | C3 browse branch | ➖ n/a — no browse this sample |" in text
@@ -353,8 +354,8 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
     )
     _write_sample_report(db, "fragile-case", 0, result=SampleResult.binary([]), reply="found it")
     text = (tmp_path / "fragile-case.md").read_text()
-    # fragile → not folded; banner carries the fragile flag
-    assert text.startswith("#### sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
+    # fragile still folds whole now (#1753); banner carries the fragile flag
+    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
     assert "| actual | 🔧 browse({}) |" in text
     assert "| actual | 📥 You tried to use `browse` but it didn't work: down |" in text
 
@@ -373,7 +374,7 @@ def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch
     result.cause = FailureCause.BEHAVIORAL  # the runner stamps this before _write_sample_report
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
     text = (tmp_path / "watch-fern.md").read_text()
-    assert text.startswith("#### sample 1 — ❌ fail · 0/1 (0.00) · behavioral ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) · behavioral ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 · behavioral |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
 
@@ -389,7 +390,8 @@ def test_report_timeout_sample_renders_placeholder_block(tmp_path, monkeypatch) 
     _stamp_cause(db, timed, timed_out=True)
     _write_sample_report(db, "timeout-case", 2, result=timed)
     text = (tmp_path / "timeout-case.md").read_text()
-    assert text.startswith("#### sample 3 — ❌ fail · harness ·")  # no k/n: the scorer never ran
+    # no k/n: the scorer never ran
+    assert text.startswith("<details><summary>sample 3 — ❌ fail · harness ·")
     assert report.NO_TURNS_PLACEHOLDER in text
 
 
@@ -692,7 +694,7 @@ def test_report_marks_regressed_and_renders_thinking(tmp_path, monkeypatch) -> N
     )
     _write_sample_report(db, "watch-fern", 2, result=result, reply="")
     text = (tmp_path / "watch-fern.md").read_text()
-    assert text.startswith("#### sample 3 — ❌ fail · 0/1 (0.00) ·")
+    assert text.startswith("<details><summary>sample 3 — ❌ fail · 0/1 (0.00) ·")
     assert '| step 1 · 👤 | "run the fern watch" | ✅→❌ |' in text  # the flip on the step header
     assert "| actual | 🔧 done({}) | ✅→❌ **REGRESSED** C1 — expected 1 send, saw 0 |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
@@ -708,7 +710,7 @@ def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatc
     )
     _write_sample_report(db, "watch-fern", 0, result=result, reply="")
     text = (tmp_path / "watch-fern.md").read_text()
-    assert text.startswith("#### sample 1 — ❌ fail · 0/1 (0.00) ·")
+    assert text.startswith("<details><summary>sample 1 — ❌ fail · 0/1 (0.00) ·")
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
     assert "REGRESSED" not in text  # first run — nothing to flip against
@@ -787,7 +789,8 @@ def test_report_renders_fragile_via_user_turn_nudge(tmp_path, monkeypatch) -> No
     )
     _write_sample_report(db, "nudge-fragile", 0, result=SampleResult.binary([]), reply="saved")
     text = (tmp_path / "nudge-fragile.md").read_text()
-    assert text.startswith("#### sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")  # unfolded, fragile
+    # fragile still folds whole now (#1753)
+    assert text.startswith("<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")
     assert "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |" in text
 
 
