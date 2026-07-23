@@ -28,12 +28,12 @@ from penny.database import Database
 from penny.database.migrate import migrate
 from penny.database.models import MemoryEntry
 from penny.email.protocol import EmailClient
-from penny.jmap import JmapClient
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError
 from penny.plugins import Plugin, load_plugins
+from penny.plugins.fastmail import JmapClient
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
