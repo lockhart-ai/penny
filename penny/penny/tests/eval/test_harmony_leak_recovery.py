@@ -63,6 +63,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
             rationale=None
             if not leaked
             else f"reply carries a raw Harmony envelope — leak reached the user: {reply[:120]!r}",
+            kind="reply",
         ),
         Check(
             "reply is substantive prose",
@@ -70,6 +71,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
             rationale=None
             if alpha >= 15
             else f"reply is not substantive prose ({alpha} chars): {reply[:120]!r}",
+            kind="reply",
         ),
     ]
 

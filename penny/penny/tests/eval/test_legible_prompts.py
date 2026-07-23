@@ -124,18 +124,21 @@ def _score_legibility(db: Database, before: set[str], reply: str) -> list[Check]
         Check(
             "read the recipe (memory_metadata called)",
             read_recipe,
+            kind="spine",
             anchor="memory_metadata(",
             rationale=None if read_recipe else "memory_metadata not called — answered from recall",
         ),
         Check(
             "reply reflects the search/browse step",
             search_i >= 0,
+            kind="reply",
             anchor=REPLY_ANCHOR,
             rationale=None if search_i >= 0 else "no search/browse family described in the reply",
         ),
         Check(
             "reply reflects the save/write step",
             save_i >= 0,
+            kind="reply",
             anchor=REPLY_ANCHOR,
             rationale=None if save_i >= 0 else "no save/write family described in the reply",
         ),
@@ -174,6 +177,7 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
         Check(
             "applied the edit (collection_set called)",
             applied,
+            kind="spine",
             anchor="collection_set(",
             rationale=None if applied else "collection_set never called — nothing persisted",
         ),
@@ -181,23 +185,27 @@ def _score_edit_and_echo(db: Database, before: set[str], reply: str) -> list[Che
         Check(
             "no collection_set rejected",
             not rejected,
+            kind="proc",
             rationale="a collection_set call was rejected mid-run" if rejected else None,
         ),
         Check(
             "designer landed in the recipe",
             designer,
+            kind="state",
             anchor="designer",
             rationale=None if designer else "'designer' absent from the stored recipe",
         ),
         Check(
             "recipe changed from the seed",
             changed,
+            kind="state",
             rationale=None if changed else "recipe still byte-identical to the seed",
         ),
-        Check("no fictitious tool persisted", "extract_text" not in stored),
+        Check("no fictitious tool persisted", "extract_text" not in stored, kind="state"),
         Check(
             "reply echoes the change",
             echoed,
+            kind="reply",
             rationale=None if echoed else "reply doesn't mention the designer change",
         ),
     ]
@@ -245,12 +253,14 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
         Check(
             "read the recipe each turn (memory_metadata >=2)",
             reads >= 2,
+            kind="spine",
             anchor="memory_metadata(",
             rationale=f"expected >=2 reads, saw {reads}",
         ),
         Check(
             "applied the edit (collection_set called)",
             applied,
+            kind="spine",
             anchor="collection_set(",
             rationale=None if applied else "collection_set never called — nothing persisted",
         ),
@@ -258,22 +268,26 @@ def _score_discuss_then_adjust(db: Database, before: set[str], reply: str) -> li
         Check(
             "no collection_set rejected",
             not rejected,
+            kind="proc",
             rationale="a collection_set call was rejected mid-run" if rejected else None,
         ),
         Check(
             "no give-up reply mid-conversation",
             not gave_up,
+            kind="proc",
             rationale="Penny gave up mid-conversation" if gave_up else None,
         ),
         Check(
             "designer landed in the recipe",
             designer,
+            kind="state",
             anchor="designer",
             rationale=None if designer else "'designer' absent from the stored recipe",
         ),
         Check(
             "reply echoes the change",
             echoed,
+            kind="reply",
             rationale=None if echoed else "reply doesn't mention the designer change",
         ),
     ]
@@ -322,12 +336,14 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
         Check(
             "read the recipe (memory_metadata called)",
             read_recipe,
+            kind="spine",
             anchor="memory_metadata(",
             rationale=None if read_recipe else "memory_metadata not called",
         ),
         Check(
             "applied edits (collection_set called)",
             applied,
+            kind="spine",
             anchor="collection_set(",
             rationale=None if applied else "collection_set never called — nothing persisted",
         ),
@@ -338,39 +354,46 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
         Check(
             "no collection_set rejected",
             not rejected,
+            kind="proc",
             rationale="a collection_set call was rejected mid-run" if rejected else None,
         ),
         Check(
             "no give-up reply mid-conversation",
             not gave_up,
+            kind="proc",
             rationale="Penny gave up mid-conversation" if gave_up else None,
         ),
         Check(
             "modify: designer added to collection_write",
             designer,
+            kind="state",
             anchor="designer",
             rationale=None if designer else "'designer' absent from the recipe",
         ),
         Check(
             "add: Amazon-price browse call",
             priced,
+            kind="state",
             anchor="amazon",
             rationale=None if priced else "neither 'amazon' nor 'price' in the recipe",
         ),
         Check(
             'remove: log_read("user-messages") gone',
             log_read_gone,
+            kind="state",
             rationale=None if log_read_gone else "log_read/user-messages still in the recipe",
         ),
         Check(
             "notify-off: notify set false",
             notify_off,
+            kind="state",
             anchor='"notify": false',
             rationale=None if notify_off else "notify still on",
         ),
         Check(
             "closer spawned no collection",
             not spawned,
+            kind="state",
             rationale=None if not spawned else f"spawned {[m.name for m in spawned]}",
         ),
     ]
@@ -378,6 +401,7 @@ def _score_edit_operations(db: Database, before: set[str], reply: str) -> list[C
         Check(
             f"spine intact: {family}",
             family in stored,
+            kind="state",
             rationale=None if family in stored else f"'{family}' missing from the recipe",
         )
         for family in ("browse", "collection_write", "done")
@@ -421,11 +445,13 @@ def _score_no_silent_edit(db: Database, before: set[str], reply: str) -> list[Ch
         Check(
             "recipe untouched on a casual mention (no imperative)",
             unchanged,
+            kind="state",
             rationale=None if unchanged else f"rewrote the recipe: {stored!r}",
         ),
         Check(
             "no collection spawned on a casual mention",
             not created,
+            kind="state",
             rationale=None if not created else f"created {[m.name for m in created]}",
         ),
     ]
@@ -466,6 +492,7 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "described the recipe (memory_metadata called)",
             described,
+            kind="spine",
             anchor="memory_metadata(",
             rationale=None if described else "memory_metadata not called",
         ),
@@ -474,6 +501,7 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "re-encoded it (collection_set called)",
             reencoded,
+            kind="spine",
             anchor="collection_set(",
             rationale=None if reencoded else "collection_set never called — no re-encode",
         ),
@@ -481,16 +509,19 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "no collection_set rejected",
             not rejected,
+            kind="proc",
             rationale="a collection_set call was rejected mid-run" if rejected else None,
         ),
         Check(
             "browse step preserved",
             browse_i >= 0,
+            kind="state",
             rationale=None if browse_i >= 0 else "browse missing from the re-encoded recipe",
         ),
         Check(
             "collection_write step preserved",
             write_i >= 0,
+            kind="state",
             rationale=None
             if write_i >= 0
             else "collection_write missing from the re-encoded recipe",
@@ -498,11 +529,13 @@ def _score_roundtrip(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "done step preserved",
             done_i >= 0,
+            kind="state",
             rationale=None if done_i >= 0 else "done missing from the re-encoded recipe",
         ),
         Check(
             "family order preserved (browse < write < done)",
             order_ok,
+            kind="state",
             rationale=None
             if order_ok
             else f"order broken — browse@{browse_i}, write@{write_i}, done@{done_i}",

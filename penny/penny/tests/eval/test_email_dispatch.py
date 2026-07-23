@@ -98,19 +98,20 @@ def _score_searched(token: str):
         if not tool_was_called(db, _SEARCH_EMAILS):
             # No dispatch — the args-token check has nothing to inspect (not-applicable).
             return [
-                Check("search_emails called", False, anchor=anchor),
-                Check.na(f"search args carry '{token}'", anchor=anchor),
+                Check("search_emails called", False, anchor=anchor, kind="spine"),
+                Check.na(f"search args carry '{token}'", anchor=anchor, kind="spine"),
             ]
         args = last_tool_args(db, _SEARCH_EMAILS) or {}
         blob = " ".join(str(v) for v in args.values()).lower()
         has_token = token in blob
         return [
-            Check("search_emails called", True, anchor=anchor),
+            Check("search_emails called", True, anchor=anchor, kind="spine"),
             Check(
                 f"search args carry '{token}'",
                 has_token,
                 anchor=anchor,
                 rationale=None if has_token else f"args {args!r} dropped {token!r}",
+                kind="spine",
             ),
         ]
 
@@ -124,6 +125,7 @@ def _score_no_email(db, before, reply) -> list[Check]:
             f"{name} not fired on a casual mention",
             tool_not_called(db, name),
             anchor=f"{name}(",
+            kind="spine",
         )
         for name in sorted(_EMAIL_TOOLS)
     ]

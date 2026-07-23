@@ -84,6 +84,7 @@ def _score_recovered_from_duplicate(db: Database, sent: list[str]) -> list[Check
                 "collection keys changed (confabulated/proliferated writes): "
                 f"{sorted(keys)} vs seeded {sorted(RECIPE_BOX_SEED_KEYS)}"
             ),
+            kind="state",
         ),
         Check(
             "recovered via done() or update_entry",
@@ -94,6 +95,7 @@ def _score_recovered_from_duplicate(db: Database, sent: list[str]) -> list[Check
                 "no done()/update_entry after the duplicate rejection "
                 "(key-hunted / spiraled to the step ceiling)"
             ),
+            kind="proc",
         ),
         Check(
             "update_entry targeted only existing bound keys",
@@ -105,6 +107,7 @@ def _score_recovered_from_duplicate(db: Database, sent: list[str]) -> list[Check
             )
             if stray_keys
             else None,
+            kind="spine",
         ),
     ]
 

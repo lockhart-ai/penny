@@ -129,7 +129,12 @@ def _reply_reflects(reply: str, tokens: list[str]) -> list[Check]:
     isn't a spurious miss; checked semantically as substrings, never exact wording."""
     normalized = _normalize(reply)
     return [
-        Check(f"reply reflects '{token}'", _normalize(token) in normalized, anchor=REPLY_ANCHOR)
+        Check(
+            f"reply reflects '{token}'",
+            _normalize(token) in normalized,
+            kind="reply",
+            anchor=REPLY_ANCHOR,
+        )
         for token in tokens
     ]
 
@@ -147,12 +152,14 @@ def _score_search_read_store(db: Database, before: set[str], reply: str) -> list
         Check(
             "browse→collection_write in order",
             in_order,
+            kind="spine",
             anchor=f"{_WRITE}(",
             rationale=None if in_order else f"got {sequence}",
         ),
         Check(
             "looked-up game saved to games",
             saved,
+            kind="state",
             rationale=None if saved else f"{collection_entries(db, _GAMES_NAME)}",
         ),
     ] + _reply_reflects(reply, ["mistforge"])
@@ -168,12 +175,14 @@ def _score_multihop_read_store(db: Database, before: set[str], reply: str) -> li
         Check(
             "browse→collection_write in order",
             in_order,
+            kind="spine",
             anchor=f"{_WRITE}(",
             rationale=None if in_order else f"got {sequence}",
         ),
         Check(
             "stored entry carries the detail-page release year (2031)",
             has_year,
+            kind="state",
             rationale=None if has_year else f"{collection_entries(db, _GAMES_NAME)}",
         ),
     ] + _reply_reflects(reply, ["mistforge", "2031"])
@@ -189,18 +198,20 @@ def _score_recall_then_delete(db: Database, before: set[str], reply: str) -> lis
         Check(
             "collection_read_latest fired",
             _READ in sequence,
+            kind="spine",
             anchor=f"{_READ}(",
             rationale=None if _READ in sequence else f"got {sequence}",
         ),
         Check(
             "collection_delete_entry fired",
             _DELETE in sequence,
+            kind="spine",
             anchor=f"{_DELETE}(",
             rationale=None if _DELETE in sequence else f"got {sequence}",
         ),
-        Check("chess removed from likes", "chess" not in remaining),
-        Check("hiking kept", "hiking" in remaining),
-        Check("jazz kept", "jazz" in remaining),
+        Check("chess removed from likes", "chess" not in remaining, kind="state"),
+        Check("hiking kept", "hiking" in remaining, kind="state"),
+        Check("jazz kept", "jazz" in remaining, kind="state"),
     ] + _reply_reflects(reply, ["chess"])
 
 
@@ -215,18 +226,20 @@ def _score_delete_then_list(db: Database, before: set[str], reply: str) -> list[
         Check(
             "collection_delete_entry fired",
             _DELETE in sequence,
+            kind="spine",
             anchor=f"{_DELETE}(",
             rationale=None if _DELETE in sequence else f"got {sequence}",
         ),
         Check(
             "collection_read_latest fired",
             _READ in sequence,
+            kind="spine",
             anchor=f"{_READ}(",
             rationale=None if _READ in sequence else f"got {sequence}",
         ),
-        Check("jazz removed from likes", "jazz" not in remaining),
-        Check("chess kept", "chess" in remaining),
-        Check("hiking kept", "hiking" in remaining),
+        Check("jazz removed from likes", "jazz" not in remaining, kind="state"),
+        Check("chess kept", "chess" in remaining, kind="state"),
+        Check("hiking kept", "hiking" in remaining, kind="state"),
     ] + _reply_reflects(reply, ["jazz"])
 
 
@@ -235,7 +248,7 @@ def _score_recall_sweep(db: Database, before: set[str], reply: str) -> list[Chec
     targets = set(tool_call_arg_values(db, _READ, "memory"))
     # The recap must reflect at least a like and a game it read back.
     return [
-        Check(f"read '{name}'", name in targets, anchor=f"{_READ}(")
+        Check(f"read '{name}'", name in targets, kind="spine", anchor=f"{_READ}(")
         for name in (_LIKES, _DISLIKES, _GAMES_NAME)
     ] + _reply_reflects(reply, ["chess", "mistforge"])
 
@@ -251,12 +264,14 @@ def _score_browse_then_update(db: Database, before: set[str], reply: str) -> lis
         Check(
             "browse→update_entry in order",
             in_order,
+            kind="spine",
             anchor=f"{_UPDATE}(",
             rationale=None if in_order else f"got {sequence}",
         ),
         Check(
             "Mistforge entry gained co-op detail",
             has_coop,
+            kind="state",
             rationale=None if has_coop else f"{collection_entries(db, _GAMES_NAME)}",
         ),
     ] + _reply_reflects(reply, ["mistforge"])
@@ -266,10 +281,13 @@ def _score_update_entry(db: Database, before: set[str], reply: str) -> list[Chec
     """Change the hiking note to alpine — via update_entry, content changed."""
     has_alpine = "alpine" in _saved_text(db, _LIKES)
     return [
-        Check("update_entry called", tool_was_called(db, _UPDATE), anchor=f"{_UPDATE}("),
+        Check(
+            "update_entry called", tool_was_called(db, _UPDATE), kind="spine", anchor=f"{_UPDATE}("
+        ),
         Check(
             "hiking note mentions alpine trails",
             has_alpine,
+            kind="state",
             rationale=None if has_alpine else f"{collection_entries(db, _LIKES)}",
         ),
     ] + _reply_reflects(reply, ["hiking", "alpine"])
@@ -287,12 +305,14 @@ def _score_recall_then_fill(db: Database, before: set[str], reply: str) -> list[
         Check(
             "browse→collection_write in order",
             in_order,
+            kind="spine",
             anchor=f"{_WRITE}(",
             rationale=None if in_order else f"got {sequence}",
         ),
         Check(
             "looked-up game saved to games",
             saved,
+            kind="state",
             rationale=None if saved else f"{collection_entries(db, _GAMES_NAME)}",
         ),
     ] + _reply_reflects(reply, ["mistforge"])
@@ -307,11 +327,13 @@ def _score_two_writes(db: Database, before: set[str], reply: str) -> list[Check]
         Check(
             "bouldering saved to likes",
             has_boulder,
+            kind="state",
             rationale=None if has_boulder else f"{collection_entries(db, _LIKES)}",
         ),
         Check(
             "instant coffee saved to dislikes",
             has_coffee,
+            kind="state",
             rationale=None if has_coffee else f"{collection_entries(db, _DISLIKES)}",
         ),
     ] + _reply_reflects(reply, ["bouldering", "coffee"])
@@ -320,7 +342,7 @@ def _score_two_writes(db: Database, before: set[str], reply: str) -> list[Check]
 def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
     """Pure narration / a wistful aside must fire no browse or entry mutation."""
     return [
-        Check(f"{tool} not fired", not tool_was_called(db, tool), anchor=f"{tool}(")
+        Check(f"{tool} not fired", not tool_was_called(db, tool), kind="spine", anchor=f"{tool}(")
         for tool in _ACTION_TOOLS
     ]
 
@@ -331,6 +353,7 @@ def _score_no_fire_reads(db: Database, before: set[str], reply: str) -> list[Che
         Check(
             "collection_read_latest not fired",
             not tool_was_called(db, _READ),
+            kind="spine",
             anchor=f"{_READ}(",
         )
     ]

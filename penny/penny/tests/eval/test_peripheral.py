@@ -34,16 +34,19 @@ def _score_startup(announcement: str) -> list[Check]:
             "generated (not the canned fallback)",
             generated,
             rationale=None if generated else "fell back to the canned restart message",
+            kind="reply",
         ),
         Check(
             "within one-line length",
             within_length,
             rationale=None if within_length else f"{len(announcement)} chars > 150",
+            kind="reply",
         ),
         Check(
             "first-person voice (speaks as Penny)",
             first_person,
             rationale=None if first_person else "no first-person 'I' in the announcement",
+            kind="reply",
         ),
     ]
 

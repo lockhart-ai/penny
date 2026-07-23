@@ -44,27 +44,63 @@ def _seed_muted(db: Database) -> None:
 
 def _score_mute(db: Database, before: set[str], reply: str) -> list[Check]:
     return [
-        Check("notifications_mute called", tool_was_called(db, _MUTE), anchor=f"{_MUTE}("),
         Check(
-            "notifications_unmute not called", tool_not_called(db, _UNMUTE), anchor=f"{_UNMUTE}("
+            "notifications_mute called",
+            tool_was_called(db, _MUTE),
+            anchor=f"{_MUTE}(",
+            kind="spine",
         ),
-        Check("notifications muted (MuteState present)", db.users.is_muted(TEST_SENDER)),
+        Check(
+            "notifications_unmute not called",
+            tool_not_called(db, _UNMUTE),
+            anchor=f"{_UNMUTE}(",
+            kind="spine",
+        ),
+        Check(
+            "notifications muted (MuteState present)",
+            db.users.is_muted(TEST_SENDER),
+            kind="state",
+        ),
     ]
 
 
 def _score_unmute(db: Database, before: set[str], reply: str) -> list[Check]:
     return [
-        Check("notifications_unmute called", tool_was_called(db, _UNMUTE), anchor=f"{_UNMUTE}("),
-        Check("notifications_mute not called", tool_not_called(db, _MUTE), anchor=f"{_MUTE}("),
-        Check("notifications unmuted (MuteState absent)", not db.users.is_muted(TEST_SENDER)),
+        Check(
+            "notifications_unmute called",
+            tool_was_called(db, _UNMUTE),
+            anchor=f"{_UNMUTE}(",
+            kind="spine",
+        ),
+        Check(
+            "notifications_mute not called",
+            tool_not_called(db, _MUTE),
+            anchor=f"{_MUTE}(",
+            kind="spine",
+        ),
+        Check(
+            "notifications unmuted (MuteState absent)",
+            not db.users.is_muted(TEST_SENDER),
+            kind="state",
+        ),
     ]
 
 
 def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
     return [
-        Check("notifications_mute not fired", tool_not_called(db, _MUTE), anchor=f"{_MUTE}("),
-        Check("notifications_unmute not fired", tool_not_called(db, _UNMUTE), anchor=f"{_UNMUTE}("),
-        Check("mute state unchanged", not db.users.is_muted(TEST_SENDER)),
+        Check(
+            "notifications_mute not fired",
+            tool_not_called(db, _MUTE),
+            anchor=f"{_MUTE}(",
+            kind="spine",
+        ),
+        Check(
+            "notifications_unmute not fired",
+            tool_not_called(db, _UNMUTE),
+            anchor=f"{_UNMUTE}(",
+            kind="spine",
+        ),
+        Check("mute state unchanged", not db.users.is_muted(TEST_SENDER), kind="state"),
     ]
 
 

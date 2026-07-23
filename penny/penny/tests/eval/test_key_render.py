@@ -75,11 +75,12 @@ def _score_copythrough(db: Database, before: set[str], reply: str) -> list[Check
     not tempt the model into pasting display brackets into a ``key=`` argument."""
     brackets = bracket_wrapped_key_calls(db)
     return [
-        Check(f"{_TARGET_KEY!r} updated by key", _target_mutated(db)),
+        Check(f"{_TARGET_KEY!r} updated by key", _target_mutated(db), kind="state"),
         Check(
             "no bracket-wrapped key pasted into an argument",
             not brackets,
             rationale=None if not brackets else f"{brackets}",
+            kind="spine",
         ),
     ]
 
@@ -100,6 +101,7 @@ def _score_forced_recovery(db: Database, before: set[str], reply: str) -> list[C
             f"{_TARGET_KEY!r} recovered to its bare key",
             mutated,
             rationale=None if mutated else f"{_TARGET_KEY!r} never updated after the rejection",
+            kind="state",
         )
     ]
 

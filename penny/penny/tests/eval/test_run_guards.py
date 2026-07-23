@@ -94,6 +94,7 @@ def _score_recovered_with_work(db: Database, sent: list[str]) -> list[Check]:
                 f"(log_read={tool_was_called(db, 'log_read')}, "
                 f"collection_write={tool_was_called(db, 'collection_write')})"
             ),
+            kind="state",
         )
     ]
 
@@ -111,6 +112,7 @@ def _score_resent_complete_message(db: Database, sent: list[str]) -> list[Check]
             rationale=f"a half-formed message was sent (gate let it through): {half_formed[0]!r}"
             if half_formed
             else None,
+            kind="reply",
         ),
         Check(
             "resent a complete message after the refusal",
@@ -119,6 +121,7 @@ def _score_resent_complete_message(db: Database, sent: list[str]) -> list[Check]
             rationale=None
             if sent
             else "no message sent after the gate refused the half-formed body — no recovery",
+            kind="reply",
         ),
     ]
 

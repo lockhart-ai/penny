@@ -66,7 +66,11 @@ def _score_create(
 ) -> list[Check]:
     memory = _created_collection(db, before)
     if memory is None:
-        return [Check("a collection was created", False, rationale="no collection created")]
+        return [
+            Check(
+                "a collection was created", False, rationale="no collection created", kind="state"
+            )
+        ]
     body = (memory.extraction_prompt or "").lower()
     # Emission is the ``notify`` flag, NOT a send_message step in the stored
     # extraction_prompt.  The model must map "ping/tell me" onto the flag — the
@@ -75,19 +79,23 @@ def _score_create(
     # the case stated a cadence (``interval is None`` → ``Check.na``, out of the
     # graded denominator — a create-notify/silent case never asked for one).
     return [
-        Check("extraction_prompt has a browse step", "browse" in body, anchor="browse"),
+        Check(
+            "extraction_prompt has a browse step", "browse" in body, anchor="browse", kind="state"
+        ),
         Check(
             f"notify set {notify}",
             memory.notify == notify,
             rationale=None
             if memory.notify == notify
             else f"expected {notify}, got {memory.notify}",
+            kind="state",
         ),
         Check(
             "no send_message step (notify is the flag, not a send step)",
             "send_message" not in body,
+            kind="state",
         ),
-        Check.na("interval matches the requested cadence")
+        Check.na("interval matches the requested cadence", kind="state")
         if interval is None
         else Check(
             f"interval set to {interval}s",
@@ -95,6 +103,7 @@ def _score_create(
             rationale=None
             if memory.collector_interval_seconds == interval
             else f"expected {interval}, got {memory.collector_interval_seconds}",
+            kind="state",
         ),
     ]
 
@@ -102,7 +111,14 @@ def _score_create(
 def _score_update_scope(db: Database, before: set[str], *, added: tuple[str, ...]) -> list[Check]:
     memory = db.memories.get("board-games")
     if memory is None:
-        return [Check("board-games still present", False, rationale="board-games disappeared")]
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
     text = f"{memory.description}\n{memory.extraction_prompt or ''}".lower()
     broadened = any(term in text for term in added)
     return [
@@ -110,6 +126,7 @@ def _score_update_scope(db: Database, before: set[str], *, added: tuple[str, ...
             "scope broadened (an added term landed in the recipe)",
             broadened,
             rationale=None if broadened else f"none of {added} in description/extraction_prompt",
+            kind="state",
         )
     ]
 
@@ -127,7 +144,14 @@ def _score_update_source(db: Database, before: set[str], *, url_token: str) -> l
     """
     memory = db.memories.get("board-games")
     if memory is None:
-        return [Check("board-games still present", False, rationale="board-games disappeared")]
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
     body = memory.extraction_prompt or ""
     applied = url_token in body
     return [
@@ -135,6 +159,7 @@ def _score_update_source(db: Database, before: set[str], *, url_token: str) -> l
             "new source URL applied to the extraction_prompt",
             applied,
             rationale=None if applied else f"{url_token!r} absent from extraction_prompt: {body!r}",
+            kind="state",
         )
     ]
 
@@ -142,7 +167,14 @@ def _score_update_source(db: Database, before: set[str], *, url_token: str) -> l
 def _score_silent_flip(db: Database, before: set[str], reply: str) -> list[Check]:
     memory = db.memories.get("board-games")
     if memory is None:
-        return [Check("board-games still present", False, rationale="board-games disappeared")]
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
     # "stop pinging me" = flip ``notify`` off.  The collector keeps gathering;
     # only the notify side is silenced.
     return [
@@ -152,6 +184,7 @@ def _score_silent_flip(db: Database, before: set[str], reply: str) -> list[Check
             rationale=None
             if not memory.notify
             else "still notifying — notify not flipped to false",
+            kind="state",
         )
     ]
 
@@ -159,13 +192,21 @@ def _score_silent_flip(db: Database, before: set[str], reply: str) -> list[Check
 def _score_notify_flip(db: Database, before: set[str], reply: str) -> list[Check]:
     memory = db.memories.get("board-games")
     if memory is None:
-        return [Check("board-games still present", False, rationale="board-games disappeared")]
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
     # "start telling me" = flip ``notify`` on for an existing silent collection.
     return [
         Check(
             "notify flipped on",
             memory.notify,
             rationale=None if memory.notify else "did not start notifying — notify not flipped on",
+            kind="state",
         )
     ]
 
@@ -173,12 +214,20 @@ def _score_notify_flip(db: Database, before: set[str], reply: str) -> list[Check
 def _score_archive(db: Database, before: set[str], reply: str) -> list[Check]:
     memory = db.memories.get("board-games")
     if memory is None:
-        return [Check("board-games still present", False, rationale="board-games disappeared")]
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
     return [
         Check(
             "collection archived",
             memory.archived,
             rationale=None if memory.archived else "collection not archived",
+            kind="state",
         )
     ]
 
@@ -190,6 +239,7 @@ def _score_no_create(db: Database, before: set[str], reply: str) -> list[Check]:
             "no collection created on an ambiguous request",
             not created,
             rationale=None if not created else f"created {[m.name for m in created]}",
+            kind="state",
         )
     ]
 

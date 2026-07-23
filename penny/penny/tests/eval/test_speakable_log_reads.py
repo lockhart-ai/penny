@@ -124,7 +124,12 @@ def _reply_reflects(reply: str, tokens: list[str]) -> list[Check]:
     reply row; normalized for typography, checked as substrings, never exact wording."""
     normalized = _normalize(reply)
     return [
-        Check(f"reply reflects '{token}'", _normalize(token) in normalized, anchor=REPLY_ANCHOR)
+        Check(
+            f"reply reflects '{token}'",
+            _normalize(token) in normalized,
+            anchor=REPLY_ANCHOR,
+            kind="reply",
+        )
         for token in tokens
     ]
 
@@ -375,11 +380,12 @@ def _score_user_messages_act(db: Database, _before: set[str], reply: str) -> lis
     read_ok = _dispatched(db, _LOG_READ, "memory", _USER_MESSAGES)
     saved = _HOBBY_TOKEN in _saved_text(db, _LIKES)
     return [
-        Check("log_read the user-messages log", read_ok, anchor=f"{_LOG_READ}("),
+        Check("log_read the user-messages log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
         Check(
             "hobby saved to likes",
             saved,
             rationale=None if saved else f"{collection_entries(db, _LIKES)}",
+            kind="state",
         ),
     ] + _reply_reflects(reply, [_HOBBY_TOKEN])
 
@@ -389,7 +395,7 @@ def _score_penny_messages_recall(db: Database, _before: set[str], reply: str) ->
     penny-messages log and relay the out-of-window recommendation."""
     read_ok = _dispatched(db, _LOG_READ, "memory", _PENNY_MESSAGES)
     return [
-        Check("log_read the penny-messages log", read_ok, anchor=f"{_LOG_READ}("),
+        Check("log_read the penny-messages log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
     ] + _reply_reflects(reply, [_SUGGESTION_TOKEN])
 
 
@@ -399,12 +405,13 @@ def _score_browse_results(db: Database, _before: set[str], reply: str) -> list[C
     read_ok = _dispatched(db, _LOG_READ, "memory", _BROWSE_RESULTS)
     named = any(token in _normalize(reply) for token in _BROWSE_TOPIC_TOKENS)
     return [
-        Check("log_read the browse-results log", read_ok, anchor=f"{_LOG_READ}("),
+        Check("log_read the browse-results log", read_ok, anchor=f"{_LOG_READ}(", kind="spine"),
         Check(
             "reply names a browsed topic",
             named,
             anchor=REPLY_ANCHOR,
             rationale=None if named else f"named none of {list(_BROWSE_TOPIC_TOKENS)}",
+            kind="reply",
         ),
     ]
 
@@ -417,6 +424,7 @@ def _score_collector_runs(db: Database, _before: set[str], reply: str) -> list[C
             "log_read the collector-runs index",
             _dispatched(db, _LOG_READ, "memory", _COLLECTOR_RUNS),
             anchor=f"{_LOG_READ}(",
+            kind="spine",
         ),
     ]
 
@@ -425,7 +433,7 @@ def _score_no_fire(db: Database, _before: set[str], reply: str) -> list[Check]:
     """A wistful aside about rereading old chats must fire NO log read, browse, or
     mutation — the false-positive guard for speakable log reads."""
     return [
-        Check(f"{tool} not fired", not tool_was_called(db, tool), anchor=f"{tool}(")
+        Check(f"{tool} not fired", not tool_was_called(db, tool), anchor=f"{tool}(", kind="spine")
         for tool in (*_READ_TOOLS, *_ACTION_TOOLS)
     ]
 

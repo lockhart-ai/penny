@@ -56,21 +56,25 @@ def _score_datetime_anchor(db: Database, before: set[str], reply: str) -> list[C
     if rendered is None:
         # No prompt logged — nothing to inspect for the two timezone checks (not-applicable).
         return [
-            Check("date/time anchor logged in the system prompt", False),
-            Check.na(f"anchor rendered in the profile timezone ({local_abbrev})"),
-            Check.na("anchor not rendered in UTC"),
+            Check("date/time anchor logged in the system prompt", False, kind="proc"),
+            Check.na(f"anchor rendered in the profile timezone ({local_abbrev})", kind="proc"),
+            Check.na("anchor not rendered in UTC", kind="proc"),
         ]
     in_zone = rendered.endswith(f" {local_abbrev}")
     not_utc = "UTC" not in rendered
     return [
-        Check("date/time anchor logged in the system prompt", True),
+        Check("date/time anchor logged in the system prompt", True, kind="proc"),
         Check(
             f"anchor rendered in the profile timezone ({local_abbrev})",
             in_zone,
             rationale=None if in_zone else f"{rendered!r}",
+            kind="proc",
         ),
         Check(
-            "anchor not rendered in UTC", not_utc, rationale=None if not_utc else f"{rendered!r}"
+            "anchor not rendered in UTC",
+            not_utc,
+            rationale=None if not_utc else f"{rendered!r}",
+            kind="proc",
         ),
     ]
 

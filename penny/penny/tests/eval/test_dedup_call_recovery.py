@@ -84,6 +84,7 @@ def _score_recovered_with_work(db: Database, sent: list[str]) -> list[Check]:
                 f"collection_write={tool_was_called(db, 'collection_write')}); the model likely "
                 "over-generalized the rejection and suppressed the owed write"
             ),
+            kind="state",
         )
     ]
 

@@ -122,6 +122,7 @@ def _score_wrote_entry(name: str) -> CollectorScorer:
                 wrote,
                 anchor="collection_write(",
                 rationale=None if wrote else f"no new {name!r} entry was added",
+                kind="state",
             )
         ]
 
@@ -139,6 +140,7 @@ def _score_no_op(name: str) -> CollectorScorer:
                 rationale=None
                 if unchanged
                 else f"wrote a {name!r} entry on a no-signal batch (false positive)",
+                kind="state",
             )
         ]
 
@@ -158,6 +160,7 @@ def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[Chec
             wrote,
             anchor="collection_write(",
             rationale=None if wrote else "no knowledge entry written from the browse-results page",
+            kind="state",
         )
     ]
     # The subject/URL content checks only apply to an entry that WAS written — with no
@@ -172,6 +175,7 @@ def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[Chec
                 rationale=None
                 if has_subject
                 else "summary missing the page's subject (antikythera)",
+                kind="state",
             )
         )
         checks.append(
@@ -181,11 +185,18 @@ def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[Chec
                 rationale=None
                 if has_url
                 else "summary missing the source URL (should lead with it)",
+                kind="state",
             )
         )
     else:
-        checks.append(Check.na("summary names the page's subject", rationale="no entry written"))
-        checks.append(Check.na("summary leads with the source URL", rationale="no entry written"))
+        checks.append(
+            Check.na("summary names the page's subject", rationale="no entry written", kind="state")
+        )
+        checks.append(
+            Check.na(
+                "summary leads with the source URL", rationale="no entry written", kind="state"
+            )
+        )
     # The cycle must close with a real done() call — a run that writes the entry then
     # narrates "Done. Summary: ..." as prose leaves its cursor uncommitted (re-run next tick).
     checks.append(
@@ -194,6 +205,7 @@ def _score_knowledge(db: Database, before: object, sent: list[str]) -> list[Chec
             closed,
             anchor="done(",
             rationale=None if closed else "wrote the entry but never closed the cycle with done()",
+            kind="spine",
         )
     )
     return checks
@@ -212,6 +224,7 @@ def _score_research(db: Database, before: object, sent: list[str]) -> list[Check
             wrote,
             anchor="collection_write(",
             rationale=None if wrote else "did not write the browsed find to the collection",
+            kind="state",
         ),
         Check(
             "silent collector sent nothing",
@@ -219,12 +232,14 @@ def _score_research(db: Database, before: object, sent: list[str]) -> list[Check
             rationale=None
             if not sent
             else "silent collector sent a message — a notify=False cycle never emits",
+            kind="state",
         ),
         Check(
             "closed the cycle with done()",
             closed,
             anchor="done(",
             rationale=None if closed else "cycle did not close with done()",
+            kind="spine",
         ),
     ]
 
@@ -348,6 +363,7 @@ def _score_taught_real_done(db: Database, before: object, sent: list[str]) -> li
             rationale=None
             if made_done
             else "no real done() call was logged — the model never re-emitted the taught call",
+            kind="spine",
         )
     ]
 
@@ -390,6 +406,7 @@ def _score_watchlist_recovered(db: Database, before: object, sent: list[str]) ->
             "wrote a watchlist entry after the forced empty response",
             wrote_entry,
             rationale=None if wrote_entry else "no watchlist entry after the forced empty response",
+            kind="state",
         ),
         Check(
             "recovered via a real collection_write call",
@@ -398,6 +415,7 @@ def _score_watchlist_recovered(db: Database, before: object, sent: list[str]) ->
             rationale=None
             if called_write
             else "no collection_write — did not recover with a real write",
+            kind="spine",
         ),
     ]
 

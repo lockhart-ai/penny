@@ -10,6 +10,8 @@ assertions cover every new report shape.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 # Importing the memory-tools module registers those tools (``Tool.__init_subclass__``) so
@@ -17,6 +19,7 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.database import Database
+from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -207,6 +210,19 @@ def test_sample_is_fragile_detects_recovery_frames(tmp_path) -> None:
     # filters no tool name, so its `_RECOVERY_FRAMES` set catches "didn't work" regardless of
     # which (target-backticked) tool produced it — no attribution gap here (#1726 audit).
     _log_prompt(db, messages=_framed_result("collection_write", {"memory": "trip-notes"}, ok=False))
+    assert sample_is_fragile(db)
+
+
+def test_sample_is_fragile_counts_a_user_turn_recovery_nudge(tmp_path) -> None:
+    # #1735 finding 2: the render marks a continue / parse-failure USER-turn nudge `⚠ recovery
+    # event`, but `sample_is_fragile` used to count only TOOL-role recovery frames — so a
+    # nudge-recovered pass banner'd clean, decoupled from the render.  Widened (single-sourced
+    # through the render's own `_is_nudge`), a recovery nudge now flags the sample fragile too.
+    db = _make_db(tmp_path)
+    _log_prompt(db, messages=[{"role": "user", "content": "when does the shop open?"}])
+    assert not sample_is_fragile(db)  # a real user ask is not a recovery event
+    # The empty-response CONTINUE_NUDGE, injected as a user turn — a recovery nudge.
+    _log_prompt(db, messages=[{"role": "user", "content": "Please provide your response."}])
     assert sample_is_fragile(db)
 
 
@@ -645,6 +661,83 @@ def test_report_no_baseline_plain_fail_still_shows_thinking(tmp_path, monkeypatc
     assert "| actual | 🔧 done({}) | ❌ C1 — expected 1 send, saw 0 |" in text
     assert "<details><summary>thinking</summary>The entry is already written" in text
     assert "REGRESSED" not in text  # first run — nothing to flip against
+
+
+def test_thinking_attaches_across_compact_and_pretty_serializations(tmp_path, monkeypatch) -> None:
+    # #1735 finding 1 (HIGH): a call's thinking is captured off `promptlog.response` (the model's
+    # COMPACT emission) but the transcript row is built off the NEXT prompt's `messages` (a
+    # `json.dumps` of the parsed args — spaced + ASCII-escaped).  Keyed on the raw strings the two
+    # NEVER matched, so real thinking silently dropped on EVERY tool call.  Built REAL-SHAPED here:
+    # the two sides come from the two DIFFERENT production serializations, not one shared string
+    # (the blind spot the old fixtures had — both were the same string).  Canonical keying attaches
+    # the thinking; the unicode arg also renders unescaped (finding 3, LOW).
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    args = {"queries": ["café hours"]}  # a curly-apostrophe-free café: the ASCII-escape case
+    # Response side (production): the model's raw COMPACT emission, persisted verbatim.
+    compact = json.dumps(args, separators=(",", ":"))
+    # Messages side (production reconstruction): LlmMessage.to_input_message re-dumps the PARSED
+    # args via default json.dumps — spaced + ASCII-escaped — a genuinely DIFFERENT string.
+    reconstructed = LlmMessage(
+        role="assistant",
+        tool_calls=[
+            LlmToolCall(id="c1", function=LlmToolCallFunction(name="browse", arguments=args))
+        ],
+    ).to_input_message()
+    assert compact != reconstructed["tool_calls"][0]["function"]["arguments"]  # two serializations
+    _log_prompt(
+        db,
+        messages=[{"role": "user", "content": "when does the café open?"}, reconstructed],
+        response={
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [{"function": {"name": "browse", "arguments": compact}}]
+                    }
+                }
+            ]
+        },
+        thinking="Search the web for the café's opening hours.",
+    )
+    # kind="spine" also exercises finding 4 end-to-end: a case Check's class renders as `[spine]`
+    # on its expected row through the real extraction path (not just report.py's pure renderer).
+    result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
+    # reply="" → no trailing reply action, so the ONLY 💭 row is the browse call's — a clean probe.
+    _write_sample_report(db, "thinking-key", 0, result=result, reply="")
+    text = (tmp_path / "thinking-key.md").read_text()
+    assert "| expected | C1 [spine]⚖ browsed |  |" in text  # finding 4: the [class] tag renders
+    # The thinking sits directly ABOVE the browse call (attached, not the silent 💭 (empty) the key
+    # mismatch produced), and the arg renders as a real ``é`` — not a ``\uXXXX`` escape.
+    assert (
+        "| 💭 | <details><summary>thinking</summary>Search the web for the café's opening "
+        "hours.</details> |  |\n"
+        '| actual | 🔧 browse({"queries": ["café hours"]}) | ✅ C1 |'
+    ) in text
+    assert "💭 (empty)" not in text
+    assert "\\u00e9" not in text  # finding 3: the escape is gone, the character is rendered
+
+
+def test_report_renders_fragile_via_user_turn_nudge(tmp_path, monkeypatch) -> None:
+    # #1735 finding 2: a passing sample whose ONLY recovery was a user-turn nudge (no tool-role
+    # rejection) now banners `✅ pass · fragile` and renders the nudge row as `⚠ recovery event` —
+    # render and fragile-probe agree (they were decoupled at the debut).
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    write_call = {"function": {"name": "collection_write", "arguments": "{}"}}
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "user", "content": "save X"},
+            {"role": "assistant", "tool_calls": [write_call]},
+            {"role": "user", "content": "Please provide your response."},  # CONTINUE_NUDGE
+        ],
+    )
+    _write_sample_report(db, "nudge-fragile", 0, result=SampleResult.binary([]), reply="saved")
+    text = (tmp_path / "nudge-fragile.md").read_text()
+    assert text.startswith("#### sample 1 — ✅ pass · 1/1 (1.00) · fragile ·")  # unfolded, fragile
+    assert "| actual | 👤 *(nudge)* Please provide your response. | ⚠ recovery event |" in text
 
 
 def test_report_renders_thinking_for_every_action(tmp_path, monkeypatch) -> None:

@@ -148,8 +148,16 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
     final_reply = replies[-1] if replies else ""
 
     return [
-        Check("state: the fact landed durably in a collection (any route)", fact_stored),
-        Check("state: no runaway creation (at most one new collection)", len(created) <= 1),
+        Check(
+            "state: the fact landed durably in a collection (any route)",
+            fact_stored,
+            kind="state",
+        ),
+        Check(
+            "state: no runaway creation (at most one new collection)",
+            len(created) <= 1,
+            kind="state",
+        ),
         Check(
             # A word-list proved brittle (live sample: a valid confirmation
             # phrased outside the list).  The honest signal is the FACT: a
@@ -157,8 +165,9 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
             # claiming the fact while storage failed is the dishonest case.
             "reply: turn-1 reply acknowledges the fact it stored (SAID == DID)",
             fact_stored == ("499" in first_reply) if replies else False,
+            kind="reply",
         ),
-        Check("reply: read-back states $499", "499" in final_reply),
+        Check("reply: read-back states $499", "499" in final_reply, kind="reply"),
         # NOTE: no hard provenance check here — answering a one-turn-old fact
         # from the conversation window is correct behavior (live sample 5).
         # The COLD variant below owns provenance absolutely.
@@ -166,6 +175,7 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -221,13 +231,15 @@ def _score_beat0_empty(db: Database, before: set[str], reply: str) -> list[Check
         Check(
             "state: exactly one collection created (nowhere existed — she made one)",
             len(created) == 1,
+            kind="state",
         ),
-        Check("state: the fact landed in the created collection", fact_stored),
-        Check("reply: read-back states $499", "499" in final_reply),
+        Check("state: the fact landed in the created collection", fact_stored, kind="state"),
+        Check("reply: read-back states $499", "499" in final_reply, kind="reply"),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -309,13 +321,20 @@ def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
 
     return [
         Check(
-            "reply: recall states $499 (the write is ambient, value is not)", "499" in final_reply
+            "reply: recall states $499 (the write is ambient, value is not)",
+            "499" in final_reply,
+            kind="reply",
         ),
-        Check("calls: answer BACKED by a storage read (any route)", read_backed),
+        Check(
+            "calls: answer BACKED by a storage read (any route)",
+            read_backed,
+            kind="spine",
+        ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -367,12 +386,21 @@ def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]
     )
 
     return [
-        Check("reply: cold recall states $499 (storage is the only route)", "499" in final_reply),
-        Check("calls: answer BACKED by a storage read (find or a scoped read)", read_backed),
+        Check(
+            "reply: cold recall states $499 (storage is the only route)",
+            "499" in final_reply,
+            kind="reply",
+        ),
+        Check(
+            "calls: answer BACKED by a storage read (find or a scoped read)",
+            read_backed,
+            kind="spine",
+        ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -469,10 +497,11 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
         or watch.run_at is not None
     )
     return [
-        Check("state: exactly one collection created", len(created) == 1),
+        Check("state: exactly one collection created", len(created) == 1, kind="state"),
         Check(
             "state: a skill was learned (browse+write, parameterized)",
             _extracted_skill_shape_ok(db),
+            kind="state",
         ),
         Check(
             "state: the skill is attached (collection carries skill + rendered prompt)",
@@ -480,40 +509,52 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
             and watch.skill_name is not None
             and watch.extraction_prompt is not None,
             anchor="collection_set(",
+            kind="state",
         ),
-        Check("state: a trigger is set (the watch can actually run)", trigger_set),
+        Check(
+            "state: a trigger is set (the watch can actually run)",
+            trigger_set,
+            kind="state",
+        ),
         Check(
             "state: notify is on (the user asked to hear about changes)",
             watch is not None and bool(watch.notify),
+            kind="state",
         ),
         Check(
             "state: the baseline entry holds the browsed price",
             any("499" in content for content in entries.values()),
             anchor="collection_write(",
+            kind="state",
         ),
         Check(
             "state: the price came through browse-extract (attributed ledger row)",
             _browse_extract_attributed(db),
             anchor="browse(",
+            kind="state",
         ),
         Check(
             "state: the seeded collection untouched",
             not collection_entries(db, "dislikes"),
+            kind="state",
         ),
         Check(
             "calls: turn 1 enacts nothing (elicit before the routine is taught)",
             not any(tool in _ENACTING_TOOLS for tool in first_run),
             scored=False,
+            kind="spine",
         ),
         Check(
             "calls: demo-turn spine browse → collection_write → collection_set",
             is_ordered_subsequence(["browse", "collection_write", "collection_set"], demo_run),
             scored=False,
+            kind="spine",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -561,19 +602,37 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
     first_run = runs[0] if runs else []
     fetched = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
     return [
-        Check("state: no collection created (nothing enacted)", not new_collections(db, before)),
-        Check("state: no skill learned (no round ran)", not db.skills.list_all()),
-        Check("state: no page fetched (browse-results stayed empty)", not fetched),
-        Check("state: the seeded collection untouched", not collection_entries(db, "dislikes")),
+        Check(
+            "state: no collection created (nothing enacted)",
+            not new_collections(db, before),
+            kind="state",
+        ),
+        Check(
+            "state: no skill learned (no round ran)",
+            not db.skills.list_all(),
+            kind="state",
+        ),
+        Check(
+            "state: no page fetched (browse-results stayed empty)",
+            not fetched,
+            kind="state",
+        ),
+        Check(
+            "state: the seeded collection untouched",
+            not collection_entries(db, "dislikes"),
+            kind="state",
+        ),
         Check(
             "calls: no enacting calls (orientation reads only)",
             not any(tool in _ENACTING_TOOLS for tool in first_run),
             scored=False,
+            kind="spine",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -638,11 +697,13 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "state: she browsed the listing (step 1 — the demonstrated fetch happened)",
             _browsed_the_listing(db),
+            kind="state",
         ),
         Check(
             "state: the browsed value ($499) landed durably in a collection "
             "(steps 2+3, any collection)",
             value_stored,
+            kind="state",
         ),
         Check(
             # SAID == DID via the acknowledge-the-fact pattern (verb lists proved
@@ -651,6 +712,7 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
             # the echo is checked across ALL sent replies, not just the first.
             "reply: a sent reply reports the browsed value it stored (SAID == DID)",
             (any("499" in reply for reply in replies) == value_stored) if replies else False,
+            kind="reply",
         ),
         Check(
             # The auto-extraction (#1658): the demonstration run ITSELF yields the
@@ -659,15 +721,18 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
             "state: a skill was auto-extracted from the demonstration "
             "(browse+write, parameterized)",
             _extracted_skill_shape_ok(db),
+            kind="state",
         ),
         Check(
             "state: the learned-skill narration frame fired (she narrates FROM the render)",
             _learned_frame_fired(db),
+            kind="state",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -761,22 +826,35 @@ def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
     retargeted = watch is not None and f"memory='{watch.name}'" in (watch.extraction_prompt or "")
     return [
         Check(
-            "state: the demonstration auto-extracted a skill (exactly one exists)", len(skills) == 1
+            "state: the demonstration auto-extracted a skill (exactly one exists)",
+            len(skills) == 1,
+            kind="state",
         ),
         Check(
             "state: ONE live watch was instantiated (skill attached, prompt rendered)",
             len(watches) == 1,
+            kind="state",
         ),
-        Check("state: the watch has a trigger (it will actually run)", has_trigger),
-        Check("state: notify is on (the ask was 'let me know')", watch.notify if watch else False),
+        Check(
+            "state: the watch has a trigger (it will actually run)",
+            has_trigger,
+            kind="state",
+        ),
+        Check(
+            "state: notify is on (the ask was 'let me know')",
+            watch.notify if watch else False,
+            kind="state",
+        ),
         Check(
             "state: writes retargeted to the new collection (the rendered program doesn't lie)",
             retargeted,
+            kind="state",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -964,34 +1042,53 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
         Check(
             "reply: she asked to be taught the round OR ran it herself to completion",
             one_message or chain_complete,
+            kind="reply",
         ),
         Check(
             "reply: an ask that happened was modelled from THEIR sources",
             modelled if one_message else True,
+            kind="reply",
         ),
-        Check("state: the routine ran on arrival (browsed the given sites)", _round_ran(db)),
+        Check(
+            "state: the routine ran on arrival (browsed the given sites)",
+            _round_ran(db),
+            kind="state",
+        ),
         Check(
             "state: the round's write landed (page-derived content stored)",
             _notable_written(db, before),
+            kind="state",
         ),
-        Check("state: a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
-        Check("state: a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check(
+            "state: a skill auto-extracted from the round",
+            len(db.skills.list_all()) >= 1,
+            kind="state",
+        ),
+        Check(
+            "state: a live watch exists (skill attached, prompt rendered)",
+            len(watches) >= 1,
+            kind="state",
+        ),
         Check(
             "state: the watch has a trigger and notify is on",
             has_trigger and bool(watch.notify if watch else False),
+            kind="state",
         ),
         Check(
             "reply: no re-teach ask once the skill exists (final reply doesn't re-elicit)",
             not (_teach_ask(replies[-1]) if replies else False),
+            kind="reply",
         ),
         Check(
             "reply: she never demanded page mechanics (snippets/selectors/patterns)",
             not _demanded_mechanics(replies),
+            kind="reply",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -1045,25 +1142,41 @@ def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
         or watch.source_log is not None
     )
     return [
-        Check("state: the routine ran (browsed the given sites)", _round_ran(db)),
+        Check(
+            "state: the routine ran (browsed the given sites)",
+            _round_ran(db),
+            kind="state",
+        ),
         Check(
             "state: the round's write landed (page-derived content stored)",
             _notable_written(db, before),
+            kind="state",
         ),
-        Check("state: a skill auto-extracted from the round", len(db.skills.list_all()) >= 1),
-        Check("state: a live watch exists (skill attached, prompt rendered)", len(watches) >= 1),
+        Check(
+            "state: a skill auto-extracted from the round",
+            len(db.skills.list_all()) >= 1,
+            kind="state",
+        ),
+        Check(
+            "state: a live watch exists (skill attached, prompt rendered)",
+            len(watches) >= 1,
+            kind="state",
+        ),
         Check(
             "state: the watch has a trigger and notify is on",
             has_trigger and bool(watch.notify if watch else False),
+            kind="state",
         ),
         Check(
             "reply: no teach-ask for a routine already in hand",
             not any(_teach_ask(r) for r in replies),
+            kind="reply",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 

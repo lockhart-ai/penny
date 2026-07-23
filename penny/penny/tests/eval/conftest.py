@@ -103,11 +103,21 @@ class Check:
     kind: str | None = None  # class label rendered `[kind]` (spine/reply/state/proc/guard)
 
     @classmethod
-    def na(cls, label: str, *, rationale: str | None = None, anchor: str | None = None) -> Check:
+    def na(
+        cls,
+        label: str,
+        *,
+        rationale: str | None = None,
+        anchor: str | None = None,
+        kind: str | None = None,
+    ) -> Check:
         """A not-applicable check — this sample's branch didn't run, so it's excluded from the
         graded denominator (neither pass nor fail).  Still rendered (➖) so a skipped expectation
-        reads as skipped, not forgotten."""
-        return cls(label=label, ok=True, anchor=anchor, rationale=rationale, ignored=True)
+        reads as skipped, not forgotten.  ``kind`` carries the same ``[class]`` tag as a scored
+        check, so an n/a row reads ``C3 [state] …`` in its class like any other."""
+        return cls(
+            label=label, ok=True, anchor=anchor, rationale=rationale, ignored=True, kind=kind
+        )
 
 
 @dataclass
@@ -395,24 +405,30 @@ def tool_call_rejected(db: Database, tool_name: str | None = None) -> bool:
 
 
 def sample_is_fragile(db: Database) -> bool:
-    """Did the run reach its result SHAKILY — through a rejected / refused / recovered tool call?
+    """Did the run reach its result SHAKILY — through a rejected / refused / recovered tool call,
+    OR a framework RECOVERY NUDGE (a continue / parse-failure / tool-call-demand user turn)?
 
-    Scans the persisted promptlog for any recovery frame (a tool-result failure, a framework
-    refusal narration — the ``_RECOVERY_FRAMES`` set).  A green sample that only got there after
-    the loop refused a call and it retried is 'passed, fragile' in the report: real, but not
-    robust.  Derived from the same promptlog primitives as ``tool_call_rejected``, not a new
-    model judgment.
+    Scans the persisted promptlog for either recovery shape: a tool-result failure / framework
+    refusal frame (``_RECOVERY_FRAMES``, on a ``tool`` turn) OR a recovery nudge injected as a
+    ``user`` turn (``_is_nudge`` — the SAME predicate the transcript render marks ``⚠ recovery
+    event`` with, single-sourced so render and probe can't drift apart again, #1735 finding 2).
+    A green sample that only got there after the loop refused a call and retried, or after a nudge
+    recovered an empty / unparseable response, is 'passed, fragile' in the report: real, but not
+    robust — exactly the robustness signal the report cares about.  Derived from the same promptlog
+    primitives as ``tool_call_rejected`` / ``_is_nudge``, not a new model judgment.  Fragile is
+    render/artifact-only — never gated — so widening it moves no threshold.
 
-    Unlike ``tool_call_rejected`` this filters on NO tool name — it asks "did the run recover
-    from *anything*?" — so it carries none of that probe's target-vs-tool-name attribution gap
-    (#1726): a memory-tool execute-time failure narrates ``… but it didn't work:``, whose
-    ``didn't work`` fragment is already in ``_RECOVERY_FRAMES``, so it is caught regardless of
-    which tool (target-backticked) produced it.  The audit found no frame-set gap here."""
+    Unlike ``tool_call_rejected`` the tool-turn leg filters on NO tool name — it asks "did the run
+    recover from *anything*?" — so it carries none of that probe's target-vs-tool-name attribution
+    gap (#1726): a memory-tool execute-time failure narrates ``… but it didn't work:``, whose
+    ``didn't work`` fragment is already in ``_RECOVERY_FRAMES``, caught regardless of which tool
+    (target-backticked) produced it."""
     for message in _iter_prompt_messages(db):
-        if message.get("role") != "tool":
-            continue
         content = message.get("content") or ""
-        if any(frame in content for frame in _RECOVERY_FRAMES):
+        role = message.get("role")
+        if role == "tool" and any(frame in content for frame in _RECOVERY_FRAMES):
+            return True
+        if role == "user" and _is_nudge(content):
             return True
     return False
 
@@ -930,6 +946,30 @@ _ACTOR = {
 }
 
 
+def _render_call(function: dict) -> str:
+    """Render a tool call as ``name(args)`` with its arguments JSON reserialized canonically.
+
+    The SAME call is serialized two ways across a run: compactly in ``promptlog.response`` (the
+    model's raw emission, ``{"queries":["x"]}``) and with default spacing in the NEXT prompt's
+    ``messages`` (``LlmMessage.to_input_message`` re-dumps the parsed args, spaced and
+    ASCII-escaping any unicode).  Parsing and re-dumping BOTH sides through one form
+    (``ensure_ascii=False``, default separators) renders the call identically wherever it is read,
+    so (1) a call's thinking — keyed off the response side by ``_thinking_by_content`` — binds to
+    its transcript row (built off the messages side by ``_sample_turns``), and real thinking stops
+    silently dropping on every tool call (#1735 finding 1); and (2) ``\\uXXXX`` escapes render as
+    their real characters in the call-argument cell (finding 3).  Malformed / absent args fall back
+    to the raw string, so a non-JSON payload never raises."""
+    name = function.get("name")
+    raw = function.get("arguments")
+    if not isinstance(raw, str):
+        return f"{name}()"  # no/non-string args (defensive — a real call carries a JSON string)
+    try:
+        rendered = json.dumps(json.loads(raw), ensure_ascii=False)
+    except json.JSONDecodeError, TypeError:
+        rendered = raw  # a non-JSON payload renders verbatim rather than raising
+    return f"{name}({rendered})"
+
+
 def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
@@ -957,8 +997,7 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
                 emit(_ACTOR["tool"], content)
             elif role == "assistant":
                 for call in message.get("tool_calls") or []:
-                    function = call.get("function", {})
-                    emit(_ACTOR["call"], f"{function.get('name')}({function.get('arguments')})")
+                    emit(_ACTOR["call"], _render_call(call.get("function", {})))
                 emit(_ACTOR["penny"], content)
     emit(_ACTOR["penny"], reply.strip())
     return turns
@@ -1068,15 +1107,20 @@ def _event_body(kind: report.EventKind, content: str) -> str:
 def _thinking_by_content(rows: list[PromptLog]) -> dict[str, str]:
     """Map each model ACTION's content (a ``name(args)`` call string or a reply's text) to the
     thinking of the promptlog row whose RESPONSE produced it — so EVERY model call can show its
-    own reasoning (#1725, superseding the failed-turns-only capture). First non-empty per key."""
+    own reasoning (#1725, superseding the failed-turns-only capture). First non-empty per key.
+
+    A call is keyed through ``_render_call`` (a CANONICAL ``name(args)`` reserialization) so it
+    matches ``_sample_turns``' transcript row for the SAME call — the two are built from the two
+    different serializations of the arguments (compact ``response`` vs. re-dumped ``messages``), so
+    string-matching the raw forms silently dropped a real call's thinking on every tool call (#1735
+    finding 1). Reply text keys on itself (both sides read ``choices[0].message.content``)."""
     mapping: dict[str, str] = {}
     for row in rows:
         thinking = (row.thinking or "").strip()
         if not thinking:
             continue
         for call in _response_tool_calls(row):
-            function = call.get("function", {})
-            mapping.setdefault(f"{function.get('name')}({function.get('arguments')})", thinking)
+            mapping.setdefault(_render_call(call.get("function", {})), thinking)
         text = _response_text(row)
         if text:
             mapping.setdefault(text, thinking)

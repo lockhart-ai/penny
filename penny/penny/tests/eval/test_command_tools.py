@@ -50,15 +50,24 @@ def _score_drew(subject_token: str):
         if args is None:
             # No dispatch — the description checks have nothing to inspect (not-applicable).
             return [
-                Check("generate_image called", False, anchor=anchor),
-                Check.na("description is non-empty", anchor=anchor),
-                Check.na(f"description carries the subject '{subject_token}'", anchor=anchor),
+                Check("generate_image called", False, anchor=anchor, kind="spine"),
+                Check.na("description is non-empty", anchor=anchor, kind="spine"),
+                Check.na(
+                    f"description carries the subject '{subject_token}'",
+                    anchor=anchor,
+                    kind="spine",
+                ),
             ]
         description = str(args.get("description") or "")
         has_subject = subject_token in description.lower()
         return [
-            Check("generate_image called", True, anchor=anchor),
-            Check("description is non-empty", bool(description.strip()), anchor=anchor),
+            Check("generate_image called", True, anchor=anchor, kind="spine"),
+            Check(
+                "description is non-empty",
+                bool(description.strip()),
+                anchor=anchor,
+                kind="spine",
+            ),
             Check(
                 f"description carries the subject '{subject_token}'",
                 has_subject,
@@ -66,6 +75,7 @@ def _score_drew(subject_token: str):
                 rationale=None
                 if has_subject
                 else f"description {description!r} dropped '{subject_token}'",
+                kind="spine",
             ),
         ]
 
@@ -79,6 +89,7 @@ def _score_no_draw(db, before, reply) -> list[Check]:
             "generate_image not fired on a casual mention",
             tool_not_called(db, _GENERATE_IMAGE),
             anchor=f"{_GENERATE_IMAGE}(",
+            kind="spine",
         ),
     ]
 

@@ -79,6 +79,7 @@ def _score_reached_update_not_write(db: Database, sent: list[str]) -> list[Check
                 "box keys changed — created a fresh/duplicate key via collection_write instead "
                 f"of update_entry: {sorted(keys)} vs seeded {sorted(RECIPE_BOX_SEED_KEYS)}"
             ),
+            kind="state",
         ),
         Check(
             "reached update_entry (not collection_write)",
@@ -90,6 +91,7 @@ def _score_reached_update_not_write(db: Database, sent: list[str]) -> list[Check
                 "did not reach update_entry after the key-not-found rejection — picked "
                 "collection_write (→ duplicate-rejected) or gave up"
             ),
+            kind="spine",
         ),
         Check(
             "the existing fajitas entry was refreshed",
@@ -100,6 +102,7 @@ def _score_reached_update_not_write(db: Database, sent: list[str]) -> list[Check
                 "the existing fajitas entry was not refreshed — update_entry did not land the "
                 "enrichment on the found key"
             ),
+            kind="state",
         ),
     ]
 

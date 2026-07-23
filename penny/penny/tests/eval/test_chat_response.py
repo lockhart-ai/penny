@@ -59,19 +59,23 @@ def _has_emoji(text: str) -> bool:
 def _score_chitchat(db: Database, before: set[str], reply: str) -> list[Check]:
     created = new_collections(db, before)
     return [
-        Check("reply is non-empty", bool(reply.strip())),
+        Check("reply is non-empty", bool(reply.strip()), kind="reply"),
         Check(
             "reply carries the chat voice (an emoji)",
             _has_emoji(reply),
             anchor=REPLY_ANCHOR,
             rationale=None if _has_emoji(reply) else "no emoji in the reply",
+            kind="reply",
         ),
         Check(
             "no collection created on plain chitchat",
             not created,
             rationale=None if not created else f"created {[m.name for m in created]}",
+            kind="state",
         ),
-        Check("no browse on a no-lookup chitchat turn", tool_not_called(db, "browse")),
+        Check(
+            "no browse on a no-lookup chitchat turn", tool_not_called(db, "browse"), kind="spine"
+        ),
     ]
 
 
@@ -84,12 +88,18 @@ def _score_recall_answer(db: Database, before: set[str], reply: str) -> list[Che
             named,
             anchor=REPLY_ANCHOR,
             rationale=None if named else f"none of {_SEEDED_GAMES} in the reply",
+            kind="reply",
         ),
-        Check("answered from the collection, did not browse", tool_not_called(db, "browse")),
+        Check(
+            "answered from the collection, did not browse",
+            tool_not_called(db, "browse"),
+            kind="spine",
+        ),
         Check(
             "no collection created when just answering a memory question",
             not created,
             rationale=None if not created else f"created {[m.name for m in created]}",
+            kind="state",
         ),
     ]
 
@@ -98,13 +108,17 @@ def _score_browse_answer(db: Database, before: set[str], reply: str) -> list[Che
     surfaced = "baikal" in reply.lower()
     return [
         Check(
-            "browsed for a current-info question", tool_was_called(db, "browse"), anchor="browse("
+            "browsed for a current-info question",
+            tool_was_called(db, "browse"),
+            anchor="browse(",
+            kind="spine",
         ),
         Check(
             "reply surfaces the browsed fact (Lake Baikal)",
             surfaced,
             anchor=REPLY_ANCHOR,
             rationale=None if surfaced else "'baikal' absent from the reply",
+            kind="reply",
         ),
     ]
 
@@ -119,6 +133,7 @@ def _score_browse_multihop(db: Database, before: set[str], reply: str) -> list[C
             chained,
             anchor=REPLY_ANCHOR,
             rationale=None if chained else "release year 2031 absent — no second hop",
+            kind="reply",
         ),
     ]
 

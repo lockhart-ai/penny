@@ -23,7 +23,7 @@ def _score_coherent(db: Database, before: set[str], reply: str) -> list[Check]:
     """A coherent action is enough: a collection was created, or there's a
     substantive text reply.  Failure is only no-action-and-no-reply (stuck)."""
     coherent = bool(new_collections(db, before)) or len(reply.strip()) >= 20
-    return [Check("coherent action or substantive reply", coherent)]
+    return [Check("coherent action or substantive reply", coherent, kind="state")]
 
 
 async def test_url_watcher(chat_eval: ChatEval) -> None:

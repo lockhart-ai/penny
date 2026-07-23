@@ -103,13 +103,19 @@ def _score_add(memory: str, other: str, token: str):
                 f"collection_write on '{memory}'",
                 memory in _memory_args(db, _WRITE),
                 anchor=f"{_WRITE}(",
+                kind="spine",
             ),
             Check(
                 f"'{memory}' has an entry mentioning '{token}'",
                 has_token,
                 rationale=None if has_token else f"entries: {collection_entries(db, memory)}",
+                kind="state",
             ),
-            Check(f"opposite collection '{other}' untouched", not collection_entries(db, other)),
+            Check(
+                f"opposite collection '{other}' untouched",
+                not collection_entries(db, other),
+                kind="state",
+            ),
         ]
 
     return score
@@ -125,9 +131,12 @@ def _score_remove(memory: str, key: str, token: str):
                 f"collection_delete_entry on '{memory}'",
                 memory in _memory_args(db, _DELETE),
                 anchor=f"{_DELETE}(",
+                kind="spine",
             ),
             Check(
-                f"entry '{key}' removed from '{memory}'", key not in collection_entries(db, memory)
+                f"entry '{key}' removed from '{memory}'",
+                key not in collection_entries(db, memory),
+                kind="state",
             ),
         ]
 
@@ -143,12 +152,14 @@ def _score_list(db: Database, before: set[str], reply: str) -> list[Check]:
             f"collection_read_latest on '{_LIKES}'",
             _LIKES in _memory_args(db, _READ),
             anchor=f"{_READ}(",
+            kind="spine",
         ),
-        Check("no write/delete on a listing request", not mutated),
+        Check("no write/delete on a listing request", not mutated, kind="spine"),
         Check(
             "seeded likes entries unchanged",
             entry_count == 2,
             rationale=None if entry_count == 2 else f"expected 2 entries, saw {entry_count}",
+            kind="state",
         ),
     ]
 
@@ -161,13 +172,19 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
     deleted_pref = _LIKES in delete_targets or _DISLIKES in delete_targets
     recorded = bool(collection_entries(db, _LIKES) or collection_entries(db, _DISLIKES))
     return [
-        Check("no collection_write on a passing opinion", not wrote_pref, anchor=f"{_WRITE}("),
+        Check(
+            "no collection_write on a passing opinion",
+            not wrote_pref,
+            anchor=f"{_WRITE}(",
+            kind="spine",
+        ),
         Check(
             "no collection_delete_entry on a passing opinion",
             not deleted_pref,
             anchor=f"{_DELETE}(",
+            kind="spine",
         ),
-        Check("no preference recorded", not recorded),
+        Check("no preference recorded", not recorded, kind="state"),
     ]
 
 

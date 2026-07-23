@@ -71,18 +71,20 @@ def _score_dispatch(db: Database, before: set[str], reply: str) -> list[Check]:
     )
     picks = _tool_picks(db)
     return [
-        Check("calls: the choose tool was called", bool(calls)),
-        Check("calls: it was given all three options", options_ok),
+        Check("calls: the choose tool was called", bool(calls), kind="spine"),
+        Check("calls: it was given all three options", options_ok, kind="spine"),
         Check(
             # SAID == DID on the pick itself: the reply must report the option
             # the TOOL returned — naming a different one means she free-chose.
             "reply: the reply reports the TOOL'S pick, not her own",
             bool(picks) and picks[-1].lower() in reply.lower(),
+            kind="reply",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 
@@ -111,15 +113,18 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
             # over-firing failure mode (the no-fire guard of the house pattern).
             "calls: choose was NOT called on a judgment ask",
             not _choose_calls(db),
+            kind="spine",
         ),
         Check(
             "reply: she gave an opinion (names at least one wood)",
             any(option in reply.lower() for option in _OPTIONS),
+            kind="reply",
         ),
         Check(
             "calls: clean routing (no bail or continue nudge fired)",
             routing_clean(db),
             scored=False,
+            kind="proc",
         ),
     ]
 

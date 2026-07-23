@@ -71,7 +71,9 @@ Each sample opens with a banner naming its stats before you read a row:
 #### sample N — <verdict> · <k/n> (<score>) · [fragile ·] [cause ·] <duration>s · <calls> calls
 ```
 
-A clean pass carries no cause; a passed-but-shaky sample carries `fragile`; a **harness-timeout**
+A clean pass carries no cause; a passed-but-shaky sample — one that reached its result only after a
+**recovery event** (a rejected/refused tool call, OR a user-turn recovery nudge — the continue and
+parse-failure nudges the render marks `⚠ recovery event`) — carries `fragile`; a **harness-timeout**
 sample (no completed turn) omits `k/n` (the scorer never ran) and renders an honest placeholder body
 instead of a table — so the report's sample count always matches N (visible degradation).
 

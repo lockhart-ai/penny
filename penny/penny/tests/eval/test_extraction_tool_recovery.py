@@ -100,6 +100,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
             rationale=f"extract_text persisted in the prompt: {(stored or '')[:160]!r}"
             if has_fictitious
             else None,
+            kind="state",
         ),
         Check(
             "a corrected update landed (prompt changed from the seed)",
@@ -110,6 +111,7 @@ def _score_recovered(db: Database, before: set[str], reply: str) -> list[Check]:
                 "prompt unchanged from the seed — the model gave up or kept re-emitting "
                 "the fictitious call"
             ),
+            kind="state",
         ),
     ]
 

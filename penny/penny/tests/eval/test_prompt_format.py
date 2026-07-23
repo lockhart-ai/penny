@@ -119,7 +119,7 @@ def _score_wrote(name: str) -> CollectorScorer:
             rationale = "bailout: called done() without reading the log (empty-user-turn)"
         else:
             rationale = f"no entry written (log_read={read}, collection_write={wrote}, done={done})"
-        return [Check("wrote a new entry", wrote_new, rationale=rationale)]
+        return [Check("wrote a new entry", wrote_new, rationale=rationale, kind="state")]
 
     return _score
 
@@ -134,6 +134,7 @@ def _score_read_before_giving_up(db: Database, before: object, sent: list[str]) 
             rationale=None
             if read
             else "concluded no-work and called done() without ever reading the log",
+            kind="spine",
         )
     ]
 
