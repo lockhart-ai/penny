@@ -3,7 +3,7 @@
 These tools power the chat agent's email surface (retired /email + /zoho, epic
 #1445).  They validate their args at the ``run`` gate and mock the mailbox
 client at the boundary — the backend clients themselves are covered in
-``tests/jmap`` and ``tests/zoho``.
+``tests/fastmail`` and ``tests/zoho``.
 """
 
 from __future__ import annotations

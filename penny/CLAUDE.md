@@ -123,14 +123,12 @@ penny/
   email/
     models.py         — Provider-agnostic email models: EmailAddress, EmailSummary, EmailDetail (shared by the JMAP + Zoho clients, the EmailClient protocol, and the zoho plugin)
     protocol.py       — EmailClient Protocol — shared interface for JMAP + Zoho email backends
-  jmap/
-    client.py         — JmapClient: Fastmail JMAP API client (httpx)
-    models.py         — JmapSession (Fastmail-specific JMAP session cache)
   zoho/
     client.py         — ZohoClient: Zoho Mail API client (httpx + OAuth refresh)
     models.py         — Zoho Mail API Pydantic models
   plugins/            — Plugin system (opt-in integrations, loaded at startup from the PLUGINS env list; see "Plugin System" below)
     __init__.py       — Plugin base (is_configured/get_tools/close) + load_plugins(config)
+    fastmail/         — Fastmail JMAP client relocated into plugins/ (client.py: JmapClient; models.py: JmapSession). A plain package, NOT a Plugin subclass — email stays auto-gated on FASTMAIL_API_TOKEN via Penny._init_email, not the PLUGINS list
     zoho/             — ZohoPlugin: Mail organisation + Calendar + Projects tools (email_tools/calendar_tools/project_tools + their clients; email-rule persistence in rules.py)
     invoiceninja/     — InvoiceNinjaPlugin: invoice + expense tools (tools.py + client.py + models.py)
   validation/         — Model-I/O validation: the one behaviour taxonomy + the live disposition machinery
@@ -156,7 +154,7 @@ penny/
       test_system.py, test_test_mode.py
     database/         — Migration validation tests
       test_migrations.py
-    jmap/             — JMAP client tests
+    fastmail/         — Fastmail JMAP client tests
       test_client.py
     tools/            — Tool tests
       test_tool_timeout.py, test_tool_not_found.py, test_tool_reasoning.py,
