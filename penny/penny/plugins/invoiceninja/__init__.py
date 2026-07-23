@@ -23,6 +23,7 @@ from penny.plugins.invoiceninja.tools import (
 )
 
 if TYPE_CHECKING:
+    from penny.database import Database
     from penny.tools.base import Tool
 
 
@@ -32,7 +33,8 @@ class InvoiceNinjaPlugin(Plugin):
     name = "invoiceninja"
     capabilities = [CAPABILITY_INVOICING]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, db: Database) -> None:
+        super().__init__(config, db)
         api_token = config.invoiceninja_api_token
         base_url = config.invoiceninja_url
         if not api_token or not base_url:

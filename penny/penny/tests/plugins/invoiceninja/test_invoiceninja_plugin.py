@@ -29,7 +29,7 @@ def test_invoice_ninja_plugin_provides_tools():
     config = MagicMock()
     config.invoiceninja_api_token = "token"
     config.invoiceninja_url = "https://example.com"
-    plugin = InvoiceNinjaPlugin(config)
+    plugin = InvoiceNinjaPlugin(config, MagicMock())
     tools = plugin.get_tools()
     assert len(tools) == 6
     assert {tool.name for tool in tools} == {

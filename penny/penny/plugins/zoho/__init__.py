@@ -33,6 +33,7 @@ from penny.plugins.zoho.projects_client import ZohoProjectsClient
 from penny.zoho.client import ZohoClient
 
 if TYPE_CHECKING:
+    from penny.database import Database
     from penny.tools.base import Tool
 
 
@@ -42,7 +43,8 @@ class ZohoPlugin(Plugin):
     name = "zoho"
     capabilities = [CAPABILITY_EMAIL, CAPABILITY_CALENDAR, CAPABILITY_PROJECT]
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, db: Database) -> None:
+        super().__init__(config, db)
         self._client_id = config.zoho_api_id
         self._client_secret = config.zoho_api_secret
         self._refresh_token = config.zoho_refresh_token
@@ -69,10 +71,6 @@ class ZohoPlugin(Plugin):
             client_secret=self._client_secret,
             refresh_token=self._refresh_token,
         )
-        db = config.runtime._db
-        if db is None:
-            raise ValueError("ZohoPlugin requires a database")
-        self._db = db
 
     @classmethod
     def is_configured(cls, config: Config) -> bool:

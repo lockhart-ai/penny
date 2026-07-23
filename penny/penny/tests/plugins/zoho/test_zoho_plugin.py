@@ -33,8 +33,10 @@ def test_zoho_plugin_provides_tools():
     config.runtime.EMAIL_BODY_MAX_LENGTH = 50000
     config.runtime.EMAIL_SEARCH_LIMIT = 50
     config.runtime.EMAIL_LIST_LIMIT = 20
-    config.runtime._db = MagicMock()
-    plugin = ZohoPlugin(config)
+    db = MagicMock()
+    plugin = ZohoPlugin(config, db)
+    # db is injected through construction, not reached from config.runtime.
+    assert plugin._db is db
     tools = plugin.get_tools()
     assert len(tools) > 0
     tool_names = {tool.name for tool in tools}

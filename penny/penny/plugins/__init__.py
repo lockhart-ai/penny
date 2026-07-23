@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from penny.config import Config
+    from penny.database import Database
     from penny.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,16 @@ class Plugin(ABC):
     name: str
     capabilities: list[str]
 
+    def __init__(self, config: Config, db: Database) -> None:
+        """Store the shared config + database every plugin is constructed with.
+
+        ``db`` is injected explicitly through the construction chain
+        (``load_plugins`` → ``Penny._init_plugins``), never reached out of
+        ``config.runtime``. Subclasses call ``super().__init__(config, db)``.
+        """
+        self.config = config
+        self._db = db
+
     @classmethod
     @abstractmethod
     def is_configured(cls, config: Config) -> bool:
@@ -54,14 +65,14 @@ class Plugin(ABC):
         """Clean up any open resources (HTTP clients, etc.). Override if needed."""
 
 
-def load_plugins(config: Config) -> list[Plugin]:
+def load_plugins(config: Config, db: Database) -> list[Plugin]:
     """Import and instantiate plugins listed in config.plugins.
 
     For each name in config.plugins:
     - Imports penny.plugins.<name>
     - Reads PLUGIN_CLASS from the module
     - Calls is_configured(); skips if credentials missing
-    - Instantiates and returns the plugin
+    - Instantiates (passing ``config`` + ``db``) and returns the plugin
     """
     plugins: list[Plugin] = []
     for name in config.plugins:
@@ -81,7 +92,7 @@ def load_plugins(config: Config) -> list[Plugin]:
             continue
 
         try:
-            plugin = plugin_cls(config)
+            plugin = plugin_cls(config, db)
             plugins.append(plugin)
             logger.info(
                 "Loaded plugin '%s' (capabilities: %s)",

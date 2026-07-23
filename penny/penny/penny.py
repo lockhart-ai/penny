@@ -209,7 +209,7 @@ class Penny:
         InvoiceNinja, etc.) that contribute LLM-callable tools. Only plugins
         listed in config.plugins and fully configured are loaded.
         """
-        self.plugins: list[Plugin] = load_plugins(config)
+        self.plugins: list[Plugin] = load_plugins(config, self.db)
         self.plugin_tools: list[Tool] = []
         for plugin in self.plugins:
             self.plugin_tools.extend(plugin.get_tools())
