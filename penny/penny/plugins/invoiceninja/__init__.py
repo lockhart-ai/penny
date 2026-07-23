@@ -14,8 +14,11 @@ from penny.config import Config
 from penny.plugins import CAPABILITY_INVOICING, Plugin
 from penny.plugins.invoiceninja.client import InvoiceNinjaClient
 from penny.plugins.invoiceninja.tools import (
+    CreateExpenseCategoryTool,
     CreateExpenseTool,
+    GetExpenseCategoryTool,
     GetExpenseTool,
+    ListExpenseCategoriesTool,
     ListExpensesTool,
     ListInvoicesTool,
     UpdateExpenseTool,
@@ -60,6 +63,9 @@ class InvoiceNinjaPlugin(Plugin):
             ListExpensesTool(self._client),
             GetExpenseTool(self._client),
             UpdateExpenseTool(self._client),
+            CreateExpenseCategoryTool(self._client),
+            ListExpenseCategoriesTool(self._client),
+            GetExpenseCategoryTool(self._client),
         ]
 
     async def close(self) -> None:
