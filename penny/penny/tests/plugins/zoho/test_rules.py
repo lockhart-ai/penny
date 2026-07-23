@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penny.constants import PennyConstants
-from penny.jmap.models import EmailAddress, EmailSummary
+from penny.email.models import EmailAddress, EmailSummary
 from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
 from penny.plugins.zoho.rules import RuleMatcher, apply_email_rules, format_rule_results
 

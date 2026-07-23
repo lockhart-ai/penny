@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 
 from penny.constants import PennyConstants
+from penny.email.models import EmailAddress, EmailDetail, EmailSummary
 from penny.html_utils import strip_html
-from penny.jmap.models import EmailAddress, EmailDetail, EmailSummary
 from penny.zoho.models import ZohoAccount, ZohoFolder, ZohoSession
 
 logger = logging.getLogger(__name__)
