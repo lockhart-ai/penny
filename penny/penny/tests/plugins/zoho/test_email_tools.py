@@ -6,12 +6,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from penny.constants import PennyConstants
 from penny.plugins.zoho.email_tools import (
     ApplyLabelTool,
+    CreateEmailRuleTool,
     CreateFolderTool,
+    ListEmailRulesTool,
     ListLabelsTool,
     MoveEmailsTool,
 )
+from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
 from penny.tools.models import ToolResult
 
 
@@ -127,3 +131,109 @@ async def test_list_labels_tool():
     assert result.success is True
     assert "Work" in result.message
     assert "Personal" in result.message
+
+
+@pytest.mark.asyncio
+async def test_create_email_rule_persists_via_store(db):
+    """create_email_rule stores a typed rule through db.email_rules and echoes it."""
+    tool = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
+    result = await tool.run(
+        name="AWS invoices",
+        condition={"from": "aws@amazon.com"},
+        action={"move_to": "Accounting/Expenses/AWS"},
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.success is True
+    assert result.mutated is True
+    assert (
+        result.message
+        == """Email rule 'AWS invoices' saved.
+
+Condition: from=aws@amazon.com
+Action: move_to=Accounting/Expenses/AWS
+
+Note: saved rules aren't applied automatically yet — this stores the rule for future use."""
+    )
+
+    rules = db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO)
+    assert len(rules) == 1
+    assert rules[0].name == "AWS invoices"
+    assert rules[0].provider == "zoho"
+    assert rules[0].enabled is True
+    assert rules[0].last_applied_at is None
+    assert EmailRuleCondition.model_validate_json(rules[0].condition).from_ == "aws@amazon.com"
+    assert EmailRuleAction.model_validate_json(rules[0].action).move_to == "Accounting/Expenses/AWS"
+
+
+@pytest.mark.asyncio
+async def test_list_email_rules_renders_active_rules(db):
+    """list_email_rules reads active rules via the store and renders them."""
+    create = CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO)
+    await create.run(
+        name="AWS invoices",
+        condition={"from": "aws@amazon.com"},
+        action={"move_to": "Accounting/Expenses/AWS"},
+    )
+
+    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run()
+
+    assert isinstance(result, ToolResult)
+    assert result.success is True
+    assert (
+        result.message
+        == """Found 1 active email rule(s):
+
+1. **AWS invoices**
+   Condition: from=aws@amazon.com
+   Action: move_to=Accounting/Expenses/AWS
+"""
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_email_rules_when_none(db):
+    """list_email_rules reports an empty rule set honestly."""
+    result = await ListEmailRulesTool(db, PennyConstants.PROVIDER_ZOHO).run()
+    assert result.success is True
+    assert result.message == "No email rules configured."
+
+
+@pytest.mark.asyncio
+async def test_create_email_rule_rejects_empty_condition(db):
+    """An all-empty condition is refused with an actionable, field-naming message."""
+    result = await CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO).run(
+        name="catch all",
+        condition={},
+        action={"move_to": "Somewhere"},
+    )
+
+    assert result.success is False
+    assert result.mutated is False
+    assert result.narration == "You tried to use `create_email_rule` but the arguments were wrong:"
+    assert result.message == (
+        "condition (object: Rule condition. Supported fields: 'from' (sender email/domain), "
+        "'subject_contains' (text in subject), 'body_contains' (text in body)): a rule condition "
+        "needs at least one of: from, subject_contains, body_contains. "
+        "Call create_email_rule(<valid arguments>) again."
+    )
+    assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == []
+
+
+@pytest.mark.asyncio
+async def test_create_email_rule_rejects_unknown_field(db):
+    """An unknown condition field is refused, not silently absorbed."""
+    result = await CreateEmailRuleTool(db, PennyConstants.PROVIDER_ZOHO).run(
+        name="typo rule",
+        condition={"sender": "aws"},
+        action={"label": "invoices"},
+    )
+
+    assert result.success is False
+    assert result.mutated is False
+    assert result.message == (
+        "unknown parameter 'condition.sender' "
+        "(valid parameters: from, subject_contains, body_contains). "
+        "Call create_email_rule(<valid arguments>) again."
+    )
+    assert db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO) == []

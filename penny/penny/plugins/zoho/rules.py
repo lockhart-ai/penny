@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlmodel import select
-
 from penny.jmap.models import EmailDetail, EmailSummary
+from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
 
 if TYPE_CHECKING:
     from penny.database import Database
@@ -21,7 +19,7 @@ class RuleMatcher:
     """Matches emails against rule conditions."""
 
     @staticmethod
-    def matches(email: EmailSummary | EmailDetail, condition: dict) -> bool:
+    def matches(email: EmailSummary | EmailDetail, condition: EmailRuleCondition) -> bool:
         """Check if an email matches a rule condition.
 
         Supported condition fields:
@@ -29,8 +27,8 @@ class RuleMatcher:
         - subject_contains: Text in subject (case-insensitive)
         - body_contains: Text in body (case-insensitive, EmailDetail only)
         """
-        if "from" in condition:
-            from_pattern = condition["from"].lower()
+        if condition.from_ is not None:
+            from_pattern = condition.from_.lower()
             sender_match = False
             for addr in email.from_addresses:
                 if addr.email and from_pattern in addr.email.lower():
@@ -42,13 +40,17 @@ class RuleMatcher:
             if not sender_match:
                 return False
 
-        if "subject_contains" in condition:
-            pattern = condition["subject_contains"].lower()
+        if condition.subject_contains is not None:
+            pattern = condition.subject_contains.lower()
             if pattern not in email.subject.lower():
                 return False
 
-        if "body_contains" in condition and isinstance(email, EmailDetail) and email.text_body:
-            pattern = condition["body_contains"].lower()
+        if (
+            condition.body_contains is not None
+            and isinstance(email, EmailDetail)
+            and email.text_body
+        ):
+            pattern = condition.body_contains.lower()
             if pattern not in email.text_body.lower():
                 return False
 
@@ -61,7 +63,7 @@ class RuleExecutor:
     def __init__(self, zoho_client: ZohoClient) -> None:
         self._client = zoho_client
 
-    async def execute(self, email_ids: list[str], action: dict) -> dict[str, bool]:
+    async def execute(self, email_ids: list[str], action: EmailRuleAction) -> dict[str, bool]:
         """Execute a rule action on a list of emails.
 
         Supported action fields:
@@ -70,8 +72,8 @@ class RuleExecutor:
         """
         results: dict[str, bool] = {}
 
-        if "move_to" in action:
-            folder_path = action["move_to"]
+        if action.move_to is not None:
+            folder_path = action.move_to
             folder = await self._client.create_nested_folder(folder_path)
             if folder:
                 success = await self._client.move_messages(email_ids, folder.folder_id)
@@ -82,8 +84,8 @@ class RuleExecutor:
                 results["move_to"] = False
                 logger.warning("Failed to create folder: %s", folder_path)
 
-        if "label" in action:
-            label_name = action["label"]
+        if action.label is not None:
+            label_name = action.label
             label = await self._client.get_label_by_name(label_name)
             if not label:
                 label = await self._client.create_label(label_name)
@@ -104,50 +106,33 @@ class RuleExecutor:
 async def apply_email_rules(
     db: Database,
     zoho_client: ZohoClient,
-    user_id: str,
     emails: list[EmailSummary],
+    provider: str,
 ) -> dict[str, list[str]]:
-    """Apply all active email rules to a list of emails."""
-    from penny.database.models import EmailRule
-
+    """Apply all active rules for a provider to a list of emails."""
     results: dict[str, list[str]] = {}
 
-    with db.get_session() as session:
-        rules = list(
-            session.exec(
-                select(EmailRule)
-                .where(EmailRule.user_id == user_id)
-                .where(EmailRule.provider == "zoho")
-                .where(EmailRule.enabled == True)  # noqa: E712
-            )
-        )
+    rules = db.email_rules.list_active(provider)
+    if not rules:
+        logger.debug("No email rules configured for provider %s", provider)
+        return results
 
-        if not rules:
-            logger.debug("No email rules configured for user %s", user_id)
-            return results
+    logger.info("Applying %d email rule(s) to %d email(s)", len(rules), len(emails))
 
-        logger.info("Applying %d email rule(s) to %d email(s)", len(rules), len(emails))
+    matcher = RuleMatcher()
+    executor = RuleExecutor(zoho_client)
 
-        matcher = RuleMatcher()
-        executor = RuleExecutor(zoho_client)
+    for rule in rules:
+        condition = EmailRuleCondition.model_validate_json(rule.condition)
+        action = EmailRuleAction.model_validate_json(rule.action)
+        matched_ids = [email.id for email in emails if matcher.matches(email, condition)]
 
-        for rule in rules:
-            condition = rule.get_condition()
-            action = rule.get_action()
-            matched_ids: list[str] = []
-
-            for email in emails:
-                if matcher.matches(email, condition):
-                    matched_ids.append(email.id)
-
-            if matched_ids:
-                logger.info("Rule '%s' matched %d email(s)", rule.name, len(matched_ids))
-                await executor.execute(matched_ids, action)
-                rule.last_applied_at = datetime.now(UTC)
-                session.add(rule)
-                results[rule.name] = matched_ids
-
-        session.commit()
+        if matched_ids:
+            logger.info("Rule '%s' matched %d email(s)", rule.name, len(matched_ids))
+            await executor.execute(matched_ids, action)
+            if rule.id is not None:
+                db.email_rules.mark_applied(rule.id)
+            results[rule.name] = matched_ids
 
     return results
 

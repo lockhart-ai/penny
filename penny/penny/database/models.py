@@ -516,7 +516,6 @@ class EmailRule(SQLModel, table=True):
     __tablename__ = "email_rule"
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True)
     provider: str = Field(index=True)  # Plugin name: "zoho", "google", etc.
     name: str  # Human-readable rule name
     condition: str  # JSON condition: {"from": "aws", "subject_contains": "invoice"}
@@ -524,9 +523,3 @@ class EmailRule(SQLModel, table=True):
     enabled: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_applied_at: datetime | None = None  # When this rule was last triggered
-
-    def get_condition(self) -> dict:
-        return json.loads(self.condition)
-
-    def get_action(self) -> dict:
-        return json.loads(self.action)

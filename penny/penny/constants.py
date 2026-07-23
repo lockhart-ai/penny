@@ -265,6 +265,10 @@ class PennyConstants:
     # Email command constants
     JMAP_SESSION_URL = "https://api.fastmail.com/jmap/session"
 
+    # Email-rule provider tag — the ``email_rule.provider`` value the Zoho plugin
+    # writes and filters on (a future non-Zoho email backend gets its own tag).
+    PROVIDER_ZOHO = "zoho"
+
     # Zoho Mail API constants
     ZOHO_TOKEN_URL = "https://accounts.zoho.com/oauth/v2/token"
     ZOHO_ACCOUNTS_URL = "https://mail.zoho.com/api/accounts"
