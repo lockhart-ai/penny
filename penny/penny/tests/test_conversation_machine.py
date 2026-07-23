@@ -190,9 +190,10 @@ def test_render_idle_with_candidates_whole():
         "one-off ask the assistant can answer right away; nothing ongoing is "
         "being set up\n"
         "- apply: one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage — add a second line naming "
-        "that skill: SKILL: <its name, copied exactly from Known "
-        "skills>\n"
+        "resemblance to a skill is not coverage, and a needed input missing "
+        "from their message (like a url) is gathered later, never a reason to "
+        "refuse — add a second line naming that skill: SKILL: <its "
+        "name, copied exactly from Known skills>\n"
         "- elicit: they are asking to set up an ongoing task or routine and no known "
         "skill covers it — the assistant would need to be taught how"
     )

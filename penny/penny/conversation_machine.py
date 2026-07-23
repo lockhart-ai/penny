@@ -108,9 +108,10 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
     (ConversationState.IDLE, ConversationState.APPLY): (
         "one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage — add a second line naming "
-        f"that skill: {SKILL_TAG} <its name, copied exactly from Known "
-        "skills>"
+        "resemblance to a skill is not coverage, and a needed input missing "
+        "from their message (like a url) is gathered later, never a reason to "
+        f"refuse — add a second line naming that skill: {SKILL_TAG} <its "
+        "name, copied exactly from Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up an ongoing task or routine and no known "
