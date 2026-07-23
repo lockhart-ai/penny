@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -143,6 +144,37 @@ _SKILL_NAMING_INSTRUCTION = (
     "parameter a semantic name and one-line description."
 )
 
+# ── Third customer: conversation-state classification (#1706) ──────────────────
+# The classifier contract is a THIRD enumerated output shape riding the SAME
+# poison-screen + reroll machinery (``_draw_clean``): given a small conversation
+# slice and a closed list of candidate states (the machine's CURRENT out-edges,
+# rendered by :mod:`penny.conversation_machine` — never the global state set),
+# emit ONE tagged line naming the state the newest message puts the conversation
+# in.  The parse validates MEMBERSHIP, not just shape: a drawn state outside the
+# offered union is a contract violation exactly like an untagged draw — rerolled
+# once on the unchanged context, then an honest failure the machine treats as
+# no-transition (fail → stay; the caller's rule, encoded in
+# ``conversation_machine.next_state``).
+STATE_TAG = "STATE:"
+
+STATE_CLASSIFIER_SYSTEM_PROMPT = (
+    "You are a dispatch step. You are given a small slice of a conversation "
+    "between a user and their assistant — the assistant's last message, the task "
+    "being worked on (when there is one), and the user's newest message — plus a "
+    "closed list of states, each with a one-line meaning. Decide which ONE state "
+    "the user's newest message puts the conversation in. Respond with exactly "
+    "one line:\n"
+    f"{STATE_TAG} <name>\n"
+    "The name must be one of the listed states, copied exactly. Judge only from "
+    "what the messages say, and write nothing else — no preamble, no "
+    "explanation, no restating the messages."
+)
+
+# The single per-call ask; the conversation slice + the candidate states are the
+# content.  Fixed, so the caller only supplies the content (the classification
+# contract is a property of this customer, not a per-call parameter).
+_STATE_INSTRUCTION = "Pick the one listed state the user's newest message puts the conversation in."
+
 
 class MicroExtractOutcome(StrEnum):
     """The enumerated outcome of a micro-context extraction — a closed set the
@@ -199,6 +231,31 @@ class SkillLabel(BaseModel):
     name: str
     description: str
     parameters: dict[str, ParameterLabel] = {}
+
+
+class StateDrawOutcome(StrEnum):
+    """The enumerated outcome of a state-classification draw (#1706) — a closed
+    set the machine maps one way each.
+
+    ``INVALID`` covers both contract violations — an untagged draw AND a drawn
+    state outside the offered union (the persisted promptlog row holds which) —
+    because the machine treats them identically: no transition (fail → stay).
+    ``POISON_REROLL_FAILED`` is the transport-artifact escape, same as extract."""
+
+    DECIDED = "decided"
+    INVALID = "invalid"
+    POISON_REROLL_FAILED = "poison_reroll_failed"
+
+
+class StateDraw(BaseModel):
+    """The state-classification micro-context's typed result (#1706): the drawn
+    state ``name`` — guaranteed a member of the offered union — on
+    :attr:`StateDrawOutcome.DECIDED`, empty on the failure outcomes.  String-typed
+    on purpose: this module knows candidate names, never the machine's state enum
+    (the machine imports this module, not the reverse)."""
+
+    outcome: StateDrawOutcome
+    name: str = ""
 
 
 class MicroContext:
@@ -306,6 +363,46 @@ class MicroContext:
         if name is None or description is None:
             return None
         return SkillLabel(name=name, description=description, parameters=_parse_param_labels(draw))
+
+    async def classify_state(
+        self, content: str, allowed: Sequence[str], *, run_target: str | None = None
+    ) -> StateDraw:
+        """Pick one state from ``allowed`` for a rendered conversation slice
+        (#1706) — the third customer of this machinery.  Rides the SAME
+        poison-screen + reroll draw loop as ``extract``, with the dispatch system
+        prompt and its own ledger attribution, then a deterministic tag parse
+        validated for MEMBERSHIP: a drawn state outside ``allowed`` is a contract
+        violation exactly like an untagged draw — one reroll of the unchanged
+        context, then an honest ``INVALID`` the machine reads as no-transition."""
+        for _ in range(_UNTAGGED_DRAW_BUDGET):
+            draw = await self._draw_clean(
+                content,
+                _STATE_INSTRUCTION,
+                run_target,
+                system_prompt=STATE_CLASSIFIER_SYSTEM_PROMPT,
+                agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+                prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
+            )
+            if draw is None:
+                return StateDraw(outcome=StateDrawOutcome.POISON_REROLL_FAILED)
+            name = self._parse_state(draw, allowed)
+            if name is not None:
+                return StateDraw(outcome=StateDrawOutcome.DECIDED, name=name)
+            logger.warning("State-classifier output invalid — one reroll of the unchanged context")
+        logger.warning("State-classifier output invalid after reroll — no transition")
+        return StateDraw(outcome=StateDrawOutcome.INVALID)
+
+    @staticmethod
+    def _parse_state(draw: str, allowed: Sequence[str]) -> str | None:
+        """The tagged state name, but ONLY when it is a member of ``allowed`` —
+        no tag, a blank payload, or a state outside the offered union is ``None``
+        (invalid), which the caller rerolls once and then fails honestly.  Exact
+        match, no normalization: the prompt says copied exactly, and the union
+        members are short lowercase words the model was shown verbatim."""
+        payload = _tagged_payload(draw, STATE_TAG)
+        if payload is None or payload not in allowed:
+            return None
+        return payload
 
     async def _draw_clean(
         self,

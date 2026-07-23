@@ -380,6 +380,14 @@ class PennyConstants:
     # promptlog rows under this agent/prompt type so run traces attribute it.
     SKILL_NAMING_AGENT_NAME = "skill-namer"
     SKILL_NAMING_PROMPT_TYPE = "skill_naming"
+    # The ledger identity of a conversation-state classification (#1706) — the
+    # THIRD customer of the micro-context machinery.  Once per incoming message a
+    # single-shot model call picks the machine's next state from the CURRENT
+    # state's out-edges (the tagged STATE: contract); it logs its own promptlog
+    # rows under this agent/prompt type so every transition is attributable and
+    # replayable from production history.
+    STATE_CLASSIFIER_AGENT_NAME = "state-classifier"
+    STATE_CLASSIFIER_PROMPT_TYPE = "state_classifier"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10
