@@ -10,7 +10,7 @@ from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
 
 if TYPE_CHECKING:
     from penny.database import Database
-    from penny.zoho.client import ZohoClient
+    from penny.plugins.zoho.mail_client import ZohoClient
 
 logger = logging.getLogger(__name__)
 

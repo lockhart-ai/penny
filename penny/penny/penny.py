@@ -34,6 +34,8 @@ from penny.llm.image_client import OllamaImageClient
 from penny.llm.models import LlmError
 from penny.plugins import Plugin, load_plugins
 from penny.plugins.fastmail import JmapClient
+from penny.plugins.zoho.mail_client import ZohoClient
+from penny.plugins.zoho.mail_models import ZohoCredentials
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
 from penny.scheduler import (
@@ -49,8 +51,6 @@ from penny.tools.list_emails import ListEmailsTool
 from penny.tools.list_folders import ListFoldersTool
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
-from penny.zoho import ZohoClient
-from penny.zoho.models import ZohoCredentials
 
 logger = logging.getLogger(__name__)
 

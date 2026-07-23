@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from penny.plugins.zoho.mail_client import ZohoClient
 from penny.tools.base import Tool
 from penny.tools.models import NoArgs, ToolResult
-from penny.zoho import ZohoClient
 
 logger = logging.getLogger(__name__)
 

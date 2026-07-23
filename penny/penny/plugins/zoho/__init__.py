@@ -28,9 +28,21 @@ from penny.plugins.zoho.email_tools import (
     ListLabelsTool,
     MoveEmailsTool,
 )
+from penny.plugins.zoho.mail_client import ZohoClient
+from penny.plugins.zoho.mail_models import (
+    ZohoAccount as ZohoAccount,
+)
+from penny.plugins.zoho.mail_models import (
+    ZohoCredentials as ZohoCredentials,
+)
+from penny.plugins.zoho.mail_models import (
+    ZohoFolder as ZohoFolder,
+)
+from penny.plugins.zoho.mail_models import (
+    ZohoSession as ZohoSession,
+)
 from penny.plugins.zoho.project_tools import project_tools as project_tools
 from penny.plugins.zoho.projects_client import ZohoProjectsClient
-from penny.zoho.client import ZohoClient
 
 if TYPE_CHECKING:
     from penny.database import Database

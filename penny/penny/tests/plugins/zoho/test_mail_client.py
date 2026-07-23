@@ -9,7 +9,7 @@ import pytest
 
 from penny.config_params import RUNTIME_CONFIG_PARAMS
 from penny.html_utils import strip_html
-from penny.zoho.client import ZohoClient
+from penny.plugins.zoho.mail_client import ZohoClient
 
 _ZOHO_TIMEOUT = float(RUNTIME_CONFIG_PARAMS["JMAP_REQUEST_TIMEOUT"].default)
 _EMAIL_MAX_LENGTH = int(RUNTIME_CONFIG_PARAMS["EMAIL_BODY_MAX_LENGTH"].default)
