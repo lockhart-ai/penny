@@ -14,9 +14,11 @@ PASSING MENTION of a watchable thing, including recurrence words describing the
 USER's own habit and topic twins of fire phrasings — which must NOT be chased
 into a teach loop.
 
-Report-only in beat 1 (``min_pass_rate=None``): the first runs record this
-brand-new surface's honest baseline; the gate lands once the edge meanings
-stabilize.  Fictional-but-believable fixtures throughout (the repo is public).
+Gated at 0.8: two clean 1.00 baseline runs at N=10 (turn-audited — every
+draw a first-try tagged in-union answer, boundary thinking read) earned the
+stable-green bar, so a later change that degrades either direction fails
+loudly instead of printing a report-only line.  Fictional-but-believable
+fixtures throughout (the repo is public).
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ async def test_idle_to_elicit_fires_on_uncovered_requests(
         snapshot=_IDLE,
         pool=_FIRE_POOL,
         expected=ConversationState.ELICIT,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -90,6 +92,6 @@ async def test_idle_holds_on_chat_and_passing_mentions(
         snapshot=_IDLE,
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
