@@ -189,9 +189,10 @@ def test_render_idle_with_candidates_whole():
         "- idle: ordinary conversation — chat, a passing mention, or a question or "
         "one-off ask the assistant can answer right away; nothing ongoing is "
         "being set up\n"
-        "- apply: they are asking for something one of the known skills already "
-        "covers — add a second line naming that skill: SKILL: <its name, copied "
-        "exactly from Known skills>\n"
+        "- apply: one of the known skills states it does exactly what they are "
+        "asking for — mere resemblance to a skill is not coverage — add a second "
+        "line naming that skill: SKILL: <its name, copied exactly from Known "
+        "skills>\n"
         "- elicit: they are asking to set up an ongoing task or routine and no known "
         "skill covers it — the assistant would need to be taught how"
     )
