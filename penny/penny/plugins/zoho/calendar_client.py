@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
-import httpx
-
 from penny.constants import PennyConstants
-from penny.plugins.zoho.models import ZohoCalendarInfo, ZohoEvent, ZohoSession
+from penny.plugins.zoho.base_client import ZohoOAuthClient
+from penny.plugins.zoho.models import BusySlot, FreeSlot, ZohoCalendarInfo, ZohoEvent
 
 logger = logging.getLogger(__name__)
 
 
-class ZohoCalendarClient:
+class ZohoCalendarClient(ZohoOAuthClient):
     """Zoho Calendar API client.
 
     Uses OAuth 2.0 with client credentials to access Zoho Calendar API.
+    The OAuth refresh, headers, and HTTP client lifecycle live on
+    ``ZohoOAuthClient``; this class adds the calendar-specific endpoints.
     """
+
+    service_label = "Zoho Calendar"
 
     def __init__(
         self,
@@ -28,52 +30,10 @@ class ZohoCalendarClient:
         client_secret: str,
         refresh_token: str,
         *,
-        timeout: float = 30.0,
+        timeout: float = PennyConstants.ZOHO_CLIENT_TIMEOUT,
     ) -> None:
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._refresh_token = refresh_token
-        self._session: ZohoSession | None = None
-        self._http = httpx.AsyncClient(timeout=timeout)
+        super().__init__(client_id, client_secret, refresh_token, timeout=timeout)
         self._calendars_cache: list[ZohoCalendarInfo] | None = None
-
-    async def _ensure_access_token(self) -> str:
-        """Ensure we have a valid access token, refreshing if needed."""
-        now = time.time()
-        if self._session and self._session.expires_at > now + 60:
-            return self._session.access_token
-
-        resp = await self._http.post(
-            PennyConstants.ZOHO_TOKEN_URL,
-            data={
-                "refresh_token": self._refresh_token,
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "grant_type": "refresh_token",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        if "error" in data:
-            raise RuntimeError(f"Zoho OAuth error: {data.get('error')}")
-
-        expires_in = data.get("expires_in", 3600)
-        self._session = ZohoSession(
-            access_token=data["access_token"],
-            expires_at=now + expires_in,
-        )
-        logger.info("Zoho Calendar access token refreshed, expires in %ds", expires_in)
-        return self._session.access_token
-
-    async def _get_headers(self) -> dict[str, str]:
-        """Get headers with current access token."""
-        token = await self._ensure_access_token()
-        return {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
 
     async def get_calendars(self, force_refresh: bool = False) -> list[ZohoCalendarInfo]:
         """Fetch all calendars for the user."""
@@ -172,7 +132,7 @@ class ZohoCalendarClient:
         start: datetime,
         end: datetime,
         attendees: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[BusySlot]:
         """Check free/busy status for a time range."""
         headers = await self._get_headers()
         url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/calendars/freebusy"
@@ -198,7 +158,12 @@ class ZohoCalendarClient:
         data = resp.json()
 
         freebusy_data = data.get("freebusy", {})
-        busy_slots = freebusy_data.get("busyslots", [])
+        busy_slots = []
+        for slot in freebusy_data.get("busyslots", []):
+            slot_start = self._parse_zoho_datetime(slot.get("start", ""))
+            slot_end = self._parse_zoho_datetime(slot.get("end", ""))
+            if slot_start and slot_end:
+                busy_slots.append(BusySlot(start=slot_start, end=slot_end))
         logger.info("Found %d busy slots in range", len(busy_slots))
         return busy_slots
 
@@ -208,7 +173,7 @@ class ZohoCalendarClient:
         start: datetime,
         end: datetime,
         attendees: list[str] | None = None,
-    ) -> list[dict[str, datetime]]:
+    ) -> list[FreeSlot]:
         """Find available time slots of a given duration."""
         headers = await self._get_headers()
         url = f"{PennyConstants.ZOHO_CALENDAR_API_BASE}/freebusy/freeslots"
@@ -235,7 +200,7 @@ class ZohoCalendarClient:
             slot_start = self._parse_zoho_datetime(slot.get("start", ""))
             slot_end = self._parse_zoho_datetime(slot.get("end", ""))
             if slot_start and slot_end:
-                free_slots.append({"start": slot_start, "end": slot_end})
+                free_slots.append(FreeSlot(start=slot_start, end=slot_end))
 
         logger.info("Found %d free slots of %d minutes", len(free_slots), duration_minutes)
         return free_slots
@@ -486,7 +451,3 @@ class ZohoCalendarClient:
         except ValueError:
             logger.warning("Failed to parse datetime: %s", dt_str)
             return None
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        await self._http.aclose()

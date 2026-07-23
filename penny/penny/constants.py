@@ -276,6 +276,10 @@ class PennyConstants:
     # Zoho Projects API constants (v3)
     ZOHO_PROJECTS_API_BASE = "https://projectsapi.zoho.com/api/v3"
 
+    # Default per-request timeout (seconds) for the Zoho Calendar + Projects
+    # HTTP clients — the value both hardcoded before it was named here.
+    ZOHO_CLIENT_TIMEOUT = 30.0
+
     # Send queue — how often the drainer polls for a deliverable message.  The
     # actual send spacing is governed by SEND_COOLDOWN_SECONDS; this is just the
     # poll granularity (the drainer checks ~once a minute and sends at most one).

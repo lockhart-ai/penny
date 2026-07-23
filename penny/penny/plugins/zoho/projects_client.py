@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
-import httpx
-
 from penny.constants import PennyConstants
+from penny.plugins.zoho.base_client import ZohoOAuthClient
 from penny.plugins.zoho.models import (
     ZohoPortal,
     ZohoProject,
-    ZohoSession,
     ZohoTask,
     ZohoTaskList,
 )
@@ -20,12 +17,16 @@ from penny.plugins.zoho.models import (
 logger = logging.getLogger(__name__)
 
 
-class ZohoProjectsClient:
+class ZohoProjectsClient(ZohoOAuthClient):
     """Zoho Projects API client.
 
     Uses OAuth 2.0 with client credentials to access Zoho Projects API.
-    Defaults to the first (and typically only) portal.
+    Defaults to the first (and typically only) portal. The OAuth refresh,
+    headers, and HTTP client lifecycle live on ``ZohoOAuthClient``; the token
+    response's API domain is captured via ``_on_token_refreshed``.
     """
+
+    service_label = "Zoho Projects"
 
     def __init__(
         self,
@@ -33,57 +34,16 @@ class ZohoProjectsClient:
         client_secret: str,
         refresh_token: str,
         *,
-        timeout: float = 30.0,
+        timeout: float = PennyConstants.ZOHO_CLIENT_TIMEOUT,
     ) -> None:
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._refresh_token = refresh_token
-        self._session: ZohoSession | None = None
-        self._http = httpx.AsyncClient(timeout=timeout)
+        super().__init__(client_id, client_secret, refresh_token, timeout=timeout)
         self._default_portal: ZohoPortal | None = None
         self._api_domain: str | None = None
 
-    async def _ensure_access_token(self) -> str:
-        """Ensure we have a valid access token, refreshing if needed."""
-        now = time.time()
-        if self._session and self._session.expires_at > now + 60:
-            return self._session.access_token
-
-        resp = await self._http.post(
-            PennyConstants.ZOHO_TOKEN_URL,
-            data={
-                "refresh_token": self._refresh_token,
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "grant_type": "refresh_token",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        if "error" in data:
-            raise RuntimeError(f"Zoho OAuth error: {data.get('error')}")
-
-        expires_in = data.get("expires_in", 3600)
-        self._session = ZohoSession(
-            access_token=data["access_token"],
-            expires_at=now + expires_in,
-        )
-
+    def _on_token_refreshed(self, data: dict[str, Any]) -> None:
+        """Capture the Zoho Projects API domain from the token response."""
         api_domain = data.get("api_domain", "https://www.zohoapis.com")
         self._api_domain = api_domain.rstrip("/")
-
-        logger.info("Zoho Projects access token refreshed, expires in %ds", expires_in)
-        return self._session.access_token
-
-    async def _get_headers(self) -> dict[str, str]:
-        """Get headers with current access token."""
-        token = await self._ensure_access_token()
-        return {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
 
     async def get_portals(self) -> list[ZohoPortal]:
         """Fetch all portals for the user."""
@@ -475,7 +435,3 @@ class ZohoProjectsClient:
                 return proj
 
         return None
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        await self._http.aclose()

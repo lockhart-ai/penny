@@ -24,6 +24,20 @@ class ZohoCalendarInfo(BaseModel):
     is_default: bool = False
 
 
+class BusySlot(BaseModel):
+    """A busy time range from a Zoho Calendar freebusy query."""
+
+    start: datetime
+    end: datetime
+
+
+class FreeSlot(BaseModel):
+    """An available time range from a Zoho Calendar freeslots query."""
+
+    start: datetime
+    end: datetime
+
+
 class ZohoEvent(BaseModel):
     """Zoho Calendar event."""
 

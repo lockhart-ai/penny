@@ -7,7 +7,74 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from penny.plugins.zoho.calendar_tools import CreateEventTool, FindFreeSlotsTool
+from penny.plugins.zoho.calendar_tools import (
+    CheckAvailabilityTool,
+    CreateEventTool,
+    FindFreeSlotsTool,
+)
+from penny.plugins.zoho.models import BusySlot, FreeSlot
+
+
+@pytest.mark.asyncio
+async def test_check_availability_renders_typed_busy_slots():
+    """CheckAvailabilityTool reads the typed BusySlot fields (start/end), not dicts."""
+    client = MagicMock()
+    client.check_availability = AsyncMock(
+        return_value=[
+            BusySlot(
+                start=datetime(2026, 7, 22, 10, 0, tzinfo=UTC),
+                end=datetime(2026, 7, 22, 11, 0, tzinfo=UTC),
+            )
+        ]
+    )
+
+    result = await CheckAvailabilityTool(client).execute(
+        start_date="2026-07-22T09:00:00",
+        end_date="2026-07-22T17:00:00",
+        attendees=["attendee@example.com"],
+    )
+
+    assert result.success
+    assert result.message == (
+        "The requested time has conflicts:\n\n- Busy: 2026-07-22 10:00 to 11:00"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_availability_reports_free_range_when_no_busy_slots():
+    """No busy slots (with attendees) renders the range as available."""
+    client = MagicMock()
+    client.check_availability = AsyncMock(return_value=[])
+
+    result = await CheckAvailabilityTool(client).execute(
+        start_date="2026-07-22T09:00:00",
+        end_date="2026-07-22T17:00:00",
+        attendees=["attendee@example.com"],
+    )
+
+    assert result.success
+    assert result.message == "The time slot 2026-07-22 09:00 to 17:00 is **available**."
+
+
+@pytest.mark.asyncio
+async def test_find_free_slots_renders_typed_slot():
+    """FindFreeSlotsTool reads the typed FreeSlot fields (start/end), not dicts."""
+    client = MagicMock()
+    client.find_free_slots = AsyncMock(
+        return_value=[
+            FreeSlot(
+                start=datetime(2026, 7, 22, 14, 0, tzinfo=UTC),
+                end=datetime(2026, 7, 22, 15, 0, tzinfo=UTC),
+            )
+        ]
+    )
+
+    result = await FindFreeSlotsTool(client).execute(duration_minutes=30)
+
+    assert result.success
+    assert result.message == (
+        "Found 1 available slot(s) of 30 minutes:\n\n- 2026-07-22 14:00 to 15:00"
+    )
 
 
 @pytest.mark.asyncio
@@ -15,10 +82,10 @@ async def test_find_free_slots_lists_every_slot():
     """Every free slot is rendered — no invented ``[:10]`` truncation of the result."""
     client = MagicMock()
     slots = [
-        {
-            "start": datetime(2026, 7, 22, 9 + i, 0, tzinfo=UTC),
-            "end": datetime(2026, 7, 22, 9 + i, 30, tzinfo=UTC),
-        }
+        FreeSlot(
+            start=datetime(2026, 7, 22, 9 + i, 0, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 9 + i, 30, tzinfo=UTC),
+        )
         for i in range(12)
     ]
     client.find_free_slots = AsyncMock(return_value=slots)
