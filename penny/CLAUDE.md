@@ -121,10 +121,11 @@ penny/
     embeddings.py     — Re-exports serialize/deserialize/cosine from shared similarity/ package
     similarity.py     — Penny-specific: embed_text (safe single-text embedding helper)
   email/
+    models.py         — Provider-agnostic email models: EmailAddress, EmailSummary, EmailDetail (shared by the JMAP + Zoho clients, the EmailClient protocol, and the zoho plugin)
     protocol.py       — EmailClient Protocol — shared interface for JMAP + Zoho email backends
   jmap/
     client.py         — JmapClient: Fastmail JMAP API client (httpx)
-    models.py         — JmapSession, EmailAddress, EmailSummary, EmailDetail
+    models.py         — JmapSession (Fastmail-specific JMAP session cache)
   zoho/
     client.py         — ZohoClient: Zoho Mail API client (httpx + OAuth refresh)
     models.py         — Zoho Mail API Pydantic models

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from penny.jmap.models import EmailDetail, EmailSummary
+from penny.email.models import EmailDetail, EmailSummary
 
 
 class EmailClient(Protocol):

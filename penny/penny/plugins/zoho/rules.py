@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from penny.jmap.models import EmailDetail, EmailSummary
+from penny.email.models import EmailDetail, EmailSummary
 from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
 
 if TYPE_CHECKING:

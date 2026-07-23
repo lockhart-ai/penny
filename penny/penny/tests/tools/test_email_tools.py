@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from penny.jmap.models import EmailAddress, EmailDetail, EmailSummary
+from penny.email.models import EmailAddress, EmailDetail, EmailSummary
 from penny.tools.draft_email import DraftEmailTool
 from penny.tools.list_emails import NO_EMAILS_FOUND as LIST_NO_EMAILS_FOUND
 from penny.tools.list_emails import ListEmailsTool

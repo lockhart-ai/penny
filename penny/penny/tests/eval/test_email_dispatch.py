@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from penny.jmap.models import EmailAddress, EmailDetail, EmailSummary
+from penny.email.models import EmailAddress, EmailDetail, EmailSummary
 from penny.penny import Penny
 from penny.tests.eval.conftest import (
     ChatEval,
