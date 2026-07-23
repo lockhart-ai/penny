@@ -146,6 +146,13 @@ _HARMONY_ENVELOPE_RE = re.compile(
 )
 
 
+# A reply that is nothing but an empty JSON object — ``{}`` / ``{ }`` / ``{}\n``.
+# Anchored to the WHOLE (already lstripped) reply, so a message that merely mentions
+# ``{}`` mid-prose ("an empty object is `{}`") never matches — only a reply that IS
+# the bare object, which Penny's voice never sends.
+_EMPTY_OBJECT_REPLY_RE = re.compile(r"\{\s*\}\s*$")
+
+
 def is_call_fragment_reply(content: str) -> bool:
     """True if a would-be user-facing reply is a bare JSON-ish call fragment.
 
@@ -157,16 +164,28 @@ def is_call_fragment_reply(content: str) -> bool:
     reroll guard treats it like the other unusable-output conditions: discard
     and re-draw on the unchanged context.
 
-    Zero-false-positive discipline: only a reply that IS the fragment matches —
-    the stripped text must OPEN with ``{"`` (no prose before it).  Penny's voice
-    never opens a message with a JSON object; a reply that merely CONTAINS a
-    quoted/embedded snippet mid-prose does not match.  A full call ENVELOPE
-    (``{"name": …, "arguments": …}``) is deliberately excluded: that shape
-    belongs to the TEACHING validators (``CallAsTextValidator`` in chat, the
-    done-JSON nudge in collectors), which re-elicit the real call — a reroll
-    here would preempt them.
+    Two fragment shapes match, both anchored to the WHOLE stripped reply so a
+    reply that merely CONTAINS a quoted/embedded snippet mid-prose never does
+    (zero-false-positive discipline — Penny's voice never SENDS a bare JSON
+    object; a reply *about* JSON carries prose around it):
+
+      * an **empty JSON object** — ``{}`` / ``{ }`` / ``{}\\n`` (#1732): the
+        degenerate tail of a forced tool-call attempt that leaked into the text
+        channel.  Pressed for "a valid tool call only", the model emits an empty
+        arguments object as its whole reply — the exact shape the #1731 nudge-loop
+        spiral terminated in, which the old ``{"`` gate missed (an empty object
+        has no string key), leaving the terminal poison untagged as pathology; and
+      * a **fragment with a string key** — the stripped text OPENS with ``{"`` but
+        is NOT the full call ENVELOPE (both ``"name"`` and ``"arguments"``
+        present).  The envelope is deliberately excluded: that shape belongs to
+        the TEACHING validators (``CallAsTextValidator`` in chat, the done-JSON
+        nudge in collectors), which re-elicit the real call — a reroll here would
+        preempt them (``{"name": …, "arguments": {}}`` opens with ``{"``, not the
+        empty-object shape, so it still falls through to the envelope exclusion).
     """
     stripped = content.lstrip()
+    if _EMPTY_OBJECT_REPLY_RE.match(stripped):
+        return True
     if not stripped.startswith('{"'):
         return False
     return not ('"name"' in stripped and '"arguments"' in stripped)

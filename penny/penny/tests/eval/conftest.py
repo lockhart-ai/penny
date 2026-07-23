@@ -443,8 +443,10 @@ def _response_text(prompt_log) -> str:
 def _response_is_poison(prompt_log) -> bool:
     """Did THIS persisted model response trip the agent-loop reroll guard — a punctuation
     collapse, a leaked Harmony envelope, a collapse-shaped tool NAME, or a bare call-fragment
-    reply?  Mirrors ``Agent._unusable_output_condition`` over the persisted OUTPUT: the text
-    content, each serialised tool-call argument, and each tool-call name."""
+    reply (incl. the bare ``{}`` empty-object reply the #1731 nudge-loop spiral terminated in,
+    #1732)?  Mirrors ``Agent._unusable_output_condition`` over the persisted OUTPUT: the text
+    content, each serialised tool-call argument, and each tool-call name — the SAME shared
+    ``is_call_fragment_reply`` the live guard uses, so scan and guard can't drift."""
     calls = _response_tool_calls(prompt_log)
     parts = [_response_text(prompt_log)]
     for call in calls:
@@ -470,11 +472,22 @@ def run_exhibited_pathology(db: Database) -> bool:
     ``text_validity`` detectors the agent-loop reroll guard runs live
     (``Agent._unusable_output_condition``): a punctuation collapse (``DEGENERATE_OUTPUT``), a
     leaked Harmony envelope (``TOOL_CALL_LEAK``), a collapse-shaped tool name, or a bare
-    call-fragment reply.  Reading only the ``response`` (never the input ``messages``) is what
+    call-fragment reply (a fragment object, or the bare ``{}`` a nudge-loop spiral ends in —
+    #1732).  Reading only the ``response`` (never the input ``messages``) is what
     makes this immune to a DELIBERATELY-injected recovery trigger: an ``_Inject*`` bail is
     returned as a SYNTHETIC ``LlmResponse`` that bypasses the persisting real client, so it
     never lands in a persisted ``response`` — a ``bail_injected`` sample is tagged pathology
-    only if the LIVE model additionally produced its own poison, never for the forced trigger."""
+    only if the LIVE model additionally produced its own poison, never for the forced trigger.
+
+    **The nudge-frame boundary (#1732).** Repeated recovery-nudge frames are DELIBERATELY not
+    counted as a pathology signal: a nudge is an INPUT message, and reading input would forfeit
+    the injection-immunity above (an injected-recovery case produces exactly one live nudge by
+    design, so naive nudge-counting would false-tag its fail path as pathology) and would need
+    an arbitrary count threshold.  A nudge loop is a *symptom* whose *cause* is the model's own
+    fragment OUTPUT — the terminal ``{}`` / call-fragment reply the scan already catches on the
+    ``response`` — so classifying on that output tags the #1731 spiral pathology at the root
+    while the output-only immunity holds.  (A spiral whose persisted output stays genuinely
+    clean has no poison to tag and reads harness/behavioral — correctly: no pathology fired.)"""
     return any(_response_is_poison(row) for row in db.messages.recent_prompts(limit=200))
 
 

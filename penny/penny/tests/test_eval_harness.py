@@ -20,6 +20,7 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.database import Database
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.prompts import Prompt
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -485,6 +486,10 @@ def test_run_exhibited_pathology_detects_reroll_guard_signals(tmp_path) -> None:
     _log_prompt(fragment, response=_content_response('{"memory": "notes"}'))
     assert run_exhibited_pathology(fragment)  # bare call-fragment reply (no tool calls)
 
+    empty_object = _make_db(tmp_path, "empty")
+    _log_prompt(empty_object, response=_content_response("{}"))
+    assert run_exhibited_pathology(empty_object)  # bare `{}` empty-object reply (#1732 spiral tail)
+
     bad_name = _make_db(tmp_path, "name")
     _log_prompt(bad_name, response=_tool_call_response("Functions?????"))
     assert run_exhibited_pathology(bad_name)  # collapse-shaped tool NAME
@@ -541,6 +546,52 @@ def test_stamp_cause_partitions_pass_pathology_harness_behavioral(tmp_path) -> N
     poison_timeout = SampleResult.binary(["no reply within timeout"])
     _stamp_cause(poison_db, poison_timeout, timed_out=True)
     assert poison_timeout.cause == FailureCause.PATHOLOGY
+
+
+def test_nudge_loop_spiral_classifies_pathology_not_harness(tmp_path) -> None:
+    # #1732: the #1731 spiral — a chat browse-extract run that looped on parse-failure nudges,
+    # re-browsing the same page each cycle, and died at the turn timeout with a bare `{}` reply.
+    # Reconstructed via the REAL production serialization: valid browse tool calls (not poison),
+    # the actual production nudge injected as a user turn (INPUT — never the classification
+    # signal), and the terminal `{}` content response (the model's OUTPUT poison).
+    spiral = _make_db(tmp_path, "spiral")
+    for _ in range(4):
+        _log_prompt(
+            spiral,
+            messages=[{"role": "user", "content": Prompt.TOOL_FORMAT_NUDGE}],
+            response=_tool_call_response(
+                "browse", '{"queries": ["https://example.test/lake"], "extract": "the depth"}'
+            ),
+        )
+    _log_prompt(spiral, response=_content_response("{}"))  # the terminal bare-`{}` reply
+    # The bare `{}` OUTPUT trips the widened call-fragment detector, so the spiral reads as
+    # pathology — and pathology OUTRANKS the timeout that actually ended the run (#1695 order),
+    # so the loop no longer hides behind a bare `harness` tag.
+    assert run_exhibited_pathology(spiral)
+    spiral_timeout = SampleResult.binary(["no reply within timeout"])
+    _stamp_cause(spiral, spiral_timeout, timed_out=True)
+    assert spiral_timeout.cause == FailureCause.PATHOLOGY
+
+
+def test_single_nudge_injected_recovery_stays_non_pathology(tmp_path) -> None:
+    # The immunity boundary (#1732): a DELIBERATELY-injected recovery trigger produces exactly
+    # ONE live nudge (the production recovery responding to the forced bail).  Counting nudge
+    # frames would false-tag its fail path pathology; the output-only scan does not.  Built the
+    # same way — the real nudge in the INPUT — but the persisted OUTPUTS are all clean (the
+    # injected bail's synthetic response never persists) and there is no bare `{}` reply.
+    recovery = _make_db(tmp_path, "recovery")
+    _log_prompt(
+        recovery,
+        messages=[{"role": "user", "content": Prompt.TOOL_FORMAT_NUDGE}],
+        response=_tool_call_response("browse", '{"queries": ["https://example.test/lake"]}'),
+    )
+    _log_prompt(recovery, response=_content_response("Lake Baikal is the deepest, at 1,642 m."))
+    assert not run_exhibited_pathology(recovery)  # a lone nudge frame is not a pathology signal
+    # A failed injected-recovery sample that TIMED OUT stays harness, never pathology — the
+    # forced trigger is invisible to the output-only scan, exactly as #1695 requires.
+    recovery_timeout = SampleResult.binary(["no reply within timeout"])
+    _stamp_cause(recovery, recovery_timeout, timed_out=True)
+    assert recovery_timeout.cause == FailureCause.HARNESS
 
 
 def test_result_line_renders_cause_summary(capsys) -> None:
