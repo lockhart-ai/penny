@@ -139,9 +139,10 @@ def test_render_idle_slice_whole():
         "timetable for me?\n"
         "\n"
         "States:\n"
-        "- idle: ordinary conversation — chat, a question, or a passing mention; "
-        "they are not asking for a task to be set up\n"
-        "- elicit: they are asking for a task or routine to be done and no known "
+        "- idle: ordinary conversation — chat, a passing mention, or a question or "
+        "one-off ask the assistant can answer right away; nothing ongoing is "
+        "being set up\n"
+        "- elicit: they are asking to set up an ongoing task or routine and no known "
         "skill covers it — the assistant would need to be taught how"
     )
 
@@ -181,12 +182,13 @@ def test_render_idle_with_candidates_whole():
         "The user's newest message: what's the ferry price at today?\n"
         "\n"
         "States:\n"
-        "- idle: ordinary conversation — chat, a question, or a passing mention; "
-        "they are not asking for a task to be set up\n"
+        "- idle: ordinary conversation — chat, a passing mention, or a question or "
+        "one-off ask the assistant can answer right away; nothing ongoing is "
+        "being set up\n"
         "- apply: they are asking for something one of the known skills already "
         "covers — add a second line naming that skill: SKILL: <its name, copied "
         "exactly from Known skills>\n"
-        "- elicit: they are asking for a task or routine to be done and no known "
+        "- elicit: they are asking to set up an ongoing task or routine and no known "
         "skill covers it — the assistant would need to be taught how"
     )
 

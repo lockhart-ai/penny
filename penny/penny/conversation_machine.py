@@ -100,8 +100,9 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
 # beats, whole-render pinned by tests.
 EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.IDLE): (
-        "ordinary conversation — chat, a question, or a passing mention; "
-        "they are not asking for a task to be set up"
+        "ordinary conversation — chat, a passing mention, or a question or "
+        "one-off ask the assistant can answer right away; nothing ongoing is "
+        "being set up"
     ),
     (ConversationState.IDLE, ConversationState.APPLY): (
         "they are asking for something one of the known skills already covers — "
@@ -109,8 +110,8 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
         "exactly from Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
-        "they are asking for a task or routine to be done and no known skill "
-        "covers it — the assistant would need to be taught how"
+        "they are asking to set up an ongoing task or routine and no known "
+        "skill covers it — the assistant would need to be taught how"
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
         "their message gives the steps — it tells the assistant how to do the "
