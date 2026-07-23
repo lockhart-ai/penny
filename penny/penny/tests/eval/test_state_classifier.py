@@ -155,22 +155,33 @@ _UNCOVERED_POOL = [
     "log every movie i tell you i've watched",
 ]
 
-# Coverage-boundary measurement — the watch-shaped near-misses (a page watch
-# that is NOT a price: counts, timetables, waitlists).  Genuinely fuzzy at the
-# model's scale (runs 4-5: different phrasings flip run to run), so this is an
-# ADVISORY measurement of where the coverage line sits — never a gate, and not
-# the transition contract (that is idle-elicit-uncovered's job, on clear inputs).
-_BOUNDARY_POOL = [
-    "hey can you keep an eye on the harbor ferry timetable for me?",
-    "could you track when the farmers market vendor list changes?",
-    "monitor the trailhead conditions page — i want to know when the pass opens",
-    "keep tabs on the library's new-arrivals page for me",
-    "watch harborseals.example/colony-count and let me know when the number moves",
-    "i want you to check the tide tables every morning and tell me if low tide is before 9",
-    "would you keep an eye out for when the ferry adds the late sailing?",
-    "track when the community pool posts its summer schedule",
-    "let me know when the birding club updates the sightings board",
-    "keep an eye on the marina's slip waitlist page for me",
+# Cross-domain non-coverage — the STARK version of the non-match test (the
+# code-owner ruling on runs 4-10: a watch-shaped request against a watch-shaped
+# skill is legitimately COVERED — the model's "it fits" reading was correct, so
+# the old watch-adjacent near-miss pool measured a non-distinction and is
+# retired).  Here the seeded discovery skill and the requests share the same
+# VERB shape (find/collect/watch for new X) in starkly different domains — a
+# job-listings skill does not cover restaurants, houses, or concerts.
+_CROSS_DOMAIN_SKILLS = [
+    eval_skill(
+        "find new job listings",
+        "search the job boards for newly posted listings matching a role and save them",
+        {"role": "the kind of job to look for", "boards": "the job boards to search"},
+    ),
+    _SEEDED_SKILLS[0],
+]
+
+_CROSS_DOMAIN_POOL = [
+    "keep a list of new restaurants opening downtown",
+    "find me new podcasts about gardening each week",
+    "watch for new houses coming on the market in our neighborhood",
+    "collect new science fiction releases at the library each month",
+    "keep track of new hiking trails the parks department opens",
+    "find new volunteer opportunities at the animal shelter",
+    "watch for new classes at the community center",
+    "collect newly announced concerts happening near us",
+    "keep an eye out for new vendors joining the farmers market",
+    "find new coffee roasters popping up in town",
 ]
 
 # Mixed-message boundary — chat preamble + a covered ask in ONE message: the
@@ -204,7 +215,7 @@ async def test_idle_to_apply_fires_and_binds_the_covering_skill(
         expected=ConversationState.APPLY,
         expected_skill=_PRICE_SKILL,
         seed_skills=_SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -220,22 +231,23 @@ async def test_idle_still_elicits_when_no_candidate_covers(
         pool=_UNCOVERED_POOL,
         expected=ConversationState.ELICIT,
         seed_skills=_SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
 
-async def test_watch_shaped_near_misses_stay_measured(
+async def test_same_verb_different_domain_still_elicits(
     classifier_eval: ClassifierEval,
 ) -> None:
-    """Advisory: where does the coverage line sit for watch-shaped asks that
-    aren't prices?  Report-only by design — the honest ambiguity reading."""
+    """The stark non-coverage contract: a discovery skill in one domain does
+    not cover discovery requests in another — same verb shape, different
+    world."""
     await classifier_eval(
-        case_id="idle-coverage-boundary",
+        case_id="idle-elicit-cross-domain",
         state=ConversationState.IDLE,
-        pool=_BOUNDARY_POOL,
+        pool=_CROSS_DOMAIN_POOL,
         expected=ConversationState.ELICIT,
-        seed_skills=_SEEDED_SKILLS,
+        seed_skills=_CROSS_DOMAIN_SKILLS,
         min_pass_rate=None,
         family=_FAMILY,
     )
@@ -252,7 +264,7 @@ async def test_idle_holds_on_chat_with_candidates_dangling(
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
         seed_skills=_SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -269,6 +281,6 @@ async def test_mixed_chat_plus_covered_ask_applies(
         expected=ConversationState.APPLY,
         expected_skill=_PRICE_SKILL,
         seed_skills=_SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
