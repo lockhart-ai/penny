@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
-from sqlmodel import select
 
-from penny.database.models import EmailRule
+from penny.plugins.zoho.rule_models import (
+    EmailRuleAction,
+    EmailRuleCondition,
+    describe_fields,
+)
 from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 
@@ -44,11 +45,18 @@ class ApplyLabelArgs(BaseModel):
 
 
 class CreateEmailRuleArgs(BaseModel):
-    """Arguments for creating an email rule."""
+    """Arguments for creating an email rule.
+
+    ``condition`` and ``action`` are typed (not raw dicts): an unknown field or
+    an all-empty shape is rejected at the tool boundary with an actionable
+    message naming the supported fields, so a rule can never be saved that would
+    match everything or nothing."""
 
     name: str = Field(description="Human-readable rule name")
-    condition: dict = Field(description="Rule condition (from, subject_contains, etc.)")
-    action: dict = Field(description="Rule action (move_to, label, etc.)")
+    condition: EmailRuleCondition = Field(
+        description="Rule condition (from, subject_contains, etc.)"
+    )
+    action: EmailRuleAction = Field(description="Rule action (move_to, label, etc.)")
 
 
 class MoveEmailsTool(Tool):
@@ -314,6 +322,20 @@ class CreateEmailRuleTool(Tool):
                     "Rule condition. Supported fields: 'from' (sender email/domain), "
                     "'subject_contains' (text in subject), 'body_contains' (text in body)"
                 ),
+                "properties": {
+                    "from": {
+                        "type": "string",
+                        "description": "Sender email or domain (partial match)",
+                    },
+                    "subject_contains": {
+                        "type": "string",
+                        "description": "Text in the subject (case-insensitive)",
+                    },
+                    "body_contains": {
+                        "type": "string",
+                        "description": "Text in the body (case-insensitive)",
+                    },
+                },
             },
             "action": {
                 "type": "object",
@@ -321,6 +343,16 @@ class CreateEmailRuleTool(Tool):
                     "Rule action. Supported fields: 'move_to' (folder path), "
                     "'label' (label name to apply)"
                 ),
+                "properties": {
+                    "move_to": {
+                        "type": "string",
+                        "description": "Folder path to move matching emails to",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Label name to apply to matching emails",
+                    },
+                },
             },
         },
         "required": ["name", "condition", "action"],
@@ -331,32 +363,26 @@ class CreateEmailRuleTool(Tool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Creating email rule"
 
-    def __init__(self, db: Database, user_id: str) -> None:
+    def __init__(self, db: Database, provider: str) -> None:
         self._db = db
-        self._user_id = user_id
+        self._provider = provider
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Create an email rule."""
         args = CreateEmailRuleArgs(**kwargs)
 
-        rule = EmailRule(
-            user_id=self._user_id,
-            provider="zoho",
+        self._db.email_rules.create(
+            provider=self._provider,
             name=args.name,
-            condition=json.dumps(args.condition),
-            action=json.dumps(args.action),
-            enabled=True,
-            created_at=datetime.now(UTC),
+            condition=args.condition.model_dump_json(by_alias=True, exclude_none=True),
+            action=args.action.model_dump_json(by_alias=True, exclude_none=True),
         )
-        with self._db.get_session() as session:
-            session.add(rule)
-            session.commit()
 
         return ToolResult(
             message=(
                 f"Email rule '{args.name}' saved.\n\n"
-                f"Condition: {args.condition}\n"
-                f"Action: {args.action}\n\n"
+                f"Condition: {describe_fields(args.condition)}\n"
+                f"Action: {describe_fields(args.action)}\n\n"
                 "Note: saved rules aren't applied automatically yet — this stores the rule "
                 "for future use."
             ),
@@ -382,32 +408,24 @@ class ListEmailRulesTool(Tool):
     def to_action_str(cls, arguments: dict) -> str:
         return "Listing email rules"
 
-    def __init__(self, db: Database, user_id: str) -> None:
+    def __init__(self, db: Database, provider: str) -> None:
         self._db = db
-        self._user_id = user_id
+        self._provider = provider
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """List all email rules."""
-        with self._db.get_session() as session:
-            rules = list(
-                session.exec(
-                    select(EmailRule)
-                    .where(EmailRule.user_id == self._user_id)
-                    .where(EmailRule.provider == "zoho")
-                    .where(EmailRule.enabled == True)  # noqa: E712
-                )
-            )
+        rules = self._db.email_rules.list_active(self._provider)
 
         if not rules:
             return ToolResult(message="No email rules configured.")
 
         lines = [f"Found {len(rules)} active email rule(s):\n"]
         for idx, rule in enumerate(rules, start=1):
-            condition = rule.get_condition()
-            action = rule.get_action()
+            condition = EmailRuleCondition.model_validate_json(rule.condition)
+            action = EmailRuleAction.model_validate_json(rule.action)
             lines.append(f"{idx}. **{rule.name}**")
-            lines.append(f"   Condition: {condition}")
-            lines.append(f"   Action: {action}")
+            lines.append(f"   Condition: {describe_fields(condition)}")
+            lines.append(f"   Action: {describe_fields(action)}")
             lines.append("")
 
         return ToolResult(message="\n".join(lines))

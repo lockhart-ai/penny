@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from penny.constants import PennyConstants
 from penny.jmap.models import EmailAddress, EmailSummary
-from penny.plugins.zoho.rules import RuleMatcher, format_rule_results
+from penny.plugins.zoho.rule_models import EmailRuleAction, EmailRuleCondition
+from penny.plugins.zoho.rules import RuleMatcher, apply_email_rules, format_rule_results
 
 
 @pytest.fixture
@@ -19,34 +23,67 @@ def sample_email() -> EmailSummary:
     )
 
 
+def _condition(**fields: str) -> EmailRuleCondition:
+    return EmailRuleCondition.model_validate(fields)
+
+
 def test_rule_matcher_from_domain(sample_email: EmailSummary) -> None:
     matcher = RuleMatcher()
-    assert matcher.matches(sample_email, {"from": "amazon.com"}) is True
-    assert matcher.matches(sample_email, {"from": "google.com"}) is False
+    assert matcher.matches(sample_email, _condition(**{"from": "amazon.com"})) is True
+    assert matcher.matches(sample_email, _condition(**{"from": "google.com"})) is False
 
 
 def test_rule_matcher_subject_contains(sample_email: EmailSummary) -> None:
     matcher = RuleMatcher()
-    assert matcher.matches(sample_email, {"subject_contains": "invoice"}) is True
-    assert matcher.matches(sample_email, {"subject_contains": "receipt"}) is False
+    assert matcher.matches(sample_email, _condition(subject_contains="invoice")) is True
+    assert matcher.matches(sample_email, _condition(subject_contains="receipt")) is False
 
 
 def test_rule_matcher_combined_conditions(sample_email: EmailSummary) -> None:
     matcher = RuleMatcher()
     assert (
-        matcher.matches(
-            sample_email,
-            {"from": "aws", "subject_contains": "July"},
-        )
+        matcher.matches(sample_email, _condition(**{"from": "aws", "subject_contains": "July"}))
         is True
     )
     assert (
-        matcher.matches(
-            sample_email,
-            {"from": "aws", "subject_contains": "receipt"},
-        )
+        matcher.matches(sample_email, _condition(**{"from": "aws", "subject_contains": "receipt"}))
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_email_rules_matches_and_marks_applied(db, sample_email: EmailSummary) -> None:
+    """apply_email_rules runs active rules, executes the action, and stamps applied."""
+    db.email_rules.create(
+        provider=PennyConstants.PROVIDER_ZOHO,
+        name="AWS invoices",
+        condition=EmailRuleCondition.model_validate({"from": "amazon.com"}).model_dump_json(
+            by_alias=True, exclude_none=True
+        ),
+        action=EmailRuleAction(move_to="Accounting/Expenses/AWS").model_dump_json(
+            by_alias=True, exclude_none=True
+        ),
+    )
+
+    client = MagicMock()
+    folder = MagicMock(folder_id="F123")
+    client.create_nested_folder = AsyncMock(return_value=folder)
+    client.move_messages = AsyncMock(return_value=True)
+
+    results = await apply_email_rules(db, client, [sample_email], PennyConstants.PROVIDER_ZOHO)
+
+    assert results == {"AWS invoices": ["F001:M1"]}
+    client.move_messages.assert_awaited_once_with(["F001:M1"], "F123")
+    applied = db.email_rules.list_active(PennyConstants.PROVIDER_ZOHO)
+    assert applied[0].last_applied_at is not None
+
+
+@pytest.mark.asyncio
+async def test_apply_email_rules_no_rules(db, sample_email: EmailSummary) -> None:
+    """With no rules configured, apply_email_rules is an empty no-op."""
+    client = MagicMock()
+    results = await apply_email_rules(db, client, [sample_email], PennyConstants.PROVIDER_ZOHO)
+    assert results == {}
 
 
 def test_format_rule_results() -> None:

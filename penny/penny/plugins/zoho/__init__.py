@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from penny.config import Config
+from penny.constants import PennyConstants
 from penny.plugins import CAPABILITY_CALENDAR, CAPABILITY_EMAIL, CAPABILITY_PROJECT, Plugin
 from penny.plugins.zoho.calendar_client import ZohoCalendarClient
 from penny.plugins.zoho.calendar_tools import calendar_tools as calendar_tools
@@ -72,7 +73,6 @@ class ZohoPlugin(Plugin):
         if db is None:
             raise ValueError("ZohoPlugin requires a database")
         self._db = db
-        self._user_id = config.signal_number or "default"
 
     @classmethod
     def is_configured(cls, config: Config) -> bool:
@@ -86,8 +86,8 @@ class ZohoPlugin(Plugin):
             CreateFolderTool(self._email_client),
             ApplyLabelTool(self._email_client),
             ListLabelsTool(self._email_client),
-            CreateEmailRuleTool(self._db, self._user_id),
-            ListEmailRulesTool(self._db, self._user_id),
+            CreateEmailRuleTool(self._db, PennyConstants.PROVIDER_ZOHO),
+            ListEmailRulesTool(self._db, PennyConstants.PROVIDER_ZOHO),
             *calendar_tools(self._calendar_client),
             *project_tools(self._projects_client),
         ]

@@ -10,6 +10,7 @@ from penny.config_params import RuntimeParams
 from penny.database.cursor_store import CursorStore
 from penny.database.device_store import DeviceStore
 from penny.database.domain_permission_store import DomainPermissionStore
+from penny.database.email_rule_store import EmailRuleStore
 from penny.database.ios_store import IosStore
 from penny.database.media_store import MediaStore
 from penny.database.memory import Memory, MemoryStore
@@ -29,6 +30,7 @@ class Database:
         cursors: Per-agent read cursors into log-shaped memories
         devices: Device registration and lookup
         domain_permissions: Domain access permissions for browser tools
+        email_rules: Persisted email-organisation rules (plugin email backends)
         media: Binary media referenced by memory entries via <media:ID> tokens
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries
@@ -46,6 +48,7 @@ class Database:
         self.cursors = CursorStore(self.engine)
         self.devices = DeviceStore(self.engine)
         self.domain_permissions = DomainPermissionStore(self.engine)
+        self.email_rules = EmailRuleStore(self.engine)
         self.ios = IosStore(self.engine)
         self.media = MediaStore(self.engine)
         # The registry-mutation ledger (#1560) and the send queue (#1634) are both
