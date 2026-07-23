@@ -36,7 +36,7 @@ from __future__ import annotations
 import pytest
 
 from penny.conversation_machine import ConversationState
-from penny.tests.eval.conftest import ClassifierEval
+from penny.tests.eval.conftest import ClassifierEval, eval_skill
 
 pytestmark = pytest.mark.eval
 
@@ -109,13 +109,15 @@ async def test_idle_holds_on_chat_and_passing_mentions(
 
 _PRICE_SKILL = "watch a listing price for changes"
 _SEEDED_SKILLS = [
-    (
+    eval_skill(
         _PRICE_SKILL,
         "keep an eye on a product or listing page and record its current price",
+        {"url": "the product or listing page whose price to watch"},
     ),
-    (
+    eval_skill(
         "collect daily cafe specials",
         "read a cafe or bakery menu page and save the day's specials each morning",
+        {"url": "the cafe's menu page"},
     ),
 ]
 

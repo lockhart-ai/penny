@@ -32,7 +32,7 @@ from penny.conversation_machine import (
     presented_edges,
     render_classifier_content,
 )
-from penny.database.skills import SkillDraft, SkillStep
+from penny.database.skills import SkillDraft, SkillParameter, SkillStep
 from penny.llm.models import LlmError, LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -51,6 +51,7 @@ _STEPS = "sure — read harborferries.example/timetable and remember the first m
 _SKILL = SkillCandidate(
     name="watch a listing price for changes",
     description="checks a page and records the current price",
+    parameters=[SkillParameter(name="url", description="the listing page to watch")],
 )
 
 _IDLE_SNAPSHOT = MachineSnapshot(state=ConversationState.IDLE)
@@ -172,13 +173,16 @@ def test_render_parked_elicit_slice_whole():
 
 def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: the Known skills
-    section appears and the apply edge joins the union."""
+    section appears — name, description, AND declared parameters (coverage is
+    reasoned from the full metadata) — and the apply edge joins the union.  A
+    parameterless candidate renders without the needs tail, byte-identical."""
+    assert SkillCandidate(name="x", description="y").render() == "x — y"
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
         "The assistant's last message: (none)\n"
         "Known skills:\n"
         "- watch a listing price for changes — checks a page and records the "
-        "current price\n"
+        "current price (needs: url — the listing page to watch)\n"
         "The user's newest message: what's the ferry price at today?\n"
         "\n"
         "States:\n"

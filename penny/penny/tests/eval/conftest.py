@@ -35,7 +35,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog
-from penny.database.skills import SkillDraft, SkillStep
+from penny.database.skills import SkillDraft, SkillParameter, SkillStep
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.llm.similarity import embed_text
@@ -2345,26 +2345,30 @@ _SEED_SKILL_STEP = SkillStep(
 )
 
 
-async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[tuple[str, str]]) -> None:
-    """Seed ``(name, description)`` skills WITH real description embeddings, so
+def eval_skill(name: str, description: str, params: dict[str, str]) -> SkillDraft:
+    """A fixture skill draft: name + description + declared parameters (semantic
+    name → what-to-supply), over one structurally-valid placeholder step.  The
+    classifier reads the FULL metadata — name, description, AND parameters — so
+    a case's seeds must carry the same shape real auto-extracted skills do."""
+    return SkillDraft(
+        name=name,
+        intent=description,
+        description=description,
+        steps=[_SEED_SKILL_STEP],
+        parameters=[SkillParameter(name=key, description=value) for key, value in params.items()],
+        source_run_id="eval-seed",
+    )
+
+
+async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[SkillDraft]) -> None:
+    """Seed fixture skills WITH real description embeddings, so
     ``resolve_by_meaning`` ranks them (a vectorless skill is resolution-invisible
     — seeding one would silently hollow the case).  A failed embed fails the
     sample loudly rather than degrade."""
-    for name, description in seed_skills:
-        vector = await embed_text(penny.embedding_model_client, description)
-        assert vector is not None, f"seed skill embed failed: {name}"
-        penny.db.skills.upsert(
-            SkillDraft(
-                name=name,
-                intent=description,
-                description=description,
-                steps=[_SEED_SKILL_STEP],
-                parameters=[],
-                source_run_id="eval-seed",
-            ),
-            author="eval-seed",
-            description_embedding=vector,
-        )
+    for draft in seed_skills:
+        vector = await embed_text(penny.embedding_model_client, draft.description)
+        assert vector is not None, f"seed skill embed failed: {draft.name}"
+        penny.db.skills.upsert(draft, author="eval-seed", description_embedding=vector)
 
 
 @pytest.fixture
@@ -2396,7 +2400,7 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
         expected: ConversationState,
         expected_skill: str | None = None,
         seed: Seeder | None = None,
-        seed_skills: Sequence[tuple[str, str]] | None = None,
+        seed_skills: Sequence[SkillDraft] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,

@@ -51,6 +51,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import PennyConstants
+from penny.database.skill_store import parameters_from_json
+from penny.database.skills import SkillParameter
 from penny.llm.similarity import embed_text
 from penny.tools.micro_context import SKILL_TAG, MicroContext, StateDraw, StateDrawOutcome
 
@@ -147,10 +149,29 @@ class SkillCandidate(BaseModel):
     """One ranked skill from the registry's structural pre-pass — the ``name``
     is the exact token a gated apply draw must copy back (display form ==
     invocation form), the ``description`` the meaning the render shows beside
-    it."""
+    it, and ``parameters`` the skill's declared inputs.  The render shows ALL
+    of it — coverage is reasoned from the skill's full metadata (what it does
+    AND what it needs to do it), so a skill for a different kind of value
+    reads as non-coverage without any imperative saying so."""
 
     name: str
     description: str
+    parameters: list[SkillParameter] = []
+
+    def render(self) -> str:
+        """The one-line candidate render: ``name — description`` plus a
+        ``(needs: …)`` tail naming each declared parameter with its
+        what-to-supply — absent (byte-identical) for a parameterless skill."""
+        line = f"{self.name} — {self.description}"
+        if not self.parameters:
+            return line
+        needs = "; ".join(
+            f"{parameter.name} — {parameter.description}"
+            if parameter.description
+            else parameter.name
+            for parameter in self.parameters
+        )
+        return f"{line} (needs: {needs})"
 
 
 class MachineSnapshot(BaseModel):
@@ -255,10 +276,7 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
         lines.append(f"{_TASK_LABEL} {snapshot.task_anchor}")
     if snapshot.skill_candidates:
         lines.append(_SKILLS_LABEL)
-        lines.extend(
-            f"- {candidate.name} — {candidate.description}"
-            for candidate in snapshot.skill_candidates
-        )
+        lines.extend(f"- {candidate.render()}" for candidate in snapshot.skill_candidates)
     else:
         lines.append(f"{_SKILLS_LABEL} {_NONE_PLACEHOLDER}")
     lines.append(f"{_MESSAGE_LABEL} {message}")
@@ -307,7 +325,11 @@ async def build_snapshot(
         logger.warning("Snapshot builder: message embed failed — no skill candidates offered")
     else:
         candidates = [
-            SkillCandidate(name=skill.name, description=skill.description)
+            SkillCandidate(
+                name=skill.name,
+                description=skill.description,
+                parameters=parameters_from_json(skill.parameters),
+            )
             for skill in db.skills.resolve_by_meaning(vector, PennyConstants.FIND_MATCH_LIMIT)
         ]
     return MachineSnapshot(
