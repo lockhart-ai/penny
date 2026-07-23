@@ -287,9 +287,9 @@ class CheckAvailabilityTool(Tool):
 
         lines = ["The requested time has conflicts:\n"]
         for slot in busy_slots:
-            slot_start = slot.get("start", "")
-            slot_end = slot.get("end", "")
-            lines.append(f"- Busy: {slot_start} to {slot_end}")
+            lines.append(
+                f"- Busy: {slot.start.strftime('%Y-%m-%d %H:%M')} to {slot.end.strftime('%H:%M')}"
+            )
 
         return ToolResult(message="\n".join(lines))
 
@@ -463,10 +463,8 @@ class FindFreeSlotsTool(Tool):
 
         lines = [f"Found {len(free_slots)} available slot(s) of {args.duration_minutes} minutes:\n"]
         for slot in free_slots:
-            slot_start = slot["start"]
-            slot_end = slot["end"]
             lines.append(
-                f"- {slot_start.strftime('%Y-%m-%d %H:%M')} to {slot_end.strftime('%H:%M')}"
+                f"- {slot.start.strftime('%Y-%m-%d %H:%M')} to {slot.end.strftime('%H:%M')}"
             )
 
         return ToolResult(message="\n".join(lines))
