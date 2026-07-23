@@ -25,12 +25,15 @@ from penny.conversation_machine import (
     OUT_EDGES,
     ConversationState,
     MachineSnapshot,
+    SkillCandidate,
     StateClassifier,
+    build_snapshot,
     next_state,
     presented_edges,
     render_classifier_content,
 )
-from penny.llm.models import LlmMessage, LlmResponse
+from penny.database.skills import SkillDraft, SkillStep
+from penny.llm.models import LlmError, LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     STATE_CLASSIFIER_SYSTEM_PROMPT,
@@ -45,7 +48,10 @@ _TEACH_QUESTION = (
     "What should I read, look for, and remember?"
 )
 _STEPS = "sure — read harborferries.example/timetable and remember the first morning departure"
-_SKILL_LINE = "watch a listing price for changes — checks a page and records the current price"
+_SKILL = SkillCandidate(
+    name="watch a listing price for changes",
+    description="checks a page and records the current price",
+)
 
 _IDLE_SNAPSHOT = MachineSnapshot(state=ConversationState.IDLE)
 _ELICIT_SNAPSHOT = MachineSnapshot(
@@ -90,7 +96,7 @@ def test_presented_edges_withholds_apply_without_candidates():
         ConversationState.IDLE,
         ConversationState.ELICIT,
     )
-    with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL_LINE])
+    with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert presented_edges(with_skills) == (
         ConversationState.IDLE,
         ConversationState.APPLY,
@@ -112,7 +118,9 @@ def test_system_prompt_whole_render():
         "the user's newest message puts the conversation in. Respond with exactly "
         "one line:\n"
         "STATE: <name>\n"
-        "The name must be one of the listed states, copied exactly. Judge only from "
+        "The name must be one of the listed states, copied exactly. When the state "
+        "you pick tells you to add a SKILL: line, add exactly that second line "
+        "and nothing more. Judge only from "
         "what the messages say, and write nothing else — no preamble, no "
         "explanation, no restating the messages."
     )
@@ -164,7 +172,7 @@ def test_render_parked_elicit_slice_whole():
 def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: the Known skills
     section appears and the apply edge joins the union."""
-    with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL_LINE])
+    with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
         "The assistant's last message: (none)\n"
         "Known skills:\n"
@@ -176,7 +184,8 @@ def test_render_idle_with_candidates_whole():
         "- idle: ordinary conversation — chat, a question, or a passing mention; "
         "they are not asking for a task to be set up\n"
         "- apply: they are asking for something one of the known skills already "
-        "covers\n"
+        "covers — add a second line naming that skill: SKILL: <its name, copied "
+        "exactly from Known skills>\n"
         "- elicit: they are asking for a task or routine to be done and no known "
         "skill covers it — the assistant would need to be taught how"
     )
@@ -275,3 +284,118 @@ async def test_classify_from_apply_refuses():
         await _classifier(_responds("STATE: idle")).classify(
             MachineSnapshot(state=ConversationState.APPLY), "great, thanks!"
         )
+
+
+# ── The skill-gated apply draw (#1706 beat 2) ─────────────────────────────────
+
+_WITH_SKILL = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
+_PRICE_ASK = "can you watch the price on ridgelinefoxes.example/den-camera-kit?"
+
+
+async def test_classify_apply_draw_binds_a_listed_skill():
+    """An apply draw carrying a SKILL: line naming a listed candidate decides
+    apply WITH the skill bound — the machine never receives a dangling apply."""
+    model = _responds("STATE: apply\nSKILL: watch a listing price for changes")
+    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    assert decision.outcome == StateDrawOutcome.DECIDED
+    assert decision.state == ConversationState.APPLY
+    assert decision.skill == "watch a listing price for changes"
+    assert len(model.requests) == 1
+
+
+async def test_classify_apply_without_skill_line_is_rerolled_then_stays():
+    """Drawing the gated state WITHOUT its SKILL: line is a contract violation
+    exactly like an untagged draw: one reroll, then INVALID — fail → stay."""
+    model = _responds("STATE: apply")
+    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    assert decision.outcome == StateDrawOutcome.INVALID
+    assert decision.skill is None
+    assert len(model.requests) == 2
+    assert next_state(ConversationState.IDLE, decision) == ConversationState.IDLE
+
+
+async def test_classify_apply_with_unlisted_skill_is_rerolled_then_stays():
+    """A SKILL: payload outside the offered candidates is the same violation —
+    the bound skill is membership-validated, never a free-text guess."""
+    model = _responds("STATE: apply\nSKILL: fold the laundry")
+    decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
+    assert decision.outcome == StateDrawOutcome.INVALID
+    assert len(model.requests) == 2
+
+
+async def test_classify_ungated_draw_ignores_a_stray_skill_line():
+    """A stray SKILL: line on a NON-gated draw binds nothing and does not
+    invalidate the decision — only the gated state demands (or reads) it."""
+    model = _responds("STATE: idle\nSKILL: watch a listing price for changes")
+    decision = await _classifier(model).classify(_WITH_SKILL, "morning! how's it going?")
+    assert decision.outcome == StateDrawOutcome.DECIDED
+    assert decision.state == ConversationState.IDLE
+    assert decision.skill is None
+    assert len(model.requests) == 1
+
+
+# ── The production snapshot builder ───────────────────────────────────────────
+
+
+class _Embeds:
+    """A minimal embedding-client stub: returns one fixed vector, or raises."""
+
+    def __init__(self, vector: list[float] | None) -> None:
+        self._vector = vector
+
+    async def embed(self, text: str) -> list[list[float]]:
+        if self._vector is None:
+            raise LlmError("embed backend down")
+        return [self._vector]
+
+
+def _seed_skill(db, name: str, description: str, embedding: list[float]) -> None:
+    draft = SkillDraft(
+        name=name,
+        intent=description,
+        description=description,
+        steps=[
+            SkillStep(
+                ordinal=1,
+                source_ordinal=1,
+                tool="browse",
+                arguments={"queries": ["https://example.test"]},
+            )
+        ],
+        parameters=[],
+        source_run_id="test-seed",
+    )
+    db.skills.upsert(draft, author="test-seed", description_embedding=embedding)
+
+
+async def test_build_snapshot_ranks_candidates_best_first(db):
+    """The builder embeds the message and ranks the registry by
+    description-anchor cosine — the nearest skill first — and a populated
+    candidate list opens the apply edge."""
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    _seed_skill(db, "collect daily cafe specials", "save a cafe's daily specials", [0.6, 0.8])
+    snapshot = await build_snapshot(
+        db,
+        cast(Any, _Embeds([1.0, 0.0])),
+        state=ConversationState.IDLE,
+        message=_PRICE_ASK,
+    )
+    assert [candidate.name for candidate in snapshot.skill_candidates] == [
+        "watch a listing price for changes",
+        "collect daily cafe specials",
+    ]
+    assert ConversationState.APPLY in presented_edges(snapshot)
+
+
+async def test_build_snapshot_embed_failure_degrades_to_no_candidates(db):
+    """A transient embed failure yields NO candidates — apply structurally
+    withheld (the safe shape), never a crash or a stale guess."""
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    snapshot = await build_snapshot(
+        db,
+        cast(Any, _Embeds(None)),
+        state=ConversationState.IDLE,
+        message=_PRICE_ASK,
+    )
+    assert snapshot.skill_candidates == []
+    assert ConversationState.APPLY not in presented_edges(snapshot)

@@ -44,15 +44,21 @@ attributable and replayable from production history.
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from penny.tools.micro_context import MicroContext, StateDraw, StateDrawOutcome
+from penny.constants import PennyConstants
+from penny.llm.similarity import embed_text
+from penny.tools.micro_context import SKILL_TAG, MicroContext, StateDraw, StateDrawOutcome
 
 if TYPE_CHECKING:
+    from penny.database import Database
     from penny.llm import LlmClient
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationState(StrEnum):
@@ -98,7 +104,9 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
         "they are not asking for a task to be set up"
     ),
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "they are asking for something one of the known skills already covers"
+        "they are asking for something one of the known skills already covers — "
+        f"add a second line naming that skill: {SKILL_TAG} <its name, copied "
+        "exactly from Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking for a task or routine to be done and no known skill "
@@ -134,6 +142,16 @@ _STATES_LABEL = "States:"
 _NONE_PLACEHOLDER = "(none)"
 
 
+class SkillCandidate(BaseModel):
+    """One ranked skill from the registry's structural pre-pass — the ``name``
+    is the exact token a gated apply draw must copy back (display form ==
+    invocation form), the ``description`` the meaning the render shows beside
+    it."""
+
+    name: str
+    description: str
+
+
 class MachineSnapshot(BaseModel):
     """The classifier's input — the machine's situation at the moment a message
     arrives, constructed by the caller (the eval harness in v1; chat wiring
@@ -144,23 +162,26 @@ class MachineSnapshot(BaseModel):
     a REPLY, and replies are only classifiable against what they answer ("just
     the headline" is steps-arrived only against "what should I look for?").
     ``task_anchor`` is the instigating ask, present when the machine is parked
-    in a non-idle state.  ``skill_candidates`` are pre-rendered
-    name-and-description lines from the registry's ranked resolution (the
-    structural pre-pass — the classifier picks among evidence, it does not
+    in a non-idle state.  ``skill_candidates`` are the registry's ranked
+    resolution for this message (the structural pre-pass, built by
+    :func:`build_snapshot` — the classifier picks among evidence, it does not
     retrieve); empty means the ``apply`` edge is withheld entirely."""
 
     state: ConversationState
     penny_last_turn: str | None = None
     task_anchor: str | None = None
-    skill_candidates: list[str] = []
+    skill_candidates: list[SkillCandidate] = []
 
 
 class StateDecision(BaseModel):
     """One classification, typed for the machine: the draw outcome plus the
-    decided state (``None`` on any non-decision — the fail → stay input)."""
+    decided state (``None`` on any non-decision — the fail → stay input) and,
+    for an apply decision, the covering skill's name (validated a member of the
+    offered candidates by the draw contract — never ``None`` on apply)."""
 
     outcome: StateDrawOutcome
     state: ConversationState | None = None
+    skill: str | None = None
 
 
 class StateClassifier:
@@ -183,17 +204,26 @@ class StateClassifier:
             )
         content = render_classifier_content(snapshot, message)
         draw = await self._micro_context.classify_state(
-            content, [edge.value for edge in edges], run_target=run_target
+            content,
+            [edge.value for edge in edges],
+            skill_gated_state=ConversationState.APPLY.value,
+            skills=[candidate.name for candidate in snapshot.skill_candidates],
+            run_target=run_target,
         )
         return self._decision(draw)
 
     @staticmethod
     def _decision(draw: StateDraw) -> StateDecision:
         """The machine-typed decision: a DECIDED draw carries a name guaranteed
-        to be a union member, so the enum conversion cannot fail; every other
-        outcome carries no state (the non-decision the machine holds on)."""
+        to be a union member (and, when apply, a skill guaranteed a candidate),
+        so the enum conversion cannot fail; every other outcome carries no state
+        (the non-decision the machine holds on)."""
         if draw.outcome is StateDrawOutcome.DECIDED:
-            return StateDecision(outcome=draw.outcome, state=ConversationState(draw.name))
+            return StateDecision(
+                outcome=draw.outcome,
+                state=ConversationState(draw.name),
+                skill=draw.skill or None,
+            )
         return StateDecision(outcome=draw.outcome)
 
 
@@ -224,7 +254,10 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
         lines.append(f"{_TASK_LABEL} {snapshot.task_anchor}")
     if snapshot.skill_candidates:
         lines.append(_SKILLS_LABEL)
-        lines.extend(f"- {candidate}" for candidate in snapshot.skill_candidates)
+        lines.extend(
+            f"- {candidate.name} — {candidate.description}"
+            for candidate in snapshot.skill_candidates
+        )
     else:
         lines.append(f"{_SKILLS_LABEL} {_NONE_PLACEHOLDER}")
     lines.append(f"{_MESSAGE_LABEL} {message}")
@@ -246,3 +279,39 @@ def next_state(current: ConversationState, decision: StateDecision) -> Conversat
     if decision.outcome is StateDrawOutcome.DECIDED and decision.state is not None:
         return decision.state
     return current
+
+
+async def build_snapshot(
+    db: Database,
+    embedding_client: LlmClient,
+    *,
+    state: ConversationState,
+    message: str,
+    penny_last_turn: str | None = None,
+    task_anchor: str | None = None,
+) -> MachineSnapshot:
+    """The production snapshot builder — the structural pre-pass that turns the
+    machine's situation into the classifier's input.  Embeds the incoming
+    message and ranks the skill registry by description-anchor cosine
+    (``resolve_by_meaning``, capped at ``FIND_MATCH_LIMIT`` — the same
+    resolution surface ``find`` uses, no new threshold), so the classifier
+    picks among presented evidence and never retrieves.
+
+    A transient embed failure degrades to NO candidates — logged, and safe by
+    construction: with no candidates the ``apply`` edge is structurally
+    withheld (``presented_edges``), the perception twin of fail → stay."""
+    candidates: list[SkillCandidate] = []
+    vector = await embed_text(embedding_client, message)
+    if vector is None:
+        logger.warning("Snapshot builder: message embed failed — no skill candidates offered")
+    else:
+        candidates = [
+            SkillCandidate(name=skill.name, description=skill.description)
+            for skill in db.skills.resolve_by_meaning(vector, PennyConstants.FIND_MATCH_LIMIT)
+        ]
+    return MachineSnapshot(
+        state=state,
+        penny_last_turn=penny_last_turn,
+        task_anchor=task_anchor,
+        skill_candidates=candidates,
+    )
