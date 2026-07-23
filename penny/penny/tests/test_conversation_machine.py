@@ -120,10 +120,13 @@ def test_system_prompt_whole_render():
 
 def test_render_idle_slice_whole():
     """The idle render, whole: no last turn yet renders the (none) placeholder,
-    no task/skills sections (absent facts render absent), and the offered
-    states are idle + elicit only — apply withheld with no candidates."""
+    the skills section renders an explicit (none) — the elicit meaning's "no
+    known skill covers it" must be a READ, never an inference from a missing
+    section — and the offered states are idle + elicit only (apply withheld
+    with no candidates)."""
     assert render_classifier_content(_IDLE_SNAPSHOT, _ASK) == (
         "The assistant's last message: (none)\n"
+        "Known skills: (none)\n"
         "The user's newest message: hey can you keep an eye on the harbor ferry "
         "timetable for me?\n"
         "\n"
@@ -145,6 +148,7 @@ def test_render_parked_elicit_slice_whole():
         "teach me? What should I read, look for, and remember?\n"
         "The task being worked on: hey can you keep an eye on the harbor ferry "
         "timetable for me?\n"
+        "Known skills: (none)\n"
         "The user's newest message: sure — read harborferries.example/timetable "
         "and remember the first morning departure\n"
         "\n"

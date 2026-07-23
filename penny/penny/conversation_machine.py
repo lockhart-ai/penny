@@ -127,11 +127,11 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
 
 # The conversation-slice render labels — fixed strings, whole-render pinned.
 _LAST_TURN_LABEL = "The assistant's last message:"
-_NO_LAST_TURN = "(none)"
 _TASK_LABEL = "The task being worked on:"
 _SKILLS_LABEL = "Known skills:"
 _MESSAGE_LABEL = "The user's newest message:"
 _STATES_LABEL = "States:"
+_NONE_PLACEHOLDER = "(none)"
 
 
 class MachineSnapshot(BaseModel):
@@ -210,16 +210,23 @@ def presented_edges(snapshot: MachineSnapshot) -> tuple[ConversationState, ...]:
 
 def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     """The classifier's whole world, rendered: the scoped conversation slice
-    (assistant's last turn, the parked task anchor when one exists, the ranked
-    skill candidates when any exist, the newest message), then the offered
-    states with their per-edge meanings.  Absent facts render absent — no empty
-    sections."""
-    lines = [f"{_LAST_TURN_LABEL} {snapshot.penny_last_turn or _NO_LAST_TURN}"]
+    (assistant's last turn, the parked task anchor when one exists, the known
+    skills, the newest message), then the offered states with their per-edge
+    meanings.
+
+    The skills section ALWAYS renders — ``(none)`` for an empty registry —
+    because an edge meaning references it ("no known skill covers it"): the
+    no-coverage fact must be a READ off the rendered state, never an inference
+    from a missing section (the rational-actor doctrine).  The task anchor, by
+    contrast, renders only when parked: no meaning references an absent task."""
+    lines = [f"{_LAST_TURN_LABEL} {snapshot.penny_last_turn or _NONE_PLACEHOLDER}"]
     if snapshot.task_anchor is not None:
         lines.append(f"{_TASK_LABEL} {snapshot.task_anchor}")
     if snapshot.skill_candidates:
         lines.append(_SKILLS_LABEL)
         lines.extend(f"- {candidate}" for candidate in snapshot.skill_candidates)
+    else:
+        lines.append(f"{_SKILLS_LABEL} {_NONE_PLACEHOLDER}")
     lines.append(f"{_MESSAGE_LABEL} {message}")
     lines.append("")
     lines.append(_STATES_LABEL)
