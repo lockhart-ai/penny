@@ -11,6 +11,7 @@ rate for inspection without failing the run.  See docs/self-improvement-loop.md.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -24,6 +25,12 @@ from sqlmodel import Session, select
 
 from penny.config import Config
 from penny.constants import ChannelType, PennyConstants
+from penny.conversation_machine import (
+    ConversationState,
+    MachineSnapshot,
+    StateClassifier,
+    StateDecision,
+)
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
@@ -47,6 +54,7 @@ from penny.text_validity import (
 )
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
+from penny.tools.micro_context import StateDrawOutcome
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
@@ -2154,6 +2162,222 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
                         result = SampleResult.binary([s for s in scored if isinstance(s, str)])
                     results.append(result)
                     _stamp_cause(penny.db, result)
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+# ── Classifier eval (#1706 beat 1): one scoped micro-context call per sample ──
+# A classifier-eval runner: (case_id, snapshot, pool, expected) -> asserts threshold.
+ClassifierEval = Callable[..., Awaitable[None]]
+
+
+def _score_classifier(decision: StateDecision, expected: ConversationState) -> list[Check]:
+    """The classifier case's graded checks (#1706): ONE scored check — the expected
+    edge was decided — so the case mean IS that direction's confusion-matrix cell.
+    A wrong edge and a contract failure both score 0 (a cleanly-decided WRONG edge
+    must never outscore a harmless no-decision — fail → stay is the safe outcome);
+    the advisory well-formed check plus the rationale keep the two failure kinds
+    distinct in the report without distorting the score."""
+    decided = decision.outcome == StateDrawOutcome.DECIDED
+    ok = decided and decision.state is expected
+    if ok:
+        rationale = None
+    elif decided and decision.state is not None:
+        rationale = f"drew {decision.state.value} instead"
+    else:
+        rationale = f"no decision — {decision.outcome.value}"
+    return [
+        Check(f"decided {expected.value}", ok, kind="state", rationale=rationale),
+        Check(
+            "draw well-formed (tagged, in-union)",
+            decided,
+            kind="proc",
+            scored=False,
+            rationale=None if decided else f"terminal outcome {decision.outcome.value}",
+        ),
+    ]
+
+
+def _classifier_rows(db: Database) -> list[PromptLog]:
+    """The sample's state-classifier promptlog rows, oldest first — one per draw,
+    so a reroll shows as a second row (the fragile signal and the transcript's
+    second 🧩 pair both read off this)."""
+    return [
+        row
+        for row in _sample_prompt_rows(db)
+        if row.agent_name == PennyConstants.STATE_CLASSIFIER_AGENT_NAME
+    ]
+
+
+def _classifier_events(phrasing: str, rows: list[PromptLog]) -> list[report.Event]:
+    """The hand-built event stream for one classifier sample: the phrasing opens
+    the step, then one 🧩 in/out pair PER DRAW — a reroll renders as a second
+    pair, so recovery is visible in the transcript, never summarized away."""
+    events = [report.Event(report.EventKind.USER, phrasing)]
+    for row in rows:
+        messages = json.loads(row.messages) if row.messages else []
+        user = next(
+            (m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), ""
+        )
+        events.append(report.Event(report.EventKind.MICRO_IN, f"micro-context ← {user}"))
+        events.append(
+            report.Event(
+                report.EventKind.MICRO_OUT,
+                f"micro-context → {_response_text(row) or '(empty)'}",
+                thinking=row.thinking or "",
+            )
+        )
+    return events
+
+
+def _classifier_check_views(
+    result: SampleResult, anchor_index: int, baseline: Baseline | None, case_id: str
+) -> list[report.CheckView]:
+    """Every check anchored to the FINAL draw's 🧩→ row (the decision), with the
+    baseline flip resolved per ``(case_id, label)`` exactly like the extractor's."""
+    views: list[report.CheckView] = []
+    for index, check in enumerate(result.checks, start=1):
+        regressed = (
+            not check.ok
+            and not check.ignored
+            and baseline is not None
+            and baseline.was_passing(case_id, check.label)
+        )
+        views.append(
+            report.CheckView(
+                check_id=f"C{index}",
+                label=check.label,
+                kind=check.kind,
+                scored=check.scored,
+                ignored=check.ignored,
+                ok=check.ok,
+                rationale=check.rationale,
+                cause=_cause_word(result.cause) if not check.ok else None,
+                anchor_index=anchor_index,
+                regressed=regressed,
+            )
+        )
+    return views
+
+
+def _write_classifier_report(
+    db: Database, case_id: str, sample_index: int, *, result: SampleResult, phrasing: str
+) -> None:
+    """One classifier sample's transcript block — hand-built (the generic extractor
+    is chat-run-shaped; a classifier sample is one step whose actor is the 🧩
+    micro-context, the spec's official sub-model actor), rendered by the SAME pure
+    report grammar and appended to the same ``<case_id>.md``. No-op off-report."""
+    report_dir = os.environ.get("EVAL_REPORT_DIR")
+    if not report_dir:
+        return
+    rows = _classifier_rows(db)
+    if not rows:
+        transcript = report.SampleTranscript(
+            sample_index + 1,
+            _sample_banner(db, result, evaluated=False),
+            [],
+            placeholder=report.NO_TURNS_PLACEHOLDER,
+        )
+    else:
+        events = _classifier_events(phrasing, rows)
+        checks = _classifier_check_views(result, len(events) - 1, baseline_from_env(), case_id)
+        passed_checks, total = _scored_counts(result)
+        transcript = report.build_sample(
+            number=sample_index + 1,
+            banner=_sample_banner(db, result, evaluated=True),
+            events=events,
+            checks=checks,
+            run_close_score=f"{passed_checks}/{total}",
+            folded=result.passed and not result.fragile,
+        )
+    directory = Path(report_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{case_id}.md").open("a") as handle:
+        handle.write(report.render_sample(transcript) + "\n\n")
+
+
+@pytest.fixture
+def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> ClassifierEval:
+    """Drive the conversation-state classifier (#1706) N times — ONE scoped
+    micro-context call per sample, no agent loop — sweeping a PHRASING POOL
+    deterministically (sample i → ``pool[i % len(pool)]``), so N samples cover
+    input SPACE rather than re-rolling one point (the input-variation doctrine's
+    first native customer): per-check cells map 1:1 to phrasings, and a baseline
+    diff compares phrasing-for-phrasing.
+
+    Each sample is hermetic (own DB + real-model Penny, mirroring
+    ``startup_eval``); the snapshot is the machine situation under test, built by
+    the case.  Scoring is runner-owned — one scored check, the expected edge was
+    decided, so the case mean IS that direction's confusion-matrix cell; a
+    well-formed-draw advisory keeps discrimination misses distinct from contract
+    failures.  ``fragile`` is the classifier's native recovery signal: DECIDED
+    after more than one draw (a reroll).  A poisoned draw group is tagged
+    pathology by the standard response scan; a hung call is a harness timeout.
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        snapshot: MachineSnapshot,
+        pool: Sequence[str],
+        expected: ConversationState,
+        seed: Seeder | None = None,
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+        timeout: float = 60.0,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        for sample_index in range(samples):
+            phrasing = pool[sample_index % len(pool)]
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    seed_user(penny.db)
+                    if seed is not None:
+                        seed(penny.db)
+                    await _embed_seeds(penny)
+                    classifier = StateClassifier(penny.model_client)
+                    try:
+                        decision = await asyncio.wait_for(
+                            classifier.classify(
+                                snapshot, phrasing, run_target=penny.chat_agent.name
+                            ),
+                            timeout=timeout,
+                        )
+                        result = _guarded_graded(list(_score_classifier(decision, expected)), [])
+                        result.fragile = result.passed and len(_classifier_rows(penny.db)) > 1
+                        results.append(result)
+                        _stamp_cause(penny.db, result)
+                    except TimeoutError:
+                        result = SampleResult.binary(["no decision within timeout"])
+                        _stamp_cause(penny.db, result, timed_out=True)
+                        results.append(result)
+                    _write_classifier_report(
+                        penny.db, case_id, sample_index, result=result, phrasing=phrasing
+                    )
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
             finally:
                 await server.stop()
