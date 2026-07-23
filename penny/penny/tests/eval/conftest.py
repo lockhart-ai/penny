@@ -27,16 +27,18 @@ from penny.config import Config
 from penny.constants import ChannelType, PennyConstants
 from penny.conversation_machine import (
     ConversationState,
-    MachineSnapshot,
     StateClassifier,
     StateDecision,
+    build_snapshot,
 )
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog
+from penny.database.skills import SkillDraft, SkillParameter, SkillStep
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
@@ -2184,13 +2186,17 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
 ClassifierEval = Callable[..., Awaitable[None]]
 
 
-def _score_classifier(decision: StateDecision, expected: ConversationState) -> list[Check]:
+def _score_classifier(
+    decision: StateDecision, expected: ConversationState, expected_skill: str | None
+) -> list[Check]:
     """The classifier case's graded checks (#1706): ONE scored check — the expected
     edge was decided — so the case mean IS that direction's confusion-matrix cell.
     A wrong edge and a contract failure both score 0 (a cleanly-decided WRONG edge
     must never outscore a harmless no-decision — fail → stay is the safe outcome);
     the advisory well-formed check plus the rationale keep the two failure kinds
-    distinct in the report without distorting the score."""
+    distinct in the report without distorting the score.  An apply case also
+    scores WHICH skill the draw bound (``expected_skill``) — n/a when the sample
+    never decided apply (no skill to judge; the edge check already failed)."""
     decided = decision.outcome == StateDrawOutcome.DECIDED
     ok = decided and decision.state is expected
     if ok:
@@ -2199,7 +2205,7 @@ def _score_classifier(decision: StateDecision, expected: ConversationState) -> l
         rationale = f"drew {decision.state.value} instead"
     else:
         rationale = f"no decision — {decision.outcome.value}"
-    return [
+    checks = [
         Check(f"decided {expected.value}", ok, kind="state", rationale=rationale),
         Check(
             "draw well-formed (tagged, in-union)",
@@ -2209,6 +2215,26 @@ def _score_classifier(decision: StateDecision, expected: ConversationState) -> l
             rationale=None if decided else f"terminal outcome {decision.outcome.value}",
         ),
     ]
+    if expected_skill is not None:
+        if decided and decision.state is ConversationState.APPLY:
+            named = decision.skill == expected_skill
+            checks.append(
+                Check(
+                    "named the covering skill",
+                    named,
+                    kind="state",
+                    rationale=None if named else f"named {decision.skill}",
+                )
+            )
+        else:
+            checks.append(
+                Check.na(
+                    "named the covering skill",
+                    rationale="no apply decision to carry a skill",
+                    kind="state",
+                )
+            )
+    return checks
 
 
 def _classifier_rows(db: Database) -> list[PromptLog]:
@@ -2309,6 +2335,42 @@ def _write_classifier_report(
         handle.write(report.render_sample(transcript) + "\n\n")
 
 
+# One structurally-valid placeholder step for an eval-seeded skill: the
+# classifier reads only name + description, but the draft stays real-typed.
+_SEED_SKILL_STEP = SkillStep(
+    ordinal=1,
+    source_ordinal=1,
+    tool="browse",
+    arguments={"queries": ["https://example.test"], "extract": "the value"},
+)
+
+
+def eval_skill(name: str, description: str, params: dict[str, str]) -> SkillDraft:
+    """A fixture skill draft: name + description + declared parameters (semantic
+    name → what-to-supply), over one structurally-valid placeholder step.  The
+    classifier reads the FULL metadata — name, description, AND parameters — so
+    a case's seeds must carry the same shape real auto-extracted skills do."""
+    return SkillDraft(
+        name=name,
+        intent=description,
+        description=description,
+        steps=[_SEED_SKILL_STEP],
+        parameters=[SkillParameter(name=key, description=value) for key, value in params.items()],
+        source_run_id="eval-seed",
+    )
+
+
+async def _seed_eval_skills(penny: Penny, seed_skills: Sequence[SkillDraft]) -> None:
+    """Seed fixture skills WITH real description embeddings, so
+    ``resolve_by_meaning`` ranks them (a vectorless skill is resolution-invisible
+    — seeding one would silently hollow the case).  A failed embed fails the
+    sample loudly rather than degrade."""
+    for draft in seed_skills:
+        vector = await embed_text(penny.embedding_model_client, draft.description)
+        assert vector is not None, f"seed skill embed failed: {draft.name}"
+        penny.db.skills.upsert(draft, author="eval-seed", description_embedding=vector)
+
+
 @pytest.fixture
 def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> ClassifierEval:
     """Drive the conversation-state classifier (#1706) N times — ONE scoped
@@ -2319,8 +2381,10 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
     diff compares phrasing-for-phrasing.
 
     Each sample is hermetic (own DB + real-model Penny, mirroring
-    ``startup_eval``); the snapshot is the machine situation under test, built by
-    the case.  Scoring is runner-owned — one scored check, the expected edge was
+    ``startup_eval``); the snapshot is built PER SAMPLE by the production
+    ``build_snapshot`` (embed + resolve_by_meaning pre-pass) from the case's
+    ``state`` + the sample's phrasing — the same path the chat wiring will
+    call.  Scoring is runner-owned — one scored check, the expected edge was
     decided, so the case mean IS that direction's confusion-matrix cell; a
     well-formed-draw advisory keeps discrimination misses distinct from contract
     failures.  ``fragile`` is the classifier's native recovery signal: DECIDED
@@ -2331,10 +2395,12 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
     async def _run(
         *,
         case_id: str,
-        snapshot: MachineSnapshot,
+        state: ConversationState,
         pool: Sequence[str],
         expected: ConversationState,
+        expected_skill: str | None = None,
         seed: Seeder | None = None,
+        seed_skills: Sequence[SkillDraft] | None = None,
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -2358,15 +2424,28 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                     if seed is not None:
                         seed(penny.db)
                     await _embed_seeds(penny)
+                    if seed_skills:
+                        await _seed_eval_skills(penny, seed_skills)
                     classifier = StateClassifier(penny.model_client)
                     try:
+                        # The PRODUCTION snapshot builder per sample — candidates
+                        # depend on the phrasing (the embed + resolve pre-pass),
+                        # so the eval exercises the same path the wiring will.
+                        snapshot = await build_snapshot(
+                            penny.db,
+                            penny.embedding_model_client,
+                            state=state,
+                            message=phrasing,
+                        )
                         decision = await asyncio.wait_for(
                             classifier.classify(
                                 snapshot, phrasing, run_target=penny.chat_agent.name
                             ),
                             timeout=timeout,
                         )
-                        result = _guarded_graded(list(_score_classifier(decision, expected)), [])
+                        result = _guarded_graded(
+                            list(_score_classifier(decision, expected, expected_skill)), []
+                        )
                         result.fragile = result.passed and len(_classifier_rows(penny.db)) > 1
                         results.append(result)
                         _stamp_cause(penny.db, result)

@@ -155,7 +155,15 @@ _SKILL_NAMING_INSTRUCTION = (
 # once on the unchanged context, then an honest failure the machine treats as
 # no-transition (fail → stay; the caller's rule, encoded in
 # ``conversation_machine.next_state``).
+#
+# One state per machine may be SKILL-GATED (#1706 beat 2 — the apply edge): its
+# option line directs the model to add a second ``SKILL:`` line naming which of
+# the listed skills covers the request.  Drawing the gated state WITHOUT a valid
+# in-set skill line is the same contract violation — reroll, then INVALID — so an
+# apply decision always carries an actionable skill, never a dangling "use a
+# skill" with nothing bound.
 STATE_TAG = "STATE:"
+SKILL_TAG = "SKILL:"
 
 STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "You are a dispatch step. You are given a small slice of a conversation "
@@ -165,9 +173,10 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "the user's newest message puts the conversation in. Respond with exactly "
     "one line:\n"
     f"{STATE_TAG} <name>\n"
-    "The name must be one of the listed states, copied exactly. Judge only from "
-    "what the messages say, and write nothing else — no preamble, no "
-    "explanation, no restating the messages."
+    "The name must be one of the listed states, copied exactly. When the state "
+    f"you pick tells you to add a {SKILL_TAG} line, add exactly that second line "
+    "and nothing more. Judge only from what the messages say, and write nothing "
+    "else — no preamble, no explanation, no restating the messages."
 )
 
 # The single per-call ask; the conversation slice + the candidate states are the
@@ -250,12 +259,15 @@ class StateDrawOutcome(StrEnum):
 class StateDraw(BaseModel):
     """The state-classification micro-context's typed result (#1706): the drawn
     state ``name`` — guaranteed a member of the offered union — on
-    :attr:`StateDrawOutcome.DECIDED`, empty on the failure outcomes.  String-typed
-    on purpose: this module knows candidate names, never the machine's state enum
-    (the machine imports this module, not the reverse)."""
+    :attr:`StateDrawOutcome.DECIDED`, empty on the failure outcomes.  ``skill``
+    carries the drawn ``SKILL:`` payload when the decided state was skill-gated —
+    guaranteed a member of the offered skills — and is empty otherwise.
+    String-typed on purpose: this module knows candidate names, never the
+    machine's state enum (the machine imports this module, not the reverse)."""
 
     outcome: StateDrawOutcome
     name: str = ""
+    skill: str = ""
 
 
 class MicroContext:
@@ -365,7 +377,13 @@ class MicroContext:
         return SkillLabel(name=name, description=description, parameters=_parse_param_labels(draw))
 
     async def classify_state(
-        self, content: str, allowed: Sequence[str], *, run_target: str | None = None
+        self,
+        content: str,
+        allowed: Sequence[str],
+        *,
+        skill_gated_state: str | None = None,
+        skills: Sequence[str] = (),
+        run_target: str | None = None,
     ) -> StateDraw:
         """Pick one state from ``allowed`` for a rendered conversation slice
         (#1706) — the third customer of this machinery.  Rides the SAME
@@ -373,7 +391,13 @@ class MicroContext:
         prompt and its own ledger attribution, then a deterministic tag parse
         validated for MEMBERSHIP: a drawn state outside ``allowed`` is a contract
         violation exactly like an untagged draw — one reroll of the unchanged
-        context, then an honest ``INVALID`` the machine reads as no-transition."""
+        context, then an honest ``INVALID`` the machine reads as no-transition.
+
+        ``skill_gated_state`` names the one state (if any) whose draw must ALSO
+        carry a ``SKILL:`` line naming a member of ``skills`` — drawing it with a
+        missing or out-of-set skill is the same contract violation, so a gated
+        decision always binds an actionable skill.  A stray ``SKILL:`` line on an
+        ungated draw is ignored (the decision stands; the line binds nothing)."""
         for _ in range(_UNTAGGED_DRAW_BUDGET):
             draw = await self._draw_clean(
                 content,
@@ -385,24 +409,35 @@ class MicroContext:
             )
             if draw is None:
                 return StateDraw(outcome=StateDrawOutcome.POISON_REROLL_FAILED)
-            name = self._parse_state(draw, allowed)
-            if name is not None:
-                return StateDraw(outcome=StateDrawOutcome.DECIDED, name=name)
+            decided = self._parse_state_draw(draw, allowed, skill_gated_state, skills)
+            if decided is not None:
+                return decided
             logger.warning("State-classifier output invalid — one reroll of the unchanged context")
         logger.warning("State-classifier output invalid after reroll — no transition")
         return StateDraw(outcome=StateDrawOutcome.INVALID)
 
     @staticmethod
-    def _parse_state(draw: str, allowed: Sequence[str]) -> str | None:
-        """The tagged state name, but ONLY when it is a member of ``allowed`` —
-        no tag, a blank payload, or a state outside the offered union is ``None``
+    def _parse_state_draw(
+        draw: str,
+        allowed: Sequence[str],
+        skill_gated_state: str | None,
+        skills: Sequence[str],
+    ) -> StateDraw | None:
+        """The tagged state (+ its gated skill), but ONLY when every member is in
+        its offered set — no tag, a blank payload, an out-of-union state, or a
+        gated state whose ``SKILL:`` line is missing or out-of-set is ``None``
         (invalid), which the caller rerolls once and then fails honestly.  Exact
-        match, no normalization: the prompt says copied exactly, and the union
-        members are short lowercase words the model was shown verbatim."""
-        payload = _tagged_payload(draw, STATE_TAG)
-        if payload is None or payload not in allowed:
+        match, no normalization: the prompt says copied exactly, and every member
+        was shown verbatim."""
+        name = _tagged_payload(draw, STATE_TAG)
+        if name is None or name not in allowed:
             return None
-        return payload
+        if skill_gated_state is None or name != skill_gated_state:
+            return StateDraw(outcome=StateDrawOutcome.DECIDED, name=name)
+        skill = _tagged_payload(draw, SKILL_TAG)
+        if skill is None or skill not in skills:
+            return None
+        return StateDraw(outcome=StateDrawOutcome.DECIDED, name=name, skill=skill)
 
     async def _draw_clean(
         self,

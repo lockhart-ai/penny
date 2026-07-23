@@ -1,40 +1,48 @@
-"""Per-edge conversation-state classifier contracts (#1706, beat 1): the
-idle → elicit edge, both directions, under the cold-start shape (an empty skill
-registry — the apply edge is structurally withheld, so the live union the
-classifier sees is elicit vs idle).
+"""Per-edge conversation-state classifier contracts (#1706, beats 1–2): the
+idle out-edges, every direction, from the cold-start shape through a populated
+skill registry.
 
 Each case sweeps a ten-phrasing pool deterministically (sample i →
 ``pool[i % 10]``), so at N=10 one run covers every phrasing exactly once and the
 per-check cells map 1:1 to phrasings — the input-variation doctrine's first
-native customer.  The FIRE pool is request-shaped asks for routines no skill
-covers (direct, polite, terse, and recurrence-worded — schedule words are
-realistic difficulty, not a separate case).  The HOLD pool is ordinary
-conversation: greetings, one-shot questions, and the named boundary case — a
-PASSING MENTION of a watchable thing, including recurrence words describing the
-USER's own habit and topic twins of fire phrasings — which must NOT be chased
-into a teach loop.
+native customer.  Snapshots are built PER SAMPLE by the production
+``build_snapshot`` (embed + resolve_by_meaning pre-pass), so what varies between
+the beat-1 and beat-2 cases is exactly what varies in production: whether the
+registry holds skills.
 
-Gated at 0.8: two clean 1.00 baseline runs at N=10 (turn-audited — every
-draw a first-try tagged in-union answer, boundary thinking read) earned the
-stable-green bar, so a later change that degrades either direction fails
-loudly instead of printing a report-only line.  Fictional-but-believable
-fixtures throughout (the repo is public).
+**Beat 1 (empty registry — the cold-start shape)**: apply is structurally
+withheld, the live union is elicit vs idle.  FIRE = request-shaped asks for
+routines nothing covers; HOLD = ordinary conversation incl. the named boundary
+case — a PASSING MENTION of a watchable thing (recurrence words describing the
+USER's own habit, topic twins of fire phrasings).  Gated at 0.8 (two clean 1.00
+baseline runs at N=10, turn-audited).
+
+**Beat 2 (two seeded skills — a price-watch plus a distractor)**: the union
+grows to three and the apply draw must ALSO bind WHICH skill (the SKILL: line,
+membership-validated).  APPLY-FIRE = asks the price-watch skill covers (the
+distractor measures wrong-skill selection); UNCOVERED = request-shaped asks
+neither skill covers, which must still elicit with plausible candidates
+dangling (the false-apply temptation — several are deliberate near-misses:
+watching a NUMBER or page that isn't a price); HOLD-WITH-SKILLS = beat 1's hold
+pool verbatim under candidates (does chat stay chat when apply is on offer?);
+MIXED = chat preamble + a covered ask in one message (the named mixed-message
+boundary → apply).  Report-only until baselines are read.
+
+Fictional-but-believable fixtures throughout (the repo is public).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from penny.conversation_machine import ConversationState, MachineSnapshot
-from penny.tests.eval.conftest import ClassifierEval
+from penny.conversation_machine import ConversationState
+from penny.tests.eval.conftest import ClassifierEval, eval_skill
 
 pytestmark = pytest.mark.eval
 
 _FAMILY = "state-classifier"
 
-# The cold-start idle machine: no prior assistant turn, no parked task, no
-# skills — the fresh-install shape (#1699's cold-start surface).
-_IDLE = MachineSnapshot(state=ConversationState.IDLE)
+# ── Beat 1: the cold-start shape (no skills seeded) ───────────────────────────
 
 # Fire direction — a routine is being asked for and nothing covers it.
 _FIRE_POOL = [
@@ -74,7 +82,7 @@ async def test_idle_to_elicit_fires_on_uncovered_requests(
     elicit — the entry edge of the whole teach loop."""
     await classifier_eval(
         case_id="idle-elicit-fire",
-        snapshot=_IDLE,
+        state=ConversationState.IDLE,
         pool=_FIRE_POOL,
         expected=ConversationState.ELICIT,
         min_pass_rate=0.8,
@@ -89,9 +97,190 @@ async def test_idle_holds_on_chat_and_passing_mentions(
     idle — don't chase a mention into a teach loop."""
     await classifier_eval(
         case_id="idle-elicit-hold",
-        snapshot=_IDLE,
+        state=ConversationState.IDLE,
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── Beat 2: a populated registry (price-watch + a distractor skill) ───────────
+
+_PRICE_SKILL = "watch a listing price for changes"
+_SEEDED_SKILLS = [
+    eval_skill(
+        _PRICE_SKILL,
+        "keep an eye on a product or listing page and record its current price",
+        {"url": "the product or listing page whose price to watch"},
+    ),
+    eval_skill(
+        "collect daily cafe specials",
+        "read a cafe or bakery menu page and save the day's specials each morning",
+        {"url": "the cafe's menu page"},
+    ),
+]
+
+# Apply direction — every ask is covered by the price-watch skill; the specials
+# skill rides along as the in-context distractor (wrong-skill selection is a
+# scored miss on the "named the covering skill" check).
+_APPLY_POOL = [
+    "can you watch the price on ridgelinefoxes.example/den-camera-kit?",
+    "keep an eye on the price of the harbor kayak rental page for me",
+    "track what the vintage synth on brasscat.example/listings/modular-iii is going for",
+    "watch tidepool-optics.example/spotting-scope and tell me when the price moves",
+    "can you keep tabs on the price of the ferry season pass?",
+    "monitor the den camera kit listing — i want to know if it gets cheaper",
+    "follow the price on that surfboard listing at driftline.example/boards/7-2",
+    "hey, watch the campsite fee page and note the current rate",
+    "could you track the price of the espresso grinder on beanhouse.example?",
+    "keep watching what the old pinball machine is listed at",
+]
+
+# Uncovered direction — routine setups CLEARLY outside both seeded skills
+# (no page-watching, no menu-reading: reminders, chat-extraction lists,
+# summaries, tallies).  The contract case proves transition reasoning on
+# unambiguous inputs; the genuinely fuzzy watch-shaped near-misses live in
+# the report-only idle-coverage-boundary case below.
+_UNCOVERED_POOL = [
+    "every friday can you remind me to water the plants?",
+    "keep a running list of every restaurant i mention to you",
+    "every morning teach me one new portuguese word",
+    "at the end of each week, summarize what we talked about",
+    "keep track of how many times i go to the gym each week",
+    "each evening save a one-line note about how my day went",
+    "whenever i mention a book, add it to my reading list",
+    "keep a tally by species of the birds i tell you i saw",
+    "every sunday plan out three dinner ideas and save them for me",
+    "log every movie i tell you i've watched",
+]
+
+# Cross-domain non-coverage — the STARK version of the non-match test (the
+# code-owner ruling on runs 4-10: a watch-shaped request against a watch-shaped
+# skill is legitimately COVERED — the model's "it fits" reading was correct, so
+# the old watch-adjacent near-miss pool measured a non-distinction and is
+# retired).  Here the seeded discovery skill and the requests share the same
+# VERB shape (find/collect/watch for new X) in starkly different domains — a
+# job-listings skill does not cover restaurants, houses, or concerts.
+_CROSS_DOMAIN_SKILLS = [
+    eval_skill(
+        "find new job listings",
+        "search the job boards for newly posted listings matching a role and save them",
+        {"role": "the kind of job to look for", "boards": "the job boards to search"},
+    ),
+    _SEEDED_SKILLS[0],
+]
+
+_CROSS_DOMAIN_POOL = [
+    "keep a list of new restaurants opening downtown",
+    "find me new podcasts about gardening each week",
+    "watch for new houses coming on the market in our neighborhood",
+    "collect new science fiction releases at the library each month",
+    "keep track of new hiking trails the parks department opens",
+    "find new volunteer opportunities at the animal shelter",
+    "watch for new classes at the community center",
+    "collect newly announced concerts happening near us",
+    "keep an eye out for new vendors joining the farmers market",
+    "find new coffee roasters popping up in town",
+]
+
+# Mixed-message boundary — chat preamble + a covered ask in ONE message: the
+# routine half wins (apply, with the skill bound); the chat half never
+# suppresses it.  Every ask names the price EXPLICITLY (a contract case tests
+# the transition on clear inputs; paraphrase tolerance is the advisory
+# boundary case's business).
+_MIXED_POOL = [
+    "morning! oh and can you watch the price on the den camera kit listing?",
+    "bakery ran out of croissants again lol — anyway, watch the espresso grinder price for me?",
+    "that hike was gorgeous. also, track the spotting scope's price for me?",
+    "thanks, super helpful! one more thing — watch the kayak rental price?",
+    "my sister's visiting next weekend. btw can you keep tabs on the surfboard listing price?",
+    "what a day. anyway — monitor the modular synth listing price for me, ok?",
+    "the ferry was packed this morning. oh — watch the season pass price too?",
+    "haha fair enough. hey, can you track the pinball machine's asking price?",
+    "good morning! quick one: keep watching the den camera kit price?",
+    "nice, that worked. also can you watch the price on the campsite booking page?",
+]
+
+
+async def test_idle_to_apply_fires_and_binds_the_covering_skill(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Apply fire: an ask a seeded skill covers classifies apply AND binds that
+    skill by name — with a distractor skill in the candidate list."""
+    await classifier_eval(
+        case_id="idle-apply-fire",
+        state=ConversationState.IDLE,
+        pool=_APPLY_POOL,
+        expected=ConversationState.APPLY,
+        expected_skill=_PRICE_SKILL,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_idle_still_elicits_when_no_candidate_covers(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The false-apply guard: request-shaped asks neither skill covers must
+    still elicit — plausible candidates dangling in context are not coverage."""
+    await classifier_eval(
+        case_id="idle-elicit-uncovered",
+        state=ConversationState.IDLE,
+        pool=_UNCOVERED_POOL,
+        expected=ConversationState.ELICIT,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_same_verb_different_domain_still_elicits(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The stark non-coverage contract: a discovery skill in one domain does
+    not cover discovery requests in another — same verb shape, different
+    world."""
+    await classifier_eval(
+        case_id="idle-elicit-cross-domain",
+        state=ConversationState.IDLE,
+        pool=_CROSS_DOMAIN_POOL,
+        expected=ConversationState.ELICIT,
+        seed_skills=_CROSS_DOMAIN_SKILLS,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_idle_holds_on_chat_with_candidates_dangling(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Beat 1's hold pool verbatim, now with candidates rendered: chat stays
+    chat even when apply is on offer (incl. the price-adjacent topic twin)."""
+    await classifier_eval(
+        case_id="idle-hold-with-skills",
+        state=ConversationState.IDLE,
+        pool=_HOLD_POOL,
+        expected=ConversationState.IDLE,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_mixed_chat_plus_covered_ask_applies(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The mixed-message boundary: a chat preamble plus a covered ask in one
+    message classifies apply with the skill bound — the routine half wins."""
+    await classifier_eval(
+        case_id="idle-apply-mixed",
+        state=ConversationState.IDLE,
+        pool=_MIXED_POOL,
+        expected=ConversationState.APPLY,
+        expected_skill=_PRICE_SKILL,
+        seed_skills=_SEEDED_SKILLS,
         min_pass_rate=0.8,
         family=_FAMILY,
     )
