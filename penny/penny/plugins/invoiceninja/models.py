@@ -5,6 +5,24 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class InvoiceNinjaCredentials(BaseModel):
+    """InvoiceNinja API credentials."""
+
+    api_token: str
+    base_url: str
+
+
+class ExpenseCategory(BaseModel):
+    """An InvoiceNinja expense category."""
+
+    id: str
+    name: str
+    color: str | None = None
+
+    def __str__(self) -> str:
+        return f"[{self.id}] {self.name}"
+
+
 class Expense(BaseModel):
     """An InvoiceNinja expense."""
 

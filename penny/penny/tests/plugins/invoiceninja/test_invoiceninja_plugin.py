@@ -31,10 +31,13 @@ def test_invoice_ninja_plugin_provides_tools():
     config.invoiceninja_url = "https://example.com"
     plugin = InvoiceNinjaPlugin(config)
     tools = plugin.get_tools()
-    assert len(tools) == 6
+    assert len(tools) == 9
     assert {tool.name for tool in tools} == {
         "create_expense",
+        "create_expense_category",
         "get_expense",
+        "get_expense_category",
+        "list_expense_categories",
         "list_expenses",
         "list_invoices",
         "update_expense",
@@ -252,3 +255,74 @@ async def test_update_expense_puts_only_changed_fields():
     call_args = mock_http.put.call_args
     assert call_args[0][0] == "https://invoicing.example.com/api/v1/expenses/exp1"
     assert call_args[1]["json"] == {"amount": 50.0}
+
+
+@pytest.mark.asyncio
+async def test_create_expense_category_posts_name():
+    request = httpx.Request("POST", "https://invoicing.example.com/api/v1/expense_categories")
+    with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:
+        client = InvoiceNinjaClient(
+            api_token="test-token", base_url="https://invoicing.example.com"
+        )
+        mock_http = mock_client_cls.return_value
+        mock_http.post = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"id": "cat1", "name": "Travel"}},
+                request=request,
+            )
+        )
+        category = await client.create_expense_category("Travel")
+    assert category.id == "cat1"
+    assert category.name == "Travel"
+    mock_http.post.assert_awaited_once_with(
+        "https://invoicing.example.com/api/v1/expense_categories",
+        json={"name": "Travel"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_expense_categories_returns_parsed_categories():
+    request = httpx.Request("GET", "https://invoicing.example.com/api/v1/expense_categories")
+    with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:
+        client = InvoiceNinjaClient(
+            api_token="test-token", base_url="https://invoicing.example.com"
+        )
+        mock_http = mock_client_cls.return_value
+        mock_http.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"data": [{"id": "cat1", "name": "Travel"}, {"id": "cat2", "name": "Meals"}]},
+                request=request,
+            )
+        )
+        categories = await client.list_expense_categories(limit=25)
+    assert len(categories) == 2
+    assert categories[0].name == "Travel"
+    mock_http.get.assert_awaited_once_with(
+        "https://invoicing.example.com/api/v1/expense_categories",
+        params={"per_page": "25"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_expense_category_fetches_by_id():
+    request = httpx.Request("GET", "https://invoicing.example.com/api/v1/expense_categories/cat1")
+    with patch("penny.plugins.invoiceninja.client.httpx.AsyncClient") as mock_client_cls:
+        client = InvoiceNinjaClient(
+            api_token="test-token", base_url="https://invoicing.example.com"
+        )
+        mock_http = mock_client_cls.return_value
+        mock_http.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"id": "cat1", "name": "Travel"}},
+                request=request,
+            )
+        )
+        category = await client.get_expense_category("cat1")
+    assert category.id == "cat1"
+    assert category.name == "Travel"
+    mock_http.get.assert_awaited_once_with(
+        "https://invoicing.example.com/api/v1/expense_categories/cat1"
+    )

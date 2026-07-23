@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from penny.plugins.invoiceninja.models import Expense, Invoice
+from penny.plugins.invoiceninja.models import Expense, ExpenseCategory, Invoice
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,15 @@ def _expense_from_data(data: dict[str, Any]) -> Expense:
         private_notes=data.get("private_notes"),
         vendor_id=data.get("vendor_id"),
         category_id=data.get("category_id"),
+    )
+
+
+def _expense_category_from_data(data: dict[str, Any]) -> ExpenseCategory:
+    """Build an ExpenseCategory from an InvoiceNinja API data object."""
+    return ExpenseCategory(
+        id=str(data.get("id", "")),
+        name=data.get("name", ""),
+        color=data.get("color"),
     )
 
 
@@ -233,6 +242,57 @@ class InvoiceNinjaClient:
         expense_data = resp.json().get("data", {})
         logger.info("Updated InvoiceNinja expense %s", expense_id)
         return _expense_from_data(expense_data)
+
+    async def create_expense_category(self, name: str) -> ExpenseCategory:
+        """Create a new expense category.
+
+        Args:
+            name: Name of the expense category.
+
+        Returns:
+            The created ExpenseCategory object.
+        """
+        url = f"{self._base_url}/api/v1/expense_categories"
+        resp = await self._http.post(url, json={"name": name})
+        resp.raise_for_status()
+        category_data = resp.json().get("data", {})
+        logger.info("Created InvoiceNinja expense category %s", category_data.get("id"))
+        return _expense_category_from_data(category_data)
+
+    async def list_expense_categories(self, *, limit: int = 50) -> list[ExpenseCategory]:
+        """List expense categories.
+
+        Args:
+            limit: Maximum number of categories to return.
+
+        Returns:
+            List of ExpenseCategory objects.
+        """
+        url = f"{self._base_url}/api/v1/expense_categories"
+        params = {"per_page": str(limit)}
+        resp = await self._http.get(url, params=params)
+        resp.raise_for_status()
+        categories: list[ExpenseCategory] = []
+        for category_data in resp.json().get("data", []):
+            categories.append(_expense_category_from_data(category_data))
+        logger.info("Listed %d InvoiceNinja expense categories", len(categories))
+        return categories
+
+    async def get_expense_category(self, category_id: str) -> ExpenseCategory:
+        """Fetch a single expense category by ID.
+
+        Args:
+            category_id: InvoiceNinja expense category ID.
+
+        Returns:
+            The ExpenseCategory object.
+        """
+        url = f"{self._base_url}/api/v1/expense_categories/{category_id}"
+        resp = await self._http.get(url)
+        resp.raise_for_status()
+        category_data = resp.json().get("data", {})
+        logger.info("Retrieved InvoiceNinja expense category %s", category_id)
+        return _expense_category_from_data(category_data)
 
     async def close(self) -> None:
         """Close the HTTP client."""

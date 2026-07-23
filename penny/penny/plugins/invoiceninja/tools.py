@@ -304,3 +304,115 @@ class UpdateExpenseTool(Tool):
             private_notes=args.private_notes,
         )
         return ToolResult(message=f"Updated expense: {expense}")
+
+
+class CreateExpenseCategoryArgs(ToolArgs):
+    """Arguments for creating an expense category."""
+
+    name: str = Field(description="Name of the new expense category.")
+
+
+class CreateExpenseCategoryTool(Tool):
+    """Create an expense category in InvoiceNinja."""
+
+    name = "create_expense_category"
+    description = "Create a new expense category in InvoiceNinja."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Name of the new expense category."},
+        },
+        "required": ["name"],
+    }
+    args_model = CreateExpenseCategoryArgs
+
+    @classmethod
+    def to_action_str(cls, arguments: dict) -> str:
+        return "Creating InvoiceNinja expense category"
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """Create an expense category."""
+        args = CreateExpenseCategoryArgs(**kwargs)
+        category = await self._client.create_expense_category(args.name)
+        return ToolResult(message=f"Created expense category: {category}")
+
+
+class ListExpenseCategoriesArgs(ToolArgs):
+    """Arguments for listing expense categories."""
+
+    limit: int = Field(default=50, description="Maximum number of categories to return.")
+
+
+class ListExpenseCategoriesTool(Tool):
+    """List expense categories from InvoiceNinja."""
+
+    name = "list_expense_categories"
+    description = "List expense categories from InvoiceNinja."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of categories to return.",
+                "default": 50,
+            },
+        },
+        "required": [],
+    }
+    args_model = ListExpenseCategoriesArgs
+
+    @classmethod
+    def to_action_str(cls, arguments: dict) -> str:
+        return "Listing expense categories"
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """List expense categories."""
+        args = ListExpenseCategoriesArgs(**kwargs)
+        categories = await self._client.list_expense_categories(limit=args.limit)
+        if not categories:
+            return ToolResult(message="No expense categories found.")
+
+        lines = [f"Found {len(categories)} expense category(ies):\n"]
+        for category in categories:
+            lines.append(str(category))
+        return ToolResult(message="\n".join(lines))
+
+
+class GetExpenseCategoryArgs(ToolArgs):
+    """Arguments for fetching a single expense category."""
+
+    category_id: str = Field(description="InvoiceNinja expense category ID.")
+
+
+class GetExpenseCategoryTool(Tool):
+    """Fetch a single expense category from InvoiceNinja."""
+
+    name = "get_expense_category"
+    description = "Fetch a single expense category from InvoiceNinja by ID."
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "category_id": {"type": "string", "description": "InvoiceNinja expense category ID."},
+        },
+        "required": ["category_id"],
+    }
+    args_model = GetExpenseCategoryArgs
+
+    @classmethod
+    def to_action_str(cls, arguments: dict) -> str:
+        return "Fetching expense category"
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """Get an expense category."""
+        args = GetExpenseCategoryArgs(**kwargs)
+        category = await self._client.get_expense_category(args.category_id)
+        return ToolResult(message=str(category))
