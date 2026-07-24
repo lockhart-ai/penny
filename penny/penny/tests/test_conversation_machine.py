@@ -112,34 +112,52 @@ def test_system_prompt_whole_render():
     """Whole-render literal of the dispatch contract: one tagged STATE: line,
     the name copied exactly from the listed states, nothing else."""
     assert STATE_CLASSIFIER_SYSTEM_PROMPT == (
-        "You are a dispatch step. You are given a small slice of a conversation "
-        "between a user and their assistant — the assistant's last message, the task "
-        "being worked on (when there is one), and the user's newest message — plus a "
-        "closed list of states, each with a one-line meaning. Decide which ONE state "
-        "the user's newest message puts the conversation in. Respond with exactly "
-        "one line:\n"
+        "You are a dispatch step for a conversation between a user and their "
+        "assistant. The assistant has real tools (reading pages, saving values), "
+        "and a separate context carries out whatever you decide — NEVER judge "
+        "whether an action is possible; your only job is the state.\n"
+        "\n"
+        "You are given:\n"
+        "- The assistant's last message\n"
+        "- The task being worked on (when there is one)\n"
+        "- Known skills — the assistant's existing routines ((none) when it has none)\n"
+        "- The user's newest message\n"
+        "- States: the closed list to pick from, each with a one-line meaning\n"
+        "\n"
+        "Do this:\n"
+        "1. In your reasoning, note what the user's newest message is doing in the "
+        "conversation, judging only from what the messages say.\n"
+        "2. Pick the ONE listed state whose meaning fits the newest message.\n"
+        "3. Check whether the chosen state's meaning directs you to add a "
+        "SKILL: line.\n"
+        "\n"
+        "Respond with exactly one line:\n"
         "STATE: <name>\n"
-        "The name must be one of the listed states, copied exactly. When the state "
-        "you pick tells you to add a SKILL: line, add exactly that second line "
-        "and nothing more. Judge only from "
-        "what the messages say, and write nothing else — no preamble, no "
-        "explanation, no restating the messages."
+        "The name must be one of the listed states, copied EXACTLY. When the chosen "
+        "state directs it, add exactly one more line — SKILL: <the skill's "
+        "name, copied exactly from Known skills> — and nothing more.\n"
+        "IMPORTANT: write nothing else — no preamble, no explanation, no restating "
+        "the messages."
     )
 
 
 def test_render_idle_slice_whole():
-    """The idle render, whole: no last turn yet renders the (none) placeholder,
-    the skills section renders an explicit (none) — the elicit meaning's "no
-    known skill covers it" must be a READ, never an inference from a missing
-    section — and the offered states are idle + elicit only (apply withheld
-    with no candidates)."""
+    """The idle render, whole: markdown SECTIONS (structural boundaries the
+    populated contexts need), the (none) placeholders for the empty last turn
+    and registry — the elicit meaning's "no known skill covers it" must be a
+    READ, never an inference from a missing section — and the offered states
+    are idle + elicit only (apply withheld with no candidates)."""
     assert render_classifier_content(_IDLE_SNAPSHOT, _ASK) == (
-        "The assistant's last message: (none)\n"
-        "Known skills: (none)\n"
-        "The user's newest message: hey can you keep an eye on the harbor ferry "
-        "timetable for me?\n"
+        "## The assistant's last message\n"
+        "(none)\n"
         "\n"
-        "States:\n"
+        "## Known skills\n"
+        "(none)\n"
+        "\n"
+        "## The user's newest message\n"
+        "hey can you keep an eye on the harbor ferry timetable for me?\n"
+        "\n"
+        "## States\n"
         "- idle: ordinary conversation — chat, a passing mention, or a question or "
         "one-off ask the assistant can answer right away; nothing ongoing is "
         "being set up\n"
@@ -150,21 +168,28 @@ def test_render_idle_slice_whole():
 
 def test_render_parked_elicit_slice_whole():
     """The parked-elicit render, whole: the assistant's teach question and the
-    instigating ask are both present (a reply is only classifiable against what
-    it answers), and the union is the elicit out-edges with their per-edge
-    meanings — including the break-out edge."""
+    instigating ask are both present as their own sections (a reply is only
+    classifiable against what it answers), and the union is the elicit
+    out-edges with their per-edge meanings — including the break-out edge."""
     assert render_classifier_content(_ELICIT_SNAPSHOT, _STEPS) == (
-        "The assistant's last message: I don't know how to do that yet — can you "
-        "teach me? What should I read, look for, and remember?\n"
-        "The task being worked on: hey can you keep an eye on the harbor ferry "
-        "timetable for me?\n"
-        "Known skills: (none)\n"
-        "The user's newest message: sure — read harborferries.example/timetable "
-        "and remember the first morning departure\n"
+        "## The assistant's last message\n"
+        "I don't know how to do that yet — can you teach me? What should I read, "
+        "look for, and remember?\n"
         "\n"
-        "States:\n"
-        "- learn: their message gives the steps — it tells the assistant how to do "
-        "the task it asked to be taught\n"
+        "## The task being worked on\n"
+        "hey can you keep an eye on the harbor ferry timetable for me?\n"
+        "\n"
+        "## Known skills\n"
+        "(none)\n"
+        "\n"
+        "## The user's newest message\n"
+        "sure — read harborferries.example/timetable and remember the first morning "
+        "departure\n"
+        "\n"
+        "## States\n"
+        "- learn: their message tells the assistant what to do — what to read, what to "
+        "look for, or what to remember; a plain instruction or command IS the "
+        "teaching, however brief\n"
         "- elicit: still working out the task — the assistant's question is not "
         "answered yet\n"
         "- idle: they changed the topic or called the task off"
@@ -173,19 +198,23 @@ def test_render_parked_elicit_slice_whole():
 
 def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: the Known skills
-    section appears — name, description, AND declared parameters (coverage is
-    reasoned from the full metadata) — and the apply edge joins the union.  A
+    section carries name, description, AND declared parameters (coverage is
+    reasoned from the full metadata) and the apply edge joins the union.  A
     parameterless candidate renders without the needs tail, byte-identical."""
     assert SkillCandidate(name="x", description="y").render() == "x — y"
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
-        "The assistant's last message: (none)\n"
-        "Known skills:\n"
+        "## The assistant's last message\n"
+        "(none)\n"
+        "\n"
+        "## Known skills\n"
         "- watch a listing price for changes — checks a page and records the "
         "current price (needs: url — the listing page to watch)\n"
-        "The user's newest message: what's the ferry price at today?\n"
         "\n"
-        "States:\n"
+        "## The user's newest message\n"
+        "what's the ferry price at today?\n"
+        "\n"
+        "## States\n"
         "- idle: ordinary conversation — chat, a passing mention, or a question or "
         "one-off ask the assistant can answer right away; nothing ongoing is "
         "being set up\n"
@@ -217,12 +246,9 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
     assert request["prompt_type"] == PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE
     assert request["run_target"] == "chat"
     assert request["messages"][0]["content"] == STATE_CLASSIFIER_SYSTEM_PROMPT
-    assert request["messages"][1]["content"] == (
-        "Instruction: Pick the one listed state the user's newest message puts "
-        "the conversation in.\n"
-        "\n"
-        "Content:\n" + render_classifier_content(_IDLE_SNAPSHOT, _ASK)
-    )
+    # The classifier's user turn is the bare rendered situation — no
+    # Instruction:/Content: wrapper (the system prompt owns the ask).
+    assert request["messages"][1]["content"] == render_classifier_content(_IDLE_SNAPSHOT, _ASK)
 
 
 @pytest.mark.asyncio

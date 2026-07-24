@@ -26,7 +26,15 @@ dangling (the false-apply temptation — several are deliberate near-misses:
 watching a NUMBER or page that isn't a price); HOLD-WITH-SKILLS = beat 1's hold
 pool verbatim under candidates (does chat stay chat when apply is on offer?);
 MIXED = chat preamble + a covered ask in one message (the named mixed-message
-boundary → apply).  Report-only until baselines are read.
+boundary → apply).
+
+**Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
+elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
+the parked-snapshot fields' first live use), and the user's reply resolves it:
+STEPS = instructions telling the assistant HOW (→ learn, incl. schedule-worded
+steps as realistic difficulty); CLARIFYING = questions back / partials without
+the how (→ elicit); BAIL = call-offs and topic changes (→ idle, the break-out
+edge).  Report-only until baselines are read.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -177,7 +185,7 @@ _CROSS_DOMAIN_POOL = [
     "watch for new houses coming on the market in our neighborhood",
     "collect new science fiction releases at the library each month",
     "keep track of new hiking trails the parks department opens",
-    "find new volunteer opportunities at the animal shelter",
+    "keep a list of new murals going up around the city",
     "watch for new classes at the community center",
     "collect newly announced concerts happening near us",
     "keep an eye out for new vendors joining the farmers market",
@@ -281,6 +289,129 @@ async def test_mixed_chat_plus_covered_ask_applies(
         expected=ConversationState.APPLY,
         expected_skill=_PRICE_SKILL,
         seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── Beat 3: the parked machine — elicit's out-edges ───────────────────────────
+
+# The parked-elicit context: the instigating ask (beat 1's first fire phrasing —
+# continuity) and the teach question the reply answers.  Replies are only
+# classifiable against what they answer, so both parked-snapshot fields render.
+_FERRY_ASK = "hey can you keep an eye on the harbor ferry timetable for me?"
+_TEACH_QUESTION = (
+    "I don't know how to do that yet — can you teach me? "
+    "What should I read, look for, and remember?"
+)
+
+# Steps direction — the reply tells the assistant HOW: what to read, what to
+# look for, what to remember (2/9 carry schedule words — realistic difficulty,
+# not a separate case).
+_STEPS_POOL = [
+    "sure — read harborferries.example/timetable and remember the first morning departure",
+    "here's what to do: open harborferries.example/timetable and save the harbor loop times",
+    "check harborferries.example/timetable every morning and note any changes to the schedule",
+    "it's easy: read harborferries.example/timetable and remember the last sailing of the day",
+    "go to the ferry timetable, find the weekend sailings, and remember those",
+    "read the timetable at harborferries.example and save the departure times",
+    "ok: fetch the timetable page, pull out the morning departures, and store them",
+    "look at harborferries.example/timetable and remember whatever sailings are listed",
+    "each day, read the timetable and write down the first and last departure",
+    "grab the times off the timetable page and keep them somewhere you can check later",
+]
+
+# Clarifying direction — still on-task, but the teach question is NOT answered:
+# questions back, hedges, partials without the how.
+_CLARIFYING_POOL = [
+    "what do you mean teach you? like explain the steps?",
+    "hmm, what kinds of things can you actually read?",
+    "what would you need from me to do that?",
+    "i'm not sure — what do you usually watch for people?",
+    "does it matter which page i give you?",
+    "hang on, let me find the right link first",
+    "can you even open websites on your own?",
+    "what format do you want the steps in?",
+    "wait, would this be every day or just once?",
+    "let me think about what exactly i want you to look for",
+]
+
+# Bail direction — the break-out edge: call-offs and topic changes.
+_BAIL_POOL = [
+    "actually never mind, don't worry about it",
+    "forget it — what's the weather looking like tomorrow?",
+    "eh, it's not that important. anyway how was your night?",
+    "no no, not that. let's drop it",
+    "let's skip it for now",
+    "on second thought i'll just check it myself",
+    "changing topics — did anything interesting happen in the news today?",
+    "scratch that. can you tell me a joke instead?",
+    "nah, leave it. what time is it in lisbon right now?",
+    "actually let's not — i'd rather talk about dinner plans",
+]
+
+
+async def test_parked_elicit_steps_arrive(classifier_eval: ClassifierEval) -> None:
+    """Steps arrived: a reply that tells the assistant how — what to read, look
+    for, remember — classifies learn (the demo round begins)."""
+    await classifier_eval(
+        case_id="elicit-learn-steps",
+        state=ConversationState.ELICIT,
+        pool=_STEPS_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_elicit_steps_arrive_with_skills_populated(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The populated-registry stress: the SAME steps replies, but with the
+    beat-2 skills seeded — the Known skills section renders watch-adjacent
+    candidates while the user is mid-teaching something NEW.  Existing skills
+    must not demote teaching to still-clarifying or a bail; the paired delta
+    against elicit-learn-steps isolates the candidates' effect."""
+    await classifier_eval(
+        case_id="elicit-learn-steps-with-skills",
+        state=ConversationState.ELICIT,
+        pool=_STEPS_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_elicit_still_clarifying(classifier_eval: ClassifierEval) -> None:
+    """Still clarifying: a question back or a partial without the how leaves the
+    machine parked in elicit — the teach question is not answered yet."""
+    await classifier_eval(
+        case_id="elicit-still-clarifying",
+        state=ConversationState.ELICIT,
+        pool=_CLARIFYING_POOL,
+        expected=ConversationState.ELICIT,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_elicit_bails_out(classifier_eval: ClassifierEval) -> None:
+    """The break-out edge: a call-off or topic change routes back to idle — the
+    parked teach loop never traps the conversation."""
+    await classifier_eval(
+        case_id="elicit-bail",
+        state=ConversationState.ELICIT,
+        pool=_BAIL_POOL,
+        expected=ConversationState.IDLE,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
         min_pass_rate=0.8,
         family=_FAMILY,
     )

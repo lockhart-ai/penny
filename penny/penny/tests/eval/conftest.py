@@ -2398,6 +2398,8 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
         pool: Sequence[str],
         expected: ConversationState,
         expected_skill: str | None = None,
+        penny_last_turn: str | None = None,
+        task_anchor: str | None = None,
         seed: Seeder | None = None,
         seed_skills: Sequence[SkillDraft] | None = None,
         samples: int = SAMPLES,
@@ -2435,6 +2437,8 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                             penny.embedding_model_client,
                             state=state,
                             message=phrasing,
+                            penny_last_turn=penny_last_turn,
+                            task_anchor=task_anchor,
                         )
                         decision = await asyncio.wait_for(
                             classifier.classify(
