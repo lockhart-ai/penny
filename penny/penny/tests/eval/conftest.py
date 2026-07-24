@@ -1152,17 +1152,31 @@ def _thinking_by_content(rows: list[PromptLog]) -> dict[str, str]:
 
 def _micro_events(row: PromptLog) -> list[report.Event]:
     """One ``browse-extract`` promptlog row → its two micro-context events: the instruction+content
-    INTO the sub-model (🧩 ←) and the extracted value OUT of it (🧩 →, carrying its thinking)."""
+    INTO the sub-model (🧩 ← user turn:) and the extracted value OUT of it (🧩 →, carrying its
+    thinking). The body is the content ONLY — the role label is the renderer's (#1759)."""
     messages = json.loads(row.messages) if row.messages else []
     user = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
     return [
-        report.Event(report.EventKind.MICRO_IN, f"micro-context ← {user}"),
-        report.Event(
-            report.EventKind.MICRO_OUT,
-            f"micro-context → {_response_text(row)}",
-            thinking=row.thinking or "",
-        ),
+        report.Event(report.EventKind.MICRO_IN, user),
+        report.Event(report.EventKind.MICRO_OUT, _response_text(row), thinking=row.thinking or ""),
     ]
+
+
+def _system_prompts(rows: list[PromptLog]) -> list[report.SystemPrompt]:
+    """The DISTINCT system prompts across a sample's promptlog rows (main agent + each micro-context
+    flavour), in first-appearance order, deduped by verbatim text — a repeated main-loop prompt
+    renders once (#1759). Each is labelled by the ``agent_name`` of the row it first appeared on
+    (the context under test); a row carrying no system message contributes none."""
+    seen: set[str] = set()
+    prompts: list[report.SystemPrompt] = []
+    for row in rows:
+        messages = json.loads(row.messages) if row.messages else []
+        system = next((m.get("content") or "" for m in messages if m.get("role") == "system"), "")
+        if not system or system in seen:
+            continue
+        seen.add(system)
+        prompts.append(report.SystemPrompt(context=row.agent_name or "", text=system))
+    return prompts
 
 
 def _micro_batches(rows: list[PromptLog]) -> list[list[report.Event]]:
@@ -1328,6 +1342,7 @@ def _build_transcript(
         events=events,
         checks=checks,
         run_close_score=f"{passed_checks}/{total}",
+        system_prompts=_system_prompts(rows),
     )
 
 
@@ -1339,7 +1354,8 @@ def _write_sample_report(
     scored result, then renders it via ``report.render_sample``: EVERY sample folds whole under
     its banner (uniform collapse, #1753), and a no-turns (timeout) sample gets the honest
     placeholder so the report's sample count always matches N (F2). The on-disk ``.md`` keeps every
-    sample's FULL transcript; the assembler decides what the posted comment shows (compact/full)."""
+    sample's FULL transcript, byte-identical to what the assembler posts (#1759 — the one and only
+    rendering, no compact/banner-only form)."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
@@ -2258,11 +2274,11 @@ def _classifier_events(phrasing: str, rows: list[PromptLog]) -> list[report.Even
         user = next(
             (m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), ""
         )
-        events.append(report.Event(report.EventKind.MICRO_IN, f"micro-context ← {user}"))
+        events.append(report.Event(report.EventKind.MICRO_IN, user))
         events.append(
             report.Event(
                 report.EventKind.MICRO_OUT,
-                f"micro-context → {_response_text(row) or '(empty)'}",
+                _response_text(row) or "(empty)",
                 thinking=row.thinking or "",
             )
         )
@@ -2327,6 +2343,7 @@ def _write_classifier_report(
             events=events,
             checks=checks,
             run_close_score=f"{passed_checks}/{total}",
+            system_prompts=_system_prompts(rows),
         )
     directory = Path(report_dir)
     directory.mkdir(parents=True, exist_ok=True)

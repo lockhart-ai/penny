@@ -35,7 +35,7 @@ Every per-step table uses these rows, identically everywhere:
 | **step header** | `step N · 👤` | `"user message"` | the step verdict (✅ / ❌ / ✅→❌) |
 | **expected** | `expected` | `Cn [class]marker label` | empty — or the verdict for a no-evidence-row contract |
 | **💭** | `💭` | an ALWAYS-collapsed `<details><summary>thinking</summary>…</details>`, one per model action, directly ABOVE it (`💭 (empty)` when the model emitted none) | always empty |
-| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 micro`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
+| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 micro-context ← user turn:` / `🧩 micro-context →`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
 | **baseline** | `baseline` | the prior run's anchor event (diff mode only) | the prior verdict, tagged `*(prior run)*` |
 | **note** | `note` | free text, always last | always empty |
 
@@ -68,7 +68,7 @@ deterministic realization of "run-close = checks with no anchor row."
 Each sample opens with a banner naming its stats before you read a row:
 
 ```
-#### sample N — <verdict> · <k/n> (<score>) · [fragile ·] [cause ·] <duration>s · <calls> calls
+<verdict> · <k/n> (<score>) · [fragile ·] [cause ·] <duration>s · <calls> calls
 ```
 
 A clean pass carries no cause; a passed-but-shaky sample — one that reached its result only after a
@@ -77,38 +77,43 @@ parse-failure nudges the render marks `⚠ recovery event`) — carries `fragile
 sample (no completed turn) omits `k/n` (the scorer never ran) and renders an honest placeholder body
 instead of a table — so the report's sample count always matches N (visible degradation).
 
-**Uniform sample-level collapse (#1753).** EVERY sample block folds whole — the entire block
-inside a `<details>` whose `<summary>` is its banner — regardless of verdict (passing, failed,
-fragile, regressed, harness-timeout). The report's visible skeleton is the run header → per-case
-heading + RESULT/gate lines → **sample banner rows**; everything below a banner is one click deep.
-This supersedes the old density-follows-failure split (a clean pass folded, a failure rendered
-unfolded), and applies identically to the per-case `.md` writer and the assembled comment.
+**Uniform sample-level collapse — the one and only rendering (#1753/#1759).** EVERY sample block
+folds whole — the entire block inside a `<details>` whose `<summary>` is `sample N — <banner>` —
+regardless of verdict (passing, failed, fragile, regressed, harness-timeout). It is **collapsed by
+default, and its full body is always one click away**: "default collapsed" never means the body is
+dropped. There is **no compact / banner-only form and no `--full` flag** — the per-case `.md` and
+the assembled comment render each sample identically, byte-for-byte. The report's visible skeleton
+is the run header → per-case heading + RESULT/gate lines → **sample banner rows**; everything below
+a banner is one click deep. This supersedes the old density-follows-failure split (a clean pass
+folded, a failure rendered unfolded); the assembler re-normalizes even a re-assembled prior run
+(whose failures may be in the pre-#1753 unfolded `#### ` form) to the uniform fold.
 
-## Compact comment mode (the default posted comment, #1753)
+## System prompts (per context) — one collapsed row each (#1759)
 
-The per-case `.md` on disk keeps EVERY sample's full transcript — it is the durable, audit-grade
-record the [footer](#footer) points at. The **assembled comment** the run posts to the PR is, by
-default, **compact**: a clean-pass sample (passed AND not fragile) renders its **banner line only**
-— no transcript body at all — while **failed / fragile / regressed** samples keep their full
-(now-collapsed) step tables. On a green-heavy run (the common case, where most samples pass) this is
-a large size reduction (~85% on the motivating N=10×6-case run) that keeps the comment inside
-GitHub's rendering limits without losing anything: a dropped body is one local hop away in the
-`.md`.
+Every rendered sample carries, **directly under its banner and inside the fold**, one always-
+collapsed `<details>` row per DISTINCT system prompt among that sample's promptlog calls — the main
+agent's (`chat` / `collector`) and each micro-context flavour's (`browse-extract`,
+`state-classifier`). The summary names the context + size — `system prompt — <agent> (<n> chars)` —
+and the verbatim prompt sits inside. Identical prompts within a sample dedupe by text, so a repeated
+main-loop prompt renders once. Source: the persisted promptlog messages (`role: system`).
 
-`make assemble EVAL_FULL=1` (CLI `--full`) emits the **everything-in** form instead — every
-sample's full folded body, byte-identical to the on-disk `.md`. Clean-pass is read from the
-artifact (`results.jsonl`: a `null` cause AND `sample_fragile` false), never re-derived from the
-`.md`'s shape — so the assembler re-normalizes even a re-assembled prior run (whose failures may be
-in the pre-#1753 unfolded form) to the uniform collapse.
+Motivation: a micro-context's `🧩 micro-context ← user turn:` row is that context's **USER** turn,
+not its system prompt — and the user mistook one for the other. When the surface under test IS a
+micro-context, its system prompt is half the contract, so each distinct context gets its own visible
+row. The rows are always present in the per-case `.md` and the assembled comment (there is no
+compact form to drop them).
 
 ## Micro-context (🧩) — an official actor
 
 A browse call carrying an `extract` micro-instruction spawns a single-shot extraction sub-model
 (`browse-extract`). Its exchange renders inline, in ledger order, as two `actual` rows — the
-instruction + page content INTO the sub-model (`🧩 micro-context ← …`) and its extracted value OUT
-(`🧩 micro-context → EXTRACTED: …`) — with the sub-model's own `💭 (micro-context)` above the OUT
-row. A multi-page `extract` browse renders one pair per page. The main-loop context never sees the
-page body; only the typed value returns — the report is the one place that exchange is visible.
+instruction + page content INTO the sub-model as its scoped USER turn (`🧩 micro-context ← user
+turn: …`, #1759 — the explicit role label, so it is never mistaken for the sub-model's system
+prompt, which has its own [system-prompt row](#system-prompts-per-context--one-collapsed-row-each-1759))
+and its extracted value OUT (`🧩 micro-context → EXTRACTED: …`) — with the sub-model's own
+`💭 (micro-context)` above the OUT row. A multi-page `extract` browse renders one pair per page. The
+main-loop context never sees the page body; only the typed value returns — the report is the one
+place that exchange is visible.
 
 ## Run header
 
@@ -149,16 +154,17 @@ no flips line — no error.
 
 - **Escaping.** Every cell escapes `|` (→ `\|`) and renders newlines as `<br>`, so a tool call or a
   multi-line result stays inside its cell.
-- **Truncation.** An `actual` cell over ~500 chars renders its head + `…` with the full escaped text
-  in a nested collapsed `<details>`; a browse page body renders as its fetch handle + first line.
-  One rule, applied by the renderer — never ad-hoc.
+- **Truncation (#1759).** An `actual` cell over ~500 chars collapses into a **single** `<details>` —
+  its first line + `… (<n> chars)` in the `<summary>`, the full escaped text inside, **one copy, no
+  visible head** (consistent with everything-defaults-collapsed; the old head + nested-full form
+  duplicated the head on expand and read absurd just past the threshold). A browse page body renders
+  as its fetch handle + first line. One rule, applied by the renderer — never ad-hoc.
 
 ## Footer
 
-The n≤1 pointer from the comment back to the raw evidence — and, since the compact comment drops
-clean-pass bodies (#1753), the pointer to where **every** sample's full transcript still lives: the
-per-case `<case_id>.md` in that report dir. Re-assemble with `EVAL_FULL=1` for the everything-in
-form.
+The n≤1 pointer from the comment back to the raw evidence: the local `<report dir>` where every
+sample's full transcript, per-sample DB, and raw artifacts live (the same folded bodies the comment
+carries — the `.md` and the comment are one rendering), and the `make assemble` re-render line.
 
 ```
 _artifacts (local, never committed): `<report dir>` · per-sample DBs beside them · re-render: `EVAL_REPORT_DIR=<report dir> make assemble`_
@@ -197,10 +203,10 @@ a check is therefore a recorded scorer-semantics change, not a cosmetic edit.
 
 One complete run comment, rendered by the assembler — a chat-browse case at N=3 (a clean pass, plus a
 harness-timeout sample the format makes visible). Entirely synthetic, shown in a fenced block so the
-tables and `<details>` read as source. Shown here in the **`--full`** form (every sample's body
-present) so the grammar is legible; the **default compact comment** renders sample 1 (a clean pass)
-as its banner line only — `#### sample 1 — ✅ pass · 2/2 (1.00) · 41s · 6 calls` — with no table
-below it (its transcript stays in the `.md`).
+tables and `<details>` read as source. This is the **one and only** rendering — every sample folds
+whole under its banner, collapsed by default with its full body a click away, byte-identical in the
+per-case `.md` and this comment (there is no compact / banner-only form). Sample 1 opens with its
+two distinct system-prompt rows (the `chat` main agent + the `browse-extract` micro-context, #1759).
 
 ````markdown
 **run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=3 · **lever:** switch the representative case to chat-browse (prior case outmoded)
@@ -209,13 +215,25 @@ below it (its transcript stays in the `.md`).
 
 <details><summary>sample 1 — ✅ pass · 2/2 (1.00) · 41s · 6 calls</summary>
 
+<details><summary>system prompt — chat (110 chars)</summary>
+
+You are Penny, a personal assistant. Verify current facts with a browse before answering, and cite the source.
+
+</details>
+
+<details><summary>system prompt — browse-extract (124 chars)</summary>
+
+You are an extraction step. Return only the value the instruction names, tagged EXTRACTED: <value> or NOT_PRESENT: <reason>.
+
+</details>
+
 | step 1 · 👤 | "what's the deepest lake in the world?" | ✅ |
 |---|---|---|
 | expected | C1 [spine]⚖ browsed for a current-info question |  |
 | expected | C2 [reply]⚖ reply surfaces the browsed fact |  |
 | 💭 | <details><summary>thinking</summary>User wants the deepest lake. Verify with a source rather than answer from memory.</details> |  |
 | actual | 🔧 browse({"queries":["wiki/Lake_Baikal"],"extract":"maximum depth"}) | ✅ C1 |
-| actual | 🧩 micro-context ← Instruction: maximum depth · Content: Lake Baikal is the deepest lake at 1,642 metres. |  |
+| actual | 🧩 micro-context ← user turn: Instruction: maximum depth · Content: Lake Baikal is the deepest lake at 1,642 metres. |  |
 | 💭 | <details><summary>thinking (micro-context)</summary>The content states 1,642 metres. Extract that value.</details> |  |
 | actual | 🧩 micro-context → EXTRACTED: 1642 |  |
 | actual | 📥 You opened wiki/Lake_Baikal (browse result) · 1642 |  |
@@ -236,8 +254,8 @@ _artifacts (local, never committed): `/penny/eval-artifacts/run-20260721T051017Z
 Sample 2 (a second clean pass) folds the same way and is omitted here. The run reads top-down: the
 gate line says the lever did **not** clear the bar (the timeout sample dragged the mean under 0.75),
 and the folded F2 placeholder makes the timeout *visible* — its per-sample DB is one local hop away
-for the full parse-failure trace, per the footer. In the compact comment, sample 1 collapses to its
-banner row while sample 3 (a failure) keeps this collapsed placeholder.
+for the full parse-failure trace, per the footer. Every sample — clean pass, failure, timeout —
+folds whole under its banner: collapsed by default, its full body always one click away.
 
 ---
 

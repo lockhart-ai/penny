@@ -4,9 +4,10 @@ NOT eval-marked — they drive the deterministic assembler over a SYNTHETIC repo
 (manifest + results.jsonl + per-case ``.md`` transcripts rendered by ``report.py``), so they run
 inside ``make check``: no git, no model, no container. The assembled comment is asserted as a
 WHOLE-RENDER literal (pr-review-guide §6): the run header (identity · RESULT · gate), the
-compact-by-default per-sample transcript (#1753 — clean passes banner-only, failures collapsed),
-the ``--full`` everything-in form, the ``.md``-vs-comment divergence, the multi-family rollup +
-per-case headings, the diff-mode flips index, the local-artifacts footer, and the CLI contract.
+per-sample transcript where EVERY sample folds whole under its banner — the one and only rendering
+(#1753/#1759 — collapsed by default, full body a click away, byte-identical to the on-disk ``.md``,
+no compact/banner-only form), the multi-family rollup + per-case headings, the diff-mode flips
+index, the local-artifacts footer, and the CLI contract.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from penny.tests.eval.artifacts import (
     render_manifest_header,
 )
 from penny.tests.eval.assemble import (
-    FULL_FLAG,
     USAGE,
     assemble_run_comment,
     load_manifest,
@@ -99,13 +99,14 @@ _BROWSE_SAMPLE_FOLDED = (
     "\n"
     "</details>"
 )
-_BROWSE_SAMPLE_BANNER = "#### sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls"
+# The forbidden banner-only heading form — the assembler must NEVER emit it (#1759, compact gone).
+_BROWSE_SAMPLE_BANNER_ONLY = "#### sample 1 — ✅ pass · 1/1 (1.00) · 45s · 8 calls"
 
 
 def test_single_gated_case_whole_render(tmp_path: Path) -> None:
     """A single gated case: the run header (identity · RESULT with timings · a gate line), the
-    COMPACT clean-pass sample (banner line only — its body stays in the ``.md``), and the footer —
-    no per-case heading (single case)."""
+    clean-pass sample's FULL folded body (#1759 — collapsed by default, body always present, never
+    banner-only), and the footer — no per-case heading (single case)."""
     manifest = build_manifest(
         commit="abba710a03ae3555148fea6a86712e9af020499a",
         dirty_diff="",
@@ -140,7 +141,7 @@ def test_single_gated_case_whole_render(tmp_path: Path) -> None:
         "pathology 0 · harness 1 · families: browse-answer 0.67 · 19 calls · 148s · "
         "54.2K in / 5.9K out\n"
         "**gate:** ⚖ 0.75 on mean → **❌ FAIL** (0.67)\n"
-        "\n" + _BROWSE_SAMPLE_BANNER + "\n"
+        "\n" + _BROWSE_SAMPLE_FOLDED + "\n"
         "\n" + _footer(tmp_path)
     )
 
@@ -213,7 +214,14 @@ def test_two_family_run_with_missing_transcript_whole_render(tmp_path: Path) -> 
         "\n"
         "### `test_a.py::one` — alpha\n"
         "\n"
-        "#### sample 1 — ✅ pass · 1/1 (1.00) · 10s · 2 calls\n"
+        "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
+        "\n"
+        '| step 1 · 👤 | "hi" |  |\n'
+        "|---|---|---|\n"
+        "| 💭 | 💭 (empty) |  |\n"
+        "| actual | 🤖 hey |  |\n"
+        "\n"
+        "</details>\n"
         "\n"
         "### `test_b.py::two` — beta\n"
         "\n"
@@ -432,14 +440,14 @@ _FAIL_SAMPLE_FOLDED = (
 
 def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
     """A single-case run whose ``.md`` holds a clean-pass sample (1) then a failure (2), both folded
-    whole on disk — the fixture the compact/full/divergence tests share."""
+    whole on disk — the fixture the fold-every-sample + ``.md``-parity tests share."""
     manifest = build_manifest(
         commit="abba710a03ae3555148fea6a86712e9af020499a",
         dirty_diff="",
         model="gpt-oss:20b",
         embedding_model="embeddinggemma",
         samples=2,
-        lever="compact mode",
+        lever="mixed run",
         now=datetime(2026, 7, 21, 5, 10, 17, tzinfo=UTC),
     )
     artifact = CaseArtifact(
@@ -462,31 +470,15 @@ def _mixed_run(tmp_path: Path) -> tuple[RunManifest, CaseArtifact]:
     return manifest, artifact
 
 
-def test_compact_comment_banner_only_pass_and_collapsed_failure(tmp_path: Path) -> None:
-    """The default compact comment (#1753): the clean-pass sample renders its banner line ONLY (no
-    body), while the failure keeps its full step table inside a collapsed ``<details>``."""
+def test_every_sample_folds_whole_in_the_comment(tmp_path: Path) -> None:
+    """The one and only rendering (#1759): EVERY sample — the clean pass AND the failure — renders
+    its full folded body inside a collapsed ``<details>``. There is no banner-only / compact
+    form."""
     _mixed_run(tmp_path)
-    comment = assemble_run_comment(tmp_path)  # compact is the default
+    comment = assemble_run_comment(tmp_path)
     assert comment == (
         "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=2 · "
-        "**lever:** compact mode\n"
-        "**RESULT:** mean 0.50 · all-pass 1/2 · pathology-excluded 0.50 · causes — behavioral 1 · "
-        "pathology 0 · harness 0 · families: browse-answer 0.50 · 19 calls · 148s · "
-        "54.2K in / 5.9K out\n"
-        "\n" + _BROWSE_SAMPLE_BANNER + "\n"
-        "\n" + _FAIL_SAMPLE_FOLDED + "\n"
-        "\n" + _footer(tmp_path)
-    )
-
-
-def test_full_mode_emits_every_sample_body(tmp_path: Path) -> None:
-    """``full=True`` (CLI ``--full`` / ``make assemble EVAL_FULL=1``) is the everything-in form: the
-    same clean-pass sample now renders its full folded body, identical to the on-disk ``.md``."""
-    _mixed_run(tmp_path)
-    comment = assemble_run_comment(tmp_path, full=True)
-    assert comment == (
-        "**run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=2 · "
-        "**lever:** compact mode\n"
+        "**lever:** mixed run\n"
         "**RESULT:** mean 0.50 · all-pass 1/2 · pathology-excluded 0.50 · causes — behavioral 1 · "
         "pathology 0 · harness 0 · families: browse-answer 0.50 · 19 calls · 148s · "
         "54.2K in / 5.9K out\n"
@@ -496,20 +488,17 @@ def test_full_mode_emits_every_sample_body(tmp_path: Path) -> None:
     )
 
 
-def test_md_keeps_full_body_while_compact_comment_diverges(tmp_path: Path) -> None:
-    """The ``.md``-vs-comment divergence (#1753): the on-disk ``<case_id>.md`` keeps EVERY sample's
-    full folded transcript (the footer's audit target), while the compact comment shows the
-    clean-pass sample banner-only — the same source, two renderings, the ``--full`` comment
-    matching the ``.md``."""
+def test_md_and_comment_render_every_sample_identically(tmp_path: Path) -> None:
+    """The ``.md`` and the comment are the SAME rendering now (#1759): the on-disk ``<case_id>.md``
+    keeps every sample's full folded body (the footer's audit target), and the comment carries the
+    exact same folded bodies — the forbidden banner-only heading form appears in NEITHER."""
     _, artifact = _mixed_run(tmp_path)
     on_disk = (tmp_path / f"{artifact.case_id}.md").read_text()
-    # The .md keeps the clean pass's full folded body, untouched by the compact comment.
     assert _BROWSE_SAMPLE_FOLDED in on_disk
-    assert _BROWSE_SAMPLE_BANNER not in on_disk
-    compact = assemble_run_comment(tmp_path)
-    full = assemble_run_comment(tmp_path, full=True)
-    assert _BROWSE_SAMPLE_BANNER in compact and _BROWSE_SAMPLE_FOLDED not in compact
-    assert _BROWSE_SAMPLE_FOLDED in full  # --full round-trips the .md body into the comment
+    assert _BROWSE_SAMPLE_BANNER_ONLY not in on_disk
+    comment = assemble_run_comment(tmp_path)
+    assert _BROWSE_SAMPLE_FOLDED in comment
+    assert _BROWSE_SAMPLE_BANNER_ONLY not in comment
 
 
 def test_missing_manifest_raises_actionable(tmp_path: Path) -> None:
@@ -556,15 +545,3 @@ def test_cli_writes_comment_and_reports_errors(
     assert capsys.readouterr().err.strip() == USAGE
     assert main([str(tmp_path / "does-not-exist")]) == 1
     assert "manifest.json" in capsys.readouterr().err
-
-
-def test_cli_full_flag_routes_to_full_form(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """``--full`` (in any argv position) routes ``main`` to the everything-in form; without it the
-    CLI emits the compact default (#1753)."""
-    _mixed_run(tmp_path)
-    assert main([FULL_FLAG, str(tmp_path)]) == 0
-    assert capsys.readouterr().out == assemble_run_comment(tmp_path, full=True)
-    assert main([str(tmp_path)]) == 0
-    assert capsys.readouterr().out == assemble_run_comment(tmp_path)  # compact default

@@ -3,11 +3,12 @@
 NOT eval-marked — they drive the PURE renderer over hand-built ``SampleTranscript``s (no DB, no
 model, no git), so they run inside ``make check`` and pin every form of the iteration-6 grammar
 as a WHOLE-RENDER literal (pr-review-guide §6). Every sample folds whole under its banner now
-(uniform collapse, #1753): the clean pass with micro-context, the failure with a nudge +
-run-close + n/a, the harness-timeout placeholder, the diff-mode regressed flip with a baseline
-row, and an advisory check + empty thinking on a fragile pass all render inside a ``<details>``;
-plus the deterministic cell hygiene (truncation + escaping) and the fold/banner-line/parse seam
-the assembler's compaction rides on.
+(uniform collapse, #1753): the clean pass with per-context system-prompt rows (#1759) + micro-
+context, the failure with a nudge + run-close + n/a, the harness-timeout placeholder, the diff-mode
+regressed flip with a baseline row, and an advisory check + empty thinking on a fragile pass all
+render inside a ``<details>``; plus the deterministic cell hygiene (single-copy collapsed
+truncation + escaping, #1759) and the fold/parse seam the assembler's re-normalization rides on
+(EVERY sample folds whole — the one and only rendering, no banner-only form).
 """
 
 from __future__ import annotations
@@ -15,9 +16,11 @@ from __future__ import annotations
 from penny.tests.eval import report
 
 
-def test_clean_pass_folds_whole_with_micro_context() -> None:
-    """A clean pass folds into one ``<details>``; a browse call's micro-context (🧩 ← / →) renders
-    inline with its own thinking, and an action with no captured thinking shows ``💭 (empty)``."""
+def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
+    """A clean pass folds into one ``<details>``: its distinct per-context system prompts (#1759)
+    render as always-collapsed rows directly under the banner (main agent then the browse-extract
+    micro-context), then a browse call's micro-context (🧩 ← user turn: / →, #1759) renders inline
+    with its own thinking, and an action with no captured thinking shows ``💭 (empty)``."""
     events = [
         report.Event(report.EventKind.USER, "deepest lake?"),
         report.Event(
@@ -25,13 +28,8 @@ def test_clean_pass_folds_whole_with_micro_context() -> None:
             'browse({"queries":["x"],"extract":"depth"})',
             thinking="verify with source",
         ),
-        report.Event(
-            report.EventKind.MICRO_IN,
-            "micro-context ← Instruction: depth · Content: 1,642 m",
-        ),
-        report.Event(
-            report.EventKind.MICRO_OUT, "micro-context → EXTRACTED: 1642", thinking="value present"
-        ),
+        report.Event(report.EventKind.MICRO_IN, "Instruction: depth · Content: 1,642 m"),
+        report.Event(report.EventKind.MICRO_OUT, "EXTRACTED: 1642", thinking="value present"),
         report.Event(report.EventKind.RESULT, "You opened wiki (browse result) · 1642"),
         report.Event(report.EventKind.REPLY, "Lake Baikal, 1,642 m.", thinking=""),
     ]
@@ -43,10 +41,31 @@ def test_clean_pass_folds_whole_with_micro_context() -> None:
         passed=True, score=1.0, passed_checks=2, total_checks=2, duration_s=45, calls=8
     )
     sample = report.build_sample(
-        number=1, banner=banner, events=events, checks=checks, run_close_score="2/2"
+        number=1,
+        banner=banner,
+        events=events,
+        checks=checks,
+        run_close_score="2/2",
+        system_prompts=[
+            report.SystemPrompt("chat", "You are Penny.\nAnswer from sources."),
+            report.SystemPrompt("browse-extract", "You extract one value."),
+        ],
     )
     assert report.render_sample(sample) == (
         "<details><summary>sample 1 — ✅ pass · 2/2 (1.00) · 45s · 8 calls</summary>\n"
+        "\n"
+        "<details><summary>system prompt — chat (35 chars)</summary>\n"
+        "\n"
+        "You are Penny.\n"
+        "Answer from sources.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "<details><summary>system prompt — browse-extract (22 chars)</summary>\n"
+        "\n"
+        "You extract one value.\n"
+        "\n"
+        "</details>\n"
         "\n"
         '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
         "|---|---|---|\n"
@@ -54,7 +73,7 @@ def test_clean_pass_folds_whole_with_micro_context() -> None:
         "| expected | C2 [reply]⚖ reply names the fact |  |\n"
         "| 💭 | <details><summary>thinking</summary>verify with source</details> |  |\n"
         '| actual | 🔧 browse({"queries":["x"],"extract":"depth"}) | ✅ C1 |\n'
-        "| actual | 🧩 micro-context ← Instruction: depth · Content: 1,642 m |  |\n"
+        "| actual | 🧩 micro-context ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
         "| 💭 | <details><summary>thinking (micro-context)</summary>value present</details> |  |\n"
         "| actual | 🧩 micro-context → EXTRACTED: 1642 |  |\n"
         "| actual | 📥 You opened wiki (browse result) · 1642 |  |\n"
@@ -282,30 +301,32 @@ def test_advisory_and_empty_thinking_on_a_fragile_pass() -> None:
 
 def test_cell_hygiene_escape_and_truncate() -> None:
     """The deterministic cell rules: ``|`` is escaped and newlines become ``<br>``; a cell over the
-    limit renders its head + ``…`` with the full escaped text in a nested ``<details>``."""
+    limit collapses into a SINGLE ``<details>`` — its first line + ``… (<n> chars)`` in the summary,
+    the full escaped text inside, one copy, no visible head (#1759)."""
     assert report.escape_cell("a|b\nc") == "a\\|b<br>c"
     long_cell = "A" * 520 + " | pipe and\nnewline"
-    rendered = report.truncate_cell(long_cell)
-    assert rendered.startswith("A" * 500 + "… <details><summary>full</summary>")
-    assert rendered.endswith("\\| pipe and<br>newline</details>")
+    assert report.truncate_cell(long_cell) == (
+        "<details><summary>"
+        + "A" * 520
+        + " \\| pipe and … (539 chars)</summary>"
+        + "A" * 520
+        + " \\| pipe and<br>newline</details>"
+    )
     # A short cell is escaped in place with no <details>.
     assert report.truncate_cell("short | cell") == "short \\| cell"
 
 
-def test_fold_banner_line_and_parse_round_trip() -> None:
-    """The assembler's compaction seam (#1753): ``fold_sample`` wraps a body under its banner,
-    ``sample_banner_line`` is the bodiless compact form, and ``parse_sample_block`` recovers
-    ``(number, banner, body)`` from BOTH the folded form and the legacy ``#### `` heading (so a
-    re-assembled prior run's unfolded failures round-trip too)."""
+def test_fold_and_parse_round_trip() -> None:
+    """The assembler's re-normalization seam (#1753): ``fold_sample`` wraps a body under its banner
+    (the one and only rendering — collapsed, full body a click away), and ``parse_sample_block``
+    recovers ``(number, banner, body)`` from BOTH the folded form and the legacy ``#### `` heading
+    (so a re-assembled prior run's unfolded failures fold uniformly too)."""
     body = '| step 1 · 👤 | "hi" |  |\n|---|---|---|\n| actual | 🤖 hey |  |'
     folded = report.fold_sample(2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
     assert folded == (
         "<details><summary>sample 2 — ✅ pass · 1/1 (1.00) · 10s · 2 calls</summary>\n"
         f"\n{body}\n\n"
         "</details>"
-    )
-    assert report.sample_banner_line(2, "✅ pass · 1/1 (1.00) · 10s · 2 calls") == (
-        "#### sample 2 — ✅ pass · 1/1 (1.00) · 10s · 2 calls"
     )
     assert report.parse_sample_block(folded) == (2, "✅ pass · 1/1 (1.00) · 10s · 2 calls", body)
     heading = f"#### sample 3 — ❌ fail · behavioral · 120s · 5 calls\n\n{body}"

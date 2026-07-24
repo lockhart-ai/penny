@@ -36,6 +36,14 @@ ACTOR_RESULT = "📥"
 ACTOR_REPLY = "🤖"
 ACTOR_MICRO = "🧩"
 
+# ── Micro-context role labels (#1759) — the input row names the scoped USER turn explicitly (the
+# user mistook it for the system prompt); the output row keeps the bare extracted-value arrow. ──
+MICRO_IN_PREFIX = "micro-context ← user turn:"
+MICRO_OUT_PREFIX = "micro-context →"
+
+# ── System-prompt row (#1759) — one always-collapsed row per distinct context's system prompt ──
+SYSTEM_PROMPT_LABEL = "system prompt"
+
 # ── Check class + scored/advisory markers ────────────────────────────────────
 GATING_MARKER = "⚖"  # a scored check (counts toward the sample score)
 ADVISORY_MARKER = "ℹ"  # flavour — renders, never scores
@@ -63,7 +71,7 @@ NO_TURNS_PLACEHOLDER = (
     "e.g. a harness timeout)_"
 )
 TABLE_DIVIDER = "|---|---|---|"
-CELL_TRUNCATE_LIMIT = 500  # an actual cell over this renders head + a nested <details>
+CELL_TRUNCATE_LIMIT = 500  # an actual cell over this collapses into a single <details> (#1759)
 
 # ── Sample-block grammar (the uniform-collapse skeleton, #1753) ───────────────
 SAMPLE_ROW = "sample"  # every sample banner opens ``sample N — <banner>``
@@ -77,13 +85,15 @@ def escape_cell(text: str) -> str:
 
 
 def truncate_cell(text: str, limit: int = CELL_TRUNCATE_LIMIT) -> str:
-    """The deterministic truncation rule: an over-long cell renders its head + ``…`` with the
-    full (escaped) text in a nested collapsed ``<details>``. Escapes once, at the end."""
+    """The deterministic truncation rule (#1759): an over-long cell collapses into a SINGLE
+    ``<details>`` — the summary is its first line + ``… (<n> chars)``, the FULL (escaped) text
+    inside it. One copy, no visible head (consistent with everything-defaults-collapsed); the old
+    head + nested-full form duplicated the head on expand. Escapes once, at the end."""
     if len(text) <= limit:
         return escape_cell(text)
-    head = escape_cell(text[:limit])
+    first_line = escape_cell(text.split("\n", 1)[0])
     full = escape_cell(text)
-    return f"{head}… <details><summary>full</summary>{full}</details>"
+    return f"<details><summary>{first_line} … ({len(text)} chars)</summary>{full}</details>"
 
 
 # ── The score-cell verdict (one check's outcome, rendered) ───────────────────
@@ -191,16 +201,36 @@ class RunClose:
         return "\n".join([header, TABLE_DIVIDER, *[row.render() for row in self.rows]])
 
 
+# ── The system-prompt row (#1759) — one collapsed block per distinct context ─
+@dataclass
+class SystemPrompt:
+    """One distinct system prompt among a sample's promptlog calls (main agent + each micro-context
+    flavour), rendered as an ALWAYS-collapsed ``<details>`` directly under the sample banner: the
+    summary names the ``context`` (the agent name) + the prompt size, the verbatim prompt sits
+    inside. Distinct prompts within a sample dedupe by text — a repeated main-loop prompt renders
+    once. The user mistook a micro-context's user turn for its system prompt; this makes each
+    context's real system prompt visible (its own row) without inflating any step table."""
+
+    context: str
+    text: str
+
+    def render(self) -> str:
+        summary = f"{SYSTEM_PROMPT_LABEL} — {self.context} ({len(self.text)} chars)"
+        return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
+
+
 # ── The whole sample ─────────────────────────────────────────────────────────
 @dataclass
 class SampleTranscript:
-    """One sample rendered end-to-end: the banner, its step tables, and the run-close table.
+    """One sample rendered end-to-end: the banner, its system-prompt rows, step tables, and the
+    run-close table.
 
     ``banner`` is the full verdict tail after ``sample N — `` (verdict · k/n (score) · cause ·
-    fragile · duration · calls). **Every** sample block folds whole under its banner summary — the
-    uniform-collapse default (#1753), superseding the old density-follows-failure split; the
-    visible skeleton is the banner rows, everything below one click deep. ``placeholder`` (F2)
-    replaces the body for a sample that produced no completed turn (a harness timeout), so the
+    fragile · duration · calls). ``system_prompts`` (#1759) are the distinct per-context system
+    prompts, rendered directly under the banner. **Every** sample block folds whole under its banner
+    summary — the uniform-collapse default (#1753), superseding the old density-follows-failure
+    split; the visible skeleton is the banner rows, everything below one click deep. ``placeholder``
+    (F2) replaces the body for a sample that produced no completed turn (a harness timeout), so the
     report never silently omits it."""
 
     number: int
@@ -208,6 +238,7 @@ class SampleTranscript:
     steps: list[Step]
     run_close: RunClose | None = None
     placeholder: str | None = None
+    system_prompts: list[SystemPrompt] = field(default_factory=list)
 
     def render(self) -> str:
         return fold_sample(self.number, self.banner, self._body())
@@ -215,7 +246,8 @@ class SampleTranscript:
     def _body(self) -> str:
         if self.placeholder is not None:
             return self.placeholder
-        blocks = [step.render() for step in self.steps]
+        blocks = [prompt.render() for prompt in self.system_prompts]
+        blocks += [step.render() for step in self.steps]
         if self.run_close is not None:
             blocks.append(self.run_close.render())
         return "\n\n".join(blocks)
@@ -226,17 +258,12 @@ def render_sample(sample: SampleTranscript) -> str:
     return sample.render()
 
 
-# ── The folded-block primitives + their inverse (the assembler's compaction seam, #1753) ──
+# ── The folded-block primitives + their inverse (the assembler's re-normalization seam, #1753) ──
 def fold_sample(number: int, banner: str, body: str) -> str:
-    """Collapse a sample's body under its banner summary — the uniform default (#1753): every
-    rendered sample block is one click deep, its ``<summary>`` the banner row."""
+    """Collapse a sample's body under its banner summary — the uniform, ONLY rendering (#1753):
+    every sample block is one click deep, its ``<summary>`` the banner row, its full body always a
+    click away (default collapsed never means content removed, #1759)."""
     return f"<details><summary>{SAMPLE_ROW} {number} — {banner}</summary>\n\n{body}\n\n</details>"
-
-
-def sample_banner_line(number: int, banner: str) -> str:
-    """The bare banner row for a sample — no body, nothing to collapse (compact comment mode's
-    clean-pass form, #1753). A markdown heading so it reads as a skeleton row."""
-    return f"#### {SAMPLE_ROW} {number} — {banner}"
 
 
 _BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
@@ -321,12 +348,17 @@ _ACTOR_GLYPH = {
 }
 _ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.MICRO_OUT})
 
+# The micro-context role prefix the renderer prepends between glyph and body (#1759), so the label
+# is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its content.
+_MICRO_PREFIX = {EventKind.MICRO_IN: MICRO_IN_PREFIX, EventKind.MICRO_OUT: MICRO_OUT_PREFIX}
+
 
 @dataclass
 class Event:
     """One extracted transcript event. ``body`` is its rendered content (verbatim; escaped at
-    render). ``thinking`` is the model reasoning that produced an ACTION (``None`` otherwise).
-    ``anchor`` is the string checks match against (defaults to ``body`` for a call)."""
+    render — for a ``MICRO_IN``/``MICRO_OUT`` event it is the content ONLY, the ``micro-context ←
+    user turn:`` / ``micro-context →`` label is the renderer's, #1759). ``thinking`` is the model
+    reasoning that produced an ACTION (``None`` otherwise)."""
 
     kind: EventKind
     body: str
@@ -334,6 +366,12 @@ class Event:
 
     def glyph(self) -> str:
         return _ACTOR_GLYPH[self.kind]
+
+    def actual_body(self) -> str:
+        """The ``actual`` row body: the glyph, the micro-context role label (#1759) for a 🧩 event,
+        then the content — so ``🧩 micro-context ← user turn: <turn>`` reads its role explicitly."""
+        prefix = _MICRO_PREFIX.get(self.kind)
+        return f"{self.glyph()} {prefix} {self.body}" if prefix else f"{self.glyph()} {self.body}"
 
 
 @dataclass
@@ -407,7 +445,7 @@ def _event_rows(event: Event, verdicts: list[Verdict]) -> list[Row]:
     if event.kind in _ACTIONS and event.thinking is not None:
         maker = micro_thinking_row if event.kind == EventKind.MICRO_OUT else thinking_row
         rows.append(maker(event.thinking))
-    rows.append(Row(ROW_ACTUAL, f"{event.glyph()} {event.body}", verdicts))
+    rows.append(Row(ROW_ACTUAL, event.actual_body(), verdicts))
     return rows
 
 
@@ -419,12 +457,14 @@ def build_sample(
     checks: list[CheckView],
     run_close_score: str,
     placeholder: str | None = None,
+    system_prompts: list[SystemPrompt] | None = None,
 ) -> SampleTranscript:
     """Assemble a sample from its extracted events + resolved checks (the pure builder).
 
     Steps segment on ``USER`` events. A check anchored to an event renders its ``expected`` row
     atop that event's step and its verdict on that event's ``actual`` row; a check with no anchor
-    event falls to the run-close table. A nudge event renders ``⚠ recovery event``. Every sample
+    event falls to the run-close table. A nudge event renders ``⚠ recovery event``.
+    ``system_prompts`` (#1759) render as collapsed rows directly under the banner. Every sample
     folds whole at render (#1753) — the builder no longer decides fold-or-not."""
     if placeholder is not None:
         return SampleTranscript(number, banner, [], placeholder=placeholder)
@@ -437,7 +477,9 @@ def build_sample(
             by_event.setdefault(check.anchor_index, []).append(check)
     steps = _build_steps(events, by_event)
     run_close = _build_run_close(run_close_checks, run_close_score) if run_close_checks else None
-    return SampleTranscript(number, banner, steps, run_close=run_close)
+    return SampleTranscript(
+        number, banner, steps, run_close=run_close, system_prompts=system_prompts or []
+    )
 
 
 def _build_steps(events: list[Event], by_event: dict[int, list[CheckView]]) -> list[Step]:
