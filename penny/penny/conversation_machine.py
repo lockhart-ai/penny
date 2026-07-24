@@ -126,16 +126,17 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
         "still working out the task — the assistant's question is not answered yet"
     ),
     (ConversationState.ELICIT, ConversationState.IDLE): (
-        "they changed the topic or called the task off"
+        "they called the task off, changed the topic, or put it off for later"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "they are correcting or retrying the task just attempted"
     ),
     (ConversationState.LEARN, ConversationState.ELICIT): (
-        "they are re-explaining from the start — the assistant needs the steps again"
+        "back to working out the task — a question or doubt about how, with no "
+        "new instructions to act on yet"
     ),
     (ConversationState.LEARN, ConversationState.IDLE): (
-        "they changed the topic or called the task off"
+        "they called the task off, changed the topic, or put it off for later"
     ),
 }
 

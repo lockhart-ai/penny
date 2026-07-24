@@ -32,9 +32,11 @@ boundary → apply).
 parked in learn (the demo round did not complete; ``penny_last_turn`` = the
 honest failure report), and the user's reply resolves it: RETRY = corrections
 and try-agains, actionable now (→ learn — the correction-loop invariant: fail
-stays in-state); REEXPLAIN = the steps need redoing but are NOT in this message
-(→ elicit — back to needing the steps); BAIL = give-ups and topic changes
-(→ idle).
+stays in-state); WORKING-IT-OUT = questions and doubts about how, no new
+instructions carried (→ elicit); DEFERRAL = "i'll get back to you later" in
+any form (→ idle — the code-owner ruling: if the reply neither gives nor
+corrects explicit instructions and defers, it is a bail); BAIL = give-ups and
+topic changes (→ idle).
 
 **Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
 elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
@@ -337,20 +339,20 @@ _CLARIFYING_POOL = [
     "what would you need from me to do that?",
     "i'm not sure — what do you usually watch for people?",
     "does it matter which page i give you?",
-    "hang on, let me find the right link first",
+    "is this something you're able to do from your side?",
     "can you even open websites on your own?",
     "what format do you want the steps in?",
     "wait, would this be every day or just once?",
-    "let me think about what exactly i want you to look for",
+    "do you need the exact address or just the site name?",
 ]
 
 # Bail direction — the break-out edge: call-offs and topic changes.
 _BAIL_POOL = [
-    "actually never mind, don't worry about it",
+    "hang on, let me find the right link first — i'll get back to you",
     "forget it — what's the weather looking like tomorrow?",
     "eh, it's not that important. anyway how was your night?",
     "no no, not that. let's drop it",
-    "let's skip it for now",
+    "let me think about what exactly i want you to look for and circle back",
     "on second thought i'll just check it myself",
     "changing topics — did anything interesting happen in the news today?",
     "scratch that. can you tell me a joke instead?",
@@ -450,10 +452,10 @@ _RETRY_POOL = [
     "redo it and this time keep only the morning sailings",
 ]
 
-# Re-explain direction — the steps need redoing but are NOT in this message:
-# the user is withdrawing the old instructions and will teach again later, so
-# the machine returns to needing the steps.
-_REEXPLAIN_POOL = [
+# Deferral direction — "i'll get back to you later" in any form: the reply
+# neither gives nor corrects instructions, so the loop cannot proceed — a bail
+# (code-owner ruling; run-1's decode agreed with the model, not the case).
+_DEFERRAL_POOL = [
     "hold on, let me rethink how to explain this",
     "scrap those steps — i'll write you better instructions in a minute",
     "hmm this isn't working. let me find the right page first and get back to you",
@@ -497,15 +499,45 @@ async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEv
     )
 
 
-async def test_parked_learn_returns_to_elicit_on_reexplain(
-    classifier_eval: ClassifierEval,
-) -> None:
-    """Re-explain: the old instructions are withdrawn and new ones are coming
-    LATER — the machine returns to elicit (needing the steps), not learn."""
+# Working-it-out direction — questions and doubts about how, continuing the
+# teach dialogue with no instructions to act on: the machine returns to elicit.
+_WORKING_IT_OUT_POOL = [
+    "what went wrong exactly? which page did you open?",
+    "hm, what can you actually read then?",
+    "did the link work at all, or did nothing come up?",
+    "wait, which url did you try?",
+    "is there something about that page you can't handle?",
+    "what do you mean it wouldn't load — did you get an error?",
+    "so what part failed, the reading or the saving?",
+    "would a different page work better for you?",
+    "what kind of pages usually work?",
+    "huh, it loads fine for me — what did you see?",
+]
+
+
+async def test_parked_learn_deferrals_bail(classifier_eval: ClassifierEval) -> None:
+    """Deferral = bail: a reply that neither gives nor corrects instructions
+    and puts the task off for later routes to idle — the machine never holds
+    open on a promise."""
     await classifier_eval(
-        case_id="learn-reexplain",
+        case_id="learn-deferral-bails",
         state=ConversationState.LEARN,
-        pool=_REEXPLAIN_POOL,
+        pool=_DEFERRAL_POOL,
+        expected=ConversationState.IDLE,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_working_it_out(classifier_eval: ClassifierEval) -> None:
+    """Working it out: a question or doubt about how — no instructions carried
+    — returns the machine to elicit, continuing the teach dialogue."""
+    await classifier_eval(
+        case_id="learn-working-it-out",
+        state=ConversationState.LEARN,
+        pool=_WORKING_IT_OUT_POOL,
         expected=ConversationState.ELICIT,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,

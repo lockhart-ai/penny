@@ -192,7 +192,7 @@ def test_render_parked_elicit_slice_whole():
         "teaching, however brief\n"
         "- elicit: still working out the task — the assistant's question is not "
         "answered yet\n"
-        "- idle: they changed the topic or called the task off"
+        "- idle: they called the task off, changed the topic, or put it off for later"
     )
 
 
