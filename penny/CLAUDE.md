@@ -725,6 +725,31 @@ run stays ephemeral (no artifacts, no lever requirement). The Makefile derives t
 time, so `make -n eval` shows the concrete `-v <primary>/data/eval-artifacts:/penny/eval-artifacts`
 from any worktree.
 
+**Posting a run: `make eval-report` one-shot + the unreviewed-run banner (#1757).** Posting a run's
+report is a **one-shot**, and the debt of *not* posting is made **structural** (structural-state-over-
+model-judgment, applied to the eval loop). The joint-checkpoint rule (run → post the report to the PR →
+STOP for joint review before the next run) was prose-only — posting was a manual step separate from
+running, so skipping it left no visible debt and nothing interrupted the next run (a real violation ran
+4+ sequential report-runs without posting any). Two mechanisms:
+`make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]` assembles the named run — default: the
+**most-recent completed run** (newest dir holding a `manifest.json`) in the durable home — captures the
+containerized `python -m penny.tests.eval.assemble` stdout **cleanly** (never `make assemble` piped
+through stripping), posts it **verbatim** to PR `<n>` via `GH_TOKEN=$(make token) gh pr comment`, then
+stamps a **`.posted` marker** (holding the comment URL) into the run dir. It **fails loudly** when `PR`
+is unset, the run dir is missing, the token is empty, or the assemble output is empty; it is
+**idempotent by the marker** — a run already carrying `.posted` re-posts only with `FORCE=1`, else prints
+the existing URL and exits 0. And `make eval`, **before taking a GPU queue ticket**, scans the durable
+home for run dirs with a `manifest.json` but **no** `.posted` and prints a **loud, multi-line banner**
+naming each (`⚠ N unreviewed eval run(s) … → post each: make eval-report PR=<n> …`) — **warn, never
+block** (a multi-run sweep stays possible; the debt is just undeniable). **Marker semantics**: a
+`manifest.json` = a completed run; a `.posted` marker = a posted (reviewed) run; a **lever-less
+ephemeral run writes no `manifest.json`** so it never appears in the banner (by design — nothing to
+review). The scan/latest/banner logic is pure, plain-tested `penny/tests/eval/checkpoint.py`
+(`run_dirs` / `latest_run_dir` / `unreviewed_runs` / `render_banner` + a `latest`/`banner` CLI), invoked
+in-container by the recipes so it reads the mounted home; the Makefile checks the marker host-side. Both
+recipes reuse the #1734 `EVAL_ARTIFACTS_HOST`/`_MOUNT` derivation, so `make -n eval-report` shows the
+same `-v <primary>/data/eval-artifacts:/penny/eval-artifacts` mount from any worktree.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,

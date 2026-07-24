@@ -22,8 +22,17 @@ EVAL_QUEUE_DIR ?= /tmp/penny-eval-queue
 EVAL_PRIMARY_CHECKOUT := $(shell dirname "$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
 EVAL_ARTIFACTS_HOST := $(EVAL_PRIMARY_CHECKOUT)/data/eval-artifacts
 EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
+# The marker `make eval-report` stamps into a posted run dir (#1757). Must match
+# `penny.tests.eval.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
+POSTED_MARKER := .posted
+# Alias for the make binary used to mint the token inside the eval-report recipe. Referenced
+# through this alias, NOT the literal `$(MAKE)`, on purpose: GNU make executes any recipe line
+# containing the literal `$(MAKE)`/`${MAKE}` even under `-n` (recursive-make tracing), and
+# eval-report's single logical recipe line also posts a PR comment + writes a marker — side
+# effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
+SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -155,6 +164,8 @@ pytest: $(if $(LOCAL),,build)
 # iteration run stays ephemeral (no artifacts, no lever requirement) as before.
 eval: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_QUEUE_DIR)" "$(EVAL_ARTIFACTS_HOST)"; \
+	banner="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint banner "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null || true)"; \
+	if [ -n "$$banner" ]; then printf '%s\n' "$$banner"; fi; \
 	ticket="$$(date +%s)-$$(printf '%08d' $$$$)"; \
 	echo $$$$ > "$(EVAL_QUEUE_DIR)/$$ticket"; \
 	trap 'rm -f "$(EVAL_QUEUE_DIR)/$$ticket"' EXIT INT TERM; \
@@ -210,6 +221,63 @@ eval: $(if $(LOCAL),,build)
 assemble: $(if $(LOCAL),,build)
 	@mkdir -p "$(EVAL_ARTIFACTS_HOST)"
 	$(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble $(if $(EVAL_FULL),--full,) "$${EVAL_REPORT_DIR:-$(EVAL_ARTIFACTS_MOUNT)}"
+
+# Post a completed eval run's assembled report to its iteration PR as a comment — the ONE-SHOT that
+# makes the joint-checkpoint rule (run → report → STOP for joint review) STRUCTURAL (#1757). It
+# assembles the named run (RUN=run-<stamp>) or, by default, the MOST-RECENT completed run under the
+# durable artifact home (the same #1734 EVAL_ARTIFACTS_HOST/_MOUNT derivation eval/assemble use),
+# posts the assembled markdown VERBATIM to PR=<n>, then stamps a `.posted` marker holding the comment
+# URL into the run dir. The assemble output is captured CLEANLY by invoking the containerized module
+# DIRECTLY (never `make assemble` piped through stripping); the token is minted inside the recipe.
+# Idempotent by the marker: a run already posted re-posts ONLY with FORCE=1 — otherwise it prints the
+# existing comment URL and exits 0. Fails loudly (never a silent no-op) when PR is unset, the run dir
+# is missing, the token is empty, or the assembled output is empty. `make -n eval-report PR=<n>`
+# shows the same durable-home resolution (`-v <primary>/data/eval-artifacts:/penny/eval-artifacts`).
+eval-report: $(if $(LOCAL),,build)
+	@if [ -z "$(PR)" ]; then \
+		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]" >&2; \
+		exit 1; \
+	fi; \
+	run="$(if $(filter command line,$(origin RUN)),$(RUN),)"; \
+	if [ -z "$$run" ]; then \
+		run="$$($(EVAL_RUN) python -m penny.tests.eval.checkpoint latest "$(EVAL_ARTIFACTS_MOUNT)" 2>/dev/null)"; \
+		if [ -z "$$run" ]; then \
+			echo "eval-report: no completed run dirs under $(EVAL_ARTIFACTS_HOST) — run make eval first" >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	host_dir="$(EVAL_ARTIFACTS_HOST)/$$run"; \
+	if [ ! -d "$$host_dir" ]; then \
+		echo "eval-report: run dir not found: $$host_dir" >&2; \
+		exit 1; \
+	fi; \
+	if [ -f "$$host_dir/$(POSTED_MARKER)" ] && [ -z "$(FORCE)" ]; then \
+		echo "eval-report: $$run already posted → $$(cat "$$host_dir/$(POSTED_MARKER)")"; \
+		echo "eval-report: re-post with FORCE=1"; \
+		exit 0; \
+	fi; \
+	body="$$(mktemp "$${TMPDIR:-/tmp}/eval-report.XXXXXX")"; \
+	trap 'rm -f "$$body"' EXIT; \
+	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble $(if $(EVAL_FULL),--full,) "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$body"; then \
+		echo "eval-report: assemble failed for $$run" >&2; \
+		exit 1; \
+	fi; \
+	if [ ! -s "$$body" ]; then \
+		echo "eval-report: assemble produced no output for $$run — is it a completed run?" >&2; \
+		exit 1; \
+	fi; \
+	tok="$$($(SUBMAKE) token)"; \
+	if [ -z "$$tok" ]; then \
+		echo "eval-report: make token returned empty — run from the primary checkout with a real .env" >&2; \
+		exit 1; \
+	fi; \
+	url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$body")"; \
+	if [ -z "$$url" ]; then \
+		echo "eval-report: gh pr comment returned no URL" >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$url" > "$$host_dir/$(POSTED_MARKER)"; \
+	echo "eval-report: posted $$run → PR #$(PR) comment $$url"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test
