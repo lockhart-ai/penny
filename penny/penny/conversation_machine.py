@@ -118,8 +118,9 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
         "skill covers it — the assistant would need to be taught how"
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
-        "their message gives the steps — it tells the assistant how to do the "
-        "task it asked to be taught"
+        "their message answers the teach question — it names what to read, "
+        "what to look for, or what to remember; plain instructions count, "
+        "however brief"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "still working out the task — the assistant's question is not answered yet"

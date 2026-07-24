@@ -310,9 +310,9 @@ _TEACH_QUESTION = (
 # not a separate case).
 _STEPS_POOL = [
     "sure — read harborferries.example/timetable and remember the first morning departure",
-    "open the ferry site's timetable page and save the times for the harbor loop",
+    "here's what to do: open harborferries.example/timetable and save the harbor loop times",
     "check harborferries.example/timetable every morning and note any changes to the schedule",
-    "just look at the timetable page and keep track of the last sailing of the day",
+    "it's easy: read harborferries.example/timetable and remember the last sailing of the day",
     "go to the ferry timetable, find the weekend sailings, and remember those",
     "read the timetable at harborferries.example and save the departure times",
     "ok: fetch the timetable page, pull out the morning departures, and store them",
