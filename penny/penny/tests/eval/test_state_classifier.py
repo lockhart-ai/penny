@@ -361,7 +361,7 @@ async def test_parked_elicit_steps_arrive(classifier_eval: ClassifierEval) -> No
         expected=ConversationState.LEARN,
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -382,7 +382,7 @@ async def test_parked_elicit_steps_arrive_with_skills_populated(
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
         seed_skills=_SEEDED_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -397,7 +397,7 @@ async def test_parked_elicit_still_clarifying(classifier_eval: ClassifierEval) -
         expected=ConversationState.ELICIT,
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -412,6 +412,6 @@ async def test_parked_elicit_bails_out(classifier_eval: ClassifierEval) -> None:
         expected=ConversationState.IDLE,
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
