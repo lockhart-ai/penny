@@ -139,12 +139,16 @@ EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
 }
 
-# The conversation-slice render labels — fixed strings, whole-render pinned.
-_LAST_TURN_LABEL = "The assistant's last message:"
-_TASK_LABEL = "The task being worked on:"
-_SKILLS_LABEL = "Known skills:"
-_MESSAGE_LABEL = "The user's newest message:"
-_STATES_LABEL = "States:"
+# The conversation-slice section headers — fixed strings, whole-render pinned.
+# Markdown headers, not label lines: the parked, populated contexts this slice
+# grows into (many candidates, quoted turns that carry their own lists and
+# colons) need STRUCTURAL section boundaries the model can navigate, not
+# typographic ones a long context swallows.
+_LAST_TURN_HEADER = "## The assistant's last message"
+_TASK_HEADER = "## The task being worked on"
+_SKILLS_HEADER = "## Known skills"
+_MESSAGE_HEADER = "## The user's newest message"
+_STATES_HEADER = "## States"
 _NONE_PLACEHOLDER = "(none)"
 
 
@@ -264,7 +268,8 @@ def presented_edges(snapshot: MachineSnapshot) -> tuple[ConversationState, ...]:
 
 
 def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
-    """The classifier's whole world, rendered: the scoped conversation slice
+    """The classifier's whole world, rendered as markdown SECTIONS: the scoped
+    conversation slice
     (assistant's last turn, the parked task anchor when one exists, the known
     skills, the newest message), then the offered states with their per-edge
     meanings.
@@ -274,22 +279,21 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     no-coverage fact must be a READ off the rendered state, never an inference
     from a missing section (the rational-actor doctrine).  The task anchor, by
     contrast, renders only when parked: no meaning references an absent task."""
-    lines = [f"{_LAST_TURN_LABEL} {snapshot.penny_last_turn or _NONE_PLACEHOLDER}"]
+    sections = [f"{_LAST_TURN_HEADER}\n{snapshot.penny_last_turn or _NONE_PLACEHOLDER}"]
     if snapshot.task_anchor is not None:
-        lines.append(f"{_TASK_LABEL} {snapshot.task_anchor}")
+        sections.append(f"{_TASK_HEADER}\n{snapshot.task_anchor}")
     if snapshot.skill_candidates:
-        lines.append(_SKILLS_LABEL)
-        lines.extend(f"- {candidate.render()}" for candidate in snapshot.skill_candidates)
+        listing = "\n".join(f"- {candidate.render()}" for candidate in snapshot.skill_candidates)
+        sections.append(f"{_SKILLS_HEADER}\n{listing}")
     else:
-        lines.append(f"{_SKILLS_LABEL} {_NONE_PLACEHOLDER}")
-    lines.append(f"{_MESSAGE_LABEL} {message}")
-    lines.append("")
-    lines.append(_STATES_LABEL)
-    lines.extend(
+        sections.append(f"{_SKILLS_HEADER}\n{_NONE_PLACEHOLDER}")
+    sections.append(f"{_MESSAGE_HEADER}\n{message}")
+    states = "\n".join(
         f"- {target.value}: {EDGE_MEANINGS[(snapshot.state, target)]}"
         for target in presented_edges(snapshot)
     )
-    return "\n".join(lines)
+    sections.append(f"{_STATES_HEADER}\n{states}")
+    return "\n\n".join(sections)
 
 
 def next_state(current: ConversationState, decision: StateDecision) -> ConversationState:

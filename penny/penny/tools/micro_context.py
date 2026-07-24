@@ -194,10 +194,12 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "the messages."
 )
 
-# The single per-call ask; the conversation slice + the candidate states are the
-# content.  Fixed, so the caller only supplies the content (the classification
-# contract is a property of this customer, not a per-call parameter).
-_STATE_INSTRUCTION = "Pick the one listed state the user's newest message puts the conversation in."
+# The classifier's user turn is the rendered situation ALONE — no
+# ``Instruction:``/``Content:`` wrapper.  That frame is the extraction
+# customer's (natural for "here's a page, pull X out"); the classifier's ask
+# lives entirely in its system prompt, so wrapping the slice would just repeat
+# the instruction and label a structured situation as bulk content.
+_STATE_USER_TEMPLATE = "{content}"
 
 
 class MicroExtractOutcome(StrEnum):
@@ -416,11 +418,12 @@ class MicroContext:
         for _ in range(_UNTAGGED_DRAW_BUDGET):
             draw = await self._draw_clean(
                 content,
-                _STATE_INSTRUCTION,
+                "",
                 run_target,
                 system_prompt=STATE_CLASSIFIER_SYSTEM_PROMPT,
                 agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
                 prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
+                user_template=_STATE_USER_TEMPLATE,
             )
             if draw is None:
                 return StateDraw(outcome=StateDrawOutcome.POISON_REROLL_FAILED)
@@ -463,6 +466,7 @@ class MicroContext:
         system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
         agent_name: str = PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type: str = PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+        user_template: str = _USER_TEMPLATE,
     ) -> str | None:
         """The raw extraction text, re-rolling on poison; ``None`` if every draw
         is unusable.  Mirrors the agent-loop reroll guard — discard poison, never
@@ -471,7 +475,7 @@ class MicroContext:
         The ``system_prompt`` + ledger attribution are parameters (defaulting to the
         browse-extract contract) so a second output contract — run-end skill naming
         (#1665) — rides the SAME poison/reroll loop without duplicating it."""
-        messages = self._messages(content, instruction, system_prompt)
+        messages = self._messages(content, instruction, system_prompt, user_template)
         run_id = uuid.uuid4().hex
         for attempt in range(self._reroll_attempts):
             response = await self._model_client.chat(
@@ -503,16 +507,20 @@ class MicroContext:
 
     @staticmethod
     def _messages(
-        content: str, instruction: str, system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT
+        content: str,
+        instruction: str,
+        system_prompt: str = MICRO_CONTEXT_SYSTEM_PROMPT,
+        user_template: str = _USER_TEMPLATE,
     ) -> list[dict]:
         """The scoped two-message context: the contract framing (``system_prompt``,
-        default the browse-extract contract), then the instruction paired with the
-        bulk content."""
+        default the browse-extract contract), then the user turn shaped by the
+        customer's ``user_template`` (default: the instruction paired with bulk
+        content; the classifier passes the bare-situation template)."""
         return [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": _USER_TEMPLATE.format(instruction=instruction, content=content),
+                "content": user_template.format(instruction=instruction, content=content),
             },
         ]
 
