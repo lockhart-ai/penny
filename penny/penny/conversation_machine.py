@@ -51,8 +51,6 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from penny.constants import PennyConstants
-from penny.database.skill_store import parameters_from_json
-from penny.database.skills import SkillParameter
 from penny.llm.similarity import embed_text
 from penny.tools.micro_context import SKILL_TAG, MicroContext, StateDraw, StateDrawOutcome
 
@@ -95,47 +93,33 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ConversationState.APPLY: (),
 }
 
-# One model-facing meaning per EDGE — keyed (current, target), because the same
-# target state means something different depending on where the machine stands
-# (idle → idle is ordinary chat; learn → learn is a correction retry).  These
-# lines are the classifier's whole doctrine: tuned per-edge through the eval
-# beats, whole-render pinned by tests.
-EDGE_MEANINGS: dict[tuple[ConversationState, ConversationState], str] = {
-    (ConversationState.IDLE, ConversationState.IDLE): (
-        "ordinary conversation — chat, a passing mention, or a question or "
-        "one-off ask the assistant can answer right away; nothing ongoing is "
-        "being set up"
+# One CANONICAL definition per STATE — stable everywhere it renders (the
+# code-owner correction on beat 4: states have fixed semantics; only which
+# TRANSITIONS are available varies by current state, and that part is already
+# structural — OUT_EDGES + the union narrowing.  The prior per-edge meanings
+# conflated transition conditions with state identity and drifted per beat;
+# four stable strings replace nine drifting ones).  Load-bearing qualifiers
+# live in the definitions themselves: learn exists ONLY when the message
+# carries instructions; idle owns everything deferred.
+STATE_DEFINITIONS: dict[ConversationState, str] = {
+    ConversationState.IDLE: (
+        "ordinary conversation — chat, questions, passing mentions, or "
+        "anything put off for later; no task is being given or taught right now"
     ),
-    (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage, and a needed input missing "
-        "from their message (like a url) is gathered later, never a reason to "
-        f"refuse — add a second line naming that skill: {SKILL_TAG} <its "
-        "name, copied exactly from Known skills>"
+    ConversationState.ELICIT: (
+        "the user wants a task done that no known skill covers, and the "
+        "assistant is asking to be taught the steps"
     ),
-    (ConversationState.IDLE, ConversationState.ELICIT): (
-        "they are asking to set up an ongoing task or routine and no known "
-        "skill covers it — the assistant would need to be taught how"
+    ConversationState.LEARN: (
+        "the user's message gives instructions to follow — what to read, look "
+        "for, or remember; a plain command counts, and a message without "
+        "instructions is never learn"
     ),
-    (ConversationState.ELICIT, ConversationState.LEARN): (
-        "their message tells the assistant what to do — what to read, what to "
-        "look for, or what to remember; a plain instruction or command IS the "
-        "teaching, however brief"
-    ),
-    (ConversationState.ELICIT, ConversationState.ELICIT): (
-        "still working out the task — the assistant's question is not answered yet"
-    ),
-    (ConversationState.ELICIT, ConversationState.IDLE): (
-        "they changed the topic or called the task off"
-    ),
-    (ConversationState.LEARN, ConversationState.LEARN): (
-        "they are correcting or retrying the task just attempted"
-    ),
-    (ConversationState.LEARN, ConversationState.ELICIT): (
-        "they are re-explaining from the start — the assistant needs the steps again"
-    ),
-    (ConversationState.LEARN, ConversationState.IDLE): (
-        "they changed the topic or called the task off"
+    ConversationState.APPLY: (
+        "a known skill does what they are asking for — mere resemblance to a "
+        "skill is not coverage, and a needed input missing from their message "
+        "is gathered later — add a second line naming that skill: "
+        f"{SKILL_TAG} <its name, copied exactly from Known skills>"
     ),
 }
 
@@ -152,6 +136,17 @@ _STATES_HEADER = "## States"
 _NONE_PLACEHOLDER = "(none)"
 
 
+class CandidateParameter(BaseModel):
+    """One declared input of a candidate skill — the light, cycle-free
+    projection of the store's ``SkillParameter`` (this module stays a leaf:
+    importing the database package from here re-enters it partially
+    initialized on a direct import, the documented validation/__init__ cycle
+    shape).  ``build_snapshot`` maps the store rows in."""
+
+    name: str
+    description: str | None = None
+
+
 class SkillCandidate(BaseModel):
     """One ranked skill from the registry's structural pre-pass — the ``name``
     is the exact token a gated apply draw must copy back (display form ==
@@ -163,7 +158,7 @@ class SkillCandidate(BaseModel):
 
     name: str
     description: str
-    parameters: list[SkillParameter] = []
+    parameters: list[CandidateParameter] = []
 
     def render(self) -> str:
         """The one-line candidate render: ``name — description`` plus a
@@ -289,8 +284,7 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
         sections.append(f"{_SKILLS_HEADER}\n{_NONE_PLACEHOLDER}")
     sections.append(f"{_MESSAGE_HEADER}\n{message}")
     states = "\n".join(
-        f"- {target.value}: {EDGE_MEANINGS[(snapshot.state, target)]}"
-        for target in presented_edges(snapshot)
+        f"- {target.value}: {STATE_DEFINITIONS[target]}" for target in presented_edges(snapshot)
     )
     sections.append(f"{_STATES_HEADER}\n{states}")
     return "\n\n".join(sections)
@@ -326,6 +320,10 @@ async def build_snapshot(
     A transient embed failure degrades to NO candidates — logged, and safe by
     construction: with no candidates the ``apply`` edge is structurally
     withheld (``presented_edges``), the perception twin of fail → stay."""
+    # Function-local import: the database package must never be imported at
+    # this module's import time (leaf discipline — see CandidateParameter).
+    from penny.database.skill_store import parameters_from_json
+
     candidates: list[SkillCandidate] = []
     vector = await embed_text(embedding_client, message)
     if vector is None:
@@ -335,7 +333,10 @@ async def build_snapshot(
             SkillCandidate(
                 name=skill.name,
                 description=skill.description,
-                parameters=parameters_from_json(skill.parameters),
+                parameters=[
+                    CandidateParameter(name=parameter.name, description=parameter.description)
+                    for parameter in parameters_from_json(skill.parameters)
+                ],
             )
             for skill in db.skills.resolve_by_meaning(vector, PennyConstants.FIND_MATCH_LIMIT)
         ]

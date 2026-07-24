@@ -28,6 +28,16 @@ pool verbatim under candidates (does chat stay chat when apply is on offer?);
 MIXED = chat preamble + a covered ask in one message (the named mixed-message
 boundary → apply).
 
+**Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
+parked in learn (the demo round did not complete; ``penny_last_turn`` = the
+honest failure report), and the user's reply resolves it: RETRY = corrections
+and try-agains, actionable now (→ learn — the correction-loop invariant: fail
+stays in-state); WORKING-IT-OUT = questions and doubts about how, no new
+instructions carried (→ elicit); DEFERRAL = "i'll get back to you later" in
+any form (→ idle — the code-owner ruling: if the reply neither gives nor
+corrects explicit instructions and defers, it is a bail); BAIL = give-ups and
+topic changes (→ idle).
+
 **Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
 elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
 the parked-snapshot fields' first live use), and the user's reply resolves it:
@@ -329,20 +339,20 @@ _CLARIFYING_POOL = [
     "what would you need from me to do that?",
     "i'm not sure — what do you usually watch for people?",
     "does it matter which page i give you?",
-    "hang on, let me find the right link first",
+    "is this something you're able to do from your side?",
     "can you even open websites on your own?",
     "what format do you want the steps in?",
     "wait, would this be every day or just once?",
-    "let me think about what exactly i want you to look for",
+    "do you need the exact address or just the site name?",
 ]
 
 # Bail direction — the break-out edge: call-offs and topic changes.
 _BAIL_POOL = [
-    "actually never mind, don't worry about it",
+    "hang on, let me find the right link first — i'll get back to you",
     "forget it — what's the weather looking like tomorrow?",
     "eh, it's not that important. anyway how was your night?",
     "no no, not that. let's drop it",
-    "let's skip it for now",
+    "let me think about what exactly i want you to look for and circle back",
     "on second thought i'll just check it myself",
     "changing topics — did anything interesting happen in the news today?",
     "scratch that. can you tell me a joke instead?",
@@ -413,5 +423,139 @@ async def test_parked_elicit_bails_out(classifier_eval: ClassifierEval) -> None:
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── Beat 4: parked learn — re-entry after a failed demo round ─────────────────
+
+# The parked-learn context: the demo round failed (the honest failure report is
+# the assistant's last turn), the machine holds in learn, and the reply decides
+# retry vs re-explain vs bail.
+_FAILED_ROUND_REPORT = (
+    "I tried, but the timetable page wouldn't load, so I couldn't save anything. "
+    "Should I try again, or is there a different page I should read?"
+)
+
+# Retry direction — corrections and try-agains actionable NOW (the correction
+# IS new instruction: a fixed url, a different column, a narrower value).
+_RETRY_POOL = [
+    "try again — the page should load now",
+    "no, read the SECOND table on the page, not the first one",
+    "you saved the arrival time — i wanted the departure time, fix that",
+    "use harborferries.example/timetable-v2 instead, the old link is dead",
+    "almost — but remember the last sailing too, not just the first",
+    "run it once more, i think the site was just down",
+    "the times you grabbed are for weekdays — get the weekend ones",
+    "same steps, but save them under 'ferry times' instead",
+    "close! the departure column is the one on the left",
+    "redo it and this time keep only the morning sailings",
+]
+
+# Deferral direction — "i'll get back to you later" in any form: the reply
+# neither gives nor corrects instructions, so the loop cannot proceed — a bail
+# (code-owner ruling; run-1's decode agreed with the model, not the case).
+_DEFERRAL_POOL = [
+    "hold on, let me rethink how to explain this",
+    "scrap those steps — i'll write you better instructions in a minute",
+    "hmm this isn't working. let me find the right page first and get back to you",
+    "wait, i think i told you wrong. give me a sec to work out what i actually want",
+    "let's start over — i'll walk you through it a different way once i've checked the site",
+    "forget those instructions, they were wrong. i'll send new ones shortly",
+    "i need to look at the page myself before i can tell you what to grab",
+    "my bad, the steps i gave you were for the old site. let me dig up the new layout",
+    "hang on — what i described doesn't match the page. i'll re-explain in a bit",
+    "let me ask my brother how he checks it, then i'll teach you properly",
+]
+
+# Bail direction — the break-out edge from a failed round: give-ups and topic
+# changes; the task dies, the conversation moves on.
+_LEARN_BAIL_POOL = [
+    "you know what, forget it — this isn't working",
+    "let's give up on this one. how's your evening been?",
+    "eh, never mind the ferry thing. what's the weather tomorrow?",
+    "drop it for now, i'll set it up some other time",
+    "this is more trouble than it's worth, let's move on",
+    "abandon that — tell me a joke instead",
+    "let's shelve it. did anything happen in the news today?",
+    "no worries, i'll just check the ferry site myself from now on",
+    "leave it — what time is it in lisbon right now?",
+    "actually let's not bother. i'd rather plan dinner",
+]
+
+
+async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEval) -> None:
+    """Retry: a correction or try-again actionable now stays in learn — the
+    correction-loop invariant (a failed round holds its state)."""
+    await classifier_eval(
+        case_id="learn-retry-corrections",
+        state=ConversationState.LEARN,
+        pool=_RETRY_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+# Working-it-out direction — questions and doubts about how, continuing the
+# teach dialogue with no instructions to act on: the machine returns to elicit.
+_WORKING_IT_OUT_POOL = [
+    "what went wrong exactly? which page did you open?",
+    "hm, what can you actually read then?",
+    "did the link work at all, or did nothing come up?",
+    "wait, which url did you try?",
+    "is there something about that page you can't handle?",
+    "what do you mean it wouldn't load — did you get an error?",
+    "so what part failed, the reading or the saving?",
+    "would a different page work better for you?",
+    "what kind of pages usually work?",
+    "huh, it loads fine for me — what did you see?",
+]
+
+
+async def test_parked_learn_deferrals_bail(classifier_eval: ClassifierEval) -> None:
+    """Deferral = bail: a reply that neither gives nor corrects instructions
+    and puts the task off for later routes to idle — the machine never holds
+    open on a promise."""
+    await classifier_eval(
+        case_id="learn-deferral-bails",
+        state=ConversationState.LEARN,
+        pool=_DEFERRAL_POOL,
+        expected=ConversationState.IDLE,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_working_it_out(classifier_eval: ClassifierEval) -> None:
+    """Working it out: a question or doubt about how — no instructions carried
+    — returns the machine to elicit, continuing the teach dialogue."""
+    await classifier_eval(
+        case_id="learn-working-it-out",
+        state=ConversationState.LEARN,
+        pool=_WORKING_IT_OUT_POOL,
+        expected=ConversationState.ELICIT,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_bails_out(classifier_eval: ClassifierEval) -> None:
+    """The break-out edge from a failed round: a give-up or topic change routes
+    to idle — a broken teach loop never traps the conversation."""
+    await classifier_eval(
+        case_id="learn-bail",
+        state=ConversationState.LEARN,
+        pool=_LEARN_BAIL_POOL,
+        expected=ConversationState.IDLE,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
         family=_FAMILY,
     )

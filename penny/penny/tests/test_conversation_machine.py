@@ -23,6 +23,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.conversation_machine import (
     OUT_EDGES,
+    CandidateParameter,
     ConversationState,
     MachineSnapshot,
     SkillCandidate,
@@ -32,7 +33,7 @@ from penny.conversation_machine import (
     presented_edges,
     render_classifier_content,
 )
-from penny.database.skills import SkillDraft, SkillParameter, SkillStep
+from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.models import LlmError, LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -51,7 +52,7 @@ _STEPS = "sure — read harborferries.example/timetable and remember the first m
 _SKILL = SkillCandidate(
     name="watch a listing price for changes",
     description="checks a page and records the current price",
-    parameters=[SkillParameter(name="url", description="the listing page to watch")],
+    parameters=[CandidateParameter(name="url", description="the listing page to watch")],
 )
 
 _IDLE_SNAPSHOT = MachineSnapshot(state=ConversationState.IDLE)
@@ -142,11 +143,10 @@ def test_system_prompt_whole_render():
 
 
 def test_render_idle_slice_whole():
-    """The idle render, whole: markdown SECTIONS (structural boundaries the
-    populated contexts need), the (none) placeholders for the empty last turn
-    and registry — the elicit meaning's "no known skill covers it" must be a
-    READ, never an inference from a missing section — and the offered states
-    are idle + elicit only (apply withheld with no candidates)."""
+    """The idle render, whole: markdown sections, the (none) placeholders, and
+    the offered states carrying their CANONICAL definitions — identical text
+    wherever a state renders (states have stable semantics; only which
+    transitions are offered varies)."""
     assert render_classifier_content(_IDLE_SNAPSHOT, _ASK) == (
         "## The assistant's last message\n"
         "(none)\n"
@@ -158,23 +158,21 @@ def test_render_idle_slice_whole():
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
         "\n"
         "## States\n"
-        "- idle: ordinary conversation — chat, a passing mention, or a question or "
-        "one-off ask the assistant can answer right away; nothing ongoing is "
-        "being set up\n"
-        "- elicit: they are asking to set up an ongoing task or routine and no known "
-        "skill covers it — the assistant would need to be taught how"
+        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
+        "put off for later; no task is being given or taught right now\n"
+        "- elicit: the user wants a task done that no known skill covers, and the "
+        "assistant is asking to be taught the steps"
     )
 
 
 def test_render_parked_elicit_slice_whole():
-    """The parked-elicit render, whole: the assistant's teach question and the
-    instigating ask are both present as their own sections (a reply is only
-    classifiable against what it answers), and the union is the elicit
-    out-edges with their per-edge meanings — including the break-out edge."""
+    """The parked-elicit render, whole: teach question + instigating ask as
+    their own sections, and the elicit out-edges carrying the same canonical
+    definitions every other render uses."""
     assert render_classifier_content(_ELICIT_SNAPSHOT, _STEPS) == (
         "## The assistant's last message\n"
-        "I don't know how to do that yet — can you teach me? What should I read, "
-        "look for, and remember?\n"
+        "I don't know how to do that yet — can you teach me? What should I read, look for, "
+        "and remember?\n"
         "\n"
         "## The task being worked on\n"
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
@@ -187,20 +185,21 @@ def test_render_parked_elicit_slice_whole():
         "departure\n"
         "\n"
         "## States\n"
-        "- learn: their message tells the assistant what to do — what to read, what to "
-        "look for, or what to remember; a plain instruction or command IS the "
-        "teaching, however brief\n"
-        "- elicit: still working out the task — the assistant's question is not "
-        "answered yet\n"
-        "- idle: they changed the topic or called the task off"
+        "- learn: the user's message gives instructions to follow — what to read, look "
+        "for, or remember; a plain command counts, and a message without instructions is "
+        "never learn\n"
+        "- elicit: the user wants a task done that no known skill covers, and the "
+        "assistant is asking to be taught the steps\n"
+        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
+        "put off for later; no task is being given or taught right now"
     )
 
 
 def test_render_idle_with_candidates_whole():
-    """The idle render with a ranked skill candidate, whole: the Known skills
-    section carries name, description, AND declared parameters (coverage is
-    reasoned from the full metadata) and the apply edge joins the union.  A
-    parameterless candidate renders without the needs tail, byte-identical."""
+    """The idle render with a ranked skill candidate, whole: full skill
+    metadata in Known skills, the apply edge joining the union with its
+    canonical definition (incl. the SKILL: directive).  A parameterless
+    candidate renders without the needs tail, byte-identical."""
     assert SkillCandidate(name="x", description="y").render() == "x — y"
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
@@ -208,23 +207,21 @@ def test_render_idle_with_candidates_whole():
         "(none)\n"
         "\n"
         "## Known skills\n"
-        "- watch a listing price for changes — checks a page and records the "
-        "current price (needs: url — the listing page to watch)\n"
+        "- watch a listing price for changes — checks a page and records the current price "
+        "(needs: url — the listing page to watch)\n"
         "\n"
         "## The user's newest message\n"
         "what's the ferry price at today?\n"
         "\n"
         "## States\n"
-        "- idle: ordinary conversation — chat, a passing mention, or a question or "
-        "one-off ask the assistant can answer right away; nothing ongoing is "
-        "being set up\n"
-        "- apply: one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage, and a needed input missing "
-        "from their message (like a url) is gathered later, never a reason to "
-        "refuse — add a second line naming that skill: SKILL: <its "
-        "name, copied exactly from Known skills>\n"
-        "- elicit: they are asking to set up an ongoing task or routine and no known "
-        "skill covers it — the assistant would need to be taught how"
+        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
+        "put off for later; no task is being given or taught right now\n"
+        "- apply: a known skill does what they are asking for — mere resemblance to a "
+        "skill is not coverage, and a needed input missing from their message is gathered "
+        "later — add a second line naming that skill: SKILL: <its name, copied exactly "
+        "from Known skills>\n"
+        "- elicit: the user wants a task done that no known skill covers, and the "
+        "assistant is asking to be taught the steps"
     )
 
 
