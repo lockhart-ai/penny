@@ -366,6 +366,27 @@ async def test_parked_elicit_steps_arrive(classifier_eval: ClassifierEval) -> No
     )
 
 
+async def test_parked_elicit_steps_arrive_with_skills_populated(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The populated-registry stress: the SAME steps replies, but with the
+    beat-2 skills seeded — the Known skills section renders watch-adjacent
+    candidates while the user is mid-teaching something NEW.  Existing skills
+    must not demote teaching to still-clarifying or a bail; the paired delta
+    against elicit-learn-steps isolates the candidates' effect."""
+    await classifier_eval(
+        case_id="elicit-learn-steps-with-skills",
+        state=ConversationState.ELICIT,
+        pool=_STEPS_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_TEACH_QUESTION,
+        task_anchor=_FERRY_ASK,
+        seed_skills=_SEEDED_SKILLS,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
 async def test_parked_elicit_still_clarifying(classifier_eval: ClassifierEval) -> None:
     """Still clarifying: a question back or a partial without the how leaves the
     machine parked in elicit — the teach question is not answered yet."""
