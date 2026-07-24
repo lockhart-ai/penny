@@ -28,6 +28,14 @@ pool verbatim under candidates (does chat stay chat when apply is on offer?);
 MIXED = chat preamble + a covered ask in one message (the named mixed-message
 boundary → apply).
 
+**Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
+parked in learn (the demo round did not complete; ``penny_last_turn`` = the
+honest failure report), and the user's reply resolves it: RETRY = corrections
+and try-agains, actionable now (→ learn — the correction-loop invariant: fail
+stays in-state); REEXPLAIN = the steps need redoing but are NOT in this message
+(→ elicit — back to needing the steps); BAIL = give-ups and topic changes
+(→ idle).
+
 **Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
 elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
 the parked-snapshot fields' first live use), and the user's reply resolves it:
@@ -413,5 +421,109 @@ async def test_parked_elicit_bails_out(classifier_eval: ClassifierEval) -> None:
         penny_last_turn=_TEACH_QUESTION,
         task_anchor=_FERRY_ASK,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── Beat 4: parked learn — re-entry after a failed demo round ─────────────────
+
+# The parked-learn context: the demo round failed (the honest failure report is
+# the assistant's last turn), the machine holds in learn, and the reply decides
+# retry vs re-explain vs bail.
+_FAILED_ROUND_REPORT = (
+    "I tried, but the timetable page wouldn't load, so I couldn't save anything. "
+    "Should I try again, or is there a different page I should read?"
+)
+
+# Retry direction — corrections and try-agains actionable NOW (the correction
+# IS new instruction: a fixed url, a different column, a narrower value).
+_RETRY_POOL = [
+    "try again — the page should load now",
+    "no, read the SECOND table on the page, not the first one",
+    "you saved the arrival time — i wanted the departure time, fix that",
+    "use harborferries.example/timetable-v2 instead, the old link is dead",
+    "almost — but remember the last sailing too, not just the first",
+    "run it once more, i think the site was just down",
+    "the times you grabbed are for weekdays — get the weekend ones",
+    "same steps, but save them under 'ferry times' instead",
+    "close! the departure column is the one on the left",
+    "redo it and this time keep only the morning sailings",
+]
+
+# Re-explain direction — the steps need redoing but are NOT in this message:
+# the user is withdrawing the old instructions and will teach again later, so
+# the machine returns to needing the steps.
+_REEXPLAIN_POOL = [
+    "hold on, let me rethink how to explain this",
+    "scrap those steps — i'll write you better instructions in a minute",
+    "hmm this isn't working. let me find the right page first and get back to you",
+    "wait, i think i told you wrong. give me a sec to work out what i actually want",
+    "let's start over — i'll walk you through it a different way once i've checked the site",
+    "forget those instructions, they were wrong. i'll send new ones shortly",
+    "i need to look at the page myself before i can tell you what to grab",
+    "my bad, the steps i gave you were for the old site. let me dig up the new layout",
+    "hang on — what i described doesn't match the page. i'll re-explain in a bit",
+    "let me ask my brother how he checks it, then i'll teach you properly",
+]
+
+# Bail direction — the break-out edge from a failed round: give-ups and topic
+# changes; the task dies, the conversation moves on.
+_LEARN_BAIL_POOL = [
+    "you know what, forget it — this isn't working",
+    "let's give up on this one. how's your evening been?",
+    "eh, never mind the ferry thing. what's the weather tomorrow?",
+    "drop it for now, i'll set it up some other time",
+    "this is more trouble than it's worth, let's move on",
+    "abandon that — tell me a joke instead",
+    "let's shelve it. did anything happen in the news today?",
+    "no worries, i'll just check the ferry site myself from now on",
+    "leave it — what time is it in lisbon right now?",
+    "actually let's not bother. i'd rather plan dinner",
+]
+
+
+async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEval) -> None:
+    """Retry: a correction or try-again actionable now stays in learn — the
+    correction-loop invariant (a failed round holds its state)."""
+    await classifier_eval(
+        case_id="learn-retry-corrections",
+        state=ConversationState.LEARN,
+        pool=_RETRY_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_returns_to_elicit_on_reexplain(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Re-explain: the old instructions are withdrawn and new ones are coming
+    LATER — the machine returns to elicit (needing the steps), not learn."""
+    await classifier_eval(
+        case_id="learn-reexplain",
+        state=ConversationState.LEARN,
+        pool=_REEXPLAIN_POOL,
+        expected=ConversationState.ELICIT,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_bails_out(classifier_eval: ClassifierEval) -> None:
+    """The break-out edge from a failed round: a give-up or topic change routes
+    to idle — a broken teach loop never traps the conversation."""
+    await classifier_eval(
+        case_id="learn-bail",
+        state=ConversationState.LEARN,
+        pool=_LEARN_BAIL_POOL,
+        expected=ConversationState.IDLE,
+        penny_last_turn=_FAILED_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        min_pass_rate=None,
         family=_FAMILY,
     )
