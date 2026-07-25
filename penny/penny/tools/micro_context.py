@@ -156,11 +156,11 @@ _SKILL_NAMING_INSTRUCTION = (
 # no-transition (fail → stay; the caller's rule, encoded in
 # ``conversation_machine.next_state``).
 #
-# One state per machine may be SKILL-GATED (#1706 beat 2 — the apply edge): its
-# option line directs the model to add a second ``SKILL:`` line naming which of
-# the listed skills covers the request.  Drawing the gated state WITHOUT a valid
-# in-set skill line is the same contract violation — reroll, then INVALID — so an
-# apply decision always carries an actionable skill, never a dangling "use a
+# Some states are SKILL-GATED (#1706 beats 2/5 — apply and request-details):
+# their option lines direct the model to add a second ``SKILL:`` line naming
+# which of the listed skills is meant.  Drawing a gated state WITHOUT a valid
+# in-set skill line is the same contract violation — reroll, then INVALID — so
+# such a decision always carries an actionable skill, never a dangling "use a
 # skill" with nothing bound.
 STATE_TAG = "STATE:"
 SKILL_TAG = "SKILL:"
@@ -401,7 +401,7 @@ class MicroContext:
         content: str,
         allowed: Sequence[str],
         *,
-        skill_gated_state: str | None = None,
+        skill_gated_states: Sequence[str] = (),
         skills: Sequence[str] = (),
         run_target: str | None = None,
     ) -> StateDraw:
@@ -413,8 +413,8 @@ class MicroContext:
         violation exactly like an untagged draw — one reroll of the unchanged
         context, then an honest ``INVALID`` the machine reads as no-transition.
 
-        ``skill_gated_state`` names the one state (if any) whose draw must ALSO
-        carry a ``SKILL:`` line naming a member of ``skills`` — drawing it with a
+        ``skill_gated_states`` names the states whose draw must ALSO carry a
+        ``SKILL:`` line naming a member of ``skills`` — drawing one with a
         missing or out-of-set skill is the same contract violation, so a gated
         decision always binds an actionable skill.  A stray ``SKILL:`` line on an
         ungated draw is ignored (the decision stands; the line binds nothing)."""
@@ -430,7 +430,7 @@ class MicroContext:
             )
             if draw is None:
                 return StateDraw(outcome=StateDrawOutcome.POISON_REROLL_FAILED)
-            decided = self._parse_state_draw(draw, allowed, skill_gated_state, skills)
+            decided = self._parse_state_draw(draw, allowed, skill_gated_states, skills)
             if decided is not None:
                 return decided
             logger.warning("State-classifier output invalid — one reroll of the unchanged context")
@@ -441,7 +441,7 @@ class MicroContext:
     def _parse_state_draw(
         draw: str,
         allowed: Sequence[str],
-        skill_gated_state: str | None,
+        skill_gated_states: Sequence[str],
         skills: Sequence[str],
     ) -> StateDraw | None:
         """The tagged state (+ its gated skill), but ONLY when every member is in
@@ -453,7 +453,7 @@ class MicroContext:
         name = _tagged_payload(draw, STATE_TAG)
         if name is None or name not in allowed:
             return None
-        if skill_gated_state is None or name != skill_gated_state:
+        if name not in skill_gated_states:
             return StateDraw(outcome=StateDrawOutcome.DECIDED, name=name)
         skill = _tagged_payload(draw, SKILL_TAG)
         if skill is None or skill not in skills:

@@ -75,6 +75,7 @@ class ConversationState(StrEnum):
     IDLE = "idle"
     ELICIT = "elicit"
     LEARN = "learn"
+    REQUEST_DETAILS = "request-details"
     APPLY = "apply"
 
 
@@ -84,6 +85,7 @@ class ConversationState(StrEnum):
 OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ConversationState.IDLE: (
         ConversationState.APPLY,
+        ConversationState.REQUEST_DETAILS,
         ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
@@ -95,6 +97,11 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ),
     ConversationState.LEARN: (
         ConversationState.LEARN,
+        ConversationState.IDLE,
+    ),
+    ConversationState.REQUEST_DETAILS: (
+        ConversationState.APPLY,
+        ConversationState.ELICIT,
         ConversationState.IDLE,
     ),
     ConversationState.APPLY: (),
@@ -122,6 +129,11 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
         "for, or remember; a plain command counts, and a message without "
         "instructions is never learn"
     ),
+    ConversationState.REQUEST_DETAILS: (
+        "a known skill looks like it covers what the user wants, and the "
+        "assistant has named that skill and asked for the details it needs "
+        "before running it"
+    ),
     ConversationState.APPLY: (
         "a known skill does what they are asking for — mere resemblance to a "
         "skill is not coverage, and a needed input missing from their message "
@@ -144,10 +156,16 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # positive clause.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage, and a needed input missing "
-        "from their message is gathered later — add a second line naming that "
-        f"skill: {SKILL_TAG} <its name, copied exactly from Known skills>"
+        "one of the known skills does what they are asking for AND their "
+        "message supplies everything that skill needs — mere resemblance to a "
+        "skill is not coverage — add a second line naming that skill: "
+        f"{SKILL_TAG} <its name, copied exactly from Known skills>"
+    ),
+    (ConversationState.IDLE, ConversationState.REQUEST_DETAILS): (
+        "a known skill looks like it covers what they are asking for, but "
+        "something that skill needs is missing from their message — add a "
+        f"second line naming that skill: {SKILL_TAG} <its name, copied exactly "
+        "from Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up an ongoing task or routine and no known skill covers it"
@@ -156,6 +174,14 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "the user's message is a set of instructions to follow for the task "
         "being worked on — what to read, what to look for, what to remember, "
         "including corrections to previous steps"
+    ),
+    (ConversationState.REQUEST_DETAILS, ConversationState.APPLY): (
+        "their message supplies the details the assistant asked for, or "
+        "confirms the skill it named — add a second line naming that skill: "
+        f"{SKILL_TAG} <its name, copied exactly from Known skills>"
+    ),
+    (ConversationState.REQUEST_DETAILS, ConversationState.ELICIT): (
+        "they say that skill is not what they meant, and still want the task done"
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task "
@@ -175,6 +201,13 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
 
 # The default transition's rendered condition — IDLE's, everywhere.
 DEFAULT_TRANSITION = "in all other cases"
+
+# The states whose draw must also bind a skill (their conditions direct the
+# SKILL: line): apply enacts one, request-details negotiates one.
+SKILL_GATED_STATES = (
+    ConversationState.APPLY.value,
+    ConversationState.REQUEST_DETAILS.value,
+)
 
 # The conversation-slice section headers — fixed strings, whole-render pinned.
 # Markdown headers, not label lines: the parked, populated contexts this slice
@@ -284,7 +317,7 @@ class StateClassifier:
         draw = await self._micro_context.classify_state(
             content,
             [edge.value for edge in edges],
-            skill_gated_state=ConversationState.APPLY.value,
+            skill_gated_states=SKILL_GATED_STATES,
             skills=[candidate.name for candidate in snapshot.skill_candidates],
             run_target=run_target,
         )
@@ -293,7 +326,8 @@ class StateClassifier:
     @staticmethod
     def _decision(draw: StateDraw) -> StateDecision:
         """The machine-typed decision: a DECIDED draw carries a name guaranteed
-        to be a union member (and, when apply, a skill guaranteed a candidate),
+        to be a union member (and, for a skill-gated state, a skill guaranteed
+        to be a candidate),
         so the enum conversion cannot fail; every other outcome carries no state
         (the non-decision the machine holds on)."""
         if draw.outcome is StateDrawOutcome.DECIDED:
@@ -307,12 +341,14 @@ class StateClassifier:
 
 def presented_edges(snapshot: MachineSnapshot) -> tuple[ConversationState, ...]:
     """The union actually offered to the classifier: the current state's
-    out-edges, minus ``apply`` when the snapshot carries no skill candidates —
-    a structural narrowing, so an empty registry never renders an apply option
-    with nothing under it (the false-apply invitation)."""
+    out-edges, minus every SKILL-GATED state when the snapshot carries no skill
+    candidates — a structural narrowing, so an empty registry never renders an
+    option whose contract demands naming a skill there is none of (the
+    false-apply invitation, and the same for request-details: you cannot ask
+    for a skill's missing details when no skill is on offer)."""
     edges = OUT_EDGES[snapshot.state]
     if not snapshot.skill_candidates:
-        edges = tuple(edge for edge in edges if edge is not ConversationState.APPLY)
+        edges = tuple(edge for edge in edges if edge.value not in SKILL_GATED_STATES)
     return edges
 
 

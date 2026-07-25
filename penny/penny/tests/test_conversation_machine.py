@@ -98,9 +98,10 @@ def test_edge_table_invariants():
 
 
 def test_presented_edges_withholds_apply_without_candidates():
-    """The apply edge is offered only when the snapshot carries skill
-    candidates — an empty registry never renders an apply option (the
-    structural false-apply guard)."""
+    """The SKILL-GATED edges (apply, request-details) are offered only when the
+    snapshot carries skill candidates — an empty registry never renders an
+    option whose contract demands naming a skill (the structural false-apply
+    guard, and its request-details twin)."""
     assert presented_edges(_IDLE_SNAPSHOT) == (
         ConversationState.LEARN,
         ConversationState.ELICIT,
@@ -109,6 +110,7 @@ def test_presented_edges_withholds_apply_without_candidates():
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert presented_edges(with_skills) == (
         ConversationState.APPLY,
+        ConversationState.REQUEST_DETAILS,
         ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
@@ -280,10 +282,14 @@ def test_render_idle_with_candidates_whole():
         "put off for later; no task is being given or taught right now\n"
         "\n"
         "## Transitions\n"
-        "- apply — one of the known skills does what they are asking for — mere "
-        "resemblance to a skill is not coverage, and a needed input missing from their "
-        "message is gathered later — add a second line naming that skill: SKILL: <its "
-        "name, copied exactly from Known skills>\n"
+        "- apply — one of the known skills does what they are asking for AND their "
+        "message supplies everything that skill needs — mere resemblance to a skill is "
+        "not coverage — add a second line naming that skill: SKILL: <its name, copied "
+        "exactly from Known skills>\n"
+        "- request-details — a known skill looks like it covers what they are asking "
+        "for, but something that skill needs is missing from their message — add a "
+        "second line naming that skill: SKILL: <its name, copied exactly from Known "
+        "skills>\n"
         "- learn — the user's message is a set of instructions to follow for the task "
         "being worked on — what to read, what to look for, what to remember, including "
         "corrections to previous steps\n"

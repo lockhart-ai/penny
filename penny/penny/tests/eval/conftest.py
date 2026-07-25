@@ -2212,7 +2212,8 @@ def _score_classifier(
     the advisory well-formed check plus the rationale keep the two failure kinds
     distinct in the report without distorting the score.  An apply case also
     scores WHICH skill the draw bound (``expected_skill``) — n/a when the sample
-    never decided apply (no skill to judge; the edge check already failed)."""
+    never decided the expected state (no skill to judge; the edge check already
+    failed).  Both skill-gated states (apply, request-details) score it."""
     decided = decision.outcome == StateDrawOutcome.DECIDED
     ok = decided and decision.state is expected
     if ok:
@@ -2232,7 +2233,7 @@ def _score_classifier(
         ),
     ]
     if expected_skill is not None:
-        if decided and decision.state is ConversationState.APPLY:
+        if decided and decision.state is expected:
             named = decision.skill == expected_skill
             checks.append(
                 Check(
@@ -2246,7 +2247,7 @@ def _score_classifier(
             checks.append(
                 Check.na(
                     "named the covering skill",
-                    rationale="no apply decision to carry a skill",
+                    rationale=f"no {expected.value} decision to carry a skill",
                     kind="state",
                 )
             )
