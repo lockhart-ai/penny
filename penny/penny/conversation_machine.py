@@ -146,16 +146,17 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "they are asking to set up an ongoing task or routine and no known skill covers it"
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
-        "their message gives instructions to follow — what to read, look for, "
-        "or remember; a plain command counts"
+        "their message gives instructions for the task being worked on — what "
+        "to read, look for, or remember; a plain command counts, and the "
+        "instructions are in this message, not promised for later"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "they are still working the task out with the assistant — a question "
         "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
-        "their message corrects or retries the round just attempted, with "
-        "instructions to act on now"
+        "their message corrects or retries the round just attempted — the "
+        "correction is in this message, not promised for later"
     ),
     (ConversationState.LEARN, ConversationState.ELICIT): (
         "they are working the task out again — a question or a doubt about "
