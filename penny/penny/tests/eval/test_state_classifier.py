@@ -306,7 +306,7 @@ async def test_same_verb_different_domain_still_elicits(
         pool=_CROSS_DOMAIN_POOL,
         expected=ConversationState.ELICIT,
         seed_skills=_CROSS_DOMAIN_SKILLS,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -518,7 +518,7 @@ async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEv
         expected=ConversationState.LEARN,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -550,7 +550,7 @@ async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEv
         expected=ConversationState.IDLE,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
 
@@ -566,6 +566,6 @@ async def test_parked_learn_bails_out(classifier_eval: ClassifierEval) -> None:
         expected=ConversationState.IDLE,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
+        min_pass_rate=0.8,
         family=_FAMILY,
     )
