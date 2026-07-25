@@ -95,14 +95,14 @@ def test_presented_edges_withholds_apply_without_candidates():
     candidates — an empty registry never renders an apply option (the
     structural false-apply guard)."""
     assert presented_edges(_IDLE_SNAPSHOT) == (
-        ConversationState.IDLE,
         ConversationState.ELICIT,
+        ConversationState.IDLE,
     )
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert presented_edges(with_skills) == (
-        ConversationState.IDLE,
         ConversationState.APPLY,
         ConversationState.ELICIT,
+        ConversationState.IDLE,
     )
 
 
@@ -110,43 +110,47 @@ def test_presented_edges_withholds_apply_without_candidates():
 
 
 def test_system_prompt_whole_render():
-    """Whole-render literal of the dispatch contract: one tagged STATE: line,
-    the name copied exactly from the listed states, nothing else."""
+    """Whole-render literal of the dispatch contract: the frame + the
+    execution-context guard, the given-inputs list (current state and
+    transitions among them), the numbered decision steps (pick the transition
+    whose CONDITION is met, else the default), and the output contract."""
     assert STATE_CLASSIFIER_SYSTEM_PROMPT == (
         "You are a dispatch step for a conversation between a user and their "
-        "assistant. The assistant has real tools (reading pages, saving values), "
-        "and a separate context carries out whatever you decide — NEVER judge "
-        "whether an action is possible; your only job is the state.\n"
+        "assistant. The assistant has real tools (reading pages, saving values), and a "
+        "separate context carries out whatever you decide — NEVER judge whether an "
+        "action is possible; your only job is the state.\n"
         "\n"
         "You are given:\n"
         "- The assistant's last message\n"
         "- The task being worked on (when there is one)\n"
         "- Known skills — the assistant's existing routines ((none) when it has none)\n"
         "- The user's newest message\n"
-        "- States: the closed list to pick from, each with a one-line meaning\n"
+        "- Current state — where the conversation stands right now\n"
+        "- Transitions — the states you may move to, each with the condition that "
+        "selects it; the last one is the default\n"
         "\n"
         "Do this:\n"
         "1. In your reasoning, note what the user's newest message is doing in the "
         "conversation, judging only from what the messages say.\n"
-        "2. Pick the ONE listed state whose meaning fits the newest message.\n"
-        "3. Check whether the chosen state's meaning directs you to add a "
-        "SKILL: line.\n"
+        "2. Pick the ONE transition whose condition the newest message meets. When "
+        "none of the conditions is met, pick the default.\n"
+        "3. Check whether the chosen transition directs you to add a SKILL: line.\n"
         "\n"
         "Respond with exactly one line:\n"
         "STATE: <name>\n"
-        "The name must be one of the listed states, copied EXACTLY. When the chosen "
-        "state directs it, add exactly one more line — SKILL: <the skill's "
+        "The name must be one of the listed transitions, copied EXACTLY. When the "
+        "chosen transition directs it, add exactly one more line — SKILL: <the skill's "
         "name, copied exactly from Known skills> — and nothing more.\n"
-        "IMPORTANT: write nothing else — no preamble, no explanation, no restating "
-        "the messages."
+        "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
+        "messages."
     )
 
 
 def test_render_idle_slice_whole():
-    """The idle render, whole: markdown sections, the (none) placeholders, and
-    the offered states carrying their CANONICAL definitions — identical text
-    wherever a state renders (states have stable semantics; only which
-    transitions are offered varies)."""
+    """The idle render, whole: the slice sections, then WHERE the machine
+    stands (current state + its canonical definition) and WHAT MOVES IT (one
+    line per transition with its condition; idle last as the declared
+    default).  Apply is absent — no candidates."""
     assert render_classifier_content(_IDLE_SNAPSHOT, _ASK) == (
         "## The assistant's last message\n"
         "(none)\n"
@@ -157,22 +161,25 @@ def test_render_idle_slice_whole():
         "## The user's newest message\n"
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
         "\n"
-        "## States\n"
-        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
+        "## Current state\n"
+        "idle — ordinary conversation — chat, questions, passing mentions, or anything "
         "put off for later; no task is being given or taught right now\n"
-        "- elicit: the user wants a task done that no known skill covers, and the "
-        "assistant is asking to be taught the steps"
+        "\n"
+        "## Transitions\n"
+        "- elicit — they are asking to set up an ongoing task or routine and no known "
+        "skill covers it\n"
+        "- idle — in all other cases"
     )
 
 
 def test_render_parked_elicit_slice_whole():
     """The parked-elicit render, whole: teach question + instigating ask as
-    their own sections, and the elicit out-edges carrying the same canonical
-    definitions every other render uses."""
+    their own sections, elicit named as the current state, and its three
+    transitions carrying the conditions that select them."""
     assert render_classifier_content(_ELICIT_SNAPSHOT, _STEPS) == (
         "## The assistant's last message\n"
-        "I don't know how to do that yet — can you teach me? What should I read, look for, "
-        "and remember?\n"
+        "I don't know how to do that yet — can you teach me? What should I read, look "
+        "for, and remember?\n"
         "\n"
         "## The task being worked on\n"
         "hey can you keep an eye on the harbor ferry timetable for me?\n"
@@ -184,22 +191,24 @@ def test_render_parked_elicit_slice_whole():
         "sure — read harborferries.example/timetable and remember the first morning "
         "departure\n"
         "\n"
-        "## States\n"
-        "- learn: the user's message gives instructions to follow — what to read, look "
-        "for, or remember; a plain command counts, and a message without instructions is "
-        "never learn\n"
-        "- elicit: the user wants a task done that no known skill covers, and the "
+        "## Current state\n"
+        "elicit — the user wants a task done that no known skill covers, and the "
         "assistant is asking to be taught the steps\n"
-        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
-        "put off for later; no task is being given or taught right now"
+        "\n"
+        "## Transitions\n"
+        "- learn — their message gives instructions to follow — what to read, look "
+        "for, or remember; a plain command counts\n"
+        "- elicit — they are still working the task out with the assistant: a question "
+        "back, a clarification, no instructions yet\n"
+        "- idle — in all other cases"
     )
 
 
 def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: full skill
-    metadata in Known skills, the apply edge joining the union with its
-    canonical definition (incl. the SKILL: directive).  A parameterless
-    candidate renders without the needs tail, byte-identical."""
+    metadata in Known skills, and the apply transition joining the list with
+    its coverage condition + the SKILL: directive.  A parameterless candidate
+    renders without the needs tail, byte-identical."""
     assert SkillCandidate(name="x", description="y").render() == "x — y"
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
@@ -207,21 +216,24 @@ def test_render_idle_with_candidates_whole():
         "(none)\n"
         "\n"
         "## Known skills\n"
-        "- watch a listing price for changes — checks a page and records the current price "
-        "(needs: url — the listing page to watch)\n"
+        "- watch a listing price for changes — checks a page and records the current "
+        "price (needs: url — the listing page to watch)\n"
         "\n"
         "## The user's newest message\n"
         "what's the ferry price at today?\n"
         "\n"
-        "## States\n"
-        "- idle: ordinary conversation — chat, questions, passing mentions, or anything "
+        "## Current state\n"
+        "idle — ordinary conversation — chat, questions, passing mentions, or anything "
         "put off for later; no task is being given or taught right now\n"
-        "- apply: a known skill does what they are asking for — mere resemblance to a "
-        "skill is not coverage, and a needed input missing from their message is gathered "
-        "later — add a second line naming that skill: SKILL: <its name, copied exactly "
-        "from Known skills>\n"
-        "- elicit: the user wants a task done that no known skill covers, and the "
-        "assistant is asking to be taught the steps"
+        "\n"
+        "## Transitions\n"
+        "- apply — one of the known skills does what they are asking for — mere "
+        "resemblance to a skill is not coverage, and a needed input missing from their "
+        "message is gathered later — add a second line naming that skill: SKILL: <its "
+        "name, copied exactly from Known skills>\n"
+        "- elicit — they are asking to set up an ongoing task or routine and no known "
+        "skill covers it\n"
+        "- idle — in all other cases"
     )
 
 

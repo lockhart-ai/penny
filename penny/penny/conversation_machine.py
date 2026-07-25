@@ -76,9 +76,9 @@ class ConversationState(StrEnum):
 # structural apply-narrowing in ``presented_edges``).  Order is render order.
 OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ConversationState.IDLE: (
-        ConversationState.IDLE,
         ConversationState.APPLY,
         ConversationState.ELICIT,
+        ConversationState.IDLE,
     ),
     ConversationState.ELICIT: (
         ConversationState.LEARN,
@@ -123,6 +123,49 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
     ),
 }
 
+# The TRANSITION FUNCTION — the condition that selects each move, keyed
+# (current, target).  This is the half that legitimately varies by where the
+# machine stands, and rendering it AS conditions is what keeps the state
+# DEFINITIONS above stable: a state means one thing everywhere; what changes is
+# what moves you out of the state you are in.  Conditions come from #1706's
+# edge table (steps arrived / still clarifying / broke out; correcting /
+# working it out / called off) — the design, not the eval pools.
+#
+# IDLE is the DECLARED DEFAULT: it carries no condition of its own and always
+# renders last as "in all other cases", so a message meeting none of the real
+# conditions has an unambiguous home instead of being forced into the nearest
+# positive clause.
+TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
+    (ConversationState.IDLE, ConversationState.APPLY): (
+        "one of the known skills does what they are asking for — mere "
+        "resemblance to a skill is not coverage, and a needed input missing "
+        "from their message is gathered later — add a second line naming that "
+        f"skill: {SKILL_TAG} <its name, copied exactly from Known skills>"
+    ),
+    (ConversationState.IDLE, ConversationState.ELICIT): (
+        "they are asking to set up an ongoing task or routine and no known skill covers it"
+    ),
+    (ConversationState.ELICIT, ConversationState.LEARN): (
+        "their message gives instructions to follow — what to read, look for, "
+        "or remember; a plain command counts"
+    ),
+    (ConversationState.ELICIT, ConversationState.ELICIT): (
+        "they are still working the task out with the assistant: a question "
+        "back, a clarification, no instructions yet"
+    ),
+    (ConversationState.LEARN, ConversationState.LEARN): (
+        "their message corrects or retries the round just attempted, with "
+        "instructions to act on now"
+    ),
+    (ConversationState.LEARN, ConversationState.ELICIT): (
+        "they are working the task out again: a question or doubt about how, "
+        "with no instructions to act on"
+    ),
+}
+
+# The default transition's rendered condition — IDLE's, everywhere.
+DEFAULT_TRANSITION = "in all other cases"
+
 # The conversation-slice section headers — fixed strings, whole-render pinned.
 # Markdown headers, not label lines: the parked, populated contexts this slice
 # grows into (many candidates, quoted turns that carry their own lists and
@@ -132,7 +175,8 @@ _LAST_TURN_HEADER = "## The assistant's last message"
 _TASK_HEADER = "## The task being worked on"
 _SKILLS_HEADER = "## Known skills"
 _MESSAGE_HEADER = "## The user's newest message"
-_STATES_HEADER = "## States"
+_CURRENT_STATE_HEADER = "## Current state"
+_TRANSITIONS_HEADER = "## Transitions"
 _NONE_PLACEHOLDER = "(none)"
 
 
@@ -263,7 +307,10 @@ def presented_edges(snapshot: MachineSnapshot) -> tuple[ConversationState, ...]:
 
 
 def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
-    """The classifier's whole world, rendered as markdown SECTIONS: the scoped
+    """The classifier's whole world, rendered as markdown SECTIONS: WHERE the
+    machine stands and WHAT MOVES IT (the current state with its canonical
+    definition, then one line per available transition carrying the condition
+    that selects it — idle last, the declared default), over the scoped
     conversation slice
     (assistant's last turn, the parked task anchor when one exists, the known
     skills, the newest message), then the offered states with their per-edge
@@ -283,11 +330,22 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     else:
         sections.append(f"{_SKILLS_HEADER}\n{_NONE_PLACEHOLDER}")
     sections.append(f"{_MESSAGE_HEADER}\n{message}")
-    states = "\n".join(
-        f"- {target.value}: {STATE_DEFINITIONS[target]}" for target in presented_edges(snapshot)
+    current = f"{snapshot.state.value} — {STATE_DEFINITIONS[snapshot.state]}"
+    sections.append(f"{_CURRENT_STATE_HEADER}\n{current}")
+    transitions = "\n".join(
+        f"- {target.value} — {_transition_condition(snapshot.state, target)}"
+        for target in presented_edges(snapshot)
     )
-    sections.append(f"{_STATES_HEADER}\n{states}")
+    sections.append(f"{_TRANSITIONS_HEADER}\n{transitions}")
     return "\n\n".join(sections)
+
+
+def _transition_condition(current: ConversationState, target: ConversationState) -> str:
+    """The condition selecting one move — IDLE is the declared default (it
+    carries no condition of its own), every other target names its own."""
+    if target is ConversationState.IDLE:
+        return DEFAULT_TRANSITION
+    return TRANSITIONS[(current, target)]
 
 
 def next_state(current: ConversationState, decision: StateDecision) -> ConversationState:
