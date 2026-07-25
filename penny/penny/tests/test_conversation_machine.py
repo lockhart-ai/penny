@@ -86,7 +86,8 @@ def test_edge_table_invariants():
     for state, edges in OUT_EDGES.items():
         if edges:
             assert ConversationState.IDLE in edges, f"{state} lacks the break-out edge"
-    assert ConversationState.LEARN not in OUT_EDGES[ConversationState.IDLE]
+    # Teaching can arrive unprompted, so learn IS reachable from idle.
+    assert ConversationState.LEARN in OUT_EDGES[ConversationState.IDLE]
     assert OUT_EDGES[ConversationState.APPLY] == ()
     # learn is two-way: instructions (stay) or the idle default — elicit exists
     # to GET instructions, so there is no path back to it once they are given.
@@ -101,12 +102,14 @@ def test_presented_edges_withholds_apply_without_candidates():
     candidates — an empty registry never renders an apply option (the
     structural false-apply guard)."""
     assert presented_edges(_IDLE_SNAPSHOT) == (
+        ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
     )
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert presented_edges(with_skills) == (
         ConversationState.APPLY,
+        ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
     )
@@ -172,6 +175,9 @@ def test_render_idle_slice_whole():
         "put off for later; no task is being given or taught right now\n"
         "\n"
         "## Transitions\n"
+        "- learn — the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, including "
+        "corrections to previous steps\n"
         "- elicit — they are asking to set up an ongoing task or routine and no known "
         "skill covers it\n"
         "- idle — in all other cases"
@@ -203,8 +209,8 @@ def test_render_parked_elicit_slice_whole():
         "\n"
         "## Transitions\n"
         "- learn — the user's message is a set of instructions to follow for the task "
-        "— what to read, what to look for, what to remember, including corrections to "
-        "previous steps\n"
+        "being worked on — what to read, what to look for, what to remember, including "
+        "corrections to previous steps\n"
         "- elicit — they are still working the task out with the assistant — a "
         "question back, or a clarification about the task itself\n"
         "- idle — in all other cases"
@@ -245,8 +251,8 @@ def test_render_parked_learn_slice_whole():
         "\n"
         "## Transitions\n"
         "- learn — the user's message is a set of instructions to follow for the task "
-        "— what to read, what to look for, what to remember, including corrections to "
-        "previous steps\n"
+        "being worked on — what to read, what to look for, what to remember, including "
+        "corrections to previous steps\n"
         "- idle — in all other cases"
     )
 
@@ -278,6 +284,9 @@ def test_render_idle_with_candidates_whole():
         "resemblance to a skill is not coverage, and a needed input missing from their "
         "message is gathered later — add a second line naming that skill: SKILL: <its "
         "name, copied exactly from Known skills>\n"
+        "- learn — the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, including "
+        "corrections to previous steps\n"
         "- elicit — they are asking to set up an ongoing task or routine and no known "
         "skill covers it\n"
         "- idle — in all other cases"
@@ -311,9 +320,10 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
 async def test_classify_out_of_union_draw_is_rerolled_then_stays():
     """A drawn state OUTSIDE the offered union is a contract violation exactly
     like an untagged draw: one reroll of the unchanged context, then an honest
-    INVALID the machine holds its state on — learn is not an idle out-edge, so
-    a flaky draw can never conjure a teach round from ordinary chat."""
-    model = _responds("STATE: learn")
+    INVALID the machine holds its state on — apply is WITHHELD from a
+    candidate-less idle snapshot, so a flaky draw can never conjure an apply
+    against an empty registry."""
+    model = _responds("STATE: apply")
     decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK)
     assert decision.outcome == StateDrawOutcome.INVALID
     assert decision.state is None

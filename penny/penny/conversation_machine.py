@@ -24,7 +24,10 @@ prose:
   ``learn`` is TWO-WAY — the user either provides instructions to follow (stay
   in learn) or the machine falls to idle: elicit exists to GET instructions, so
   once they have been given there is no going back to it (code-owner ruling,
-  beat 4);
+  beat 4).  ``learn`` is reachable from ``idle`` directly — teaching can arrive
+  UNPROMPTED ("lemme teach you how to X: do A, B, C"), skipping the teach
+  question entirely; entering learn means ONE thing from every source, so the
+  condition text is identical on every edge that enters it;
   ``learn`` is unreachable from ``idle`` (steps can only arrive after an ask);
   ``apply`` has NO out-edges — its reset to idle is a post-turn structural
   fact, never a classifier call (there is no message to classify at end of
@@ -81,6 +84,7 @@ class ConversationState(StrEnum):
 OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ConversationState.IDLE: (
         ConversationState.APPLY,
+        ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
     ),
@@ -148,19 +152,24 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up an ongoing task or routine and no known skill covers it"
     ),
+    (ConversationState.IDLE, ConversationState.LEARN): (
+        "the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, "
+        "including corrections to previous steps"
+    ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
-        "the user's message is a set of instructions to follow for the task — "
-        "what to read, what to look for, what to remember, including "
-        "corrections to previous steps"
+        "the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, "
+        "including corrections to previous steps"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "they are still working the task out with the assistant — a question "
         "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
-        "the user's message is a set of instructions to follow for the task — "
-        "what to read, what to look for, what to remember, including "
-        "corrections to previous steps"
+        "the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, "
+        "including corrections to previous steps"
     ),
 }
 

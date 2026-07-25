@@ -11,11 +11,14 @@ the beat-1 and beat-2 cases is exactly what varies in production: whether the
 registry holds skills.
 
 **Beat 1 (empty registry — the cold-start shape)**: apply is structurally
-withheld, the live union is elicit vs idle.  FIRE = request-shaped asks for
-routines nothing covers; HOLD = ordinary conversation incl. the named boundary
-case — a PASSING MENTION of a watchable thing (recurrence words describing the
-USER's own habit, topic twins of fire phrasings).  Gated at 0.8 (two clean 1.00
-baseline runs at N=10, turn-audited).
+withheld, the live union is learn vs elicit vs idle.  FIRE = request-shaped asks
+for routines nothing covers (no steps in the message → elicit); HOLD = ordinary
+conversation incl. the named boundary case — a PASSING MENTION of a watchable
+thing (recurrence words describing the USER's own habit, topic twins of fire
+phrasings).  UNPROMPTED TEACHING = the same intents but WITH the steps in the
+message → learn directly, skipping the teach question; fire is its paired guard
+(same asks, no steps).  Gated at 0.8 (two clean 1.00 baseline runs at N=10,
+turn-audited).
 
 **Beat 2 (two seeded skills — a price-watch plus a distractor)**: the union
 grows to three and the apply draw must ALSO bind WHICH skill (the SKILL: line,
@@ -120,6 +123,42 @@ async def test_idle_holds_on_chat_and_passing_mentions(
         pool=_HOLD_POOL,
         expected=ConversationState.IDLE,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# Unprompted teaching — the user volunteers the routine WITH its steps, so the
+# machine goes straight to learn from idle, skipping the teach question (the
+# fire pool above is the paired guard: same intents, no steps → elicit).
+_UNPROMPTED_TEACH_POOL = [
+    "hey lemme teach you how to check the ferry: open harborferries.example/timetable "
+    "and remember the first morning departure",
+    "here's how i want you to track the tides — read the tide table page and note when "
+    "low tide is before 9",
+    "i'll show you how this works: go to the library's new-arrivals page and save any "
+    "new mystery titles",
+    "let me teach you my routine — open the bakery's site, find the daily special, write it down",
+    "this is how you do it: read the trailhead conditions page and remember whether the "
+    "pass is open",
+    "want to learn how i do this? open the vendor list page and note which stalls are new",
+    "ok teaching time — read harborseals.example/colony-count and save the number",
+    "here's the routine: check the ferry site, find the late sailing, remember if it's listed",
+    "i'll walk you through it: open the community pool page and note the summer hours",
+    "let me show you — read the birding club's sightings board and save any new species",
+]
+
+
+async def test_idle_to_learn_on_unprompted_teaching(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """Teaching can arrive UNPROMPTED: a message carrying the routine AND its
+    steps goes straight to learn from idle, skipping the teach question."""
+    await classifier_eval(
+        case_id="idle-learn-unprompted",
+        state=ConversationState.IDLE,
+        pool=_UNPROMPTED_TEACH_POOL,
+        expected=ConversationState.LEARN,
+        min_pass_rate=None,
         family=_FAMILY,
     )
 
