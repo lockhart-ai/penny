@@ -1,4 +1,4 @@
-"""Per-edge conversation-state classifier contracts (#1706, beats 1–2): the
+"""Per-edge conversation-state classifier contracts (#1706, beats 1–4): the
 idle out-edges, every direction, from the cold-start shape through a populated
 skill registry.
 
@@ -28,23 +28,24 @@ pool verbatim under candidates (does chat stay chat when apply is on offer?);
 MIXED = chat preamble + a covered ask in one message (the named mixed-message
 boundary → apply).
 
-**Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
-parked in learn (the demo round did not complete; ``penny_last_turn`` = the
-honest failure report), and the user's reply resolves it: learn is TWO-WAY
-(code-owner ruling: elicit exists to GET instructions, so once they have been
-given there is no going back to it — the user either provides instructions or
-the machine falls to idle).  RETRY = corrections that CARRY new instructions
-(→ learn); QUESTIONS = post-failure questions and doubts, no instructions
-carried (→ idle); DEFERRAL = "i'll get back to you later" in any form
-(→ idle); BAIL = give-ups and topic changes (→ idle).
-
 **Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
 elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
 the parked-snapshot fields' first live use), and the user's reply resolves it:
 STEPS = instructions telling the assistant HOW (→ learn, incl. schedule-worded
 steps as realistic difficulty); CLARIFYING = questions back / partials without
 the how (→ elicit); BAIL = call-offs and topic changes (→ idle, the break-out
-edge).  Report-only until baselines are read.
+edge).
+
+**Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
+parked in learn (the demo round did not complete; ``penny_last_turn`` = the
+honest failure report), and the user's reply resolves it: learn is TWO-WAY
+(code-owner ruling: elicit exists to GET instructions, so once they have been
+given there is no going back to it — the user either provides instructions or
+the machine falls to idle).  Parked learn is BINARY: a corrected
+set of instructions (→ learn), or a bail (→ idle).  RETRY = corrections that
+CARRY the new instructions; QUESTIONS = post-failure questions and doubts,
+no instructions carried; BAIL = give-ups, topic changes, and withdrawals of
+the instructions.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -348,11 +349,11 @@ _CLARIFYING_POOL = [
 
 # Bail direction — the break-out edge: call-offs and topic changes.
 _BAIL_POOL = [
-    "hang on, let me find the right link first — i'll get back to you",
+    "actually never mind, don't worry about it",
     "forget it — what's the weather looking like tomorrow?",
     "eh, it's not that important. anyway how was your night?",
     "no no, not that. let's drop it",
-    "let me think about what exactly i want you to look for and circle back",
+    "let's skip it for now",
     "on second thought i'll just check it myself",
     "changing topics — did anything interesting happen in the news today?",
     "scratch that. can you tell me a joke instead?",
@@ -452,22 +453,6 @@ _RETRY_POOL = [
     "redo it and this time keep only the morning sailings",
 ]
 
-# Deferral direction — "i'll get back to you later" in any form: the reply
-# neither gives nor corrects instructions, so the loop cannot proceed — a bail
-# (code-owner ruling; run-1's decode agreed with the model, not the case).
-_DEFERRAL_POOL = [
-    "hold on, let me rethink how to explain this",
-    "scrap those steps — i'll write you better instructions in a minute",
-    "hmm this isn't working. let me find the right page first and get back to you",
-    "wait, i think i told you wrong. give me a sec to work out what i actually want",
-    "let's start over — i'll get you new steps after i've checked the site myself",
-    "forget those instructions, they were wrong. i'll send new ones shortly",
-    "i need to look at the page myself before i can tell you what to grab",
-    "my bad, the steps i gave you were for the old site. let me dig up the new layout",
-    "hang on — what i described doesn't match the page. i'll re-explain in a bit",
-    "let me ask my brother how he checks it, then i'll teach you properly",
-]
-
 # Bail direction — the break-out edge from a failed round: give-ups and topic
 # changes; the task dies, the conversation moves on.
 _LEARN_BAIL_POOL = [
@@ -479,8 +464,8 @@ _LEARN_BAIL_POOL = [
     "abandon that — tell me a joke instead",
     "let's shelve it. did anything happen in the news today?",
     "no worries, i'll just check the ferry site myself from now on",
-    "leave it — what time is it in lisbon right now?",
-    "actually let's not bother. i'd rather plan dinner",
+    "scrap those steps — i'll write you better instructions in a minute",
+    "forget those instructions, they were wrong. i'll send new ones shortly",
 ]
 
 
@@ -516,22 +501,6 @@ _POST_FAILURE_QUESTION_POOL = [
 ]
 
 
-async def test_parked_learn_deferrals_bail(classifier_eval: ClassifierEval) -> None:
-    """Deferral = bail: a reply that neither gives nor corrects instructions
-    and puts the task off for later routes to idle — the machine never holds
-    open on a promise."""
-    await classifier_eval(
-        case_id="learn-deferral-bails",
-        state=ConversationState.LEARN,
-        pool=_DEFERRAL_POOL,
-        expected=ConversationState.IDLE,
-        penny_last_turn=_FAILED_ROUND_REPORT,
-        task_anchor=_FERRY_ASK,
-        min_pass_rate=None,
-        family=_FAMILY,
-    )
-
-
 async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEval) -> None:
     """Engaged questions still carry no instructions, so they fall to idle —
     the two-way learn state has no path back to elicit."""
@@ -548,8 +517,9 @@ async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEv
 
 
 async def test_parked_learn_bails_out(classifier_eval: ClassifierEval) -> None:
-    """The break-out edge from a failed round: a give-up or topic change routes
-    to idle — a broken teach loop never traps the conversation."""
+    """The break-out edge from a failed round: a give-up, a topic change, or a
+    withdrawal of the instructions routes to idle — parked learn is binary, so
+    anything that is not a corrected set of instructions is a bail."""
     await classifier_eval(
         case_id="learn-bail",
         state=ConversationState.LEARN,
