@@ -21,6 +21,10 @@ prose:
 
 - **The edge table is data** (:data:`OUT_EDGES`): every non-idle state that
   classifies carries the break-out edge → idle (topic changed / called off);
+  ``learn`` is TWO-WAY — the user either provides instructions to follow (stay
+  in learn) or the machine falls to idle: elicit exists to GET instructions, so
+  once they have been given there is no going back to it (code-owner ruling,
+  beat 4);
   ``learn`` is unreachable from ``idle`` (steps can only arrive after an ask);
   ``apply`` has NO out-edges — its reset to idle is a post-turn structural
   fact, never a classifier call (there is no message to classify at end of
@@ -87,7 +91,6 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
     ),
     ConversationState.LEARN: (
         ConversationState.LEARN,
-        ConversationState.ELICIT,
         ConversationState.IDLE,
     ),
     ConversationState.APPLY: (),
@@ -146,21 +149,16 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "they are asking to set up an ongoing task or routine and no known skill covers it"
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
-        "their message gives instructions for the task being worked on — what "
-        "to read, look for, or remember; a plain command counts, and the "
-        "instructions are in this message, not promised for later"
+        "the user provided instructions to follow for the task — what to read, "
+        "look for, or remember; a plain command counts"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "they are still working the task out with the assistant — a question "
         "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
-        "their message corrects or retries the round just attempted — the "
-        "correction is in this message, not promised for later"
-    ),
-    (ConversationState.LEARN, ConversationState.ELICIT): (
-        "they are working the task out again — a question or a doubt about "
-        "how the assistant should do it"
+        "the user provided instructions to follow for the task — what to read, "
+        "look for, or remember; a plain command counts"
     ),
 }
 

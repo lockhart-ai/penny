@@ -88,6 +88,12 @@ def test_edge_table_invariants():
             assert ConversationState.IDLE in edges, f"{state} lacks the break-out edge"
     assert ConversationState.LEARN not in OUT_EDGES[ConversationState.IDLE]
     assert OUT_EDGES[ConversationState.APPLY] == ()
+    # learn is two-way: instructions (stay) or the idle default — elicit exists
+    # to GET instructions, so there is no path back to it once they are given.
+    assert OUT_EDGES[ConversationState.LEARN] == (
+        ConversationState.LEARN,
+        ConversationState.IDLE,
+    )
 
 
 def test_presented_edges_withholds_apply_without_candidates():
@@ -196,11 +202,49 @@ def test_render_parked_elicit_slice_whole():
         "assistant is asking to be taught the steps\n"
         "\n"
         "## Transitions\n"
-        "- learn — their message gives instructions for the task being worked on — "
-        "what to read, look for, or remember; a plain command counts, and the "
-        "instructions are in this message, not promised for later\n"
+        "- learn — the user provided instructions to follow for the task — what to "
+        "read, look for, or remember; a plain command counts\n"
         "- elicit — they are still working the task out with the assistant — a "
         "question back, or a clarification about the task itself\n"
+        "- idle — in all other cases"
+    )
+
+
+def test_render_parked_learn_slice_whole():
+    """The parked-learn render, whole: learn is TWO-WAY — the union is learn
+    (the user provided instructions) and idle (everything else, the declared
+    default).  There is no path back to elicit: elicit exists to GET the
+    instructions, and they have been given."""
+    parked_learn = MachineSnapshot(
+        state=ConversationState.LEARN,
+        penny_last_turn=(
+            "I tried, but the timetable page wouldn't load, so I couldn't save "
+            "anything. Should I try again, or is there a different page I should read?"
+        ),
+        task_anchor=_ASK,
+    )
+    assert render_classifier_content(parked_learn, "try again — the page should load now") == (
+        "## The assistant's last message\n"
+        "I tried, but the timetable page wouldn't load, so I couldn't save anything. "
+        "Should I try again, or is there a different page I should read?\n"
+        "\n"
+        "## The task being worked on\n"
+        "hey can you keep an eye on the harbor ferry timetable for me?\n"
+        "\n"
+        "## Known skills\n"
+        "(none)\n"
+        "\n"
+        "## The user's newest message\n"
+        "try again — the page should load now\n"
+        "\n"
+        "## Current state\n"
+        "learn — the user's message gives instructions to follow — what to read, look "
+        "for, or remember; a plain command counts, and a message without instructions "
+        "is never learn\n"
+        "\n"
+        "## Transitions\n"
+        "- learn — the user provided instructions to follow for the task — what to "
+        "read, look for, or remember; a plain command counts\n"
         "- idle — in all other cases"
     )
 

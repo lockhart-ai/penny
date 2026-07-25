@@ -30,13 +30,13 @@ boundary → apply).
 
 **Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
 parked in learn (the demo round did not complete; ``penny_last_turn`` = the
-honest failure report), and the user's reply resolves it: RETRY = corrections
-and try-agains, actionable now (→ learn — the correction-loop invariant: fail
-stays in-state); WORKING-IT-OUT = questions and doubts about how, no new
-instructions carried (→ elicit); DEFERRAL = "i'll get back to you later" in
-any form (→ idle — the code-owner ruling: if the reply neither gives nor
-corrects explicit instructions and defers, it is a bail); BAIL = give-ups and
-topic changes (→ idle).
+honest failure report), and the user's reply resolves it: learn is TWO-WAY
+(code-owner ruling: elicit exists to GET instructions, so once they have been
+given there is no going back to it — the user either provides instructions or
+the machine falls to idle).  RETRY = corrections that CARRY new instructions
+(→ learn); QUESTIONS = post-failure questions and doubts, no instructions
+carried (→ idle); DEFERRAL = "i'll get back to you later" in any form
+(→ idle); BAIL = give-ups and topic changes (→ idle).
 
 **Beat 3 (the parked machine — elicit's out-edges)**: the machine is parked in
 elicit (anchor = the instigating ask, ``penny_last_turn`` = the teach question —
@@ -499,9 +499,10 @@ async def test_parked_learn_retries_on_corrections(classifier_eval: ClassifierEv
     )
 
 
-# Working-it-out direction — questions and doubts about how, continuing the
-# teach dialogue with no instructions to act on: the machine returns to elicit.
-_WORKING_IT_OUT_POOL = [
+# Questions direction — post-failure questions and doubts about how: engaged,
+# but carrying no instructions, so the machine falls to idle (learn is two-way;
+# there is no path back to elicit once instructions have been given).
+_POST_FAILURE_QUESTION_POOL = [
     "what went wrong exactly? which page did you open?",
     "hm, what can you actually read then?",
     "did the link work at all, or did nothing come up?",
@@ -531,14 +532,14 @@ async def test_parked_learn_deferrals_bail(classifier_eval: ClassifierEval) -> N
     )
 
 
-async def test_parked_learn_working_it_out(classifier_eval: ClassifierEval) -> None:
-    """Working it out: a question or doubt about how — no instructions carried
-    — returns the machine to elicit, continuing the teach dialogue."""
+async def test_parked_learn_questions_fall_to_idle(classifier_eval: ClassifierEval) -> None:
+    """Engaged questions still carry no instructions, so they fall to idle —
+    the two-way learn state has no path back to elicit."""
     await classifier_eval(
-        case_id="learn-working-it-out",
+        case_id="learn-questions-idle",
         state=ConversationState.LEARN,
-        pool=_WORKING_IT_OUT_POOL,
-        expected=ConversationState.ELICIT,
+        pool=_POST_FAILURE_QUESTION_POOL,
+        expected=ConversationState.IDLE,
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
         min_pass_rate=None,
