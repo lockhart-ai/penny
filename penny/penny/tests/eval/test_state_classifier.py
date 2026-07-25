@@ -198,8 +198,8 @@ _CROSS_DOMAIN_POOL = [
     "keep a list of new murals going up around the city",
     "watch for new classes at the community center",
     "collect newly announced concerts happening near us",
-    "keep an eye out for new vendors joining the farmers market",
-    "find new coffee roasters popping up in town",
+    "every week, check which new vendors joined the farmers market",
+    "keep a running list of new coffee roasters opening in town",
 ]
 
 # Mixed-message boundary — chat preamble + a covered ask in ONE message: the
@@ -460,7 +460,7 @@ _DEFERRAL_POOL = [
     "scrap those steps — i'll write you better instructions in a minute",
     "hmm this isn't working. let me find the right page first and get back to you",
     "wait, i think i told you wrong. give me a sec to work out what i actually want",
-    "let's start over — i'll walk you through it a different way once i've checked the site",
+    "let's start over — i'll get you new steps after i've checked the site myself",
     "forget those instructions, they were wrong. i'll send new ones shortly",
     "i need to look at the page myself before i can tell you what to grab",
     "my bad, the steps i gave you were for the old site. let me dig up the new layout",

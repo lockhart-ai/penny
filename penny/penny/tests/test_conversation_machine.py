@@ -198,8 +198,8 @@ def test_render_parked_elicit_slice_whole():
         "## Transitions\n"
         "- learn — their message gives instructions to follow — what to read, look "
         "for, or remember; a plain command counts\n"
-        "- elicit — they are still working the task out with the assistant: a question "
-        "back, a clarification, no instructions yet\n"
+        "- elicit — they are still working the task out with the assistant — a "
+        "question back, or a clarification about the task itself\n"
         "- idle — in all other cases"
     )
 

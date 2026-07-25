@@ -150,16 +150,16 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "or remember; a plain command counts"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
-        "they are still working the task out with the assistant: a question "
-        "back, a clarification, no instructions yet"
+        "they are still working the task out with the assistant — a question "
+        "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "their message corrects or retries the round just attempted, with "
         "instructions to act on now"
     ),
     (ConversationState.LEARN, ConversationState.ELICIT): (
-        "they are working the task out again: a question or doubt about how, "
-        "with no instructions to act on"
+        "they are working the task out again — a question or a doubt about "
+        "how the assistant should do it"
     ),
 }
 
