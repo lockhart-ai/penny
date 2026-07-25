@@ -203,8 +203,8 @@ def test_render_parked_elicit_slice_whole():
         "\n"
         "## Transitions\n"
         "- learn — the user's message is a set of instructions to follow for the task "
-        "— what to read, what to look for, what to remember; a corrected set counts, "
-        "however brief\n"
+        "— what to read, what to look for, what to remember, including corrections to "
+        "previous steps\n"
         "- elicit — they are still working the task out with the assistant — a "
         "question back, or a clarification about the task itself\n"
         "- idle — in all other cases"
@@ -245,8 +245,8 @@ def test_render_parked_learn_slice_whole():
         "\n"
         "## Transitions\n"
         "- learn — the user's message is a set of instructions to follow for the task "
-        "— what to read, what to look for, what to remember; a corrected set counts, "
-        "however brief\n"
+        "— what to read, what to look for, what to remember, including corrections to "
+        "previous steps\n"
         "- idle — in all other cases"
     )
 

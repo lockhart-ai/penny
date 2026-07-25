@@ -150,8 +150,8 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
     (ConversationState.ELICIT, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task — "
-        "what to read, what to look for, what to remember; a corrected set "
-        "counts, however brief"
+        "what to read, what to look for, what to remember, including "
+        "corrections to previous steps"
     ),
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "they are still working the task out with the assistant — a question "
@@ -159,8 +159,8 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task — "
-        "what to read, what to look for, what to remember; a corrected set "
-        "counts, however brief"
+        "what to read, what to look for, what to remember, including "
+        "corrections to previous steps"
     ),
 }
 
