@@ -98,10 +98,10 @@ def test_edge_table_invariants():
 
 
 def test_presented_edges_withholds_apply_without_candidates():
-    """The SKILL-GATED edges (apply, request-details) are offered only when the
+    """The SKILL-GATED edges (apply, request) are offered only when the
     snapshot carries skill candidates — an empty registry never renders an
     option whose contract demands naming a skill (the structural false-apply
-    guard, and its request-details twin)."""
+    guard, and its request twin)."""
     assert presented_edges(_IDLE_SNAPSHOT) == (
         ConversationState.LEARN,
         ConversationState.ELICIT,
@@ -110,7 +110,7 @@ def test_presented_edges_withholds_apply_without_candidates():
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert presented_edges(with_skills) == (
         ConversationState.APPLY,
-        ConversationState.REQUEST_DETAILS,
+        ConversationState.REQUEST,
         ConversationState.LEARN,
         ConversationState.ELICIT,
         ConversationState.IDLE,
@@ -286,7 +286,7 @@ def test_render_idle_with_candidates_whole():
         "message supplies everything that skill needs — mere resemblance to a skill is "
         "not coverage — add a second line naming that skill: SKILL: <its name, copied "
         "exactly from Known skills>\n"
-        "- request-details — a known skill looks like it covers what they are asking "
+        "- request — a known skill looks like it covers what they are asking "
         "for, but something that skill needs is missing from their message — add a "
         "second line naming that skill: SKILL: <its name, copied exactly from Known "
         "skills>\n"

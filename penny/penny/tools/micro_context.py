@@ -156,7 +156,7 @@ _SKILL_NAMING_INSTRUCTION = (
 # no-transition (fail → stay; the caller's rule, encoded in
 # ``conversation_machine.next_state``).
 #
-# Some states are SKILL-GATED (#1706 beats 2/5 — apply and request-details):
+# Some states are SKILL-GATED (#1706 beats 2/5 — apply and request):
 # their option lines direct the model to add a second ``SKILL:`` line naming
 # which of the listed skills is meant.  Drawing a gated state WITHOUT a valid
 # in-set skill line is the same contract violation — reroll, then INVALID — so

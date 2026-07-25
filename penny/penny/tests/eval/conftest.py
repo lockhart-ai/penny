@@ -2213,7 +2213,7 @@ def _score_classifier(
     distinct in the report without distorting the score.  An apply case also
     scores WHICH skill the draw bound (``expected_skill``) — n/a when the sample
     never decided the expected state (no skill to judge; the edge check already
-    failed).  Both skill-gated states (apply, request-details) score it."""
+    failed).  Both skill-gated states (apply, request) score it."""
     decided = decision.outcome == StateDrawOutcome.DECIDED
     ok = decided and decision.state is expected
     if ok:
