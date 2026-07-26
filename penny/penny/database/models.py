@@ -525,34 +525,19 @@ class EmailRule(SQLModel, table=True):
     last_applied_at: datetime | None = None  # When this rule was last triggered
 
 
-class ConversationMachineRow(SQLModel, table=True):
-    """The conversation state machine's materialized state — WHERE the machine
-    stands right now (#1706).
-
-    One row (v1 is a single active machine; concurrency is deferred), the twin
-    of ``memory`` in the mutation ledger's shape: this is the truth, and
-    ``state_transition`` is the audit trail of how it got here.  State attaches
-    to the TASK, not the conversation — idle chat interleaves freely and a
-    parked teach loop survives the interruption, which is exactly what the
-    anchor is for: the instigating ask a parked state's replies are answers to.
-
-    ``anchor_message_id`` is a real FK into the conversation, never a copy of
-    its text — the anchor renders by resolving the message, so it cannot drift
-    from what the user actually said.
-    """
-
-    __tablename__ = "conversation_machine"
-
-    id: int | None = Field(default=None, primary_key=True)
-    state: str  # ConversationState value
-    # The instigating ask, present exactly when the machine is parked off idle.
-    anchor_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
 class StateTransition(SQLModel, table=True):
-    """One move of the conversation state machine — the event half of the
-    machine's spine (#1706), replayable and per-edge confusion-matrix evaluable.
+    """One move of the conversation state machine — and, as the newest row, the
+    machine's whole state (#1706).
+
+    An append-only log with no materialized twin: the newest row's ``to_state``
+    IS where the machine stands, its ``anchor_message_id`` IS the ask a parked
+    round is anchored to, its ``created_at`` IS when the machine last moved.  A
+    current-state row alongside would carry nothing that isn't derivable, and
+    would mean two writes per move that can disagree — so there is one write,
+    and a failed write moves nothing.  (The mutation ledger's ``memory`` twin
+    earns itself because a ``memory`` row carries name/description/prompt/cadence,
+    facts no event derives; the shape does not transfer here.)  No row is
+    seeded: the cold start is the ABSENCE of history, not a row asserting it.
 
     Every classified draw writes a row, INCLUDING a draw that moved nothing:
     ``outcome`` carries the ``StateDrawOutcome``, so a contract failure the
@@ -570,14 +555,22 @@ class StateTransition(SQLModel, table=True):
     __tablename__ = "state_transition"
 
     id: int | None = Field(default=None, primary_key=True)
+    # Both ends of the move on one row.  ``from_state`` is derivable from the
+    # previous row's ``to_state``, but on an append-only log a row that states
+    # its own whole move is self-describing and cheaper to read.
     from_state: str  # ConversationState value
     to_state: str  # ConversationState value
     cause: str = Field(index=True)  # TransitionCause value: classifier | structural
     # The draw's terminal outcome (``StateDrawOutcome``) for a classifier move;
     # NULL for a structural one, which runs no model and so has no draw.
     outcome: str | None = None
+    # The instigating ask the machine is anchored to AFTER this move — set on
+    # entry to a parked state, carried unchanged through the round, NULL once
+    # idle.  A fact about this transition (like ``to_state``), not a copy of
+    # another table's column, so the anchor's whole history is readable.
+    anchor_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
     # The message that provoked the move, and the run whose promptlog rows carry
-    # the draw itself (the ledger join key) — both NULL for a structural move.
+    # the draw itself (the ledger join key) — the run NULL for a structural move.
     message_id: int | None = Field(default=None, foreign_key="messagelog.id")
     run_id: str | None = Field(default=None, index=True)
     # The skill a SKILL-GATED decision bound, by name (``skill.name``) — a plain

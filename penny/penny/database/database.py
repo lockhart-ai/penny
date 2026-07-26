@@ -32,7 +32,7 @@ class Database:
         devices: Device registration and lookup
         domain_permissions: Domain access permissions for browser tools
         email_rules: Persisted email-organisation rules (plugin email backends)
-        machine: Conversation state machine — current state + transition ledger (#1706)
+        machine: Conversation state machine — its append-only transition log (#1706)
         media: Binary media referenced by memory entries via <media:ID> tokens
         memories: Unified collection + log access (task/memory framework)
         messages: Message/prompt/command logging, threading, queries

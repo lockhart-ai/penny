@@ -537,6 +537,7 @@ async def test_machine_cold_starts_idle_and_records_the_move(db):
     outcome, message, run and bound skill."""
     _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
     machine = _machine(db, _responds("STATE: apply\nSKILL: watch a listing price for changes"))
+    assert db.machine.latest_transition() is None  # cold start = no history, not a seeded row
     assert machine.state() is ConversationState.IDLE
 
     message_id = _log(db, _KAYAK_ASK)
@@ -578,16 +579,16 @@ async def test_anchor_is_set_on_entry_kept_while_parked_and_cleared_on_break_out
     machine = _machine(db, _responds("STATE: elicit"))
     await machine.advance(_ASK, message_id=anchor_id)
     assert machine.state() is ConversationState.ELICIT
-    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id == anchor_id
+    assert db.machine.latest_transition().anchor_message_id == anchor_id
 
     staying = _machine(db, _responds("STATE: elicit"))
     await staying.advance("wait — what exactly do you need?", message_id=_log(db, "wait — what?"))
-    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id == anchor_id
+    assert db.machine.latest_transition().anchor_message_id == anchor_id
 
     bailing = _machine(db, _responds("STATE: idle"))
     await bailing.advance("never mind, forget it", message_id=_log(db, "never mind"))
     assert bailing.state() is ConversationState.IDLE
-    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id is None
+    assert db.machine.latest_transition().anchor_message_id is None
 
 
 async def test_parked_anchor_reaches_the_classifier_as_the_task(db):
@@ -607,19 +608,43 @@ async def test_apply_resets_structurally_then_classifies_the_new_message(db):
     FIRST: the reset lands as its own structural row (no model, no outcome) and
     the message is then classified from idle — two rows, in causal order."""
     _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
-    db.machine.advance_to(
-        state=ConversationState.APPLY.value,
-        anchor_message_id=None,
-        default_state=ConversationState.IDLE.value,
+    db.machine.record_transition(
+        from_state=ConversationState.IDLE.value,
+        to_state=ConversationState.APPLY.value,
+        cause=TransitionCause.CLASSIFIER,
     )
     machine = _machine(db, _responds("STATE: idle"))
     await machine.advance("thanks!", message_id=_log(db, "thanks!"))
 
     assert machine.state() is ConversationState.IDLE
-    reset, classified = reversed(db.machine.recent_transitions(10))
+    _parked, reset, classified = reversed(db.machine.recent_transitions(10))
     assert reset.from_state == ConversationState.APPLY.value
     assert reset.to_state == ConversationState.IDLE.value
     assert reset.cause == TransitionCause.STRUCTURAL.value
     assert reset.outcome is None
     assert classified.cause == TransitionCause.CLASSIFIER.value
     assert classified.from_state == ConversationState.IDLE.value
+
+
+async def test_state_is_a_fold_over_the_log_with_no_materialized_twin(db):
+    """The whole state IS the newest row — state, anchor and last-moved time —
+    so nothing can drift out of step with the audit trail.  Appending a move by
+    hand moves the machine, which is the property that makes the second table
+    unnecessary."""
+    anchor_id = _log(db, _ASK)
+    db.machine.record_transition(
+        from_state=ConversationState.IDLE.value,
+        to_state=ConversationState.ELICIT.value,
+        cause=TransitionCause.CLASSIFIER,
+        anchor_message_id=anchor_id,
+        outcome=StateDrawOutcome.DECIDED.value,
+    )
+    machine = _machine(db, _responds("STATE: idle"))
+    assert machine.state() is ConversationState.ELICIT
+
+    latest = db.machine.latest_transition()
+    assert latest is not None
+    assert (latest.to_state, latest.anchor_message_id) == (
+        ConversationState.ELICIT.value,
+        anchor_id,
+    )

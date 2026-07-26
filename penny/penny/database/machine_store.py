@@ -6,13 +6,20 @@ evaporates at the end of the turn is not a machine: every parked state
 message's classification, so the state has to outlive the turn that set it.
 This store is where it lives.
 
-Two shapes, the same split the mutation ledger draws:
+**One table, no materialized twin.** ``state_transition`` is an append-only log
+and the machine's whole state is a fold over it — the newest row's ``to_state``
+IS where the machine stands, its ``anchor_message_id`` IS the ask a parked round
+is anchored to, its ``created_at`` IS when the machine last moved.  So there is
+no second row holding a current-state copy: a materialized twin here would carry
+*nothing that isn't derivable*, and keeping it would mean two writes per move
+that can disagree (the mutation ledger's ``memory`` twin earns itself only
+because a ``memory`` row carries name/description/prompt/cadence — facts no
+event derives; the shape does not transfer).  One write per move means a failed
+write moves nothing, so the state and its audit trail cannot drift.
 
-1. ``conversation_machine`` — the materialized truth (state + the anchoring
-   message), one row, read at the top of every turn.
-2. ``state_transition`` — the append-only audit of how it got there, one row per
-   move INCLUDING the moves that moved nothing (a held draw is the signal you
-   need to score the classifier; see ``StateTransition``).
+``from_state`` beside ``to_state`` is deliberate denormalization — the previous
+row's ``to_state`` would give it by join, but on an append-only log a row that
+states its own whole move is self-describing and cheaper to read.
 
 Deals in plain state STRINGS on purpose: ``conversation_machine.py`` imports the
 database package only function-locally to stay a leaf, so the typing seam lives
@@ -22,19 +29,14 @@ there and this layer never imports the state enum — the same discipline
 
 from __future__ import annotations
 
-import logging
-from datetime import UTC, datetime
-
 from sqlmodel import Session, select
 
 from penny.constants import TransitionCause
-from penny.database.models import ConversationMachineRow, StateTransition
-
-logger = logging.getLogger(__name__)
+from penny.database.models import StateTransition
 
 
 class MachineStore:
-    """Read/write access to the machine's current state + its transition ledger."""
+    """Read/write access to the machine's transition log — its only state."""
 
     def __init__(self, engine) -> None:
         self.engine = engine
@@ -42,43 +44,19 @@ class MachineStore:
     def _session(self) -> Session:
         return Session(self.engine)
 
-    def current(self, default_state: str) -> ConversationMachineRow:
-        """The machine's row, creating it at ``default_state`` on first read.
-
-        Lazy creation rather than a seeded row: a migration may not run against
-        a database whose default state this module has since renamed, and the
-        caller owns the enum — so the machine's cold start is idle by the
-        CALLER's definition of idle, not by a value frozen into DDL."""
+    def latest_transition(self) -> StateTransition | None:
+        """The newest move — the machine's current state, anchor, and last-moved
+        time in one row.  ``None`` means the machine has never moved, which IS
+        the cold start: no row is seeded and none is lazily created, so "nothing
+        has happened yet" is represented by the absence of history rather than
+        by a row asserting it."""
         with self._session() as session:
-            row = self._row(session)
-            if row is not None:
-                return row
-            row = ConversationMachineRow(state=default_state)
-            session.add(row)
-            session.commit()
-            session.refresh(row)
-            return row
-
-    def advance_to(
-        self,
-        *,
-        state: str,
-        anchor_message_id: int | None,
-        default_state: str,
-    ) -> None:
-        """Move the machine's materialized state, stamping ``updated_at``.
-
-        The anchor is written on EVERY advance (never merged with the prior
-        value) so that clearing it — what returning to idle does — is the same
-        operation as setting it, and a stale anchor cannot survive a state it no
-        longer belongs to."""
-        with self._session() as session:
-            row = self._row(session) or ConversationMachineRow(state=default_state)
-            row.state = state
-            row.anchor_message_id = anchor_message_id
-            row.updated_at = datetime.now(UTC)
-            session.add(row)
-            session.commit()
+            return session.exec(
+                select(StateTransition).order_by(
+                    StateTransition.created_at.desc(),  # type: ignore[union-attr]
+                    StateTransition.id.desc(),  # type: ignore[union-attr]
+                )
+            ).first()
 
     def record_transition(
         self,
@@ -86,29 +64,33 @@ class MachineStore:
         from_state: str,
         to_state: str,
         cause: TransitionCause,
+        anchor_message_id: int | None = None,
         outcome: str | None = None,
         message_id: int | None = None,
         run_id: str | None = None,
         skill_name: str | None = None,
     ) -> None:
-        """Append one transition event.  Best-effort logging — a failed audit
-        write must never fail the move it records (mirrors ``MutationStore``)."""
-        try:
-            with self._session() as session:
-                session.add(
-                    StateTransition(
-                        from_state=from_state,
-                        to_state=to_state,
-                        cause=cause.value,
-                        outcome=outcome,
-                        message_id=message_id,
-                        run_id=run_id,
-                        skill_name=skill_name,
-                    )
+        """Append one move — the single write that BOTH advances the machine and
+        records how it moved.
+
+        Deliberately NOT best-effort (unlike ``MutationStore.record``, whose
+        swallowed failure protects the mutation it merely audits): this row *is*
+        the state, so a swallowed failure here would silently lose the move
+        itself.  It raises, and the caller's move fails with it."""
+        with self._session() as session:
+            session.add(
+                StateTransition(
+                    from_state=from_state,
+                    to_state=to_state,
+                    cause=cause.value,
+                    anchor_message_id=anchor_message_id,
+                    outcome=outcome,
+                    message_id=message_id,
+                    run_id=run_id,
+                    skill_name=skill_name,
                 )
-                session.commit()
-        except Exception as exc:
-            logger.error("Failed to record state transition %s → %s: %s", from_state, to_state, exc)
+            )
+            session.commit()
 
     def recent_transitions(self, limit: int) -> list[StateTransition]:
         """The machine's most recent moves, newest first — the replay surface.
@@ -130,10 +112,3 @@ class MachineStore:
                     .limit(limit)
                 ).all()
             )
-
-    @staticmethod
-    def _row(session: Session) -> ConversationMachineRow | None:
-        """The single machine row (lowest id wins — v1 is one active machine)."""
-        return session.exec(
-            select(ConversationMachineRow).order_by(ConversationMachineRow.id.asc())  # type: ignore[union-attr]
-        ).first()
