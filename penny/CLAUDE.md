@@ -723,6 +723,24 @@ the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.
 `EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
 whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
 
+**Repeated system prompts hoist to the top of the comment (#1763).** A run's samples carry a
+system prompt each, and restating every one inline made a chat beat's assembled comment 525K
+against GitHub's 64K comment cap — 11 comments for one 4-case run. `report.hoist_repeated_system_prompts`
+(pure, applied by the assembler over the FINISHED document) renders each system prompt that appears
+in MORE THAN ONE sample once under a `### System prompts` heading at the top, and replaces its
+per-sample rows with a one-line `system prompt — <ctx> (<n> chars) (above, under **System prompts**)`
+reference. A prompt used by a SINGLE sample stays exactly where it is — hoisting it would move it
+away from the only sample it belongs to and save nothing. **Nothing is dropped and nothing is
+summarised**: every prompt is still in the document, verbatim, one click from where it applies (the
+collapsed-never-means-removed rule, #1753/#1759 — the failure this replaced was *selecting* which
+samples to post, which is that rule broken in a new costume). Same render-once-at-top move the
+assembler already makes for the manifest header. Applied at the ASSEMBLER only: the per-case
+on-disk `.md` is a single case's artifact and hoists nothing. Measured on the beat-0 run: 525K →
+400K, 11 comments → 7. The ceiling is real and worth knowing — of 81 prompt occurrences only 9
+distinct prompts repeat (the classifier's, 32×); the other 27 are each used once because the chat
+prompt embeds the live self-state header, which genuinely differs per sample. Whole-render tests in
+`test_report.py`.
+
 **Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
 `data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative
 to the compose-file dir, so an eval run from a worktree would write artifacts under that worktree —

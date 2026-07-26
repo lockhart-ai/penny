@@ -83,7 +83,11 @@ def assemble_run_comment(report_dir: Path) -> str:
     sections = [render_run_header(manifest, artifacts, baseline)]
     sections += [_case_section(report_dir, manifest, artifact, multi) for artifact in artifacts]
     sections.append(render_footer(report_dir))
-    return SECTION_SEPARATOR.join(sections) + "\n"
+    # A run's samples nearly all carry the SAME system prompt, and restating it per
+    # sample was 67% of a chat beat's whole document (#1763).  Render each repeated
+    # one once at the top; a prompt used by a single sample stays inline.  Nothing
+    # is dropped — the same render-once move the manifest header already makes.
+    return report.hoist_repeated_system_prompts(SECTION_SEPARATOR.join(sections)) + "\n"
 
 
 # ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──

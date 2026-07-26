@@ -219,6 +219,51 @@ class SystemPrompt:
         return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
 
 
+# ── Hoisting a REPEATED system prompt to the top of the document (#1763) ────
+SYSTEM_PROMPTS_HEADING = "### System prompts"
+HOISTED_REFERENCE = "(above, under **System prompts**)"
+_SYSTEM_PROMPT_BLOCK = re.compile(
+    rf"<details><summary>{re.escape(SYSTEM_PROMPT_LABEL)} — "
+    r"(?P<context>[^(]+) \((?P<size>\d+) chars\)</summary>\n\n(?P<text>.*?)\n\n</details>",
+    re.DOTALL,
+)
+
+
+def hoist_repeated_system_prompts(document: str) -> str:
+    """Render each REPEATED system prompt once at the top instead of restating it
+    per sample (the code owner's call on the #1763 comment-size wall).
+
+    A run's samples nearly all carry the same system prompt — on a chat beat that
+    was 67% of the whole document, the same ~6K of text 81 times, which is not 81
+    things to review.  A prompt appearing in more than one sample is lifted into a
+    collapsed block at the top and its per-sample rows become one-line references;
+    a prompt appearing ONCE stays exactly where it is, because hoisting it would
+    move it away from the only sample it belongs to for no saving.
+
+    Nothing is dropped and nothing is summarised — every prompt is still in the
+    document, still verbatim, still one click from where it applies.  This is the
+    same render-once-at-top move the assembler already makes for the manifest
+    header, applied to the other thing every case was repeating."""
+    seen: dict[tuple[str, str], int] = {}
+    for match in _SYSTEM_PROMPT_BLOCK.finditer(document):
+        key = (match.group("context").strip(), match.group("text"))
+        seen[key] = seen.get(key, 0) + 1
+    repeated = [key for key, count in seen.items() if count > 1]
+    if not repeated:
+        return document
+
+    def replace(match: re.Match[str]) -> str:
+        key = (match.group("context").strip(), match.group("text"))
+        if key not in repeated:
+            return match.group(0)
+        return f"_{SYSTEM_PROMPT_LABEL} — {key[0]} ({len(key[1])} chars) {HOISTED_REFERENCE}_"
+
+    body = _SYSTEM_PROMPT_BLOCK.sub(replace, document)
+    blocks = [SystemPrompt(context=context, text=text).render() for context, text in repeated]
+    hoisted = "\n\n".join([SYSTEM_PROMPTS_HEADING, *blocks])
+    return f"{hoisted}\n\n{body}"
+
+
 # ── The whole sample ─────────────────────────────────────────────────────────
 @dataclass
 class SampleTranscript:

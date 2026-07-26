@@ -341,3 +341,58 @@ def test_split_sample_blocks_separates_mixed_forms() -> None:
     transcript = f"{folded}\n\n{heading}\n\n"
     assert report.split_sample_blocks(transcript) == [folded, heading]
     assert report.split_sample_blocks("") == []
+
+
+# ── Hoisting a repeated system prompt (#1763) ────────────────────────────────
+
+
+def _prompt_block(context: str, text: str) -> str:
+    return report.SystemPrompt(context=context, text=text).render()
+
+
+def test_a_repeated_system_prompt_is_rendered_once_at_the_top():
+    """The same prompt across samples is ONE block at the top plus one-line
+    references — the saving that makes a chat run postable, with nothing dropped:
+    the verbatim text is still in the document, still one click away."""
+    block = _prompt_block("chat", "SYSTEM TEXT " * 20)
+    document = f"## header\n\n{block}\n\nsample one\n\n{block}\n\nsample two"
+    hoisted = report.hoist_repeated_system_prompts(document)
+
+    assert hoisted.startswith(report.SYSTEM_PROMPTS_HEADING)
+    assert hoisted.count(block) == 1, "the verbatim prompt renders exactly once"
+    assert hoisted.count(report.HOISTED_REFERENCE) == 2, "each use points at it"
+    assert "SYSTEM TEXT" in hoisted, "the text itself is never dropped"
+    assert len(hoisted) < len(document)
+
+
+def test_a_system_prompt_used_once_stays_inline():
+    """Hoisting a one-off would move it away from the only sample it belongs to
+    and save nothing, so it stays exactly where it is — byte-identical."""
+    once = _prompt_block("browse-extract", "ONLY HERE")
+    twice = _prompt_block("chat", "SHARED " * 20)
+    document = f"## header\n\n{twice}\n\nsample one\n\n{twice}\n\n{once}\n\nsample two"
+    hoisted = report.hoist_repeated_system_prompts(document)
+
+    assert once in hoisted, "the single-use prompt is untouched, in place"
+    assert hoisted.count(twice) == 1
+
+
+def test_a_document_with_no_repeats_is_returned_unchanged():
+    """No repetition, no restructuring — a single-sample report is byte-identical
+    to what it was before the pass existed."""
+    document = f"## header\n\n{_prompt_block('chat', 'ONE')}\n\nsample one"
+    assert report.hoist_repeated_system_prompts(document) == document
+
+
+def test_distinct_prompts_from_the_same_context_hoist_separately():
+    """Two samples whose chat prompts DIFFER (their self-state differs) are two
+    distinct prompts — each hoisted on its own, never collapsed into one, so a
+    real difference between samples stays visible."""
+    first = _prompt_block("chat", "STATE A " * 20)
+    second = _prompt_block("chat", "STATE B " * 20)
+    document = f"{first}\n\na\n\n{first}\n\nb\n\n{second}\n\nc\n\n{second}"
+    hoisted = report.hoist_repeated_system_prompts(document)
+
+    assert hoisted.count(first) == 1
+    assert hoisted.count(second) == 1
+    assert "STATE A" in hoisted and "STATE B" in hoisted
