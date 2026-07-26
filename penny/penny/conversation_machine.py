@@ -451,26 +451,30 @@ def build_snapshot(
     )
 
 
-# The ONE instruction per state the chat prompt carries — the machine's whole
-# output as far as chat is concerned.  A state with no entry here has no
-# instruction of its own YET and falls back to the default union block, so
-# states land one at a time without the unlanded ones changing behaviour.
+# The ONE instruction per state the chat prompt carries.  TOTAL over the state
+# set by construction (pinned by a test): the machine always has a state, so a
+# turn always has exactly one instruction and there is no default to fall back
+# on.  A fallback would mean the state failed to determine the prompt, which is
+# the whole thing the machine exists to fix.
 STATE_INSTRUCTIONS: dict[ConversationState, str] = {
+    ConversationState.IDLE: Prompt.IDLE_INSTRUCTION,
     ConversationState.ELICIT: Prompt.ELICIT_INSTRUCTION,
+    ConversationState.LEARN: Prompt.LEARN_INSTRUCTION,
+    ConversationState.REQUEST: Prompt.REQUEST_INSTRUCTION,
+    ConversationState.APPLY: Prompt.APPLY_INSTRUCTION,
 }
 
 
 def conversation_prompt(state: ConversationState) -> str:
     """The chat system prompt for a state: the invariant physics core with THIS
-    state's instruction in the middle.
+    state's instruction between head and tail.
 
-    The state's name never renders, and neither does the union of the others —
-    by the time chat reads this the state is already decided, so what it needs
-    is what to do, not where it is.  A state with no instruction yet composes
-    byte-identically to the un-stated prompt (``Prompt.CONVERSATION_PROMPT``),
-    which is what lets states land one at a time."""
-    middle = STATE_INSTRUCTIONS.get(state, Prompt.SKILL_PATH_DEFAULT)
-    return Prompt.CONVERSATION_HEAD + middle + Prompt.CONVERSATION_TAIL
+    The state's name never renders, and neither does any other state's
+    instruction — by the time chat reads this the state is already decided, so
+    what it needs is what to do, not where it is.  Indexes ``STATE_INSTRUCTIONS``
+    directly: a missing state is a programming error and should raise, never
+    quietly compose some other state's prompt."""
+    return Prompt.CONVERSATION_HEAD + STATE_INSTRUCTIONS[state] + Prompt.CONVERSATION_TAIL
 
 
 class ConversationMachine:

@@ -31,6 +31,7 @@ import pytest
 from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import (
     OUT_EDGES,
+    STATE_INSTRUCTIONS,
     CandidateParameter,
     ConversationMachine,
     ConversationState,
@@ -638,50 +639,66 @@ async def test_state_is_a_fold_over_the_log_with_no_materialized_twin(db):
     )
 
 
-# ── Per-state chat instructions (#1706) ───────────────────────────────────────
+# ── Per-state chat instructions (#1706) ─────────────────────────────────────
 
 
-def test_a_state_without_its_own_instruction_composes_the_unchanged_prompt():
-    """States land ONE at a time: a state with no instruction yet renders the
-    default union block, so the prompt is byte-identical to the un-stated one and
-    the unlanded states cannot change behaviour while elicit is being tuned."""
-    for state in (ConversationState.IDLE, ConversationState.LEARN, ConversationState.APPLY):
-        assert conversation_prompt(state) == Prompt.CONVERSATION_PROMPT
+def test_every_state_has_an_instruction_and_there_is_no_fallback():
+    """TOTAL by construction: the machine always has a state, so a turn always
+    has exactly one instruction.  A default would mean the state failed to
+    determine the prompt — the one thing the machine exists to fix — so a
+    missing entry must RAISE rather than quietly compose someone else's."""
+    assert set(STATE_INSTRUCTIONS) == set(ConversationState)
+    for state in ConversationState:
+        prompt = conversation_prompt(state)
+        assert prompt.startswith(Prompt.CONVERSATION_HEAD)
+        assert prompt.endswith(Prompt.CONVERSATION_TAIL)
+        assert STATE_INSTRUCTIONS[state] in prompt
 
 
-def test_elicit_swaps_only_the_middle_and_never_names_the_machine():
-    """The elicit prompt is the invariant physics core with ONE instruction where
-    the union used to be — the head and tail (browse signature, no-selectors,
-    memory-first, recap rules) are untouched, the union is gone, and nothing
-    renders the machine itself: no state name, no transitions, no mention that a
-    classifier ran.  By the time chat reads this, where it is has already been
-    decided; what it needs is what to do."""
-    elicit = conversation_prompt(ConversationState.ELICIT)
-    assert elicit.startswith(Prompt.CONVERSATION_HEAD)
-    assert elicit.endswith(Prompt.CONVERSATION_TAIL)
-    assert Prompt.SKILL_PATH_DEFAULT not in elicit
-    assert elicit == Prompt.CONVERSATION_HEAD + Prompt.ELICIT_INSTRUCTION + Prompt.CONVERSATION_TAIL
+def test_each_state_carries_only_its_own_instruction():
+    """No union: a state's prompt contains ITS instruction and no other's.  This
+    is what the machine buys — #1687's four-case block existed only so the model
+    could work out which case applied, and that is answered in Python now."""
+    for state in ConversationState:
+        prompt = conversation_prompt(state)
+        for other, instruction in STATE_INSTRUCTIONS.items():
+            if other is not state:
+                assert instruction not in prompt, f"{state} leaked {other}'s instruction"
 
-    for machine_word in ("elicit", "idle", "state", "transition", "classif"):
-        assert machine_word not in Prompt.ELICIT_INSTRUCTION.lower(), machine_word
 
-    # The two levers the machine makes redundant are NOT carried over: the
-    # coverage double-check (landing here IS the coverage answer) and the
-    # improvise guard (there is no other branch left to improvise out of).
-    assert "find(" not in Prompt.ELICIT_INSTRUCTION
-    assert "improvise" not in Prompt.ELICIT_INSTRUCTION
+def test_no_instruction_names_the_machine():
+    """Nothing renders the machine to chat — no state name, no transitions, no
+    hint a classifier ran.  Where the conversation stands is already decided;
+    what the turn needs is what to do."""
+    machine_words = ("idle", "elicit", "learn", "apply", "request-details", "transition", "classif")
+    for state, instruction in STATE_INSTRUCTIONS.items():
+        for word in machine_words:
+            assert word not in instruction.lower(), f"{state} instruction names '{word}'"
+
+
+def test_the_un_stated_prompt_is_idle():
+    """With no machine wired (or a classifier failure) the chat agent falls back
+    to ``CONVERSATION_PROMPT`` — which IS idle's composition, not a second
+    definition that could drift from it."""
+    assert conversation_prompt(ConversationState.IDLE) == Prompt.CONVERSATION_PROMPT
 
 
 def test_elicit_instruction_whole_render():
     """The whole instruction, verbatim — the model-facing text this beat exists
     to test, pinned so a later edit is a visible diff and not a silent drift."""
     assert Prompt.ELICIT_INSTRUCTION == (
-        "They are asking for something ongoing or repeatable — a routine — and you "
-        "have no skill for it yet. Your whole job this turn is to ask to be taught "
-        "it. In ONE message:\n"
+        "The user is asking for something ongoing or repeatable — a routine — and "
+        "you have no skill for it yet. Your whole job this turn is to ask them to "
+        "teach it to you. Ask in ONE message:\n"
         "1. Say plainly that you don't know how to do this one yet.\n"
-        "2. Ask them to walk you through it once, naming what you need: what to "
-        "read, what to look for, what to remember.\n"
-        "Do not start the task, do not do part of it, and do not set anything up. "
-        "Nothing is running yet, so never say or imply that it is.\n\n"
+        "2. Ask them to walk you through it once as a list of steps, and model the "
+        "example on their OWN words — like: '1. go to <the page they named> "
+        "2. pull out <the thing they said> 3. remember it'.\n\n"
+        "What they already said IS the filter — 'trades and signings' is a "
+        "complete description of what to pull out. Never ask them to define "
+        "keywords, terms, matching rules, or anything about how a page is built.\n\n"
+        "A routine is ONE round — read, pull out, remember — and any schedule "
+        "comes later, so ask only for the round. Don't start the task, don't do "
+        "part of it, and don't set anything up. Nothing is running yet, so never "
+        "say or imply that it is.\n\n"
     )
