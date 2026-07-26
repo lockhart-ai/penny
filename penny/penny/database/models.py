@@ -523,3 +523,64 @@ class EmailRule(SQLModel, table=True):
     enabled: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_applied_at: datetime | None = None  # When this rule was last triggered
+
+
+class ConversationMachineRow(SQLModel, table=True):
+    """The conversation state machine's materialized state — WHERE the machine
+    stands right now (#1706).
+
+    One row (v1 is a single active machine; concurrency is deferred), the twin
+    of ``memory`` in the mutation ledger's shape: this is the truth, and
+    ``state_transition`` is the audit trail of how it got here.  State attaches
+    to the TASK, not the conversation — idle chat interleaves freely and a
+    parked teach loop survives the interruption, which is exactly what the
+    anchor is for: the instigating ask a parked state's replies are answers to.
+
+    ``anchor_message_id`` is a real FK into the conversation, never a copy of
+    its text — the anchor renders by resolving the message, so it cannot drift
+    from what the user actually said.
+    """
+
+    __tablename__ = "conversation_machine"
+
+    id: int | None = Field(default=None, primary_key=True)
+    state: str  # ConversationState value
+    # The instigating ask, present exactly when the machine is parked off idle.
+    anchor_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class StateTransition(SQLModel, table=True):
+    """One move of the conversation state machine — the event half of the
+    machine's spine (#1706), replayable and per-edge confusion-matrix evaluable.
+
+    Every classified draw writes a row, INCLUDING a draw that moved nothing:
+    ``outcome`` carries the ``StateDrawOutcome``, so a contract failure the
+    machine held its state on (fail → stay) is distinguishable from a decided
+    hold (idle → idle) that meant it.  Scoring per-edge accuracy over production
+    history needs both — a ledger that records only successful transitions
+    reports a perfect classifier by construction.
+
+    ``cause`` separates the two kinds of move: ``classifier`` (a model draw,
+    carrying its ``run_id`` join key into the promptlog) and ``structural`` (no
+    model in the loop — the post-apply reset), mirroring the mutation ledger's
+    user-run / system actor split.
+    """
+
+    __tablename__ = "state_transition"
+
+    id: int | None = Field(default=None, primary_key=True)
+    from_state: str  # ConversationState value
+    to_state: str  # ConversationState value
+    cause: str = Field(index=True)  # TransitionCause value: classifier | structural
+    # The draw's terminal outcome (``StateDrawOutcome``) for a classifier move;
+    # NULL for a structural one, which runs no model and so has no draw.
+    outcome: str | None = None
+    # The message that provoked the move, and the run whose promptlog rows carry
+    # the draw itself (the ledger join key) — both NULL for a structural move.
+    message_id: int | None = Field(default=None, foreign_key="messagelog.id")
+    run_id: str | None = Field(default=None, index=True)
+    # The skill a SKILL-GATED decision bound, by name (``skill.name``) — a plain
+    # column like ``messagelog.mechanism``, since a skill is REPLACE-able by name.
+    skill_name: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)

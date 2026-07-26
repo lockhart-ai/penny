@@ -1,4 +1,5 @@
-"""The conversation state machine's classifier machinery (#1706, beat 0).
+"""The conversation state machine — its classifier machinery and its durable
+half (#1706).
 
 The machine's structural invariants are pinned as data assertions (the edge
 table: break-out from every classifying state, no learn edge out of idle, no
@@ -10,6 +11,12 @@ per-edge state meanings) and by the draw mechanics: membership-validated tag
 parse, one reroll on a contract violation, poison discard-and-reroll, honest
 enumerated failures.
 
+The persistence half (``ConversationMachine``) is pinned on what a machine must
+do that a decision alone cannot: hold state across turns, keep the ANCHOR
+through a parked round and drop it on break-out, move structurally where the
+edge table has no out-edges, and record EVERY draw — including the held ones,
+without which per-edge accuracy over the ledger is unmeasurable.
+
 Deterministic mock model responses throughout — the live-model contract is the
 eval suite's job (beat 1 onward), not this file's.
 """
@@ -20,10 +27,11 @@ from typing import Any, cast
 
 import pytest
 
-from penny.constants import PennyConstants
+from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import (
     OUT_EDGES,
     CandidateParameter,
+    ConversationMachine,
     ConversationState,
     MachineSnapshot,
     SkillCandidate,
@@ -81,7 +89,7 @@ def _classifier(model: MockLlmClient) -> StateClassifier:
 
 def test_edge_table_invariants():
     """Every state that classifies carries the break-out edge → idle; learn is
-    unreachable from idle (steps can only arrive after an ask); apply has NO
+    reachable from idle (teaching can arrive unprompted); apply has NO
     out-edges — its reset is structural, never a classifier call."""
     for state, edges in OUT_EDGES.items():
         if edges:
@@ -505,3 +513,113 @@ async def test_build_snapshot_embed_failure_degrades_to_no_candidates(db):
     )
     assert snapshot.skill_candidates == []
     assert ConversationState.APPLY not in presented_edges(snapshot)
+
+
+# ── The durable half: state held across turns, every move recorded ────────────
+
+_KAYAK_ASK = "keep an eye on the price of the harbor kayak rental page"
+
+
+def _machine(db, model: MockLlmClient) -> ConversationMachine:
+    """A machine over the real store, with a stub embedder and a mock model."""
+    return ConversationMachine(db, cast(Any, _Embeds([1.0, 0.0])), _classifier(model))
+
+
+def _log(db, content: str) -> int:
+    message_id = db.messages.log_message(direction="incoming", sender="tester", content=content)
+    assert message_id is not None
+    return message_id
+
+
+async def test_machine_cold_starts_idle_and_records_the_move(db):
+    """First read creates the row at idle (no seeded state), and a decided draw
+    both moves the machine and lands one classifier transition carrying its
+    outcome, message, run and bound skill."""
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    machine = _machine(db, _responds("STATE: apply\nSKILL: watch a listing price for changes"))
+    assert machine.state() is ConversationState.IDLE
+
+    message_id = _log(db, _KAYAK_ASK)
+    decision = await machine.advance(_KAYAK_ASK, message_id=message_id, run_id="run-1")
+
+    assert decision.state is ConversationState.APPLY
+    assert machine.state() is ConversationState.APPLY
+    (transition,) = db.machine.recent_transitions(10)
+    assert transition.from_state == ConversationState.IDLE.value
+    assert transition.to_state == ConversationState.APPLY.value
+    assert transition.cause == TransitionCause.CLASSIFIER.value
+    assert transition.outcome == StateDrawOutcome.DECIDED.value
+    assert transition.message_id == message_id
+    assert transition.run_id == "run-1"
+    assert transition.skill_name == "watch a listing price for changes"
+
+
+async def test_held_draw_stays_put_but_is_still_recorded(db):
+    """Fail → stay, with the non-decision RECORDED: a ledger that logged only
+    successful moves would report a perfect classifier by construction, so the
+    held draw lands as a self-edge carrying its honest outcome."""
+    machine = _machine(db, _responds("I think we should probably elicit here"))
+    decision = await machine.advance(_ASK, message_id=_log(db, _ASK))
+
+    assert decision.state is None
+    assert machine.state() is ConversationState.IDLE
+    (transition,) = db.machine.recent_transitions(10)
+    assert transition.from_state == transition.to_state == ConversationState.IDLE.value
+    assert transition.outcome == StateDrawOutcome.INVALID.value
+    assert transition.skill_name is None
+
+
+async def test_anchor_is_set_on_entry_kept_while_parked_and_cleared_on_break_out(db):
+    """The anchor lifecycle end to end: the instigating ask is captured entering
+    elicit, SURVIVES the parked round (a later message never overwrites it — a
+    reply is classified against the ask it answers, not against itself), and is
+    dropped on the break-out to idle."""
+    anchor_id = _log(db, _ASK)
+    machine = _machine(db, _responds("STATE: elicit"))
+    await machine.advance(_ASK, message_id=anchor_id)
+    assert machine.state() is ConversationState.ELICIT
+    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id == anchor_id
+
+    staying = _machine(db, _responds("STATE: elicit"))
+    await staying.advance("wait — what exactly do you need?", message_id=_log(db, "wait — what?"))
+    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id == anchor_id
+
+    bailing = _machine(db, _responds("STATE: idle"))
+    await bailing.advance("never mind, forget it", message_id=_log(db, "never mind"))
+    assert bailing.state() is ConversationState.IDLE
+    assert db.machine.current(ConversationState.IDLE.value).anchor_message_id is None
+
+
+async def test_parked_anchor_reaches_the_classifier_as_the_task(db):
+    """The stored anchor is READ back into the snapshot as the task being worked
+    on — the whole point of persisting it — resolved from the message row rather
+    than a copy the machine keeps."""
+    anchor_id = _log(db, _ASK)
+    await _machine(db, _responds("STATE: elicit")).advance(_ASK, message_id=anchor_id)
+
+    model = _responds("STATE: learn")
+    await _machine(db, model).advance(_STEPS, message_id=_log(db, _STEPS))
+    assert _ASK in model.requests[-1]["messages"][1]["content"]
+
+
+async def test_apply_resets_structurally_then_classifies_the_new_message(db):
+    """A state with no out-edges cannot be classified, so the machine settles it
+    FIRST: the reset lands as its own structural row (no model, no outcome) and
+    the message is then classified from idle — two rows, in causal order."""
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    db.machine.advance_to(
+        state=ConversationState.APPLY.value,
+        anchor_message_id=None,
+        default_state=ConversationState.IDLE.value,
+    )
+    machine = _machine(db, _responds("STATE: idle"))
+    await machine.advance("thanks!", message_id=_log(db, "thanks!"))
+
+    assert machine.state() is ConversationState.IDLE
+    reset, classified = reversed(db.machine.recent_transitions(10))
+    assert reset.from_state == ConversationState.APPLY.value
+    assert reset.to_state == ConversationState.IDLE.value
+    assert reset.cause == TransitionCause.STRUCTURAL.value
+    assert reset.outcome is None
+    assert classified.cause == TransitionCause.CLASSIFIER.value
+    assert classified.from_state == ConversationState.IDLE.value

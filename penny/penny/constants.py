@@ -134,6 +134,22 @@ class MutationActor(StrEnum):
     SYSTEM = "system"
 
 
+class TransitionCause(StrEnum):
+    """What moved the conversation state machine (#1706).
+
+    ``CLASSIFIER`` — a scoped micro-context draw over the current state's
+    out-edges decided it; the row carries the run whose promptlog holds the
+    draw.  ``STRUCTURAL`` — no model was in the loop (the post-apply reset,
+    which is a fact about the edge table, not a judgment).  The same split the
+    mutation ledger draws between a user-run and a system actor: it is what
+    lets per-edge classifier accuracy be scored over production history without
+    structural moves inflating it.
+    """
+
+    CLASSIFIER = "classifier"
+    STRUCTURAL = "structural"
+
+
 class MutationEntityType(StrEnum):
     """The kind of registry entity a mutation event points at (#1560).
 
