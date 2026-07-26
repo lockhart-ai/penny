@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlmodel import select
 
-from penny.constants import MutationAction, MutationActor, PennyConstants
+from penny.constants import MutationAction, MutationActor, PennyConstants, TransitionCause
+from penny.conversation_machine import ConversationState
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
 from penny.database.skill_store import steps_from_json
@@ -146,6 +147,18 @@ async def test_basic_message_flow(
                 session.exec(select(MessageLog).where(MessageLog.direction == "outgoing")).all()
             )
         assert len(outgoing) >= 1, "Outgoing message should be logged"
+
+        # The conversation state machine ran BEFORE the turn (#1706): the turn is
+        # entered with its state already decided, and the move is on the log —
+        # attributed to the turn's run and linked back to the incoming message,
+        # which is logged only AFTER the run (so it never doubles into that
+        # turn's own recall) and so cannot be stamped at classify time.
+        transition = penny.db.machine.latest_transition()
+        assert transition is not None, "The turn should have moved the machine"
+        assert transition.cause == TransitionCause.CLASSIFIER.value
+        assert transition.from_state == ConversationState.IDLE.value
+        assert transition.message_id == incoming_messages[0].id
+        assert transition.run_id is not None
 
         # Verify device_id FK is populated on both incoming and outgoing
         test_device = penny.db.devices.get_by_identifier(TEST_SENDER)

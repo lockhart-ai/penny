@@ -63,8 +63,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from penny.constants import PennyConstants, TransitionCause
-from penny.llm.similarity import embed_text
+from penny.constants import TransitionCause
 from penny.tools.micro_context import SKILL_TAG, MicroContext, StateDraw, StateDrawOutcome
 
 if TYPE_CHECKING:
@@ -409,35 +408,35 @@ def next_state(current: ConversationState, decision: StateDecision) -> Conversat
     return current
 
 
-async def build_snapshot(
+def build_snapshot(
     db: Database,
-    embedding_client: LlmClient,
     *,
     state: ConversationState,
     message: str,
     penny_last_turn: str | None = None,
     task_anchor: str | None = None,
 ) -> MachineSnapshot:
-    """The production snapshot builder — the structural pre-pass that turns the
-    machine's situation into the classifier's input.  Embeds the incoming
-    message and ranks the skill registry by description-anchor cosine
-    (``resolve_by_meaning``, capped at ``FIND_MATCH_LIMIT`` — the same
-    resolution surface ``find`` uses, no new threshold), so the classifier
-    picks among presented evidence and never retrieves.
+    """The production snapshot builder — the machine's situation as the
+    classifier's input.
 
-    A transient embed failure degrades to NO candidates — logged, and safe by
-    construction: with no candidates the ``apply`` edge is structurally
-    withheld (``presented_edges``), the perception twin of fail → stay."""
+    EVERY skill is offered, as name + description + parameters.  No ranking, no
+    cap, no embedding (code-owner ruling on #1706): a relevance gate here would
+    contradict #1471, which deliberately renders the whole registry to chat
+    "wholesale, no relevance gate, no cap" because gates were what HID skills —
+    and this list is strictly smaller than the full recipes chat already carries
+    every turn, so shortening it buys nothing and can only hide the covering
+    skill.  Offering everything also means the classifier and the chat turn
+    reason over the SAME set, so a disagreement can never come from them having
+    been shown different evidence."""
     # Function-local import: the database package must never be imported at
     # this module's import time (leaf discipline — see CandidateParameter).
     from penny.database.skill_store import parameters_from_json
 
-    candidates: list[SkillCandidate] = []
-    vector = await embed_text(embedding_client, message)
-    if vector is None:
-        logger.warning("Snapshot builder: message embed failed — no skill candidates offered")
-    else:
-        candidates = [
+    return MachineSnapshot(
+        state=state,
+        penny_last_turn=penny_last_turn,
+        task_anchor=task_anchor,
+        skill_candidates=[
             SkillCandidate(
                 name=skill.name,
                 description=skill.description,
@@ -446,13 +445,8 @@ async def build_snapshot(
                     for parameter in parameters_from_json(skill.parameters)
                 ],
             )
-            for skill in db.skills.resolve_by_meaning(vector, PennyConstants.FIND_MATCH_LIMIT)
-        ]
-    return MachineSnapshot(
-        state=state,
-        penny_last_turn=penny_last_turn,
-        task_anchor=task_anchor,
-        skill_candidates=candidates,
+            for skill in db.skills.list_all()
+        ],
     )
 
 
@@ -475,14 +469,8 @@ class ConversationMachine:
     Not wired to chat yet — the caller supplies the message and its id.
     """
 
-    def __init__(
-        self,
-        db: Database,
-        embedding_client: LlmClient,
-        classifier: StateClassifier,
-    ) -> None:
+    def __init__(self, db: Database, classifier: StateClassifier) -> None:
         self._db = db
-        self._embedding_client = embedding_client
         self._classifier = classifier
 
     async def advance(
@@ -499,7 +487,7 @@ class ConversationMachine:
         result (which is what applies it).  Returns the decision the caller
         acts on."""
         state = self._settle_structural(message_id=message_id)
-        snapshot = await self._snapshot(state, message, penny_last_turn=penny_last_turn)
+        snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id)
         return decision
@@ -509,6 +497,24 @@ class ConversationMachine:
         at all is the cold start, and idle is what that means."""
         latest = self._db.machine.latest_transition()
         return ConversationState(latest.to_state) if latest else ConversationState.IDLE
+
+    def link_message(self, run_id: str, message_id: int) -> None:
+        """Attach the incoming message to the moves it caused, once it has an id.
+
+        The channel cannot supply the id up front (it logs the message after the
+        turn so it never doubles into that turn's own recall), so ``advance``
+        runs without it and this closes the loop.  A round that OPENED this turn
+        — the machine left idle and parked itself — takes that same message as
+        its anchor: the ask a parked round is anchored to is the one that opened
+        it, which is precisely the move recorded here."""
+        latest = self._db.machine.latest_transition()
+        opened_round = (
+            latest is not None
+            and latest.run_id == run_id
+            and latest.from_state == ConversationState.IDLE.value
+            and latest.to_state != ConversationState.IDLE.value
+        )
+        self._db.machine.link_message(run_id, message_id, anchor=opened_round)
 
     def _settle_structural(self, *, message_id: int | None) -> ConversationState:
         """Apply any move the edge table makes WITHOUT a model: a state with no
@@ -528,15 +534,14 @@ class ConversationMachine:
         )
         return ConversationState.IDLE
 
-    async def _snapshot(
+    def _snapshot(
         self, state: ConversationState, message: str, *, penny_last_turn: str | None
     ) -> MachineSnapshot:
         """The classifier's input, with the anchor resolved from the machine's
         own log — the parked ask is READ from the conversation it points at,
         never a copy this layer keeps."""
-        return await build_snapshot(
+        return build_snapshot(
             self._db,
-            self._embedding_client,
             state=state,
             message=message,
             penny_last_turn=penny_last_turn,

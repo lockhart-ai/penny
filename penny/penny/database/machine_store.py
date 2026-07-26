@@ -92,6 +92,31 @@ class MachineStore:
             )
             session.commit()
 
+    def link_message(self, run_id: str, message_id: int, *, anchor: bool) -> None:
+        """Back-fill the message a run's moves were provoked by, once it has an id.
+
+        The channel logs the incoming message AFTER the turn runs — deliberately,
+        so it never doubles into the turn's own recall — but the machine has to
+        classify BEFORE the turn.  So the id doesn't exist at write time and is
+        linked here instead, matched on the run id, exactly as
+        ``link_source_message`` links a spawning message to the mechanism a run
+        created (#1566).
+
+        ``anchor`` additionally stamps it as the round's anchor, for the rows
+        that opened a round; the caller owns that rule (see
+        ``ConversationMachine._link_message``) so anchoring is decided in one
+        place, not re-derived here."""
+        with self._session() as session:
+            rows = session.exec(
+                select(StateTransition).where(StateTransition.run_id == run_id)
+            ).all()
+            for row in rows:
+                row.message_id = message_id
+                if anchor:
+                    row.anchor_message_id = message_id
+                session.add(row)
+            session.commit()
+
     def recent_transitions(self, limit: int) -> list[StateTransition]:
         """The machine's most recent moves, newest first — the replay surface.
 

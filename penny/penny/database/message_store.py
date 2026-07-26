@@ -348,6 +348,25 @@ class MessageStore:
 
     # --- Message lookup ---
 
+    def last_outgoing_content(self) -> str | None:
+        """What Penny said most recently, or ``None`` if she hasn't yet.
+
+        The conversation state machine's ``penny_last_turn`` (#1706): the newest
+        message is a REPLY, and a reply is only classifiable against what it
+        answers ("just the headline" is steps-arrived only against "what should
+        I look for?").  Ordered by ``timestamp`` (never id), with id breaking
+        same-timestamp ties."""
+        with self._session() as session:
+            message = session.exec(
+                select(MessageLog)
+                .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
+                .order_by(
+                    MessageLog.timestamp.desc(),  # type: ignore[union-attr]
+                    MessageLog.id.desc(),  # type: ignore[union-attr]
+                )
+            ).first()
+            return message.content if message is not None else None
+
     def get_by_id(self, message_id: int) -> MessageLog | None:
         """Get a message by its database ID."""
         with self._session() as session:

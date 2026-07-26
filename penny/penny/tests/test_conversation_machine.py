@@ -23,6 +23,7 @@ eval suite's job (beat 1 onward), not this file's.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -42,7 +43,7 @@ from penny.conversation_machine import (
     render_classifier_content,
 )
 from penny.database.skills import SkillDraft, SkillStep
-from penny.llm.models import LlmError, LlmMessage, LlmResponse
+from penny.llm.models import LlmMessage, LlmResponse
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     STATE_CLASSIFIER_SYSTEM_PROMPT,
@@ -71,13 +72,26 @@ _ELICIT_SNAPSHOT = MachineSnapshot(
 )
 
 
+def _responds_per_call(reply: Callable[[int], str]) -> MockLlmClient:
+    """A mock model client whose Nth chat returns ``reply(N)``.
+
+    This file's whole subject IS the classifier, so its handler CLAIMS those
+    calls (``answers_state_classifier``) rather than letting the mock's default
+    intercept answer them — that intercept exists for the many flow tests that
+    say nothing about the machine and must not have it eat their responses."""
+    model = MockLlmClient()
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        return LlmResponse(message=LlmMessage(role="assistant", content=reply(count)))
+
+    handler.answers_state_classifier = True  # type: ignore[attr-defined]
+    model.set_response_handler(handler)
+    return model
+
+
 def _responds(content: str) -> MockLlmClient:
     """A mock model client whose every chat returns ``content``."""
-    model = MockLlmClient()
-    model.set_response_handler(
-        lambda request, count: LlmResponse(message=LlmMessage(role="assistant", content=content))
-    )
-    return model
+    return _responds_per_call(lambda count: content)
 
 
 def _classifier(model: MockLlmClient) -> StateClassifier:
@@ -360,15 +374,7 @@ async def test_classify_untagged_draw_is_rerolled_then_stays():
 async def test_classify_reroll_can_recover():
     """The one contract-violation reroll re-draws on the unchanged context — a
     valid second draw decides the transition."""
-    model = MockLlmClient()
-    model.set_response_handler(
-        lambda request, count: LlmResponse(
-            message=LlmMessage(
-                role="assistant",
-                content="hmm, let me think" if count == 1 else "STATE: learn",
-            )
-        )
-    )
+    model = _responds_per_call(lambda count: "hmm, let me think" if count == 1 else "STATE: learn")
     decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.LEARN
@@ -451,19 +457,7 @@ async def test_classify_ungated_draw_ignores_a_stray_skill_line():
 # ── The production snapshot builder ───────────────────────────────────────────
 
 
-class _Embeds:
-    """A minimal embedding-client stub: returns one fixed vector, or raises."""
-
-    def __init__(self, vector: list[float] | None) -> None:
-        self._vector = vector
-
-    async def embed(self, text: str) -> list[list[float]]:
-        if self._vector is None:
-            raise LlmError("embed backend down")
-        return [self._vector]
-
-
-def _seed_skill(db, name: str, description: str, embedding: list[float]) -> None:
+def _seed_skill(db, name: str, description: str) -> None:
     draft = SkillDraft(
         name=name,
         intent=description,
@@ -479,38 +473,30 @@ def _seed_skill(db, name: str, description: str, embedding: list[float]) -> None
         parameters=[],
         source_run_id="test-seed",
     )
-    db.skills.upsert(draft, author="test-seed", description_embedding=embedding)
+    db.skills.upsert(draft, author="test-seed", description_embedding=None)
 
 
-async def test_build_snapshot_ranks_candidates_best_first(db):
-    """The builder embeds the message and ranks the registry by
-    description-anchor cosine — the nearest skill first — and a populated
-    candidate list opens the apply edge."""
-    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
-    _seed_skill(db, "collect daily cafe specials", "save a cafe's daily specials", [0.6, 0.8])
-    snapshot = await build_snapshot(
-        db,
-        cast(Any, _Embeds([1.0, 0.0])),
-        state=ConversationState.IDLE,
-        message=_PRICE_ASK,
-    )
+def test_build_snapshot_offers_every_skill_with_no_relevance_gate(db):
+    """EVERY skill is offered — no ranking, no cap, no embedding (the code-owner
+    ruling): a relevance gate here would hide the covering skill exactly like
+    the gates #1471 removed, and this list is strictly smaller than the full
+    recipes chat already carries every turn.  A skill with no description vector
+    is offered like any other, since nothing is compared."""
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price")
+    _seed_skill(db, "collect daily cafe specials", "save a cafe's daily specials")
+    snapshot = build_snapshot(db, state=ConversationState.IDLE, message=_PRICE_ASK)
     assert [candidate.name for candidate in snapshot.skill_candidates] == [
-        "watch a listing price for changes",
         "collect daily cafe specials",
+        "watch a listing price for changes",
     ]
     assert ConversationState.APPLY in presented_edges(snapshot)
 
 
-async def test_build_snapshot_embed_failure_degrades_to_no_candidates(db):
-    """A transient embed failure yields NO candidates — apply structurally
-    withheld (the safe shape), never a crash or a stale guess."""
-    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
-    snapshot = await build_snapshot(
-        db,
-        cast(Any, _Embeds(None)),
-        state=ConversationState.IDLE,
-        message=_PRICE_ASK,
-    )
+def test_build_snapshot_on_an_empty_registry_withholds_the_gated_states(db):
+    """An empty registry offers no candidates, so the SKILL-GATED states are
+    structurally withheld — the cold-start shape, reached by there being nothing
+    to offer rather than by anything failing."""
+    snapshot = build_snapshot(db, state=ConversationState.IDLE, message=_PRICE_ASK)
     assert snapshot.skill_candidates == []
     assert ConversationState.APPLY not in presented_edges(snapshot)
 
@@ -521,8 +507,8 @@ _KAYAK_ASK = "keep an eye on the price of the harbor kayak rental page"
 
 
 def _machine(db, model: MockLlmClient) -> ConversationMachine:
-    """A machine over the real store, with a stub embedder and a mock model."""
-    return ConversationMachine(db, cast(Any, _Embeds([1.0, 0.0])), _classifier(model))
+    """A machine over the real store, driven by a mock model."""
+    return ConversationMachine(db, _classifier(model))
 
 
 def _log(db, content: str) -> int:
@@ -535,7 +521,7 @@ async def test_machine_cold_starts_idle_and_records_the_move(db):
     """First read creates the row at idle (no seeded state), and a decided draw
     both moves the machine and lands one classifier transition carrying its
     outcome, message, run and bound skill."""
-    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price")
     machine = _machine(db, _responds("STATE: apply\nSKILL: watch a listing price for changes"))
     assert db.machine.latest_transition() is None  # cold start = no history, not a seeded row
     assert machine.state() is ConversationState.IDLE
@@ -607,7 +593,7 @@ async def test_apply_resets_structurally_then_classifies_the_new_message(db):
     """A state with no out-edges cannot be classified, so the machine settles it
     FIRST: the reset lands as its own structural row (no model, no outcome) and
     the message is then classified from idle — two rows, in causal order."""
-    _seed_skill(db, "watch a listing price for changes", "record a listing's price", [1.0, 0.0])
+    _seed_skill(db, "watch a listing price for changes", "record a listing's price")
     db.machine.record_transition(
         from_state=ConversationState.IDLE.value,
         to_state=ConversationState.APPLY.value,

@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
+from penny.conversation_machine import ConversationMachine
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -105,10 +106,15 @@ class MessageChannel(ABC):
         self._scheduler: BackgroundScheduler | None = None
         self._config: Config | None = None
         self._embedding_model_client: LlmClient | None = None
+        self._conversation_machine: ConversationMachine | None = None
 
     def set_scheduler(self, scheduler: BackgroundScheduler) -> None:
         """Set the scheduler for message notifications."""
         self._scheduler = scheduler
+
+    def set_conversation_machine(self, machine: ConversationMachine) -> None:
+        """Set the conversation state machine classified at the top of each turn."""
+        self._conversation_machine = machine
 
     def set_command_context(
         self,
@@ -645,6 +651,36 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
+    async def _classify_state(self, message: IncomingMessage, run_id: str) -> None:
+        """Move the conversation state machine for this incoming message (#1706).
+
+        Runs BEFORE the turn — the machine's whole purpose is that the turn is
+        entered with its state already decided.  The message has no id yet (it
+        is logged after the run, so it never doubles into that turn's recall),
+        so the moves are linked to it afterwards by ``link_message``.
+
+        A classifier failure must never cost the user their turn: the machine is
+        fail → stay by construction, so a failed draw already leaves it where it
+        was, and an unexpected error here is logged and swallowed rather than
+        dropping a reply Penny would otherwise have sent."""
+        if self._conversation_machine is None:
+            return
+        try:
+            decision = await self._conversation_machine.advance(
+                message.content,
+                penny_last_turn=self._db.messages.last_outgoing_content(),
+                run_id=run_id,
+                run_target=self._message_agent.name,
+            )
+        except Exception as exc:
+            logger.error("Conversation state classification failed: %s", exc)
+            return
+        logger.info(
+            "Conversation state: %s (%s)",
+            self._conversation_machine.state().value,
+            decision.outcome.value,
+        )
+
     async def _run_message_through_agent(
         self,
         message: IncomingMessage,
@@ -670,6 +706,7 @@ class MessageChannel(ABC):
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
+        await self._classify_state(message, run_id)
         response = await self._message_agent.handle(
             content=message.content,
             sender=user_sender,
@@ -695,6 +732,8 @@ class MessageChannel(ABC):
         # message has an id (#1566) — matched by the unique per-turn run id.
         if incoming_id is not None:
             self._db.memories.link_source_message(run_id, incoming_id)
+            if self._conversation_machine is not None:
+                self._conversation_machine.link_message(run_id, incoming_id)
         await self._deliver_agent_response(
             message, user_sender, response, incoming_id, progress, self._message_agent.name
         )

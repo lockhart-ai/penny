@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from penny.channels.base import IncomingMessage, MessageChannel
 from penny.config import Config
+from penny.conversation_machine import ConversationMachine
 
 if TYPE_CHECKING:
     from penny.agents import ChatAgent
@@ -189,6 +190,15 @@ class ChannelManager(MessageChannel):
         super().set_scheduler(scheduler)
         for channel in self._channels.values():
             channel.set_scheduler(scheduler)
+
+    def set_conversation_machine(self, machine: ConversationMachine) -> None:
+        """Forward the conversation state machine to all registered channels.
+
+        A receive→reply loop lives on each CONCRETE channel (the manager only
+        routes outgoing sends), so the machine has to reach them, not just here."""
+        super().set_conversation_machine(machine)
+        for channel in self._channels.values():
+            channel.set_conversation_machine(machine)
 
     def set_command_context(
         self,

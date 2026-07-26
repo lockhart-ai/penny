@@ -2447,12 +2447,11 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                         await _seed_eval_skills(penny, seed_skills)
                     classifier = StateClassifier(penny.model_client)
                     try:
-                        # The PRODUCTION snapshot builder per sample — candidates
-                        # depend on the phrasing (the embed + resolve pre-pass),
-                        # so the eval exercises the same path the wiring will.
-                        snapshot = await build_snapshot(
+                        # The PRODUCTION snapshot builder per sample, so the eval
+                        # exercises the same path the wiring does — EVERY seeded
+                        # skill offered, no ranking or cap (the #1706 ruling).
+                        snapshot = build_snapshot(
                             penny.db,
-                            penny.embedding_model_client,
                             state=state,
                             message=phrasing,
                             penny_last_turn=penny_last_turn,
