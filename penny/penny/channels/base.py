@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationMachine
+from penny.conversation_machine import ConversationMachine, ConversationState
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -651,7 +651,9 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
-    async def _classify_state(self, message: IncomingMessage, run_id: str) -> None:
+    async def _classify_state(
+        self, message: IncomingMessage, run_id: str
+    ) -> ConversationState | None:
         """Move the conversation state machine for this incoming message (#1706).
 
         Runs BEFORE the turn — the machine's whole purpose is that the turn is
@@ -664,7 +666,7 @@ class MessageChannel(ABC):
         was, and an unexpected error here is logged and swallowed rather than
         dropping a reply Penny would otherwise have sent."""
         if self._conversation_machine is None:
-            return
+            return None
         try:
             decision = await self._conversation_machine.advance(
                 message.content,
@@ -674,12 +676,10 @@ class MessageChannel(ABC):
             )
         except Exception as exc:
             logger.error("Conversation state classification failed: %s", exc)
-            return
-        logger.info(
-            "Conversation state: %s (%s)",
-            self._conversation_machine.state().value,
-            decision.outcome.value,
-        )
+            return None
+        state = self._conversation_machine.state()
+        logger.info("Conversation state: %s (%s)", state.value, decision.outcome.value)
+        return state
 
     async def _run_message_through_agent(
         self,
@@ -706,7 +706,7 @@ class MessageChannel(ABC):
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
-        await self._classify_state(message, run_id)
+        state = await self._classify_state(message, run_id)
         response = await self._message_agent.handle(
             content=message.content,
             sender=user_sender,
@@ -714,6 +714,7 @@ class MessageChannel(ABC):
             page_context=message.page_context,
             quoted_text=message.quoted_text,
             run_id=run_id,
+            state=state,
             **self._make_handle_kwargs(message, progress),
         )
         incoming_embedding = await self._embed_message(message.content)

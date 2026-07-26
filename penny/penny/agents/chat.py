@@ -16,6 +16,7 @@ from penny.agents.models import ControllerResponse
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants
+from penny.conversation_machine import ConversationState, conversation_prompt
 from penny.datetime_utils import current_datetime_line
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
@@ -221,6 +222,7 @@ class ChatAgent(Agent):
         page_context: PageContext | None = None,
         quoted_text: str | None = None,
         run_id: str | None = None,
+        state: ConversationState | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
@@ -262,7 +264,14 @@ class ChatAgent(Agent):
 
             logger.info("Handling message from %s (conversation mode)", sender)
             self._install_tools(self.get_tools(run_id=run_id))
-            system_prompt = await self._build_system_prompt(sender)
+            # The machine decided this turn's state before the turn began, so the
+            # prompt carries THAT state's single instruction (#1706).  ``None`` —
+            # no machine wired, or a state with no instruction yet — composes the
+            # unchanged default.
+            system_prompt = await self._build_system_prompt(
+                sender,
+                instructions=conversation_prompt(state) if state is not None else None,
+            )
             return await self.run(
                 prompt=content,
                 max_steps=self.get_max_steps(),

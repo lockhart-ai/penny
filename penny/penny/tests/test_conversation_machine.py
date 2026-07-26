@@ -38,12 +38,14 @@ from penny.conversation_machine import (
     SkillCandidate,
     StateClassifier,
     build_snapshot,
+    conversation_prompt,
     next_state,
     presented_edges,
     render_classifier_content,
 )
 from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.models import LlmMessage, LlmResponse
+from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     STATE_CLASSIFIER_SYSTEM_PROMPT,
@@ -633,4 +635,53 @@ async def test_state_is_a_fold_over_the_log_with_no_materialized_twin(db):
     assert (latest.to_state, latest.anchor_message_id) == (
         ConversationState.ELICIT.value,
         anchor_id,
+    )
+
+
+# ── Per-state chat instructions (#1706) ───────────────────────────────────────
+
+
+def test_a_state_without_its_own_instruction_composes_the_unchanged_prompt():
+    """States land ONE at a time: a state with no instruction yet renders the
+    default union block, so the prompt is byte-identical to the un-stated one and
+    the unlanded states cannot change behaviour while elicit is being tuned."""
+    for state in (ConversationState.IDLE, ConversationState.LEARN, ConversationState.APPLY):
+        assert conversation_prompt(state) == Prompt.CONVERSATION_PROMPT
+
+
+def test_elicit_swaps_only_the_middle_and_never_names_the_machine():
+    """The elicit prompt is the invariant physics core with ONE instruction where
+    the union used to be — the head and tail (browse signature, no-selectors,
+    memory-first, recap rules) are untouched, the union is gone, and nothing
+    renders the machine itself: no state name, no transitions, no mention that a
+    classifier ran.  By the time chat reads this, where it is has already been
+    decided; what it needs is what to do."""
+    elicit = conversation_prompt(ConversationState.ELICIT)
+    assert elicit.startswith(Prompt.CONVERSATION_HEAD)
+    assert elicit.endswith(Prompt.CONVERSATION_TAIL)
+    assert Prompt.SKILL_PATH_DEFAULT not in elicit
+    assert elicit == Prompt.CONVERSATION_HEAD + Prompt.ELICIT_INSTRUCTION + Prompt.CONVERSATION_TAIL
+
+    for machine_word in ("elicit", "idle", "state", "transition", "classif"):
+        assert machine_word not in Prompt.ELICIT_INSTRUCTION.lower(), machine_word
+
+    # The two levers the machine makes redundant are NOT carried over: the
+    # coverage double-check (landing here IS the coverage answer) and the
+    # improvise guard (there is no other branch left to improvise out of).
+    assert "find(" not in Prompt.ELICIT_INSTRUCTION
+    assert "improvise" not in Prompt.ELICIT_INSTRUCTION
+
+
+def test_elicit_instruction_whole_render():
+    """The whole instruction, verbatim — the model-facing text this beat exists
+    to test, pinned so a later edit is a visible diff and not a silent drift."""
+    assert Prompt.ELICIT_INSTRUCTION == (
+        "They are asking for something ongoing or repeatable — a routine — and you "
+        "have no skill for it yet. Your whole job this turn is to ask to be taught "
+        "it. In ONE message:\n"
+        "1. Say plainly that you don't know how to do this one yet.\n"
+        "2. Ask them to walk you through it once, naming what you need: what to "
+        "read, what to look for, what to remember.\n"
+        "Do not start the task, do not do part of it, and do not set anything up. "
+        "Nothing is running yet, so never say or imply that it is.\n\n"
     )
