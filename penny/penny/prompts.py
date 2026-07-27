@@ -86,7 +86,8 @@ class Prompt:
         "In ONE message, ask them to walk you through doing it once: what to "
         "read, what to do with it, and what to remember afterwards. Ask in the "
         "terms they used — describing the task is theirs, working out how to "
-        "carry it out is yours.\n\n"
+        "carry it out is yours. Never ask them to define keywords, terms, "
+        "matching rules, or anything about how a page is built.\n\n"
         "Don't attempt the task, don't do part of it, and don't record anything. "
         "Nothing exists yet, so don't say or imply that it does.\n\n"
     )
@@ -137,7 +138,10 @@ class Prompt:
         'array (e.g., queries: ["https://example.com/page"]). '
         "Real pages have full details that search snippets leave out.\n"
         "4. The `extract` argument is REQUIRED on every browse — say, in plain "
-        "language, exactly what to pull out. You get back just that value "
+        "language, exactly what to pull out. A description in ordinary words IS "
+        'the whole specification — "the opening hours" or "anything the page '
+        'says about refunds" are complete, sufficient answers, and nothing more '
+        "precise exists to give. You get back just that value "
         "(plus a handle to the stored full page), never the whole page. There "
         "are no CSS selectors, XPaths, or HTML parsing anywhere in your tools; "
         "never ask the user for page structure, snippets, or selectors — "

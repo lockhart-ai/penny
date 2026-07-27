@@ -51,6 +51,7 @@ from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
+    asked_for_page_structure,
     chat_run_tool_sequences,
     collection_entries,
     is_ordered_subsequence,
@@ -621,6 +622,14 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
             "state: the seeded collection untouched",
             not collection_entries(db, "dislikes"),
             kind="state",
+        ),
+        Check(
+            "reply: asked for no page structure (no selector, element id, or pattern)",
+            asked_for_page_structure(reply) is None,
+            rationale=(
+                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
+            ),
+            kind="reply",
         ),
         Check(
             "calls: no enacting calls (orientation reads only)",

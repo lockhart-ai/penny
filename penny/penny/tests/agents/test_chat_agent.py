@@ -1043,10 +1043,12 @@ _BASIC_FLOW_EXPECTED = (
     'queries: ["https://example.com/page"]). Real pages have full details that search '
     "snippets leave out.\n"
     "4. The `extract` argument is REQUIRED on every browse — say, in plain language, "
-    "exactly what to pull out. You get back just that value (plus a handle to the stored "
-    "full page), never the whole page. There are no CSS selectors, XPaths, or HTML "
-    "parsing anywhere in your tools; never ask the user for page structure, snippets, or "
-    "selectors — reading pages is your job.\n"
+    "exactly what to pull out. A description in ordinary words IS the whole specification "
+    '— "the opening hours" or "anything the page says about refunds" are complete, '
+    "sufficient answers, and nothing more precise exists to give. You get back just that "
+    "value (plus a handle to the stored full page), never the whole page. There are no "
+    "CSS selectors, XPaths, or HTML parsing anywhere in your tools; never ask the user "
+    "for page structure, snippets, or selectors — reading pages is your job.\n"
     "\n"
     "After reading pages, you MUST respond with what you found. Do not make additional "
     "tool calls to re-fetch or supplement pages you already read. If a page had limited "

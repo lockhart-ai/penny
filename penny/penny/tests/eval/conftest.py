@@ -658,6 +658,38 @@ def routing_clean(db: Database) -> bool:
     return not bail_nudge_fired(db) and not continue_nudge_fired(db)
 
 
+# Page-structure vocabulary — asking the user HOW a page is built, which the
+# tools cannot use and the user should never have to know (there are no
+# selectors, XPaths, or HTML parsing anywhere in the browse surface).  Kept to
+# unambiguous terms so a reply that merely discusses a web page never trips it.
+_PAGE_STRUCTURE_TERMS = (
+    "css",
+    "xpath",
+    "selector",
+    "element id",
+    "element_id",
+    "html parsing",
+    "html tag",
+    "dom node",
+    "text pattern",
+    "regex",
+)
+
+
+def asked_for_page_structure(reply: str) -> str | None:
+    """The structure term a reply asked the user for, or ``None`` — the scorable
+    form of a failure that was previously only catchable by eye.
+
+    Penny reads pages by saying in plain language what she wants out of them, so
+    asking the user for a selector, an element id, or a text pattern is asking
+    for something no tool of hers accepts AND something a user has no reason to
+    know.  It reappeared at 5-of-8 the moment the elicit instruction stopped
+    naming it, while the standing rule in the invariant prompt tail did not hold
+    it alone — so it is worth a check rather than a rule nobody measures."""
+    lowered = reply.lower()
+    return next((term for term in _PAGE_STRUCTURE_TERMS if term in lowered), None)
+
+
 def outgoing_replies(db: Database) -> list[str]:
     """Every message Penny sent this sample (the per-turn replies), oldest first."""
     entries = db.memory("penny-messages").read_recent(window_seconds=3600, cap=None)
