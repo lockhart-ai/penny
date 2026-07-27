@@ -1,4 +1,4 @@
-"""Automatic skill extraction at chat-run end (#1658/#1665).
+"""Automatic skill extraction at chat-run end (#1658/#1665/#1668/#1770).
 
 Drives ``SkillExtractor.extract`` over REAL-SHAPED logged runs — every tool call
 carries the framework's top-level ``reasoning`` think-aloud, and the user turn is a
@@ -12,7 +12,11 @@ value binds against a prior result's PAYLOAD (the frame stripped) while a topic-
 key still doesn't · the skill is named GENERICALLY by a micro-context (tagged
 NAME:/DESCRIPTION:), falling back to the deterministic slug on any failure · the
 run-end narration frame renders the generic name plus the demonstrated-on instance.
-All content is synthetic (aurora / faux-market).
+The #1770 additions: the labeller ADJUDICATES each candidate parameter — a PARAM
+verdict keeps it a required parameter, a PLACEHOLDER verdict drops it and renders
+what belongs there instead of freezing the demonstrated value, and NO verdict (or a
+malformed one) keeps the arg-derived required parameter · the naming system prompt
+as a whole-render literal.  All content is synthetic (aurora / faux-market).
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ from penny.skill_extraction import (
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
+from penny.tools.micro_context import SKILL_NAMING_SYSTEM_PROMPT
 from penny.tools.skill_tools import render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
@@ -455,6 +460,19 @@ _WATCH_STEPS = steps_to_json(
 )
 _WATCH_PARAMS = parameters_to_json([SkillParameter(name="url", required=True)])
 
+# #1770: the motivating write — the round recorded the price AND a second entry it
+# composed ITSELF about the page it had just read.  Neither leaf of that second
+# entry came from the user, so neither can be a required parameter.
+_INVENTED_LABEL = "Page source for Aurora Deck 2"
+_INVENTED_WRITE_ARGS = {
+    "memory": "aurora-prices",
+    "entries": [
+        {"key": "aurora deck 2 price", "content": _PRICE},
+        {"key": "aurora deck 2 source", "content": _INVENTED_LABEL},
+    ],
+}
+_INVENTED_WRITE = ("collection_write", _INVENTED_WRITE_ARGS, _WRITE_OK, True)
+
 
 def _naming_model(content: str) -> MockLlmClient:
     """A text model client whose every chat returns ``content`` (the naming draw)."""
@@ -602,6 +620,9 @@ async def test_tagged_param_labels_become_semantic_names_and_descriptions(db):
         ("url", "the page to look at"),
         ("what_to_find", "what to pull from it"),
     ]
+    # A PARAM verdict says the USER supplied that value (#1770), so it stays a real,
+    # REQUIRED parameter — the model binds it per instantiation.
+    assert all(p.required for p in params)
     # The full render shows the semantic parameters block AND {semantic} placeholders.
     rendered = render_skill_full(result.skill)
     assert "  - url (required): the page to look at" in rendered
@@ -614,9 +635,11 @@ async def test_tagged_param_labels_become_semantic_names_and_descriptions(db):
 
 @pytest.mark.asyncio
 async def test_param_labelling_falls_back_per_parameter(db):
-    """Per-parameter fallback, not all-or-nothing (#1668): a parameter the model
-    labels gets its semantic name + description; one it omits keeps its arg-derived
-    name and carries no description."""
+    """Per-parameter fallback, not all-or-nothing (#1668/#1770): a candidate the model
+    labels gets its semantic name + description; one it omits — or one whose verdict
+    line is malformed — keeps its arg-derived name, carries no description, and stays
+    a REQUIRED parameter.  Absence is deliberately not a verdict: overloading it to
+    mean "drop" would let one flaky draw silently delete a real parameter."""
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price and record it.\n"
@@ -631,6 +654,53 @@ async def test_param_labelling_falls_back_per_parameter(db):
     assert [(p.name, p.description) for p in params] == [
         ("url", "the page to look at"),  # labelled
         ("extract", None),  # unlabelled → arg-derived name, no description
+    ]
+    assert all(p.required for p in params)
+    assert "extract={extract}" in render_skill(steps_from_json(result.skill.steps))
+
+    # A PLACEHOLDER line with no description says nothing about what belongs there,
+    # so it is dropped by the parse — the same no-verdict path, NOT a drop.
+    malformed = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price and record it.\n"
+        "PARAM queries: url — the page to look at\n"
+        "PLACEHOLDER extract:"
+    )
+    _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
+
+    later = await _extractor(db, model=malformed).extract("run-B")
+
+    assert isinstance(later, SkillExtracted)
+    kept = parameters_from_json(later.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in kept] == [
+        ("url", "the page to look at", True),
+        ("extract", None, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_contradictory_verdict_lines_leave_the_parameter_alone(db):
+    """A draw that names one candidate TWICE contradicts itself (#1770 — the contract
+    asks for exactly one line each), so that candidate gets NO verdict and keeps its
+    arg-derived required parameter.  Letting the last line win would let a stray
+    trailing PLACEHOLDER delete a real parameter, which is exactly what
+    absence-is-never-a-drop exists to prevent."""
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price and record it.\n"
+        "PARAM queries: url — the page to look at\n"
+        "PARAM extract: what_to_find — what to pull from it\n"
+        "PLACEHOLDER extract: something the assistant worked out"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("url", "the page to look at", True),
+        ("extract", None, True),  # contradicted → no verdict → the default survives
     ]
 
 
@@ -657,6 +727,129 @@ async def test_semantic_names_are_hardened_slugged_and_deduped(db):
     rendered = render_skill(steps_from_json(result.skill.steps))
     assert "queries=[{page_url}]" in rendered
     assert "{page_url_2}" in rendered
+
+
+# ── #1770: only USER-PROVIDED values are parameters; the rest are placeholders ─
+
+
+@pytest.mark.asyncio
+async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_value(db):
+    """The motivating case (#1770): the round recorded the price AND a second entry it
+    composed itself about the page.  The distiller's 'everything else is a parameter'
+    default would make BOTH of that entry's leaves required parameters no user could
+    supply, so the labeller adjudicates: a PLACEHOLDER verdict drops the candidate
+    from the parameter list and renders the labeller's description in its place.
+
+    Freezing the demonstrated value is the specific failure this prevents — a
+    collector re-running the skill would write that stale phrase into the collection
+    every cycle, forever — so the attached prompt is asserted WHOLE: the user's two
+    values are bound, the assistant's two are placeholders, and neither demonstrated
+    phrase appears anywhere."""
+    db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price on a listing page and record it.\n"
+        "PARAM queries: url — the listing page to read\n"
+        "PARAM extract: what_to_find — what to pull from the page\n"
+        "PLACEHOLDER key: a short label for the second entry\n"
+        "PLACEHOLDER content: a note about the page you just read"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
+    extractor = _extractor(db, model=model)
+
+    result = await extractor.extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    # Only the two values the user supplied survive as parameters.
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("url", "the listing page to read", True),
+        ("what_to_find", "what to pull from the page", True),
+    ]
+    assert unbound_required_parameters(params, {"url": "u", "what_to_find": "w"}) == []
+
+    # The whole-skill render (what `skill_read` returns and the ambient Skills section
+    # shows): only the real parameters are listed, and each assistant-produced leaf
+    # shows WHAT BELONGS THERE in placeholder syntax — never the demonstrated value.
+    assert render_skill_full(result.skill) == (
+        "skill 'watch-a-listing-price'\n"
+        "what it's for: Look up a price on a listing page and record it.\n"
+        "parameters:\n"
+        "  - url (required): the listing page to read\n"
+        "  - what_to_find (required): what to pull from the page\n"
+        "steps:\n"
+        "  1. browse(queries=[{url}], extract={what_to_find})\n"
+        "  2. collection_write(memory='aurora-prices', entries=["
+        "{'key': {url}, 'content': the value from step 1}, "
+        "{'key': {a short label for the second entry}, "
+        "'content': {a note about the page you just read}}])"
+    )
+
+    # Auto-attach binds ONLY the real parameters — a placeholder is not user-suppliable,
+    # so it can never be bound to the value the demonstration happened to use.
+    attached = await extractor.attach_to_created_collection(result.skill, "run-A")
+    assert attached is not None
+    assert attached.params == {"url": "aurora deck 2 price", "what_to_find": "the current price"}
+    row = db.memories.get("aurora-prices")
+    assert row is not None and row.extraction_prompt == (
+        "1. browse(queries=['aurora deck 2 price'], extract='the current price')\n"
+        "2. collection_write(memory='aurora-prices', entries=["
+        "{'key': 'aurora deck 2 price', 'content': the value from step 1}, "
+        "{'key': {a short label for the second entry}, "
+        "'content': {a note about the page you just read}}])"
+    )
+    assert "aurora deck 2 source" not in row.extraction_prompt
+    assert _INVENTED_LABEL not in row.extraction_prompt
+
+
+def test_naming_system_prompt_whole_render():
+    """Whole-render literal of the labelling contract (#1665/#1668/#1770): the framing
+    and its inputs, the three numbered asks — intent, then the generic routine name,
+    then the per-candidate WHERE-DID-THIS-COME-FROM verdict as two named cases — and
+    the enumerated output shape with one line required per candidate."""
+    assert SKILL_NAMING_SYSTEM_PROMPT == (
+        "You are a naming step. You are given the conversation that led to the "
+        "construction of a reusable routine, the routine itself — a numbered list of "
+        "tool calls with fill-in-the-blank {parameters} — the message that first "
+        "demonstrated it, and the routine's candidate parameters (each currently named "
+        "after the tool argument it fills, and shown with the value it was demonstrated "
+        "with). Do three things:\n"
+        "1. From the conversation, extract the CORE USER INTENT — what the user was "
+        "trying to get done when they asked for this (e.g. keeping an eye on a "
+        "listing's price). The routine exists to serve that intent.\n"
+        "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
+        "the KIND of task (e.g. 'watch a listing price for changes'), generic — never "
+        "the specific instance — and never mechanics alone ('fetch and store data' "
+        "says nothing about when to reach for it).\n"
+        "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
+        "from. There are two cases:\n"
+        "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
+        "they asked to be found, a label they chose — including when the assistant "
+        "reworded it ('the current price' for their \"find the price\"). This is a real "
+        "parameter: name it by what the value MEANS to the user (e.g. 'url', "
+        "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
+        "describe in one line what to supply for it.\n"
+        "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
+        "returned, or wrote it itself while carrying the task out — a summary, a note, "
+        "a caption about a page. The user never said it and could not supply it, so it "
+        "is NOT a parameter: it is a placeholder, and you describe in one line what "
+        "belongs in that spot each time the routine runs.\n"
+        "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "
+        "instruction naming what to pull from the page (e.g. 'the current price') — "
+        "there is no CSS-selector, XPath, or pattern machinery in this system, so never "
+        "name or describe one that way.\n"
+        "Respond with these tagged lines and nothing else:\n"
+        "NAME: <a short generic verb-noun name>\n"
+        "DESCRIPTION: <one line: the user intent it serves, then the mechanics>\n"
+        "PARAM <current name>: <semantic_name> — <one-line description>   "
+        "(the user gave it)\n"
+        "PLACEHOLDER <current name>: <one-line description of what belongs there>   "
+        "(the assistant produced it)\n"
+        "Write ONE line for EVERY candidate parameter — a PARAM line or a PLACEHOLDER "
+        "line, never both and never neither — repeating its CURRENT name exactly so it "
+        "maps back; use a single lowercase word or snake_case for <semantic_name>.\n"
+        "Write nothing else — no preamble, no explanation, no restating the routine."
+    )
 
 
 # ── #1668: a skill captures ONLY collector-runnable steps ──────────────────────

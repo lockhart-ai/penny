@@ -19,14 +19,20 @@ retired tool produced, now fired by the run finishing instead of a model call.
   belong in it, and they count for nothing in the taxonomy (#1668).
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
   steps: strips the framework ``reasoning`` leaf, excludes the retarget-owned
-  write target, classifies bindings vs. required parameters (#1659/#1660/#1662).
-* **name** — a GENERIC verb-noun label + a one-line generic description, written by
-  a single-shot naming micro-context (#1665, the SECOND customer of the micro-context
-  machinery) over the distilled routine — so a skill is named by its CONTRACT ("look
-  up a price on a listing page and record it"), not by the instance ("read-the-aurora-
-  deck-2-listing"), and cross-instance ``find`` can match it.  On ANY naming failure
-  the fallback is the deterministic slug of the triggering message (URLs removed, ≤6
-  words) + that message as the description — extraction NEVER blocks on the rewrite.
+  write target, classifies bindings vs. candidate parameters (#1659/#1660/#1662).
+* **name + adjudicate** — a GENERIC verb-noun label + a one-line generic description,
+  written by a single-shot naming micro-context (#1665, the SECOND customer of the
+  micro-context machinery) over the distilled routine — so a skill is named by its
+  CONTRACT ("look up a price on a listing page and record it"), not by the instance
+  ("read-the-aurora-deck-2-listing"), and cross-instance ``find`` can match it.  The
+  same draw decides, per CANDIDATE parameter, whether the USER supplied that value
+  (#1770): one they did is a real parameter (semantic name + description); one the
+  assistant derived from a result or invented is a **placeholder** — dropped from the
+  parameter list and rendered as what belongs there, never as the frozen demonstrated
+  value.  On ANY naming failure the fallback is the deterministic slug of the
+  triggering message (URLs removed, ≤6 words) + that message as the description, and
+  every candidate keeps its arg-derived required parameter — extraction NEVER blocks
+  on the rewrite, and a missing verdict never deletes a parameter.
 * **dedup (REPLACE semantics)** — exact name match → REPLACE; else a same-shape,
   same-meaning skill (the GENERIC ``description_embedding`` converges cross-instance)
   → REPLACE keeping ITS name; otherwise insert.
@@ -64,6 +70,7 @@ from penny.database.skills import (
     SkillParameter,
     SkillStep,
     SkillSubKind,
+    SkillSubstitution,
     distill_steps,
     render_skill,
     retarget_writes,
@@ -71,7 +78,12 @@ from penny.database.skills import (
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.text_validity import check_extraction_prompt
-from penny.tools.micro_context import MicroContext, SkillLabel
+from penny.tools.micro_context import (
+    MicroContext,
+    ParameterLabel,
+    ParameterVerdict,
+    SkillLabel,
+)
 
 if TYPE_CHECKING:
     from penny.llm.client import LlmClient
@@ -183,7 +195,9 @@ def _demonstrated_params(steps: list[SkillStep]) -> dict[str, str]:
     """Each parameter's DEMONSTRATED value, read off the steps' verbatim arguments
     by the substitution paths — the honest auto-attach binding: the instantiated
     watch watches exactly what the demonstration used (shared-leaf parameters
-    collapse to one value by construction)."""
+    collapse to one value by construction).  Only ``HOLE`` leaves are read: a
+    PLACEHOLDER leaf (#1770) is by definition not user-suppliable, so binding it to
+    the demonstrated value is exactly the freeze the verdict exists to prevent."""
     params: dict[str, str] = {}
     for step in steps:
         for sub in step.substitutions:
@@ -371,15 +385,17 @@ class SkillExtractor:
         projection: RunProjection,
         certified: list[RunProjectionStep],
     ) -> SkillDraft:
-        """Distil the certified steps into structured steps + parameters, name the
-        skill AND its parameters GENERICALLY via a single-shot micro-context (#1665/
-        #1668, a verb-noun name + description + a semantic name/description per
-        parameter over the rendered routine), and bundle it for the store.
+        """Distil the certified steps into structured steps + candidate parameters,
+        name the skill GENERICALLY and adjudicate each candidate via a single-shot
+        micro-context (#1665/#1668/#1770 — a verb-noun name + description, then per
+        candidate either a semantic name/description or a placeholder verdict), and
+        bundle it for the store.
 
         On ANY naming failure the fallback is the deterministic slug of the triggering
-        message + that message as the description, and parameters keep their
-        arg-derived names — the model writes LABELS only; steps/parameters are
-        untouched otherwise, and extraction never blocks on the rewrite."""
+        message + that message as the description, and candidates keep their
+        arg-derived names as required parameters — the model writes LABELS and
+        VERDICTS only; steps are untouched otherwise, and extraction never blocks on
+        the rewrite."""
         steps, parameters = distill_steps(self._distill_inputs(projection, certified))
         fallback_name = _slug_name(projection.origin_message)
         fallback_description = projection.origin_message or f"Skill: {fallback_name}"
@@ -402,15 +418,17 @@ class SkillExtractor:
         parameters: list[SkillParameter],
         projection: RunProjection,
     ) -> SkillLabel | None:
-        """One single-shot naming micro-context over the rendered routine (#1665/#1668).
+        """One single-shot naming micro-context over the rendered routine
+        (#1665/#1668/#1770).
 
         Content = the numbered recipe with parameters as ``{variables}`` + the
-        triggering message + the run's ``find`` query phrases + the parameter list
-        (each parameter's current arg-derived name, demonstrated value, and the arg
-        site(s) it fills); the micro-context writes a GENERIC name + description AND a
-        semantic name/description per parameter (poison-screened + one reroll, its own
-        ledger attribution).  ``None`` on any failure — the caller falls back to the
-        slug + arg-derived names."""
+        triggering message + the run's ``find`` query phrases + the CANDIDATE parameter
+        list (each candidate's current arg-derived name, demonstrated value, and the
+        arg site(s) it fills); the micro-context writes a GENERIC name + description
+        AND, per candidate, either a semantic name/description (the user supplied it)
+        or a placeholder description (they did not) — poison-screened + one reroll,
+        its own ledger attribution.  ``None`` on any failure — the caller falls back to
+        the slug + arg-derived names."""
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         content = _naming_content(steps, parameters, projection, conversation)
         return await self._micro_context.label_skill(content, run_target=self._agent_name)
@@ -491,12 +509,14 @@ def _naming_content(
     projection: RunProjection,
     conversation: list[tuple[str, str]],
 ) -> str:
-    """The naming micro-context's content (#1665/#1668): the numbered recipe
-    (parameters as ``{variables}``, so the model treats them as user-supplied), the
-    message that first demonstrated it, any ``find`` query phrases from the run (the
-    generic task phrases the step-1 doctrine sends to find — a naming signal), and the
-    parameter list — each parameter's current arg-derived name, demonstrated value,
-    and the arg site(s) it fills — so the model can relabel each semantically."""
+    """The naming micro-context's content (#1665/#1668/#1770): the numbered recipe
+    (parameters as ``{variables}``), the message that first demonstrated it, any
+    ``find`` query phrases from the run (the generic task phrases the step-1 doctrine
+    sends to find — a naming signal), and the CANDIDATE parameter list — each
+    candidate's current arg-derived name, demonstrated value, and the arg site(s) it
+    fills — so the model can both relabel each semantically and judge whether the USER
+    supplied its value at all.  They are named *candidates* because the distiller's
+    "everything else is a parameter" is a default the labeller adjudicates."""
     parts = []
     if conversation:
         turns = "\n".join(
@@ -514,15 +534,17 @@ def _naming_content(
     param_lines = _parameter_lines(steps, parameters)
     if param_lines:
         parts.append(
-            "Parameters (each currently named after the tool arg it fills):\n" + param_lines
+            "Candidate parameters (each currently named after the tool arg it fills):\n"
+            + param_lines
         )
     return "\n\n".join(parts)
 
 
 def _parameter_lines(steps: list[SkillStep], parameters: list[SkillParameter]) -> str:
-    """One line per parameter for the naming content (#1668): its current name, the
-    value it was demonstrated with, and the tool-arg site(s) it fills — the facts the
-    model needs to give it a semantic name and description."""
+    """One line per candidate parameter for the naming content (#1668/#1770): its
+    current name, the value it was demonstrated with, and the tool-arg site(s) it fills
+    — the facts the model needs both to give it a semantic name and description and to
+    judge whether the user supplied that value."""
     lines: list[str] = []
     for parameter in parameters:
         value, sites = _parameter_facts(steps, parameter.name)
@@ -601,26 +623,49 @@ def _apply_parameter_labels(
     parameters: list[SkillParameter],
     label: SkillLabel | None,
 ) -> tuple[list[SkillStep], list[SkillParameter]]:
-    """Relabel each parameter with its hardened semantic name + description and map the
-    rename through every leaf site (#1668).  A parameter the label doesn't cover — or
-    whose semantic name slugs to empty — keeps its arg-derived name (per-parameter
-    fallback, not all-or-nothing); a collision gets a numeric suffix, since the name
-    is the binding key.  ``label is None`` leaves everything untouched."""
+    """Apply the labeller's per-candidate verdicts (#1668/#1770): a PARAMETER verdict
+    relabels the candidate with its hardened semantic name + description and maps the
+    rename through every leaf site; a PLACEHOLDER verdict says the user never
+    supplied that value, so the candidate is NOT a parameter — it drops out of the
+    parameter list and its leaf sites become placeholder substitutions carrying the
+    labeller's description.
+
+    A candidate the label doesn't cover — or whose semantic name slugs to empty —
+    keeps its arg-derived required parameter (per-candidate fallback, not
+    all-or-nothing, and absence is never a drop); a name collision gets a numeric
+    suffix, since the name is the binding key.  ``label is None`` leaves everything
+    untouched."""
     if label is None:
         return steps, parameters
     rename: dict[str, str] = {}
+    placeholders: dict[str, str] = {}
     used: set[str] = set()
     relabelled: list[SkillParameter] = []
     for parameter in parameters:
         param_label = label.parameters.get(parameter.name)
-        candidate = _slug_parameter_name(param_label.name) if param_label is not None else ""
-        final = _unique_name(candidate or parameter.name, used)
-        used.add(final)
-        rename[parameter.name] = final
-        description = param_label.description if param_label and param_label.description else None
-        relabelled.append(parameter.model_copy(update={"name": final, "description": description}))
-    renamed_steps = [_rename_step_parameters(step, rename) for step in steps]
-    return renamed_steps, relabelled
+        if param_label is not None and param_label.verdict == ParameterVerdict.PLACEHOLDER:
+            placeholders[parameter.name] = param_label.description
+            continue
+        relabelled.append(_relabelled(parameter, param_label, rename, used))
+    rewritten = [_rewrite_step_leaves(step, rename, placeholders) for step in steps]
+    return rewritten, relabelled
+
+
+def _relabelled(
+    parameter: SkillParameter,
+    param_label: ParameterLabel | None,
+    rename: dict[str, str],
+    used: set[str],
+) -> SkillParameter:
+    """One real parameter under its semantic label (#1668): the hardened name (falling
+    back to the arg-derived one when the label is absent or slugs to empty), made
+    unique, recorded in ``rename`` for the leaf sites, plus the one-line description."""
+    candidate = _slug_parameter_name(param_label.name) if param_label is not None else ""
+    final = _unique_name(candidate or parameter.name, used)
+    used.add(final)
+    rename[parameter.name] = final
+    description = param_label.description if param_label and param_label.description else None
+    return parameter.model_copy(update={"name": final, "description": description})
 
 
 def _unique_name(candidate: str, used: set[str]) -> str:
@@ -634,17 +679,37 @@ def _unique_name(candidate: str, used: set[str]) -> str:
     return f"{candidate}_{suffix}"
 
 
-def _rename_step_parameters(step: SkillStep, rename: dict[str, str]) -> SkillStep:
-    """A copy of ``step`` with every ``HOLE`` substitution's ``parameter`` field
-    remapped through ``rename`` (#1668) — so every leaf site follows its parameter to
-    the semantic name, and the render substitutes by that name."""
-    subs = [
-        sub.model_copy(update={"parameter": rename[sub.parameter]})
-        if sub.kind == SkillSubKind.HOLE and sub.parameter in rename
-        else sub
-        for sub in step.substitutions
-    ]
+def _rewrite_step_leaves(
+    step: SkillStep, rename: dict[str, str], placeholders: dict[str, str]
+) -> SkillStep:
+    """A copy of ``step`` with every ``HOLE`` substitution resolved against the
+    verdicts (#1668/#1770): a real parameter's ``parameter`` field is remapped through
+    ``rename`` (so every leaf site follows it to the semantic name and the render
+    substitutes by that name); a candidate the labeller called a PLACEHOLDER becomes a
+    ``PLACEHOLDER`` substitution carrying its description, so the render shows what
+    belongs there instead of freezing the demonstrated value."""
+    subs = [_rewrite_substitution(sub, rename, placeholders) for sub in step.substitutions]
     return step.model_copy(update={"substitutions": subs})
+
+
+def _rewrite_substitution(
+    sub: SkillSubstitution, rename: dict[str, str], placeholders: dict[str, str]
+) -> SkillSubstitution:
+    """One substitution under the verdicts — renamed, converted to a placeholder, or
+    left exactly as it was (a binding, or a parameter with no verdict)."""
+    if sub.kind != SkillSubKind.HOLE or sub.parameter is None:
+        return sub
+    if sub.parameter in placeholders:
+        return sub.model_copy(
+            update={
+                "kind": SkillSubKind.PLACEHOLDER,
+                "parameter": None,
+                "description": placeholders[sub.parameter],
+            }
+        )
+    if sub.parameter in rename:
+        return sub.model_copy(update={"parameter": rename[sub.parameter]})
+    return sub
 
 
 def _find_phrases(projection: RunProjection) -> list[str]:

@@ -17,12 +17,21 @@ never by matching the user's prose (#1659):
   ``Price: $499`` over a browse that returned ``$499``);
 * the scoped-write **target** argument (``memory`` on a write step) → a
   **constant** owned by write-retarget (#1629), never a parameter;
-* **every other string leaf** → a required **parameter** (the model binds it per
-  instantiation); identical values collapse to ONE shared parameter.  A parameter
-  is ``required`` by construction — an unbound one is a loud refusal at
-  instantiation, never a silent default (no-silent-fallbacks).  Parameters get
-  arg-derived names at distill; the run-end naming micro-context relabels them
-  semantically (#1668).
+* **every other string leaf** → a **candidate** required parameter (the model binds
+  it per instantiation); identical values collapse to ONE shared candidate.  A
+  parameter is ``required`` by construction — an unbound one is a loud refusal at
+  instantiation, never a silent default (no-silent-fallbacks).  Candidates get
+  arg-derived names at distill; the run-end naming micro-context then relabels them
+  semantically AND adjudicates each one (#1668/#1770).
+
+That last rule is a **default, not a determination** — it assumes an unexplained
+value came from the user, which is false for a value the model derived-and-
+transformed from a result or invented outright (neither shares a literal span with
+what produced it, so no substring test can reach them, and #1659 ruled prose
+matching out).  The user-provenance question is a judgment, so it lives in
+model-space: the labeller answers "did the USER provide this?" per candidate and
+returns either a semantic name (a real parameter) or a placeholder description.  A
+candidate with no verdict keeps the default — absence is never a drop.
 
 This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
@@ -60,6 +69,7 @@ class SkillSubKind(StrEnum):
 
     HOLE = "hole"
     BINDING = "binding"
+    PLACEHOLDER = "placeholder"
 
 
 class SkillSubstitution(BaseModel):
@@ -69,13 +79,17 @@ class SkillSubstitution(BaseModel):
     ``HOLE`` names the parameter that fills it at instantiation (``parameter`` is
     the parameter's semantic name — the binding key at instantiation); a
     ``BINDING`` names the prior *skill* step (1-based ordinal) whose result flows
-    into it.
+    into it; a ``PLACEHOLDER`` (#1770) carries a one-line ``description`` of what
+    belongs there each run — the leaf the labeller judged the ASSISTANT to have
+    produced (derived from a result, or invented outright), so no user could bind
+    it and the demonstrated value must never be frozen into the recipe.
     """
 
     path: list[str | int]
     kind: SkillSubKind
     parameter: str | None = None  # set when kind == HOLE — the parameter's semantic name
     step: int | None = None  # set when kind == BINDING — the skill-relative ordinal
+    description: str | None = None  # set when kind == PLACEHOLDER — what belongs there
 
 
 class SkillStep(BaseModel):
@@ -297,8 +311,10 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
     wraps** a prior selected step's result is a **binding** (it came from that step);
     **every other** string leaf is a required **parameter**, with identical values
     collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
-    a constant.  Parameters get arg-derived names here; the run-end naming
-    micro-context relabels them semantically (#1668)."""
+    a constant.  That last rule is a DEFAULT, not a determination — it holds only
+    when the user supplied the value, which structure cannot decide; the run-end
+    naming micro-context relabels each one semantically AND adjudicates it, turning
+    an assistant-produced leaf into a placeholder (#1668/#1770)."""
     namer = _ParameterNamer()
     steps: list[SkillStep] = []
     parameters: dict[str, SkillParameter] = {}
@@ -349,7 +365,23 @@ class _BindingRef(BaseModel):
     step: int
 
 
+class _DescribedSlot(BaseModel):
+    """Render sentinel: an assistant-produced leaf (#1770), shown in the SAME
+    placeholder syntax as an unbound parameter but carrying the labeller's one-line
+    description of what belongs there — never the demonstrated value.  Freezing that
+    value is the failure this exists to prevent: a collector re-running the skill
+    would write the demonstration's stale phrase into the collection every cycle,
+    forever."""
+
+    description: str
+
+
 def _marker_for(sub: SkillSubstitution, params: dict[str, str]) -> Any:
+    # Each kind's payload read defensively, as its siblings are: the labelling parse
+    # rejects a PLACEHOLDER verdict with a blank description (there would be nothing
+    # to render in the leaf's place), so an empty one never reaches here in practice.
+    if sub.kind == SkillSubKind.PLACEHOLDER:
+        return _DescribedSlot(description=sub.description or "")
     if sub.kind == SkillSubKind.HOLE:
         name = sub.parameter or ""
         if name in params:
@@ -371,11 +403,14 @@ def _render_value(value: Any) -> str:
     """One argument value in the canonical call notation (the ``!r`` projection
     #1578's ``render_tool_call`` uses), with the render sentinels rendered
     legibly: a bound parameter as its value (verbatim, quoted like any literal), an
-    unbound parameter as ``{name}``, a binding as ``the value from step N``."""
+    unbound parameter as ``{name}``, an assistant-produced leaf as
+    ``{<what belongs there>}``, a binding as ``the value from step N``."""
     if isinstance(value, _Bound):
         return repr(value.value)
     if isinstance(value, _Placeholder):
         return f"{{{value.name}}}"
+    if isinstance(value, _DescribedSlot):
+        return f"{{{value.description}}}"
     if isinstance(value, _BindingRef):
         return f"the value from step {value.step}"
     if isinstance(value, dict):
@@ -405,8 +440,11 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     to stamp the collection's ``extraction_prompt`` at creation.  Parameters present
     in ``params`` are substituted with their value verbatim; parameters NOT in
     ``params`` render as ``{name}`` (the with-params form the read surface shows);
-    bindings render as ``the value from step N``; everything else is a constant.  Pure and
-    deterministic — the same steps + params always produce the same text.
+    an assistant-produced leaf (#1770) renders as ``{<what belongs there>}`` — the
+    labeller's description, never the demonstrated value, since ``params`` can never
+    bind it; bindings render as ``the value from step N``; everything else is a
+    constant.  Pure and deterministic — the same steps + params always produce the
+    same text.
     """
     params = params or {}
     return "\n".join(_render_step(step, params) for step in steps)

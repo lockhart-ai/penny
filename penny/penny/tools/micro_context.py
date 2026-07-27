@@ -90,19 +90,28 @@ _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
 # extraction fails honestly.
 _UNTAGGED_DRAW_BUDGET = 2
 
-# ── Second customer: run-end skill naming (#1665/#1668) ────────────────────────
+# ── Second customer: run-end skill naming (#1665/#1668/#1770) ──────────────────
 # The naming contract is a DIFFERENT enumerated output shape riding the SAME
 # poison-screen + reroll machinery (``_draw_clean``): given a distilled routine
-# AND its parameters, write a GENERIC verb-noun name + a one-line generic
-# description AND a semantic name + description for each parameter (#1668 — skill
-# parameters are SKILL-level inputs, not tool-arg echoes).  Every tag is enumerated
-# on both sides of the interface, exactly like EXTRACTED:/NOT_PRESENT: — the system
-# prompt names them and ``_parse_label`` parses them deterministically.  The
-# per-parameter line is keyed by the parameter's CURRENT (arg-derived) name, so the
-# system owns an unambiguous mapping back; the model writes LABELS only.
+# AND its candidate parameters, write a GENERIC verb-noun name + a one-line generic
+# description AND — per candidate — a VERDICT: the user supplied this value (a real
+# parameter, named semantically) or they did not (a placeholder).  Every tag is
+# enumerated on both sides of the interface, exactly like EXTRACTED:/NOT_PRESENT: —
+# the system prompt names them and ``_parse_label`` parses them deterministically.
+# Each line is keyed by the candidate's CURRENT (arg-derived) name, so the system
+# owns an unambiguous mapping back; the model writes LABELS and VERDICTS only.
+#
+# Why a verdict at all (#1770): the distiller classifies an unexplained string leaf
+# as a required parameter BY DEFAULT — a default that is wrong for a value the model
+# derived-and-transformed from a tool result or invented outright, since neither can
+# ever be supplied by a user.  Those two origins share no literal span with what
+# produced them, so no substring test can reach them (and #1659 already ruled prose
+# matching out); the question "did the USER provide this?" has an answer in every
+# case and is a judgment, which is why the labeller is the right instrument.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
 PARAM_TAG = "PARAM"
+PLACEHOLDER_TAG = "PLACEHOLDER"
 # The em-dash separating a parameter's semantic name from its description on a
 # ``PARAM <current>: <semantic> — <description>`` line.
 _PARAM_DESC_SEPARATOR = "—"
@@ -111,8 +120,9 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "You are a naming step. You are given the conversation that led to the "
     "construction of a reusable routine, the routine itself — a numbered list of "
     "tool calls with fill-in-the-blank {parameters} — the message that first "
-    "demonstrated it, and the routine's parameters (each currently named after the "
-    "tool argument it fills). Do three things:\n"
+    "demonstrated it, and the routine's candidate parameters (each currently named "
+    "after the tool argument it fills, and shown with the value it was demonstrated "
+    "with). Do three things:\n"
     "1. From the conversation, extract the CORE USER INTENT — what the user was "
     "trying to get done when they asked for this (e.g. keeping an eye on a "
     "listing's price). The routine exists to serve that intent.\n"
@@ -120,28 +130,45 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "the KIND of task (e.g. 'watch a listing price for changes'), generic — never "
     "the specific instance — and never mechanics alone ('fetch and store data' "
     "says nothing about when to reach for it).\n"
-    "3. Name each PARAMETER by what the value MEANS to the user (e.g. 'url', "
-    "'what_to_find', 'label'), NOT the tool argument it happens to fill — plus a "
-    "one-line description of what to supply for it. A parameter filling browse's "
-    "extract argument is a PLAIN-LANGUAGE instruction naming what to pull from "
-    "the page (e.g. 'the current price') — there is no CSS-selector, XPath, or "
-    "pattern machinery in this system, so never name or describe one that way.\n"
+    "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
+    "from. There are two cases:\n"
+    "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
+    "they asked to be found, a label they chose — including when the assistant "
+    "reworded it ('the current price' for their \"find the price\"). This is a real "
+    "parameter: name it by what the value MEANS to the user (e.g. 'url', "
+    "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
+    "describe in one line what to supply for it.\n"
+    "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
+    "returned, or wrote it itself while carrying the task out — a summary, a note, "
+    "a caption about a page. The user never said it and could not supply it, so it "
+    "is NOT a parameter: it is a placeholder, and you describe in one line what "
+    "belongs in that spot each time the routine runs.\n"
+    "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "
+    "instruction naming what to pull from the page (e.g. 'the current price') — "
+    "there is no CSS-selector, XPath, or pattern machinery in this system, so never "
+    "name or describe one that way.\n"
     "Respond with these tagged lines and nothing else:\n"
     f"{NAME_TAG} <a short generic verb-noun name>\n"
     f"{DESCRIPTION_TAG} <one line: the user intent it serves, then the mechanics>\n"
     f"{PARAM_TAG} <current name>: <semantic_name> {_PARAM_DESC_SEPARATOR} <one-line "
-    "description>   (one line per parameter, repeating its CURRENT name exactly so "
-    "it maps back; use a single lowercase word or snake_case for <semantic_name>)\n"
+    "description>   (the user gave it)\n"
+    f"{PLACEHOLDER_TAG} <current name>: <one-line description of what belongs "
+    "there>   (the assistant produced it)\n"
+    "Write ONE line for EVERY candidate parameter — a "
+    f"{PARAM_TAG} line or a {PLACEHOLDER_TAG} line, never both and never neither — "
+    "repeating its CURRENT name exactly so it maps back; use a single lowercase "
+    "word or snake_case for <semantic_name>.\n"
     "Write nothing else — no preamble, no explanation, no restating the routine."
 )
 
-# The single per-call ask; the routine + its parameters are the content.  Fixed, so
-# the caller only supplies the content (the naming contract is a property of this
-# customer, not a per-call parameter).
+# The single per-call ask; the routine + its candidate parameters are the content.
+# Fixed, so the caller only supplies the content (the naming contract is a property
+# of this customer, not a per-call parameter).
 _SKILL_NAMING_INSTRUCTION = (
     "Extract the user's core intent from the conversation, name this routine by that "
-    "intent, describe it in one line (intent first, mechanics second), and give each "
-    "parameter a semantic name and one-line description."
+    "intent, describe it in one line (intent first, mechanics second), and for every "
+    "candidate parameter say whether the user gave that value — naming and describing "
+    "it if they did, describing what belongs there if they did not."
 )
 
 # ── Third customer: conversation-state classification (#1706) ──────────────────
@@ -238,24 +265,48 @@ class MicroContextResult(BaseModel):
     reason: str = ""
 
 
-class ParameterLabel(BaseModel):
-    """One parameter's semantic label from the naming micro-context (#1668): a
-    generic ``name`` (what the value means, not the tool arg it fills) and a one-line
-    ``description`` (empty when the model gave none).  Keyed back to the CURRENT
-    arg-derived name by the parse, so the caller's rename is unambiguous."""
+class ParameterVerdict(StrEnum):
+    """Where a candidate parameter's demonstrated value came from (#1770) — the
+    closed union the labeller decides per candidate, and the only thing that makes
+    an unexplained leaf a parameter rather than a default.
 
-    name: str
+    ``PARAMETER`` = the USER supplied it (verbatim or reworded), so it is a real
+    skill input the model rebinds per instantiation.  ``PLACEHOLDER`` = the
+    assistant derived it from a step's result or invented it while working, so no
+    user could ever supply it — it renders as a placeholder carrying the labeller's
+    description, never as the frozen demonstrated value."""
+
+    PARAMETER = "parameter"
+    PLACEHOLDER = "placeholder"
+
+
+class ParameterLabel(BaseModel):
+    """One candidate parameter's verdict + label from the naming micro-context
+    (#1668/#1770).  ``verdict`` is the decision; ``name`` carries the generic
+    semantic name (what the value means, not the tool arg it fills) on
+    :attr:`ParameterVerdict.PARAMETER` and is EMPTY on
+    :attr:`ParameterVerdict.PLACEHOLDER` (a placeholder is not a parameter, so it
+    has no binding key); ``description`` carries the one-line what-to-supply on
+    either.  Keyed back to the CURRENT arg-derived name by the parse, so the
+    caller's rename/conversion is unambiguous."""
+
+    verdict: ParameterVerdict
+    name: str = ""
     description: str = ""
 
 
 class SkillLabel(BaseModel):
-    """The run-end naming micro-context's typed result (#1665/#1668): a GENERIC
+    """The run-end naming micro-context's typed result (#1665/#1668/#1770): a GENERIC
     verb-noun ``name`` + one-line ``description`` for the distilled routine, plus a
-    per-parameter semantic label keyed by the parameter's CURRENT (arg-derived)
+    per-candidate verdict+label keyed by the candidate's CURRENT (arg-derived)
     name.  ``name``/``description`` are non-blank by construction (``_parse_label``
     returns ``None`` otherwise, so the caller falls back to the deterministic slug —
-    naming never blocks extraction); ``parameters`` may be empty or partial (a
-    parameter without a valid ``PARAM`` line keeps its arg-derived name, per-param)."""
+    naming never blocks extraction); ``parameters`` may be empty or partial.
+
+    Absence is deliberately NOT a verdict: a candidate with no line keeps its
+    current meaning (the arg-derived required parameter), because overloading
+    absence to mean "drop it" would let one flaky draw silently delete a real
+    parameter — and extraction must never block or degrade on the rewrite."""
 
     name: str
     description: str
@@ -352,18 +403,19 @@ class MicroContext:
     async def label_skill(
         self, content: str, *, run_target: str | None = None
     ) -> SkillLabel | None:
-        """Write a GENERIC name + description for a distilled routine AND a semantic
-        name + description per parameter (#1665/#1668) — the second customer of this
-        machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
-        with the naming system prompt and its own ledger attribution, then a
-        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``PARAM`` line
-        per parameter).
+        """Write a GENERIC name + description for a distilled routine AND, per
+        candidate parameter, a VERDICT (#1665/#1668/#1770) — the second customer of
+        this machinery.  Rides the SAME poison-screen + reroll draw loop as
+        ``extract``, with the naming system prompt and its own ledger attribution,
+        then a deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``PARAM``
+        or ``PLACEHOLDER`` line per candidate).
 
         Returns the label, or ``None`` on ANY failure (poison exhausted, or the
         model never produced both the name and description tags) — the caller falls
         back to the deterministic slug, so run-end skill extraction NEVER blocks on
-        the rewrite.  Parameter labels are best-effort: a parameter without a valid
-        ``PARAM`` line is simply absent (the caller keeps its arg-derived name)."""
+        the rewrite.  Per-candidate verdicts are best-effort: a candidate without a
+        valid line is simply absent, which the caller reads as "keep the arg-derived
+        required parameter" — absence is never a drop."""
         for _ in range(_UNTAGGED_DRAW_BUDGET):
             draw = await self._draw_clean(
                 content,
@@ -386,10 +438,10 @@ class MicroContext:
     def _parse_label(draw: str) -> SkillLabel | None:
         """Deterministic parse of the naming contract — a ``NAME:`` line, a
         ``DESCRIPTION:`` line (each with a non-blank payload), and zero or more
-        ``PARAM <current>: <semantic> — <description>`` lines.  Missing the name or
+        per-candidate verdict lines (``PARAM``/``PLACEHOLDER``).  Missing the name or
         description (or a blank payload) is a contract violation → ``None`` (the
-        caller rerolls once and then falls back), never a partial label.  Parameter
-        labels are best-effort — a malformed ``PARAM`` line is dropped, not fatal."""
+        caller rerolls once and then falls back), never a partial label.  Verdict
+        lines are best-effort — a malformed one is dropped, not fatal."""
         name = _tagged_payload(draw, NAME_TAG)
         description = _tagged_payload(draw, DESCRIPTION_TAG)
         if name is None or description is None:
@@ -542,24 +594,72 @@ def _tagged_payload(draw: str, tag: str) -> str | None:
 
 
 def _parse_param_labels(draw: str) -> dict[str, ParameterLabel]:
-    """Every ``PARAM <current>: <semantic> — <description>`` line parsed into a
-    ``{current_name: ParameterLabel}`` map (#1668).  The line is keyed by the
-    parameter's CURRENT (arg-derived) name so the mapping back is unambiguous; the
-    semantic name and description are split on the em-dash (description optional).
-    A line missing a current name or a semantic name is dropped (best-effort — the
-    caller keeps the arg-derived name for any parameter absent from this map)."""
+    """Every verdict line parsed into a ``{current_name: ParameterLabel}`` map
+    (#1668/#1770) — ``PARAM <current>: <semantic> — <description>`` (the user gave
+    it) and ``PLACEHOLDER <current>: <description>`` (the assistant produced it).
+    Each line is keyed by the candidate's CURRENT (arg-derived) name so the mapping
+    back is unambiguous.
+
+    A malformed line is DROPPED, never coerced: a ``PARAM`` line missing its current
+    or semantic name, or a ``PLACEHOLDER`` line missing its current name or its
+    description (a placeholder with nothing to say is what the render would have to
+    show, so a blank one is no verdict at all).  A candidate named on MORE THAN ONE
+    line is a contradictory draw (the prompt asks for exactly one line each) and is
+    dropped too — letting the last line win would let a stray trailing
+    ``PLACEHOLDER`` delete a real parameter, the exact failure absence-is-not-a-drop
+    exists to prevent.  A dropped line is simply an absent verdict, which the caller
+    reads as "keep the arg-derived required parameter" — the flaky-draw-safe
+    direction."""
     labels: dict[str, ParameterLabel] = {}
+    repeated: set[str] = set()
     for line in draw.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(f"{PARAM_TAG} "):
+        parsed = _parse_verdict_line(line.strip())
+        if parsed is None:
             continue
-        body = stripped[len(PARAM_TAG) :].strip()
-        current, sep, rest = body.partition(":")
-        if not sep:
-            continue
-        semantic, _, description = rest.partition(_PARAM_DESC_SEPARATOR)
-        current, semantic = current.strip(), semantic.strip()
-        if is_blank(current) or is_blank(semantic):
-            continue
-        labels[current] = ParameterLabel(name=semantic, description=description.strip())
-    return labels
+        current, label = parsed
+        if current in labels:
+            repeated.add(current)
+        labels[current] = label
+    return {name: label for name, label in labels.items() if name not in repeated}
+
+
+def _parse_verdict_line(line: str) -> tuple[str, ParameterLabel] | None:
+    """One candidate's verdict line — a ``PARAM`` line (the user gave it) or a
+    ``PLACEHOLDER`` line (the assistant produced it) — or ``None`` for anything else."""
+    return _parse_param_line(line) or _parse_placeholder_line(line)
+
+
+def _parse_param_line(line: str) -> tuple[str, ParameterLabel] | None:
+    """``PARAM <current>: <semantic> — <description>`` → the candidate's current name
+    and its PARAMETER verdict (the semantic name and description split on the
+    em-dash; the description is optional).  ``None`` when the line isn't a ``PARAM``
+    line or lacks a current or semantic name."""
+    if not line.startswith(f"{PARAM_TAG} "):
+        return None
+    current, sep, rest = line[len(PARAM_TAG) :].strip().partition(":")
+    if not sep:
+        return None
+    semantic, _, description = rest.partition(_PARAM_DESC_SEPARATOR)
+    current, semantic = current.strip(), semantic.strip()
+    if is_blank(current) or is_blank(semantic):
+        return None
+    label = ParameterLabel(
+        verdict=ParameterVerdict.PARAMETER, name=semantic, description=description.strip()
+    )
+    return current, label
+
+
+def _parse_placeholder_line(line: str) -> tuple[str, ParameterLabel] | None:
+    """``PLACEHOLDER <current>: <description>`` → the candidate's current name and its
+    PLACEHOLDER verdict.  The description is REQUIRED (it is what the render shows in
+    the leaf's place), so a blank one drops the line; ``None`` when the line isn't a
+    ``PLACEHOLDER`` line or lacks a current name."""
+    if not line.startswith(f"{PLACEHOLDER_TAG} "):
+        return None
+    current, sep, description = line[len(PLACEHOLDER_TAG) :].strip().partition(":")
+    if not sep:
+        return None
+    current, description = current.strip(), description.strip()
+    if is_blank(current) or is_blank(description):
+        return None
+    return current, ParameterLabel(verdict=ParameterVerdict.PLACEHOLDER, description=description)

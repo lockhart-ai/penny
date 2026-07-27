@@ -34,12 +34,14 @@ from penny.conversation_machine import (
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
-from penny.database.models import MemoryRow, PromptLog
-from penny.database.skills import SkillDraft, SkillParameter, SkillStep
+from penny.database.models import MemoryRow, PromptLog, Skill
+from penny.database.skill_store import steps_from_json
+from penny.database.skills import SkillDraft, SkillParameter, SkillStep, SkillSubKind
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
+from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
@@ -56,6 +58,7 @@ from penny.text_validity import (
 )
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
+from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.micro_context import StateDrawOutcome
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -2286,21 +2289,23 @@ def _score_classifier(
     return checks
 
 
+def _micro_context_rows(db: Database, agent_name: str) -> list[PromptLog]:
+    """The sample's micro-context promptlog rows for ``agent_name``, oldest first —
+    one per draw, so a reroll shows as a second row (the fragile signal and the
+    transcript's second 🧩 pair both read off this).  Shared by every single-draw
+    customer: the state classifier and the skill labeller."""
+    return [row for row in _sample_prompt_rows(db) if row.agent_name == agent_name]
+
+
 def _classifier_rows(db: Database) -> list[PromptLog]:
-    """The sample's state-classifier promptlog rows, oldest first — one per draw,
-    so a reroll shows as a second row (the fragile signal and the transcript's
-    second 🧩 pair both read off this)."""
-    return [
-        row
-        for row in _sample_prompt_rows(db)
-        if row.agent_name == PennyConstants.STATE_CLASSIFIER_AGENT_NAME
-    ]
+    """The sample's state-classifier rows (#1706)."""
+    return _micro_context_rows(db, PennyConstants.STATE_CLASSIFIER_AGENT_NAME)
 
 
 def _classifier_events(phrasing: str, rows: list[PromptLog]) -> list[report.Event]:
-    """The hand-built event stream for one classifier sample: the phrasing opens
-    the step, then one 🧩 in/out pair PER DRAW — a reroll renders as a second
-    pair, so recovery is visible in the transcript, never summarized away."""
+    """The hand-built event stream for one single-draw micro-context sample: the
+    phrasing opens the step, then one 🧩 in/out pair PER DRAW — a reroll renders as
+    a second pair, so recovery is visible in the transcript, never summarized away."""
     events = [report.Event(report.EventKind.USER, phrasing)]
     for row in rows:
         messages = json.loads(row.messages) if row.messages else []
@@ -2349,16 +2354,24 @@ def _classifier_check_views(
 
 
 def _write_classifier_report(
-    db: Database, case_id: str, sample_index: int, *, result: SampleResult, phrasing: str
+    db: Database,
+    case_id: str,
+    sample_index: int,
+    *,
+    result: SampleResult,
+    phrasing: str,
+    agent_name: str = PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
 ) -> None:
-    """One classifier sample's transcript block — hand-built (the generic extractor
-    is chat-run-shaped; a classifier sample is one step whose actor is the 🧩
-    micro-context, the spec's official sub-model actor), rendered by the SAME pure
-    report grammar and appended to the same ``<case_id>.md``. No-op off-report."""
+    """One single-draw micro-context sample's transcript block — hand-built (the
+    generic extractor is chat-run-shaped; this sample is one step whose actor is the
+    🧩 micro-context, the spec's official sub-model actor), rendered by the SAME pure
+    report grammar and appended to the same ``<case_id>.md``. No-op off-report.
+    ``agent_name`` selects the customer's rows (classifier by default, the skill
+    labeller for #1770's case)."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
-    rows = _classifier_rows(db)
+    rows = _micro_context_rows(db, agent_name)
     if not rows:
         transcript = report.SampleTranscript(
             sample_index + 1,
@@ -2507,6 +2520,257 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                         results.append(result)
                     _write_classifier_report(
                         penny.db, case_id, sample_index, result=result, phrasing=phrasing
+                    )
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+# ── Fourth micro-context customer: run-end skill labelling (#1770) ─────────────
+
+# One demonstrated tool call as a case fixture: tool name, verbatim arguments, its
+# framed result, and whether it succeeded — the shape ``_log_demonstration`` writes
+# into the ledger, mirroring what a real chat run leaves behind.
+DemoCall = tuple[str, dict, str, bool]
+
+LabellerEval = Callable[..., Awaitable[None]]
+
+
+def _log_demonstration(
+    db: Database, run_id: str, utterance: str, calls: Sequence[DemoCall]
+) -> None:
+    """Log one chat run REAL-SHAPED — the bare utterance turn, each call carrying the
+    framework's top-level ``reasoning`` think-aloud (#1661) and each result carrying
+    its structural per-call success stamp (#1600).  The demonstration is a FIXTURE
+    ledger, not a driven round: the case measures the labeller's judgment over a fixed
+    routine, and deliberately asserts nothing about what a round chooses to write."""
+    tool_calls = []
+    tool_turns: list[dict] = []
+    for index, (name, args, result, success) in enumerate(calls, start=1):
+        call_id = f"c{index}"
+        arguments = json.dumps({**args, "reasoning": f"step {index}: doing {name}"})
+        tool_calls.append({"id": call_id, "function": {"name": name, "arguments": arguments}})
+        tool_turns.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": result,
+                PennyConstants.TOOL_RESULT_SUCCESS_KEY: success,
+            }
+        )
+    db.messages.log_prompt(
+        model="m",
+        messages=[{"role": "user", "content": utterance}, *tool_turns],
+        response={"choices": [{"message": {"tool_calls": tool_calls}}]},
+        run_id=run_id,
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+    )
+
+
+def _labeller_rows(db: Database) -> list[PromptLog]:
+    """The sample's skill-labelling rows (#1770) — more than one means a reroll."""
+    return _micro_context_rows(db, PennyConstants.SKILL_NAMING_AGENT_NAME)
+
+
+def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
+    """The string leaf a substitution's JSON path addresses in a step's verbatim
+    arguments — the demonstrated value — or ``None`` when the path doesn't resolve to
+    one."""
+    node: object = arguments
+    for part in path:
+        if isinstance(node, dict) and isinstance(part, str):
+            node = node.get(part)
+        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
+            node = node[part]
+        else:
+            return None
+    return node if isinstance(node, str) else None
+
+
+def _leaf_kinds(skill: Skill) -> dict[str, str]:
+    """Every substituted leaf of a learned skill as ``{demonstrated value: kind}`` —
+    the identity that survives labelling.  Keyed by VALUE, not by name, because the
+    semantic name is the model's to choose: the contract is about WHICH leaves stayed
+    bindable parameters, never what they ended up called."""
+    kinds: dict[str, str] = {}
+    for step in steps_from_json(skill.steps):
+        for sub in step.substitutions:
+            value = _leaf_string(step.arguments, sub.path)
+            if value is not None:
+                kinds[value] = sub.kind.value
+    return kinds
+
+
+def _kept_parameter_check(value: str, kinds: dict[str, str]) -> Check:
+    """A USER-supplied value stayed a bindable parameter — the direction that keeps a
+    learned skill instantiable at all."""
+    kept = kinds.get(value) == SkillSubKind.HOLE.value
+    return Check(
+        f"user value stayed a parameter: {value!r}",
+        kept,
+        kind="state",
+        rationale=None if kept else f"became {kinds.get(value)}",
+    )
+
+
+def _placeholder_checks(value: str, kinds: dict[str, str], prompt: str) -> list[Check]:
+    """An ASSISTANT-produced value became a placeholder AND its demonstrated phrase is
+    absent from the prompt a collector would actually run.  The second check is the
+    harm itself — a frozen phrase re-written into the collection every cycle, forever —
+    so it is scored, not advisory."""
+    placeholder = kinds.get(value) == SkillSubKind.PLACEHOLDER.value
+    return [
+        Check(
+            f"assistant value became a placeholder: {value!r}",
+            placeholder,
+            kind="state",
+            rationale=None if placeholder else f"stayed {kinds.get(value)}",
+        ),
+        Check(
+            f"assistant value not frozen into the prompt: {value!r}",
+            value not in prompt,
+            kind="state",
+        ),
+    ]
+
+
+def _score_labelling(
+    skill: Skill, prompt: str, user_values: Sequence[str], assistant_values: Sequence[str]
+) -> list[Check]:
+    """The labelling case's graded checks (#1770), read off persisted state alone: the
+    values the user supplied against the ones the assistant produced."""
+    kinds = _leaf_kinds(skill)
+    checks = [_kept_parameter_check(value, kinds) for value in user_values]
+    for value in assistant_values:
+        checks.extend(_placeholder_checks(value, kinds, prompt))
+    return checks
+
+
+def _seed_demonstration(
+    penny: Penny, run_id: str, *, conversation: Sequence[str], target: str
+) -> SkillExtractor:
+    """Lay down one sample's fixture world — the conversation turns that carry the
+    user's intent, the collection the round wrote into (stamped as created by that run,
+    so auto-attach fires the production way), and the demonstration itself — and return
+    the REAL extractor, constructed exactly as ``ChatAgent`` constructs it."""
+    seed_user(penny.db)
+    for turn in conversation:
+        penny.db.messages.log_message(direction="incoming", sender=TEST_SENDER, content=turn)
+    penny.db.memories.create_collection(
+        target, "what the demonstrated round wrote into", created_by_run_id=run_id
+    )
+    return SkillExtractor(
+        penny.db,
+        penny.embedding_model_client,
+        penny.model_client,
+        agent_name=penny.chat_agent.name,
+        collector_tool_surface=collector_tool_surface(penny.db, penny.model_client),
+    )
+
+
+async def _learn_and_attach(extractor: SkillExtractor, run_id: str, target: str, db: Database):
+    """Run the production pipeline over the fixture ledger — distil → label → attach —
+    and return ``(skill, the extraction_prompt a collector would run)``.  Both halves
+    fail LOUDLY when the fixture doesn't reach them: a demonstration that never
+    qualifies, or an attach that stamps no prompt, would otherwise score the
+    not-frozen-into-the-prompt checks green against an empty string — a broken case
+    reading as half-passed."""
+    extracted = await extractor.extract(run_id)
+    assert isinstance(extracted, SkillExtracted), (
+        f"the fixture demonstration must qualify as a skill: {extracted}"
+    )
+    await extractor.attach_to_created_collection(extracted.skill, run_id)
+    row = db.memories.get(target)
+    assert row is not None and row.extraction_prompt, (
+        f"auto-attach must stamp {target}'s extraction_prompt — "
+        "the freeze checks are vacuous without it"
+    )
+    return extracted.skill, row.extraction_prompt
+
+
+@pytest.fixture
+def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> LabellerEval:
+    """Drive the run-end skill labeller (#1770) N times — the production extraction
+    pipeline over a FIXTURE ledger, so the only live variable is the labelling draw.
+
+    Each sample is hermetic (own DB + real-model Penny, mirroring ``classifier_eval``):
+    the case's conversation turns and demonstrated tool calls are written into the
+    ledger, the collection the round wrote into is stamped as created by that run, and
+    the REAL ``SkillExtractor`` distils → labels → auto-attaches exactly as the chat
+    turn does.  Scoring is runner-owned and reads only PERSISTED state: which leaves
+    the labeller kept bindable, and whether any assistant-produced phrase got frozen
+    into the ``extraction_prompt`` a collector would run.
+
+    The demonstration is a fixture precisely so the case measures the JUDGMENT and
+    never polices what a round chose to write — if a round writes two entries, two
+    entries are the skill (the code owner's ruling on #1770).
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        utterance: str,
+        calls: Sequence[DemoCall],
+        target: str,
+        user_values: Sequence[str],
+        assistant_values: Sequence[str],
+        conversation: Sequence[str] = (),
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+        timeout: float = 60.0,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        run_id = "demo-run"
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    extractor = _seed_demonstration(
+                        penny, run_id, conversation=conversation, target=target
+                    )
+                    _log_demonstration(penny.db, run_id, utterance, calls)
+                    try:
+                        skill, prompt = await asyncio.wait_for(
+                            _learn_and_attach(extractor, run_id, target, penny.db), timeout=timeout
+                        )
+                        scored = _score_labelling(skill, prompt, user_values, assistant_values)
+                        result = _guarded_graded(list(scored), [])
+                        result.fragile = result.passed and len(_labeller_rows(penny.db)) > 1
+                        results.append(result)
+                        _stamp_cause(penny.db, result)
+                    except TimeoutError:
+                        result = SampleResult.binary(["no label within timeout"])
+                        _stamp_cause(penny.db, result, timed_out=True)
+                        results.append(result)
+                    _write_classifier_report(
+                        penny.db,
+                        case_id,
+                        sample_index,
+                        result=result,
+                        phrasing=utterance,
+                        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
