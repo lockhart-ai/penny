@@ -198,13 +198,10 @@ class ChatAgent(Agent):
         result = await self._skill_extractor.extract(run_id)
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
-                attached = await self._skill_extractor.attach_to_created_collection(skill, run_id)
-                if attached is not None:
-                    return Prompt.SKILL_LEARNED_ATTACHED_NARRATION.format(
-                        skill=render_skill_full(skill),
-                        demonstrated_on=origin,
-                        collection=attached.collection,
-                    )
+                # Learning a skill does NOT attach it (#1706): the machine makes
+                # teach and instantiate two clear turns — learn ends by reporting
+                # what it did and offering, apply binds it when the user says so —
+                # so the framework no longer folds the two together at run end.
                 return Prompt.SKILL_LEARNED_NARRATION.format(
                     skill=render_skill_full(skill), demonstrated_on=origin
                 )

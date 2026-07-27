@@ -168,38 +168,24 @@ async def test_read_write_run_qualifies_and_distils_correctly(db):
 
 
 @pytest.mark.asyncio
-async def test_auto_attach_to_collection_created_by_the_same_run(db):
-    """The demonstrated round created its own write target → the skill auto-attaches
-    framework-side: the collection's prompt is the rendered skill, provenance is
-    stamped, params bind to the DEMONSTRATED values, and the job stays trigger-less
-    (nothing dispatches until the schedule binds via collection_set).  A round
-    that wrote into a PRE-EXISTING collection attaches nothing — the join is the
-    ``created_by_run_id`` stamp, never a guess."""
+async def test_learning_a_skill_attaches_nothing(db):
+    """Extraction LEARNS; it never instantiates (#1706).  The framework used to
+    attach the just-learned skill to the collection the demonstrated round
+    created, folding teach and instantiate into one turn.  The state machine
+    makes them two turns — learn reports what it did and offers, apply binds it
+    when the user says so — so the collection is left exactly as the round left
+    it: no skill, no rendered prompt, nothing scheduled."""
     db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
-    extractor = _extractor(db)
-    result = await extractor.extract("run-A")
+
+    result = await _extractor(db).extract("run-A")
+
     assert isinstance(result, SkillExtracted)
-
-    attached = await extractor.attach_to_created_collection(result.skill, "run-A")
-
-    assert attached is not None and attached.collection == "aurora-prices"
     row = db.memories.get("aurora-prices")
-    assert row is not None and row.skill_name == result.skill.name
-    assert row.extraction_prompt is not None and "collection_write" in row.extraction_prompt
-    # Params bound to the demonstrated values, read off the steps' verbatim args
-    # by the substitution paths (the queries LEAF, not the list around it).
-    assert attached.params["queries"] == "aurora deck 2 price"
-    assert attached.params["extract"] == "the current price"
-    # Trigger-less: the dispatcher skips it until the schedule binds.
-    assert row.collector_interval_seconds is None
-
-    # The pre-existing-collection direction: a later run writing into the SAME
-    # (now established) collection extracts a skill but attaches nothing.
-    _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
-    later = await extractor.extract("run-B")
-    assert isinstance(later, SkillExtracted)
-    assert await extractor.attach_to_created_collection(later.skill, "run-B") is None
+    assert row is not None
+    assert row.skill_name is None, "learning must not bind the skill to a collection"
+    assert row.extraction_prompt is None, "and must not render a program into it"
+    assert row.collector_interval_seconds is None, "and must not schedule anything"
 
 
 # ── Excluded: pure read, pure write, failed-write-only, bail, no-calls ─────────
@@ -785,21 +771,12 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
         "'content': {a note about the page you just read}}])"
     )
 
-    # Auto-attach binds ONLY the real parameters — a placeholder is not user-suppliable,
-    # so it can never be bound to the value the demonstration happened to use.
-    attached = await extractor.attach_to_created_collection(result.skill, "run-A")
-    assert attached is not None
-    assert attached.params == {"url": "aurora deck 2 price", "what_to_find": "the current price"}
+    # The collection the round wrote into is left exactly as the round left it:
+    # learning does not instantiate (#1706 removed the run-end auto-attach), so
+    # there is no rendered program for a placeholder to be frozen into.
     row = db.memories.get("aurora-prices")
-    assert row is not None and row.extraction_prompt == (
-        "1. browse(queries=['aurora deck 2 price'], extract='the current price')\n"
-        "2. collection_write(memory='aurora-prices', entries=["
-        "{'key': 'aurora deck 2 price', 'content': the value from step 1}, "
-        "{'key': {a short label for the second entry}, "
-        "'content': {a note about the page you just read}}])"
-    )
-    assert "aurora deck 2 source" not in row.extraction_prompt
-    assert _INVENTED_LABEL not in row.extraction_prompt
+    assert row is not None
+    assert row.skill_name is None and row.extraction_prompt is None
 
 
 def test_naming_system_prompt_whole_render():
