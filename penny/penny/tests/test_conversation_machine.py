@@ -23,6 +23,7 @@ eval suite's job (beat 1 onward), not this file's.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -684,21 +685,34 @@ def test_the_un_stated_prompt_is_idle():
 
 
 def test_elicit_instruction_whole_render():
-    """The whole instruction, verbatim — the model-facing text this beat exists
-    to test, pinned so a later edit is a visible diff and not a silent drift."""
+    """The whole instruction, verbatim — pinned so an edit is a visible diff.
+
+    Generically and minimally sufficient to enact the state: no task shape, no
+    example phrasing, and no guard written against a particular failed sample.
+    (Both of those crept in from #1687 and had to come back out — one of them
+    quoted an eval fixture's own words, which is the contamination the
+    definitions-are-product-semantics rule exists to catch.)"""
     assert Prompt.ELICIT_INSTRUCTION == (
-        "The user is asking for something ongoing or repeatable — a routine — and "
-        "you have no skill for it yet. Your whole job this turn is to ask them to "
-        "teach it to you. Ask in ONE message:\n"
-        "1. Say plainly that you don't know how to do this one yet.\n"
-        "2. Ask them to walk you through it once as a list of steps, and model the "
-        "example on their OWN words — like: '1. go to <the page they named> "
-        "2. pull out <the thing they said> 3. remember it'.\n\n"
-        "What they already said IS the filter — 'trades and signings' is a "
-        "complete description of what to pull out. Never ask them to define "
-        "keywords, terms, matching rules, or anything about how a page is built.\n\n"
-        "A routine is ONE round — read, pull out, remember — and any schedule "
-        "comes later, so ask only for the round. Don't start the task, don't do "
-        "part of it, and don't set anything up. Nothing is running yet, so never "
-        "say or imply that it is.\n\n"
+        "The user has asked for a task you have no skill for. Your job this turn "
+        "is to get the instructions from them.\n\n"
+        "In ONE message, ask them to walk you through doing it once: what to "
+        "read, what to do with it, and what to remember afterwards. Ask in the "
+        "terms they used — describing the task is theirs, working out how to "
+        "carry it out is yours.\n\n"
+        "Don't attempt the task, don't do part of it, and don't record anything. "
+        "Nothing exists yet, so don't say or imply that it does.\n\n"
     )
+
+
+def test_no_instruction_carries_a_task_shape_or_an_example_phrasing():
+    """An instruction describes the STATE, never a kind of task or a form of
+    words a user might use.  Both leaked in from #1687 — an example filter quoted
+    verbatim from an eval fixture, and a numbered template mirroring that
+    fixture's teach turn — which is a prompt describing its own test pool."""
+    for state, instruction in STATE_INSTRUCTIONS.items():
+        # A quoted phrase (an apostrophe opening after whitespace) is an example
+        # of what a user might say — contractions don't match, quoted specimens do.
+        assert not re.search(r"(?<=\s)'[^']+'", instruction), f"{state} quotes an example phrasing"
+        assert not re.search(r"\d\.\s+(go to|pull out|visit)", instruction), (
+            f"{state} models a task-shaped template"
+        )
