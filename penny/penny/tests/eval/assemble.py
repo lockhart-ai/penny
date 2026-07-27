@@ -83,11 +83,12 @@ def assemble_run_comment(report_dir: Path) -> str:
     sections = [render_run_header(manifest, artifacts, baseline)]
     sections += [_case_section(report_dir, manifest, artifact, multi) for artifact in artifacts]
     sections.append(render_footer(report_dir))
-    # A run's samples nearly all carry the SAME system prompt, and restating it per
-    # sample was 67% of a chat beat's whole document (#1763).  Render each repeated
-    # one once at the top; a prompt used by a single sample stays inline.  Nothing
-    # is dropped — the same render-once move the manifest header already makes.
-    return report.hoist_repeated_system_prompts(SECTION_SEPARATOR.join(sections)) + "\n"
+    # A case's samples each carry a ~6K system prompt that is mostly the same text,
+    # and restating it per sample made one 4-case run 525K against a 64K comment cap
+    # (#1763).  Lift each case's shared block under its heading; samples keep only
+    # what is genuinely theirs.  Nothing is dropped — every prompt stays
+    # reconstructable, verbatim, one click from where it applies.
+    return report.hoist_shared_prompt_blocks(SECTION_SEPARATOR.join(sections)) + "\n"
 
 
 # ── Artifact loading (the manifest is required; results/transcripts tolerate absence) ──

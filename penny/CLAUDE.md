@@ -723,23 +723,28 @@ the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.
 `EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
 whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
 
-**Repeated system prompts hoist to the top of the comment (#1763).** A run's samples carry a
-system prompt each, and restating every one inline made a chat beat's assembled comment 525K
-against GitHub's 64K comment cap — 11 comments for one 4-case run. `report.hoist_repeated_system_prompts`
-(pure, applied by the assembler over the FINISHED document) renders each system prompt that appears
-in MORE THAN ONE sample once under a `### System prompts` heading at the top, and replaces its
-per-sample rows with a one-line `system prompt — <ctx> (<n> chars) (above, under **System prompts**)`
-reference. A prompt used by a SINGLE sample stays exactly where it is — hoisting it would move it
-away from the only sample it belongs to and save nothing. **Nothing is dropped and nothing is
-summarised**: every prompt is still in the document, verbatim, one click from where it applies (the
-collapsed-never-means-removed rule, #1753/#1759 — the failure this replaced was *selecting* which
-samples to post, which is that rule broken in a new costume). Same render-once-at-top move the
-assembler already makes for the manifest header. Applied at the ASSEMBLER only: the per-case
-on-disk `.md` is a single case's artifact and hoists nothing. Measured on the beat-0 run: 525K →
-400K, 11 comments → 7. The ceiling is real and worth knowing — of 81 prompt occurrences only 9
-distinct prompts repeat (the classifier's, 32×); the other 27 are each used once because the chat
-prompt embeds the live self-state header, which genuinely differs per sample. Whole-render tests in
-`test_report.py`.
+**A case's shared system prompt hoists under its heading (#1763).** A run's samples each carry a
+system prompt, and restating every one inline made a chat beat's assembled comment 525K against
+GitHub's 64K comment cap — 11 comments for one 4-case run. `report.hoist_shared_prompt_blocks`
+(pure, applied by the assembler over the FINISHED document) lifts, per CASE and per CONTEXT, every
+line shared by ALL that group's prompts into one collapsed `#### Shared system prompt` block under
+the case heading; each sample keeps only the lines genuinely its own, with a
+`_[shared block — see **Shared system prompt** above]_` marker standing where the shared text sits.
+**Every shared LINE, not just the longest contiguous run** — a case's prompts differ at both ends (a
+timestamp opens them, the live self-state closes them) and often mid-prompt too (a sample that
+created a collection gained a line), and taking only the longest run left half the prompt inline on
+exactly the cases that needed it most. Hoisting is gated on a DERIVED condition (`_worth_hoisting`:
+the block stored once plus a marker per use must beat N copies), never a tuned threshold. Per case,
+not per run, so a case section stays self-contained once the document is split to fit the cap; a
+single-case run (no `### case` heading) treats the whole document as one section. **Nothing is
+dropped and nothing is summarised** — every prompt is reconstructable, verbatim, one click from
+where it applies (collapsed-never-means-removed, #1753/#1759; the failure this replaced was
+*selecting which samples to post*, which is that rule broken in a new costume). Measured on the
+beat-0 run: 525K → 266K, 11 comments → 6, and per-sample unique prompt text a **median of 125
+bytes** (max 1,329) against a 6.4K wall — so the sample's row now shows the DIFFERENCE, which is
+what a reader is actually checking. The floor is the rest: ~172K of thinking blocks and transcript
+tables, one per sample and all distinct, so ~3 comments is the minimum for a 32-sample run no matter
+what happens to prompts. Whole-render tests in `test_report.py`.
 
 **Durable local artifact home (#1734).** "Stays local" means the **primary checkout's
 `data/eval-artifacts/`**, not the running worktree's `data/`. The `./data` bind mount is relative

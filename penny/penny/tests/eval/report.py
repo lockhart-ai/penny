@@ -25,6 +25,7 @@ verdicts on their own ``expected`` rows in a trailing ``run-close`` table.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -219,9 +220,10 @@ class SystemPrompt:
         return f"<details><summary>{summary}</summary>\n\n{self.text}\n\n</details>"
 
 
-# ── Hoisting a REPEATED system prompt to the top of the document (#1763) ────
-SYSTEM_PROMPTS_HEADING = "### System prompts"
-HOISTED_REFERENCE = "(above, under **System prompts**)"
+# ── Hoisting the SHARED part of a case's system prompts (#1763) ─────────────
+SHARED_PROMPT_HEADING = "#### Shared system prompt"
+SHARED_PROMPT_MARKER = "_[shared block — see **Shared system prompt** above]_"
+_CASE_HEADING = re.compile(r"^### `[^`]+` — .*$", re.MULTILINE)
 _SYSTEM_PROMPT_BLOCK = re.compile(
     rf"<details><summary>{re.escape(SYSTEM_PROMPT_LABEL)} — "
     r"(?P<context>[^(]+) \((?P<size>\d+) chars\)</summary>\n\n(?P<text>.*?)\n\n</details>",
@@ -229,39 +231,125 @@ _SYSTEM_PROMPT_BLOCK = re.compile(
 )
 
 
-def hoist_repeated_system_prompts(document: str) -> str:
-    """Render each REPEATED system prompt once at the top instead of restating it
-    per sample (the code owner's call on the #1763 comment-size wall).
+def shared_lines(texts: list[str]) -> set[int]:
+    """Indices (into the FIRST text's lines) of every line present, in order, in
+    all the others — not just the longest contiguous run of them.
 
-    A run's samples nearly all carry the same system prompt — on a chat beat that
-    was 67% of the whole document, the same ~6K of text 81 times, which is not 81
-    things to review.  A prompt appearing in more than one sample is lifted into a
-    collapsed block at the top and its per-sample rows become one-line references;
-    a prompt appearing ONCE stays exactly where it is, because hoisting it would
-    move it away from the only sample it belongs to for no saving.
+    A case's chat prompts differ at both ends (a timestamp opens them, the live
+    self-state closes them) and often in the MIDDLE too, where a sample that
+    created a collection gains a line the others lack.  Taking only the longest
+    run left half the prompt inline on exactly those cases; taking every shared
+    line leaves each sample a median of ~120 bytes of genuinely its own."""
+    if len(texts) < 2:
+        return set()
+    base = texts[0].split("\n")
+    keep = set(range(len(base)))
+    for other in texts[1:]:
+        matched: set[int] = set()
+        for start, _, size in difflib.SequenceMatcher(
+            None, base, other.split("\n"), autojunk=False
+        ).get_matching_blocks():
+            matched.update(range(start, start + size))
+        keep &= matched
+        if not keep:
+            return set()
+    return keep
 
-    Nothing is dropped and nothing is summarised — every prompt is still in the
-    document, still verbatim, still one click from where it applies.  This is the
-    same render-once-at-top move the assembler already makes for the manifest
-    header, applied to the other thing every case was repeating."""
-    seen: dict[tuple[str, str], int] = {}
-    for match in _SYSTEM_PROMPT_BLOCK.finditer(document):
-        key = (match.group("context").strip(), match.group("text"))
-        seen[key] = seen.get(key, 0) + 1
-    repeated = [key for key, count in seen.items() if count > 1]
-    if not repeated:
-        return document
+
+def shared_block_text(texts: list[str]) -> str:
+    """The shared lines rendered in order as one block — what gets hoisted."""
+    base = texts[0].split("\n")
+    return "\n".join(base[index] for index in sorted(shared_lines(texts)))
+
+
+def unique_lines(text: str, shared: frozenset[str]) -> str:
+    """One sample's own lines — everything not in the hoisted block, in order,
+    with a marker standing where the shared text sits so the whole prompt is
+    still reconstructable rather than merely summarised."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        if line in shared:
+            if not out or out[-1] != SHARED_PROMPT_MARKER:
+                out.append(SHARED_PROMPT_MARKER)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _worth_hoisting(block: str, count: int) -> bool:
+    """Hoist only when it actually shrinks the document: the block is stored once
+    plus a marker per use, against ``count`` copies today.  A derived condition,
+    not a tuned threshold — a tiny shared block loses to its own markup."""
+    return len(block) * count > len(block) + count * len(SHARED_PROMPT_MARKER)
+
+
+def hoist_shared_prompt_blocks(document: str) -> str:
+    """Render each case's shared system-prompt text ONCE under its heading, and
+    leave every sample only the part that is genuinely its own (#1763).
+
+    A chat beat's samples each carry a ~6K system prompt of which the great
+    majority is identical, and restating it per sample made one 4-case run 525K
+    against GitHub's 64K comment cap.  Per case, per context, the shared middle
+    is lifted to a collapsed block under the case heading; each sample keeps its
+    own head and tail with a marker where the shared part belongs.
+
+    **Nothing is dropped and nothing is summarised** — every prompt is still
+    reconstructable, verbatim, one click from where it applies (the
+    collapsed-never-means-removed rule; the failure this replaces was *selecting*
+    which samples to post, which is that rule broken in a new costume).  When the
+    shared block is the WHOLE prompt (a classifier run, byte-identical every
+    sample) the per-sample remainder is empty and the row is a pure reference —
+    the same mechanism, no special case.
+
+    Per CASE rather than per run, so a case's comment stays self-contained when
+    the document is split to fit the cap."""
+    # A single-case run renders no `### case` heading (the assembler omits it), so
+    # there is one section: the whole document.  Hoisting is about repetition
+    # across SAMPLES — a run with one case repeats its prompt just as hard.
+    bounds = [m.start() for m in _CASE_HEADING.finditer(document)]
+    spans = (
+        list(zip([0, *bounds], [*bounds, len(document)], strict=True))
+        if bounds
+        else [(0, len(document))]
+    )
+    return "".join(_hoist_one_case(document[a:b]) for a, b in spans)
+
+
+def _hoist_one_case(section: str) -> str:
+    """One case section with its shared prompt blocks lifted under its heading."""
+    groups: dict[str, list[str]] = {}
+    for match in _SYSTEM_PROMPT_BLOCK.finditer(section):
+        groups.setdefault(match.group("context").strip(), []).append(match.group("text"))
+    shared = {
+        context: block
+        for context, texts in groups.items()
+        if (block := shared_block_text(texts)) and _worth_hoisting(block, len(texts))
+    }
+    if not shared:
+        return section
 
     def replace(match: re.Match[str]) -> str:
-        key = (match.group("context").strip(), match.group("text"))
-        if key not in repeated:
+        context = match.group("context").strip()
+        block = shared.get(context)
+        text = match.group("text")
+        if block is None:
             return match.group(0)
-        return f"_{SYSTEM_PROMPT_LABEL} — {key[0]} ({len(key[1])} chars) {HOISTED_REFERENCE}_"
+        body = unique_lines(text, frozenset(block.split("\n")))
+        own = len(body.replace(SHARED_PROMPT_MARKER, ""))
+        summary = (
+            f"{SYSTEM_PROMPT_LABEL} — {context} ({len(text)} chars; {own} unique to this sample)"
+        )
+        return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
 
-    body = _SYSTEM_PROMPT_BLOCK.sub(replace, document)
-    blocks = [SystemPrompt(context=context, text=text).render() for context, text in repeated]
-    hoisted = "\n\n".join([SYSTEM_PROMPTS_HEADING, *blocks])
-    return f"{hoisted}\n\n{body}"
+    rewritten = _SYSTEM_PROMPT_BLOCK.sub(replace, section)
+    hoisted = "\n\n".join(
+        f"{SHARED_PROMPT_HEADING} — {context}\n\n"
+        f"<details><summary>{len(block)} chars, shared by every sample below</summary>"
+        f"\n\n{block}\n\n</details>"
+        for context, block in shared.items()
+    )
+    heading_end = rewritten.index("\n") if "\n" in rewritten else len(rewritten)
+    return f"{rewritten[:heading_end]}\n\n{hoisted}{rewritten[heading_end:]}"
 
 
 # ── The whole sample ─────────────────────────────────────────────────────────
