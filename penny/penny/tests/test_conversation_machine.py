@@ -699,7 +699,8 @@ def test_elicit_instruction_whole_render():
         "read, what to do with it, and what to remember afterwards. Ask in the "
         "terms they used — describing the task is theirs, working out how to "
         "carry it out is yours. Never ask them to define keywords, terms, "
-        "matching rules, or anything about how a page is built.\n\n"
+        "matching rules, css or selectors, or anything about how a page is "
+        "built.\n\n"
         "Don't attempt the task, don't do part of it, and don't record anything. "
         "Nothing exists yet, so don't say or imply that it does.\n\n"
     )
