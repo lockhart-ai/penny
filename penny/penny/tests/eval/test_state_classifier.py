@@ -67,8 +67,12 @@ the report + the offer to set it running.  ACCEPT = taking that offer up, in the
 shapes an acceptance arrives in (a bare yes, a cadence, an end condition, a
 notify ask) → apply, binding the just-taught skill; none of them restates the
 page, which is the whole reason the edge exists rather than a request that asks
-for what was just read.  Its paired guard re-runs beat 4's RETRY pool under the
-same offer — a correction must still be a correction when apply is on the table.
+for what was just read.  Its paired guard is CORRECTIONS under that same offer —
+a correction must still be a correction when apply is on the table — and it
+carries its own pool rather than re-running beat 4's, because beat 4's answers a
+FAILED round and those phrasings contradict a last turn that reports what it
+saved.  A pool has to cohere with the turn it answers or the case measures
+contradiction-handling instead of the boundary it names.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -787,6 +791,29 @@ async def test_parked_learn_accepts_the_offer_and_applies(
     )
 
 
+# Corrections to a round that RAN — this beat's own pool, not beat 4's.  Beat 4's
+# retry pool answers a FAILED round ("try again — the page should load now", "run
+# it once more, i think the site was just down"), so under this beat's last turn —
+# which reports what it saved and offers to keep it up to date — those phrasings
+# contradict the story they are answering, and the classifier is being asked to
+# resolve a fixture that does not cohere rather than the boundary under test.
+# (Measured: exactly those two phrasings missed at N=10; the eight carrying real
+# corrections held.)  A correction to a SUCCESSFUL round fixes what it saved —
+# the wrong column, the wrong day, too little, the wrong place to put it.
+_POST_SUCCESS_CORRECTION_POOL = [
+    "no, read the SECOND table on the page, not the first one",
+    "you grabbed the departure — i actually wanted the arrival time, fix that",
+    "almost — but remember the last sailing too, not just the first",
+    "the times you grabbed are for weekdays, i want the weekend ones",
+    "close! the departure column is the one on the left",
+    "redo it and this time keep only the morning sailings",
+    "save it under 'morning ferries' instead",
+    "use harborferries.example/timetable-v2 — that's the page i actually meant",
+    "6:40 is the weekday one, grab the sunday departure instead",
+    "also note the ferry name next to the time, not just the time",
+]
+
+
 async def test_parked_learn_corrections_still_learn_with_the_skill_offered(
     classifier_eval: ClassifierEval,
 ) -> None:
@@ -798,7 +825,7 @@ async def test_parked_learn_corrections_still_learn_with_the_skill_offered(
     await classifier_eval(
         case_id="learn-apply-corrections-guard",
         state=ConversationState.LEARN,
-        pool=_RETRY_POOL,
+        pool=_POST_SUCCESS_CORRECTION_POOL,
         expected=ConversationState.LEARN,
         penny_last_turn=_TAUGHT_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
