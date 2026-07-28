@@ -1554,6 +1554,11 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
     Single-message vs. conversation: pass ``message`` for one turn, or
     ``messages`` for a discuss-then-adjust conversation (see
     ``_conversation_turns``).
+
+    ``seed_skills`` lays fixture skills into the registry with real description
+    embeddings (``_seed_eval_skills``, shared with the classifier runner) — what
+    a case needs when its ONE turn stands on a routine an earlier round already
+    taught, rather than driving that round again.
     """
 
     async def _run(
@@ -1563,6 +1568,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         messages: Sequence[str] | None = None,
         score: Scorer,
         seed: Seeder | None = None,
+        seed_skills: Sequence[SkillDraft] | None = None,
         browse: list[CannedPage] | None = None,
         prepare: Preparer | None = None,
         wrap_client: Callable[[LlmClient], _InjectingClient] | None = None,
@@ -1590,6 +1596,8 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                     if seed is not None:
                         seed(penny.db)
                     await _embed_seeds(penny)
+                    if seed_skills:
+                        await _seed_eval_skills(penny, seed_skills)
                     if browse is not None:
                         install_browse(penny, browse)
                     if prepare is not None:

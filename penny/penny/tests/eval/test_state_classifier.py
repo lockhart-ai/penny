@@ -41,14 +41,13 @@ edge).
 
 **Beat 4 (parked learn — re-entry after a failed demo round)**: the machine is
 parked in learn (the demo round did not complete; ``penny_last_turn`` = the
-honest failure report), and the user's reply resolves it: learn is TWO-WAY
-(code-owner ruling: elicit exists to GET instructions, so once they have been
-given there is no going back to it — the user either provides instructions or
-the machine falls to idle).  Parked learn is BINARY: a corrected
-set of instructions (→ learn), or a bail (→ idle).  RETRY = corrections that
-CARRY the new instructions; QUESTIONS = post-failure questions and doubts,
-no instructions carried; BAIL = give-ups, topic changes, and withdrawals of
-the instructions.
+honest failure report) with NOTHING in the registry — a failed round taught no
+skill — so the skill-gated apply edge is structurally withheld and the union is
+binary: a corrected set of instructions (→ learn), or a bail (→ idle).  There is
+no path back to elicit (code-owner ruling: elicit exists to GET instructions,
+and they have been given).  RETRY = corrections that CARRY the new instructions;
+QUESTIONS = post-failure questions and doubts, no instructions carried; BAIL =
+give-ups, topic changes, and withdrawals of the instructions.
 
 **Beat 5 (the parked machine — request's out-edges)**: idle grows a fifth
 edge, and apply splits with it.  A covered ask whose message CARRIES what the
@@ -60,6 +59,16 @@ resolves it: DETAILS ARRIVE = the page, or a confirmation (→ apply, skill stil
 bound); WRONG SKILL = the proposal rejected but the task still wanted (→ elicit);
 BAIL = call-offs (→ idle).  Both apply and request are SKILL-GATED, so each also
 binds its skill by name.
+
+**Beat 6 (parked learn — the round RAN and the offer is on the table)**: the
+same parked state as beat 4 with the two things a COMPLETED round changes — the
+taught skill is in the registry (so apply is offered) and ``penny_last_turn`` is
+the report + the offer to set it running.  ACCEPT = taking that offer up, in the
+shapes an acceptance arrives in (a bare yes, a cadence, an end condition, a
+notify ask) → apply, binding the just-taught skill; none of them restates the
+page, which is the whole reason the edge exists rather than a request that asks
+for what was just read.  Its paired guard re-runs beat 4's RETRY pool under the
+same offer — a correction must still be a correction when apply is on the table.
 
 Fictional-but-believable fixtures throughout (the repo is public).
 """
@@ -712,5 +721,88 @@ async def test_parked_learn_bails_out(classifier_eval: ClassifierEval) -> None:
         penny_last_turn=_FAILED_ROUND_REPORT,
         task_anchor=_FERRY_ASK,
         min_pass_rate=0.8,
+        family=_FAMILY,
+    )
+
+
+# ── Beat 6: parked learn — the round RAN, and the offer is on the table ───────
+
+# The taught routine, as the run-end extractor would have left it: a generic
+# name + description over the demonstration, alongside an unrelated distractor
+# (wrong-skill selection is a scored miss on the bound-skill check).
+_TIMETABLE_SKILL = "check a timetable page for a departure time"
+_TAUGHT_SKILLS = [
+    eval_skill(
+        _TIMETABLE_SKILL,
+        "read a schedule page and record the departure time it lists",
+        {"url": "the timetable page to read"},
+    ),
+    _SEEDED_SKILLS[1],
+]
+
+# The parked-learn context beat 4 does NOT cover: the demo round SUCCEEDED, so
+# the assistant's last turn reports what it did and offers to set it running —
+# which is where the machine stands when the user answers that offer.
+_TAUGHT_ROUND_REPORT = (
+    "Read harborferries.example/timetable and saved the first morning departure "
+    "(6:40am) to ferry-times. Want me to keep it up to date on its own?"
+)
+
+# Accept direction — the offer taken up, in the shapes an acceptance actually
+# arrives in: a bare yes, a cadence, an end condition, a notify ask.  None of
+# them restates the page: the round that just ran supplied it.
+_ACCEPT_POOL = [
+    "yes please, set that up",
+    "yeah do that every morning",
+    "perfect — keep it running and tell me when it changes",
+    "great, check it hourly until tonight",
+    "sure, go ahead and make that automatic",
+    "yep, run that daily from now on",
+    "please do — and let me know if the time moves",
+    "that's exactly it, keep doing that",
+    "ok set it going, once a day is fine",
+    "yes, and ping me when the departure changes",
+]
+
+
+async def test_parked_learn_accepts_the_offer_and_applies(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The edge the demonstrated round's own offer creates: accepting it moves
+    the parked machine to apply with the just-taught skill bound.  Nothing in
+    these messages names the page — the round that just ran is what supplies
+    it, which is why this edge exists at all rather than routing through a
+    request that asks for what was just read."""
+    await classifier_eval(
+        case_id="learn-apply-accept",
+        state=ConversationState.LEARN,
+        pool=_ACCEPT_POOL,
+        expected=ConversationState.APPLY,
+        expected_skill=_TIMETABLE_SKILL,
+        penny_last_turn=_TAUGHT_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=_TAUGHT_SKILLS,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+async def test_parked_learn_corrections_still_learn_with_the_skill_offered(
+    classifier_eval: ClassifierEval,
+) -> None:
+    """The paired over-correction guard: the SAME parked state with apply now on
+    offer must still route a correction to learn.  Beat 4 measured this with an
+    empty registry, where apply was structurally withheld — so it could not have
+    caught the failure this edge introduces (a correction read as acceptance,
+    freezing the wrong routine into a schedule)."""
+    await classifier_eval(
+        case_id="learn-apply-corrections-guard",
+        state=ConversationState.LEARN,
+        pool=_RETRY_POOL,
+        expected=ConversationState.LEARN,
+        penny_last_turn=_TAUGHT_ROUND_REPORT,
+        task_anchor=_FERRY_ASK,
+        seed_skills=_TAUGHT_SKILLS,
+        min_pass_rate=None,
         family=_FAMILY,
     )

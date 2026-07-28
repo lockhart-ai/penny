@@ -24,12 +24,23 @@ the skill onto it.  Scoring that separation is most of the point of these cases.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from penny.constants import TransitionCause
+from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import ConversationState
 from penny.database import Database
+from penny.database.memory import EntryInput
 from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.database.skills import DistillInput, SkillDraft, distill_steps, slug_skill_name
+
+# The production verdict-application, used as itself: this case's fixture skill
+# has to be the SHAPE run-end extraction really produces (two bindable
+# parameters and one placeholder), and re-implementing that mapping here would
+# be a fixture that drifts from the pipeline it stands in for.
+from penny.skill_extraction import _apply_parameter_labels
+from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -37,9 +48,11 @@ from penny.tests.eval.conftest import (
     new_collections,
     outgoing_replies,
     routing_clean,
+    tool_not_called,
     tool_was_called,
 )
 from penny.tests.eval.test_watch_journey import AURORA_LISTING_499, LISTING_URL
+from penny.tools.micro_context import ParameterLabel, ParameterVerdict, SkillLabel
 
 pytestmark = pytest.mark.eval
 
@@ -53,15 +66,20 @@ _AUCTION_ASK = f"hey can you watch the auction at {LISTING_URL} for me?"
 _TEACH_TURN = f"yeah go to {LISTING_URL}, find the price, and remember it"
 
 
-def _park(penny, state: ConversationState) -> None:
+def _park(db: Database, state: ConversationState, *, anchor_message_id: int | None = None) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
     here fakes a state the production path couldn't be in.  The incoming message
-    is still classified against it, so a case exercises the edge end to end."""
-    penny.db.machine.record_transition(
+    is still classified against it, so a case exercises the edge end to end.
+
+    ``anchor_message_id`` is the instigating ask the parked round is anchored to
+    — what the production anchor lifecycle stamps on the way in, and what the
+    classifier renders as the task being worked on."""
+    db.machine.record_transition(
         from_state=ConversationState.IDLE.value,
         to_state=state.value,
         cause=TransitionCause.CLASSIFIER,
+        anchor_message_id=anchor_message_id,
     )
 
 
@@ -228,8 +246,244 @@ async def test_elicit_to_learn_runs_the_round_and_instantiates_nothing(
         case_id="transition-elicit-to-learn",
         message=_TEACH_TURN,
         browse=[AURORA_LISTING_499],
-        prepare=lambda penny: _park(penny, ConversationState.ELICIT),
+        seed=lambda db: _park(db, ConversationState.ELICIT),
         score=_score_elicit_to_learn,
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+# ── learn → apply: the offer accepted, the routine set running ────────────────
+
+# The world the demonstrated round leaves behind, seeded so this case stays ONE
+# turn: the collection the naive write created (the price in it, no skill, no
+# program, no schedule — exactly what the elicit → learn case above scores), and
+# the skill the run-end extractor distilled from that same round.
+_WATCH_COLLECTION = "aurora-deck-2-price"
+_DEMO_KEY = "aurora deck 2 price"
+_PRICE = "$499"
+_EXTRACT = "the current price"
+
+_SKILL_NAME = "watch a listing page for its current price"
+_SKILL_DESCRIPTION = "read a listing page and record the price it shows"
+
+# The round's ledger, as the extractor would have read it off the promptlog.
+_DEMONSTRATED_ROUND = [
+    DistillInput(
+        source_ordinal=1,
+        tool="browse",
+        arguments={"queries": [LISTING_URL], "extract": _EXTRACT},
+        result=f"You opened the Aurora Deck 2 listing (browse result)\n{_PRICE}",
+    ),
+    DistillInput(
+        source_ordinal=2,
+        tool="collection_write",
+        arguments={
+            "memory": _WATCH_COLLECTION,
+            "entries": [{"key": _DEMO_KEY, "content": _PRICE}],
+        },
+        result=(
+            f"You saved an entry to {_WATCH_COLLECTION}: (collection_write result)\nWrote 1 entry."
+        ),
+    ),
+]
+
+# The labeller's verdict per candidate (#1770), keyed by the DEMONSTRATED VALUE
+# rather than by the arg-derived name the distiller happens to mint — so the
+# fixture states what it means (which values the user supplied) and cannot go
+# quietly stale if that naming changes.  The user named the page and said what
+# to find; the entry's key is the assistant's own label, so it is a placeholder
+# and its demonstrated phrase must never be frozen into the recipe.
+_VERDICTS = {
+    LISTING_URL: ParameterLabel(
+        verdict=ParameterVerdict.PARAMETER,
+        name="url",
+        description="the listing page to check",
+    ),
+    _EXTRACT: ParameterLabel(
+        verdict=ParameterVerdict.PARAMETER,
+        name="what to find",
+        description="what to pull off the page",
+    ),
+    _DEMO_KEY: ParameterLabel(
+        verdict=ParameterVerdict.PLACEHOLDER,
+        description="what to call the entry it saves",
+    ),
+}
+
+
+def learn_to_apply_fixture_skill() -> SkillDraft:
+    """The skill that round leaves in the registry, built by the PRODUCTION
+    pipeline over its ledger — ``distill_steps`` for the structure, the real
+    verdict application for the labels, with a hand-written ``SkillLabel``
+    standing in for the one live naming draw.  So the case's starting world is
+    the shape extraction actually produces, not a convenient copy of it: two
+    bindable parameters the conversation can supply, and a placeholder no user
+    could."""
+    steps, parameters = distill_steps(_DEMONSTRATED_ROUND)
+    verdicts = {}
+    for step in steps:
+        for sub in step.substitutions:
+            if sub.parameter is None:
+                continue
+            value = str(_leaf_at(step.arguments, sub.path))
+            assert value in _VERDICTS, f"fixture has no verdict for {sub.parameter!r} = {value!r}"
+            verdicts[sub.parameter] = _VERDICTS[value]
+    label = SkillLabel(name=_SKILL_NAME, description=_SKILL_DESCRIPTION, parameters=verdicts)
+    steps, parameters = _apply_parameter_labels(steps, parameters, label)
+    assert sorted(p.name for p in parameters) == ["url", "what_to_find"], (
+        f"the fixture skill must carry exactly the two user-supplied parameters: {parameters}"
+    )
+    return SkillDraft(
+        name=_SKILL_NAME,
+        intent=_SKILL_DESCRIPTION,
+        description=_SKILL_DESCRIPTION,
+        steps=steps,
+        parameters=parameters,
+        source_run_id="demonstrated-round",
+    )
+
+
+# What the round reported, and the offer the learn instruction ends every round
+# with — the message the user is answering, and the reason this edge exists.
+_PENNY_REPORT = (
+    f"Opened the listing, found {_PRICE}, and saved it to {_WATCH_COLLECTION}. "
+    "Want me to keep an eye on it for you from now on?"
+)
+
+# learn → apply: the offer taken up.  It names a cadence, an end condition, and
+# a notify ask — but NOT the page, which the round it is answering already read.
+_APPLY_TURN = "perfect — do that every hour until 10pm tonight and tell me if it changes"
+
+
+def _seed_demonstrated_round(db: Database) -> None:
+    """Lay down the state a completed teach round leaves: the conversation up to
+    and including the offer, the collection the round wrote into (holding the
+    price, attached to nothing), and the machine parked in learn on the
+    instigating ask."""
+    ask_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content=_AUCTION_ASK,
+    )
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content=_TEACH_TURN,
+    )
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender=PennyConstants.MessageAuthor.PENNY,
+        content=_PENNY_REPORT,
+    )
+    db.memories.create_collection(_WATCH_COLLECTION, "the aurora deck 2 listing price")
+    db.memory(_WATCH_COLLECTION).write(
+        [EntryInput(key=_DEMO_KEY, content=_PRICE)],
+        author=PennyConstants.CHAT_AGENT_NAME,
+    )
+    _park(db, ConversationState.LEARN, anchor_message_id=ask_id)
+
+
+def _bound_values(row) -> list[str]:
+    """The values she bound into the skill at instantiation, from the collection's
+    own provenance column (#1603) — a read, not an inference."""
+    return [str(value) for value in json.loads(row.skill_params or "{}").values()]
+
+
+def _score_learn_to_apply(db: Database, before: set[str], reply: str) -> list[Check]:
+    """The taught routine became a live job on the collection that already
+    exists — adopted, not rebuilt, and not re-run."""
+    row = db.memories.get(_WATCH_COLLECTION)
+    created = new_collections(db, before)
+    taught = slug_skill_name(_SKILL_NAME)
+    bound = _bound_values(row) if row else []
+    return [
+        Check(
+            "state: she set it up in one call",
+            tool_was_called(db, "collection_set"),
+            kind="state",
+        ),
+        Check(
+            "state: the taught skill is attached to the collection the round wrote into",
+            row is not None and row.skill_name == taught,
+            rationale=None
+            if row and row.skill_name == taught
+            else f"skill_name {row and row.skill_name}",
+            kind="state",
+        ),
+        Check(
+            "state: nothing new was created (she adopted the collection, not rebuilt it)",
+            not created,
+            rationale=f"created {[each.name for each in created]}" if created else None,
+            kind="state",
+        ),
+        Check(
+            "state: the skill's program was rendered into it",
+            row is not None and bool(row.extraction_prompt),
+            kind="state",
+        ),
+        Check(
+            "state: the page she was taught on is what she bound",
+            any(LISTING_URL in value for value in bound),
+            rationale=f"bound {bound}",
+            kind="state",
+        ),
+        Check(
+            "state: it runs hourly (the cadence they asked for)",
+            row is not None and row.collector_interval_seconds == 3600,
+            rationale=f"interval {row and row.collector_interval_seconds}",
+            kind="state",
+        ),
+        Check(
+            "state: it stops tonight (the end condition they gave)",
+            row is not None and row.expires_at is not None,
+            kind="state",
+        ),
+        Check(
+            "state: it will tell them when the price moves",
+            row is not None and bool(row.notify),
+            kind="state",
+        ),
+        Check(
+            "state: she set it running instead of running it again (no browse this turn)",
+            tool_not_called(db, "browse"),
+            kind="state",
+        ),
+        Check(
+            "reply: she says what will happen now, naming the cadence",
+            any(token in reply.lower() for token in ("hour", "60 min")),
+            kind="reply",
+        ),
+        Check(
+            "calls: the machine landed in apply",
+            _landed_state(db) == ConversationState.APPLY.value,
+            rationale=f"landed in {_landed_state(db)}",
+            scored=False,
+            kind="spine",
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+            kind="proc",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_learn_to_apply_instantiates_the_taught_skill(chat_eval: ChatEval) -> None:
+    """learn → apply: parked on the offer the demonstrated round ended with, the
+    user accepts and adds the job's terms.  She binds the taught skill onto the
+    collection that round already wrote into — one `collection_set`, the page
+    taken from the round rather than asked for again — and does NOT re-run the
+    round to answer."""
+    await chat_eval(
+        case_id="transition-learn-to-apply",
+        message=_APPLY_TURN,
+        seed=_seed_demonstrated_round,
+        seed_skills=[learn_to_apply_fixture_skill()],
+        score=_score_learn_to_apply,
         min_pass_rate=None,
         timeout=240.0,
         family=_FAMILY,

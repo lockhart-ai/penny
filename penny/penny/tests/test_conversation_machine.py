@@ -114,12 +114,16 @@ def test_edge_table_invariants():
     # Teaching can arrive unprompted, so learn IS reachable from idle.
     assert ConversationState.LEARN in OUT_EDGES[ConversationState.IDLE]
     assert OUT_EDGES[ConversationState.APPLY] == ()
-    # learn is two-way: instructions (stay) or the idle default — elicit exists
-    # to GET instructions, so there is no path back to it once they are given.
+    # learn exits to apply (the demonstrated round ends by OFFERING to set the
+    # routine running, so the acceptance is answerable from where that offer was
+    # made), stays on further instructions, or falls to the idle default — never
+    # back to elicit, which exists to GET instructions already given.
     assert OUT_EDGES[ConversationState.LEARN] == (
+        ConversationState.APPLY,
         ConversationState.LEARN,
         ConversationState.IDLE,
     )
+    assert ConversationState.ELICIT not in OUT_EDGES[ConversationState.LEARN]
 
 
 def test_presented_edges_withholds_apply_without_candidates():
@@ -245,10 +249,11 @@ def test_render_parked_elicit_slice_whole():
 
 
 def test_render_parked_learn_slice_whole():
-    """The parked-learn render, whole: learn is TWO-WAY — the union is learn
-    (the user provided instructions) and idle (everything else, the declared
-    default).  There is no path back to elicit: elicit exists to GET the
-    instructions, and they have been given."""
+    """The parked-learn render after a FAILED round, whole: with nothing in the
+    registry the skill-gated apply edge is withheld, so the union narrows to
+    learn (the user provided instructions) and idle (everything else, the
+    declared default).  There is no path back to elicit: elicit exists to GET
+    the instructions, and they have been given."""
     parked_learn = MachineSnapshot(
         state=ConversationState.LEARN,
         penny_last_turn=(
@@ -277,6 +282,52 @@ def test_render_parked_learn_slice_whole():
         "is never learn\n"
         "\n"
         "## Transitions\n"
+        "- learn — the user's message is a set of instructions to follow for the task "
+        "being worked on — what to read, what to look for, what to remember, including "
+        "corrections to previous steps\n"
+        "- idle — in all other cases"
+    )
+
+
+def test_render_parked_learn_with_candidates_whole():
+    """The parked-learn render after a round that RAN, whole: the round ends by
+    offering to set the routine running, the skill it just taught is in the
+    registry, so apply joins the union with the SKILL: directive — the edge the
+    acceptance takes.  Nothing about the values it needs is asked for: the
+    round that just ran supplied them."""
+    taught = MachineSnapshot(
+        state=ConversationState.LEARN,
+        penny_last_turn=(
+            "Read the timetable and saved the first morning departure. "
+            "Want me to keep it up to date on its own?"
+        ),
+        task_anchor=_ASK,
+        skill_candidates=[_SKILL],
+    )
+    assert render_classifier_content(taught, "yeah, check it every morning") == (
+        "## The assistant's last message\n"
+        "Read the timetable and saved the first morning departure. Want me to keep it "
+        "up to date on its own?\n"
+        "\n"
+        "## The task being worked on\n"
+        "hey can you keep an eye on the harbor ferry timetable for me?\n"
+        "\n"
+        "## Known skills\n"
+        "- watch a listing price for changes — checks a page and records the current "
+        "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## The user's newest message\n"
+        "yeah, check it every morning\n"
+        "\n"
+        "## Current state\n"
+        "learn — the user's message gives instructions to follow — what to read, look "
+        "for, or remember; a plain command counts, and a message without instructions "
+        "is never learn\n"
+        "\n"
+        "## Transitions\n"
+        "- apply — they are asking for the routine just demonstrated to run on its own "
+        "— a schedule, a repeat, or accepting an offer to set it up — add a second line "
+        "naming that skill: SKILL: <its name, copied exactly from Known skills>\n"
         "- learn — the user's message is a set of instructions to follow for the task "
         "being worked on — what to read, what to look for, what to remember, including "
         "corrections to previous steps\n"

@@ -23,18 +23,22 @@ prose:
 
 - **The edge table is data** (:data:`OUT_EDGES`): every non-idle state that
   classifies carries the break-out edge → idle (topic changed / called off);
-  ``learn`` is TWO-WAY — the user either provides instructions to follow (stay
-  in learn) or the machine falls to idle: elicit exists to GET instructions, so
+  ``learn`` never returns to elicit — elicit exists to GET instructions, so
   once they have been given there is no going back to it (code-owner ruling,
-  beat 4).  ``learn`` is reachable from ``idle`` directly — teaching can arrive
+  beat 4) — but it does reach ``apply``: the demonstrated round ENDS by
+  offering to set the routine running, so the machine is parked in learn at the
+  exact moment the user accepts, and the acceptance has to be answerable from
+  there (before the run-end auto-attach was removed in #1768, learning
+  instantiated implicitly and the edge had no work to do).  What supplies the
+  skill's values is the round that just ran, so accepting never has to restate
+  them.  ``learn`` is reachable from ``idle`` directly — teaching can arrive
   UNPROMPTED ("lemme teach you how to X: do A, B, C"), skipping the teach
   question entirely; entering learn means ONE thing from every source, so the
   condition text is identical on every edge that enters it;
   ``apply`` has NO out-edges — its reset to idle is a post-turn structural
   fact, never a classifier call (there is no message to classify at end of
   run, and completion self-report is the one judgment the machine never asks
-  the model for).  A completed learn round resets structurally the same way;
-  only a FAILED round leaves the machine parked in ``learn``.
+  the model for).
 - **Fail → stay** (:func:`next_state`): a classifier contract failure — an
   untagged draw, a state outside the union, exhausted poison rerolls — is a
   NON-decision: the machine holds its state.  Distinct from a *classified*
@@ -102,6 +106,7 @@ OUT_EDGES: dict[ConversationState, tuple[ConversationState, ...]] = {
         ConversationState.IDLE,
     ),
     ConversationState.LEARN: (
+        ConversationState.APPLY,
         ConversationState.LEARN,
         ConversationState.IDLE,
     ),
@@ -195,6 +200,12 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.ELICIT, ConversationState.ELICIT): (
         "they are still working the task out with the assistant — a question "
         "back, or a clarification about the task itself"
+    ),
+    (ConversationState.LEARN, ConversationState.APPLY): (
+        "they are asking for the routine just demonstrated to run on its own — "
+        "a schedule, a repeat, or accepting an offer to set it up — add a "
+        f"second line naming that skill: {SKILL_TAG} <its name, copied exactly "
+        "from Known skills>"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task "
