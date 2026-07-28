@@ -17,6 +17,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1124,7 +1125,35 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
 
 
 # ── Transcript extraction: promptlog → report.SampleTranscript (#1725 iteration-6) ──
-_BROWSE_EXTRACT_AGENT = "browse-extract"
+
+
+class MicroPlacement(StrEnum):
+    """Where a micro-context's events splice into the transcript (#1773).
+
+    One value per CAUSAL relationship to the run, not per agent — which is what makes this a
+    generalization rather than a pile of per-customer branches: a fourth micro-context declares
+    the relationship it already has and needs no new walk code."""
+
+    # It ran INSIDE a tool call (the browse-extract sub-model, while ``browse`` was executing) —
+    # its events belong immediately after that call's row.
+    DURING_CALL = "during_call"
+    # It ran BEFORE the chat agent, on the message that opens a turn (the state classifier, whose
+    # draw selects the instruction the turn is answered under) — its events belong at the head of
+    # the turn it decides, right after the user turn that provoked it.
+    TURN_HEAD = "turn_head"
+    # It ran AFTER the run's last action (the run-end skill labeller) — its events close the turn.
+    RUN_CLOSE = "run_close"
+
+
+# Every micro-context customer, by its ledger identity (``promptlog.agent_name``), with the
+# placement its position in the run implies.  The ONE place agent names appear in the transcript
+# walk; everything downstream reads the placement.
+MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
+    PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
+    PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
+    PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+}
+
 _NUDGE_FRAMES = (
     "Please provide your response",  # Prompt.CONTINUE_NUDGE
     "could not be parsed as a tool call",  # the parse-failure recovery nudge
@@ -1186,14 +1215,22 @@ def _thinking_by_content(rows: list[PromptLog]) -> dict[str, str]:
 
 
 def _micro_events(row: PromptLog) -> list[report.Event]:
-    """One ``browse-extract`` promptlog row → its two micro-context events: the instruction+content
-    INTO the sub-model (🧩 ← user turn:) and the extracted value OUT of it (🧩 →, carrying its
-    thinking). The body is the content ONLY — the role label is the renderer's (#1759)."""
+    """One micro-context promptlog row → its two events: the scoped turn INTO the sub-model
+    (🧩 ← user turn:) and the drawn output OUT of it (🧩 →, carrying its thinking). The body is
+    the content ONLY — the role label is the renderer's (#1759) — and both events carry the row's
+    ledger identity as their actor label (#1773), so browse extraction, state classification and
+    skill naming read apart and each matches its own system-prompt row."""
     messages = json.loads(row.messages) if row.messages else []
     user = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
+    context = row.agent_name or ""
     return [
-        report.Event(report.EventKind.MICRO_IN, user),
-        report.Event(report.EventKind.MICRO_OUT, _response_text(row), thinking=row.thinking or ""),
+        report.Event(report.EventKind.MICRO_IN, user, context=context),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            _response_text(row),
+            thinking=row.thinking or "",
+            context=context,
+        ),
     ]
 
 
@@ -1214,20 +1251,35 @@ def _system_prompts(rows: list[PromptLog]) -> list[report.SystemPrompt]:
     return prompts
 
 
-def _micro_batches(rows: list[PromptLog]) -> list[list[report.Event]]:
-    """The micro-context events grouped by browse call, in order: each contiguous run of
-    ``browse-extract`` rows (the pages one ``extract`` browse fetched) is one batch, FIFO-matched
-    to the extract-browse calls as the transcript walk reaches them."""
-    batches: list[list[report.Event]] = []
-    current: list[report.Event] = []
+@dataclass
+class MicroBatch:
+    """One micro-context's contiguous run of promptlog rows, as transcript events plus the
+    placement its ledger identity declares — the unit the transcript walk splices (#1773)."""
+
+    placement: MicroPlacement
+    events: list[report.Event]
+
+
+def _micro_batches(rows: list[PromptLog]) -> list[MicroBatch]:
+    """EVERY micro-context call in the sample's ledger, batched, in ledger order (#1773).
+
+    A batch is a maximal run of CONSECUTIVE rows from the SAME micro-context — the pages one
+    ``extract`` browse fetched, or a single draw plus its reroll — so two customers that happen to
+    be ledger-adjacent (a run-end labeller and the next turn's classifier) never merge into one
+    actor. Each batch carries its placement, so the walk splices it without knowing which agent
+    produced it."""
+    batches: list[MicroBatch] = []
+    open_agent: str | None = None
     for row in rows:
-        if row.agent_name == _BROWSE_EXTRACT_AGENT:
-            current.extend(_micro_events(row))
-        elif current:
-            batches.append(current)
-            current = []
-    if current:
-        batches.append(current)
+        agent = row.agent_name or ""
+        placement = MICRO_CONTEXT_PLACEMENTS.get(agent)
+        if placement is None:
+            open_agent = None
+            continue
+        if agent != open_agent:
+            batches.append(MicroBatch(placement, []))
+            open_agent = agent
+        batches[-1].events.extend(_micro_events(row))
     return batches
 
 
@@ -1237,22 +1289,50 @@ def _is_extract_browse(content: str) -> bool:
     return content.startswith("browse(") and '"extract"' in content
 
 
+def _splice(
+    batches: list[MicroBatch], placement: MicroPlacement, events: list[report.Event]
+) -> None:
+    """Splice every batch AT THE HEAD of the queue with this placement, then stop — so the queue
+    drains in strict ledger order and a batch waiting on a later anchor holds the ones behind it."""
+    while batches and batches[0].placement == placement:
+        events.extend(batches.pop(0).events)
+
+
+def _splice_one(
+    batches: list[MicroBatch], placement: MicroPlacement, events: list[report.Event]
+) -> None:
+    """Splice the ONE batch at the head of the queue with this placement — the FIFO pairing an
+    in-call batch keeps with the call that spawned it (one batch per extract-browse call)."""
+    if batches and batches[0].placement == placement:
+        events.extend(batches.pop(0).events)
+
+
 def _turns_to_events(
-    turns: list[tuple[str, str]], thinking: dict[str, str], micro_batches: list[list[report.Event]]
+    turns: list[tuple[str, str]], thinking: dict[str, str], micro_batches: list[MicroBatch]
 ) -> tuple[list[report.Event], dict[int, int]]:
-    """Turn the de-duped ``(actor, content)`` turns into report events, splicing each extract-browse
-    call's micro-context batch right after it (ledger order). Returns the events and a ``turn index
-    → event index`` map so a check placed on a turn resolves to its event."""
+    """Turn the de-duped ``(actor, content)`` turns into report events, splicing each micro-context
+    batch at the anchor its placement names, in ledger order (#1773): a run-end batch closes the
+    turn in progress (before the next user turn), a turn-head batch opens the turn it decided
+    (right after that user turn), and an in-call batch follows the extract-browse call that spawned
+    it. Anything still queued at the end renders there rather than vanishing (collapsed never means
+    dropped, #1753). Returns the events and a ``turn index → event index`` map so a check placed on
+    a turn resolves to its event."""
     events: list[report.Event] = []
     turn_to_event: dict[int, int] = {}
     for turn_index, (actor, content) in enumerate(turns):
         kind = _turn_kind(actor, content)
+        if kind == report.EventKind.USER:
+            _splice(micro_batches, MicroPlacement.RUN_CLOSE, events)
         action = kind in (report.EventKind.CALL, report.EventKind.REPLY)
         thought = (thinking.get(content) or "") if action else None
         turn_to_event[turn_index] = len(events)
         events.append(report.Event(kind, _event_body(kind, content), thinking=thought))
-        if kind == report.EventKind.CALL and _is_extract_browse(content) and micro_batches:
-            events.extend(micro_batches.pop(0))
+        if kind == report.EventKind.USER:
+            _splice(micro_batches, MicroPlacement.TURN_HEAD, events)
+        elif kind == report.EventKind.CALL and _is_extract_browse(content):
+            _splice_one(micro_batches, MicroPlacement.DURING_CALL, events)
+    for batch in micro_batches:
+        events.extend(batch.events)
     return events, turn_to_event
 
 
@@ -1343,9 +1423,17 @@ def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> st
 
 
 def _sample_prompt_rows(db: Database) -> list[PromptLog]:
-    """Every promptlog row for the sample (main + browse-extract), oldest first."""
+    """Every promptlog row for the sample (the main agent's + every micro-context's), oldest
+    first — the ledger order the transcript walk interleaves the actors by."""
     with Session(db.engine) as session:
         return list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+
+
+def _main_rows(rows: list[PromptLog]) -> list[PromptLog]:
+    """The MAIN agent's rows — everything that is not a micro-context call (#1773). A
+    micro-context's scoped turn is its own actor's input, never a turn of the conversation: left
+    in, the classifier's rendered slice opened a phantom ``👤 user`` step ahead of the real one."""
+    return [row for row in rows if (row.agent_name or "") not in MICRO_CONTEXT_PLACEMENTS]
 
 
 def _build_transcript(
@@ -1395,7 +1483,7 @@ def _write_sample_report(
     if not report_dir:
         return
     rows = _sample_prompt_rows(db)
-    main_rows = [row for row in rows if row.agent_name != _BROWSE_EXTRACT_AGENT]
+    main_rows = _main_rows(rows)
     baseline = baseline_from_env()
     # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
     result.fragile = result.passed and sample_is_fragile(db)
@@ -2305,19 +2393,23 @@ def _classifier_rows(db: Database) -> list[PromptLog]:
 def _classifier_events(phrasing: str, rows: list[PromptLog]) -> list[report.Event]:
     """The hand-built event stream for one single-draw micro-context sample: the
     phrasing opens the step, then one 🧩 in/out pair PER DRAW — a reroll renders as
-    a second pair, so recovery is visible in the transcript, never summarized away."""
+    a second pair, so recovery is visible in the transcript, never summarized away.
+    Each pair is labelled with the drawing context's ledger identity (#1773), the
+    same actor label the chat-run extractor emits."""
     events = [report.Event(report.EventKind.USER, phrasing)]
     for row in rows:
         messages = json.loads(row.messages) if row.messages else []
         user = next(
             (m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), ""
         )
-        events.append(report.Event(report.EventKind.MICRO_IN, user))
+        context = row.agent_name or ""
+        events.append(report.Event(report.EventKind.MICRO_IN, user, context=context))
         events.append(
             report.Event(
                 report.EventKind.MICRO_OUT,
                 _response_text(row) or "(empty)",
                 thinking=row.thinking or "",
+                context=context,
             )
         )
     return events

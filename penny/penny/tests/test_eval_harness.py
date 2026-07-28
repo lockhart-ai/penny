@@ -18,6 +18,7 @@ import pytest
 # ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
+from penny.constants import PennyConstants
 from penny.database import Database
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
@@ -57,12 +58,15 @@ def _make_db(tmp_path, name: str = "harness") -> Database:
     return db
 
 
-def _log_prompt(db: Database, *, messages=None, response=None, thinking=None) -> None:
+def _log_prompt(
+    db: Database, *, messages=None, response=None, thinking=None, agent_name=None
+) -> None:
     db.messages.log_prompt(
         model="test-model",
         messages=messages if messages is not None else [{"role": "user", "content": "hi"}],
         response=response if response is not None else {},
         thinking=thinking,
+        agent_name=agent_name,
         run_id="r1",
     )
 
@@ -820,3 +824,133 @@ def test_report_renders_thinking_for_every_action(tmp_path, monkeypatch) -> None
     )
     assert "| actual | 🔧 collection_write({}) | ✅ C1 |" in text
     assert "REGRESSED" not in text
+
+
+# ── Every micro-context renders as its own actor, in ledger order (#1773) ────────────────────
+
+_BROWSE_ARGS = '{"queries": ["lake"], "extract": "depth"}'
+_BROWSE_CALL = {"function": {"name": "browse", "arguments": _BROWSE_ARGS}}
+_REPLY_TEXT = "Lake Baikal — 1,642 m."
+
+
+def _three_micro_context_ledger(db: Database) -> None:
+    """One chat turn's promptlog exactly as production writes it (#1773): the state classifier
+    draws BEFORE the chat agent, a browse-extract sub-model runs INSIDE the browse call, and the
+    run-end skill labeller names the routine AFTER the reply — each with its own ``agent_name``,
+    interleaved with the two main-agent rows in ledger order."""
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": "Pick one state."},
+            {"role": "user", "content": "current: idle · newest message: deepest lake?"},
+        ],
+        response=_content_response("STATE: idle"),
+        thinking="a question, not a task",
+    )
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "deepest lake?"},
+        ],
+        response={"choices": [{"message": {"tool_calls": [_BROWSE_CALL]}}]},
+        thinking="check a source",
+    )
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": "Extract one value."},
+            {"role": "user", "content": "Instruction: depth · Content: 1,642 m"},
+        ],
+        response=_content_response("EXTRACTED: 1642"),
+        thinking="the value is right there",
+    )
+    _log_prompt(
+        db,
+        messages=[
+            {"role": "system", "content": "You are Penny."},
+            {"role": "user", "content": "deepest lake?"},
+            {"role": "assistant", "tool_calls": [_BROWSE_CALL]},
+            {"role": "tool", "content": "You opened the page (browse result) · 1642"},
+        ],
+        response=_content_response(_REPLY_TEXT),
+        thinking="the source says 1,642 m",
+    )
+    _log_prompt(
+        db,
+        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+        messages=[
+            {"role": "system", "content": "Name the routine."},
+            {"role": "user", "content": "steps: browse"},
+        ],
+        response=_content_response("NAME: look-up-lake-depth"),
+        thinking="a generic name",
+    )
+
+
+def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monkeypatch) -> None:
+    # #1773: `_micro_batches` admitted only browse-extract rows, so the classifier's decision and
+    # the labeller's adjudication were invisible — and, being main-agent rows to the turn walk,
+    # their scoped slices rendered as PHANTOM `👤 user` steps ahead of the real one.  All three
+    # micro-contexts now render as named actors at the anchor their placement declares: the
+    # classifier at the head of the turn it decided, the browse extraction after the call that
+    # spawned it (unchanged FIFO pairing), the labeller closing the turn.  Whole-render literal.
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    _three_micro_context_ledger(db)
+    result = SampleResult.graded([Check("browsed", ok=True, anchor="browse(", kind="spine")])
+    _write_sample_report(db, "micro-actors", 0, result=result, reply=_REPLY_TEXT)
+    assert (tmp_path / "micro-actors.md").read_text() == (
+        "<details><summary>sample 1 — ✅ pass · 1/1 (1.00) · 0s · 5 calls</summary>\n"
+        "\n"
+        "<details><summary>system prompt — state-classifier (15 chars)</summary>\n"
+        "\n"
+        "Pick one state.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "<details><summary>system prompt —  (14 chars)</summary>\n"
+        "\n"
+        "You are Penny.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "<details><summary>system prompt — browse-extract (18 chars)</summary>\n"
+        "\n"
+        "Extract one value.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "<details><summary>system prompt — skill-namer (17 chars)</summary>\n"
+        "\n"
+        "Name the routine.\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        '| step 1 · 👤 | "deepest lake?" | ✅ |\n'
+        "|---|---|---|\n"
+        "| expected | C1 [spine]⚖ browsed |  |\n"
+        "| actual | 🧩 state-classifier ← user turn: current: idle · newest message: "
+        "deepest lake? |  |\n"
+        "| 💭 | <details><summary>thinking (state-classifier)</summary>a question, not a task"
+        "</details> |  |\n"
+        "| actual | 🧩 state-classifier → STATE: idle |  |\n"
+        "| 💭 | <details><summary>thinking</summary>check a source</details> |  |\n"
+        '| actual | 🔧 browse({"queries": ["lake"], "extract": "depth"}) | ✅ C1 |\n'
+        "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
+        "| 💭 | <details><summary>thinking (browse-extract)</summary>the value is right there"
+        "</details> |  |\n"
+        "| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |\n"
+        "| actual | 📥 You opened the page (browse result) · 1642 |  |\n"
+        "| 💭 | <details><summary>thinking</summary>the source says 1,642 m</details> |  |\n"
+        '| actual | 🤖 "Lake Baikal — 1,642 m." |  |\n'
+        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
+        "| 💭 | <details><summary>thinking (skill-namer)</summary>a generic name</details> |  |\n"
+        "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
+        "\n"
+        "</details>\n"
+        "\n"
+    )

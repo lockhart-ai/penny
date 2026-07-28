@@ -696,9 +696,9 @@ transcript, in causal order (contract → thinking → action → verdict-on-act
 persisted promptlog. Each sample is a series of **per-step tables** (a user turn opens each step):
 one `expected` row per check (`Cn [class]⚖/ℹ label`), an ALWAYS-collapsed `💭 <details>` directly
 above **every** model action (thinking for every call now, not only failed turns; `💭 (empty)` when
-none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 micro-context ← user
-turn:` in / `🧩 micro-context →` out — the browse-extract sub-model is an official actor with its
-USER turn explicitly labelled, #1759) with the check verdict on its anchor row. Whole-run /
+none), and an `actual` row per transcript event (`🔧`/`📥`/`🤖`/`👤 nudge`/`🧩 <context> ← user
+turn:` in / `🧩 <context> →` out — **every** micro-context sub-model is an official actor with its
+USER turn explicitly labelled, #1759/#1773) with the check verdict on its anchor row. Whole-run /
 missing-action checks fall to a trailing **run-close** table. **Per-context system-prompt rows
 (#1759):** directly under the banner, one always-collapsed `<details>` per DISTINCT system prompt
 among the sample's calls (main agent + each micro-context flavour, deduped by text) —
@@ -726,6 +726,21 @@ Additive artifact fields carry it:
 the durable record; all raw artifacts (manifest/results.jsonl/`.md`/`.db`/dirty.diff) stay local and
 `EVAL_BASELINE` diffs those local paths (#1725 policy). Spec + worked example: `docs/eval-report-format.md`;
 whole-render tests in `test_report.py` / `test_assemble.py` (+ extraction in `test_eval_harness.py`).
+
+**Every micro-context renders as its own actor (#1773).** The v3 transcript admitted only
+`browse-extract` rows, so the state classifier's draw (#1706) and the run-end skill labeller's
+adjudication (#1770) were invisible — their system prompts rendered, the calls made against them did
+not — and, being main-agent rows to the turn walk, their scoped slices surfaced as PHANTOM
+`👤 user` steps ahead of the real one. Now the extractor (`conftest.py`) admits every micro-context
+by its ledger identity and each 🧩 row is labelled with it (`🧩 state-classifier → STATE: apply`),
+matching that context's system-prompt row. Where a batch splices is a declared **`MicroPlacement`** —
+the causal relationship, not the agent: `DURING_CALL` (browse-extract → after the `extract=` browse
+call that spawned it, the unchanged FIFO pairing) · `TURN_HEAD` (state-classifier → right after the
+user turn it decided, since the classifier runs before the chat agent) · `RUN_CLOSE` (skill-namer →
+closing the turn, after the final reply). One generic walk drains the ledger-ordered batch queue at
+those anchors, so a fourth customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not new code; a batch
+left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).
+Deterministic — proven by whole-render tests over fixture promptlog rows, no GPU.
 
 **A case's shared system prompt hoists under its heading (#1763).** A run's samples each carry a
 system prompt, and restating every one inline made a chat beat's assembled comment 525K against

@@ -72,7 +72,7 @@ Every per-step table uses these rows, identically everywhere:
 | **step header** | `step N · 👤` | `"user message"` | the step verdict (✅ / ❌ / ✅→❌) |
 | **expected** | `expected` | `Cn [class]marker label` | empty — or the verdict for a no-evidence-row contract |
 | **💭** | `💭` | an ALWAYS-collapsed `<details><summary>thinking</summary>…</details>`, one per model action, directly ABOVE it (`💭 (empty)` when the model emitted none) | always empty |
-| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 micro-context ← user turn:` / `🧩 micro-context →`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
+| **actual** | `actual` | one transcript event (`🔧 call` · `📥 result` · `🤖 reply` · `👤 nudge` · `🧩 <context> ← user turn:` / `🧩 <context> →`) | the check verdict on the anchor row; `⚠ recovery event` on a nudge; else empty |
 | **baseline** | `baseline` | the prior run's anchor event (diff mode only) | the prior verdict, tagged `*(prior run)*` |
 | **note** | `note` | free text, always last | always empty |
 
@@ -134,23 +134,35 @@ agent's (`chat` / `collector`) and each micro-context flavour's (`browse-extract
 and the verbatim prompt sits inside. Identical prompts within a sample dedupe by text, so a repeated
 main-loop prompt renders once. Source: the persisted promptlog messages (`role: system`).
 
-Motivation: a micro-context's `🧩 micro-context ← user turn:` row is that context's **USER** turn,
+Motivation: a micro-context's `🧩 <context> ← user turn:` row is that context's **USER** turn,
 not its system prompt — and the user mistook one for the other. When the surface under test IS a
 micro-context, its system prompt is half the contract, so each distinct context gets its own visible
 row. The rows are always present in the per-case `.md` and the assembled comment (there is no
 compact form to drop them).
 
-## Micro-context (🧩) — an official actor
+## Micro-context (🧩) — every sub-model is an official actor
 
-A browse call carrying an `extract` micro-instruction spawns a single-shot extraction sub-model
-(`browse-extract`). Its exchange renders inline, in ledger order, as two `actual` rows — the
-instruction + page content INTO the sub-model as its scoped USER turn (`🧩 micro-context ← user
-turn: …`, #1759 — the explicit role label, so it is never mistaken for the sub-model's system
-prompt, which has its own [system-prompt row](#system-prompts-per-context--one-collapsed-row-each-1759))
-and its extracted value OUT (`🧩 micro-context → EXTRACTED: …`) — with the sub-model's own
-`💭 (micro-context)` above the OUT row. A multi-page `extract` browse renders one pair per page. The
-main-loop context never sees the page body; only the typed value returns — the report is the one
-place that exchange is visible.
+**Every** micro-context call in a sample's ledger renders inline, in ledger order, as two `actual`
+rows labelled with the calling context's ledger identity (#1773): the scoped turn INTO the sub-model
+as its USER turn (`🧩 <context> ← user turn: …`, #1759 — the explicit role label, so it is never
+mistaken for the sub-model's system prompt, which has its own
+[system-prompt row](#system-prompts-per-context--one-collapsed-row-each-1759)) and its drawn output
+OUT (`🧩 <context> → …`) — with the sub-model's own `💭 (<context>)` above the OUT row. The label
+is the same `agent_name` the context's system-prompt row carries, so the two read as one actor.
+
+Where a batch splices is its **placement** — the causal relationship it has to the run, declared per
+context and read by one generic walk (a fourth customer is a data row, not new code):
+
+| placement | who | where it renders |
+|---|---|---|
+| in-call | `browse-extract` — runs while `browse` executes | right after the `extract=` browse call that spawned it (FIFO-paired; a multi-page `extract` browse renders one pair per page) |
+| turn-head | `state-classifier` — draws before the chat agent | at the head of the turn it decided, right after that user turn |
+| run-close | `skill-namer` — labels the routine at run end | closing the turn, after the final reply |
+
+The main-loop context never sees what a sub-model read — only the typed value returns — so the
+report is the one place these exchanges are visible. Before #1773 only the browse-extract batch was
+admitted, so a classifier draw that inverted a whole turn (it picks the per-state instruction chat is
+answered under) showed as a downstream check failure with no visible cause.
 
 ## Run header
 
@@ -243,7 +255,8 @@ harness-timeout sample the format makes visible). Entirely synthetic, shown in a
 tables and `<details>` read as source. This is the **one and only** rendering — every sample folds
 whole under its banner, collapsed by default with its full body a click away, byte-identical in the
 per-case `.md` and this comment (there is no compact / banner-only form). Sample 1 opens with its
-two distinct system-prompt rows (the `chat` main agent + the `browse-extract` micro-context, #1759).
+three distinct system-prompt rows (the `chat` main agent + the `state-classifier` and
+`browse-extract` micro-contexts, #1759/#1773).
 
 ````markdown
 **run-20260721T051017Z-abba710a** · commit `abba710a` · gpt-oss:20b · N=3 · **lever:** switch the representative case to chat-browse (prior case outmoded)
@@ -258,6 +271,12 @@ You are Penny, a personal assistant. Verify current facts with a browse before a
 
 </details>
 
+<details><summary>system prompt — state-classifier (96 chars)</summary>
+
+Pick exactly one state from the list you are shown and answer with STATE: <name>, copied exactly.
+
+</details>
+
 <details><summary>system prompt — browse-extract (124 chars)</summary>
 
 You are an extraction step. Return only the value the instruction names, tagged EXTRACTED: <value> or NOT_PRESENT: <reason>.
@@ -268,11 +287,14 @@ You are an extraction step. Return only the value the instruction names, tagged 
 |---|---|---|
 | expected | C1 [spine]⚖ browsed for a current-info question |  |
 | expected | C2 [reply]⚖ reply surfaces the browsed fact |  |
+| actual | 🧩 state-classifier ← user turn: current state: idle · newest message: what's the deepest lake in the world? |  |
+| 💭 | <details><summary>thinking (state-classifier)</summary>A factual question, no task to set up. Stay idle.</details> |  |
+| actual | 🧩 state-classifier → STATE: idle |  |
 | 💭 | <details><summary>thinking</summary>User wants the deepest lake. Verify with a source rather than answer from memory.</details> |  |
 | actual | 🔧 browse({"queries":["wiki/Lake_Baikal"],"extract":"maximum depth"}) | ✅ C1 |
-| actual | 🧩 micro-context ← user turn: Instruction: maximum depth · Content: Lake Baikal is the deepest lake at 1,642 metres. |  |
-| 💭 | <details><summary>thinking (micro-context)</summary>The content states 1,642 metres. Extract that value.</details> |  |
-| actual | 🧩 micro-context → EXTRACTED: 1642 |  |
+| actual | 🧩 browse-extract ← user turn: Instruction: maximum depth · Content: Lake Baikal is the deepest lake at 1,642 metres. |  |
+| 💭 | <details><summary>thinking (browse-extract)</summary>The content states 1,642 metres. Extract that value.</details> |  |
+| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |
 | actual | 📥 You opened wiki/Lake_Baikal (browse result) · 1642 |  |
 | 💭 | <details><summary>thinking</summary>Answer with the fact and the source.</details> |  |
 | actual | 🤖 Lake Baikal is the deepest, at 1,642 m. 🌊 | ✅ C2 |

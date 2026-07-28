@@ -3,8 +3,9 @@
 NOT eval-marked — they drive the PURE renderer over hand-built ``SampleTranscript``s (no DB, no
 model, no git), so they run inside ``make check`` and pin every form of the iteration-6 grammar
 as a WHOLE-RENDER literal (pr-review-guide §6). Every sample folds whole under its banner now
-(uniform collapse, #1753): the clean pass with per-context system-prompt rows (#1759) + micro-
-context, the failure with a nudge + run-close + n/a, the harness-timeout placeholder, the diff-mode
+(uniform collapse, #1753): the clean pass with per-context system-prompt rows (#1759) + all three
+named micro-context actors (#1773), the failure with a nudge + run-close + n/a, the harness-timeout
+placeholder, the diff-mode
 regressed flip with a baseline row, and an advisory check + empty thinking on a fragile pass all
 render inside a ``<details>``; plus the deterministic cell hygiene (single-copy collapsed
 truncation + escaping, #1759) and the fold/parse seam the assembler's re-normalization rides on
@@ -18,24 +19,51 @@ from penny.tests.eval import report
 
 def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
     """A clean pass folds into one ``<details>``: its distinct per-context system prompts (#1759)
-    render as always-collapsed rows directly under the banner (main agent then the browse-extract
-    micro-context), then a browse call's micro-context (🧩 ← user turn: / →, #1759) renders inline
-    with its own thinking, and an action with no captured thinking shows ``💭 (empty)``."""
+    render as always-collapsed rows directly under the banner (main agent then each micro-context),
+    then EVERY micro-context call renders inline as its own named actor (🧩 <context> ← user turn: /
+    →, #1759/#1773) with its own thinking — the state classifier at the head of the turn it decided,
+    the browse extraction after the call that spawned it, the run-end skill labeller closing the
+    turn — and an action with no captured thinking shows ``💭 (empty)``."""
     events = [
         report.Event(report.EventKind.USER, "deepest lake?"),
+        report.Event(
+            report.EventKind.MICRO_IN, "newest message: deepest lake?", context="state-classifier"
+        ),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            "STATE: idle",
+            thinking="a question, no task",
+            context="state-classifier",
+        ),
         report.Event(
             report.EventKind.CALL,
             'browse({"queries":["x"],"extract":"depth"})',
             thinking="verify with source",
         ),
-        report.Event(report.EventKind.MICRO_IN, "Instruction: depth · Content: 1,642 m"),
-        report.Event(report.EventKind.MICRO_OUT, "EXTRACTED: 1642", thinking="value present"),
+        report.Event(
+            report.EventKind.MICRO_IN,
+            "Instruction: depth · Content: 1,642 m",
+            context="browse-extract",
+        ),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            "EXTRACTED: 1642",
+            thinking="value present",
+            context="browse-extract",
+        ),
         report.Event(report.EventKind.RESULT, "You opened wiki (browse result) · 1642"),
         report.Event(report.EventKind.REPLY, "Lake Baikal, 1,642 m.", thinking=""),
+        report.Event(report.EventKind.MICRO_IN, "steps: browse", context="skill-namer"),
+        report.Event(
+            report.EventKind.MICRO_OUT,
+            "NAME: look-up-a-lake-depth",
+            thinking="generic name",
+            context="skill-namer",
+        ),
     ]
     checks = [
-        report.CheckView("C1", "browsed", "spine", True, False, True, anchor_index=1),
-        report.CheckView("C2", "reply names the fact", "reply", True, False, True, anchor_index=5),
+        report.CheckView("C1", "browsed", "spine", True, False, True, anchor_index=3),
+        report.CheckView("C2", "reply names the fact", "reply", True, False, True, anchor_index=7),
     ]
     banner = report.render_banner(
         passed=True, score=1.0, passed_checks=2, total_checks=2, duration_s=45, calls=8
@@ -71,14 +99,21 @@ def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
         "|---|---|---|\n"
         "| expected | C1 [spine]⚖ browsed |  |\n"
         "| expected | C2 [reply]⚖ reply names the fact |  |\n"
+        "| actual | 🧩 state-classifier ← user turn: newest message: deepest lake? |  |\n"
+        "| 💭 | <details><summary>thinking (state-classifier)</summary>a question, no task"
+        "</details> |  |\n"
+        "| actual | 🧩 state-classifier → STATE: idle |  |\n"
         "| 💭 | <details><summary>thinking</summary>verify with source</details> |  |\n"
         '| actual | 🔧 browse({"queries":["x"],"extract":"depth"}) | ✅ C1 |\n'
-        "| actual | 🧩 micro-context ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
-        "| 💭 | <details><summary>thinking (micro-context)</summary>value present</details> |  |\n"
-        "| actual | 🧩 micro-context → EXTRACTED: 1642 |  |\n"
+        "| actual | 🧩 browse-extract ← user turn: Instruction: depth · Content: 1,642 m |  |\n"
+        "| 💭 | <details><summary>thinking (browse-extract)</summary>value present</details> |  |\n"
+        "| actual | 🧩 browse-extract → EXTRACTED: 1642 |  |\n"
         "| actual | 📥 You opened wiki (browse result) · 1642 |  |\n"
         "| 💭 | 💭 (empty) |  |\n"
         "| actual | 🤖 Lake Baikal, 1,642 m. | ✅ C2 |\n"
+        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
+        "| 💭 | <details><summary>thinking (skill-namer)</summary>generic name</details> |  |\n"
+        "| actual | 🧩 skill-namer → NAME: look-up-a-lake-depth |  |\n"
         "\n"
         "</details>"
     )

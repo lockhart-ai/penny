@@ -37,10 +37,14 @@ ACTOR_RESULT = "📥"
 ACTOR_REPLY = "🤖"
 ACTOR_MICRO = "🧩"
 
-# ── Micro-context role labels (#1759) — the input row names the scoped USER turn explicitly (the
-# user mistook it for the system prompt); the output row keeps the bare extracted-value arrow. ──
-MICRO_IN_PREFIX = "micro-context ← user turn:"
-MICRO_OUT_PREFIX = "micro-context →"
+# ── Micro-context role labels (#1759/#1773) — the input row names the scoped USER turn explicitly
+# (the user mistook it for the system prompt); the output row keeps the bare drawn-value arrow.
+# The label between glyph and arrow is the calling CONTEXT (``Event.context`` — the ledger identity
+# of the sub-model: browse extraction, state classification, skill naming), so the three customers
+# read as distinct actors and each row's label matches its system-prompt row's. ──
+MICRO_CONTEXT_LABEL = "micro-context"  # the actor label when an event names no context
+MICRO_IN_ARROW = "← user turn:"
+MICRO_OUT_ARROW = "→"
 
 # ── System-prompt row (#1759) — one always-collapsed row per distinct context's system prompt ──
 SYSTEM_PROMPT_LABEL = "system prompt"
@@ -156,11 +160,13 @@ def thinking_row(thinking: str) -> Row:
     return Row(ROW_THINKING, body, escape=False)
 
 
-def micro_thinking_row(thinking: str) -> Row:
-    """A 💭 row for a micro-context call — labelled ``thinking (micro-context)``."""
+def micro_thinking_row(thinking: str, context: str | None = None) -> Row:
+    """A 💭 row for a micro-context call — labelled ``thinking (<context>)`` so the sub-model's
+    reasoning is attributed to the actor that produced it (#1773); an event naming no context
+    keeps the generic ``thinking (micro-context)``."""
     if not thinking.strip():
         return Row(ROW_THINKING, EMPTY_THINKING, escape=False)
-    body = _thinking_details(thinking, summary="thinking (micro-context)")
+    body = _thinking_details(thinking, summary=f"thinking ({context or MICRO_CONTEXT_LABEL})")
     return Row(ROW_THINKING, body, escape=False)
 
 
@@ -481,30 +487,42 @@ _ACTOR_GLYPH = {
 }
 _ACTIONS = frozenset({EventKind.CALL, EventKind.REPLY, EventKind.MICRO_OUT})
 
-# The micro-context role prefix the renderer prepends between glyph and body (#1759), so the label
-# is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its content.
-_MICRO_PREFIX = {EventKind.MICRO_IN: MICRO_IN_PREFIX, EventKind.MICRO_OUT: MICRO_OUT_PREFIX}
+# The micro-context direction arrow the renderer puts after the actor label (#1759), so the role
+# vocabulary is single-sourced here and the ``MICRO_IN``/``MICRO_OUT`` event body carries only its
+# content.
+_MICRO_ARROW = {EventKind.MICRO_IN: MICRO_IN_ARROW, EventKind.MICRO_OUT: MICRO_OUT_ARROW}
 
 
 @dataclass
 class Event:
     """One extracted transcript event. ``body`` is its rendered content (verbatim; escaped at
-    render — for a ``MICRO_IN``/``MICRO_OUT`` event it is the content ONLY, the ``micro-context ←
-    user turn:`` / ``micro-context →`` label is the renderer's, #1759). ``thinking`` is the model
-    reasoning that produced an ACTION (``None`` otherwise)."""
+    render — for a ``MICRO_IN``/``MICRO_OUT`` event it is the content ONLY, the ``<context> ←
+    user turn:`` / ``<context> →`` label is the renderer's, #1759). ``thinking`` is the model
+    reasoning that produced an ACTION (``None`` otherwise). ``context`` is the calling
+    micro-context's ledger identity (#1773) — the actor label on a 🧩 row and on its 💭 row, so
+    the three sub-models read apart and match their own system-prompt rows; ``None`` renders the
+    generic ``micro-context``."""
 
     kind: EventKind
     body: str
     thinking: str | None = None
+    context: str | None = None
 
     def glyph(self) -> str:
         return _ACTOR_GLYPH[self.kind]
 
+    def actor_label(self) -> str:
+        """The 🧩 actor's name — its calling context, or the generic label when it names none."""
+        return self.context or MICRO_CONTEXT_LABEL
+
     def actual_body(self) -> str:
-        """The ``actual`` row body: the glyph, the micro-context role label (#1759) for a 🧩 event,
-        then the content — so ``🧩 micro-context ← user turn: <turn>`` reads its role explicitly."""
-        prefix = _MICRO_PREFIX.get(self.kind)
-        return f"{self.glyph()} {prefix} {self.body}" if prefix else f"{self.glyph()} {self.body}"
+        """The ``actual`` row body: the glyph, the micro-context actor label + direction arrow
+        (#1759/#1773) for a 🧩 event, then the content — so ``🧩 state-classifier ← user turn:
+        <turn>`` reads both its actor and its role explicitly."""
+        arrow = _MICRO_ARROW.get(self.kind)
+        if arrow is None:
+            return f"{self.glyph()} {self.body}"
+        return f"{self.glyph()} {self.actor_label()} {arrow} {self.body}"
 
 
 @dataclass
@@ -576,8 +594,10 @@ def _event_rows(event: Event, verdicts: list[Verdict]) -> list[Row]:
     A nudge's verdict is the fixed ``⚠ recovery event`` mark (the caller passes it)."""
     rows: list[Row] = []
     if event.kind in _ACTIONS and event.thinking is not None:
-        maker = micro_thinking_row if event.kind == EventKind.MICRO_OUT else thinking_row
-        rows.append(maker(event.thinking))
+        if event.kind == EventKind.MICRO_OUT:
+            rows.append(micro_thinking_row(event.thinking, event.context))
+        else:
+            rows.append(thinking_row(event.thinking))
     rows.append(Row(ROW_ACTUAL, event.actual_body(), verdicts))
     return rows
 
