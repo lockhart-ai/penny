@@ -202,14 +202,14 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.APPLY): (
-        "they are asking for the routine just demonstrated to run on its own — "
-        "a schedule, a repeat, or accepting an offer to set it up — and their "
-        "message changes no STEP of the routine: how often it runs, until when, "
-        "and whether it tells them are the job's terms, not steps; a message "
-        "that fixes or adds a step (what to read, what to look for, what to "
-        "remember, where to save it) is instructions, even when it also sounds "
-        f"like a yes — add a second line naming that skill: {SKILL_TAG} <its "
-        "name, copied exactly from Known skills>"
+        "they are asking for the routine just demonstrated to run on its own. "
+        "How often it runs, how long it keeps running, and whether it tells "
+        "them are the job's terms; naming any of those is expected here and "
+        "does not make the message instructions. Only a change to the "
+        "routine's own steps — what to read, what to look for, what to "
+        "remember, where to save it — is instructions, even when it also "
+        f"sounds like a yes. Add a second line naming that skill: {SKILL_TAG} "
+        "<its name, copied exactly from Known skills>"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task "

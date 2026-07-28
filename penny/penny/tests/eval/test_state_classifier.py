@@ -755,16 +755,22 @@ _TAUGHT_ROUND_REPORT = (
 # Accept direction — the offer taken up, in the shapes an acceptance actually
 # arrives in: a bare yes, a cadence, an end condition, a notify ask.  None of
 # them restates the page: the round that just ran supplied it.
+#
+# Phrasings 4 and 9 stack ALL THREE terms in one message (how often · until when
+# · tell me), which is what a real acceptance looks like and what the enactment
+# case sends verbatim — the shape that exposed this edge's hardest failure, where
+# the terms were read as steps of the routine and the message classified learn.
+# A pool of one-term acceptances hid that; these two are the case for it.
 _ACCEPT_POOL = [
     "yes please, set that up",
     "yeah do that every morning",
     "perfect — keep it running and tell me when it changes",
-    "great, check it hourly until tonight",
+    "perfect — do that every hour until 10pm tonight and tell me if it changes",
     "sure, go ahead and make that automatic",
     "yep, run that daily from now on",
     "please do — and let me know if the time moves",
     "that's exactly it, keep doing that",
-    "ok set it going, once a day is fine",
+    "yes — check it every 30 minutes until midnight and message me if it moves",
     "yes, and ping me when the departure changes",
 ]
 
