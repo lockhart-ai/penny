@@ -203,9 +203,11 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
     (ConversationState.LEARN, ConversationState.APPLY): (
         "they are asking for the routine just demonstrated to run on its own — "
-        "a schedule, a repeat, or accepting an offer to set it up — add a "
-        f"second line naming that skill: {SKILL_TAG} <its name, copied exactly "
-        "from Known skills>"
+        "a schedule, a repeat, or accepting an offer to set it up — and their "
+        "message adds no new instructions: one that corrects or adds a step is "
+        "instructions, even when it also sounds like a yes — add a second line "
+        f"naming that skill: {SKILL_TAG} <its name, copied exactly from Known "
+        "skills>"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task "
