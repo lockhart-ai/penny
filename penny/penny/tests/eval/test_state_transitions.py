@@ -18,8 +18,15 @@ shapes are the later beats' business):
 **Learning attaches nothing** (#1706, replacing #1687's run-end auto-attach): the
 machine makes teaching and instantiating two clear turns, so the demonstrated
 round leaves a naive collection_write behind — a collection with a value in it
-and no skill, no rendered program, nothing scheduled — and the NEXT turn adopts
-the skill onto it.  Scoring that separation is most of the point of these cases.
+and no skill, no rendered program, nothing scheduled — and a LATER turn applies
+the skill.  Scoring that separation is most of the point of these cases.
+
+WHICH collection a job ends up on is deliberately out of scope (code owner): she
+has spread work across several collections where one was meant since long before
+this machine existed, so that is a collection-management question of its own and
+grading it per-transition would report a standing problem as an edge failure.
+The apply case scores that the skill is APPLIED correctly — bound, rendered,
+scheduled on the terms given — and carries the reuse question as an advisory.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     asked_for_page_structure,
+    count_tool_calls,
     new_collections,
     outgoing_replies,
     routing_clean,
@@ -385,6 +393,21 @@ def _seed_demonstrated_round(db: Database) -> None:
     _park(db, ConversationState.LEARN, anchor_message_id=ask_id)
 
 
+def _instantiated(db: Database):
+    """The collection the taught skill was applied to — WHICHEVER one she chose.
+
+    Which collection a job lands on is deliberately NOT this case's business (code
+    owner): she has created several where one was meant since well before the
+    machine existed, so where jobs accumulate is a collection-management question
+    of its own and grading it here would report that standing problem as a
+    transition failure.  This edge owns whether the skill is APPLIED correctly —
+    bound, rendered, and scheduled on the terms given — so every check reads the
+    row that carries the skill, and the one about reuse rides along unscored."""
+    taught = slug_skill_name(_SKILL_NAME)
+    applied = [row for row in db.memories.list_all() if row.skill_name == taught]
+    return applied[0] if applied else None
+
+
 def _bound_values(row) -> list[str]:
     """The values she bound into the skill at instantiation, from the collection's
     own provenance column (#1603) — a read, not an inference."""
@@ -392,30 +415,25 @@ def _bound_values(row) -> list[str]:
 
 
 def _score_learn_to_apply(db: Database, before: set[str], reply: str) -> list[Check]:
-    """The taught routine became a live job on the collection that already
-    exists — adopted, not rebuilt, and not re-run."""
-    row = db.memories.get(_WATCH_COLLECTION)
+    """The taught routine became a live job on the terms they gave — bound to the
+    page the round read, rendered, scheduled, and notifying — without re-running
+    the round to answer.  WHERE that job lives is not scored (see
+    ``_instantiated``); it rides along as an advisory so the choice stays visible."""
+    row = _instantiated(db)
     created = new_collections(db, before)
-    taught = slug_skill_name(_SKILL_NAME)
     bound = _bound_values(row) if row else []
+    reused = row is not None and row.name == _WATCH_COLLECTION
+    sets = count_tool_calls(db, "collection_set")
     return [
         Check(
-            "state: she set it up in one call",
+            "state: she set the job up with collection_set",
             tool_was_called(db, "collection_set"),
             kind="state",
         ),
         Check(
-            "state: the taught skill is attached to the collection the round wrote into",
-            row is not None and row.skill_name == taught,
-            rationale=None
-            if row and row.skill_name == taught
-            else f"skill_name {row and row.skill_name}",
-            kind="state",
-        ),
-        Check(
-            "state: nothing new was created (she adopted the collection, not rebuilt it)",
-            not created,
-            rationale=f"created {[each.name for each in created]}" if created else None,
+            "state: the taught skill was applied to a collection",
+            row is not None,
+            rationale=None if row else "no collection carries the skill",
             kind="state",
         ),
         Check(
@@ -454,6 +472,31 @@ def _score_learn_to_apply(db: Database, before: set[str], reply: str) -> list[Ch
             "reply: she says what will happen now, naming the cadence",
             any(token in reply.lower() for token in ("hour", "60 min")),
             kind="reply",
+        ),
+        # Advisory — the collection-management question, parked (code owner): does
+        # the job land on the collection the round already wrote into, or on a new
+        # one?  Visible every run, graded never, so the standing tendency to spread
+        # across collections is measured here without this edge answering for it.
+        Check(
+            "state: applied onto the collection the round wrote into (not a new one)",
+            reused,
+            rationale=(
+                None
+                if reused
+                else (
+                    f"applied to {row.name if row else None}, "
+                    f"created {[each.name for each in created]}"
+                )
+            ),
+            scored=False,
+            kind="state",
+        ),
+        Check(
+            "calls: one collection_set call",
+            sets == 1,
+            rationale=f"{sets} calls" if sets != 1 else None,
+            scored=False,
+            kind="proc",
         ),
         Check(
             "calls: the machine landed in apply",
