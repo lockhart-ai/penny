@@ -570,11 +570,18 @@ async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(d
     assert result.skill.description == "Look up a price on a listing page and record it."
     assert result.skill.intent == "Look up a price on a listing page and record it."
     assert result.origin_message == _UTTERANCE
-    # The naming micro-context's content led with the conversation, oldest first.
+    # The naming content leads with the conversation, oldest first — and the
+    # DEMONSTRATING message is in it, attributed to the user (#1770).  Presented
+    # under its own unattributed heading, the labeller read the conversation as
+    # the only record of what the user said, did not find the demonstrated values
+    # there, and ruled them assistant-produced — correct reasoning over a
+    # presentation that hid the speaker.  Both turns must render as `user:`.
     naming_request = model.requests[-1]
     naming_content = " ".join(m.get("content", "") for m in naming_request["messages"])
-    assert "Conversation that led to the construction of this routine:" in naming_content
+    assert "Conversation that led to the construction of this routine" in naming_content
     assert "user: can you keep an eye on the zephyr lamp listing for me?" in naming_content
+    assert f"user: {_UTTERANCE}" in naming_content, "the demonstrating turn is the user's"
+    assert "First demonstrated by this message" not in naming_content
 
 
 @pytest.mark.asyncio

@@ -417,17 +417,30 @@ def _naming_content(
     fills — so the model can both relabel each semantically and judge whether the USER
     supplied its value at all.  They are named *candidates* because the distiller's
     "everything else is a parameter" is a default the labeller adjudicates."""
+    # The demonstrating message is a USER turn, and it must be rendered as one.
+    # Presented under its own unattributed heading, the labeller read the
+    # conversation block as the only record of what the user said, did not find
+    # the demonstrated values there, and concluded the assistant had produced
+    # them — correct reasoning over a presentation that hid who was speaking
+    # (#1770; the thinking traces say it in as many words: "the user didn't give
+    # the URL directly").  So it joins the conversation, deduped in case the
+    # recent-turns window already carries it.
+    turns = [*conversation]
+    demonstration = (PennyConstants.MessageDirection.INCOMING, projection.origin_message)
+    if projection.origin_message and demonstration not in turns:
+        turns.append(demonstration)
     parts = []
-    if conversation:
-        turns = "\n".join(
-            f"{'user' if direction == 'incoming' else 'penny'}: {content}"
-            for direction, content in conversation
+    if turns:
+        rendered = "\n".join(
+            f"{'user' if direction == PennyConstants.MessageDirection.INCOMING else 'penny'}: "
+            f"{content}"
+            for direction, content in turns
         )
-        parts.append(f"Conversation that led to the construction of this routine:\n{turns}")
-    parts += [
-        f"Routine steps:\n{render_skill(steps)}",
-        f"First demonstrated by this message:\n{projection.origin_message}",
-    ]
+        parts.append(
+            "Conversation that led to the construction of this routine "
+            f"(the LAST user turn is the one that demonstrated it):\n{rendered}"
+        )
+    parts.append(f"Routine steps:\n{render_skill(steps)}")
     find_phrases = _find_phrases(projection)
     if find_phrases:
         parts.append("Search phrases used to look for a skill:\n" + "\n".join(find_phrases))
