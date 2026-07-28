@@ -29,7 +29,7 @@ import pytest
 from penny.constants import TransitionCause
 from penny.conversation_machine import ConversationState
 from penny.database import Database
-from penny.database.skill_store import parameters_from_json
+from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -71,30 +71,47 @@ def _landed_state(db: Database) -> str | None:
     return latest.to_state if latest else None
 
 
-def _untraceable_parameters(db: Database) -> list[str]:
-    """Required parameters whose demonstrated value the user never supplied.
+def _leaf_at(arguments: dict, path: list):
+    """The argument leaf a substitution's JSON path addresses — the step carries the
+    call's verbatim arguments, so the DEMONSTRATED value is still in place."""
+    node = arguments
+    for part in path:
+        node = node[part]
+    return node
 
-    A skill's parameters are what the NEXT user has to provide to reuse it, so a
+
+def _untraceable_parameters(db: Database) -> list[str]:
+    """Required parameters whose DEMONSTRATED VALUE the user never supplied.
+
+    A skill's parameters are what the NEXT user must provide to reuse it, so a
     required one nobody could supply makes the skill uninstantiable (#1770 — a
     round that also wrote a note it composed itself turned that note into a
     required `page_source`).  What she chose to write is her latitude and is not
     scored; the SHAPE of the skill it produced is.
 
-    This teach turn supplies exactly two things — the page and what to find on it
-    — so a legitimate parameter's demonstrated value names one of them.  A
-    fixture-anchored test, deliberately: no generic rule can decide this (the
-    extract instruction is the user's intent in the assistant's words and appears
-    verbatim nowhere), which is why the labeller judges it in production and why
-    the CASE, which knows what its user said, checks it here."""
+    Checks the value, never the label: a correctly-named parameter (`url`,
+    described as "the listing page to check") contains neither the address nor
+    the word the user used, so testing the NAME reports a real parameter as
+    unsupplied — which is exactly what this check did on its first run.
+
+    This teach turn supplies two things — the page and what to find on it — so a
+    legitimate parameter was demonstrated with one of them.  Fixture-anchored
+    deliberately: no generic rule can decide this (the extract instruction is the
+    user's intent in the assistant's words), which is why the labeller judges it
+    in production and why the CASE, which knows what its user said, checks here."""
     supplied = (LISTING_URL.lower(), "price")
     untraceable = []
     for skill in db.skills.list_all():
-        for parameter in parameters_from_json(skill.parameters):
-            if not parameter.required:
-                continue
-            demonstrated = f"{parameter.name} {parameter.description or ''}".lower()
-            if not any(token in demonstrated for token in supplied):
-                untraceable.append(parameter.name)
+        required = {p.name for p in parameters_from_json(skill.parameters) if p.required}
+        demonstrated: dict[str, str] = {}
+        for step in steps_from_json(skill.steps):
+            for sub in step.substitutions:
+                if sub.parameter is not None:
+                    demonstrated[sub.parameter] = str(_leaf_at(step.arguments, sub.path)).lower()
+        for name in sorted(required):
+            value = demonstrated.get(name, "")
+            if not any(token in value for token in supplied):
+                untraceable.append(name)
     return untraceable
 
 
