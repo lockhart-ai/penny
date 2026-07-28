@@ -34,7 +34,6 @@ from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     asked_for_page_structure,
-    collection_entries,
     new_collections,
     outgoing_replies,
     routing_clean,
@@ -69,6 +68,22 @@ def _park(penny, state: ConversationState) -> None:
 def _landed_state(db: Database) -> str | None:
     latest = db.machine.latest_transition()
     return latest.to_state if latest else None
+
+
+def _entries_written_by_this_run(db: Database) -> list[str]:
+    """Every entry content this run wrote, wherever it landed.
+
+    Scoring only collections the run CREATED assumed she always makes one — but
+    "remember it" may reuse a name that already exists, and then the run's real
+    writes are invisible while the reused collection's own seeded prompt and
+    trigger read as things she did.  The run-id stamp says exactly what this run
+    wrote (#1560), so ask that instead of inferring from newness."""
+    written = []
+    for row in db.memories.list_all():
+        memory = db.memory(row.name)
+        entries = memory.read_all() if memory is not None else []
+        written += [e.content for e in entries if e.created_by_run_id]
+    return written
 
 
 def _leaf_at(arguments: dict, path: list):
@@ -122,9 +137,9 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
     and puts the value in it.  What must NOT happen is the fold — no skill bound
     to that collection, no rendered program, no schedule.  The skill is learned
     (it exists in the registry) and stays unattached until the user asks for it."""
-    rows = new_collections(db, before)
-    stored = [content for row in rows for content in collection_entries(db, row.name).values()]
-    skills = db.skills.list_all()
+    created = new_collections(db, before)
+    written = _entries_written_by_this_run(db)
+    instantiated = [row for row in db.memories.list_all() if row.skill_name is not None]
     return [
         Check(
             "state: she browsed the listing (the demonstrated fetch happened)",
@@ -133,31 +148,39 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
         ),
         Check(
             "state: the browsed price landed durably (remember = a plain write)",
-            any("499" in content for content in stored),
-            rationale=None if stored else "nothing was written",
+            any("499" in content for content in written),
+            rationale=None if written else "nothing was written",
             kind="state",
         ),
         Check(
             "state: a skill was learned from the round",
-            bool(skills),
+            bool(db.skills.list_all()),
+            kind="state",
+        ),
+        # Learning must not instantiate.  Scored against what this run TOUCHED:
+        # a collection it created, or — when it reused an existing one — nothing,
+        # since a seeded collection's own prompt and cadence predate the round and
+        # failing on those would report the framework's fixtures as her doing.
+        Check(
+            "state: no skill was attached anywhere (learning does not instantiate)",
+            not instantiated,
+            rationale=f"attached to {[row.name for row in instantiated]}" if instantiated else None,
             kind="state",
         ),
         Check(
-            "state: the skill is NOT attached (learning does not instantiate)",
-            bool(rows) and all(row.skill_name is None for row in rows),
+            "state: no program was rendered into the collection it created",
+            all(row.extraction_prompt is None for row in created),
             kind="state",
-        ),
+        )
+        if created
+        else Check.na("state: no program was rendered into the collection it created"),
         Check(
-            "state: no program was rendered into the collection",
-            bool(rows) and all(row.extraction_prompt is None for row in rows),
+            "state: nothing it created was scheduled (no trigger, no notify)",
+            all(row.collector_interval_seconds is None and not row.notify for row in created),
             kind="state",
-        ),
-        Check(
-            "state: nothing was scheduled (no trigger, no notify)",
-            bool(rows)
-            and all(row.collector_interval_seconds is None and not row.notify for row in rows),
-            kind="state",
-        ),
+        )
+        if created
+        else Check.na("state: nothing it created was scheduled (no trigger, no notify)"),
         Check(
             "state: every required parameter is one the user supplied",
             not _untraceable_parameters(db),
