@@ -29,6 +29,7 @@ import pytest
 from penny.constants import TransitionCause
 from penny.conversation_machine import ConversationState
 from penny.database import Database
+from penny.database.skill_store import parameters_from_json
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -68,6 +69,33 @@ def _park(penny, state: ConversationState) -> None:
 def _landed_state(db: Database) -> str | None:
     latest = db.machine.latest_transition()
     return latest.to_state if latest else None
+
+
+def _untraceable_parameters(db: Database) -> list[str]:
+    """Required parameters whose demonstrated value the user never supplied.
+
+    A skill's parameters are what the NEXT user has to provide to reuse it, so a
+    required one nobody could supply makes the skill uninstantiable (#1770 — a
+    round that also wrote a note it composed itself turned that note into a
+    required `page_source`).  What she chose to write is her latitude and is not
+    scored; the SHAPE of the skill it produced is.
+
+    This teach turn supplies exactly two things — the page and what to find on it
+    — so a legitimate parameter's demonstrated value names one of them.  A
+    fixture-anchored test, deliberately: no generic rule can decide this (the
+    extract instruction is the user's intent in the assistant's words and appears
+    verbatim nowhere), which is why the labeller judges it in production and why
+    the CASE, which knows what its user said, checks it here."""
+    supplied = (LISTING_URL.lower(), "price")
+    untraceable = []
+    for skill in db.skills.list_all():
+        for parameter in parameters_from_json(skill.parameters):
+            if not parameter.required:
+                continue
+            demonstrated = f"{parameter.name} {parameter.description or ''}".lower()
+            if not any(token in demonstrated for token in supplied):
+                untraceable.append(parameter.name)
+    return untraceable
 
 
 def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[Check]:
@@ -111,6 +139,12 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
             "state: nothing was scheduled (no trigger, no notify)",
             bool(rows)
             and all(row.collector_interval_seconds is None and not row.notify for row in rows),
+            kind="state",
+        ),
+        Check(
+            "state: every required parameter is one the user supplied",
+            not _untraceable_parameters(db),
+            rationale=(f"unsupplied: {names}" if (names := _untraceable_parameters(db)) else None),
             kind="state",
         ),
         Check(
