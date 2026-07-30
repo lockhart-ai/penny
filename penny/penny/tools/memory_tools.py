@@ -72,7 +72,6 @@ from penny.tools.collection_instantiation import (
     has_trigger,
     parse_datetime,
     parse_trigger,
-    render_active_duplicate,
     render_ambiguous,
     render_creation_echo,
     render_inert_echo,
@@ -616,8 +615,12 @@ class CollectionCreateTool(MemoryTool):
     collection's ``extraction_prompt`` at creation (a deterministic snapshot).  The
     resolution is an enumerated union — a clean name match instantiates; a fuzzy
     match returns ranked candidates to choose from; no match returns the teach-me
-    elicitation.  Idempotency at birth (#1567) refuses a near-duplicate of an
-    existing collection — birth dedup always runs (there is no override arg).
+    elicitation.
+
+    Idempotency at birth (#1567/#1775) lives one level up, on ``CollectionSetTool``
+    — the registered front door, and the only place that can answer a duplicate by
+    UPDATING the collection we already have instead of refusing.  By the time this
+    class runs, the target is known to be a new job.
     """
 
     name = "collection_set"
@@ -788,14 +791,11 @@ class CollectionCreateTool(MemoryTool):
         """A skill-less create: an INERT collection (#1629) — storage only, no
         ``extraction_prompt`` / cadence / notify, so it never dispatches (the
         dispatcher selects on ``extraction_prompt IS NOT NULL``).  A job-shaped arg
-        alongside is refused (an inert container has no job); idempotency-at-birth
-        still applies; the echo is honest about being storage-only."""
+        alongside is refused (an inert container has no job); the echo is honest
+        about being storage-only."""
         if job_error := self._reject_job_args(args):
             return job_error
         description_embedding = await embed_text(self._llm_client, args.description)
-        dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
-        if dup is not None:
-            return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
             args.description,
@@ -840,15 +840,12 @@ class CollectionCreateTool(MemoryTool):
         trigger: Trigger,
         expires_at: datetime | None,
     ) -> ToolResult:
-        """Idempotency at birth (#1567), then create the collection and echo it.
+        """Create the collection and echo it.
 
-        ``description`` is the routing/dedup meaning anchor; ``notify`` drives the
+        ``description`` is the routing meaning anchor; ``notify`` drives the
         run-time notify suffix on the collector (#1557 — the sole emission path since
         the notifier consumer was retired)."""
         description_embedding = await embed_text(self._llm_client, args.description)
-        dup = self._db.memories.find_duplicate_collection(args.name, description_embedding)
-        if dup is not None:
-            return self._duplicate_result(dup)
         memory = self._db.memories.create_collection(
             args.name,
             args.description,
@@ -871,14 +868,6 @@ class CollectionCreateTool(MemoryTool):
         suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
         return ToolResult(message=f"{echo}{suffix}", mutated=True)
-
-    @staticmethod
-    def _duplicate_result(dup: MemoryRow) -> ToolResult:
-        """The idempotency refusal — the tombstone confirm-shape for an archived
-        near-duplicate, the active-collection reuse refusal otherwise (#1567)."""
-        if dup.archived:
-            return ToolResult(message=render_tombstone_duplicate(dup), success=False)
-        return ToolResult(message=render_active_duplicate(dup), success=False)
 
 
 class LogCreateTool(MemoryTool):
@@ -1726,13 +1715,15 @@ def _current_skill_params(row: MemoryRow) -> dict[str, str]:
 
 class CollectionSetTool(MemoryTool):
     """The ONE idempotent create-or-update entry point for a collection (the
-    code-owner fusion): existence is dispatched HERE, in python — the model never
+    code-owner fusion): identity is dispatched HERE, in python — the model never
     reasons about whether the collection already exists.
 
-    Missing name → the create path (birth idempotency-dedup unless
-    skill instantiation, the inert/job-arg refusal).  Existing
-    name → the update path (adopt/rebind/swap/refresh re-render, atomic trigger
-    replace, raw prompt edit).  Both inner paths keep their full validation —
+    Three cases, in order.  The name EXISTS → the update path (adopt/rebind/swap/
+    refresh re-render, atomic trigger replace).  The name is new but names a job we
+    ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
+    path, aimed at the collection we have, because ``collection_set`` dispatching on
+    the name alone is exactly what lets an invented name become a second copy of one
+    job.  Otherwise → the create path.  Both inner paths keep their full validation —
     this class is a dispatcher, not a re-implementation."""
 
     name = "collection_set"
@@ -1780,17 +1771,17 @@ class CollectionSetTool(MemoryTool):
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
+        """Dispatch on IDENTITY, not on the name alone: the collection this call
+        names, else the one it duplicates, else a new one.  Reads as a table of
+        contents."""
         args = CollectionSetArgs(**kwargs)
         if self._db.memories.get(args.name) is not None:
-            return await self._update._run(
-                name=args.name,
-                description=args.description,
-                notify=args.notify,
-                skill=args.skill,
-                params=args.params,
-                trigger=args.trigger,
-                expires_at=args.expires_at,
-            )
+            return await self._apply_to(args, args.name)
+        duplicate = self._db.memories.find_duplicate_collection(
+            args.name, skill_name=args.skill, skill_params=args.params
+        )
+        if duplicate is not None:
+            return await self._same_job(args, duplicate)
         if args.description is None:
             return ToolResult(
                 message=_SET_BIRTH_NEEDS_DESCRIPTION.format(name=args.name), success=False
@@ -1805,12 +1796,61 @@ class CollectionSetTool(MemoryTool):
             notify=bool(args.notify),
         )
 
+    async def _apply_to(self, args: CollectionSetArgs, name: str) -> ToolResult:
+        """Apply this call's fields to the EXISTING collection ``name`` — the update
+        path, with the target's own name substituted for the one the call used."""
+        return await self._update._run(
+            name=name,
+            description=args.description,
+            notify=args.notify,
+            skill=args.skill,
+            params=args.params,
+            trigger=args.trigger,
+            expires_at=args.expires_at,
+        )
+
+    async def _same_job(self, args: CollectionSetArgs, duplicate: MemoryRow) -> ToolResult:
+        """A new name for a job we already have (#1775).  An ARCHIVED match stays a
+        refusal — reviving a retired mechanism is the user's call, and the tombstone
+        confirm-shape asks for it (#1567).  An ACTIVE one is UPDATED in place rather
+        than refused: the refusal cost an entire observed turn (the model retried, the
+        second refusal was identical, and the all-failed abort ended the turn with no
+        reply), while the update is what the user asked for on the collection that
+        already serves it."""
+        if duplicate.archived:
+            return ToolResult(message=render_tombstone_duplicate(duplicate), success=False)
+        result = await self._apply_to(args, duplicate.name)
+        template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
+        note = template.format(requested=args.name, existing=duplicate.name)
+        return result.model_copy(update={"message": f"{note}{result.message}"})
+
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
     "'{name}' doesn't exist yet, so this call would create it — but a new "
     "collection needs a `description` (what it's for, in the user's words; it's "
     "how the collection is found by meaning later). Call collection_set again "
     "with description=<what it holds>."
+)
+
+# The same-job redirect (#1775): the requested name was a second name for a job that
+# already has a collection, so the call landed on THAT collection.  Named in the
+# result because everything downstream — reads, further edits, what Penny tells the
+# user — has to use the real name, not the one the call invented.
+_SAME_JOB_UPDATED = (
+    "'{requested}' is the same job as '{existing}', which already exists — so I "
+    "updated '{existing}' instead of creating a second collection for it. It's "
+    "'{existing}' from here on: read it with collection_read_latest('{existing}') or "
+    "adjust it with collection_set(name='{existing}', ...). If this really is a "
+    "separate task, set it up again with a name that carries what makes it "
+    "different.\n"
+)
+
+# The same redirect when the update itself failed — the target is still named (the
+# error below is about '{existing}', not the requested name), but nothing changed.
+_SAME_JOB_TARGETED = (
+    "'{requested}' is the same job as the existing collection '{existing}', so this "
+    "was aimed at '{existing}' rather than creating a second collection — but it "
+    "didn't land:\n"
 )
 
 

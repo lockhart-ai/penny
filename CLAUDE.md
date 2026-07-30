@@ -67,8 +67,11 @@ github_api/                     — GitHub API client (GraphQL + REST); backs `m
   api.py                        — GitHubAPI class (typed Pydantic return values)
   auth.py                       — GitHubAuth (App JWT token generation)
 similarity/                     — Similarity primitives (embeddings, dedup)
-  embeddings.py                 — Pure math: cosine similarity, TCR, serialization
-  dedup.py                      — Dedup strategies (TCR + embedding)
+  embeddings.py                 — Pure math: cosine similarity, TCR, serialization; job-name
+                                  normalisation (`tokenize_job_name` / `singularize` /
+                                  `JOB_ROLE_WORDS`) + strict token containment (#1775)
+  dedup.py                      — Dedup strategies: entry dedup (TCR + embedding) and the
+                                  two-tier job identity rule `is_same_job` (#1775)
 browser/                        — Firefox browser extension
   src/                          — TypeScript source
     protocol.ts                 — Typed WebSocket + runtime messaging protocol

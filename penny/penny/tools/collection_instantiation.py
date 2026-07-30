@@ -10,9 +10,10 @@ are whole-render tested in isolation:
 * the **skill-resolution union** (``SkillResolutionKind`` — MATCHED / AMBIGUOUS /
   NO_SKILL_FOUND / EMBED_FAILED) and its enumerated tool-result renders, including
   the #1471 "walk me through it once" elicitation;
-* the **idempotency-at-birth** results (#1567) — the active-duplicate refusal and
-  the tombstone-duplicate confirm-shaped result, each naming the existing row and
-  the deliberate override;
+* the **idempotency-at-birth** tombstone result (#1567) — the archived-duplicate
+  confirm-shape, naming the retired row and the unarchive that revives it.  (Its
+  active-duplicate sibling is gone: an active duplicate is no longer refused, it
+  is UPDATED in place — see ``CollectionSetTool._same_job``, #1775);
 * the **trigger** parse (one ``trigger`` arg, four enumerated forms: ``every
   <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>`` | ``cron <5-field
   expression>``, #1631/#1684) and the ``expires_at`` end condition, with
@@ -133,24 +134,11 @@ def render_unbound_parameters(skill_name: str, missing: list[SkillParameter]) ->
 
 # ── Idempotency at birth (#1567) ──────────────────────────────────────────────
 
-_ACTIVE_DUPLICATE = (
-    "Already have a collection for this: '{name}' (active) — it covers the same thing, so I "
-    "didn't create a second one. Reuse it: read it with collection_read_latest('{name}'), or "
-    "adjust it with collection_set(name='{name}', ...). If this really is a distinct task, "
-    "give it a clearly different name and description and set it up again."
-)
-
 _TOMBSTONE_DUPLICATE = (
     "There's an archived collection for this: '{name}' (archived {archived_at}) — I didn't "
     "create a duplicate. Bring it back with collection_unarchive('{name}') to resume it, "
     "or set up a fresh one with a clearly different name and description."
 )
-
-
-def render_active_duplicate(row: MemoryRow) -> str:
-    """The active-duplicate refusal (#1567): name the live collection and make
-    reuse the easy path, deliberate re-creation the explicit one."""
-    return _ACTIVE_DUPLICATE.format(name=row.name)
 
 
 def render_tombstone_duplicate(row: MemoryRow) -> str:

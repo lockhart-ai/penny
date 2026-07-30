@@ -45,6 +45,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
     parse_trigger,
+    render_reinstantiation_echo,
     render_trigger_clause,
     render_unbound_parameters,
 )
@@ -53,6 +54,7 @@ from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_TRIGGER_NOTE,
     _REBIND_NO_SKILL,
+    _SAME_JOB_UPDATED,
     _SKILL_GONE,
     CollectionArchiveTool,
     CollectionCatalogTool,
@@ -332,9 +334,9 @@ _CREATE_ECHO_LITERAL = (
 
 class TestCollectionCreateFrontDoor:
     """The skill-instantiation front door (#1591): resolve a skill by name/meaning,
-    bind its holes, render its steps into the stored prompt, and refuse a
-    near-duplicate (#1567).  Results are model-facing text, asserted as whole
-    renders."""
+    bind its holes, render its steps into the stored prompt, and dispatch a job we
+    already have onto the collection that already serves it (#1567/#1775).  Results
+    are model-facing text, asserted as whole renders."""
 
     @pytest.mark.asyncio
     async def test_instantiates_skill_and_stores_the_rendered_prompt(self, db):
@@ -488,33 +490,60 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("some-watch") is None
 
     @pytest.mark.asyncio
-    async def test_active_near_duplicate_is_refused_naming_reuse(self, db):
-        """Instantiating a collection whose description semantically duplicates an active
-        one creates nothing and points at reuse + the deliberate override (#1567)."""
+    async def test_active_same_job_updates_the_existing_collection(self, db):
+        """A create whose name is a second name for a job we already have UPDATES that
+        collection instead of refusing (#1775).  The refusal it replaces cost an entire
+        observed turn (retry → identical refusal → all-failed abort → no reply), so the
+        call succeeds against the real collection, the whole message names it (redirect
+        note + the standard re-render echo), and no second row is created."""
         _seed_watch_skill(db)
         _seed_collection(db, name="jacket-price", description="watch the blue jacket price")
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            # A role-affix twin: 'monitor' is a job word, so both names normalise to
+            # {jacket} ⊆ {jacket, price} — the same job under an invented name.
             name="jacket-monitor",
-            description="watch the blue jacket price",  # same purpose → near-duplicate
+            description="watch the blue jacket price",
             skill=_SKILL_NAME,
             params={"peak": "jacket"},
             trigger="every 3600",
         )
-        assert result.success is False
+        assert result.success and result.mutated
+        assert db.memories.get("jacket-monitor") is None  # no second copy of the job
+        updated = db.memories.get("jacket-price")
         assert result.message == (
-            "Already have a collection for this: 'jacket-price' (active) — it covers the "
-            "same thing, so I didn't create a second one. Reuse it: read it with "
-            "collection_read_latest('jacket-price'), or adjust it with "
-            "collection_set(name='jacket-price', ...). If this really is a distinct "
-            "task, give it a clearly different name and description and set it up again."
+            _SAME_JOB_UPDATED.format(requested="jacket-monitor", existing="jacket-price")
+            + render_reinstantiation_echo(updated, _SKILL_NAME, {"peak": "jacket"})
         )
-        assert db.memories.get("jacket-monitor") is None
+        # The config the call carried landed on the collection we already had.
+        assert updated.skill_name == _SKILL_NAME
+        assert updated.collector_interval_seconds == 3600
+
+    @pytest.mark.asyncio
+    async def test_distinct_specifics_are_not_merged(self, db):
+        """The adversarial negative: same subject, different specifics (`deck-2` vs
+        `deck-3`) is a SUBSTITUTION, not an extension — neither name contains the other,
+        so the second collection is created rather than folded into the first (#1775)."""
+        _seed_watch_skill(db)
+        _seed_collection(db, name="aurora-deck-2-price", description="watch a listing price")
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="aurora-deck-3-price",
+            description="watch a listing price",
+            skill=_SKILL_NAME,
+            params={"peak": "aurora deck 3"},
+            trigger="every 3600",
+        )
+        assert result.success and result.mutated
+        # Two distinct jobs, both live — and the identical descriptions did not merge
+        # them (embeddings are not a merge signal, #1775 finding 1).
+        assert db.memories.get("aurora-deck-3-price") is not None
+        assert db.memories.get("aurora-deck-2-price") is not None
 
     @pytest.mark.asyncio
     async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, db):
-        """A near-duplicate of an ARCHIVED collection surfaces the tombstone + its
-        archive time and offers unarchive or a deliberate override — never a silent
-        proceed (#1567)."""
+        """The same job under a new name when the match is ARCHIVED stays a REFUSAL —
+        reviving a retired mechanism is the user's call, so the tombstone confirm-shape
+        surfaces it + its archive time and offers unarchive (#1567), rather than silently
+        resurrecting it the way an active match is updated (#1775)."""
         _seed_watch_skill(db)
         _seed_collection(
             db,
@@ -522,7 +551,7 @@ class TestCollectionCreateFrontDoor:
             description="watch the blue jacket price",
             archived=True,
         )
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
             name="jacket-monitor",
             description="watch the blue jacket price",
             skill=_SKILL_NAME,
@@ -1430,20 +1459,25 @@ class TestInertCollections:
         assert db.memories.get("deals-watch") is None
 
     @pytest.mark.asyncio
-    async def test_inert_create_still_respects_idempotency(self, db):
-        """Idempotency-at-birth (#1567) still applies to an inert create — a
-        near-duplicate of an existing collection is refused, nothing created."""
+    async def test_inert_create_of_an_existing_job_updates_it(self, db):
+        """Idempotency-at-birth (#1567) still applies to a skill-less create, and since
+        #1775 it RESOLVES rather than refuses: 'deals-watch' normalises to the same token
+        as the existing 'deals' (the role word is dropped), so the call lands on that
+        collection — nothing new created, and the message names where it went."""
         _seed_collection(
             db,
             name="deals",
             description="track the trail-runner shoe deals",
         )
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
-        assert result.success is False
-        assert "Already have a collection for this" in result.message
+        assert result.success and result.mutated
         assert db.memories.get("deals-watch") is None
+        assert result.message.startswith(
+            _SAME_JOB_UPDATED.format(requested="deals-watch", existing="deals")
+        )
+        assert db.memories.get("deals").description == "track the trail-runner shoe deals"
 
     @pytest.mark.asyncio
     async def test_blank_optional_args_coerce_to_inert_create(self, db):
@@ -3815,8 +3849,9 @@ def _axis_client(mock_llm) -> LlmClient:
 async def _create_collection(db, client: LlmClient, name: str, description: str) -> None:
     """Instantiate a collection whose intent/description anchor is ``description``
     (what ``find`` resolves over).  A hole-less skill supplies the rendered
-    prompt; ``create_anyway`` skips the idempotency check so these tests can stand
-    up several deliberately-similar collections.  The helper skill is seeded
+    prompt; going through ``CollectionCreateTool`` rather than the ``collection_set``
+    front door skips the same-job check (#1775), so these tests can stand up several
+    deliberately-similar collections.  The helper skill is seeded
     UNEMBEDDED (``embed=False``) — it's resolved by exact name, and an anchor in
     the hash geometry would collide with the axis geometry these tests pin."""
     _seed_watch_skill(

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 from pydantic import BaseModel
+from similarity.dedup import JobSide, is_same_job
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 
@@ -46,6 +47,7 @@ from penny.database.memory.types import (
 from penny.database.models import MemoryEntry, MemoryRow, MessageLog, PromptLog, Skill
 from penny.database.mutation_store import MutationDetail, MutationStore, cancelled_sends_note
 from penny.database.send_queue_store import SendQueueStore
+from penny.database.skills import slug_skill_name
 
 logger = logging.getLogger(__name__)
 
@@ -960,28 +962,34 @@ class MemoryStore:
     def find_duplicate_collection(
         self,
         name: str,
-        description_embedding: list[float] | None,
-        thresholds: DedupThresholds | None = None,
+        skill_name: str | None = None,
+        skill_params: dict[str, str] | None = None,
     ) -> MemoryRow | None:
-        """The first EXISTING collection a proposed one is a semantic near-duplicate
-        of (#1567), or ``None`` when the target is genuinely distinct.
+        """The first EXISTING collection a proposed one is the same JOB as (#1567,
+        #1775), or ``None`` when the target is genuinely distinct.
 
-        Compared name-vs-name (token containment) and description-vs-description
-        (content cosine — the collection's ``description`` is its purpose/meaning
-        anchor) through the SAME three-signal
-        dedup rule the entry write uses (``sim.is_duplicate``) with the SAME runtime
-        thresholds — never a hand-rolled similarity rule.  Active rows are checked
-        before archived ones (a tombstone), so a live "already watching this" wins
-        over a retired one.  Framework collections (``SYSTEM_COLLECTIONS``) are
-        excluded — Penny's own machinery, not a mechanism a user re-creates — and a
-        merely-related topic clears the thresholds, so distinct targets are
-        unimpeded.
+        Decided by the shared two-tier job-identity rule (``is_same_job``): the same
+        skill bound to the same params, else strict containment of the normalised
+        names — never a hand-rolled similarity rule, and with no threshold on either
+        tier.  **Embeddings deliberately do not participate**: measured against the
+        labelled corpus they are anti-correlated on the hard cases (an embedding says
+        "same kind of thing", and every trap is two collections of the same kind about
+        different specifics), so the ``description`` anchor stays what ``find``
+        resolves on and says nothing about duplication.
+
+        Active rows are checked before archived ones (a tombstone), so a live "already
+        watching this" wins over a retired one.  Framework collections
+        (``SYSTEM_COLLECTIONS``) are excluded — Penny's own machinery, not a mechanism
+        a user re-creates.
         """
-        thresholds = thresholds or self._default_thresholds()
-        candidate = EntrySide(slug(name), None, description_embedding)
+        candidate = JobSide(
+            name=slug(name),
+            skill=slug_skill_name(skill_name) if skill_name else None,
+            params=skill_params,
+        )
         active, archived = self._duplicate_candidates()
         for row in (*active, *archived):
-            if sim.is_duplicate(candidate, [self._collection_side(row)], thresholds):
+            if is_same_job(candidate, self._collection_side(row)):
                 return row
         return None
 
@@ -999,10 +1007,14 @@ class MemoryStore:
         return active, archived
 
     @staticmethod
-    def _collection_side(row: MemoryRow) -> EntrySide:
-        """One existing collection as a dedup side: its name (token-containment
-        signal) and its description anchor (content-cosine signal)."""
-        return EntrySide(row.name, None, sim.maybe_deserialize(row.description_embedding))
+    def _collection_side(row: MemoryRow) -> JobSide:
+        """One existing collection as a job-identity side: what it is called, and the
+        skill + bindings that say what it does (both ``None`` while it is inert)."""
+        return JobSide(
+            name=row.name,
+            skill=row.skill_name,
+            params=json.loads(row.skill_params) if row.skill_params else None,
+        )
 
     # ── Dedup probe ───────────────────────────────────────────────────────────
 

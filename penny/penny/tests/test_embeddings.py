@@ -6,8 +6,11 @@ import openai
 import pytest
 from similarity.embeddings import (
     find_similar,
+    is_token_containment,
+    singularize,
     token_containment_ratio,
     tokenize_entity_name,
+    tokenize_job_name,
 )
 
 from penny.llm import LlmNotFoundError, LlmResponseError
@@ -134,6 +137,90 @@ class TestTokenContainmentRatio:
     def test_empty_returns_zero(self):
         """Pure year vs pure year → both empty after normalization → 0.0"""
         assert token_containment_ratio("2026", "2025") == 0.0
+
+
+class TestSingularize:
+    """The naive stemmer behind job-name normalisation (#1775) — conservative by
+    design: a wrong stem is a false merge, a missed stem is only a missed catch."""
+
+    def test_plural_s_dropped(self):
+        assert singularize("prices") == "price"
+        assert singularize("decks") == "deck"
+
+    def test_sibilant_es_plural_drops_both(self):
+        assert singularize("watches") == "watch"
+        assert singularize("boxes") == "box"
+
+    def test_ies_becomes_y(self):
+        assert singularize("stories") == "story"
+
+    def test_already_singular_s_endings_untouched(self):
+        """``analysis`` / ``status`` end in ``s`` without being plural."""
+        assert singularize("analysis") == "analysis"
+        assert singularize("status") == "status"
+        assert singularize("address") == "address"
+
+    def test_invariant_words_untouched(self):
+        """``news`` → ``new`` would invent a different word — the exact shape that
+        manufactures a false merge (``harbor-news`` vs ``harbor-new-releases``)."""
+        assert singularize("news") == "news"
+
+    def test_short_tokens_untouched(self):
+        assert singularize("gas") == "gas"
+        assert singularize("2") == "2"
+
+
+class TestTokenizeJobName:
+    """Job-name normalisation: separators + case + singular + the closed role-word
+    vocabulary, so a name naming its own mechanism reduces to its subject."""
+
+    def test_role_words_stripped(self):
+        assert tokenize_job_name("aurora-deck-2-monitor") == ["aurora", "deck", "2"]
+        assert tokenize_job_name("aurora-deck-2-price-watcher") == [
+            "aurora",
+            "deck",
+            "2",
+            "price",
+        ]
+
+    def test_plural_role_words_stripped_via_the_stemmer(self):
+        """``alerts`` / ``updates`` need no separate vocabulary entry — the stemmer
+        runs first, so the canonical singular form covers both."""
+        assert tokenize_job_name("aurora-alerts") == ["aurora"]
+        assert tokenize_job_name("aurora-updates") == ["aurora"]
+
+    def test_subject_words_that_merely_resemble_roles_are_kept(self):
+        """``track`` and ``check`` carry subject meaning of their own and are
+        deliberately NOT roles — only their mechanism-shaped relatives are."""
+        assert tokenize_job_name("favourite-tracks") == ["favourite", "track"]
+        assert tokenize_job_name("rent-checks") == ["rent", "check"]
+
+    def test_separators_and_case_fold_together(self):
+        assert tokenize_job_name("Aurora_Deck 2 Prices") == ["aurora", "deck", "2", "price"]
+
+    def test_a_bare_role_word_normalises_to_nothing(self):
+        assert tokenize_job_name("monitor") == []
+
+
+class TestIsTokenContainment:
+    """The tier-2 discriminator: a set relation, so there is nothing to tune."""
+
+    def test_extension_is_containment(self):
+        assert is_token_containment("aurora-deck-2", "aurora-deck-2-price")
+
+    def test_substitution_is_not(self):
+        """The pair no name threshold separates: one token differs, and it is the one
+        carrying the meaning."""
+        assert not is_token_containment("aurora-deck-2-price", "aurora-deck-3-price")
+
+    def test_equal_after_normalisation(self):
+        assert is_token_containment("aurora_deck_2_prices", "aurora-deck-2-price")
+
+    def test_empty_side_contains_nothing(self):
+        """An empty set is a subset of everything — which would make a bare role word
+        a duplicate of every collection, so it is refused explicitly."""
+        assert not is_token_containment("monitor", "aurora-deck-2-price")
+        assert not is_token_containment("2026", "aurora-deck-2-price")
 
 
 class TestFindSimilar:
