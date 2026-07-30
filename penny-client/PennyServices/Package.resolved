@@ -1,5 +1,5 @@
 {
-  "originHash" : "1566d3ea84e9fa48efccad4e5440a827d322f41a9aa8ff9b6f610cd9c01a87a9",
+  "originHash" : "c7be5c79c7475b2ff3facab3361db2bbfedc962f79064aed4311915fe1af08ce",
   "pins" : [
     {
       "identity" : "collectionconcurrencykit",
@@ -31,7 +31,7 @@
     {
       "identity" : "sqlite.swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/stephencelis/SQLite.swift",
+      "location" : "https://github.com/stephencelis/SQLite.swift.git",
       "state" : {
         "revision" : "964c300fb0736699ce945c9edb56ecd62eba27a3",
         "version" : "0.16.0"
@@ -58,7 +58,7 @@
     {
       "identity" : "swiftlint",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/realm/SwiftLint",
+      "location" : "https://github.com/realm/SwiftLint.git",
       "state" : {
         "revision" : "625792423014cc49b0a1e5a1a5c0d6b8b3de10f9",
         "version" : "0.59.1"

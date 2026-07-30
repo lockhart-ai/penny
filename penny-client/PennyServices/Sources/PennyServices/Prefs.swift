@@ -1,7 +1,7 @@
 import Foundation
 
-final class Prefs {
-    static let shared = Prefs()
+public final class Prefs: @unchecked Sendable {
+    public static let shared = Prefs()
 
     private let userDefaults: UserDefaults
     private let keychain: KeychainStore
@@ -93,43 +93,43 @@ final class Prefs {
 }
 
 extension Prefs {
-    var webSocketURL: String? {
+    public var webSocketURL: String? {
         get { string(forKey: .webSocketURL) ?? bundledSecrets?.webSocketURL }
         set { set(newValue, forKey: .webSocketURL) }
     }
 
-    var username: String? {
+    public var username: String? {
         get { secureString(forKey: .username) ?? bundledSecrets?.username }
         set { setSecureString(newValue, forKey: .username) }
     }
 
-    var password: String? {
+    public var password: String? {
         get { secureString(forKey: .password) ?? bundledSecrets?.password }
         set { setSecureString(newValue, forKey: .password) }
     }
 
-    struct Key: RawRepresentable, Hashable, ExpressibleByStringLiteral {
-        let rawValue: String
+    public struct Key: RawRepresentable, Hashable, ExpressibleByStringLiteral, Sendable {
+        public let rawValue: String
 
-        init(rawValue: String) {
+        public init(rawValue: String) {
             self.rawValue = rawValue
         }
 
-        init(_ rawValue: String) {
+        public init(_ rawValue: String) {
             self.rawValue = rawValue
         }
 
-        init(stringLiteral value: String) {
+        public init(stringLiteral value: String) {
             self.rawValue = value
         }
     }
 }
 
 extension Prefs.Key {
-    static let webSocketURL = Self("connection.webSocketURL")
-    static let username = Self("connection.username")
-    static let password = Self("connection.password")
-    static let historySyncState = Self("history.syncState")
+    public static let webSocketURL = Self("connection.webSocketURL")
+    public static let username = Self("connection.username")
+    public static let password = Self("connection.password")
+    public static let historySyncState = Self("history.syncState")
 }
 
 private struct SecretsPlist: Decodable {

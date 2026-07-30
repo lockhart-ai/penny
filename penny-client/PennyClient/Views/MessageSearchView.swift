@@ -1,6 +1,7 @@
 import Observation
 import SwiftUI
 import UIKit
+import PennyServices
 
 struct MessageSearchView: View {
     @Environment(\.dismiss) private var dismiss

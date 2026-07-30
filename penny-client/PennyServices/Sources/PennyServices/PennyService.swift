@@ -4,29 +4,29 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-struct AgentProgressToolItem: Identifiable {
-    let id = UUID()
-    let name: String
-    let arguments: [String: AgentProgressValue]
+public struct AgentProgressToolItem: Identifiable {
+    public let id = UUID()
+    public let name: String
+    public let arguments: [String: AgentProgressValue]
 }
 
-struct AgentProgressStepItem: Identifiable {
-    let id = UUID()
-    let number: Int
-    let maxSteps: Int?
-    var tools: [AgentProgressToolItem] = []
+public struct AgentProgressStepItem: Identifiable {
+    public let id = UUID()
+    public let number: Int
+    public let maxSteps: Int?
+    public var tools: [AgentProgressToolItem] = []
 }
 
-struct AgentProgressRunItem: Identifiable {
-    let id: String
-    let agent: String
-    let scope: AgentProgressScope
-    var steps: [AgentProgressStepItem] = []
+public struct AgentProgressRunItem: Identifiable {
+    public let id: String
+    public let agent: String
+    public let scope: AgentProgressScope
+    public var steps: [AgentProgressStepItem] = []
 }
 
 @MainActor
 @Observable
-final class PennyService {
+public final class PennyService {
     private let webSocketClient: any WebSocketTransport
     private var heartbeatTask: Task<Void, Never>?
     private var notificationTokenTask: Task<Void, Never>?
@@ -47,44 +47,44 @@ final class PennyService {
     @ObservationIgnored private var embeddingContinuations: [String: CheckedContinuation<Data, Error>] = [:]
     @ObservationIgnored private var pendingResponseTimings: [String: [PendingResponseTiming]] = [:]
 
-    var messages: [ChatMessage] = []
-    var pendingCount = 0
-    var isConnected = false
-    var isRegistered = false
-    var isTyping = false
-    var agentProgressRuns: [String: AgentProgressRunItem] = [:]
+    public var messages: [ChatMessage] = []
+    public var pendingCount = 0
+    public var isConnected = false
+    public var isRegistered = false
+    public var isTyping = false
+    public var agentProgressRuns: [String: AgentProgressRunItem] = [:]
 
-    var foregroundProgress: AgentProgressRunItem? {
+    public var foregroundProgress: AgentProgressRunItem? {
         agentProgressRuns.values.first(where: { $0.scope == .foreground })
     }
 
-    var backgroundProgressRuns: [AgentProgressRunItem] {
+    public var backgroundProgressRuns: [AgentProgressRunItem] {
         agentProgressRuns.values.filter { $0.scope == .background }.sorted { $0.id < $1.id }
     }
-    var lastError: String?
-    var runtimeConfigParams: [RuntimeConfigParam] = []
-    var promptLogRuns: [PromptLogRun] = []
-    var promptLogsHasMore = false
-    var memories: [MemoryRecord] = []
-    var memoryDetail: MemoryDetail?
-    var memoryPage: MemoryPage?
-    var lastMemoryChangedName: String?
+    public var lastError: String?
+    public var runtimeConfigParams: [RuntimeConfigParam] = []
+    public var promptLogRuns: [PromptLogRun] = []
+    public var promptLogsHasMore = false
+    public var memories: [MemoryRecord] = []
+    public var memoryDetail: MemoryDetail?
+    public var memoryPage: MemoryPage?
+    public var lastMemoryChangedName: String?
     var collectionTriggerResult: CollectionTriggerResult?
-    var domainPermissions: [DomainPermissionEntry] = []
-    var permissionPrompt: PermissionPrompt?
-    var historySyncing = false
+    public var domainPermissions: [DomainPermissionEntry] = []
+    public var permissionPrompt: PermissionPrompt?
+    public var historySyncing = false
     var historyRequestedCount = 0
     var historySavedOrUpdatedCount = 0
     var historyRemainingCount = 0
-    var historyStatus = "Not started"
+    public var historyStatus = "Not started"
 
-    var historyProgressText: String {
+    public var historyProgressText: String {
         "Requested \(historyRequestedCount) · Saved \(historySavedOrUpdatedCount) · Remaining \(historyRemainingCount)"
     }
 
     private let pendingMessagePullLimit = 3
 
-    init() {
+    public init() {
         self.databaseService = .shared
         self.prefs = .shared
         self.webSocketClient = WebSocketClient()
@@ -117,15 +117,15 @@ final class PennyService {
         localMessageID = min(-1, (databaseService.minimumMessageID() ?? 0) - 1)
     }
 
-    var canSend: Bool {
+    public var canSend: Bool {
         isConnected && isRegistered
     }
 
-    var apnsHost: String {
+    public var apnsHost: String {
         ApnsEnvironment.current.host
     }
 
-    var statusText: String {
+    public var statusText: String {
         if let lastError {
             return lastError
         }
@@ -141,14 +141,14 @@ final class PennyService {
         return "Disconnected"
     }
 
-    var connectionColor: Color {
+    public var connectionColor: Color {
         if isRegistered { return .green }
         if isConnected { return .orange }
         return .red
     }
 }
 extension PennyService {
-    func connect() async {
+    public func connect() async {
         guard !webSocketClient.isConnected else { return }
 
         lastError = nil
@@ -169,12 +169,12 @@ extension PennyService {
         send(.pullMessages(limit: pendingMessagePullLimit))
     }
 
-    func reconnect() {
+    public func reconnect() {
         disconnect(clearLiveBindings: false)
         Task { await connect() }
     }
 
-    func disconnect() {
+    public func disconnect() {
         disconnect(clearLiveBindings: true)
     }
 
@@ -200,7 +200,7 @@ extension PennyService {
         agentProgressRuns.removeAll()
     }
 
-    func requestMessagePage(_ request: MessagePageRequest) async -> MessagePage {
+    public func requestMessagePage(_ request: MessagePageRequest) async -> MessagePage {
         logger.debug(
             "message page requested " +
             "(limit=\(request.limit), before=\(request.before?.description ?? "nil"), filter=\(request.filter.debugDescription))",
@@ -235,7 +235,7 @@ extension PennyService {
         continuation.resume(throwing: CancellationError())
     }
 
-    func bindLiveMessages(
+    public func bindLiveMessages(
         _ messages: Binding<[ChatMessage]>,
         hasNewMessages: Binding<Bool>,
         filter: MessagePageFilter,
@@ -247,11 +247,11 @@ extension PennyService {
         historicalMessagesHandler = historicalMessages
     }
 
-    func updateLiveMessageFilter(_ filter: MessagePageFilter) {
+    public func updateLiveMessageFilter(_ filter: MessagePageFilter) {
         liveMessageFilter = filter
     }
 
-    func startHistorySync(channelTypes: [String], includeAttachments: Bool = true) {
+    public func startHistorySync(channelTypes: [String], includeAttachments: Bool = true) {
         guard !channelTypes.isEmpty else {
             historyStatus = "Select at least one channel"
             return
@@ -296,7 +296,7 @@ extension PennyService {
         if let status { historyStatus = status }
     }
 
-    func deleteAllMessages() {
+    public func deleteAllMessages() {
         historyResponseContinuation?.finish()
         historyResponseContinuation = nil
         historySyncTask?.cancel()
@@ -313,13 +313,13 @@ extension PennyService {
         liveHasNewMessages?.wrappedValue = false
     }
 
-    func unbindLiveMessages() {
+    public func unbindLiveMessages() {
         liveMessages = nil
         liveHasNewMessages = nil
         historicalMessagesHandler = nil
     }
 
-    func sendMessage(_ content: String) {
+    public func sendMessage(_ content: String) {
         let message = ChatMessage.local(id: nextLocalMessageID(), content: content)
         messages.append(message)
         databaseService.save(message: MessageModel(message: message))
@@ -327,15 +327,15 @@ extension PennyService {
         send(.message(content: content))
     }
 
-    func requestConfig() {
+    public func requestConfig() {
         send(.configRequest)
     }
 
-    func updateConfig(key: String, value: String) {
+    public func updateConfig(key: String, value: String) {
         send(.configUpdate(key: key, value: value))
     }
 
-    func requestPromptLogs(
+    public func requestPromptLogs(
         agentName: String? = nil,
         offset: Int? = nil,
         query: String? = nil,
@@ -349,15 +349,15 @@ extension PennyService {
         ))
     }
 
-    func requestMemories(query: String? = nil) {
+    public func requestMemories(query: String? = nil) {
         send(.memoriesRequest(query: query))
     }
 
-    func requestMemoryDetail(name: String, query: String? = nil) {
+    public func requestMemoryDetail(name: String, query: String? = nil) {
         send(.memoryDetailRequest(name: name, query: query))
     }
 
-    func requestMemoryPage(
+    public func requestMemoryPage(
         name: String,
         section: MemorySection,
         offset: Int,
@@ -366,7 +366,7 @@ extension PennyService {
         send(.memoryPageRequest(name: name, section: section, offset: offset, query: query))
     }
 
-    func createMemory(
+    public func createMemory(
         name: String,
         description: String,
         intent: String,
@@ -388,7 +388,7 @@ extension PennyService {
         ))
     }
 
-    func updateMemory(
+    public func updateMemory(
         name: String,
         description: String? = nil,
         intent: String? = nil,
@@ -410,43 +410,43 @@ extension PennyService {
         ))
     }
 
-    func archiveMemory(name: String) {
+    public func archiveMemory(name: String) {
         send(.memoryArchive(name: name))
     }
 
-    func createEntry(memory: String, key: String, content: String) {
+    public func createEntry(memory: String, key: String, content: String) {
         send(.entryCreate(memory: memory, key: key, content: content))
     }
 
-    func updateEntry(memory: String, key: String, content: String) {
+    public func updateEntry(memory: String, key: String, content: String) {
         send(.entryUpdate(memory: memory, key: key, content: content))
     }
 
-    func deleteEntry(memory: String, key: String) {
+    public func deleteEntry(memory: String, key: String) {
         send(.entryDelete(memory: memory, key: key))
     }
 
-    func triggerCollection(name: String) {
+    public func triggerCollection(name: String) {
         send(.collectionTrigger(name: name))
     }
 
-    func setCursor(name: String, logName: String, lastReadAt: String) {
+    public func setCursor(name: String, logName: String, lastReadAt: String) {
         send(.cursorSet(name: name, logName: logName, lastReadAt: lastReadAt))
     }
 
-    func clearCursor(name: String, logName: String) {
+    public func clearCursor(name: String, logName: String) {
         send(.cursorClear(name: name, logName: logName))
     }
 
-    func updateDomain(domain: String, permission: DomainPermission) {
+    public func updateDomain(domain: String, permission: DomainPermission) {
         send(.domainUpdate(domain: domain, permission: permission))
     }
 
-    func deleteDomain(domain: String) {
+    public func deleteDomain(domain: String) {
         send(.domainDelete(domain: domain))
     }
 
-    func decidePermission(requestID: String, allowed: Bool) {
+    public func decidePermission(requestID: String, allowed: Bool) {
         send(.permissionDecision(requestID: requestID, allowed: allowed))
         if permissionPrompt?.requestID == requestID {
             permissionPrompt = nil

@@ -1,4 +1,5 @@
 import SwiftUI
+import PennyServices
 
 struct MemoryManagementView: View {
     @State private var viewModel: MemoryManagementViewModel

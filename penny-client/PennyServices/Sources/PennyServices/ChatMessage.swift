@@ -105,31 +105,35 @@ struct Attachment: Decodable {
     }
 }
 
-struct ImageAttachment: Identifiable {
-    let id = UUID()
-    let image: UIImage
+public struct ImageAttachment: Identifiable {
+    public let id = UUID()
+    public let image: UIImage
+
+    public init(image: UIImage) {
+        self.image = image
+    }
 }
 
-struct ChatMessage: Identifiable {
-    let id: Int
-    let serverID: Int?
-    let createdAt: Date
-    let content: String
-    let sourceHint: String?
-    let channelType: String?
-    let deviceLabel: String?
-    let deviceIdentifier: String?
-    let parentID: Int?
-    let imageAttachmentDataURLs: [String]
-    let imageAttachments: [ImageAttachment]
-    let isOutgoing: Bool
-    let embedding: Data?
+public struct ChatMessage: Identifiable {
+    public let id: Int
+    public let serverID: Int?
+    public let createdAt: Date
+    public let content: String
+    public let sourceHint: String?
+    public let channelType: String?
+    public let deviceLabel: String?
+    public let deviceIdentifier: String?
+    public let parentID: Int?
+    public let imageAttachmentDataURLs: [String]
+    public let imageAttachments: [ImageAttachment]
+    public let isOutgoing: Bool
+    public let embedding: Data?
 
-    var displayTime: String {
+    public var displayTime: String {
         displayTimestamp(relativeTo: .now)
     }
 
-    func displayTimestamp(relativeTo referenceDate: Date, calendar: Calendar = .current) -> String {
+    public func displayTimestamp(relativeTo referenceDate: Date, calendar: Calendar = .current) -> String {
         if calendar.isDate(createdAt, inSameDayAs: referenceDate) {
             return createdAt.formatted(date: .omitted, time: .shortened)
         }
@@ -137,7 +141,7 @@ struct ChatMessage: Identifiable {
         return createdAt.formatted(date: .abbreviated, time: .shortened)
     }
 
-    init(
+    public init(
         id: Int,
         serverID: Int?,
         createdAt: Date,
@@ -186,7 +190,7 @@ struct ChatMessage: Identifiable {
         isOutgoing = model.isOutgoing
     }
 
-    static func local(id: Int, content: String) -> ChatMessage {
+    public static func local(id: Int, content: String) -> ChatMessage {
         ChatMessage(id: id, serverID: nil, createdAt: .now, content: content, sourceHint: nil, imageAttachments: [], isOutgoing: true, embedding: nil)
     }
 
@@ -246,13 +250,13 @@ enum DateParser {
         return localTimestamp.date(from: value)
     }
 
-    private static let iso8601: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let iso8601: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
 
-    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter

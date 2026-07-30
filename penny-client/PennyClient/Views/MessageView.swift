@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PennyServices
 
 struct MessageView: View {
     @Environment(\.scenePhase) private var scenePhase

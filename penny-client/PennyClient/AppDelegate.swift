@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import UserNotifications
+import os
+import PennyServices
 
 @main struct MyApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -21,7 +23,7 @@ import UserNotifications
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    private let logger = OSLogService(category: .notifications)
+    private let logger = Logger(subsystem: "PennyClient", category: "notifications")
 
     func application(
         _ application: UIApplication,
@@ -42,7 +44,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        logger.error("Failed to register for remote notifications: \(error.localizedDescription)", privacy: .public)
+        logger.error("Failed to register for remote notifications: \(error.localizedDescription)")
     }
 
     func userNotificationCenter(
@@ -57,7 +59,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        logger.info("Received notification response: \(response.notification.request.identifier)", privacy: .public)
+        logger.info("Received notification response: \(response.notification.request.identifier)")
         applyBadge(from: response.notification, using: center)
     }
 
@@ -68,10 +70,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
 
         let badgeCount = badge.intValue
-        logger.info("Applying notification badge count: \(badgeCount)", privacy: .public)
+        logger.info("Applying notification badge count: \(badgeCount)")
         center.setBadgeCount(badgeCount) { error in
             if let error {
-                self.logger.error("Failed to set badge count: \(error.localizedDescription)", privacy: .public)
+                self.logger.error("Failed to set badge count: \(error.localizedDescription)")
             }
         }
     }
@@ -79,7 +81,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     private func requestNotificationRegistration(_ application: UIApplication, using center: UNUserNotificationCenter) {
         center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
             if let error {
-                self.logger.error("Notification authorization failed: \(error.localizedDescription)", privacy: .public)
+                self.logger.error("Notification authorization failed: \(error.localizedDescription)")
                 return
             }
 
@@ -94,21 +96,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     private func logNotificationSettings(using center: UNUserNotificationCenter) {
         center.getNotificationSettings { settings in
-            self.logger.info("Notification authorization: \(settings.authorizationStatus.rawValue), badge setting: \(settings.badgeSetting.rawValue)", privacy: .public)
+            self.logger.info("Notification authorization: \(settings.authorizationStatus.rawValue), badge setting: \(settings.badgeSetting.rawValue)")
         }
-    }
-}
-
-@MainActor
-final class PushNotificationState {
-    static let didUpdateDeviceToken = Notification.Name("PushNotificationState.didUpdateDeviceToken")
-    static let shared = PushNotificationState()
-
-    private(set) var deviceToken: String?
-
-    func updateDeviceToken(_ token: String) {
-        guard deviceToken != token else { return }
-        deviceToken = token
-        NotificationCenter.default.post(name: Self.didUpdateDeviceToken, object: nil)
     }
 }

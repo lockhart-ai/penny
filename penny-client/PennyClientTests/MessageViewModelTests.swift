@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import PennyClient
+@testable import PennyServices
 
 @Suite(.serialized)
 @MainActor

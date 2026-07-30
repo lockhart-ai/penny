@@ -12,10 +12,10 @@ Use Xcode project-relative paths when working from Xcode tooling. Prefer Xcode t
 - `PennyClient/PennyClient/Views/MessageView.swift`: Main chat screen, toolbar, composer, message rows.
 - `PennyClient/PennyClient/Views/MessageView+ViewModel.swift`: Message screen view model.
 - `PennyClient/PennyClient/Views/SettingsView.swift`: Editable connection settings.
-- `PennyClient/PennyClient/Service/PennyWebSocketClient.swift`: Websocket connection, registration, message handling, badge clearing.
-- `PennyClient/PennyClient/Service/LogService.swift`: Central `Logger`/OSLog wrapper with log levels, privacy handling, and UTC timestamp prefixes.
-- `PennyClient/PennyClient/Service/DatabaseService.swift`: SQLite-backed message persistence.
-- `PennyClient/PennyClient/Service/Prefs.swift`: UserDefaults wrapper and optional `Secrets.plist` loading.
+- `PennyClient/PennyServices/Package.swift`: Local Swift package boundary for the service layer.
+- `PennyClient/PennyServices/Sources/PennyServices/`: Websocket, persistence, preferences, wire models, logging, search, and shared client models.
+- `PennyClient/PennyServices/Tests/PennyServicesTests/`: Service-owned tests and isolated test fixtures.
+- `PennyClient/PennyClient/Views/`: SwiftUI views and view models that consume `PennyServices`.
 - `PennyClient/PennyClient/AppDelegate.swift`: Push notification registration and foreground notification handling.
 - `PennyClient/PennyClient/PennyDev.entitlements`: PennyDev push notification entitlements.
 - `PennyClient/PennyClient/PennyTestflight.entitlements`: PennyTestflight push notification entitlements.
@@ -41,9 +41,14 @@ For final verification, prefer:
 - focused tests for touched behavior, or `RunAllTests` when the change affects shared behavior
 - `BuildProject`
 
+Service-layer changes must also pass `make client-services-check`. This runs the
+`PennyServicesStandaloneTests` bundle against the package without building or
+launching PennyDev or PennyTestflight. Run `make client-check` for the complete
+service, app, and Testflight build gate.
+
 ## Testing Guidelines
 Use the Swift Testing framework for unit and component tests. UI tests are not recommended by default; avoid XCUIAutomation unless the behavior cannot be validated with focused unit, component, or service-level tests.
-Keep tests organized by component in separate files under `PennyClient/PennyClientTests`, with shared helpers in test support files instead of large monolithic test sources.
+Keep service tests under `PennyServices/Tests/PennyServicesTests` and app/view-model tests under `PennyClient/PennyClientTests`, with shared helpers in the owning test target instead of large monolithic test sources.
 
 All view models require test coverage. When adding or changing a view model, add or update focused tests for:
 - state derived from model/client data
@@ -53,6 +58,10 @@ All view models require test coverage. When adding or changing a view model, add
 - async lifecycle behavior when relevant
 
 Prefer injecting test doubles or configured in-memory services over relying on live network, real user defaults, or persistent app data. For persistence tests, use `DatabaseService.setupForTesting()` or another isolated in-memory setup.
+
+The package is the owner of service behavior and service-owned models. Keep
+SwiftUI presentation and view-model behavior in the app target; import
+`PennyServices` from those files rather than duplicating service types.
 
 ## UI Patterns
 Use SwiftUI and the Observation framework. Avoid Combine unless there is a concrete need.

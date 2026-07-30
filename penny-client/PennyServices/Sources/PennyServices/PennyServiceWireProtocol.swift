@@ -1,7 +1,7 @@
 import Foundation
 import UIKit
 
-typealias PennyWebSocketClient = PennyService
+public typealias PennyWebSocketClient = PennyService
 
 enum ClientMessage: Encodable {
     case register(RegisterPayload)
@@ -333,6 +333,7 @@ struct RegisterPayload {
     let apnsEnvironment: String
     let appVersion: String
 
+    @MainActor
     static func current(apnsToken: String?) -> RegisterPayload {
         RegisterPayload(
             deviceID: DeviceIdentity.stableDeviceID(),
@@ -657,7 +658,7 @@ enum AgentProgressEventType: String, Decodable {
     case runFinished = "run_finished"
 }
 
-enum AgentProgressScope: String, Decodable {
+public enum AgentProgressScope: String, Decodable {
     case foreground
     case background
 }
@@ -668,7 +669,7 @@ enum AgentProgressOutcome: String, Decodable {
     case error
 }
 
-enum AgentProgressValue: Decodable {
+public enum AgentProgressValue: Decodable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -676,7 +677,7 @@ enum AgentProgressValue: Decodable {
     case object([String: AgentProgressValue])
     case null
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         if let container = try? decoder.singleValueContainer(), container.decodeNil() {
             self = .null
         } else if let value = try? decoder.singleValueContainer().decode(String.self) {

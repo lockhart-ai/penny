@@ -1,5 +1,4 @@
 import Foundation
-@testable import PennyClient
 @testable import PennyServices
 
 final class EmptyBundleMarker {}
@@ -7,7 +6,9 @@ final class EmptyBundleMarker {}
 final class InMemoryKeychain: KeychainStore {
     private var storage: [String: String] = [:]
 
-    func string(account: String) -> String? { storage[account] }
+    func string(account: String) -> String? {
+        storage[account]
+    }
 
     func set(_ value: String?, account: String) {
         storage[account] = value
@@ -27,11 +28,7 @@ func configuredPrefs(
     username: String = "alice",
     password: String = "secret"
 ) -> Prefs {
-    let prefs = Prefs(
-        userDefaults: makeUserDefaults(),
-        keychain: InMemoryKeychain(),
-        bundle: Bundle(for: EmptyBundleMarker.self)
-    )
+    let prefs = Prefs(userDefaults: makeUserDefaults(), keychain: InMemoryKeychain(), bundle: Bundle(for: EmptyBundleMarker.self))
     prefs.webSocketURL = url
     prefs.username = username
     prefs.password = password

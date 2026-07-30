@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import PennyServices
 
 struct ChatMessageView: View {
     let message: ChatMessage

@@ -2,7 +2,7 @@ import Foundation
 import SQLite
 import SQLPropertyMacros
 
-final class DatabaseService {
+public final class DatabaseService: @unchecked Sendable {
     static let shared = DatabaseService()
 
     private let logger: any LogService

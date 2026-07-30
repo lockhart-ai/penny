@@ -32,7 +32,7 @@ POSTED_MARKER := .posted
 # effects `make -n eval-report` must NOT trigger. The alias keeps the dry-run a true dry-run.
 SUBMAKE := $(MAKE)
 
-.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check fmt lint fix typecheck check pytest eval eval-report assemble token migrate-test migrate-validate
+.PHONY: up prod prod-ios kill clean-project-images docker-prune build browser-build client-check client-services-check fmt lint fix typecheck check pytest eval eval-report assemble token migrate-test migrate-validate
 
 # --- Docker Compose ---
 
@@ -103,6 +103,10 @@ browser-build:
 # CI runs the same script on any PR touching penny-client/ (client-check.yml).
 client-check:
 	./scripts/client-check.sh
+
+# Run service-layer tests without building or launching PennyDev/PennyTestflight.
+client-services-check:
+	./scripts/client-services-check.sh
 
 # Print a GitHub App installation token for use with gh CLI
 # Usage: GH_TOKEN=$(make token) gh pr create ...

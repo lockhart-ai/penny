@@ -37,6 +37,13 @@ trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true; if [ -n "$BUILD_INF
 
 xcodebuild test \
     -project penny-client/PennyClient.xcodeproj \
+    -scheme PennyServicesStandaloneTests \
+    -destination "id=$UDID" \
+    -skipMacroValidation \
+    -skipPackagePluginValidation
+
+xcodebuild test \
+    -project penny-client/PennyClient.xcodeproj \
     -scheme PennyClient \
     -destination "id=$UDID" \
     -skipMacroValidation \

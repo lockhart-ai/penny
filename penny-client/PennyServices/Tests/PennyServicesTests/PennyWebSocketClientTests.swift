@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
-@testable import PennyClient
+@testable import PennyServices
 
 @Suite(.serialized)
 @MainActor

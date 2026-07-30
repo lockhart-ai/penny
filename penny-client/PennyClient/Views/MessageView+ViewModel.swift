@@ -1,5 +1,6 @@
 import Observation
 import SwiftUI
+import PennyServices
 
 extension MessageView {
     enum MessageLayout: Int, CaseIterable, Identifiable, Sendable {

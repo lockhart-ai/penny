@@ -21,6 +21,9 @@ extension PennyService {
     }
 
     func clearAppBadge() {
+        // The standalone service test bundle has no application bundle proxy,
+        // so UserNotifications is unavailable there.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         UNUserNotificationCenter.current().setBadgeCount(0) { error in
             if let error {
                 OSLogService(category: .pennyService).error("Failed to clear badge count: \(error.localizedDescription)", privacy: .public)

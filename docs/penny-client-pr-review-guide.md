@@ -9,6 +9,8 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Cross-stack changes identify the matching Python endpoint/model/test and preserve compatibility intentionally.
 - [ ] No unrelated generated files, derived data, local secrets, or formatting churn are included.
 - [ ] Target membership, build configurations, entitlements, and scheme changes are intentional.
+- [ ] Service behavior and service-owned models live in `PennyServices`; SwiftUI presentation and view-model behavior remain in the app target.
+- [ ] Package resources, including the Metal search shader, are loaded through the package boundary and do not rely on the app bundle.
 
 ## 2. SwiftUI and state
 
@@ -62,6 +64,9 @@ A focused checklist for reviewing Swift and iOS changes in `penny-client/`. Use 
 - [ ] Focused tests cover the changed behavior and the most likely regression edge cases.
 - [ ] View-model tests cover state derivation and side effects, not only initial rendering.
 - [ ] Service tests cover reconnect, duplicate delivery, malformed input, and cancellation where applicable.
+- [ ] `make client-services-check` passes for service or package changes and runs without building or launching PennyDev/PennyTestflight.
+- [ ] `make client-check` also passes when the package public API, resources, persistence behavior, or app integration changes.
+- [ ] Tests moved into `PennyServicesTests` do not import or depend on `PennyClient`; app-hosted tests import `PennyServices` directly when they exercise package types.
 - [ ] Persistence tests use isolated/in-memory storage.
 - [ ] The normal `make client-check` gate was run, or the PR explicitly states why it could not be run.
 - [ ] If `DEVELOPER_DIR` selected Xcode beta, the exact Xcode version is recorded.

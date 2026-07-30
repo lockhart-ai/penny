@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import PennyClient
+@testable import PennyServices
 
 struct ChatMessageTests {
     @Test func displayTimestampOmitsDateForMessagesSentToday() {

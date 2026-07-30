@@ -1,32 +1,32 @@
 import Foundation
 
-struct MessagePageCursor: Equatable, Sendable {
-    let createdAt: Date
-    let id: Int
+public struct MessagePageCursor: Equatable, Sendable {
+    public let createdAt: Date
+    public let id: Int
 }
 
 extension MessagePageCursor: CustomStringConvertible {
-    var description: String {
+    public var description: String {
         "createdAt=\(createdAt.ISO8601Format()), id=\(id)"
     }
 }
 
-struct MessagePageRequest: Sendable {
-    let limit: Int
-    let before: MessagePageCursor?
-    let filter: MessagePageFilter
+public struct MessagePageRequest: Sendable {
+    public let limit: Int
+    public let before: MessagePageCursor?
+    public let filter: MessagePageFilter
 
-    init(limit: Int = 30, before: MessagePageCursor? = nil, filter: MessagePageFilter = .all) {
+    public init(limit: Int = 30, before: MessagePageCursor? = nil, filter: MessagePageFilter = .all) {
         self.limit = limit
         self.before = before
         self.filter = filter
     }
 }
 
-struct MessagePage {
-    let messages: [ChatMessage]
-    let nextCursor: MessagePageCursor?
-    let hasMore: Bool
+public struct MessagePage {
+    public let messages: [ChatMessage]
+    public let nextCursor: MessagePageCursor?
+    public let hasMore: Bool
 }
 
 struct HistoryPageResult {
@@ -67,7 +67,7 @@ enum HistorySyncEvent {
     case error(String)
 }
 
-enum MessagePageFilter: Equatable, Sendable {
+public enum MessagePageFilter: Equatable, Sendable {
     case all
     case penny
     case chat
@@ -76,7 +76,7 @@ enum MessagePageFilter: Equatable, Sendable {
 
     private static let collectorPrefix = "Collector: "
 
-    var debugDescription: String {
+    public var debugDescription: String {
         switch self {
         case .all:
             return "all"

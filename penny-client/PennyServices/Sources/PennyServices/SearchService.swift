@@ -2,12 +2,12 @@ import Foundation
 import Metal
 import Observation
 
-struct MessageSearchResult: Identifiable {
-    let message: ChatMessage
-    let distance: Float
+public struct MessageSearchResult: Identifiable {
+    public let message: ChatMessage
+    public let distance: Float
 
-    var id: Int { message.id }
-    var similarity: Float { max(0, 1 - distance) }
+    public var id: Int { message.id }
+    public var similarity: Float { max(0, 1 - distance) }
 }
 
 enum MessageSearchError: LocalizedError {
@@ -35,22 +35,22 @@ enum MessageSearchError: LocalizedError {
 
 @MainActor
 @Observable
-final class SearchService {
+public final class SearchService {
     static let maximumResults = 50
     static let minimumSimilarity: Float = 0.24
 
     private let databaseService: DatabaseService
     private let engine: any CosineDistanceEngine
     private let embeddingTimeout: Duration
-    private let requestEmbedding: (String) async throws -> Data
+    private let requestEmbedding: @Sendable (String) async throws -> Data
     private var searchGeneration = 0
 
-    var results: [MessageSearchResult] = []
-    var isSearching = false
-    var hasSearched = false
-    var errorMessage: String?
+    public var results: [MessageSearchResult] = []
+    public var isSearching = false
+    public var hasSearched = false
+    public var errorMessage: String?
 
-    convenience init(client: PennyService) {
+    public convenience init(client: PennyService) {
         self.init(client: client, databaseService: .shared)
     }
 
@@ -67,7 +67,7 @@ final class SearchService {
         databaseService: DatabaseService,
         engine: any CosineDistanceEngine,
         embeddingTimeout: Duration = .seconds(15),
-        requestEmbedding: @escaping (String) async throws -> Data
+        requestEmbedding: @escaping @Sendable (String) async throws -> Data
     ) {
         self.databaseService = databaseService
         self.engine = engine
@@ -75,7 +75,7 @@ final class SearchService {
         self.requestEmbedding = requestEmbedding
     }
 
-    func search(_ query: String, filter: MessagePageFilter = .all) async {
+    public func search(_ query: String, filter: MessagePageFilter = .all) async {
         searchGeneration += 1
         let generation = searchGeneration
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,7 +141,7 @@ final class SearchService {
         }
     }
 
-    func clear() {
+    public func clear() {
         searchGeneration += 1
         clear(generation: searchGeneration)
     }
@@ -198,7 +198,7 @@ private final class MetalCosineDistanceEngine: CosineDistanceEngine {
 
     init() {
         guard let device = MTLCreateSystemDefaultDevice(),
-              let library = device.makeDefaultLibrary(),
+              let library = try? device.makeDefaultLibrary(bundle: Bundle.module),
               let function = library.makeFunction(name: "cosineDistance"),
               let pipeline = try? device.makeComputePipelineState(function: function) else {
             commandQueue = nil

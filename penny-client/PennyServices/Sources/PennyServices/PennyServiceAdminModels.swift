@@ -1,13 +1,13 @@
 import Foundation
 
-struct RuntimeConfigParam: Decodable, Identifiable {
-    var id: String { key }
-    let key: String
-    let value: String
-    let defaultValue: String
-    let description: String
-    let type: String
-    let group: String
+public struct RuntimeConfigParam: Decodable, Identifiable {
+    public var id: String { key }
+    public let key: String
+    public let value: String
+    public let defaultValue: String
+    public let description: String
+    public let type: String
+    public let group: String
 
     private enum CodingKeys: String, CodingKey {
         case key
@@ -23,7 +23,7 @@ struct ConfigResponsePayload: Decodable {
     let params: [RuntimeConfigParam]
 }
 
-enum RunOutcome: String, Codable {
+public enum RunOutcome: String, Codable {
     case failed
     case noWork = "no_work"
     case worked
@@ -31,7 +31,7 @@ enum RunOutcome: String, Codable {
     case cancelled
 }
 
-enum RunHealthFlag: String, Codable {
+public enum RunHealthFlag: String, Codable, Sendable {
     case noWorkDone = "no_work_done"
     case noWrites = "no_writes"
     case incomplete
@@ -39,16 +39,16 @@ enum RunHealthFlag: String, Codable {
     case halfFormedSend = "half_formed_send"
 }
 
-struct RunHealth: Decodable {
-    let bailed: Bool
-    let noWrites: Bool
-    let incomplete: Bool
-    let toolFailures: Int
-    let degenerateSend: Bool
-    let flags: [RunHealthFlag]
-    let regressive: Bool
+public struct RunHealth: Decodable, Sendable {
+    public let bailed: Bool
+    public let noWrites: Bool
+    public let incomplete: Bool
+    public let toolFailures: Int
+    public let degenerateSend: Bool
+    public let flags: [RunHealthFlag]
+    public let regressive: Bool
 
-    static let empty = RunHealth(
+    public static let empty = RunHealth(
         bailed: false,
         noWrites: false,
         incomplete: false,
@@ -69,22 +69,22 @@ struct RunHealth: Decodable {
     }
 }
 
-struct PromptLogRun: Decodable, Identifiable {
-    var id: String { runID }
-    let runID: String
-    let agentName: String
-    var promptCount: Int
-    let startedAt: String
-    var endedAt: String
-    var totalDurationMS: Int
-    var totalInputTokens: Int
-    var totalOutputTokens: Int
-    var runOutcome: RunOutcome?
-    var runReason: String?
-    let runTarget: String?
-    let health: RunHealth
-    let record: String
-    var prompts: [PromptLogEntry]
+public struct PromptLogRun: Decodable, Identifiable {
+    public var id: String { runID }
+    public let runID: String
+    public let agentName: String
+    public var promptCount: Int
+    public let startedAt: String
+    public var endedAt: String
+    public var totalDurationMS: Int
+    public var totalInputTokens: Int
+    public var totalOutputTokens: Int
+    public var runOutcome: RunOutcome?
+    public var runReason: String?
+    public let runTarget: String?
+    public let health: RunHealth
+    public let record: String
+    public var prompts: [PromptLogEntry]
 
     init(update: PromptLogUpdateEntry) {
         runID = update.runID
@@ -121,20 +121,20 @@ struct PromptLogRun: Decodable, Identifiable {
     }
 }
 
-struct PromptLogEntry: Decodable, Identifiable {
-    let id: Int
-    let timestamp: String
-    let model: String
-    let agentName: String
-    let promptType: String
-    let durationMS: Int
-    let inputTokens: Int
-    let outputTokens: Int
-    let runTarget: String?
-    let messages: [JSONValue]
-    let response: JSONValue
-    let thinking: String
-    let hasTools: Bool
+public struct PromptLogEntry: Decodable, Identifiable {
+    public let id: Int
+    public let timestamp: String
+    public let model: String
+    public let agentName: String
+    public let promptType: String
+    public let durationMS: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let runTarget: String?
+    public let messages: [JSONValue]
+    public let response: JSONValue
+    public let thinking: String
+    public let hasTools: Bool
 
     init(update: PromptLogUpdateEntry) {
         id = update.id
@@ -229,42 +229,42 @@ struct RunOutcomeUpdatePayload: Decodable {
     }
 }
 
-enum MemoryType: String, Codable {
+public enum MemoryType: String, Codable {
     case collection
     case log
 }
 
-enum MemoryInclusion: String, Codable {
+public enum MemoryInclusion: String, Codable {
     case always
     case relevant
     case never
 }
 
-enum MemoryRecall: String, Codable {
+public enum MemoryRecall: String, Codable {
     case all
     case relevant
     case recent
 }
 
-enum MemorySection: String, Codable {
+public enum MemorySection: String, Codable {
     case entries
     case collectorRuns = "collector_runs"
 }
 
-struct MemoryRecord: Decodable, Identifiable {
-    var id: String { name }
-    let name: String
-    let type: MemoryType
-    let description: String
-    let intent: String?
-    let inclusion: MemoryInclusion
-    let recall: MemoryRecall
-    let published: Bool
-    let archived: Bool
-    let extractionPrompt: String?
-    let collectorIntervalSeconds: Int?
-    let lastCollectedAt: String?
-    let entryCount: Int
+public struct MemoryRecord: Decodable, Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let type: MemoryType
+    public let description: String
+    public let intent: String?
+    public let inclusion: MemoryInclusion
+    public let recall: MemoryRecall
+    public let published: Bool
+    public let archived: Bool
+    public let extractionPrompt: String?
+    public let collectorIntervalSeconds: Int?
+    public let lastCollectedAt: String?
+    public let entryCount: Int
 
     private enum CodingKeys: String, CodingKey {
         case name
@@ -282,12 +282,12 @@ struct MemoryRecord: Decodable, Identifiable {
     }
 }
 
-struct MemoryEntryRecord: Decodable, Identifiable {
-    let id: Int
-    let key: String?
-    let content: String
-    let author: String
-    let createdAt: String
+public struct MemoryEntryRecord: Decodable, Identifiable {
+    public let id: Int
+    public let key: String?
+    public let content: String
+    public let author: String
+    public let createdAt: String
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -298,10 +298,10 @@ struct MemoryEntryRecord: Decodable, Identifiable {
     }
 }
 
-struct CursorRecord: Decodable, Identifiable {
-    var id: String { logName }
-    let logName: String
-    let lastReadAt: String
+public struct CursorRecord: Decodable, Identifiable {
+    public var id: String { logName }
+    public let logName: String
+    public let lastReadAt: String
 
     private enum CodingKeys: String, CodingKey {
         case logName = "log_name"
@@ -309,13 +309,13 @@ struct CursorRecord: Decodable, Identifiable {
     }
 }
 
-struct MemoryDetail {
-    let memory: MemoryRecord
-    var entries: [MemoryEntryRecord]
-    var entriesHasMore: Bool
-    var collectorRuns: [PromptLogRun]
-    var collectorRunsHasMore: Bool
-    var cursors: [CursorRecord]
+public struct MemoryDetail {
+    public let memory: MemoryRecord
+    public var entries: [MemoryEntryRecord]
+    public var entriesHasMore: Bool
+    public var collectorRuns: [PromptLogRun]
+    public var collectorRunsHasMore: Bool
+    public var cursors: [CursorRecord]
 
     init(payload: MemoryDetailResponsePayload) {
         memory = payload.memory
@@ -327,12 +327,12 @@ struct MemoryDetail {
     }
 }
 
-struct MemoryPage {
-    let name: String
-    let section: MemorySection
-    let entries: [MemoryEntryRecord]
-    let runs: [PromptLogRun]
-    let hasMore: Bool
+public struct MemoryPage {
+    public let name: String
+    public let section: MemorySection
+    public let entries: [MemoryEntryRecord]
+    public let runs: [PromptLogRun]
+    public let hasMore: Bool
 
     init(payload: MemoryPageResponsePayload) {
         name = payload.name
@@ -385,32 +385,32 @@ struct MemoryChangedPayload: Decodable {
     let name: String?
 }
 
-struct CollectionTriggerResult: Decodable {
+public struct CollectionTriggerResult: Decodable {
     let name: String
     let success: Bool
     let message: String
 }
 
-enum DomainPermission: String, Codable {
+public enum DomainPermission: String, Codable {
     case allowed
     case blocked
 }
 
-struct DomainPermissionEntry: Decodable, Identifiable {
-    var id: String { domain }
-    let domain: String
-    let permission: DomainPermission
+public struct DomainPermissionEntry: Decodable, Identifiable {
+    public var id: String { domain }
+    public let domain: String
+    public let permission: DomainPermission
 }
 
 struct DomainPermissionsSyncPayload: Decodable {
     let permissions: [DomainPermissionEntry]
 }
 
-struct PermissionPrompt: Decodable, Identifiable {
-    var id: String { requestID }
-    let requestID: String
-    let domain: String
-    let url: String
+public struct PermissionPrompt: Decodable, Identifiable {
+    public var id: String { requestID }
+    public let requestID: String
+    public let domain: String
+    public let url: String
 
     private enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
@@ -427,7 +427,7 @@ struct PermissionDismissPayload: Decodable {
     }
 }
 
-enum JSONValue: Codable, Equatable {
+public enum JSONValue: Codable, Equatable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -435,7 +435,7 @@ enum JSONValue: Codable, Equatable {
     case array([JSONValue])
     case null
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
             self = .null
@@ -454,7 +454,7 @@ enum JSONValue: Codable, Equatable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
         case .string(let value):
