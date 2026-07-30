@@ -40,14 +40,20 @@ from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import DistillInput, SkillDraft, distill_steps, slug_skill_name
+from penny.database.skills import (
+    WRITE_TARGET_DESCRIPTION,
+    DistillInput,
+    SkillDraft,
+    distill_steps,
+    slug_skill_name,
+)
 
 # The production verdict-application, used as itself: this case's fixture skill
 # has to be the SHAPE run-end extraction really produces (two bindable
 # parameters and one placeholder), and re-implementing that mapping here would
 # be a fixture that drifts from the pipeline it stands in for.
 from penny.skill_extraction import _apply_parameter_labels
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -318,6 +324,14 @@ _VERDICTS = {
         verdict=ParameterVerdict.PLACEHOLDER,
         description="what to call the entry it saves",
     ),
+    # The destination became an ordinary judged leaf in #1783.  This round's user
+    # said "go to <url>, find the price, and remember it" and named no collection,
+    # so Penny chose it — a placeholder the attachment fills, which is precisely
+    # what the apply turn under test then binds.
+    _WATCH_COLLECTION: ParameterLabel(
+        verdict=ParameterVerdict.PLACEHOLDER,
+        description=WRITE_TARGET_DESCRIPTION,
+    ),
 }
 
 
@@ -329,7 +343,10 @@ def learn_to_apply_fixture_skill() -> SkillDraft:
     the shape extraction actually produces, not a convenient copy of it: two
     bindable parameters the conversation can supply, and a placeholder no user
     could."""
-    steps, parameters = distill_steps(_DEMONSTRATED_ROUND)
+    # The registry as this fixture's round saw it — #1783 marks a leaf whose
+    # demonstrated value names one of Penny's collections, so the destination is
+    # only adjudicated as one if the collection actually existed.
+    steps, parameters = distill_steps(_DEMONSTRATED_ROUND, frozenset({_WATCH_COLLECTION}))
     verdicts = {}
     for step in steps:
         for sub in step.substitutions:
@@ -386,7 +403,7 @@ def _seed_demonstrated_round(db: Database) -> None:
         content=_PENNY_REPORT,
     )
     db.memories.create_collection(_WATCH_COLLECTION, "the aurora deck 2 listing price")
-    db.memory(_WATCH_COLLECTION).write(
+    require_memory(db, _WATCH_COLLECTION).write(
         [EntryInput(key=_DEMO_KEY, content=_PRICE)],
         author=PennyConstants.CHAT_AGENT_NAME,
     )
