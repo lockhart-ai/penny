@@ -168,13 +168,13 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "one of the known skills does what they are asking for AND their "
         "message supplies everything that skill needs — mere resemblance to a "
         "skill is not coverage — add a second line naming that skill: "
-        f"{SKILL_TAG} <its name, copied exactly from Known skills>"
+        f"{SKILL_TAG} <its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
         "a known skill looks like it covers what they are asking for, but "
         "something that skill needs is missing from their message — add a "
-        f"second line naming that skill: {SKILL_TAG} <its name, copied exactly "
-        "from Known skills>"
+        f"second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
+        "in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.ELICIT): (
         "they are asking to set up an ongoing task or routine and no known skill covers it"
@@ -187,7 +187,7 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.REQUEST, ConversationState.APPLY): (
         "their message supplies the details the assistant asked for, or "
         "confirms the skill it named — add a second line naming that skill: "
-        f"{SKILL_TAG} <its name, copied exactly from Known skills>"
+        f"{SKILL_TAG} <its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.REQUEST, ConversationState.ELICIT): (
         "they say that skill is not what they meant, and still want the task done"
@@ -209,7 +209,7 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "routine's own steps — what to read, what to look for, what to "
         "remember, where to save it — is instructions, even when it also "
         f"sounds like a yes. Add a second line naming that skill: {SKILL_TAG} "
-        "<its name, copied exactly from Known skills>"
+        "<its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user's message is a set of instructions to follow for the task "
@@ -267,10 +267,19 @@ class SkillCandidate(BaseModel):
     parameters: list[CandidateParameter] = []
 
     def render(self) -> str:
-        """The one-line candidate render: ``name — description`` plus a
+        """The one-line candidate render: ``"name" — description`` plus a
         ``(needs: …)`` tail naming each declared parameter with its
-        what-to-supply — absent (byte-identical) for a parameterless skill."""
-        line = f"{self.name} — {self.description}"
+        what-to-supply — absent (byte-identical) for a parameterless skill.
+
+        The name is QUOTED because a skill-gated draw has to copy it back
+        verbatim, and unquoted it had no visible end: the line joins name to
+        description with an em-dash and then uses em-dashes again inside the
+        ``needs`` tail, so "copy the name exactly" addressed a boundary the
+        render never drew.  A draw pasted the entire line — name, description
+        and needs — failed membership validation, rerolled, and did it again,
+        losing a turn whose state it had reasoned out correctly twice.  Quotes
+        make the token the instruction refers to the token the eye can see."""
+        line = f'"{self.name}" — {self.description}'
         if not self.parameters:
             return line
         needs = "; ".join(

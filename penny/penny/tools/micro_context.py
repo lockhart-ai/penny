@@ -444,7 +444,7 @@ _SKILL_LINE = LineSpec(
     fields=(
         FieldSpec(
             name=DrawField.SKILL,
-            placeholder="<the skill's name, copied exactly from Known skills>",
+            placeholder="<the skill's name, exactly as quoted in Known skills>",
         ),
     ),
 )
