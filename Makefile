@@ -108,8 +108,28 @@ client-check:
 # Usage: GH_TOKEN=$(make token) gh pr create ...
 # auth.py is pure stdlib, so it runs in the penny service (github_api is mounted
 # there at /shared/github_api); the GitHub App creds come from the mounted .env.
+#
+# FAILS LOUDLY, and the guard lives HERE rather than in every caller.  Compose
+# chatter on stderr is held back while the run succeeds (callers capture stdout,
+# so only the token is ever printed) and released verbatim the moment it does
+# not — an empty token with no reason is what this target used to hand back, and
+# a caller cannot diagnose a missing credential from an unready mount from a
+# revoked key without it.  Empty output on a zero exit is treated as failure too:
+# the whole point of the target is that success means a usable token.
 token:
-	@docker compose run --rm --no-deps --entrypoint "" penny uv run python /shared/github_api/auth.py 2>/dev/null
+	@err="$$(mktemp)"; \
+	tok="$$(docker compose run --rm --no-deps --entrypoint "" penny \
+		uv run python /shared/github_api/auth.py 2>"$$err")"; \
+	status=$$?; \
+	if [ $$status -ne 0 ] || [ -z "$$tok" ]; then \
+		echo "make token: could not mint a GitHub App installation token." >&2; \
+		[ -s "$$err" ] && sed 's/^/  /' "$$err" >&2; \
+		echo "  (checked: docker running? .env mounted with GITHUB_APP_* set?)" >&2; \
+		rm -f "$$err"; \
+		exit 1; \
+	fi; \
+	rm -f "$$err"; \
+	printf '%s\n' "$$tok"
 
 # --- Code quality (auto-detects host vs container via LOCAL env var) ---
 
