@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     # Imported lazily for annotations only — a top-level ``penny.database`` import
     # here runs before ``penny.penny`` primes the package and hits a circular import.
     from penny.database import Database
+    from penny.database.memory import Memory
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -133,6 +134,22 @@ def db(request, tmp_path) -> Database:
     if request.node.get_closest_marker("bare_db"):
         return schema_only_db(str(tmp_path / "test.db"))
     return migrated_db(str(tmp_path / "test.db"))
+
+
+def require_memory(database: Database, name: str) -> Memory:
+    """The ``Memory`` object for ``name``, asserted present — the narrowing companion
+    to ``db.memory(name)``, whose ``Memory | None`` return a test almost never wants.
+
+    A test that seeds or reads a memory it just created knows the row exists, so the
+    interesting failure is a *typo'd or since-renamed name* — which this reports as
+    the name that missed, instead of an ``AttributeError`` on ``None`` several frames
+    later. Narrowing it here (rather than at each call site) is also what lets
+    ``unresolved-attribute`` stay an error: the rule's remaining true positives are
+    calls to methods that don't exist at all.
+    """
+    memory = database.memory(name)
+    assert memory is not None, f"memory {name!r} does not exist"
+    return memory
 
 
 @pytest.fixture

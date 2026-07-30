@@ -40,7 +40,7 @@ from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, computed_field
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import (
@@ -256,7 +256,7 @@ class Memory:
                 session.exec(
                     select(MemoryEntry)
                     .where(MemoryEntry.memory_name == self.name)
-                    .order_by(MemoryEntry.created_at.asc())  # type: ignore[union-attr]
+                    .order_by(col(MemoryEntry.created_at).asc())
                 ).all()
             )
 
@@ -265,13 +265,12 @@ class Memory:
             query = (
                 select(MemoryEntry)
                 .where(MemoryEntry.memory_name == self.name)
-                .order_by(MemoryEntry.created_at.desc())  # type: ignore[union-attr]
+                .order_by(col(MemoryEntry.created_at).desc())
             )
             if search:
                 like = f"%{search}%"
                 query = query.where(
-                    MemoryEntry.content.like(like)  # ty: ignore[unresolved-attribute]
-                    | MemoryEntry.key.like(like)  # ty: ignore[unresolved-attribute]
+                    col(MemoryEntry.content).like(like) | col(MemoryEntry.key).like(like)
                 )
             if offset:
                 query = query.offset(offset)
@@ -284,7 +283,7 @@ class Memory:
             query = (
                 select(MemoryEntry)
                 .where(MemoryEntry.memory_name == self.name, MemoryEntry.created_at > cursor)
-                .order_by(MemoryEntry.created_at.asc())  # type: ignore[union-attr]
+                .order_by(col(MemoryEntry.created_at).asc())
             )
             if cap is not None:
                 query = query.limit(cap)
@@ -296,7 +295,7 @@ class Memory:
                 session.exec(
                     select(MemoryEntry).where(
                         MemoryEntry.memory_name == self.name,
-                        MemoryEntry.content_embedding.is_not(None),  # type: ignore[union-attr]
+                        col(MemoryEntry.content_embedding).is_not(None),
                     )
                 ).all()
             )
@@ -346,9 +345,9 @@ class Collection(Memory):
                     select(MemoryEntry.key)
                     .where(
                         MemoryEntry.memory_name == self.name,
-                        MemoryEntry.key.is_not(None),  # type: ignore[union-attr]
+                        col(MemoryEntry.key).is_not(None),
                     )
-                    .order_by(MemoryEntry.created_at.asc())  # type: ignore[union-attr]
+                    .order_by(col(MemoryEntry.created_at).asc())
                 ).all()
             )
         seen: set[str] = set()
@@ -707,19 +706,19 @@ class MessageLogMemory(Log):
     def _select(self):
         return select(MessageLog).where(
             MessageLog.direction == self._direction,
-            MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
+            col(MessageLog.is_reaction).is_(False),
         )
 
     def _all_rows(self) -> list[MemoryEntry]:
         with self._session() as session:
-            rows = session.exec(self._select().order_by(MessageLog.timestamp.asc())).all()
+            rows = session.exec(self._select().order_by(col(MessageLog.timestamp).asc())).all()
         return [self._to_entry(row) for row in rows]
 
     def _newest_rows(self, k: int | None, offset: int, search: str | None) -> list[MemoryEntry]:
         with self._session() as session:
-            query = self._select().order_by(MessageLog.timestamp.desc())
+            query = self._select().order_by(col(MessageLog.timestamp).desc())
             if search:
-                query = query.where(MessageLog.content.like(f"%{search}%"))  # ty: ignore[union-attr]
+                query = query.where(col(MessageLog.content).like(f"%{search}%"))
             if offset:
                 query = query.offset(offset)
             if k is not None:
@@ -732,7 +731,7 @@ class MessageLogMemory(Log):
             query = (
                 self._select()
                 .where(MessageLog.timestamp > cursor)
-                .order_by(MessageLog.timestamp.asc())
+                .order_by(col(MessageLog.timestamp).asc())
             )
             if cap is not None:
                 query = query.limit(cap)
@@ -741,9 +740,7 @@ class MessageLogMemory(Log):
 
     def _embedded_rows(self) -> list[MemoryEntry]:
         with self._session() as session:
-            rows = session.exec(
-                self._select().where(MessageLog.embedding.is_not(None))  # ty: ignore[union-attr]
-            ).all()
+            rows = session.exec(self._select().where(col(MessageLog.embedding).is_not(None))).all()
         return [self._to_entry(row) for row in rows]
 
 
@@ -1520,8 +1517,8 @@ class RunLog(Log):
 
     def _completion_clauses(self) -> list:
         return [
-            PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
-            PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+            col(PromptLog.run_outcome).isnot(None),
+            col(PromptLog.run_target).isnot(None),
         ]
 
     def _all_rows(self) -> list[MemoryEntry]:
@@ -1569,7 +1566,7 @@ class RunLog(Log):
         )
         if cursor is not None:
             query = query.where(PromptLog.timestamp > cursor)
-        order = PromptLog.timestamp.desc() if newest_first else PromptLog.timestamp.asc()
+        order = col(PromptLog.timestamp).desc() if newest_first else col(PromptLog.timestamp).asc()
         query = query.order_by(order)  # type: ignore[union-attr]
         if offset:
             query = query.offset(offset)
@@ -1594,8 +1591,8 @@ class RunLog(Log):
     def _group_prompts(session: Session, run_ids: list[str]) -> dict[str, list[PromptLog]]:
         rows = session.exec(
             select(PromptLog)
-            .where(PromptLog.run_id.in_(run_ids))  # ty: ignore[unresolved-attribute]
-            .order_by(PromptLog.timestamp.asc())
+            .where(col(PromptLog.run_id).in_(run_ids))
+            .order_by(col(PromptLog.timestamp).asc())
         ).all()
         grouped: dict[str, list[PromptLog]] = {}
         for prompt in rows:

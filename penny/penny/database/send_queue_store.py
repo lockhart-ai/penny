@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.database.models import SendQueueItem
 
@@ -58,10 +58,10 @@ class SendQueueStore:
             return session.exec(
                 select(SendQueueItem)
                 .where(
-                    SendQueueItem.sent_at.is_(None),  # ty: ignore[unresolved-attribute]
-                    SendQueueItem.cancelled_at.is_(None),  # ty: ignore[unresolved-attribute]
+                    col(SendQueueItem.sent_at).is_(None),
+                    col(SendQueueItem.cancelled_at).is_(None),
                 )
-                .order_by(SendQueueItem.created_at.asc())  # ty: ignore[unresolved-attribute]
+                .order_by(col(SendQueueItem.created_at).asc())
                 .limit(1)
             ).first()
 
@@ -78,10 +78,10 @@ class SendQueueStore:
                 session.exec(
                     select(SendQueueItem)
                     .where(
-                        SendQueueItem.sent_at.is_(None),  # ty: ignore[unresolved-attribute]
-                        SendQueueItem.cancelled_at.is_(None),  # ty: ignore[unresolved-attribute]
+                        col(SendQueueItem.sent_at).is_(None),
+                        col(SendQueueItem.cancelled_at).is_(None),
                     )
-                    .order_by(SendQueueItem.created_at.asc())  # ty: ignore[unresolved-attribute]
+                    .order_by(col(SendQueueItem.created_at).asc())
                 )
             )
 
@@ -101,8 +101,8 @@ class SendQueueStore:
                 session.exec(
                     select(SendQueueItem).where(
                         SendQueueItem.collection == collection,
-                        SendQueueItem.sent_at.is_(None),  # ty: ignore[unresolved-attribute]
-                        SendQueueItem.cancelled_at.is_(None),  # ty: ignore[unresolved-attribute]
+                        col(SendQueueItem.sent_at).is_(None),
+                        col(SendQueueItem.cancelled_at).is_(None),
                     )
                 )
             )

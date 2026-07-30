@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.database.models import EmailRule
 
@@ -52,7 +52,7 @@ class EmailRuleStore:
                     select(EmailRule)
                     .where(EmailRule.provider == provider)
                     .where(EmailRule.enabled == True)  # noqa: E712
-                    .order_by(EmailRule.created_at.asc())  # ty: ignore[unresolved-attribute]
+                    .order_by(col(EmailRule.created_at).asc())
                 )
             )
 

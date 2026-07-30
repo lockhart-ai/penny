@@ -1630,6 +1630,7 @@ class TestBlankOptionalArgsAreRefused:
         )
         assert updated.success
         row = update_db.memories.get("deals-watch")
+        assert row is not None
         assert row.description == "track the trail-runner shoe deals"
         assert row.collector_interval_seconds == 3600  # cadence untouched
         assert row.extraction_prompt == "test fixture extraction prompt"  # routine untouched

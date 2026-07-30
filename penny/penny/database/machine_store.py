@@ -29,7 +29,7 @@ there and this layer never imports the state enum — the same discipline
 
 from __future__ import annotations
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.constants import TransitionCause
 from penny.database.models import StateTransition
@@ -53,8 +53,8 @@ class MachineStore:
         with self._session() as session:
             return session.exec(
                 select(StateTransition).order_by(
-                    StateTransition.created_at.desc(),  # type: ignore[union-attr]
-                    StateTransition.id.desc(),  # type: ignore[union-attr]
+                    col(StateTransition.created_at).desc(),
+                    col(StateTransition.id).desc(),
                 )
             ).first()
 
@@ -131,8 +131,8 @@ class MachineStore:
                 session.exec(
                     select(StateTransition)
                     .order_by(
-                        StateTransition.created_at.desc(),  # type: ignore[union-attr]
-                        StateTransition.id.desc(),  # type: ignore[union-attr]
+                        col(StateTransition.created_at).desc(),
+                        col(StateTransition.id).desc(),
                     )
                     .limit(limit)
                 ).all()

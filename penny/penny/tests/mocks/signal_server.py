@@ -52,8 +52,9 @@ class MockSignalServer:
         await self._site.start()
 
         # Get the actual port (important when port=0)
-        assert self._site._server is not None
-        sock = self._site._server.sockets[0]
+        server = self._site._server
+        assert isinstance(server, asyncio.Server)
+        sock = server.sockets[0]
         self.port = sock.getsockname()[1]
 
     async def stop(self) -> None:

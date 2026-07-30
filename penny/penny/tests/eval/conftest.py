@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.config import Config
 from penny.constants import ChannelType, PennyConstants
@@ -51,7 +51,7 @@ from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.startup import get_restart_message
-from penny.tests.conftest import TEST_SENDER, run_penny_with_server
+from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import FailureCause
@@ -291,7 +291,7 @@ def seed_collection(
         collector_interval_seconds=interval,
         notify=notify,
     )
-    db.memory(synth.name).write(
+    require_memory(db, synth.name).write(
         [EntryInput(key=entry.split(" — ")[0], content=entry) for entry in synth.entries],
         author="user",
     )
@@ -719,7 +719,7 @@ def asked_for_page_structure(reply: str) -> str | None:
 
 def outgoing_replies(db: Database) -> list[str]:
     """Every message Penny sent this sample (the per-turn replies), oldest first."""
-    entries = db.memory("penny-messages").read_recent(window_seconds=3600, cap=None)
+    entries = require_memory(db, "penny-messages").read_recent(window_seconds=3600, cap=None)
     return [entry.content for entry in entries]
 
 
@@ -1000,7 +1000,7 @@ def _dump_thinking(db: Database, case_id: str, sample_index: int, *, failed: boo
     if not failed and not os.environ.get("EVAL_DUMP_THINKING"):
         return
     with Session(db.engine) as session:
-        rows = session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all()
+        rows = session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all()
     print(f"\n===== THINKING [{case_id} #{sample_index}] — {len(rows)} LLM call(s) =====")
     for index, row in enumerate(rows, start=1):
         label = row.agent_name or row.prompt_type or "?"
@@ -1450,7 +1450,7 @@ def _sample_prompt_rows(db: Database) -> list[PromptLog]:
     """Every promptlog row for the sample (the main agent's + every micro-context's), oldest
     first — the ledger order the transcript walk interleaves the actors by."""
     with Session(db.engine) as session:
-        return list(session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all())
+        return list(session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all())
 
 
 def _main_rows(rows: list[PromptLog]) -> list[PromptLog]:

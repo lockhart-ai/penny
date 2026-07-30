@@ -56,6 +56,11 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 - [ ] Datetime columns (`created_at`, `timestamp`, `learned_at`, etc.) used for recency ordering in all queries
 - [ ] Auto-increment `id` columns are NEVER used to infer chronological order — IDs are for joins and lookups only
 
+### Column Expressions Go Through `col()`
+- [ ] A SQLAlchemy column operator on a model field (`.desc()`, `.asc()`, `.in_()`, `.is_()`, `.like()`, …) is written `col(Model.field).desc()`, never `Model.field.desc()` — ty resolves the bare attribute to the field's plain Python type (`datetime`, `str`, …), so the bare form is an `unresolved-attribute` error
+- [ ] Not silenced with `# ty: ignore[unresolved-attribute]`: a per-line suppression there hides every *other* unresolved attribute on that line, including the next real one. `col()` keeps the field name itself checked
+- [ ] Need the mapped `Table` (for `.c`)? `inspect(Model).local_table.c`, not `Model.__table__.c`
+
 ### Store Pattern
 - [ ] Database access goes through domain-specific store classes (`db.messages`, `db.preferences`, `db.thoughts`, etc.)
 - [ ] The `Database` class is a thin facade — no business logic, just creates and exposes stores

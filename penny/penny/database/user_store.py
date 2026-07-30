@@ -3,7 +3,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.constants import PennyConstants
 from penny.database.models import MessageLog, MuteState, UserInfo
@@ -85,7 +85,7 @@ class UserStore:
                     MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     MessageLog.timestamp <= timestamp + buffer,
                 )
-                .order_by(MessageLog.timestamp.desc())
+                .order_by(col(MessageLog.timestamp).desc())
                 .limit(1)
             ).first()
 

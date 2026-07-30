@@ -44,7 +44,7 @@ import pytest
 from penny.constants import PennyConstants, RunOutcome
 from penny.database import Database
 from penny.database.memory import LogEntryInput
-from penny.tests.conftest import TEST_SENDER
+from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
     ChatEval,
@@ -241,7 +241,7 @@ _BROWSE_TOPIC_TOKENS = ("tidewatch", "selmer", "verdant")
 
 
 def _seed_browse_history(db: Database) -> None:
-    db.memory(_BROWSE_RESULTS).append(
+    require_memory(db, _BROWSE_RESULTS).append(
         [LogEntryInput(content=content) for content in _BROWSE_ENTRIES], author="chat"
     )
 

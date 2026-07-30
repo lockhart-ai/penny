@@ -57,6 +57,12 @@ class MockLlmClient:
         self.db = kwargs.get("db")
         self.requests: list[dict] = []
         self._response_handler: Callable[[dict, int], LlmResponse] | None = None
+        # Which micro-context flavours the current handler CLAIMS (see
+        # ``set_response_handler``) — plain state, not attributes smuggled onto
+        # the handler function, so a typo is a signature error rather than a
+        # silently-ignored flag.
+        self._handler_answers_micro_contexts = True
+        self._handler_answers_state_classifier = False
         self._request_count = 0
         self._embed_handler: Callable[[str, str | list[str]], list[list[float]]] | None = None
         self.embed_requests: list[dict] = []
@@ -64,13 +70,25 @@ class MockLlmClient:
         # ``requests`` so per-call-count assertions in flow tests stay stable.
         self.micro_requests: list[dict] = []
 
-    def set_response_handler(self, handler: Callable[[dict, int], LlmResponse]) -> None:
+    def set_response_handler(
+        self,
+        handler: Callable[[dict, int], LlmResponse],
+        *,
+        answers_micro_contexts: bool = True,
+        answers_state_classifier: bool = False,
+    ) -> None:
         """Set a custom response handler.
 
         Args:
             handler: Function that takes (request_data, request_count) and returns LlmResponse
+            answers_micro_contexts: the handler serves browse micro-context calls itself
+                (the default — a handler that wants the built-in intercept passes False)
+            answers_state_classifier: the handler serves state-classifier calls itself
+                (opt-in — nearly every test wants the intercept; see ``chat``)
         """
         self._response_handler = handler
+        self._handler_answers_micro_contexts = answers_micro_contexts
+        self._handler_answers_state_classifier = answers_state_classifier
 
     def set_default_flow(
         self, final_response: str = "test response", search_query: str = "test query"
@@ -84,8 +102,8 @@ class MockLlmClient:
                 )
             return self._make_text_response(request, final_response)
 
-        handler.answers_micro_contexts = False  # default flow: let the intercept serve them
-        self._response_handler = handler
+        # Default flow: let the intercept serve the micro-contexts.
+        self.set_response_handler(handler, answers_micro_contexts=False)
 
     async def chat(
         self,
@@ -112,9 +130,7 @@ class MockLlmClient:
         # response handlers keyed on call ordinals (set_default_flow) stay stable.
         # Only when no custom handler claims micro-context calls: a test that sets
         # its own handler (the micro-context contract tests) keeps full control.
-        handler_defers = self._response_handler is None or not getattr(
-            self._response_handler, "answers_micro_contexts", True
-        )
+        handler_defers = self._response_handler is None or not self._handler_answers_micro_contexts
         system = messages[0].get("content", "") if messages else ""
         if (
             handler_defers
@@ -136,11 +152,8 @@ class MockLlmClient:
         # Opt-IN rather than opt-out (the reverse of the browse intercept above):
         # nearly every test exercises a flow that says nothing about the machine,
         # so the intercept is the default and a handler that actually drives the
-        # classifier declares ``answers_state_classifier = True``.
-        if (
-            not getattr(self._response_handler, "answers_state_classifier", False)
-            and system == STATE_CLASSIFIER_SYSTEM_PROMPT
-        ):
+        # classifier passes ``answers_state_classifier=True``.
+        if not self._handler_answers_state_classifier and system == STATE_CLASSIFIER_SYSTEM_PROMPT:
             self.micro_requests.append(request_data)
             return self._make_text_response(request_data, "STATE: idle")
         self.requests.append(request_data)

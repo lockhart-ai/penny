@@ -161,7 +161,9 @@ async def test_update_event_applies_changes_and_renders_summary():
         "  - Time: 2026-07-22 14:00 to 15:00\n"
         "  - Location: Room 2"
     )
-    kwargs = client.update_event.await_args.kwargs
+    await_args = client.update_event.await_args
+    assert await_args is not None
+    kwargs = await_args.kwargs
     assert kwargs["etag"] == 7
     # _parse_iso_datetime keeps a bare ISO string naive (no 'Z' → no tzinfo).
     assert kwargs["start"] == datetime(2026, 7, 22, 14, 0)
@@ -202,7 +204,9 @@ async def test_update_recurring_event_switches_edittype_and_sets_recurrenceid():
     )
 
     assert result.success
-    kwargs = client.update_event.await_args.kwargs
+    await_args = client.update_event.await_args
+    assert await_args is not None
+    kwargs = await_args.kwargs
     assert kwargs["recurrence_edittype"] == "following"
     assert kwargs["recurrenceid"] == "20260722T100000Z"
     assert kwargs["rrule"] == "FREQ=WEEKLY"

@@ -2,7 +2,7 @@
 
 import logging
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.database.models import Device
 
@@ -39,7 +39,7 @@ class DeviceStore:
             return session.exec(
                 select(Device)
                 .where(Device.is_default == True)  # noqa: E712
-                .order_by(Device.created_at.asc(), Device.id.asc())
+                .order_by(col(Device.created_at).asc(), col(Device.id).asc())
             ).first()
 
     def get_default_identifier(self) -> str | None:

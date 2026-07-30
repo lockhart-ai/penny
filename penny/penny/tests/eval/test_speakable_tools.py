@@ -23,6 +23,7 @@ import pytest
 
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     REPLY_ANCHOR,
     ChatEval,
@@ -72,7 +73,7 @@ def _seed_games(db: Database) -> None:
 
 def _seed_games_with_mistforge(db: Database) -> None:
     seed_collection(db, _GAMES)
-    db.memory(_GAMES_NAME).write(
+    require_memory(db, _GAMES_NAME).write(
         [EntryInput(key=_MISTFORGE_KEY, content="Mistforge Tactics — a turn-based strategy game.")],
         author="user",
     )
@@ -84,12 +85,12 @@ def _seed_likes(db: Database) -> None:
         ("hiking", "hiking — loves weekend hikes"),
         ("jazz", "jazz — a big fan of jazz records"),
     ):
-        db.memory(_LIKES).write([EntryInput(key=key, content=content)], author="user")
+        require_memory(db, _LIKES).write([EntryInput(key=key, content=content)], author="user")
 
 
 def _seed_sweep(db: Database) -> None:
     _seed_likes(db)
-    db.memory(_DISLIKES).write(
+    require_memory(db, _DISLIKES).write(
         [EntryInput(key="loud offices", content="loud offices — can't focus in them")],
         author="user",
     )
