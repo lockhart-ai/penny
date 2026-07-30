@@ -11,6 +11,7 @@ import pytest
 
 from penny.database import Database
 from penny.database.skills import (
+    WRITE_TARGET_DESCRIPTION,
     DistillInput,
     SkillDraft,
     SkillParameter,
@@ -28,8 +29,9 @@ from penny.tools.skill_tools import SkillReadTool
 #
 # Structural provenance (#1659): the browse query and the extract instruction are
 # non-binding string leaves → HOLES; the extracted reading ("1,842 m") flows
-# step 1 → step 2 as a BINDING; the write TARGET ("elevations") is owned by
-# write-retarget, never a hole.  All fictional.
+# step 1 → step 2 as a BINDING; the write TARGET ("elevations") is a PLACEHOLDER
+# (#1777) — never a hole, and never rendered as the demonstrated collection.  All
+# fictional.
 
 _UTTERANCE = "Save the Zephyr Ridge elevation to my notes"
 _EXTRACTED_VALUE = "1,842 m"
@@ -82,6 +84,11 @@ def _elevation_steps() -> list[SkillStep]:
             arguments=json.loads(json.dumps(_WRITE_ARGS)),
             substitutions=[
                 SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                ),
+                SkillSubstitution(
                     path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter="queries"
                 ),
                 SkillSubstitution(
@@ -96,16 +103,18 @@ def _elevation_steps() -> list[SkillStep]:
 
 _WITH_HOLES = (
     "1. browse(queries=[{queries}], extract={extract})\n"
-    "2. collection_write(memory='elevations', "
+    "2. collection_write(memory={the collection this is set up on}, "
     "entries=[{'key': {queries}, 'content': the value from step 1}])"
 )
 
-# THE money literal — steps + bound params → the numbered TEXT extraction_prompt a
-# future collection actually runs.  Holes substituted verbatim; the binding reads
-# as a legible instruction.
+# THE money literal — steps + bound params → the numbered TEXT recipe.  Holes
+# substituted verbatim; the binding reads as a legible instruction; the write TARGET
+# stays a placeholder (#1777) because only ATTACHING the skill to a collection decides
+# it — ``params`` can never bind it, so an uninstantiated skill never names a
+# collection.  The prompt a collection actually runs adds ``retarget_writes`` (below).
 _MONEY_LITERAL = (
     "1. browse(queries=['Cinder Peak elevation'], extract='the elevation above sea level')\n"
-    "2. collection_write(memory='elevations', "
+    "2. collection_write(memory={the collection this is set up on}, "
     "entries=[{'key': 'Cinder Peak elevation', 'content': the value from step 1}])"
 )
 
@@ -117,13 +126,15 @@ def test_render_skill_with_holes_is_the_template():
 
 
 def test_render_skill_bound_is_the_money_literal():
-    """steps + bound params → the numbered text prompt a collection will run: every
-    hole substituted with the param value verbatim, the binding kept legible."""
+    """steps + bound params → the numbered text recipe: every hole substituted with the
+    param value verbatim, the binding kept legible, and the write target still the
+    placeholder — a skill hardcodes nothing from its demonstration (#1777)."""
     rendered = render_skill(
         _elevation_steps(),
         {"queries": "Cinder Peak elevation", "extract": "the elevation above sea level"},
     )
     assert rendered == _MONEY_LITERAL
+    assert "elevations" not in rendered  # the demonstrated collection is never named
 
 
 # ── Provenance inference: binding / hole / write-target in one run ─────────────
@@ -132,7 +143,8 @@ def test_render_skill_bound_is_the_money_literal():
 def test_distill_classifies_binding_holes_and_write_target():
     """Structural provenance (#1659): a value that flowed from a prior result is a
     BINDING; every other string leaf is a REQUIRED hole (shared values collapse to
-    one); the scoped-write target is NOT a hole — write-retarget owns it."""
+    one); the scoped-write target is NOT a hole — it is the write-retarget-bound
+    PLACEHOLDER (#1777), and the demonstrated name survives only in ``arguments``."""
     inputs = [
         DistillInput(source_ordinal=1, tool="browse", arguments=_BROWSE_ARGS, result=_BROWSE_OK),
         DistillInput(
@@ -160,14 +172,19 @@ def test_distill_classifies_binding_holes_and_write_target():
     assert step1[("extract",)].kind == SkillSubKind.HOLE
 
     # Step 2: the key is the SHARED 'queries' hole; the content is a BINDING to step
-    # 1's result; the write TARGET ('memory') is a retarget-owned constant — no sub.
+    # 1's result; the write TARGET ('memory') is the retarget-bound PLACEHOLDER (#1777).
     step2 = {tuple(s.path): s for s in steps[1].substitutions}
     assert step2[("entries", 0, "key")].kind == SkillSubKind.HOLE
     assert step2[("entries", 0, "key")].parameter == "queries"
     assert step2[("entries", 0, "content")].kind == SkillSubKind.BINDING
     assert step2[("entries", 0, "content")].step == 1
-    assert ("memory",) not in step2  # write-target owned by retarget, not parameterized
-    assert steps[1].arguments["memory"] == "elevations"  # the constant demo value stays
+    assert step2[("memory",)].kind == SkillSubKind.PLACEHOLDER
+    assert step2[("memory",)].description == WRITE_TARGET_DESCRIPTION
+    assert step2[("memory",)].parameter is None  # never a parameter — nobody can bind it
+    # The demonstrated collection survives as the verbatim ledger copy (provenance),
+    # and ONLY there — the render shows what belongs in the slot instead.
+    assert steps[1].arguments["memory"] == "elevations"
+    assert "elevations" not in render_skill(steps)
 
 
 def test_distill_binds_a_wrapped_prior_result():
@@ -337,10 +354,10 @@ async def test_fresh_migrated_registry_is_empty_and_reads_honestly(db):
 
 
 def test_retarget_writes_binds_the_write_memory_to_the_target():
-    """The scoped-write step's ``memory`` constant is overwritten with the target
+    """The scoped-write step's ``memory`` placeholder is BOUND to the target
     collection's name, and the render reflects it — a skill demoed against
     'elevations' renders its write to the collection it's applied to."""
-    steps = _elevation_steps()  # step 2 writes memory='elevations' (a constant)
+    steps = _elevation_steps()  # step 2's memory leaf is the #1777 placeholder
     retargeted = retarget_writes(steps, "cinder-elevation")
     rendered = render_skill(
         retargeted, {"queries": "Cinder Peak", "extract": "the elevation above sea level"}
@@ -352,12 +369,32 @@ def test_retarget_writes_binds_the_write_memory_to_the_target():
     )
     # Pure: the source steps are untouched (a skill is target-agnostic at rest).
     assert steps[1].arguments["memory"] == "elevations"
+    assert steps[1].substitutions[0].kind == SkillSubKind.PLACEHOLDER
 
 
-def test_write_target_is_not_a_hole_and_retarget_owns_it():
-    """The scoped-write target arg is NOT parameterized (#1659): the demo's
-    memory='knowledge' produces no hole, and applying the skill to a collection
-    renders the write to that TARGET — write-retarget owns the target structurally."""
+def test_retarget_writes_binds_a_legacy_write_target_constant():
+    """A skill distilled BEFORE #1777 carries the demo target as a bare constant with
+    no substitution at all.  Retarget still binds it, so an instantiated collection's
+    program writes to its own collection whatever shape the stored skill is in (the
+    render leak on that legacy shape is what migration 0101 clears)."""
+    legacy = SkillStep(
+        ordinal=1,
+        source_ordinal=1,
+        tool="collection_write",
+        arguments={"memory": "elevations", "entries": [{"key": "k", "content": "c"}]},
+        substitutions=[],
+    )
+    retargeted = retarget_writes([legacy], "peak-notes")
+    assert render_skill(retargeted) == (
+        "1. collection_write(memory='peak-notes', entries=[{'key': 'k', 'content': 'c'}])"
+    )
+
+
+def test_write_target_is_a_placeholder_not_a_hole_and_retarget_binds_it():
+    """The scoped-write target arg is NOT parameterized (#1659) and NOT the demo
+    literal (#1777): the demo's memory='knowledge' becomes a placeholder that renders
+    as what belongs there, and applying the skill to a collection binds it to that
+    TARGET — write-retarget owns the target structurally."""
     inputs = [
         DistillInput(
             source_ordinal=1,
@@ -377,7 +414,11 @@ def test_write_target_is_not_a_hole_and_retarget_owns_it():
     ]
     steps, holes = distill_steps(inputs)
     assert "memory" not in {hole.name for hole in holes}  # target is not a parameter
-    assert all(sub.path != ["memory"] for sub in steps[1].substitutions)
+    target_sub = next(sub for sub in steps[1].substitutions if sub.path == ["memory"])
+    assert target_sub.kind == SkillSubKind.PLACEHOLDER
+    unbound = render_skill(steps)
+    assert f"collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}" in unbound
+    assert "knowledge" not in unbound  # the demonstrated collection is never rendered
     retargeted = retarget_writes(steps, "peak-notes")
     rendered = render_skill(retargeted, {"queries": "Cinder Peak", "extract": "the elevation"})
     assert "collection_write(memory='peak-notes'" in rendered

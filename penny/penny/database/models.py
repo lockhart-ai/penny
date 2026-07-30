@@ -379,10 +379,12 @@ class Skill(SQLModel, table=True):
     succeeded, non-``done`` tool calls into ``steps`` (the ``LoggedToolCall`` shape as
     JSON) and factoring each argument by provenance into declared ``parameters`` (JSON)
     — a value from a prior step's result becomes a binding, the scoped-write target a
-    retarget-owned constant, every other string leaf a required parameter (#1658/
-    #1659), semantically named + described by the run-end naming micro-context
-    (#1668).  #1591's ``collection_set`` renders ``steps`` + bound params into the
-    collection's numbered TEXT ``extraction_prompt`` at creation.
+    placeholder write-retarget binds at instantiation (#1777 — the demonstrated
+    collection stays in ``steps`` as the verbatim ledger copy but never renders), every
+    other string leaf a required parameter (#1658/#1659), semantically named +
+    described by the run-end naming micro-context (#1668).  #1591's ``collection_set``
+    renders ``steps`` + bound params into the collection's numbered TEXT
+    ``extraction_prompt`` at creation.
 
     **One row per name — no versioning.**  Collections carry the rendered text
     snapshotted at creation, so a re-teach never retroactively changes an

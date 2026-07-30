@@ -37,7 +37,13 @@ from penny.database.models import (
 )
 from penny.database.mutation_store import MutationDetail
 from penny.database.skill_store import parameters_to_json, steps_to_json
-from penny.database.skills import SkillParameter, SkillStep, SkillSubKind, SkillSubstitution
+from penny.database.skills import (
+    WRITE_TARGET_DESCRIPTION,
+    SkillParameter,
+    SkillStep,
+    SkillSubKind,
+    SkillSubstitution,
+)
 from penny.prompts import Prompt
 
 USER = "+15550001111"
@@ -147,6 +153,9 @@ _TRACK_SHIPMENT_STEPS = steps_to_json(
     ]
 )
 _TRACK_SHIPMENT_HOLES = parameters_to_json([SkillParameter(name="tracking", required=True)])
+# Two steps, so the AMBIENT render (the 0-call firing surface) covers a scoped WRITE:
+# its target is the #1777 placeholder, and the collection the skill was demonstrated
+# against must never appear here — no instantiation runs on this surface to retarget it.
 _WATCH_FIELD_STEPS = steps_to_json(
     [
         SkillStep(
@@ -157,7 +166,26 @@ _WATCH_FIELD_STEPS = steps_to_json(
             substitutions=[
                 SkillSubstitution(path=["queries", 0], kind=SkillSubKind.HOLE, parameter="url")
             ],
-        )
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "demonstrated-on-collection",
+                "entries": [{"key": "price", "content": "$19"}],
+            },
+            substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
+                ),
+            ],
+        ),
     ]
 )
 _WATCH_FIELD_HOLES = parameters_to_json([SkillParameter(name="url", required=True)])
@@ -570,7 +598,10 @@ def test_self_state_archived_heavy_render(db):
 
 def test_self_state_taught_skills_only_render(db):
     """The taught-skill registry renders each skill's FULL recipe (#1665) — name,
-    intent, holes, and numbered steps, name order — the section's sole feed."""
+    intent, holes, and numbered steps, name order — the section's sole feed.  This is
+    the 0-call FIRING surface: the model acts on this text directly, with no
+    instantiation to retarget anything, so a scoped write must show the #1777
+    placeholder and never the collection the skill was demonstrated against."""
     with Session(db.engine) as session:
         _add_skill(
             session,
@@ -591,6 +622,7 @@ def test_self_state_taught_skills_only_render(db):
         session.commit()
     actual = SelfStateHeader(db, None).render()
     assert actual == _TAUGHT_SKILLS_ONLY
+    assert "demonstrated-on-collection" not in actual
 
 
 # ── 4b. Activity-block shape matrix ───────────────────────────────────────
@@ -988,6 +1020,8 @@ _KITCHEN_SINK = (
     "  - url (required)\n"
     "steps:\n"
     "  1. browse(queries=[{url}])\n"
+    "  2. collection_write(memory={the collection this is set up on}, "
+    "entries=[{'key': 'price', 'content': the value from step 1}])\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1181,6 +1215,8 @@ _TAUGHT_SKILLS_ONLY = (
     "  - url (required)\n"
     "steps:\n"
     "  1. browse(queries=[{url}])\n"
+    "  2. collection_write(memory={the collection this is set up on}, "
+    "entries=[{'key': 'price', 'content': the value from step 1}])\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

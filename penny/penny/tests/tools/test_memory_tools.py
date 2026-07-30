@@ -28,6 +28,7 @@ from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill
 from penny.database.mutation_store import mutation_change_summary
 from penny.database.skill_store import steps_from_json
 from penny.database.skills import (
+    WRITE_TARGET_DESCRIPTION,
     SkillDraft,
     SkillParameter,
     SkillStep,
@@ -204,7 +205,10 @@ def _seed_collection(
 
 def _watch_skill_steps() -> list[SkillStep]:
     """The fictional demonstration's steps: a {peak} hole reused in the browse query
-    and the write key, and step 1's reading flowing into step 2 as a binding."""
+    and the write key, step 1's reading flowing into step 2 as a binding, and the write
+    TARGET as the #1777 placeholder (the shape ``distill_steps`` produces today —
+    ``_river_skill_steps`` keeps the pre-#1777 bare-constant shape, so both reach the
+    front door and both must render the write to the collection they're applied to)."""
     return [
         SkillStep(
             ordinal=1,
@@ -223,6 +227,11 @@ def _watch_skill_steps() -> list[SkillStep]:
             tool="collection_write",
             arguments={"memory": "elevations", "entries": [{"key": _SKILL_HOLE, "content": "x"}]},
             substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                ),
                 SkillSubstitution(
                     path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
                 ),
@@ -988,7 +997,9 @@ def _watch_skill_steps_reteught() -> list[SkillStep]:
 
 def _river_skill_steps() -> list[SkillStep]:
     """A distinct skill: a {river} hole in the browse query and write key, step 1's
-    reading flowing into step 2 — the swap target."""
+    reading flowing into step 2 — the swap target.  Its write target is kept in the
+    PRE-#1777 shape (a bare constant, no substitution), so the swap path is exercised
+    on a skill taught before the write-target placeholder existed."""
     return [
         SkillStep(
             ordinal=1,
@@ -1607,6 +1618,13 @@ class TestTwoStepTeachBootstrap:
         taught_name = extraction.skill.name
         assert taught_name == "watch-the-meridian-trail-3-shoe"
         assert db.skills.get(taught_name) is not None
+        # The learned skill hardcodes NOTHING from the round that taught it (#1777):
+        # the collection it was demonstrated against is absent from its recipe, which
+        # names what belongs in the write target instead.  This is the render the model
+        # fires from ambiently, where no instantiation retargets anything.
+        recipe = render_skill(steps_from_json(db.skills.get(taught_name).steps))
+        assert "deals-watch" not in recipe
+        assert f"collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}" in recipe
 
         # 4. Adopt the skill onto the inert collection with a trigger + notify (real update).
         adopted = await CollectionUpdateTool(

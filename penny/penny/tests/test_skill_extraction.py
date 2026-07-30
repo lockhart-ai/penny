@@ -16,7 +16,10 @@ The #1770 additions: the labeller ADJUDICATES each candidate parameter — a PAR
 verdict keeps it a required parameter, a PLACEHOLDER verdict drops it and renders
 what belongs there instead of freezing the demonstrated value, and NO verdict (or a
 malformed one) keeps the arg-derived required parameter · the naming system prompt
-as a whole-render literal.  All content is synthetic (aurora / faux-market).
+as a whole-render literal.  The #1777 addition: the scoped-write TARGET is a
+placeholder on the same footing — the demonstrated collection survives only as the
+step's verbatim ledger arguments and never reaches the rendered recipe.  All content
+is synthetic (aurora / faux-market).
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from penny.database.skill_store import (
     steps_to_json,
 )
 from penny.database.skills import (
+    WRITE_TARGET_DESCRIPTION,
     SkillParameter,
     SkillStep,
     SkillSubKind,
@@ -145,7 +149,8 @@ def _log_run(
 async def test_read_write_run_qualifies_and_distils_correctly(db):
     """A browse (read) + collection_write (act) run is a routine: it qualifies and a
     skill is extracted with the query/extract as required holes, the write content
-    bound to the browse result, and the write target NOT a hole (retarget owns it).
+    bound to the browse result, and the write target a PLACEHOLDER (#1777 — retarget
+    binds it at instantiation, and the demonstrated collection is never rendered).
     The description is the run's bare utterance; the framework ``reasoning`` is gone."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -161,8 +166,15 @@ async def test_read_write_run_qualifies_and_distils_correctly(db):
     assert [hole.name for hole in parameters_from_json(skill.parameters)] == ["queries", "extract"]
     steps = steps_from_json(skill.steps)
     assert [step.tool for step in steps] == ["browse", "collection_write"]
-    content_sub = {tuple(s.path): s for s in steps[1].substitutions}[("entries", 0, "content")]
+    subs = {tuple(s.path): s for s in steps[1].substitutions}
+    content_sub = subs[("entries", 0, "content")]
     assert content_sub.kind.value == "binding" and content_sub.step == 1
+    # The write TARGET: a placeholder, not a parameter — the demonstrated collection
+    # stays in ``arguments`` as the ledger copy and never reaches the recipe (#1777).
+    assert subs[("memory",)].kind == SkillSubKind.PLACEHOLDER
+    assert subs[("memory",)].description == WRITE_TARGET_DESCRIPTION
+    assert steps[1].arguments["memory"] == "aurora-prices"
+    assert "aurora-prices" not in render_skill_full(skill)
     # The framework reasoning think-aloud is stripped from every stored step.
     assert all("reasoning" not in step.arguments for step in steps)
 
@@ -755,8 +767,9 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     assert unbound_required_parameters(params, {"url": "u", "what_to_find": "w"}) == []
 
     # The whole-skill render (what `skill_read` returns and the ambient Skills section
-    # shows): only the real parameters are listed, and each assistant-produced leaf
-    # shows WHAT BELONGS THERE in placeholder syntax — never the demonstrated value.
+    # shows): only the real parameters are listed, and every leaf no user can bind —
+    # each assistant-produced value AND the write target (#1777) — shows WHAT BELONGS
+    # THERE in placeholder syntax, never the demonstrated value.
     assert render_skill_full(result.skill) == (
         "skill 'watch-a-listing-price'\n"
         "what it's for: Look up a price on a listing page and record it.\n"
@@ -765,7 +778,7 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
         "  - what_to_find (required): what to pull from the page\n"
         "steps:\n"
         "  1. browse(queries=[{url}], extract={what_to_find})\n"
-        "  2. collection_write(memory='aurora-prices', entries=["
+        "  2. collection_write(memory={the collection this is set up on}, entries=["
         "{'key': {url}, 'content': the value from step 1}, "
         "{'key': {a short label for the second entry}, "
         "'content': {a note about the page you just read}}])"

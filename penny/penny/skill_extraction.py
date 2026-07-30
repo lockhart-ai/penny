@@ -18,8 +18,9 @@ retired tool produced, now fired by the run finishing instead of a model call.
   calls — a skill renders into a collector prompt, so only collector-runnable steps
   belong in it, and they count for nothing in the taxonomy (#1668).
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
-  steps: strips the framework ``reasoning`` leaf, excludes the retarget-owned
-  write target, classifies bindings vs. candidate parameters (#1659/#1660/#1662).
+  steps: strips the framework ``reasoning`` leaf, marks the scoped-write target a
+  retarget-bound placeholder (#1777 — never the demonstrated collection's name),
+  classifies bindings vs. candidate parameters (#1659/#1660/#1662).
 * **name + adjudicate** — a GENERIC verb-noun label + a one-line generic description,
   written by a single-shot naming micro-context (#1665, the SECOND customer of the
   micro-context machinery) over the distilled routine — so a skill is named by its

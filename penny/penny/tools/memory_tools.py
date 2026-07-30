@@ -535,9 +535,9 @@ def render_skill_prompt(
 
     Every scoped-write step's ``memory`` argument is retargeted to ``target_name`` at
     this seam (#1629): applying a skill to a collection is what DEFINES where its writes
-    land, so the demo-run target the skill baked in is replaced by the collection's own
-    name — the rendered program never lies about its write target, on either the one-call
-    create or the adopt path."""
+    land, so the placeholder the stored skill carries there (#1777) is BOUND to the
+    collection's own name — the rendered program never lies about its write target, on
+    either the one-call create or the adopt path."""
     missing = unbound_required_parameters(parameters_from_json(skill.parameters), params)
     if missing:
         return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)
