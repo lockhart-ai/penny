@@ -37,7 +37,14 @@ from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
 from penny.database.models import MemoryRow, PromptLog, Skill
 from penny.database.skill_store import steps_from_json
-from penny.database.skills import SkillDraft, SkillParameter, SkillStep, SkillSubKind
+from penny.database.skills import (
+    SkillDraft,
+    SkillParameter,
+    SkillStep,
+    SkillSubKind,
+    render_skill,
+    retarget_writes,
+)
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.llm.similarity import embed_text
@@ -2742,8 +2749,9 @@ def _placeholder_checks(value: str, kinds: dict[str, str], prompt: str) -> list[
 def _score_labelling(
     skill: Skill, prompt: str, user_values: Sequence[str], assistant_values: Sequence[str]
 ) -> list[Check]:
-    """The labelling case's graded checks (#1770), read off persisted state alone: the
-    values the user supplied against the ones the assistant produced."""
+    """The labelling case's graded checks (#1770), read off the learned skill and the
+    prompt rendered from it: the values the user supplied against the ones the assistant
+    produced."""
     kinds = _leaf_kinds(skill)
     checks = [_kept_parameter_check(value, kinds) for value in user_values]
     for value in assistant_values:
@@ -2756,7 +2764,7 @@ def _seed_demonstration(
 ) -> SkillExtractor:
     """Lay down one sample's fixture world — the conversation turns that carry the
     user's intent, the collection the round wrote into (stamped as created by that run,
-    so auto-attach fires the production way), and the demonstration itself — and return
+    the way a demonstrated round leaves it), and the demonstration itself — and return
     the REAL extractor, constructed exactly as ``ChatAgent`` constructs it."""
     seed_user(penny.db)
     for turn in conversation:
@@ -2773,24 +2781,54 @@ def _seed_demonstration(
     )
 
 
-async def _learn_and_attach(extractor: SkillExtractor, run_id: str, target: str, db: Database):
-    """Run the production pipeline over the fixture ledger — distil → label → attach —
-    and return ``(skill, the extraction_prompt a collector would run)``.  Both halves
-    fail LOUDLY when the fixture doesn't reach them: a demonstration that never
-    qualifies, or an attach that stamps no prompt, would otherwise score the
+def _demonstrated_bindings(skill: Skill) -> dict[str, str]:
+    """Each real parameter's DEMONSTRATED value, read off the steps' verbatim arguments
+    by the substitution paths.  Only ``HOLE`` leaves are read: a ``PLACEHOLDER`` leaf is
+    by definition not user-suppliable, so binding it would BE the freeze the verdict
+    exists to prevent — and would make the not-frozen checks green by construction.
+
+    Binding is what gives those checks teeth: a leaf the labeller kept a parameter
+    renders as its demonstrated value, so an assistant-produced phrase mislabelled as a
+    parameter shows up in the prompt and the check fails.  Rendered unbound, every
+    parameter would come out as ``{name}`` and no phrase could ever be caught."""
+    bindings: dict[str, str] = {}
+    for step in steps_from_json(skill.steps):
+        for sub in step.substitutions:
+            if sub.kind != SkillSubKind.HOLE or sub.parameter is None:
+                continue
+            value = _leaf_string(step.arguments, sub.path)
+            if value is not None:
+                bindings[sub.parameter] = value
+    return bindings
+
+
+async def _learn_and_render(
+    extractor: SkillExtractor, run_id: str, target: str
+) -> tuple[Skill, str]:
+    """Run the production pipeline over the fixture ledger — distil → label — then
+    RENDER the learned skill as the ``extraction_prompt`` a collector would run, and
+    return ``(skill, prompt)``.
+
+    Learning attaches nothing (#1706): the run-end auto-attach is gone, so the prompt is
+    produced here through the same two functions the instantiation seam composes
+    (``retarget_writes`` onto the round's collection, then ``render_skill`` with the
+    demonstrated bindings) rather than by routing the case through an attach.
+
+    Both halves fail LOUDLY when the fixture doesn't reach them: a demonstration that
+    never qualifies, or a render that produces nothing, would otherwise score the
     not-frozen-into-the-prompt checks green against an empty string — a broken case
     reading as half-passed."""
     extracted = await extractor.extract(run_id)
     assert isinstance(extracted, SkillExtracted), (
         f"the fixture demonstration must qualify as a skill: {extracted}"
     )
-    await extractor.attach_to_created_collection(extracted.skill, run_id)
-    row = db.memories.get(target)
-    assert row is not None and row.extraction_prompt, (
-        f"auto-attach must stamp {target}'s extraction_prompt — "
+    steps = retarget_writes(steps_from_json(extracted.skill.steps), target)
+    prompt = render_skill(steps, _demonstrated_bindings(extracted.skill))
+    assert prompt, (
+        f"rendering the learned skill onto {target} must produce an extraction_prompt — "
         "the freeze checks are vacuous without it"
     )
-    return extracted.skill, row.extraction_prompt
+    return extracted.skill, prompt
 
 
 @pytest.fixture
@@ -2801,10 +2839,11 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
     Each sample is hermetic (own DB + real-model Penny, mirroring ``classifier_eval``):
     the case's conversation turns and demonstrated tool calls are written into the
     ledger, the collection the round wrote into is stamped as created by that run, and
-    the REAL ``SkillExtractor`` distils → labels → auto-attaches exactly as the chat
-    turn does.  Scoring is runner-owned and reads only PERSISTED state: which leaves
-    the labeller kept bindable, and whether any assistant-produced phrase got frozen
-    into the ``extraction_prompt`` a collector would run.
+    the REAL ``SkillExtractor`` distils → labels exactly as the chat turn does.  Scoring
+    is runner-owned and reads the LEARNED SKILL plus the prompt rendered from it (#1706:
+    learning attaches nothing, so the render is the case's own step): which leaves the
+    labeller kept bindable, and whether any assistant-produced phrase got frozen into
+    the ``extraction_prompt`` a collector would run.
 
     The demonstration is a fixture precisely so the case measures the JUDGMENT and
     never polices what a round chose to write — if a round writes two entries, two
@@ -2845,7 +2884,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                     _log_demonstration(penny.db, run_id, utterance, calls)
                     try:
                         skill, prompt = await asyncio.wait_for(
-                            _learn_and_attach(extractor, run_id, target, penny.db), timeout=timeout
+                            _learn_and_render(extractor, run_id, target), timeout=timeout
                         )
                         scored = _score_labelling(skill, prompt, user_values, assistant_values)
                         result = _guarded_graded(list(scored), [])

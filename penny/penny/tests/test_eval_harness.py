@@ -6,11 +6,17 @@ so they run inside ``make check`` and pin the new ergonomics: check ``rationale`
 not-applicable (``ignored``) third state, the fragile-pass verdict, the dual strict+partial
 RESULT line, and the ``tool_not_called`` negative-constraint primitive.  Whole-render literal
 assertions cover every new report shape.
+
+The labeller runner's learn → render step (#1770/#1782) is pinned here too, driving the REAL
+``SkillExtractor`` over a fixture ledger and a mocked labelling draw — a runner helper that
+calls into machinery a later change removed fails inside ``make check``, not only on the
+``eval``-marked run the marker deselects.
 """
 
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -20,8 +26,9 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
+from penny.skill_extraction import SkillExtractor
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -39,6 +46,9 @@ from penny.tests.eval.conftest import (
     _cycle_recovered_check,
     _frame_attributes_to,
     _guarded_graded,
+    _learn_and_render,
+    _log_demonstration,
+    _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
     _write_sample_report,
@@ -48,8 +58,10 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
+from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.models import ToolResult
 
 
@@ -954,3 +966,122 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "</details>\n"
         "\n"
     )
+
+
+# ── The labeller runner's learn → render step (#1770 / #1782) ─────────────────
+
+# The eval case's fixture demonstration, in miniature: the round recorded the price
+# AND a second entry it composed itself about the page it had just read.  Synthetic
+# throughout (aurora / faux-market).
+_LABELLER_TARGET = "aurora-prices"
+_LABELLER_UTTERANCE = "read the aurora deck 2 listing, find the current price, and remember it"
+_LABELLER_BROWSE = (
+    "browse",
+    {"queries": ["aurora deck 2 price"], "extract": "the current price"},
+    "You used `browse` and here's the result: (browse result)\nEXTRACTED: $499",
+    True,
+)
+_LABELLER_INVENTED_KEY = "aurora deck 2 page source"
+_LABELLER_INVENTED_CONTENT = "Page source for the Aurora Deck 2 listing"
+_LABELLER_WRITE = (
+    "collection_write",
+    {
+        "memory": _LABELLER_TARGET,
+        "entries": [
+            {"key": "aurora deck 2 price", "content": "$499"},
+            {"key": _LABELLER_INVENTED_KEY, "content": _LABELLER_INVENTED_CONTENT},
+        ],
+    },
+    "You saved entries to aurora-prices: (collection_write result)\nWrote 2 entries.",
+    True,
+)
+_LABELLER_VERDICTS = (
+    "NAME: Watch a listing price\n"
+    "DESCRIPTION: Look up a price on a listing page and record it.\n"
+    "PARAM queries: url — the listing page to read\n"
+    "PARAM extract: what_to_find — what to pull from the page\n"
+    "PLACEHOLDER key: a short label for the second entry\n"
+    "PLACEHOLDER content: a note about the page you just read"
+)
+
+
+def _labeller_extractor(db: Database, verdicts: str) -> SkillExtractor:
+    """The REAL ``SkillExtractor`` the labeller runner builds, over a text model whose
+    every draw returns ``verdicts`` — so the only thing faked is the labelling draw."""
+    model = MockLlmClient()
+    model.set_response_handler(
+        lambda _request, _count: LlmResponse(message=LlmMessage(role="assistant", content=verdicts))
+    )
+    client = cast(Any, model)
+    return SkillExtractor(
+        db,
+        cast(Any, MockLlmClient()),
+        client,
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        collector_tool_surface=collector_tool_surface(db, client),
+    )
+
+
+@pytest.mark.asyncio
+async def test_learn_and_render_builds_the_prompt_the_freeze_checks_read(tmp_path) -> None:
+    # #1782: the runner used to reach the prompt through `attach_to_created_collection`,
+    # which #1768 removed with the run-end auto-attach — so both labeller cases raised
+    # `AttributeError` and the file was dead.  The runner renders the learned skill
+    # itself now, through the two functions the instantiation seam composes.  This
+    # drives the REAL extractor, so a helper calling a method that no longer exists
+    # fails HERE, inside `make check`, instead of only on the deselected GPU run.
+    db = _make_db(tmp_path, "labeller")
+    db.memories.create_collection(_LABELLER_TARGET, "price notes", created_by_run_id="run-A")
+    _log_demonstration(db, "run-A", _LABELLER_UTTERANCE, [_LABELLER_BROWSE, _LABELLER_WRITE])
+
+    skill, prompt = await _learn_and_render(
+        _labeller_extractor(db, _LABELLER_VERDICTS), "run-A", _LABELLER_TARGET
+    )
+
+    # The prompt a collector would run, WHOLE.  The user's two values are bound
+    # verbatim (which is what lets a mislabelled leaf be caught at all), the write
+    # target is retargeted onto the collection, and each assistant-produced leaf shows
+    # WHAT BELONGS THERE — never its demonstrated phrase.
+    assert prompt == (
+        "1. browse(queries=['aurora deck 2 price'], extract='the current price')\n"
+        "2. collection_write(memory='aurora-prices', entries=["
+        "{'key': 'aurora deck 2 price', 'content': the value from step 1}, "
+        "{'key': {a short label for the second entry}, "
+        "'content': {a note about the page you just read}}])"
+    )
+
+    # And the case's own scoring over that pair: every check green, none vacuous.
+    checks = _score_labelling(
+        skill,
+        prompt,
+        ["aurora deck 2 price", "the current price"],
+        [_LABELLER_INVENTED_KEY, _LABELLER_INVENTED_CONTENT],
+    )
+    assert [(check.label, check.ok) for check in checks] == [
+        ("user value stayed a parameter: 'aurora deck 2 price'", True),
+        ("user value stayed a parameter: 'the current price'", True),
+        ("assistant value became a placeholder: 'aurora deck 2 page source'", True),
+        ("assistant value not frozen into the prompt: 'aurora deck 2 page source'", True),
+        (
+            "assistant value became a placeholder: 'Page source for the Aurora Deck 2 listing'",
+            True,
+        ),
+        (
+            "assistant value not frozen into the prompt: "
+            "'Page source for the Aurora Deck 2 listing'",
+            True,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_learn_and_render_fails_loudly_when_the_fixture_never_qualifies(tmp_path) -> None:
+    # The loud half of the helper: a demonstration that doesn't qualify as a skill must
+    # stop the sample, not score the not-frozen checks green against an empty prompt.
+    db = _make_db(tmp_path, "labeller-gate")
+    _log_demonstration(db, "run-B", _LABELLER_UTTERANCE, [_LABELLER_BROWSE])
+
+    with pytest.raises(AssertionError, match="must qualify as a skill"):
+        await _learn_and_render(
+            _labeller_extractor(db, _LABELLER_VERDICTS), "run-B", _LABELLER_TARGET
+        )
