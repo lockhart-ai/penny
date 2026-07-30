@@ -532,11 +532,13 @@ def render_skill_prompt(
     re-render preserves the steps-1..A / no-stored-``done()`` invariant by construction — it
     is the same render fn ``collection_set`` stamps at birth.
 
-    Every scoped-write step's ``memory`` argument is retargeted to ``target_name`` at
-    this seam (#1629): applying a skill to a collection is what DEFINES where its writes
-    land, so the placeholder the stored skill carries there (#1777) is BOUND to the
-    collection's own name — the rendered program never lies about its write target, on
-    either the one-call create or the adopt path."""
+    Every ATTACHMENT-MARKED leaf is bound to ``target_name`` at this seam (#1629/#1783):
+    applying a routine to a collection is what DECIDES a leaf that named a collection
+    and nobody supplied, so the placeholder the stored skill carries there is BOUND to
+    the collection's own name — the rendered program never lies about the collection it
+    acts on, on either the one-call create or the adopt path.  A leaf the labeller
+    judged the USER to have chosen carries no mark and stays a parameter ``params``
+    binds, so a routine the user gave two destinations keeps them distinct."""
     missing = unbound_required_parameters(parameters_from_json(skill.parameters), params)
     if missing:
         return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)

@@ -180,6 +180,7 @@ _WATCH_FIELD_STEPS = steps_to_json(
                     path=["memory"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
+                    attachment=True,
                 ),
                 SkillSubstitution(
                     path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1

@@ -214,10 +214,11 @@ def _seed_collection(
 
 def _watch_skill_steps() -> list[SkillStep]:
     """The fictional demonstration's steps: a {peak} hole reused in the browse query
-    and the write key, step 1's reading flowing into step 2 as a binding, and the write
-    TARGET as the #1777 placeholder (the shape ``distill_steps`` produces today —
-    ``_river_skill_steps`` keeps the pre-#1777 bare-constant shape, so both reach the
-    front door and both must render the write to the collection they're applied to)."""
+    and the write key, step 1's reading flowing into step 2 as a binding, and the leaf
+    that named a collection an ATTACHMENT-marked placeholder (the shape a freshly
+    distilled skill has — ``_river_skill_steps`` keeps the shape migrations 0101/0103
+    leave on a skill taught before the mark, so both reach the front door and both must
+    render the write to the collection they're applied to)."""
     return [
         SkillStep(
             ordinal=1,
@@ -240,6 +241,7 @@ def _watch_skill_steps() -> list[SkillStep]:
                     path=["memory"],
                     kind=SkillSubKind.PLACEHOLDER,
                     description=WRITE_TARGET_DESCRIPTION,
+                    attachment=True,
                 ),
                 SkillSubstitution(
                     path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_SKILL_HOLE
@@ -1044,8 +1046,9 @@ def _watch_skill_steps_reteught() -> list[SkillStep]:
 def _river_skill_steps() -> list[SkillStep]:
     """A distinct skill: a {river} hole in the browse query and write key, step 1's
     reading flowing into step 2 — the swap target.  Its write target is kept in the
-    PRE-#1777 shape (a bare constant, no substitution), so the swap path is exercised
-    on a skill taught before the write-target placeholder existed."""
+    LEGACY shape a skill taught before #1777/#1783 has after migrations 0101 and 0103
+    (a placeholder carrying the fixed fallback wording, marked for the attachment), so
+    the swap path is exercised on an upgraded old skill rather than a fresh one."""
     return [
         SkillStep(
             ordinal=1,
@@ -1064,6 +1067,12 @@ def _river_skill_steps() -> list[SkillStep]:
             tool="collection_write",
             arguments={"memory": "flows", "entries": [{"key": _RIVER_HOLE, "content": "x"}]},
             substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                    attachment=True,
+                ),
                 SkillSubstitution(
                     path=["entries", 0, "key"], kind=SkillSubKind.HOLE, parameter=_RIVER_HOLE
                 ),
@@ -1637,10 +1646,10 @@ class TestBlankOptionalArgsAreRefused:
 
 
 class TestWriteRetargetAtApply:
-    """WRITE-RETARGET (#1629): applying a skill to a collection binds every
-    scoped-write step's ``memory`` argument to that collection's own name — the
-    demo target the skill baked in is overwritten at the render seam, so the
-    rendered program never lies about where it writes."""
+    """RETARGET-AT-APPLY (#1629/#1783): applying a routine to a collection binds every
+    ATTACHMENT-MARKED leaf to that collection's own name — the demo target the skill
+    baked in is overwritten at the render seam, so the rendered program never lies
+    about the collection it acts on."""
 
     @pytest.mark.asyncio
     async def test_skill_demoed_against_a_renders_writes_to_b_on_create(self, db):
