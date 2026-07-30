@@ -46,6 +46,7 @@ from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
+    FOUR_TRIGGER_FORMS,
     parse_trigger,
     render_reinstantiation_echo,
     render_trigger_clause,
@@ -654,8 +655,10 @@ class TestCollectionCreateFrontDoor:
             "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
             "- on advance of <log> — wake when a source log gets a new entry "
             "(e.g. on advance of browse-results)\n"
-            "- cron <5-field expression> — a time-of-day recurrence in cron form "
-            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)\n"
+            "- cron <5-field expression> — a time-of-day recurrence in cron form, for a "
+            'schedule stated as times of day ("weekdays at 9", "mornings and evenings") '
+            "that no interval can express (e.g. cron 0 8,20 * * * for 8am and 8pm daily); "
+            "the fields are read in UTC, so convert the user's wall-clock times\n"
             "Or leave the trigger out entirely for a storage-only collection."
         )
         assert db.memories.get("garbled") is None
@@ -707,8 +710,10 @@ class TestCollectionCreateFrontDoor:
             "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
             "- on advance of <log> — wake when a source log gets a new entry "
             "(e.g. on advance of browse-results)\n"
-            "- cron <5-field expression> — a time-of-day recurrence in cron form "
-            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
+            "- cron <5-field expression> — a time-of-day recurrence in cron form, for a "
+            'schedule stated as times of day ("weekdays at 9", "mornings and evenings") '
+            "that no interval can express (e.g. cron 0 8,20 * * * for 8am and 8pm daily); "
+            "the fields are read in UTC, so convert the user's wall-clock times"
         )
         assert db.memories.get("bad-cron") is None
 
@@ -886,6 +891,20 @@ class TestTriggerRoundTrip:
             cron_expression=reparsed.cron_expression,
         )
         assert render_trigger_clause(rerendered) == clause
+
+    def test_registered_description_splices_the_whole_grammar(self):
+        """``collection_set``'s description is the model's ONLY view of the trigger
+        grammar at call time, so it splices the shared four-form block verbatim rather
+        than restating it.  #1788 is what a restatement costs: the cron form shipped
+        complete — parser, readiness gate, migration 0098's column — while this
+        description still listed three forms, so a "weekdays at 9" request had no form to
+        land on and the capability was unreachable in practice.  Pinning the SPLICE (not
+        the bytes) is what stops a fifth form being added everywhere except here."""
+        assert FOUR_TRIGGER_FORMS in CollectionSetTool.description
+        # The two facts a stated time-of-day schedule needs: the form exists, and its
+        # fields are UTC (so the model converts the user's wall-clock time).
+        assert "cron <5-field expression>" in CollectionSetTool.description
+        assert "the fields are read in UTC" in CollectionSetTool.description
 
 
 class TestCreateAndList:

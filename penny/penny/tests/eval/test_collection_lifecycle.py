@@ -7,7 +7,7 @@ end (no AST stubs, no hand-built tools), and asserting on what actually landed i
 the DB rather than captured tool-call JSON.
 
     create  — notify, silent, cadence-in-request
-    update  — broaden scope, flip notify→silent
+    update  — broaden scope, flip notify→silent, re-schedule (cron vs. interval)
     archive — done phrasing
     abstain — implicit trip-prep should NOT create a collection
 
@@ -50,6 +50,25 @@ def _seed_board_games_silent(db: Database) -> None:
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
         interval=3600,
         notify=False,
+    )
+
+
+# The cadence both re-schedule cases start from.  Shared by the seeder and the scorers,
+# which read it to tell "the trigger was rewritten" from "nothing happened this turn".
+_SEEDED_DAILY_INTERVAL = 86400
+_HOURLY_INTERVAL = 3600
+
+
+def _seed_board_games_daily(db: Database) -> None:
+    """The same collection on a plain DAILY cadence — the shared starting state of the
+    two re-schedule cases, so the pair differs ONLY in the shape of the cadence asked
+    for (a time of day vs. a plain interval) and not in what it is changed from."""
+    seed_collection(
+        db,
+        BOARD_GAMES,
+        extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
+        interval=_SEEDED_DAILY_INTERVAL,
+        notify=True,
     )
 
 
@@ -211,6 +230,118 @@ def _score_notify_flip(db: Database, before: set[str], reply: str) -> list[Check
     ]
 
 
+def _cron_fields(expression: str | None) -> list[str]:
+    """A stored cron expression's five fields (minute hour day-of-month month
+    day-of-week), or ``[]`` when the collection carries no cron trigger."""
+    return expression.split() if expression else []
+
+
+def _score_cron_trigger(db: Database, before: set[str], reply: str) -> list[Check]:
+    """A schedule the user stated as a TIME OF DAY must reach the cron trigger form.
+
+    This scores REACHABILITY, not parsing: `parse_trigger` has understood
+    ``cron <5-field expression>`` since #1684 and the readiness gate has honoured it just
+    as long, but the model only ever sees the forms `collection_set`'s description names —
+    which listed three of four until #1788, so a "weekdays at 9" request had nowhere to
+    land and got flattened into a crude interval (or nothing).  Read off the persisted
+    row, never off the reply: a collection whose stored trigger is still an interval was
+    not rescheduled, whatever the reply claimed.
+
+    The shape checks are the ones the parser does NOT already guarantee (an invalid
+    expression is refused before it can persist, so re-validating it here would be free
+    marks): the schedule pins a time of day rather than being an interval wearing cron
+    syntax, and it restricts the days — the half of the request no interval can express.
+    """
+    memory = db.memories.get("board-games")
+    if memory is None:
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
+    expression = memory.cron_expression
+    fields = _cron_fields(expression)
+    timed = len(fields) == 5 and fields[0] != "*" and fields[1] != "*"
+    weekdays_only = len(fields) == 5 and fields[4] != "*"
+    return [
+        Check(
+            "trigger reached the cron form (cron_expression set)",
+            expression is not None,
+            rationale=None
+            if expression is not None
+            else (f"no cron_expression — still every {memory.collector_interval_seconds} seconds"),
+            kind="state",
+        ),
+        Check(
+            "the schedule pins a time of day (minute + hour, not '*')",
+            timed,
+            rationale=None if timed else f"cron fields {fields or 'absent'}",
+            kind="state",
+        ),
+        Check(
+            "the schedule is restricted to weekdays (day-of-week not '*')",
+            weekdays_only,
+            rationale=None if weekdays_only else f"cron fields {fields or 'absent'}",
+            kind="state",
+        ),
+    ]
+
+
+def _score_interval_trigger(db: Database, before: set[str], reply: str) -> list[Check]:
+    """The paired guard: a PLAIN interval request stays ``every <seconds>``.
+
+    Teaching the model a fourth trigger form is only half a contract — the other half is
+    that it doesn't now dress every cadence up as cron.  "every hour" names no time of
+    day, so the honest trigger is ``every 3600``; a ``cron 0 * * * *`` would technically
+    fire hourly while silently switching the collection onto the wrong form (and out of
+    the auto-throttle's reach, which exempts cron), so the cron column must stay clear.
+
+    The form check is NOT-APPLICABLE on a turn that rewrote no trigger at all: an
+    untouched collection has an empty cron column for free, and a guard that scores a
+    free mark for nothing happening reports the over-correction it is watching for as
+    absent when it was never given the chance to occur.
+    """
+    memory = db.memories.get("board-games")
+    if memory is None:
+        return [
+            Check(
+                "board-games still present",
+                False,
+                rationale="board-games disappeared",
+                kind="state",
+            )
+        ]
+    hourly = memory.collector_interval_seconds == _HOURLY_INTERVAL
+    rewrote_trigger = (
+        memory.collector_interval_seconds != _SEEDED_DAILY_INTERVAL
+        or memory.cron_expression is not None
+    )
+    form_label = "no cron expression — a plain interval stays the 'every <seconds>' form"
+    return [
+        Check(
+            f"interval set to {_HOURLY_INTERVAL}s",
+            hourly,
+            rationale=None
+            if hourly
+            else f"expected {_HOURLY_INTERVAL}, got {memory.collector_interval_seconds}",
+            kind="state",
+        ),
+        Check(
+            form_label,
+            memory.cron_expression is None,
+            rationale=None
+            if memory.cron_expression is None
+            else f"dressed up as cron {memory.cron_expression!r}",
+            kind="state",
+        )
+        if rewrote_trigger
+        else Check.na(form_label, rationale="no trigger was rewritten this turn", kind="state"),
+    ]
+
+
 def _score_archive(db: Database, before: set[str], reply: str) -> list[Check]:
     memory = db.memories.get("board-games")
     if memory is None:
@@ -338,6 +469,54 @@ async def test_update_notify_flip(chat_eval: ChatEval) -> None:
         seed=_seed_board_games_silent,
         score=_score_notify_flip,
         family="lifecycle-update",
+    )
+
+
+# Both re-schedule cases are REPORT-ONLY, and the reason is upstream of what they
+# measure.  Measured at N=3 on the branch that landed the description fix: the chat
+# agent, when the turn reaches it, composes the cron form correctly and even converts
+# the user's wall-clock 9am to UTC unprompted ("cron 0 16 * * 1-5") — the grammar is
+# reached.  What loses the other samples is the conversation state machine (#1706): its
+# classifier snapshot carries the SKILL registry but not the ACTIVE-MECHANISM registry,
+# so "check for new board games on weekdays at 9am" — a reconfiguration of a collection
+# that already exists and is already running — is indistinguishable from setting up a
+# new ongoing task with no covering skill, and is classified ``elicit``.  The turn is
+# then parked: the model reasons its way to the exact ``collection_set`` call it wants
+# to make, notes it has been told to ask the user to walk it through instead, and makes
+# no tool call ("We should not make any tool calls. Just plain reply.").
+#
+# Gating on that would be gating the trigger grammar on a routing draw it does not
+# control, so these report instead — visibly, every run — until a re-schedule of a live
+# mechanism classifies as the ordinary edit it is.  Rephrasing the ask to dodge the
+# classifier is not on the table: the whole contract is that the user's OWN phrasing of
+# a recurring time of day reaches the form.
+async def test_update_cron_trigger(chat_eval: ChatEval) -> None:
+    """A stated time-of-day schedule reaches the cron trigger form (#1684/#1788).
+
+    The paired direction is ``test_update_interval_trigger`` below — same seed, same
+    "change the cadence" ask, differing only in whether the user named a time of day.
+    Together they cover both edges of the grammar: the fourth form is reachable, and it
+    doesn't swallow the first one.  A one-direction contract is half a contract."""
+    await chat_eval(
+        case_id="update-cron-trigger",
+        message="actually, only check for new board games on weekdays at 9am",
+        seed=_seed_board_games_daily,
+        score=_score_cron_trigger,
+        family="lifecycle-update",
+        min_pass_rate=None,
+    )
+
+
+async def test_update_interval_trigger(chat_eval: ChatEval) -> None:
+    """The over-correction guard for the case above: a plain interval request stays
+    ``every <seconds>`` and is not dressed up as cron."""
+    await chat_eval(
+        case_id="update-interval-trigger",
+        message="actually, check for new board games every hour instead of once a day",
+        seed=_seed_board_games_daily,
+        score=_score_interval_trigger,
+        family="lifecycle-update",
+        min_pass_rate=None,
     )
 
 
