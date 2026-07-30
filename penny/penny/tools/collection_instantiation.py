@@ -191,17 +191,25 @@ _ON_ADVANCE_PREFIX = "on advance of "
 _CRON_PREFIX = "cron "
 
 # The four enumerated trigger forms as copyable bullets (display form == invocation
-# form), shared by the reject-and-teach texts so every rejection names the WHOLE
-# vocabulary.  The cron form (#1684) encodes a time-of-day recurrence a stated schedule
-# states in words ("morning and evening") that the other three can't express.
-_FOUR_FORMS = (
+# form) — the ONE place the vocabulary is authored, so no surface can enumerate a subset
+# of it: the reject-and-teach texts below and ``collection_set``'s own description (the
+# schema the model reads at call time) all splice this block verbatim.  #1788 is what
+# that single-sourcing prevents: the cron form shipped complete (parser, gate, column)
+# while the tool description still listed three forms, so the capability was unreachable
+# in practice.  The cron form (#1684) encodes a time-of-day recurrence a stated schedule
+# states in words ("morning and evening") that the other three can't express; its fields
+# are read in UTC, which is part of the form's grammar and so is named here rather than
+# left to whichever surface happens to mention it.
+FOUR_TRIGGER_FORMS = (
     "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
     "- once at <ISO datetime> [xN] — run at a time, optionally N times "
     "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
     "- on advance of <log> — wake when a source log gets a new entry "
     "(e.g. on advance of browse-results)\n"
-    "- cron <5-field expression> — a time-of-day recurrence in cron form "
-    "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
+    "- cron <5-field expression> — a time-of-day recurrence in cron form, for a schedule "
+    'stated as times of day ("weekdays at 9", "mornings and evenings") that no '
+    "interval can express (e.g. cron 0 8,20 * * * for 8am and 8pm daily); the fields are "
+    "read in UTC, so convert the user's wall-clock times"
 )
 
 # The reject-and-teach failure for an unrecognised trigger shape (#1631/#1684): name the
@@ -214,7 +222,7 @@ _FOUR_FORMS = (
 _TRIGGER_TEACHING = (
     "I couldn't read the trigger '{trigger}'. Set it to one of these four forms "
     "(copy the shape exactly):\n"
-    f"{_FOUR_FORMS}\n"
+    f"{FOUR_TRIGGER_FORMS}\n"
     "Or leave the trigger out entirely for a storage-only collection."
 )
 
@@ -226,7 +234,7 @@ _CRON_INVALID = (
     "'cron {expr}' isn't a valid cron expression. A cron trigger is five space-separated "
     "fields — minute hour day-of-month month day-of-week — e.g. cron 0 8,20 * * * for 8am "
     "and 8pm daily. Set the trigger to one of these four forms (copy the shape exactly):\n"
-    f"{_FOUR_FORMS}"
+    f"{FOUR_TRIGGER_FORMS}"
 )
 
 

@@ -65,6 +65,7 @@ from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
+    FOUR_TRIGGER_FORMS,
     SkillResolution,
     SkillResolutionKind,
     Trigger,
@@ -1727,17 +1728,22 @@ class CollectionSetTool(MemoryTool):
     this class is a dispatcher, not a re-implementation."""
 
     name = "collection_set"
+    # The trigger grammar is SPLICED from ``FOUR_TRIGGER_FORMS``, never restated: this
+    # description is the only view of it the model gets at call time, and a hand-rolled
+    # copy is exactly how the cron form came to be unreachable (#1788 — shipped in the
+    # parser, the gate, and the column, absent from the three forms listed here).
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If `name` "
         "doesn't exist it comes into being with this config; if it does, only "
         "the fields you set change — you never need to know which. "
         "`description` = what it's for, in the user's words (required the first "
         "time). `skill` (+ `params`) attaches a learned skill — its steps become "
-        'the collection\'s routine. `trigger` schedules it: "every <seconds>" | '
-        '"once at <ISO> [xN]" | "on advance of <log>". `notify`=true tells the '
-        "user about new/changed entries. Plain storage needs no call at all — "
-        "collection_write creates storage automatically; use collection_set for "
-        "jobs and config."
+        "the collection's routine. `notify`=true tells the user about new/changed "
+        "entries. Plain storage needs no call at all — collection_write creates "
+        "storage automatically; use collection_set for jobs and config.\n"
+        "\n"
+        "`trigger` schedules the job — ONE string, in one of four forms:\n"
+        f"{FOUR_TRIGGER_FORMS}"
     )
     parameters = {
         "type": "object",
