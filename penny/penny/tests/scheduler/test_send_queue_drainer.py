@@ -14,6 +14,7 @@ attributes it to the collection that queued it.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,9 +65,7 @@ def _make_config(cooldown_seconds: float = 600.0):
 
 
 def _make_channel():
-    channel = type("Channel", (), {})()
-    channel.send_response = AsyncMock(return_value=42)
-    return channel
+    return SimpleNamespace(send_response=AsyncMock(return_value=42))
 
 
 def _make_drainer(db, channel, cooldown_seconds: float = 600.0) -> SendQueueDrainer:

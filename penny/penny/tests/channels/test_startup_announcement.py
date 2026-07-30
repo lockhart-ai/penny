@@ -299,7 +299,7 @@ async def test_ios_operational_startup_announcement_respects_history_gate(
 
     # No message history yet — the push is suppressed, not spammed per deploy.
     await penny._send_startup_announcement()
-    penny.channel.send_message.assert_not_awaited()
+    channel.send_message.assert_not_awaited()
 
     # Once the user has chatted, the operational push fires.
     penny.db.messages.log_message(
@@ -308,7 +308,7 @@ async def test_ios_operational_startup_announcement_respects_history_gate(
         content="hey penny",
     )
     await penny._send_startup_announcement()
-    penny.channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
+    channel.send_message.assert_awaited_once_with("ios-device-id", "Penny is operational.")
 
 
 @pytest.mark.asyncio

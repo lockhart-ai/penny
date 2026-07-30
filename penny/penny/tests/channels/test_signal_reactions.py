@@ -4,7 +4,7 @@ import json
 import time
 
 import pytest
-from sqlmodel import select
+from sqlmodel import col, select
 
 from penny.database.models import MessageLog
 from penny.tests.conftest import TEST_SENDER, wait_until
@@ -27,7 +27,7 @@ async def _wait_for_outgoing_ids(penny, contains: str) -> tuple[int, str]:
         return session.exec(
             select(MessageLog)
             .where(MessageLog.direction == "outgoing")
-            .where(MessageLog.content.contains(contains))  # type: ignore[union-attr]
+            .where(col(MessageLog.content).contains(contains))
         ).first()
 
     def stamped() -> bool:

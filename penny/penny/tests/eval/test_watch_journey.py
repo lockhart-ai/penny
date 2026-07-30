@@ -48,6 +48,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.skill_store import parameters_from_json, steps_from_json
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
@@ -372,7 +373,7 @@ def _seed_cold_fact(db: Database) -> None:
     from penny.database.memory.types import EntryInput
 
     db.memories.create_collection("gear-notes", "notes about gear the user tracks")
-    db.memory("gear-notes").write(
+    require_memory(db, "gear-notes").write(
         [EntryInput(key="aurora deck 2 price", content="$499")], author="chat"
     )
 
@@ -601,7 +602,7 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
     transcript in the joint review (one line of English, no structural signal)."""
     runs = chat_run_tool_sequences(db)
     first_run = runs[0] if runs else []
-    fetched = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    fetched = require_memory(db, "browse-results").read_recent(window_seconds=3600, cap=None)
     return [
         Check(
             "state: no collection created (nothing enacted)",
@@ -686,7 +687,7 @@ _BEAT2_TURN = (
 def _browsed_the_listing(db: Database) -> bool:
     """The walked-through fetch is persisted in the browse-results log — score
     the durable record, not the call transcript."""
-    entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    entries = require_memory(db, "browse-results").read_recent(window_seconds=3600, cap=None)
     return any("aurora-deck-2" in entry.content for entry in entries)
 
 
@@ -980,7 +981,7 @@ def _demanded_mechanics(replies: list[str]) -> bool:
 
 def _round_ran(db: Database) -> bool:
     """The self-started round's browse is persisted in browse-results."""
-    entries = db.memory("browse-results").read_recent(window_seconds=3600, cap=None)
+    entries = require_memory(db, "browse-results").read_recent(window_seconds=3600, cap=None)
     return any(
         "ridgelinefoxes" in entry.content or "harborseals" in entry.content for entry in entries
     )

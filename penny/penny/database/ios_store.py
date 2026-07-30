@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.database.models import Device, IosDeviceRegistration, IosOutboxItem
 
@@ -105,9 +105,9 @@ class IosStore:
                     select(IosOutboxItem)
                     .where(
                         IosOutboxItem.device_id == device_id,
-                        IosOutboxItem.acked_at.is_(None),  # ty: ignore[unresolved-attribute]
+                        col(IosOutboxItem.acked_at).is_(None),
                     )
-                    .order_by(IosOutboxItem.created_at.asc())  # ty: ignore[unresolved-attribute]
+                    .order_by(col(IosOutboxItem.created_at).asc())
                     .limit(limit)
                 ).all()
             )
@@ -120,7 +120,7 @@ class IosStore:
                 .select_from(IosOutboxItem)
                 .where(
                     IosOutboxItem.device_id == device_id,
-                    IosOutboxItem.acked_at.is_(None),  # ty: ignore[unresolved-attribute]
+                    col(IosOutboxItem.acked_at).is_(None),
                 )
             ).one()
 
@@ -134,8 +134,8 @@ class IosStore:
             rows = session.exec(
                 select(IosOutboxItem).where(
                     IosOutboxItem.device_id == device_id,
-                    IosOutboxItem.id.in_(item_ids),  # ty: ignore[unresolved-attribute]
-                    IosOutboxItem.acked_at.is_(None),  # ty: ignore[unresolved-attribute]
+                    col(IosOutboxItem.id).in_(item_ids),
+                    col(IosOutboxItem.acked_at).is_(None),
                 )
             ).all()
             for row in rows:

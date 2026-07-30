@@ -8,8 +8,8 @@ from datetime import datetime
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
-from sqlalchemy import and_, bindparam, func, or_, text
-from sqlmodel import Session, select
+from sqlalchemy import and_, bindparam, func, inspect, or_, text
+from sqlmodel import Session, col, select
 
 from penny.agents.models import MessageRole
 from penny.constants import PennyConstants, RunOutcome
@@ -330,8 +330,8 @@ class MessageStore:
                 session.exec(
                     select(MessageLog)
                     .where(
-                        MessageLog.embedding.is_(None),  # ty: ignore[unresolved-attribute]
-                        MessageLog.is_reaction.is_(False),  # ty: ignore[unresolved-attribute]
+                        col(MessageLog.embedding).is_(None),
+                        col(MessageLog.is_reaction).is_(False),
                     )
                     .limit(limit)
                 ).all()
@@ -361,8 +361,8 @@ class MessageStore:
                 select(MessageLog)
                 .where(MessageLog.direction == PennyConstants.MessageDirection.OUTGOING)
                 .order_by(
-                    MessageLog.timestamp.desc(),  # type: ignore[union-attr]
-                    MessageLog.id.desc(),  # type: ignore[union-attr]
+                    col(MessageLog.timestamp).desc(),
+                    col(MessageLog.id).desc(),
                 )
             ).first()
             return message.content if message is not None else None
@@ -377,7 +377,9 @@ class MessageStore:
         if not message_ids:
             return {}
         with self._session() as session:
-            messages = session.exec(select(MessageLog).where(MessageLog.id.in_(message_ids))).all()
+            messages = session.exec(
+                select(MessageLog).where(col(MessageLog.id).in_(message_ids))
+            ).all()
             return {message.id: message for message in messages if message.id is not None}
 
     def find_by_external_id(self, external_id: str) -> MessageLog | None:
@@ -395,9 +397,9 @@ class MessageStore:
                 select(MessageLog)
                 .where(
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
-                    MessageLog.content.startswith(content),
+                    col(MessageLog.content).startswith(content),
                 )
-                .order_by(MessageLog.timestamp.desc())
+                .order_by(col(MessageLog.timestamp).desc())
             ).first()
 
     # --- Thread context ---
@@ -445,7 +447,7 @@ class MessageStore:
     def get_conversation_leaves(self) -> list[MessageLog]:
         """Get outgoing leaf messages eligible for spontaneous continuation."""
         with self._session() as session:
-            has_child = select(MessageLog.parent_id).where(MessageLog.parent_id.isnot(None))
+            has_child = select(MessageLog.parent_id).where(col(MessageLog.parent_id).isnot(None))
             incoming_ids = select(MessageLog.id).where(
                 MessageLog.direction == PennyConstants.MessageDirection.INCOMING
             )
@@ -454,10 +456,10 @@ class MessageStore:
                     select(MessageLog)
                     .where(
                         MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
-                        MessageLog.id.notin_(has_child),
-                        MessageLog.parent_id.in_(incoming_ids),
+                        col(MessageLog.id).notin_(has_child),
+                        col(MessageLog.parent_id).in_(incoming_ids),
                     )
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                 ).all()
             )
 
@@ -471,7 +473,7 @@ class MessageStore:
                         MessageLog.sender == sender,
                         MessageLog.direction == PennyConstants.MessageDirection.INCOMING,
                     )
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                     .limit(limit)
                 ).all()
             )
@@ -487,7 +489,7 @@ class MessageStore:
             session.exec(
                 select(MessageLog).where(
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
-                    MessageLog.parent_id.in_(incoming_ids),
+                    col(MessageLog.parent_id).in_(incoming_ids),
                 )
             ).all()
         )
@@ -507,7 +509,7 @@ class MessageStore:
                     MessageLog.recipient == recipient,
                     MessageLog.timestamp >= since,
                 )
-                .order_by(MessageLog.timestamp.desc())
+                .order_by(col(MessageLog.timestamp).desc())
                 .limit(limit)
             ).all()
         )
@@ -539,7 +541,7 @@ class MessageStore:
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.timestamp >= since,
                     )
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                     .limit(limit)
                 ).all()
             )
@@ -562,8 +564,8 @@ class MessageStore:
         message-log rows may not have a populated ``device_id``.
         """
         with self._session() as session:
-            message_columns = MessageLog.__table__.c
-            outbox_columns = IosOutboxItem.__table__.c
+            message_columns = inspect(MessageLog).local_table.c
+            outbox_columns = inspect(IosOutboxItem).local_table.c
             devices = list(session.exec(select(Device)).all())
             if channel_types:
                 devices = [device for device in devices if device.channel_type in channel_types]
@@ -650,7 +652,7 @@ class MessageStore:
     def ios_history_count(self, *, channel_types: list[str] | None) -> int:
         """Count eligible history rows once at the start of an iOS sync."""
         with self._session() as session:
-            message_columns = MessageLog.__table__.c
+            message_columns = inspect(MessageLog).local_table.c
             devices = list(session.exec(select(Device)).all())
             if channel_types:
                 devices = [device for device in devices if device.channel_type in channel_types]
@@ -693,7 +695,7 @@ class MessageStore:
                         MessageLog.is_reaction == False,  # noqa: E712
                         MessageLog.processed == False,  # noqa: E712
                     )
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                     .limit(limit)
                 ).all()
             )
@@ -710,7 +712,7 @@ class MessageStore:
                         MessageLog.is_reaction == True,  # noqa: E712
                         MessageLog.processed == False,  # noqa: E712
                     )
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                     .limit(limit)
                 ).all()
             )
@@ -741,9 +743,11 @@ class MessageStore:
     def count_active_threads(self) -> int:
         """Count leaf messages (those with no children)."""
         with self._session() as session:
-            has_child = select(MessageLog.parent_id).where(MessageLog.parent_id.isnot(None))
+            has_child = select(MessageLog.parent_id).where(col(MessageLog.parent_id).isnot(None))
             return session.exec(
-                select(func.count()).select_from(MessageLog).where(MessageLog.id.notin_(has_child))
+                select(func.count())
+                .select_from(MessageLog)
+                .where(col(MessageLog.id).notin_(has_child))
             ).one()
 
     def set_run_outcome(
@@ -815,7 +819,7 @@ class MessageStore:
         return session.exec(
             select(PromptLog)
             .where(PromptLog.run_id == run_id)
-            .order_by(PromptLog.timestamp.desc())
+            .order_by(col(PromptLog.timestamp).desc())
             .limit(1)
         ).first()
 
@@ -830,7 +834,7 @@ class MessageStore:
                 session.exec(
                     select(MessageLog)
                     .where(MessageLog.is_reaction == False)  # noqa: E712
-                    .order_by(MessageLog.timestamp.desc())
+                    .order_by(col(MessageLog.timestamp).desc())
                     .limit(limit)
                 ).all()
             )
@@ -858,11 +862,11 @@ class MessageStore:
             rows = session.exec(
                 select(PromptLog.timestamp, PromptLog.run_outcome, PromptLog.run_reason)
                 .where(
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_target == run_target,
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
                 )
-                .order_by(PromptLog.timestamp.desc())
+                .order_by(col(PromptLog.timestamp).desc())
                 .limit(limit)
             ).all()
         return [(timestamp, reason or outcome) for timestamp, outcome, reason in rows if outcome]
@@ -882,7 +886,7 @@ class MessageStore:
                 select(func.count())
                 .select_from(PromptLog)
                 .where(
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_target == run_target,
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
                 )
@@ -909,7 +913,7 @@ class MessageStore:
         with self._session() as session:
             query = (
                 select(PromptLog.run_id, finished.label("finished"))
-                .where(PromptLog.run_id.isnot(None))  # ty: ignore[unresolved-attribute]
+                .where(col(PromptLog.run_id).isnot(None))
                 .group_by(PromptLog.run_id)
             )
             if target == PennyConstants.CHAT_AGENT_NAME:
@@ -917,7 +921,7 @@ class MessageStore:
             else:
                 query = query.where(
                     PromptLog.run_target == target,
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
                 )
             if cursor is not None:
@@ -943,7 +947,7 @@ class MessageStore:
                 session.exec(
                     select(PromptLog)
                     .where(PromptLog.run_id == run_id)
-                    .order_by(PromptLog.timestamp.asc())
+                    .order_by(col(PromptLog.timestamp).asc())
                 ).all()
             )
 
@@ -970,13 +974,13 @@ class MessageStore:
                     PromptLog.timestamp,
                 )
                 .where(
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_target).isnot(None),
                 )
                 # ``id`` breaks same-timestamp ties deterministically so the
                 # activity render is stable across runs.
-                .order_by(PromptLog.timestamp.desc(), PromptLog.id.desc())
+                .order_by(col(PromptLog.timestamp).desc(), col(PromptLog.id).desc())
                 .limit(limit)
             ).all()
             run_ids = [run_id for run_id, _, _, _ in rows if run_id is not None]
@@ -1009,9 +1013,9 @@ class MessageStore:
                 select(MessageLog)
                 .where(
                     MessageLog.direction == PennyConstants.MessageDirection.OUTGOING,
-                    MessageLog.mechanism.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(MessageLog.mechanism).isnot(None),
                 )
-                .order_by(MessageLog.timestamp.desc(), MessageLog.id.desc())  # ty: ignore[unresolved-attribute]
+                .order_by(col(MessageLog.timestamp).desc(), col(MessageLog.id).desc())
                 .limit(limit)
             ).all()
         return [
@@ -1041,9 +1045,9 @@ class MessageStore:
                     func.max(PromptLog.timestamp),
                 )
                 .where(
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
                     PromptLog.run_outcome != RunOutcome.CANCELLED.value,
-                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_target).isnot(None),
                 )
                 .group_by(PromptLog.run_target)
             ).all()
@@ -1061,8 +1065,8 @@ class MessageStore:
         grouped: dict[str, list[PromptLog]] = {}
         prompts = session.exec(
             select(PromptLog)
-            .where(PromptLog.run_id.in_(run_ids))  # ty: ignore[unresolved-attribute]
-            .order_by(PromptLog.timestamp.asc())
+            .where(col(PromptLog.run_id).in_(run_ids))
+            .order_by(col(PromptLog.timestamp).asc())
         ).all()
         for prompt in prompts:
             if prompt.run_id is not None:
@@ -1121,10 +1125,10 @@ class MessageStore:
         rows = session.exec(
             select(PromptLog.run_id)
             .where(
-                PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
+                col(PromptLog.run_outcome).isnot(None),
                 PromptLog.run_target == run_target,
             )
-            .order_by(PromptLog.timestamp.desc())
+            .order_by(col(PromptLog.timestamp).desc())
             .limit(limit)
             .offset(offset)
         ).all()
@@ -1137,8 +1141,8 @@ class MessageStore:
         grouped: dict[str, list[PromptLog]] = {}
         prompts = session.exec(
             select(PromptLog)
-            .where(PromptLog.run_id.in_(run_ids_ordered))  # ty: ignore[unresolved-attribute]
-            .order_by(PromptLog.timestamp.asc())
+            .where(col(PromptLog.run_id).in_(run_ids_ordered))
+            .order_by(col(PromptLog.timestamp).asc())
         ).all()
         for prompt in prompts:
             if prompt.run_id is None:
@@ -1234,7 +1238,7 @@ class MessageStore:
         """
         if search:
             return MessageStore._page_of_run_ids_fts(session, limit, offset, agent_name, search)
-        query = select(PromptLog.run_id).where(PromptLog.run_id.isnot(None))  # ty: ignore[unresolved-attribute]
+        query = select(PromptLog.run_id).where(col(PromptLog.run_id).isnot(None))
         if agent_name:
             query = query.where(PromptLog.agent_name == agent_name)
         query = (
@@ -1275,7 +1279,7 @@ class MessageStore:
         with self._session() as session:
             return list(
                 session.exec(
-                    select(PromptLog).order_by(PromptLog.timestamp.desc()).limit(limit)
+                    select(PromptLog).order_by(col(PromptLog.timestamp).desc()).limit(limit)
                 ).all()
             )
 

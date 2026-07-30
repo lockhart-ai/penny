@@ -33,6 +33,7 @@ import pytest
 from penny.constants import PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import (
     Check,
     CollectorScorer,
@@ -75,7 +76,7 @@ def _seed_user_messages(*messages: str):
 
 def _seed_browse_results(content: str):
     def _apply(db: Database) -> None:
-        db.memory(PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
+        require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
             [LogEntryInput(content=content)], author="chat"
         )
 
@@ -96,7 +97,7 @@ def _seed_research_watcher(db: Database) -> None:
 
 
 def _seed_like(db: Database) -> None:
-    db.memory("likes").write(
+    require_memory(db, "likes").write(
         [EntryInput(key="tabletop board games", content="I love tabletop board games")],
         author="history",
     )

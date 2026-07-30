@@ -33,11 +33,12 @@ import json
 import re
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.models import PromptLog
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import REPLY_ANCHOR, Check, tool_was_called
 from penny.tests.eval.fixtures import (
     ALL_BROWSES_FAIL,
@@ -63,7 +64,7 @@ def _tool_sequence(db: Database) -> list[str]:
     call, oldest first — read from the persisted promptlog (the real record)."""
     seq: list[str] = []
     with Session(db.engine) as session:
-        rows = session.exec(select(PromptLog).order_by(PromptLog.timestamp.asc())).all()
+        rows = session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all()
     for row in rows:
         response = json.loads(row.response) if row.response else {}
         choices = response.get("choices") or []
@@ -173,7 +174,7 @@ _LIKES = "likes"
 
 
 def _seed_like(db: Database, key: str, content: str) -> None:
-    db.memory(_LIKES).write([EntryInput(key=key, content=content)], author="user")
+    require_memory(db, _LIKES).write([EntryInput(key=key, content=content)], author="user")
 
 
 # The write was a duplicate → the reply must say it was already there, never a

@@ -15,10 +15,6 @@ never by matching the user's prose (#1659):
   result → a **binding** (rendered "the value from step N"), because in the
   source run it *came from* that step (a wrapped result binds too — the arg
   ``Price: $499`` over a browse that returned ``$499``);
-* the scoped-write **target** argument (``memory`` on a write step) → a
-  **placeholder** naming the collection the routine is set up on (#1777): never a
-  parameter (attaching the skill is what decides it — write-retarget #1629 binds it
-  at the render seam) and never the demonstrated collection's name;
 * **every other string leaf** → a **candidate** required parameter (the model binds
   it per instantiation); identical values collapse to ONE shared candidate.  A
   parameter is ``required`` by construction — an unbound one is a loud refusal at
@@ -26,7 +22,14 @@ never by matching the user's prose (#1659):
   arg-derived names at distill; the run-end naming micro-context then relabels them
   semantically AND adjudicates each one (#1668/#1770).
 
-That last rule is a **default, not a determination** — it assumes an unexplained
+**Every** unexplained leaf goes through that one process, whatever tool it sits on
+and whatever argument it fills (#1783).  A skill is a learned sequence of ARBITRARY
+tool calls, so nothing here knows which tools a skill contains: there is no write
+target, no privileged argument, no tool whitelist.  Several reads, writes, browses
+and plugin calls in one routine are not special cases — they are more leaves through
+the same process.
+
+That candidate rule is a **default, not a determination** — it assumes an unexplained
 value came from the user, which is false for a value the model derived-and-
 transformed from a result or invented outright (neither shares a literal span with
 what produced it, so no substring test can reach them, and #1659 ruled prose
@@ -34,6 +37,16 @@ matching out).  The user-provenance question is a judgment, so it lives in
 model-space: the labeller answers "did the USER provide this?" per candidate and
 returns either a semantic name (a real parameter) or a placeholder description.  A
 candidate with no verdict keeps the default — absence is never a drop.
+
+The one leaf a user cannot bind and the *attachment* can is the ATTACHMENT MARK
+(#1783, :attr:`SkillSubstitution.attachment`): a leaf whose demonstrated value named
+one of Penny's own COLLECTIONS.  "Apply this routine to C" is what decides such a
+leaf, so when the labeller judges it internally-chosen the render seam binds it to C
+(:func:`retarget_writes`) instead of freezing the demonstration's collection into the
+recipe.  The mark is registry-derived, not tool-derived — distillation is handed the
+collection names and compares VALUES — and a leaf the labeller judged
+user-supplied keeps its parameter and is never rebound, so a routine whose two
+destinations the user named binds two destinations, with no mechanism added for it.
 
 This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
@@ -82,11 +95,16 @@ class SkillSubstitution(BaseModel):
     the parameter's semantic name — the binding key at instantiation); a
     ``BINDING`` names the prior *skill* step (1-based ordinal) whose result flows
     into it; a ``PLACEHOLDER`` carries a one-line ``description`` of what belongs
-    there each run, for the two leaves no user can bind — the one the labeller judged
-    the ASSISTANT to have produced (derived from a result, or invented outright,
-    #1770), and the scoped-write TARGET, decided structurally at distill and bound by
-    write-retarget at instantiation (#1777).  Either way the demonstrated value must
-    never be frozen into the recipe.
+    there each run — the leaf the labeller judged the ASSISTANT to have produced
+    (derived from a result, or invented outright, #1770), whose demonstrated value
+    must never be frozen into the recipe.
+
+    ``attachment`` is the ATTACHMENT MARK (#1783): this leaf's demonstrated value
+    named one of Penny's own COLLECTIONS, so *what the routine is attached to* is what
+    decides it.  Set at distill by comparing values against the registry (never a tool
+    name), and CLEARED when the labeller judges the user supplied the value — a user's
+    choice is a parameter they bind, not something the attachment overwrites.  A
+    surviving mark is what :func:`retarget_writes` binds at the render seam.
     """
 
     path: list[str | int]
@@ -94,6 +112,7 @@ class SkillSubstitution(BaseModel):
     parameter: str | None = None  # set when kind == HOLE — the parameter's semantic name
     step: int | None = None  # set when kind == BINDING — the skill-relative ordinal
     description: str | None = None  # set when kind == PLACEHOLDER — what belongs there
+    attachment: bool = False  # the attached collection fills this leaf (#1783)
 
 
 class SkillStep(BaseModel):
@@ -294,70 +313,55 @@ def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int |
     return None
 
 
-# What belongs in the scoped-write ``memory`` argument each run (#1777) — the
-# collection the routine is attached to.  It is the one leaf a model can never supply
-# (attaching the skill is what DECIDES it, so a parameter would be a value retarget
-# immediately overwrites), and it must not carry the demonstrated collection's name
-# either: the ambient recipe is a 0-call firing surface where NO instantiation runs, so
-# a baked literal there reads as "this routine writes to X" — which is what misled a
-# live run into treating a duplicate collection as harmless.  So: a placeholder, the
-# same concept every other assistant-produced leaf uses (#1770).
+# What belongs in an attachment-marked leaf whose labeller draw never landed (#1777,
+# retained as the FALLBACK by #1783) — the collection the routine is attached to.  The
+# leaf must not carry the demonstrated collection's name: the ambient recipe is a 0-call
+# firing surface where NO instantiation runs, so a baked literal there reads as "this
+# routine writes to X" — which is what misled a live run into treating a duplicate
+# collection as harmless.  A fresh distillation gets its wording from the labeller like
+# every other leaf; this fixed string covers the draws that fail and the legacy skills
+# migration 0101 back-filled, which have no draw left to recover.
 WRITE_TARGET_DESCRIPTION = "the collection this is set up on"
 
 
-def _is_write_target(tool: str, path: list[str | int]) -> bool:
-    """The scoped-write target leaf (``memory`` on a ``collection_write`` /
-    ``update_entry`` / ``collection_delete_entry`` step) — a PLACEHOLDER, never a
-    parameter and never a baked constant (#1777, superseding #1659's exemption).
-    Write-retarget (#1629, :func:`retarget_writes`) binds it to the attached collection
-    at the render seam."""
-    return tool in SCOPED_WRITE_TOOLS and path == ["memory"]
-
-
-def _write_target_substitution(path: list[str | int]) -> SkillSubstitution:
-    """The scoped-write target's placeholder leaf (#1777) — carrying what belongs
-    there each run, so the render shows the routine's target rather than the
-    demonstration's.  The demonstrated name stays in the step's ``arguments`` as the
-    verbatim ledger copy, exactly as every other placeholder leaf keeps its value."""
-    return SkillSubstitution(
-        path=path, kind=SkillSubKind.PLACEHOLDER, description=WRITE_TARGET_DESCRIPTION
-    )
-
-
-def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[SkillParameter]]:
+def distill_steps(
+    selected: list[DistillInput], attachment_names: frozenset[str]
+) -> tuple[list[SkillStep], list[SkillParameter]]:
     """Factor one run's selected steps into ``(steps, parameters)`` by STRUCTURAL
     provenance — read off the ledger, never by matching the user's prose (#1659).
 
     ``selected`` is the contiguous, certified slice in run order.  The universal
     ``reasoning`` think-aloud is stripped from each call's arguments FIRST (#1661) —
     run narration, never routine — so it is neither classified nor stored.  Each
-    remaining string leaf is classified in order: the scoped-write **target** is a
-    retarget-bound **placeholder** (#1777 — what belongs there, never the demonstrated
-    collection); a value that **equals / is contained in / wraps** a prior selected
-    step's result is a **binding** (it came from that step);
+    remaining string leaf is then classified the SAME way regardless of which tool it
+    sits on or which argument it fills (#1783): a value that **equals / is contained in
+    / wraps** a prior selected step's result is a **binding** (it came from that step);
     **every other** string leaf is a required **parameter**, with identical values
     collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
     a constant.  That last rule is a DEFAULT, not a determination — it holds only
     when the user supplied the value, which structure cannot decide; the run-end
     naming micro-context relabels each one semantically AND adjudicates it, turning
-    an assistant-produced leaf into a placeholder (#1668/#1770)."""
+    an assistant-produced leaf into a placeholder (#1668/#1770).
+
+    ``attachment_names`` are the names of Penny's own COLLECTIONS (the caller reads them
+    off the registry).  An UNEXPLAINED leaf whose demonstrated VALUE is one of them
+    additionally carries the attachment mark — see
+    :attr:`SkillSubstitution.attachment` — because attaching the routine somewhere is
+    what decides a leaf that named a collection.  The mark rides ALONGSIDE the ordinary
+    classification: the leaf is still a candidate the labeller adjudicates, and a
+    user-supplied verdict clears it.  A leaf that BOUND is never marked, whatever its
+    value: its provenance is already explained (it came from a prior step), so nothing
+    is left for an attachment to decide, and marking it would let the render seam
+    overwrite a real binding with the collection's name."""
     namer = _ParameterNamer()
     steps: list[SkillStep] = []
     parameters: dict[str, SkillParameter] = {}
     for index, inp in enumerate(selected):
         arguments = _without_reasoning(inp.arguments)
-        subs: list[SkillSubstitution] = []
-        for path, value in _leaf_paths(arguments, []):
-            if _is_write_target(inp.tool, path):
-                subs.append(_write_target_substitution(path))
-                continue
-            producer = _binding_step(value, index, selected)
-            if producer is not None:
-                subs.append(SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer))
-                continue
-            name = namer.name_for(value, path)
-            parameters.setdefault(name, SkillParameter(name=name, required=True))
-            subs.append(SkillSubstitution(path=path, kind=SkillSubKind.HOLE, parameter=name))
+        subs = [
+            _substitution_for(path, value, index, selected, namer, parameters, attachment_names)
+            for path, value in _leaf_paths(arguments, [])
+        ]
         steps.append(
             SkillStep(
                 ordinal=index + 1,
@@ -368,6 +372,33 @@ def distill_steps(selected: list[DistillInput]) -> tuple[list[SkillStep], list[S
             )
         )
     return steps, list(parameters.values())
+
+
+def _substitution_for(
+    path: list[str | int],
+    value: str,
+    index: int,
+    selected: list[DistillInput],
+    namer: _ParameterNamer,
+    parameters: dict[str, SkillParameter],
+    attachment_names: frozenset[str],
+) -> SkillSubstitution:
+    """Classify ONE string leaf — the whole of :func:`distill_steps`'s per-leaf rule.
+
+    A value a prior selected step produced is a BINDING and nothing else; anything left
+    unexplained is a candidate parameter (registered in ``parameters``, deduped by value
+    through ``namer``), marked for the attachment when its value names a collection."""
+    producer = _binding_step(value, index, selected)
+    if producer is not None:
+        return SkillSubstitution(path=path, kind=SkillSubKind.BINDING, step=producer)
+    name = namer.name_for(value, path)
+    parameters.setdefault(name, SkillParameter(name=name, required=True))
+    return SkillSubstitution(
+        path=path,
+        kind=SkillSubKind.HOLE,
+        parameter=name,
+        attachment=value in attachment_names,
+    )
 
 
 # ── The render (steps + bound params → the numbered TEXT extraction_prompt) ────
@@ -393,8 +424,9 @@ class _BindingRef(BaseModel):
 
 
 class _DescribedSlot(BaseModel):
-    """Render sentinel: a leaf no user can bind — an assistant-produced value (#1770)
-    or the scoped-write target (#1777) — shown in the SAME placeholder syntax as an
+    """Render sentinel: a leaf no user binds — a value the labeller judged the assistant
+    to have produced (#1770), including one still awaiting its attachment (#1783) —
+    shown in the SAME placeholder syntax as an
     unbound parameter but carrying the one-line description of what belongs there,
     never the demonstrated value.  Freezing that value is the failure this exists to
     prevent: a collector re-running the skill would write the demonstration's stale
@@ -405,10 +437,10 @@ class _DescribedSlot(BaseModel):
 
 
 def _marker_for(sub: SkillSubstitution, params: dict[str, str]) -> Any:
-    # Each kind's payload read defensively, as its siblings are: a write-target
-    # placeholder carries the module constant, and the labelling parse rejects a
-    # PLACEHOLDER verdict with a blank description (there would be nothing to render in
-    # the leaf's place), so an empty one never reaches here in practice.
+    # Each kind's payload read defensively, as its siblings are: the labelling parse
+    # rejects a PLACEHOLDER verdict with a blank description (there would be nothing to
+    # render in the leaf's place) and an unadjudicated marked leaf falls back to
+    # ``WRITE_TARGET_DESCRIPTION``, so an empty one never reaches here in practice.
     if sub.kind == SkillSubKind.PLACEHOLDER:
         return _DescribedSlot(description=sub.description or "")
     if sub.kind == SkillSubKind.HOLE:
@@ -469,9 +501,9 @@ def render_skill(steps: list[SkillStep], params: dict[str, str] | None = None) -
     to stamp the collection's ``extraction_prompt`` at creation.  Parameters present
     in ``params`` are substituted with their value verbatim; parameters NOT in
     ``params`` render as ``{name}`` (the with-params form the read surface shows);
-    a leaf ``params`` can never bind — an assistant-produced value (#1770) or the
-    scoped-write target (#1777) — renders as ``{<what belongs there>}`` from its
-    description, never the demonstrated value; bindings render as ``the value from
+    a leaf ``params`` can never bind — an assistant-produced value (#1770), including
+    one an attachment has yet to fill (#1783) — renders as ``{<what belongs there>}``
+    from its description, never the demonstrated value; bindings render as ``the value from
     step N``; everything else is a constant.  Pure and deterministic — the same steps
     + params always produce the same text.
     """
@@ -490,47 +522,45 @@ def unbound_required_parameters(
     return [p for p in parameters if p.required and p.name not in params]
 
 
-# ── Write-retarget at apply (#1629) ────────────────────────────────────────────
-
-# The scoped-write tools a collector run is pinned to its bound target through
-# (``_memory_scope``): their ``memory`` argument must name the collection being
-# instantiated, not whatever the demonstration happened to write into.  A skill is
-# demonstrated against SOME collection, so its write steps keep that demo target in
-# ``arguments`` as the verbatim ledger copy — but they RENDER it as the #1777
-# placeholder, because instantiating the skill into collection C is what DEFINES the
-# write target, and it is C the placeholder is bound to at the render seam.
-SCOPED_WRITE_TOOLS = frozenset({"collection_write", "update_entry", "collection_delete_entry"})
+# ── Attachment binding at apply (#1629/#1783) ──────────────────────────────────
 
 
 def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
-    """Bind every scoped-write step's ``memory`` placeholder to ``target`` — the
-    write-retarget-at-apply rule (#1629).
+    """Bind every ATTACHMENT-MARKED leaf to ``target`` — the retarget-at-apply rule
+    (#1629, generalized off the tool whitelist by #1783).
 
-    "Apply this skill to collection C" is what fixes where its writes go, so the leaf
-    the stored recipe shows as ``{the collection this is set up on}`` (#1777) is bound
-    here to C's own name: the rendered copy carries the value and drops the
-    substitution, so the render prints the collection instead of the placeholder.  The
-    same line covers every other shape that leaf can hold — a skill distilled before
-    #1777 (whose demo constant carries no substitution at all), or a stray
-    parameter/binding — so an apply lands on the target regardless of when the skill was
-    taught.  This runs at the render/instantiation seam (``render_skill_prompt``), on
-    BOTH the one-call ``collection_set(skill=…)`` and the ``collection_set`` adopt
-    paths, so the rendered ``extraction_prompt`` never lies about its write target.
-    Pure — the skill's STORED steps keep their verbatim ledger arguments (a skill is
-    target-agnostic at rest); only the rendered-into-a-collection copy is bound.  A step
-    that isn't a scoped write, or whose call omits ``memory``, passes through untouched.
+    "Apply this routine to collection C" is what decides a leaf that named a collection,
+    so each leaf still carrying :attr:`SkillSubstitution.attachment` at instantiation is
+    bound to C's own name: the rendered copy takes the value and drops the substitution,
+    so the render prints the collection instead of the placeholder.  Nothing here knows
+    which tools a skill contains — it reads the MARK distillation left and the labeller
+    let stand, so a write, a read of the routine's own collection, or a tool nobody has
+    enumerated all bind identically, and a leaf the labeller judged USER-supplied kept no
+    mark and stays the parameter the user binds.
+
+    Two leaves marked and unbound therefore both land on C — not a collapse rule, the
+    OUTCOME of two verdicts that said "the assistant chose this"; two destinations the
+    user named are two parameters and stay distinct.
+
+    Runs at the render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
+    ``collection_set(skill=…)`` and the adopt path, so the rendered ``extraction_prompt``
+    never lies about the collection it acts on.  Pure — the skill's STORED steps keep
+    their verbatim ledger arguments (a skill is target-agnostic at rest); only the
+    rendered-into-a-collection copy is bound.  A step with no marked leaf passes through
+    untouched.
     """
     retargeted: list[SkillStep] = []
     for step in steps:
-        if step.tool not in SCOPED_WRITE_TOOLS or "memory" not in step.arguments:
+        marked = [sub.path for sub in step.substitutions if sub.attachment]
+        if not marked:
             retargeted.append(step)
             continue
         arguments = copy.deepcopy(step.arguments)
-        arguments["memory"] = target
-        # The ``memory`` leaf now holds the bound target, so drop the placeholder (or a
-        # stray parameter/binding) that addressed it — else the render would substitute
-        # a marker back over the collection's own name.
-        substitutions = [sub for sub in step.substitutions if sub.path[:1] != ["memory"]]
+        for path in marked:
+            _set_at_path(arguments, path, target)
+        # Each bound leaf now holds the target, so drop the substitution that addressed
+        # it — else the render would substitute a marker back over the collection's name.
+        substitutions = [sub for sub in step.substitutions if not sub.attachment]
         retargeted.append(
             step.model_copy(update={"arguments": arguments, "substitutions": substitutions})
         )

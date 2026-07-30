@@ -16,10 +16,14 @@ The #1770 additions: the labeller ADJUDICATES each candidate parameter — a PAR
 verdict keeps it a required parameter, a PLACEHOLDER verdict drops it and renders
 what belongs there instead of freezing the demonstrated value, and NO verdict (or a
 malformed one) keeps the arg-derived required parameter · the naming system prompt
-as a whole-render literal.  The #1777 addition: the scoped-write TARGET is a
-placeholder on the same footing — the demonstrated collection survives only as the
-step's verbatim ledger arguments and never reaches the rendered recipe.  All content
-is synthetic (aurora / faux-market).
+as a whole-render literal.  The #1783 additions: the leaf that named a collection is
+adjudicated like every other one — the assistant's choice is filled by whatever the
+routine is attached to, the user's choice stays a parameter they bind, and two
+user-named destinations therefore stay two destinations — as a stored SKILL; a
+collector cycle is scoped to ONE collection, so what running such a routine on a
+cadence should do is a separate, open question.  Either way the demonstrated
+collection survives only as the step's verbatim ledger arguments and never reaches the
+rendered recipe.  All content is synthetic (aurora / faux-market).
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from penny.database.skills import (
     SkillSubKind,
     SkillSubstitution,
     render_skill,
+    retarget_writes,
     unbound_required_parameters,
 )
 from penny.llm.models import LlmMessage, LlmResponse
@@ -79,6 +84,27 @@ _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
 
 
 pytestmark = pytest.mark.bare_db
+
+
+# The collection every demonstration in this module writes into.
+_DEMO_COLLECTION = "aurora-prices"
+
+
+@pytest.fixture(autouse=True)
+def _demonstrated_collection(request):
+    """The collection the demonstrations write into EXISTS while they run — a write
+    that succeeded means its collection was there, and on the chat surface the write
+    itself creates it.
+
+    Load-bearing since #1783: distillation marks a leaf whose demonstrated VALUE names
+    one of Penny's collections, so a fixture that logged a write against a collection
+    the registry never had would exercise a run that cannot happen and would miss the
+    mark entirely.  Only for tests that take the ``db`` fixture."""
+    if "db" not in request.fixturenames:
+        return
+    db = request.getfixturevalue("db")
+    if db.memories.get(_DEMO_COLLECTION) is None:
+        db.memories.create_collection(_DEMO_COLLECTION, "price notes")
 
 
 def _extractor(
@@ -149,8 +175,10 @@ def _log_run(
 async def test_read_write_run_qualifies_and_distils_correctly(db):
     """A browse (read) + collection_write (act) run is a routine: it qualifies and a
     skill is extracted with the query/extract as required holes, the write content
-    bound to the browse result, and the write target a PLACEHOLDER (#1777 — retarget
-    binds it at instantiation, and the demonstrated collection is never rendered).
+    bound to the browse result, and the leaf naming the collection an ATTACHMENT-marked
+    placeholder — with a bare model there is no draw to describe it, so it falls back to
+    the fixed string (#1777's constant, kept as exactly that fallback by #1783), and the
+    demonstrated collection is never rendered.
     The description is the run's bare utterance; the framework ``reasoning`` is gone."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -169,12 +197,15 @@ async def test_read_write_run_qualifies_and_distils_correctly(db):
     subs = {tuple(s.path): s for s in steps[1].substitutions}
     content_sub = subs[("entries", 0, "content")]
     assert content_sub.kind.value == "binding" and content_sub.step == 1
-    # The write TARGET: a placeholder, not a parameter — the demonstrated collection
-    # stays in ``arguments`` as the ledger copy and never reaches the recipe (#1777).
+    # The leaf that named a collection: attachment-marked, and — with no draw to
+    # describe it — a placeholder on the fallback string rather than a required
+    # parameter nobody could bind.  The demonstrated collection stays in ``arguments``
+    # as the ledger copy and never reaches the recipe.
     assert subs[("memory",)].kind == SkillSubKind.PLACEHOLDER
+    assert subs[("memory",)].attachment is True
     assert subs[("memory",)].description == WRITE_TARGET_DESCRIPTION
-    assert steps[1].arguments["memory"] == "aurora-prices"
-    assert "aurora-prices" not in render_skill_full(skill)
+    assert steps[1].arguments["memory"] == _DEMO_COLLECTION
+    assert _DEMO_COLLECTION not in render_skill_full(skill)
     # The framework reasoning think-aloud is stripped from every stored step.
     assert all("reasoning" not in step.arguments for step in steps)
 
@@ -187,7 +218,6 @@ async def test_learning_a_skill_attaches_nothing(db):
     makes them two turns — learn reports what it did and offers, apply binds it
     when the user says so — so the collection is left exactly as the round left
     it: no skill, no rendered prompt, nothing scheduled."""
-    db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db).extract("run-A")
@@ -570,11 +600,18 @@ async def test_tagged_naming_micro_context_sets_a_generic_name_and_description(d
     assert result.skill.description == "Look up a price on a listing page and record it."
     assert result.skill.intent == "Look up a price on a listing page and record it."
     assert result.origin_message == _UTTERANCE
-    # The naming micro-context's content led with the conversation, oldest first.
+    # The naming content leads with the conversation, oldest first — and the
+    # DEMONSTRATING message is in it, attributed to the user (#1770).  Presented
+    # under its own unattributed heading, the labeller read the conversation as
+    # the only record of what the user said, did not find the demonstrated values
+    # there, and ruled them assistant-produced — correct reasoning over a
+    # presentation that hid the speaker.  Both turns must render as `user:`.
     naming_request = model.requests[-1]
     naming_content = " ".join(m.get("content", "") for m in naming_request["messages"])
-    assert "Conversation that led to the construction of this routine:" in naming_content
+    assert "Conversation that led to the construction of this routine" in naming_content
     assert "user: can you keep an eye on the zephyr lamp listing for me?" in naming_content
+    assert f"user: {_UTTERANCE}" in naming_content, "the demonstrating turn is the user's"
+    assert "First demonstrated by this message" not in naming_content
 
 
 @pytest.mark.asyncio
@@ -743,7 +780,6 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     every cycle, forever — so the attached prompt is asserted WHOLE: the user's two
     values are bound, the assistant's two are placeholders, and neither demonstrated
     phrase appears anywhere."""
-    db.memories.create_collection("aurora-prices", "price notes", created_by_run_id="run-A")
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price on a listing page and record it.\n"
@@ -792,6 +828,84 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     assert row.skill_name is None and row.extraction_prompt is None
 
 
+# ── #1783: the collection name is adjudicated like every other leaf ────────────
+
+
+@pytest.mark.asyncio
+async def test_assistant_chosen_destination_is_filled_by_the_attachment(db):
+    """A PLACEHOLDER verdict on the leaf that named a collection says the assistant
+    picked where to put the results.  Nobody can bind that, so the attachment fills it:
+    the leaf keeps its mark, renders the LABELLER's wording (not a hardcoded string) in
+    the stored recipe, and applying the routine to a collection binds it to that
+    collection's own name."""
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price on a listing page and record it.\n"
+        "PARAM queries: url — the listing page to read\n"
+        "PARAM extract: what_to_find — what to pull from the page\n"
+        "PLACEHOLDER memory: wherever this routine keeps its readings"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [p.name for p in params] == ["url", "what_to_find"]
+    steps = steps_from_json(result.skill.steps)
+    target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
+    assert target.kind == SkillSubKind.PLACEHOLDER and target.attachment is True
+    # The wording is the labeller's, not the fixed fallback.
+    assert target.description == "wherever this routine keeps its readings"
+    assert "memory={wherever this routine keeps its readings}" in render_skill(steps)
+    assert "memory='aurora-watch'" in render_skill(retarget_writes(steps, "aurora-watch"))
+
+
+@pytest.mark.asyncio
+async def test_two_user_named_destinations_stay_two_parameters(db):
+    """The corrected model's load-bearing claim (#1783): a routine writing to two
+    places the USER named is TWO parameters, bound separately at instantiation — no new
+    mechanism, no privileged argument, nothing user-facing invented.  It falls out of
+    the verdicts: the user chose both, so neither is the attachment's to fill.  (Two
+    places the ASSISTANT chose are two placeholders and both land on the attached
+    collection — also an outcome of the verdicts, not a rule.)"""
+    db.memories.create_collection("aurora-archive", "older readings")
+    second_write = (
+        "collection_write",
+        {"memory": "aurora-archive", "entries": [{"key": "aurora deck 2 price", "content": "old"}]},
+        "You saved an entry to aurora-archive: (collection_write result)\nWrote 1 entry.",
+        True,
+    )
+    model = _naming_model(
+        "NAME: Record a listing price in two places\n"
+        "DESCRIPTION: Look up a price and record it in a live list and an archive.\n"
+        "PARAM queries: url — the listing page to read\n"
+        "PARAM extract: what_to_find — what to pull from the page\n"
+        "PARAM memory: live_list — the collection to keep the current reading in\n"
+        "PARAM memory-2: archive — the collection to keep past readings in\n"
+        "PARAM content: previous_reading — the value to file in the archive"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE, second_write])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert {p.name for p in parameters_from_json(result.skill.parameters)} >= {
+        "live_list",
+        "archive",
+    }
+    steps = steps_from_json(result.skill.steps)
+    targets = [{tuple(s.path): s for s in step.substitutions}[("memory",)] for step in steps[1:]]
+    # The user chose both, so neither carries the mark and the attachment rebinds
+    # neither — they render as their own distinct parameters.
+    assert [t.parameter for t in targets] == ["live_list", "archive"]
+    assert all(t.attachment is False for t in targets)
+    assert retarget_writes(steps, "somewhere-else") == steps
+    rendered = render_skill(steps, {"live_list": "current-prices", "archive": "price-history"})
+    assert "collection_write(memory='current-prices'" in rendered
+    assert "collection_write(memory='price-history'" in rendered
+
+
 def test_naming_system_prompt_whole_render():
     """Whole-render literal of the labelling contract (#1665/#1668/#1770): the framing
     and its inputs, the three numbered asks — intent, then the generic routine name,
@@ -814,14 +928,16 @@ def test_naming_system_prompt_whole_render():
         "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
         "from. There are two cases:\n"
         "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
-        "they asked to be found, a label they chose — including when the assistant "
+        "they asked to be found, a label they chose, a place they said to keep it — "
+        "including when the assistant "
         "reworded it ('the current price' for their \"find the price\"). This is a real "
         "parameter: name it by what the value MEANS to the user (e.g. 'url', "
         "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
         "describe in one line what to supply for it.\n"
         "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
         "returned, or wrote it itself while carrying the task out — a summary, a note, "
-        "a caption about a page. The user never said it and could not supply it, so it "
+        "a caption about a page, a place it picked itself to keep the results in. The "
+        "user never said it and could not supply it, so it "
         "is NOT a parameter: it is a placeholder, and you describe in one line what "
         "belongs in that spot each time the routine runs.\n"
         "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "

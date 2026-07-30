@@ -90,6 +90,7 @@ class TestEmbeddingModelRequired:
         # The httpx Timeout object the SDK ends up with is its default —
         # the read deadline is 600s, not our caller-supplied number.
         timeout_obj = client.client.timeout
+        assert isinstance(timeout_obj, httpx.Timeout)
         assert timeout_obj.read == 600.0
 
 

@@ -17,7 +17,7 @@ from penny.constants import ChannelType, PennyConstants
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, PromptLog, RuntimeConfig
-from penny.tests.conftest import wait_until
+from penny.tests.conftest import require_memory, wait_until
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.browse import BrowseTool
@@ -1387,7 +1387,7 @@ class TestBrowserMemoryHandlers:
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "tabletop strategy")
         db.memories.create_collection("espresso-gear", "coffee equipment")
-        db.memory("espresso-gear").write(
+        require_memory(db, "espresso-gear").write(
             [EntryInput(key="grinder", content="Niche Zero burr grinder")],
             author="test",
         )
@@ -1411,7 +1411,7 @@ class TestBrowserMemoryHandlers:
         entries section to matches — but metadata keeps the full count."""
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("espresso-gear", "coffee")
-        db.memory("espresso-gear").write(
+        require_memory(db, "espresso-gear").write(
             [
                 EntryInput(key="grinder", content="Niche Zero burr grinder"),
                 EntryInput(key="machine", content="Gaggia Classic espresso machine"),
@@ -1599,7 +1599,7 @@ class TestBrowserMemoryHandlers:
         received: list[str | None] = []
         db.memories._on_memory_changed = lambda name: received.append(name)
 
-        db.memory("board-games").write(
+        require_memory(db, "board-games").write(
             [EntryInput(key="catan", content="A classic")],
             author="user",
         )
@@ -1614,7 +1614,7 @@ class TestBrowserMemoryHandlers:
         received: list[str | None] = []
         db.memories._on_memory_changed = lambda name: received.append(name)
 
-        db.memory("notes").append([LogEntryInput(content="cycle x")], author="user")
+        require_memory(db, "notes").append([LogEntryInput(content="cycle x")], author="user")
 
         assert "notes" in received
 
@@ -1778,7 +1778,7 @@ class TestBrowserMemoryHandlers:
                 "content": "Gateway strategy game",
             }
         )
-        entries = db.memory("board-games").read_latest()
+        entries = require_memory(db, "board-games").read_latest()
         assert len(entries) == 1
         assert entries[0].key == "catan"
         assert entries[0].content == "Gateway strategy game"
@@ -1788,7 +1788,7 @@ class TestBrowserMemoryHandlers:
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "x")
-        db.memory("board-games").write(
+        require_memory(db, "board-games").write(
             [EntryInput(key="catan", content="old")],
             author="user",
         )
@@ -1800,18 +1800,18 @@ class TestBrowserMemoryHandlers:
                 "content": "Gateway strategy game, updated",
             }
         )
-        entries = db.memory("board-games").get("catan")
+        entries = require_memory(db, "board-games").get("catan")
         assert entries[0].content == "Gateway strategy game, updated"
 
     def test_entry_delete_removes_row(self, tmp_path):
 
         channel, db = self._channel(tmp_path)
         db.memories.create_collection("board-games", "x")
-        db.memory("board-games").write(
+        require_memory(db, "board-games").write(
             [EntryInput(key="catan", content="A classic")],
             author="user",
         )
         channel._handle_entry_delete(
             {"type": "entry_delete", "memory": "board-games", "key": "catan"}
         )
-        assert db.memory("board-games").get("catan") == []
+        assert require_memory(db, "board-games").get("catan") == []

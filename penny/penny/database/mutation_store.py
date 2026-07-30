@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 
 from pydantic import BaseModel, Field
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.constants import MutationAction, MutationActor, MutationEntityType
 from penny.database.models import MutationEvent
@@ -175,7 +175,7 @@ class MutationStore:
                 session.exec(
                     select(MutationEvent)
                     .where(MutationEvent.entity_name == entity_name)
-                    .order_by(MutationEvent.created_at.desc())  # type: ignore[union-attr]
+                    .order_by(col(MutationEvent.created_at).desc())
                     .limit(limit)
                 ).all()
             )
@@ -195,7 +195,7 @@ class MutationStore:
                     select(MutationEvent)
                     # ``id`` breaks same-timestamp ties deterministically (newest
                     # id first = creation order) so the activity render is stable.
-                    .order_by(MutationEvent.created_at.desc(), MutationEvent.id.desc())  # type: ignore[union-attr]
+                    .order_by(col(MutationEvent.created_at).desc(), col(MutationEvent.id).desc())
                     .limit(limit)
                 ).all()
             )

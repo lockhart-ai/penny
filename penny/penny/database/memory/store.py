@@ -23,7 +23,7 @@ import numpy as np
 from pydantic import BaseModel
 from similarity.dedup import JobSide, is_same_job
 from sqlalchemy import and_, func, or_
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
@@ -390,14 +390,14 @@ class MemoryStore:
             by_direction = dict(
                 session.exec(
                     select(MessageLog.direction, func.count(MessageLog.id))  # ty: ignore[invalid-argument-type]
-                    .where(MessageLog.is_reaction.is_(False))  # ty: ignore[unresolved-attribute]
+                    .where(col(MessageLog.is_reaction).is_(False))
                     .group_by(MessageLog.direction)
                 ).all()
             )
             run_count = session.exec(
                 select(func.count(PromptLog.id)).where(  # ty: ignore[invalid-argument-type]
-                    PromptLog.run_outcome.isnot(None),  # ty: ignore[unresolved-attribute]
-                    PromptLog.run_target.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(PromptLog.run_outcome).isnot(None),
+                    col(PromptLog.run_target).isnot(None),
                 )
             ).one()
         for log_name, direction in _MESSAGE_LOG_DIRECTIONS.items():
@@ -428,13 +428,13 @@ class MemoryStore:
                     MemoryEntry.key,
                 )
                 .where(
-                    MemoryEntry.last_written_by_run_id.in_(run_ids),  # ty: ignore[unresolved-attribute]
-                    MemoryEntry.key.isnot(None),  # ty: ignore[unresolved-attribute]
+                    col(MemoryEntry.last_written_by_run_id).in_(run_ids),
+                    col(MemoryEntry.key).isnot(None),
                 )
                 .order_by(
-                    MemoryEntry.memory_name.asc(),
-                    MemoryEntry.created_at.asc(),
-                    MemoryEntry.id.asc(),
+                    col(MemoryEntry.memory_name).asc(),
+                    col(MemoryEntry.created_at).asc(),
+                    col(MemoryEntry.id).asc(),
                 )
             ).all()
         for run_id, memory_name, key in rows:
@@ -451,10 +451,7 @@ class MemoryStore:
         with self._session() as session:
             rows = session.exec(
                 select(MemoryEntry.memory_name)
-                .where(
-                    MemoryEntry.content.like(like)  # ty: ignore[unresolved-attribute]
-                    | MemoryEntry.key.like(like)  # ty: ignore[unresolved-attribute]
-                )
+                .where(col(MemoryEntry.content).like(like) | col(MemoryEntry.key).like(like))
                 .distinct()
             ).all()
             return set(rows)
@@ -626,7 +623,7 @@ class MemoryStore:
             rows = session.exec(
                 select(MemoryRow).where(
                     MemoryRow.created_by_run_id == run_id,
-                    MemoryRow.source_message_id.is_(None),  # ty: ignore[unresolved-attribute]
+                    col(MemoryRow.source_message_id).is_(None),
                 )
             ).all()
             changed_names = [memory.name for memory in rows]
@@ -681,10 +678,10 @@ class MemoryStore:
         backfill batches.
         """
         missing_vector = or_(
-            MemoryEntry.content_embedding.is_(None),  # ty: ignore[unresolved-attribute]
+            col(MemoryEntry.content_embedding).is_(None),
             and_(
-                MemoryEntry.key.is_not(None),  # ty: ignore[unresolved-attribute]
-                MemoryEntry.key_embedding.is_(None),  # ty: ignore[unresolved-attribute]
+                col(MemoryEntry.key).is_not(None),
+                col(MemoryEntry.key_embedding).is_(None),
             ),
         )
         with self._session() as session:
@@ -696,7 +693,7 @@ class MemoryStore:
                         missing_vector,
                         MemoryRow.archived == False,  # noqa: E712
                     )
-                    .order_by(MemoryEntry.created_at.desc())  # type: ignore[union-attr]
+                    .order_by(col(MemoryEntry.created_at).desc())
                     .limit(limit)
                 ).all()
             )
@@ -924,8 +921,8 @@ class MemoryStore:
             entries = session.exec(
                 select(MemoryEntry).where(
                     or_(
-                        MemoryEntry.content_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
-                        MemoryEntry.key_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                        col(MemoryEntry.content_embedding).is_not(None),
+                        col(MemoryEntry.key_embedding).is_not(None),
                     )
                 )
             ).all()
@@ -940,7 +937,7 @@ class MemoryStore:
         with self._session() as session:
             rows = session.exec(
                 select(Skill).where(
-                    Skill.description_embedding.is_not(None),  # ty: ignore[unresolved-attribute]
+                    col(Skill.description_embedding).is_not(None),
                 )
             ).all()
         return [

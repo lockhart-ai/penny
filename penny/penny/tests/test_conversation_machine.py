@@ -88,8 +88,7 @@ def _responds_per_call(reply: Callable[[int], str]) -> MockLlmClient:
     def handler(request: dict, count: int) -> LlmResponse:
         return LlmResponse(message=LlmMessage(role="assistant", content=reply(count)))
 
-    handler.answers_state_classifier = True  # type: ignore[attr-defined]
-    model.set_response_handler(handler)
+    model.set_response_handler(handler, answers_state_classifier=True)
     return model
 
 

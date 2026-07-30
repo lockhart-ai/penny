@@ -74,6 +74,11 @@ python = "/usr/local/bin/python"
 [tool.ty.rules]
 unresolved-import = "ignore"
 call-non-callable = "warn"
-# SQLModel/SQLAlchemy column descriptors (.desc(), .asc(), .in_(), etc.) appear
-# as plain Python types to ty — all unresolved-attribute errors are false positives
-unresolved-attribute = "warn"
+# A call to an attribute or method that doesn't exist is a real defect, so it
+# fails the gate. The noisy family that used to justify downgrading this — a
+# SQLModel/SQLAlchemy column descriptor (.desc(), .asc(), .in_(), …), which ty
+# sees as the field's plain Python type — is fixed AT SOURCE with sqlmodel.col()
+# rather than hidden here: a global downgrade also hid a real deleted-method call
+# for days. Reach for col(), or a narrow `# ty: ignore[unresolved-attribute]` with
+# a reason — never this severity.
+unresolved-attribute = "error"

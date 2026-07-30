@@ -29,6 +29,7 @@ import pytest
 
 from penny.database import Database
 from penny.database.memory import EntryInput
+from penny.tests.conftest import require_memory
 from penny.tests.eval.conftest import ChatEval, Check, collection_entries
 from penny.tests.eval.conftest import _response_tool_calls as response_tool_calls
 
@@ -82,11 +83,11 @@ def _has_entry_mentioning(db: Database, memory: str, token: str) -> bool:
 
 
 def _seed_like(db: Database, key: str, content: str) -> None:
-    db.memory(_LIKES).write([EntryInput(key=key, content=content)], author="user")
+    require_memory(db, _LIKES).write([EntryInput(key=key, content=content)], author="user")
 
 
 def _seed_dislike(db: Database, key: str, content: str) -> None:
-    db.memory(_DISLIKES).write([EntryInput(key=key, content=content)], author="user")
+    require_memory(db, _DISLIKES).write([EntryInput(key=key, content=content)], author="user")
 
 
 # ── Scorers ───────────────────────────────────────────────────────────────────

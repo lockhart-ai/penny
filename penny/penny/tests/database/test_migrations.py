@@ -15,7 +15,7 @@ from penny.database.migrate import (
     validate_migrations,
 )
 from penny.database.skill_store import steps_from_json
-from penny.database.skills import WRITE_TARGET_DESCRIPTION, render_skill
+from penny.database.skills import render_skill, retarget_writes
 
 
 class TestDiscovery:
@@ -84,7 +84,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 102
+        assert count == 103
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +126,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 102
+        assert count1 == 103
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +164,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 101 migrations
-        assert count == 101
+        # 0001 is skipped; the rest run = 102 migrations
+        assert count == 102
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +191,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 102  # all migrations applied
+        assert count == 103  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1099,12 +1099,13 @@ class TestMigrate:
         name in ``arguments`` (the verbatim ledger copy), and touches neither a
         non-write step nor a leaf that already carries a substitution."""
         # The migration writes a FROZEN copy of the description (a migration is a
-        # historical artifact).  Pinning the literal here and asserting it still equals
-        # the live constant states the contract: a back-filled row must read like a
-        # freshly-distilled one, and changing the live wording needs a NEW migration
-        # rather than this one silently rewriting history.
+        # historical artifact), so the literal is pinned here and nowhere else.  It is
+        # deliberately NOT compared against the live constant: since #1783 a
+        # freshly-distilled skill gets its wording from the labeller, and the live
+        # constant is only the failed-draw fallback — so back-filled rows read
+        # differently from new ones, and that is the intended state (a skill taught
+        # before the labeller saw that leaf has no draw left to recover).
         frozen_description = "the collection this is set up on"
-        assert frozen_description == WRITE_TARGET_DESCRIPTION
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         conn.execute(
@@ -1200,4 +1201,99 @@ class TestMigrate:
             conn.execute("SELECT steps FROM skill WHERE name = 'current'").fetchone()[0]
         )
         assert unchanged == current_steps
+        conn.close()
+
+    def test_0103_marks_the_legacy_write_target_for_attachment_binding(self, tmp_path):
+        """Migration 0103 (#1783): instantiation binds what carries the ATTACHMENT MARK,
+        not what a tool whitelist says is a write.  A skill taught before the mark
+        existed carries none, so its rendered program would show the placeholder where
+        the collection's own name belongs — it would stop stating where it acts.  This
+        marks those leaves: the 0101 placeholder is marked in place, a leaf that reached
+        this migration with no substitution at all gets a marked one, a non-write step
+        is untouched, and the demonstrated name stays in ``arguments``."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE skill ("
+            "  name TEXT PRIMARY KEY, steps TEXT NOT NULL, parameters TEXT NOT NULL,"
+            "  intent TEXT NOT NULL, description TEXT NOT NULL, author TEXT NOT NULL)"
+        )
+        browse_step = {
+            "ordinal": 1,
+            "source_ordinal": 1,
+            "tool": "browse",
+            "arguments": {"queries": ["{url}"]},
+            "substitutions": [{"path": ["queries", 0], "kind": "hole", "parameter": "url"}],
+        }
+        steps = [
+            browse_step,
+            # The 0101 shape: a placeholder, no mark.
+            {
+                "ordinal": 2,
+                "source_ordinal": 2,
+                "tool": "collection_write",
+                "arguments": {"memory": "aurora-prices", "entries": [{"key": "k", "content": "c"}]},
+                "substitutions": [
+                    {
+                        "path": ["memory"],
+                        "kind": "placeholder",
+                        "parameter": None,
+                        "step": None,
+                        "description": "the collection this is set up on",
+                    }
+                ],
+            },
+            # A row 0101 never reached — no substitution at all.
+            {
+                "ordinal": 3,
+                "source_ordinal": 3,
+                "tool": "update_entry",
+                "arguments": {"memory": "aurora-prices", "key": "k", "content": "c"},
+                "substitutions": [],
+            },
+        ]
+        conn.execute(
+            "INSERT INTO skill (name, steps, parameters, intent, description, author) "
+            "VALUES ('legacy', ?, '[]', 'x', 'x', 'chat')",
+            (json.dumps(steps),),
+        )
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0103_skill_attachment_mark.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0103", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        mod.up(conn)
+        mod.up(conn)  # idempotent — a second application changes nothing
+
+        stored = json.loads(
+            conn.execute("SELECT steps FROM skill WHERE name = 'legacy'").fetchone()[0]
+        )
+        assert stored[0] == browse_step  # the browse step is untouched
+        for step in stored[1:]:
+            assert step["substitutions"] == [
+                {
+                    "path": ["memory"],
+                    "kind": "placeholder",
+                    "parameter": None,
+                    "step": None,
+                    "description": "the collection this is set up on",
+                    "attachment": True,
+                }
+            ]
+            assert step["arguments"]["memory"] == "aurora-prices"  # the ledger copy stays
+        # The upgraded row instantiates like a freshly-distilled skill: applying it to a
+        # collection binds every marked leaf to that collection's own name.
+        rendered = render_skill(retarget_writes(steps_from_json(json.dumps(stored)), "harbor-log"))
+        assert "aurora-prices" not in rendered
+        assert "collection_write(memory='harbor-log'" in rendered
+        assert "update_entry(memory='harbor-log'" in rendered
         conn.close()

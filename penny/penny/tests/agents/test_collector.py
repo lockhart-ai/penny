@@ -33,6 +33,7 @@ from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
+from penny.tests.conftest import require_memory
 from penny.tests.schema_template import schema_only_db
 from penny.tools.memory_tools import LogReadTool, build_memory_tools, collector_tool_surface
 
@@ -797,7 +798,7 @@ def _seed_notify_collection(db: Database) -> None:
         collector_interval_seconds=3600,
         notify=True,
     )
-    db.memory("indie-metroidvanias").write(
+    require_memory(db, "indie-metroidvanias").write(
         [EntryInput(key=_NOTIFY_SEED_KEY, content=_NOTIFY_SEED_CONTENT)], author="producer"
     )
 
@@ -919,7 +920,7 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
 
     # The gate auto-refreshed the baseline in place: one row, now the new value,
     # stamped by the writing run — via the write alone, no update_entry.
-    stored = db.memory("indie-metroidvanias").get(_NOTIFY_SEED_KEY)
+    stored = require_memory(db, "indie-metroidvanias").get(_NOTIFY_SEED_KEY)
     assert len(stored) == 1
     assert stored[0].content == new_value
     assert stored[0].last_written_by_run_id is not None
@@ -1491,8 +1492,10 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
     observed: dict = {}
 
     async def fake_run_cycle(run_id: str) -> CycleResult:
+        target = collector._current_target
+        assert target is not None
         observed["locked"] = collector._cycle_lock.locked()
-        observed["target"] = collector._current_target.name
+        observed["target"] = target.name
         return CycleResult(success=True, response=ControllerResponse(answer="done"))
 
     collector._run_cycle = fake_run_cycle  # ty: ignore[invalid-assignment]

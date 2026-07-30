@@ -394,11 +394,13 @@ class Skill(SQLModel, table=True):
     (``penny.skill_extraction``) snapshots that run's own ledger, copying its
     succeeded, non-``done`` tool calls into ``steps`` (the ``LoggedToolCall`` shape as
     JSON) and factoring each argument by provenance into declared ``parameters`` (JSON)
-    — a value from a prior step's result becomes a binding, the scoped-write target a
-    placeholder write-retarget binds at instantiation (#1777 — the demonstrated
-    collection stays in ``steps`` as the verbatim ledger copy but never renders), every
-    other string leaf a required parameter (#1658/#1659), semantically named +
-    described by the run-end naming micro-context (#1668).  #1591's ``collection_set``
+    — a value from a prior step's result becomes a binding, every other string leaf a
+    required parameter (#1658/#1659), semantically named + described by the run-end
+    naming micro-context (#1668).  EVERY leaf goes through that one process whatever
+    tool it sits on (#1783); one whose value named a collection additionally carries the
+    attachment mark, so unless the labeller says the user chose it, instantiation binds
+    it to the collection the routine is attached to (the demonstrated name stays in
+    ``steps`` as the verbatim ledger copy but never renders).  #1591's ``collection_set``
     renders ``steps`` + bound params into the collection's numbered TEXT
     ``extraction_prompt`` at creation.
 

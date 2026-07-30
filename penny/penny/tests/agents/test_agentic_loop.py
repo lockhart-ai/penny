@@ -3059,7 +3059,8 @@ class TestResponseValidators:
         collector_mid = collector.check(empty, _ctx(tools_available=True))
         assert isinstance(collector_mid, Retry) and collector_mid.nudge == "make a tool call"
         # Final-step behaviour is unchanged by the swap (still the strong-nudge sentinel).
-        assert collector.check(empty, _ctx(tools_available=False)).nudge == ""
+        collector_final = collector.check(empty, _ctx(tools_available=False))
+        assert isinstance(collector_final, Retry) and collector_final.nudge == ""
 
     def test_refusal_validator(self):
         resp = _text_response("I'm sorry, but I can't help with that.")
