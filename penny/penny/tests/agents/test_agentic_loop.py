@@ -1248,6 +1248,11 @@ class TestEmptyContentRetry:
         assert response.answer == PennyResponse.FALLBACK_RESPONSE
         # 3 tool calls + empty final step + empty retry = 5 model calls
         assert len(mock_llm.requests) == 5
+        # The fallback carries the run's records like any other close (#1776) — a run
+        # that called tools and then said nothing must not record as a callless one.
+        # Everything that reads a finished run (its terminal outcome, the collector's
+        # tool trace, its work/failure counts) reads ``tool_calls``.
+        assert [record.tool for record in response.tool_calls] == ["search"] * 3
 
         await agent.close()
 
@@ -1426,31 +1431,47 @@ class TestParallelToolCalls:
         assert PennyConstants.BROWSE_PAGE_HEADER not in result.message
 
     @pytest.mark.asyncio
-    async def test_repeated_all_failed_browse_aborts_loop(self, test_db, mock_llm):
-        """Two browse calls that each fully fail (``success=False`` — the way
-        BrowseTool now reports an all-queries-failed call) reach the all-tools-failed
-        abort, so the loop stops with the canned unavailable answer instead of
-        looping on a dead browser.  This path was unreachable while browse reported
-        every outcome as ``success=True``."""
-        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
-        agent._tool_executor.execute = AsyncMock(
-            return_value=ToolResult(
-                message=f"{PennyConstants.BROWSE_ERROR_HEADER}q\nCould not read this page.",
-                success=False,
-            )
-        )
+    async def test_converging_retry_after_failed_browses_keeps_its_steps(self, test_db, mock_llm):
+        """Two browse calls that each fully fail (``success=False`` — the way BrowseTool
+        reports an all-queries-failed call) no longer end the turn (#1776): the model
+        reads the actionable errors, changes its arguments, and its THIRD call — the
+        converging one — still runs and carries the answer.
+
+        The removed all-tools-failed abort fired here, on failure COUNT alone, without
+        looking at the arguments — so it could not tell a stuck run from a recovering
+        one and cut this exact shape off with most of its steps unused.  Byte-identical
+        repeats stay blocked by the duplicate-call cache, so the only behaviour the guard
+        added on top was ending turns whose arguments were changing."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
+        attempts: list[str] = []
+
+        async def failing_then_working(tool_call):
+            attempts.append(tool_call.arguments["queries"][0])
+            if len(attempts) <= 2:
+                return ToolResult(
+                    message=f"{PennyConstants.BROWSE_ERROR_HEADER}q\nCould not read this page.",
+                    success=False,
+                )
+            return ToolResult(message="## browse https://example.test/c:\nthe page text")
+
+        agent._tool_executor.execute = failing_then_working
 
         def handler(request, count):
-            return mock_llm._make_tool_call_response(request, "browse", {"queries": [f"q{count}"]})
+            if count <= 3:
+                # A DIFFERENT query each time — the model correcting, not repeating.
+                return mock_llm._make_tool_call_response(
+                    request, "browse", {"queries": [f"q{count}"]}
+                )
+            return mock_llm._make_text_response(request, "here's what the page said")
 
         mock_llm.set_response_handler(handler)
-        agent.allow_repeat_tools = True
 
         response = await agent.run("look this up", max_steps=max_steps)
 
-        assert response.answer == PennyResponse.AGENT_TOOLS_UNAVAILABLE.format(tools="browse")
-        assert len(response.tool_calls) == PennyConstants.TOOL_FAILURE_ABORT_THRESHOLD
-        assert all(record.failed for record in response.tool_calls)
+        # The turn reached the answer instead of stopping after the second failure.
+        assert response.answer == "here's what the page said"
+        assert attempts == ["q1", "q2", "q3"]
+        assert [record.failed for record in response.tool_calls] == [True, True, False]
 
         await agent.close()
 
@@ -2099,28 +2120,74 @@ class TestMalformedUrlCleaning:
         await agent.close()
 
 
-class TestAllToolsFailedAbort:
-    """Test that the agentic loop aborts when all tool calls fail."""
+class TestAllToolsFailedRunsOutItsSteps:
+    """The all-tools-failed abort is GONE (#1776) — ``max_steps`` is the only bound on
+    the loop, and an all-failed run closes honestly on the run record rather than being
+    truncated mid-recovery."""
 
     @pytest.mark.asyncio
-    async def test_aborts_when_all_tool_calls_fail(self, test_db, mock_llm):
-        """Loop aborts with AGENT_TOOLS_UNAVAILABLE when all tools return errors."""
+    async def test_every_tool_call_failing_uses_the_whole_step_budget(self, test_db, mock_llm):
+        """A run whose every tool call fails keeps going instead of stopping at the old
+        two-failure threshold, so the model spends the budget it was given trying to
+        recover — and composes the close itself, over the failures it can see, rather
+        than having the turn cut off under it."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
-        # Mock tool executor to always return an error
         agent._tool_executor.execute = AsyncMock(
             return_value=ToolResult(message="API unavailable", success=False)
         )
 
         def handler(request, count):
-            # Model keeps trying tool calls — all fail
+            # Model keeps trying tool calls, changing the query each time — all fail —
+            # until the final step, where the loop has stripped its tools.
+            if count <= max_steps - 1:
+                return mock_llm._make_tool_call_response(
+                    request, "search", {"query": f"attempt {count}"}
+                )
+            return mock_llm._make_text_response(request, "I couldn't reach any source for that")
+
+        mock_llm.set_response_handler(handler)
+        response = await agent.run("what's the news?", max_steps=max_steps)
+
+        assert response.answer == "I couldn't reach any source for that"
+        # A failing call on every step that HAS tools — the old guard stopped at 2.
+        assert len(response.tool_calls) == max_steps - 1
+        assert all(record.failed for record in response.tool_calls)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_failed_calls_stay_honest_in_the_context_the_model_reads(self, test_db, mock_llm):
+        """Removing the abort must not let a failed run read as a successful one: every
+        failed call is still framed to the model as a failure, verbatim, with its error
+        body — the honesty the abort's canned answer used to stand in for lives here, in
+        the per-call frames (whole-render pinned in ``TestToolResultFraming``) plus the
+        ``error`` the run record carries, not in ending the turn early."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=4)
+        agent._tool_executor.execute = AsyncMock(
+            return_value=ToolResult(message="API unavailable", success=False)
+        )
+        events = []
+
+        async def on_progress(event):
+            events.append(event)
+
+        def handler(request, count):
             return mock_llm._make_tool_call_response(
                 request, "search", {"query": f"attempt {count}"}
             )
 
         mock_llm.set_response_handler(handler)
-        response = await agent.run("what's the news?", max_steps=max_steps)
-        assert response.answer.startswith("Sorry, I wasn't able to get results right now")
-        assert "search" in response.answer
+        response = await agent.run("what's the news?", max_steps=max_steps, on_progress=on_progress)
+
+        assert response.tool_calls  # the run really did make failing calls
+        failure_frame = "You tried to use `search` but it didn't work: (search result)\n"
+        assert agent._tool_result_text == [f"{failure_frame}API unavailable"] * len(
+            response.tool_calls
+        )
+        # And the run is classified an error from what actually happened, so nothing
+        # downstream reads an all-failed run as a completed one.
+        assert events[-1].event == "run_finished"
+        assert events[-1].outcome == "error"
 
         await agent.close()
 

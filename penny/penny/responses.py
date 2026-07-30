@@ -18,7 +18,6 @@ class PennyResponse:
     AGENT_MODEL_ERROR = "Sorry, I had trouble reaching the AI model. Please try again."
     AGENT_EMPTY_RESPONSE = "Sorry, the model generated an empty response."
     AGENT_MAX_STEPS = "Sorry, I couldn't complete that request within the allowed steps."
-    AGENT_TOOLS_UNAVAILABLE = "Sorry, I wasn't able to get results right now ({tools})."
 
     # ── Channel ──────────────────────────────────────────────────────────────
 

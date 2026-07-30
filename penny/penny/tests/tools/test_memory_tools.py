@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
@@ -48,7 +49,13 @@ from penny.tools.collection_instantiation import (
     render_trigger_clause,
     render_unbound_parameters,
 )
-from penny.tools.memory_args import CollectionCreateArgs, CollectionUpdateArgs
+from penny.tools.memory_args import (
+    OPTIONAL_ARG_FORMS,
+    CollectionCreateArgs,
+    CollectionSetArgs,
+    CollectionUpdateArgs,
+    _reject_blank_optional,
+)
 from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
     _NO_TRIGGER_NOTE,
@@ -864,11 +871,12 @@ class TestCreateAndList:
         assert "events" in result.message
 
     @pytest.mark.asyncio
-    async def test_update_treats_blank_fields_as_omitted(self, db, mock_llm):
-        # Models emit "" for an optional field they mean to leave alone (gpt-oss
-        # was observed passing extraction_prompt="" alongside a recall change).
-        # A blank must be skipped, not written through: the recall change lands
-        # while the existing prompt/description survive untouched.
+    async def test_update_refuses_a_blank_field_and_applies_nothing(self, db, mock_llm):
+        # Models emit "" for an optional field they mean to leave alone (gpt-oss was
+        # observed passing extraction_prompt="" alongside another change).  That is
+        # REFUSED at the arg gate now (#1776) rather than silently read as "omitted" —
+        # and the refusal is total: the notify flip riding alongside it doesn't land
+        # either, so the model resends the call it meant instead of half of it.
         original_prompt = "test fixture extraction prompt that is long enough"
         _seed_collection(
             db,
@@ -877,17 +885,26 @@ class TestCreateAndList:
             extraction_prompt=original_prompt,
             collector_interval_seconds=3600,
         )
-        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
             description="   ",
             notify=True,
         )
-        assert "Updated" in result.message
-        updated = db.memories.get("notes")
-        assert updated.extraction_prompt == original_prompt  # blank skipped, not blanked
-        assert updated.description == "real description"  # blank skipped, not blanked
-        # notify flips on the update path (created silent by default → notify-on-new).
-        assert updated.notify is True
+        assert result.success is False
+        # The whole render — the arg-validation envelope pairs the field's own schema
+        # hint with the teaching reason and the retry instruction.
+        assert result.message == (
+            "description (string: Content-reflective one-line summary AND the meaning "
+            "anchor (find / resolve-by-meaning) — changing it re-embeds the collection. "
+            "Keep it an accurate summary of the subject matter.): an empty string sets "
+            "nothing — omit description entirely to leave it unset, or pass what the "
+            "collection is for, in the user's own words. "
+            "Call collection_set(<valid arguments>) again."
+        )
+        untouched = db.memories.get("notes")
+        assert untouched.extraction_prompt == original_prompt
+        assert untouched.description == "real description"
+        assert untouched.notify is False  # the whole call was refused, flip included
 
     @pytest.mark.asyncio
     async def test_update_rejects_the_dropped_intent_arg(self, db, mock_llm):
@@ -1445,84 +1462,133 @@ class TestInertCollections:
         assert "Already have a collection for this" in result.message
         assert db.memories.get("deals-watch") is None
 
+
+class TestBlankOptionalArgsAreRefused:
+    """A blank optional string on the collection surface is a TEACHING REJECTION at the
+    arg gate (#1776), never a silent drop.
+
+    Models fill an optional argument they mean to omit with ``""`` (a chronic gpt-oss
+    habit).  #1646 coerced that to ``None`` — read as "omitted" — which made the two
+    indistinguishable: the observed run set up an hourly watch with ``expires_at=""``
+    on a request that said "until 10pm tonight" and the end condition simply vanished,
+    every other field correct, nothing in the reply or the record marking the
+    difference.  Omitting an argument and passing ``""`` for it are different calls,
+    and only the first means "leave this alone".
+
+    The rule lives on the Pydantic args model (``OptionalText`` / ``OptionalSkill``), so
+    ``execute`` never sees a blank and nothing is created or reconfigured on a call the
+    model has to redo — and it covers every optional string on the surface, not just the
+    one field the miss was observed on.
+    """
+
     @pytest.mark.asyncio
-    async def test_blank_optional_args_coerce_to_inert_create(self, db):
-        """The live journey beat-0 failing shape (#1646): gpt-oss fills the optional
-        args it means to omit with "" — skill="" / trigger="" / expires_at="" — which
-        USED to route to the skill path and die in the trigger parser ("I couldn't read
-        the trigger ''"), abandoning storage. Blank coercion (OptionalSkill /
-        OptionalText) turns each "" into omitted BEFORE routing, so the exact call lands
-        as an inert storage create — the byte-identical echo of an all-omitted create,
-        and a genuinely inert row (no job / cadence / skill / expiry)."""
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+    async def test_blank_expires_at_is_refused_naming_the_field_and_the_form(self, db):
+        """The observed case, whole render: the drop is named, the remedy is both halves
+        (omit it, or pass the accepted form), and no collection is created."""
+        _seed_watch_skill(db)
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
             name="deals-watch",
             description="track the trail-runner shoe deals",
-            skill="",
-            trigger="",
+            skill=_SKILL_NAME,
+            params={"peak": "trail-runner shoes"},
+            trigger="every 3600",
             expires_at="",
         )
-        assert result.success and result.mutated
-        assert result.message == _INERT_ECHO_LITERAL  # byte-identical to the omitted-args echo
+        assert result.success is False
+        assert result.message == (
+            "expires_at (string): an empty string sets nothing — omit expires_at entirely "
+            "to leave it unset, or pass an ISO-8601 datetime, e.g. 2026-03-01T09:00:00Z. "
+            "Call collection_set(<valid arguments>) again."
+        )
+        assert db.memories.get("deals-watch") is None
+
+    def test_every_blank_refusing_field_has_a_form(self):
+        """``OPTIONAL_ARG_FORMS`` is TOTAL over the fields that refuse a blank —
+        derived from the three arg models themselves, not from a copy of the table.
+
+        The validator indexes the table directly (no default), so a new
+        ``OptionalText`` / ``OptionalSkill`` field added without an entry would raise a
+        ``KeyError`` *inside* validation — escaping ``Tool.run``, which catches only
+        ``ValidationError``, as a framework exception rather than a teaching rejection.
+        This is the pin that makes that a red test instead of a production traceback."""
+        declared = {
+            name
+            for model in (CollectionCreateArgs, CollectionSetArgs, CollectionUpdateArgs)
+            for name, field in model.model_fields.items()
+            if any(
+                isinstance(meta, BeforeValidator) and meta.func is _reject_blank_optional
+                for meta in field.metadata
+            )
+        }
+        assert declared == set(OPTIONAL_ARG_FORMS)
+        assert declared  # the introspection really found the fields
+
+    @pytest.mark.asyncio
+    async def test_every_optional_string_names_its_own_form(self, db):
+        """Uniform across the surface — each optional string refuses a blank with ITS
+        accepted form, so the guard isn't special-cased to ``expires_at``.  A
+        whitespace-only value is the same miss as an empty one."""
+        tool = CollectionSetTool(db, cast(Any, MockLlmClient()))
+        for field, form in OPTIONAL_ARG_FORMS.items():
+            result = await tool.run(name="deals-watch", **{field: "   "})
+            assert result.success is False
+            assert result.message == (
+                f"{field} (string): an empty string sets nothing — omit {field} entirely "
+                f"to leave it unset, or pass {form}. "
+                f"Call collection_set(<valid arguments>) again."
+            )
+        assert db.memories.get("deals-watch") is None
+
+    @pytest.mark.asyncio
+    async def test_blank_is_refused_identically_on_create_and_update(self, db):
+        """Both halves of the idempotent front door hold the same rule — the update path
+        (an existing collection) refuses a blank exactly as the create path does, so a
+        blank can never quietly leave an existing job's field alone either."""
+        _seed_collection(db, name="deals-watch", description="track the shoe deals")
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
+            name="deals-watch", trigger=""
+        )
+        assert result.success is False
+        assert result.message == (
+            "trigger (string): an empty string sets nothing — omit trigger entirely to "
+            "leave it unset, or pass a schedule in one of the four trigger forms, e.g. "
+            '"every 3600" for hourly. Call collection_set(<valid arguments>) again.'
+        )
+        # The existing row is untouched — the refusal happens before execute.
         row = db.memories.get("deals-watch")
-        assert row is not None
-        assert row.extraction_prompt is None  # inert — no job
-        assert row.collector_interval_seconds is None  # blank trigger → no cadence
-        assert row.skill_name is None  # blank skill → not resolved, no provenance
-        assert row.expires_at is None  # blank expiry → no end condition
-        assert row.notify is False
+        assert row.collector_interval_seconds == 3600
+        assert row.extraction_prompt == "test fixture extraction prompt"
 
     @pytest.mark.asyncio
-    async def test_blank_equals_omitted_parity_create_and_update(self, tmp_path):
-        """Blank == omitted, byte-identical, on BOTH create and update (#1646, the parity
-        with update). Passing "" for every optional arg produces the exact same tool echo
-        AND stored row as leaving those args off — proven side by side on twin DBs so
-        neither run's state can leak into the other."""
-        blank_dir, omit_dir = tmp_path / "blank", tmp_path / "omit"
-        blank_dir.mkdir()
-        omit_dir.mkdir()
-        blank_db, omit_db = (
-            schema_only_db(str(blank_dir / "test.db")),
-            schema_only_db(str(omit_dir / "test.db")),
+    async def test_omitting_an_optional_arg_is_still_the_way_to_leave_it_alone(self, tmp_path):
+        """The paired over-correction guard: refusing a blank must not make OMISSION
+        harder.  Leaving the optional args off still creates the inert container and
+        still edits metadata without touching the cadence or the routine — proven side by
+        side on twin DBs so neither run's state leaks into the other."""
+        create_dir, update_dir = tmp_path / "create", tmp_path / "update"
+        create_dir.mkdir()
+        update_dir.mkdir()
+        create_db, update_db = (
+            schema_only_db(str(create_dir / "test.db")),
+            schema_only_db(str(update_dir / "test.db")),
         )
 
-        # CREATE parity: "" for skill/trigger/expires_at == leaving them off.
-        blank_create = await CollectionCreateTool(blank_db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch",
-            description="track the trail-runner shoe deals",
-            skill="",
-            trigger="",
-            expires_at="",
-        )
-        omit_create = await CollectionCreateTool(omit_db, cast(Any, MockLlmClient())).execute(
+        created = await CollectionSetTool(create_db, cast(Any, MockLlmClient())).run(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
-        assert blank_create.success and omit_create.success
-        assert blank_create.message == omit_create.message  # byte-identical create echo
+        assert created.success and created.mutated
+        assert created.message == _INERT_ECHO_LITERAL
 
-        # UPDATE parity: "" for skill/trigger/expires_at alongside a real description edit
-        # == leaving them off — a plain metadata edit, cadence + routine untouched.
-        blank_update = await CollectionUpdateTool(blank_db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch",
-            description="track the trail-runner shoe deals a bit differently",
-            skill="",
-            trigger="",
-            expires_at="",
+        _seed_collection(update_db, name="deals-watch", description="track the shoe deals")
+        updated = await CollectionSetTool(update_db, cast(Any, MockLlmClient())).run(
+            name="deals-watch", description="track the trail-runner shoe deals"
         )
-        omit_update = await CollectionUpdateTool(omit_db, cast(Any, MockLlmClient())).execute(
-            name="deals-watch",
-            description="track the trail-runner shoe deals a bit differently",
-        )
-        assert blank_update.success and omit_update.success
-        assert blank_update.message == omit_update.message  # byte-identical update echo
-        blank_row, omit_row = (
-            blank_db.memories.get("deals-watch"),
-            omit_db.memories.get("deals-watch"),
-        )
-        assert blank_row.description == omit_row.description  # description applied either way
-        assert blank_row.collector_interval_seconds == omit_row.collector_interval_seconds
-        assert blank_row.extraction_prompt == omit_row.extraction_prompt
-        assert blank_row.skill_name == omit_row.skill_name
-        assert blank_row.expires_at == omit_row.expires_at  # blank expires_at == omitted
+        assert updated.success
+        row = update_db.memories.get("deals-watch")
+        assert row.description == "track the trail-runner shoe deals"
+        assert row.collector_interval_seconds == 3600  # cadence untouched
+        assert row.extraction_prompt == "test fixture extraction prompt"  # routine untouched
+        assert row.expires_at is None
 
 
 class TestWriteRetargetAtApply:

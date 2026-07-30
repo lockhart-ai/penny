@@ -219,9 +219,10 @@ _FOUR_FORMS = (
 # The reject-and-teach failure for an unrecognised trigger shape (#1631/#1684): name the
 # four enumerated forms so the model rewrites to one of them instead of inventing a
 # fifth.  Each example is a copyable input (display form == invocation form).  The
-# closing omission line (#1646) names the other valid move — leave the trigger out
-# entirely for a storage-only collection — since a blank trigger now coerces to omitted
-# and this rejection is only reached for genuinely garbled (non-blank) input.
+# closing omission line names the other valid move — leave the trigger out entirely for
+# a storage-only collection.  A BLANK trigger never reaches here: it is refused at the
+# arg gate with its own teaching rejection (#1776), so this text only ever answers
+# genuinely garbled (non-blank) input.
 _TRIGGER_TEACHING = (
     "I couldn't read the trigger '{trigger}'. Set it to one of these four forms "
     "(copy the shape exactly):\n"

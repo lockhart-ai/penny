@@ -11,11 +11,17 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    ValidationInfo,
+    model_validator,
+)
 
 from penny.constants import PennyConstants
 from penny.text_validity import (
-    require_extraction_prompt,
     require_non_blank_description,
     require_non_blank_log_content,
     require_non_degenerate_content,
@@ -88,31 +94,60 @@ def _reject_nonpositive_count(value: int | None) -> int | None:
 ReadCount = Annotated[int | None, AfterValidator(_reject_nonpositive_count)]
 
 
-def _blank_to_none(value: object) -> object:
-    """Collapse a blank string to ``None`` so an update treats it as "omitted".
+# What each optional string argument on the collection surface actually accepts, so a
+# blank rejection can NAME the form instead of only refusing.  Total over the fields
+# typed ``OptionalText`` / ``OptionalSkill`` on the three collection arg models (pinned
+# by a test), so the lookup indexes directly: a field declaring one of those types with
+# no entry here is a programming error, not a case to absorb behind a vague default.
+OPTIONAL_ARG_FORMS: dict[str, str] = {
+    "description": "what the collection is for, in the user's own words",
+    "skill": "the name of a learned skill (or a paraphrase of what it does)",
+    # NOT a sixth copy of the four enumerated forms — ``_TRIGGER_TEACHING`` (in
+    # collection_instantiation) is where that enumeration is authored, and a garbled
+    # trigger gets it verbatim.  A BLANK one needs the one shape that makes the fix
+    # obvious, so this stays an example and a pointer to the count.
+    "trigger": 'a schedule in one of the four trigger forms, e.g. "every 3600" for hourly',
+    "expires_at": "an ISO-8601 datetime, e.g. 2026-03-01T09:00:00Z",
+}
 
-    Models routinely emit ``""`` for an optional field they mean to leave
-    unchanged — gpt-oss was observed passing ``extraction_prompt=""`` alongside
-    another field's change, reasoning "they will not be updated".  But the update
-    layer applies any value that ``is not None``, so a blank string would
-    overwrite: silently blanking a ``description`` (and re-embedding empty as its
-    meaning anchor).  None of these fields has a meaningful empty value, so a
-    blank means "skip", never "set to empty".
+# No trailing period: the arg-validation envelope appends ". Call <tool>(<valid
+# arguments>) again." after each field's reason.
+_BLANK_OPTIONAL_ARG = (
+    "an empty string sets nothing — omit {field} entirely to leave it unset, or pass {form}"
+)
+
+
+def _reject_blank_optional(value: object, info: ValidationInfo) -> object:
+    """Refuse a blank/whitespace-only optional string, naming the field and its form.
+
+    Models routinely fill an optional argument they mean to omit with ``""`` (a chronic
+    gpt-oss habit).  That used to be COERCED to ``None`` — read as "omitted" — which made
+    the two indistinguishable and turned a partially-understood request into silent
+    partial compliance: a watch asked for "until 10pm tonight" went live with
+    ``expires_at=""`` swallowed, unbounded, every other field correct, and nothing in the
+    reply or the record marking the difference (#1776; supersedes the #1646 coercion).
+
+    So a blank is a **teaching rejection** at the arg gate instead — before ``execute``,
+    so nothing is created or reconfigured on a call the model has to redo — carrying both
+    halves of an actionable failure: what went wrong (a blank sets nothing) and how to fix
+    it (omit the argument, or pass the named form).  Uniform across every optional string
+    on the surface rather than special-cased to the one field it was observed on.
     """
     if isinstance(value, str) and not value.strip():
-        return None
+        field = str(info.field_name)
+        raise ValueError(_BLANK_OPTIONAL_ARG.format(field=field, form=OPTIONAL_ARG_FORMS[field]))
     return value
 
 
-# Optional text on an update: a blank string is coerced to ``None`` (omitted)
-# rather than written through, so it can never clobber the existing value.
-OptionalText = Annotated[str | None, BeforeValidator(_blank_to_none)]
+# Optional text on the collection surface: a blank is refused with the teaching
+# rejection above, never silently read as "omitted".
+OptionalText = Annotated[str | None, BeforeValidator(_reject_blank_optional)]
 
-# An optional skill name/paraphrase on an update (#1620): dashes normalised (a
-# skill name may be slug-ish) then a blank coerced to ``None`` (omitted), so a
-# model leaving it empty means "don't re-render", never "resolve the empty skill".
+# An optional skill name/paraphrase (#1620): dashes normalised first (a skill name may be
+# slug-ish), then the same blank refusal — so ``skill=""`` is corrected rather than
+# quietly taking the skill-less path.
 OptionalSkill = Annotated[
-    str | None, BeforeValidator(_blank_to_none), BeforeValidator(_normalize_dashes)
+    str | None, BeforeValidator(_reject_blank_optional), BeforeValidator(_normalize_dashes)
 ]
 
 
@@ -155,18 +190,9 @@ SkillParamValue = Annotated[str, BeforeValidator(_coerce_single_element_list)]
 # ── Annotated validator types ─────────────────────────────────────────────────
 # One Annotated type per validation concern, wrapping a shared predicate, so a
 # field declares its rule by *type* — no per-field @field_validator methods.  The
-# required variants raise on a bad value; the optional variants coerce a blank to
-# ``None`` first (so "" means "leave unchanged") and skip the rule when omitted.
-
-
-def _skip_none(validator: Any) -> Any:
-    """Wrap an AfterValidator predicate so it runs only when the value is set —
-    an optional field coerced to ``None`` (omitted) skips the rule."""
-
-    def _validate(value: Any) -> Any:
-        return value if value is None else validator(value)
-
-    return _validate
+# required variants raise on a bad value; the optional variants (``OptionalText`` /
+# ``OptionalSkill``, above) refuse a blank with the teaching rejection and apply no
+# further rule when the argument is genuinely omitted.
 
 
 def _reject_system_log(value: str) -> str:
@@ -195,13 +221,6 @@ NonBlankDescription = Annotated[str, AfterValidator(require_non_blank_descriptio
 CollectionContent = Annotated[str, AfterValidator(require_non_degenerate_content)]
 NonBlankLogContent = Annotated[str, AfterValidator(require_non_blank_log_content)]
 
-# Optional-on-update variants: blank → None (omitted), rule applied only when set.
-OptionalExtractionPrompt = Annotated[
-    str | None,
-    BeforeValidator(_blank_to_none),
-    AfterValidator(_skip_none(require_extraction_prompt)),
-]
-
 
 # ── Metadata ────────────────────────────────────────────────────────────────
 
@@ -223,14 +242,13 @@ class CollectionCreateArgs(ToolArgs):
     own words — the goal it serves and the collection's routing/dedup meaning anchor.
     ``name`` is the unique slug.
 
-    **A blank string on an optional arg counts as "not set"** — the same rule
-    ``collection_set`` documents, missed on create before #1646.  ``skill`` /
-    ``trigger`` / ``expires_at`` coerce ``""`` to ``None`` (``OptionalSkill`` /
-    ``OptionalText``) BEFORE any routing or parsing, so a model that fills an optional
-    field it means to omit with ``""`` (a chronic gpt-oss habit) gets the omitted
-    behaviour: a blank ``skill`` takes the inert storage path (not a resolution of the
-    empty skill), and a blank ``trigger`` / ``expires_at`` never reaches the trigger
-    parser (nor trips the inert create's job-arg refusal) — never a spurious rejection.
+    **A blank string on an optional arg is REFUSED, not read as "not set"** (#1776,
+    superseding #1646's coercion).  ``skill`` / ``trigger`` / ``expires_at`` reject
+    ``""`` at the arg gate (``OptionalSkill`` / ``OptionalText``) with a teaching error
+    naming the field and its accepted form, BEFORE any routing or parsing — so a model
+    that fills an optional field with ``""`` (a chronic gpt-oss habit) is corrected
+    rather than silently given the omitted behaviour, which turned a half-understood
+    request into a half-built mechanism nothing marked as such.
 
     The **trigger** (skill path only) is ONE argument with four enumerated forms,
     parsed by prefix in the tool (``parse_trigger``): ``"every <seconds>"`` (a recurring
@@ -246,9 +264,9 @@ class CollectionCreateArgs(ToolArgs):
 
     name: MemoryName
     description: NonBlankDescription
-    # The skill to instantiate; omitted OR blank (``""`` → ``None``, #1646) yields an
-    # INERT storage-only collection — the first half of the two-step teach bootstrap
-    # (#1629).  OptionalSkill == update's skill: blank→None + dash-normalise.
+    # The skill to instantiate; OMITTED yields an INERT storage-only collection — the
+    # first half of the two-step teach bootstrap (#1629).  A blank ``""`` is refused,
+    # never read as omitted (#1776).  OptionalSkill == update's skill.
     skill: OptionalSkill = None
     # Bindings for the skill's parameters ({url}, {field}, …) → values.  A value
     # passed as a single-element list is unwrapped to its element (#1666,
@@ -257,13 +275,13 @@ class CollectionCreateArgs(ToolArgs):
     # Trigger — one arg, four enumerated forms, parsed by prefix in the tool
     # (parse_trigger, #1631/#1684): "every <seconds>" | "once at <ISO> [xN]" |
     # "on advance of <log>" | "cron <5-field expression>".  Its render
-    # (render_trigger_clause) IS this input form.  OptionalText: a blank ``""`` coerces to
-    # ``None`` (#1646) so it never reaches the parser as a garbled trigger.
+    # (render_trigger_clause) IS this input form.  OptionalText: a blank ``""`` is
+    # refused at the gate (#1776) rather than reaching the parser as a garbled trigger.
     trigger: OptionalText = None
     # End condition (optional) — an ISO-8601 datetime; the collection archives
     # itself when it passes.  Parsed in the tool (actionable error on a bad value).
-    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) so it reads as "no end
-    # condition" and can't trip the inert create's job-arg refusal.
+    # OptionalText: a blank ``""`` is refused at the gate (#1776) — the observed silent
+    # drop, where a bounded watch asked for went live unbounded.
     expires_at: OptionalText = None
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
@@ -310,7 +328,11 @@ class CollectionSetArgs(ToolArgs):
     default: silent).  There is NO ``extraction_prompt`` argument anywhere on the
     model surface: a collection's routine is only ever a RENDER of a demonstrated
     skill (#1658) — a wrong routine is fixed by re-teaching, never by editing
-    prompt text."""
+    prompt text.
+
+    Every optional string here refuses a blank (#1776): omitting an argument and
+    passing ``""`` for it are different calls, and only the first means "leave this
+    alone" — the second is a half-expressed intention, corrected at the gate."""
 
     name: MemoryName
     description: OptionalText = None
@@ -325,10 +347,10 @@ class CollectionUpdateArgs(ToolArgs):
     """Update a collection's metadata.
 
     All fields after ``name`` are optional — only the ones explicitly set
-    are applied.  A blank string counts as "not set": the ``OptionalText``
-    fields coerce ``""`` to ``None`` so a field the model passes empty (to
-    mean "leave it alone") is skipped rather than overwriting the existing
-    value.
+    are applied.  A blank string is NOT "not set" (#1776): the ``OptionalText`` /
+    ``OptionalSkill`` fields refuse ``""`` at the arg gate, naming the field and its
+    accepted form, so a field the model passes empty is corrected rather than read as
+    an omission it never expressed.
 
     ``skill`` / ``params`` are the re-render axis (#1620): supplying either RE-RENDERS
     the ``extraction_prompt`` from a skill's current steps and re-stamps the
@@ -358,12 +380,12 @@ class CollectionUpdateArgs(ToolArgs):
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
     # Trigger — one arg, four enumerated forms (parse_trigger, #1631/#1684), mirroring
-    # collection_set.  Present → replaces the whole trigger atomically; a blank/omit
-    # → cadence untouched.  "every <seconds>" | "once at <ISO> [xN]" | "on advance of
-    # <log>" | "cron <5-field expression>".
+    # collection_set.  Present → replaces the whole trigger atomically; OMITTED →
+    # cadence untouched (a blank is refused, #1776).  "every <seconds>" | "once at <ISO>
+    # [xN]" | "on advance of <log>" | "cron <5-field expression>".
     trigger: OptionalText = None
-    # OptionalText: a blank ``""`` coerces to ``None`` (#1646) — "leave the end condition
-    # alone" — mirroring create; behaviour is unchanged (the tool already guarded blank).
+    # OptionalText: omitted leaves the end condition alone; a blank ``""`` is refused
+    # (#1776), mirroring create.
     expires_at: OptionalText = None
 
 

@@ -79,7 +79,12 @@ Live (today in `agents/base.py`, moving into validators):
 | `_clean_malformed_urls` / source-URL append | — | `Repair` |
 | `handle_text_step` (collector) | `text_instead_of_tool` | `NudgeContinue` |
 | `handle_premature_terminator` (collector) | `no_work_done` | `RejectToolCall` |
-| `_abort_if_all_tools_failed` | — | `Stop` |
+
+(`_abort_if_all_tools_failed` — the all-failed early exit, the one `Stop` this table
+listed — was **removed** by #1776: it couldn't tell a stuck run from a converging one,
+so a model correcting the exact field an actionable error named was cut off with most of
+its steps unused. `max_steps` bounds the loop; an all-failed run is recorded as an error
+at the close rather than truncated mid-recovery.)
 
 Post-hoc (today in `database/memory/objects.py`): `classify_run` /
 `render_run_record` / `RunHealth` — these read the same catalog so the `⚠` lines

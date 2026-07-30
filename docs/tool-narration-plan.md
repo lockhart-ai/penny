@@ -74,7 +74,9 @@ These are the settled findings that constrain the design. They orient the rest o
 - **(e) Total-failure replies bypass the model.** When every tool fails, the reply is a
   deterministic `AGENT_TOOLS_UNAVAILABLE` (`_abort_if_all_tools_failed`), so the recap only
   governs success + partial-failure paths where the model composes the reply. Warming that
-  canned string is separate/optional.
+  canned string is separate/optional. *(No longer true: #1776 removed the all-failed abort
+  and its canned reply — a total-failure run now runs out its steps and the model composes
+  the reply over the failure narrations, so the recap governs that path too.)*
 
 ## Non-regression (this ticket's eval obligation)
 

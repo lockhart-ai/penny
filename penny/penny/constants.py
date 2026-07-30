@@ -373,7 +373,6 @@ class PennyConstants:
     # enumerating them, while still allowing terse legit replies like "done"
     # or "yes". Anything below this is treated as EMPTY and retried.
     MIN_RESPONSE_LETTERS = 3
-    TOOL_FAILURE_ABORT_THRESHOLD = 2
 
     # Thinking constants
     MIN_THOUGHT_WORDS = 50

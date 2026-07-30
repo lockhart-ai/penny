@@ -400,14 +400,7 @@ class Agent:
                 prompt_type,
                 progress_scope,
             )
-            if response.answer == PennyResponse.AGENT_MAX_STEPS:
-                outcome = "max_steps"
-            elif response.answer == PennyResponse.AGENT_MODEL_ERROR or (
-                response.tool_calls and all(record.failed for record in response.tool_calls)
-            ):
-                outcome = "error"
-            else:
-                outcome = "completed"
+            outcome = self._run_outcome(response)
             return response
         except Exception:
             outcome = "error"
@@ -419,6 +412,27 @@ class Agent:
                     "run_finished", run_id, self.name, progress_scope, outcome=outcome
                 ),
             )
+
+    @staticmethod
+    def _run_outcome(response: ControllerResponse) -> str:
+        """Classify a finished run for its terminal progress event.
+
+        An all-failed run is recorded as an error HERE, at the close, from what
+        actually happened — it is no longer *stopped* early for it.  #1776 removed the
+        all-failed abort: it fired on failure COUNT alone, so it could not tell a stuck
+        run from a converging one, and a model correcting the exact field an actionable
+        error named was cut off with most of its steps unused.  ``steps`` bounds the
+        loop; the honesty the abort's canned answer stood in for lives in the per-call
+        failure narration the model reads and in this record, not in a truncated turn.
+        """
+        if response.answer == PennyResponse.AGENT_MAX_STEPS:
+            return "max_steps"
+        all_calls_failed = bool(response.tool_calls) and all(
+            record.failed for record in response.tool_calls
+        )
+        if response.answer == PennyResponse.AGENT_MODEL_ERROR or all_calls_failed:
+            return "error"
+        return "completed"
 
     async def _run_agentic_loop_body(
         self,
@@ -474,9 +488,6 @@ class Agent:
                 if self.should_stop_loop(result.records):
                     logger.info("Loop stop requested after step %d/%d", step + 1, steps)
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
-                abort = self._abort_if_all_tools_failed(tool_call_records)
-                if abort is not None:
-                    return abort
                 continue
 
             if await self._nudge_text_step(response, messages, ctx, run_id):
@@ -621,25 +632,6 @@ class Agent:
         messages.extend(result.messages)
         tool_call_records.extend(result.records)
         source_urls.extend(result.source_urls)
-
-    def _abort_if_all_tools_failed(
-        self, tool_call_records: list[ToolCallRecord]
-    ) -> ControllerResponse | None:
-        """Return an early-exit response if every tool call so far has failed."""
-        if len(tool_call_records) < PennyConstants.TOOL_FAILURE_ABORT_THRESHOLD:
-            return None
-        if not all(r.failed for r in tool_call_records):
-            return None
-        failed_tools = sorted({r.tool for r in tool_call_records})
-        logger.warning(
-            "All %d tool call(s) failed — aborting: %s",
-            len(tool_call_records),
-            ", ".join(failed_tools),
-        )
-        return ControllerResponse(
-            answer=PennyResponse.AGENT_TOOLS_UNAVAILABLE.format(tools=", ".join(failed_tools)),
-            tool_calls=tool_call_records,
-        )
 
     def on_response(self, response) -> None:
         """Hook called after every model response, before tool/text branching.
@@ -948,12 +940,7 @@ class Agent:
                 self._model_client.model,
                 len(tool_call_records),
             )
-            fallback = (
-                PennyResponse.FALLBACK_RESPONSE
-                if tool_call_records
-                else PennyResponse.AGENT_EMPTY_RESPONSE
-            )
-            return ControllerResponse(answer=fallback)
+            return self._empty_content_fallback(tool_call_records)
 
         thinking = response.thinking or response.message.thinking
 
@@ -968,12 +955,7 @@ class Agent:
 
         if not content:
             logger.error("Model returned empty content after stripping think tags!")
-            fallback = (
-                PennyResponse.FALLBACK_RESPONSE
-                if tool_call_records
-                else PennyResponse.AGENT_EMPTY_RESPONSE
-            )
-            return ControllerResponse(answer=fallback)
+            return self._empty_content_fallback(tool_call_records)
 
         content = clean_malformed_urls(content)
 
@@ -986,6 +968,25 @@ class Agent:
             thinking=thinking,
             tool_calls=tool_call_records,
         )
+
+    @staticmethod
+    def _empty_content_fallback(tool_call_records: list[ToolCallRecord]) -> ControllerResponse:
+        """The close for a final answer that carries no usable content.
+
+        **The records travel with it** (#1776), exactly as they do on the normal
+        final-answer path: everything that reads a finished run — the terminal outcome,
+        the collector's tool trace, its work/failure counts — reads
+        ``ControllerResponse.tool_calls``, so dropping them made a run that browsed,
+        failed, and then said nothing record as a clean, callless *completed* one.  That
+        was invisible while the all-tools-failed abort ended such runs before they could
+        reach here; removing the abort makes this the path they take.
+        """
+        fallback = (
+            PennyResponse.FALLBACK_RESPONSE
+            if tool_call_records
+            else PennyResponse.AGENT_EMPTY_RESPONSE
+        )
+        return ControllerResponse(answer=fallback, tool_calls=tool_call_records)
 
     # ── Tool management ──────────────────────────────────────────────────
 
