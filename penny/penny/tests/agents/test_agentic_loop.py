@@ -157,6 +157,10 @@ class TestReasoningStripped:
         assert response.tool_calls[0].reasoning == "User asked about weather"
         # reasoning should NOT be in the arguments dict
         assert "reasoning" not in response.tool_calls[0].arguments
+        # This run ended on a text reply, so every tool result already rode into a
+        # later call and was written down there — nothing trails (#1778).  The record
+        # of an ordinary run is byte-identical to before the tail existed.
+        assert all(row.trailing_messages is None for row in db.messages.recent_prompts(limit=10))
 
         await agent.close()
 
@@ -175,6 +179,69 @@ class TestReasoningStripped:
         response = await agent.run("test", max_steps=max_steps)
         assert len(response.tool_calls) == 1
         assert response.tool_calls[0].reasoning is None
+
+        await agent.close()
+
+
+class TestTerminalToolResultRecorded:
+    """A run that ends the instant a tool returns still records that result (#1778).
+
+    A tool result is otherwise durable only as a side effect of being fed back — it
+    rides into the NEXT call's ``messages``.  A run with no next call (``max_steps``
+    reached on a tool step, a write-gate STOP, a reroll abort, an exception) wrote its
+    terminal outcome nowhere, and those are exactly the runs worth reading afterwards.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_ending_on_a_tool_call_stamps_the_tail_on_its_record(self, test_db, mock_llm):
+        """``max_steps`` reached on a tool step: the terminal call + its result land on
+        the run's last prompt row, in the same wire shape the next call would have
+        carried them in."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=1)
+        # Keep tools available on the last step (the collector/terminator shape), so the
+        # run can END on a tool call rather than be forced into a text answer.
+        agent._keep_tools_on_final_step = True
+
+        mock_llm.set_response_handler(
+            lambda request, _count: mock_llm._make_tool_call_response(
+                request, "search", {"query": "kites"}
+            )
+        )
+
+        response = await agent.run("find kites", max_steps=max_steps, run_id="run-tail")
+        assert response.answer == PennyResponse.AGENT_MAX_STEPS
+
+        tail = db.messages.get_run_prompts("run-tail")[-1].get_trailing_messages()
+        assert [message["role"] for message in tail] == ["assistant", "tool"]
+        assert tail[0]["tool_calls"][0]["function"]["name"] == "search"
+        assert tail[1]["tool_call_id"] == tail[0]["tool_calls"][0]["id"]
+        assert "Mock search results for testing" in tail[1]["content"]
+        # The structural per-call execution stamp rides along, so the terminal call's
+        # success is a boolean read like every other call's.
+        assert tail[1][PennyConstants.TOOL_RESULT_SUCCESS_KEY] is True
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_exception_out_of_the_loop_still_stamps_the_tail(self, test_db, mock_llm):
+        """The tail survives a run that DIED — the boundary box lives on the caller, so
+        an exception thrown out of the loop body still closes the record."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent._keep_tools_on_final_step = True
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "kites"})
+            raise RuntimeError("the endpoint died mid-run")
+
+        mock_llm.set_response_handler(handler)
+
+        with pytest.raises(RuntimeError):
+            await agent.run("find kites", max_steps=max_steps, run_id="run-died")
+
+        tail = db.messages.get_run_prompts("run-died")[-1].get_trailing_messages()
+        assert [message["role"] for message in tail] == ["assistant", "tool"]
+        assert "Mock search results for testing" in tail[1]["content"]
 
         await agent.close()
 

@@ -763,12 +763,7 @@ class MessageStore:
         rather than parsing tool-result text."""
         try:
             with self._session() as session:
-                last_prompt = session.exec(
-                    select(PromptLog)
-                    .where(PromptLog.run_id == run_id)
-                    .order_by(PromptLog.timestamp.desc())
-                    .limit(1)
-                ).first()
+                last_prompt = self._last_run_prompt(session, run_id)
                 if last_prompt:
                     last_prompt.run_outcome = outcome
                     last_prompt.run_reason = reason
@@ -779,6 +774,50 @@ class MessageStore:
                         self._on_run_outcome_set(run_id, outcome, reason)
         except Exception as e:
             logger.error("Failed to set run outcome for %s: %s", run_id, e)
+
+    def set_run_trailing_messages(self, run_id: str, messages: list[dict]) -> None:
+        """Stamp the run's TRAILING turns — the conversation the agent loop appended
+        after its final model call — onto the last prompt row for ``run_id`` (#1778).
+
+        A tool result is otherwise durable only as a side effect of being fed back:
+        it rides into the NEXT call's ``messages`` and is written down there.  A run
+        that ends immediately after executing a tool (a write-gate STOP, ``max_steps``
+        on a tool step, a reroll abort, an exception) has no next call, so its
+        terminal call's outcome was recorded nowhere — and those are exactly the runs
+        worth reading afterwards.  Stamping the tail here makes the record complete
+        however the loop ended: the run renderers and the eval transcript extractor
+        read ``messages`` + this tail as one sequence, so neither can be missing an
+        entry.
+
+        The tail is stored in the SAME wire shape ``messages`` uses (it is literally
+        what the next call's ``messages`` would have ended with), so one decode path
+        serves both and the two can't drift.  Empty tail → no write at all, so a run
+        that round-tripped every result is untouched and renders byte-identically.
+
+        Best-effort like ``log_prompt``: a failed record write must never fail the
+        run it records."""
+        if not messages:
+            return
+        try:
+            with self._session() as session:
+                last_prompt = self._last_run_prompt(session, run_id)
+                if last_prompt:
+                    last_prompt.trailing_messages = json.dumps(messages)
+                    session.add(last_prompt)
+                    session.commit()
+        except Exception as e:
+            logger.error("Failed to persist trailing messages for %s: %s", run_id, e)
+
+    @staticmethod
+    def _last_run_prompt(session: Session, run_id: str) -> PromptLog | None:
+        """The run's final prompt row — the one row per run that carries the run's
+        derived stamps (outcome, tool failures, the trailing turns)."""
+        return session.exec(
+            select(PromptLog)
+            .where(PromptLog.run_id == run_id)
+            .order_by(PromptLog.timestamp.desc())
+            .limit(1)
+        ).first()
 
     def recent_conversation(self, limit: int) -> list[tuple[str, str]]:
         """The last ``limit`` conversational messages (both directions, reactions

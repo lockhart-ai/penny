@@ -932,6 +932,30 @@ _WRITE_TOOLS = frozenset(
     {"collection_write", "update_entry", "collection_delete_entry", "log_append"}
 )
 
+_ROLE_TOOL = "tool"
+
+
+def _run_tool_turns(prompts: list[PromptLog]) -> list[dict]:
+    """Every tool-result turn of a run, in order — the COMPLETE set (#1778).
+
+    Two halves, read as one sequence.  The run's last prompt's ``messages`` holds the
+    full accumulated conversation, where every result that rode into a later call sits
+    exactly once; its ``trailing_messages`` holds the tail no call carried — the
+    terminal call's result, which a run ending immediately after executing a tool (a
+    write-gate STOP, ``max_steps`` on a tool step, a reroll abort, an exception) would
+    otherwise have written nowhere.  Both are the same wire shape, so this is a
+    concatenation, not a merge; a run that round-tripped everything has an empty tail
+    and reads exactly as it always did."""
+    if not prompts:
+        return []
+    last = prompts[-1]
+    turns = json.loads(last.messages) if last.messages else []
+    return [
+        message
+        for message in [*turns, *last.get_trailing_messages()]
+        if message.get("role") == _ROLE_TOOL
+    ]
+
 
 def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
     """Structural I/O counts for a run: ``(browses_ok, browses_failed, reads,
@@ -957,10 +981,10 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
     the per-step responses), so ``writes == 0`` is the hard fact that nothing was
     ever written — whatever a ``done()`` summary claims.
 
-    Browse results are read off the final prompt's ``messages`` (the full
-    accumulated conversation, so every result bar the last step's — which is almost
-    always ``done()`` — appears there exactly once); the call counts come from the
-    responses, so they're complete regardless."""
+    Browse results are read off the run's COMPLETE tool turns (``_run_tool_turns`` —
+    the final prompt's accumulated conversation plus the trailing tail no call carried,
+    #1778), so every result appears exactly once including a terminal one; the call
+    counts come from the responses, so they're complete regardless."""
     calls = _run_tool_calls(prompts)
     writes = sum(1 for name, _ in calls if name in _WRITE_TOOLS)
     sends = sum(1 for name, _ in calls if name == "send_message")
@@ -970,10 +994,7 @@ def _run_io_tally(prompts: list[PromptLog]) -> tuple[int, int, int, int, int]:
         if name not in _WRITE_TOOLS and name not in {"browse", "send_message", "done"}
     )
     browses_ok = browses_failed = 0
-    messages = json.loads(prompts[-1].messages) if prompts and prompts[-1].messages else []
-    for message in messages:
-        if message.get("role") != "tool":
-            continue
+    for message in _run_tool_turns(prompts):
         content = message.get("content") or ""
         browses_ok += content.count(PennyConstants.BROWSE_PAGE_HEADER)
         browses_ok += content.count(PennyConstants.BROWSE_SEARCH_HEADER)
@@ -1298,16 +1319,12 @@ def _generated_media_ids(prompts: list[PromptLog]) -> list[int]:
 
     A drawn image is delivered deterministically to its own reply (#1564); its
     ``generate_image`` tool result records the stored media id, which lives in the
-    run's accumulated tool-result messages.  Read it back so the egress trace names
-    an addressable id, closing the delivery-introspection gap that let the model
-    confabulate a delivery it couldn't inspect."""
-    if not prompts or not prompts[-1].messages:
-        return []
-    messages = json.loads(prompts[-1].messages)
+    run's tool-result turns.  Read it back so the egress trace names an addressable
+    id, closing the delivery-introspection gap that let the model confabulate a
+    delivery it couldn't inspect.  Reads the COMPLETE turns (#1778), so a run whose
+    last act was the draw still names what it attached."""
     found: list[int] = []
-    for message in messages:
-        if message.get("role") != "tool":
-            continue
+    for message in _run_tool_turns(prompts):
         found.extend(
             int(m.group(1)) for m in _GENERATED_MEDIA_RE.finditer(message.get("content") or "")
         )
@@ -1321,42 +1338,35 @@ def _egress_media_lines(prompts: list[PromptLog]) -> list[str]:
 
 
 def _tool_results_by_id(prompts: list[PromptLog]) -> dict[str, str]:
-    """``{tool_call_id: result content}`` from the run's accumulated tool turns.
+    """``{tool_call_id: result content}`` from the run's COMPLETE tool turns.
 
-    Read off the last prompt's messages (the full conversation, where every step's
-    result sits exactly once), keyed by ``tool_call_id`` so each call renders with
-    its own outcome — the ``their outcomes`` half of chat-run introspection."""
-    if not prompts or not prompts[-1].messages:
-        return {}
-    messages = json.loads(prompts[-1].messages)
+    Keyed by ``tool_call_id`` so each call renders with its own outcome — the
+    ``their outcomes`` half of chat-run introspection.  Reads ``_run_tool_turns``
+    (accumulated conversation + the trailing tail, #1778), so a run that ended
+    right after a tool call still pairs that call with its result instead of
+    rendering a call whose outcome is indistinguishable from nothing happening."""
     return {
         message["tool_call_id"]: message.get("content") or ""
-        for message in messages
-        if message.get("role") == "tool" and message.get("tool_call_id")
+        for message in _run_tool_turns(prompts)
+        if message.get("tool_call_id")
     }
 
 
 def _tool_successes_by_id(prompts: list[PromptLog]) -> dict[str, bool]:
     """``{tool_call_id: success}`` — the STRUCTURAL per-call execution stamp (#1600).
 
-    Read off the run's accumulated tool turns (the last prompt's ``messages``, where
-    every step's result sits exactly once), keyed by ``tool_call_id`` so each call
-    pairs with its own outcome.  The framework wrote each stamp at execution time
-    from the tool's ``ToolResult.success`` (``PennyConstants.TOOL_RESULT_SUCCESS_KEY``),
-    beside the framed result prose — so "did this call succeed?" is a boolean read,
-    not a narration parse.  A tool turn with no stamp (a run logged before #1600) is
-    simply absent from the map — the caller treats an absent stamp as uncertified."""
-    if not prompts or not prompts[-1].messages:
-        return {}
-    messages = json.loads(prompts[-1].messages)
+    Read off the run's COMPLETE tool turns (``_run_tool_turns`` — the accumulated
+    conversation plus the trailing tail no call carried, #1778), keyed by
+    ``tool_call_id`` so each call pairs with its own outcome.  The framework wrote
+    each stamp at execution time from the tool's ``ToolResult.success``
+    (``PennyConstants.TOOL_RESULT_SUCCESS_KEY``), beside the framed result prose — so
+    "did this call succeed?" is a boolean read, not a narration parse.  A tool turn
+    with no stamp (a run logged before #1600) is simply absent from the map — the
+    caller treats an absent stamp as uncertified."""
     successes: dict[str, bool] = {}
-    for message in messages:
+    for message in _run_tool_turns(prompts):
         call_id = message.get("tool_call_id")
-        if (
-            message.get("role") == "tool"
-            and call_id
-            and PennyConstants.TOOL_RESULT_SUCCESS_KEY in message
-        ):
+        if call_id and PennyConstants.TOOL_RESULT_SUCCESS_KEY in message:
             successes[call_id] = bool(message[PennyConstants.TOOL_RESULT_SUCCESS_KEY])
     return successes
 

@@ -32,9 +32,25 @@ class PromptLog(SQLModel, table=True):
     # the last prompt alongside run_outcome.  NULL = not measured (old rows,
     # untagged/non-collector runs); the run-health classifier reads NULL as 0.
     tool_failures: int | None = None
+    # The run's TRAILING turns — the conversation the loop appended after this
+    # call, which no later call carried (#1778).  A tool result is otherwise
+    # durable only as a side effect of riding into the NEXT call's `messages`, so
+    # a run that ends immediately after executing a tool loses its terminal
+    # outcome.  Same wire shape as `messages` (it is literally what the next
+    # call's `messages` would have ended with — the final assistant tool-call turn
+    # plus its tool-result turns), so the run renderers read the two as one
+    # sequence.  Stamped on the run's last prompt by `set_run_trailing_messages`;
+    # NULL for a run that ended on a text reply (every result already
+    # round-tripped) and for every row that isn't its run's last.
+    trailing_messages: str | None = None
 
     def get_messages(self) -> list[dict]:
         return json.loads(self.messages)
+
+    def get_trailing_messages(self) -> list[dict]:
+        """The trailing turns as message dicts — empty when the run round-tripped
+        every result (the overwhelmingly common case, and every pre-#1778 row)."""
+        return json.loads(self.trailing_messages) if self.trailing_messages else []
 
     def get_response(self) -> dict:
         return json.loads(self.response)

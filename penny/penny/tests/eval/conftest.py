@@ -351,10 +351,26 @@ _GAVE_UP = re.compile(
 )
 
 
+def _row_turns(row: PromptLog) -> list[dict]:
+    """One promptlog row's conversation: the turns it CARRIED (``messages``) followed by the
+    turns the run appended after it (``trailing_messages`` — the tail no later call carried,
+    #1778).
+
+    The tail is the same wire shape, so the two concatenate rather than merge.  Without it a
+    run that ended immediately after executing a tool (``max_steps`` on a tool step, a
+    write-gate STOP, a reroll abort, an exception) recorded its terminal call and result
+    NOWHERE — a transcript that stops mid-run is indistinguishable from one where nothing
+    happened, which misrepresents the run it claims to record.  Empty on every row but a run's
+    last, so an ordinary run reads byte-identically to before."""
+    carried = json.loads(row.messages) if row.messages else []
+    return [*carried, *row.get_trailing_messages()]
+
+
 def _iter_prompt_messages(db: Database):
-    """Every message across the run's promptlog (accumulated history + tool results)."""
+    """Every message across the run's promptlog (accumulated history + tool results, incl. the
+    trailing tail no model call carried — so a terminal rejection is visible, #1778)."""
     for row in db.messages.recent_prompts(limit=200):
-        yield from (json.loads(row.messages) if row.messages else [])
+        yield from _row_turns(row)
 
 
 # Tool-result fragments that mean a call the model made was refused.  ``tool_call_rejected``
@@ -1035,7 +1051,8 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
 
     Each row's ``messages`` array accumulates the conversation up to that LLM call (a later
     turn carries an earlier one only as text history, so an earlier turn's tool calls live
-    only in that turn's own rows).  Walking every row and de-duplicating by (actor, content)
+    only in that turn's own rows), and its ``trailing_messages`` carries the tail no call
+    ever took (``_row_turns``).  Walking every row and de-duplicating by (actor, content)
     yields each user turn, tool call, tool result, and intermediate reply exactly once, in
     order.  The final reply (the last response's text, which is in no messages array) is
     appended last.  System prompt omitted."""
@@ -1048,7 +1065,7 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
             turns.append((actor, content))
 
     for row in rows:
-        for message in json.loads(row.messages) if row.messages else []:
+        for message in _row_turns(row):
             role, content = message.get("role"), message.get("content") or ""
             if role == "user":
                 emit(_ACTOR["user"], content)

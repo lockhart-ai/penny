@@ -88,6 +88,29 @@ class _StepResult:
     source_urls: list[str]
 
 
+@dataclass
+class _LoggedBoundary:
+    """How much of a run's ``messages`` a model call has already carried (#1778).
+
+    Every model call logs its whole input, so the turns before ``turns`` are durable in
+    the ledger.  The ones after it are the run's TAIL — the terminal tool calls and
+    their results, which no later call will carry — and the loop stamps them onto the
+    run's last prompt row at close, so the record is complete however the loop ended
+    (a write-gate STOP, ``max_steps`` on a tool step, a reroll abort, an exception).
+
+    A mutable box passed into the loop body rather than a return value, because the
+    tail has to survive an exception thrown out of it.
+    """
+
+    turns: int = 0
+
+    def tail(self, messages: list[dict]) -> list[dict]:
+        """The turns no model call carried.  Empty until a call has been made: with no
+        call there is no record of this run to complete, and everything in ``messages``
+        is still just the input the loop was handed."""
+        return messages[self.turns :] if self.turns else []
+
+
 @dataclass(frozen=True)
 class AgentProgressEvent:
     """Structured, transport-neutral progress emitted by an agent run."""
@@ -383,9 +406,11 @@ class Agent:
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
     ) -> ControllerResponse:
-        """Run the loop while guaranteeing a terminal progress event."""
+        """Run the loop while guaranteeing a terminal progress event and a complete
+        run record (the trailing turns no model call carried, #1778)."""
         run_id = run_id or uuid.uuid4().hex
         outcome = "error"
+        logged = _LoggedBoundary()
         await self._notify_progress(
             on_progress, AgentProgressEvent("run_started", run_id, self.name, progress_scope)
         )
@@ -399,6 +424,7 @@ class Agent:
                 run_id,
                 prompt_type,
                 progress_scope,
+                logged,
             )
             outcome = self._run_outcome(response)
             return response
@@ -406,6 +432,9 @@ class Agent:
             outcome = "error"
             raise
         finally:
+            # The tail closes the record BEFORE the terminal event, so a reader woken
+            # by that event never sees a run whose last outcome is still missing.
+            self.db.messages.set_run_trailing_messages(run_id, logged.tail(messages))
             await self._notify_progress(
                 on_progress,
                 AgentProgressEvent(
@@ -444,8 +473,14 @@ class Agent:
         run_id: str | None = None,
         prompt_type: str | None = None,
         progress_scope: str = "foreground",
+        logged: _LoggedBoundary | None = None,
     ) -> ControllerResponse:
-        """Execute the step loop: call model, process tool calls, or return final answer."""
+        """Execute the step loop: call model, process tool calls, or return final answer.
+
+        ``logged`` is the caller's boundary box (#1778) — advanced past everything a
+        model call has just carried, so whatever sits beyond it when the loop leaves
+        (by return OR by exception) is the tail the caller stamps onto the record."""
+        logged = logged if logged is not None else _LoggedBoundary()
         run_id = run_id or uuid.uuid4().hex
         source_urls: list[str] = []
         called_tools: set[tuple[str, ...]] = set()
@@ -465,6 +500,9 @@ class Agent:
             step_tools = self._tools_for_step(tools, is_final_step)
 
             response = await self._call_model_validated(messages, step_tools, run_id, prompt_type)
+            # The call carried (and logged) every turn accumulated so far, so the
+            # record already holds them — the tail restarts from here.
+            logged.turns = len(messages)
             if response is None:
                 return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR)
 

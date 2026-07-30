@@ -60,13 +60,16 @@ def _prompt(
     target: str | None = "games",
     tool_failures: int | None = None,
     messages: str = "[]",
+    trailing: str | None = None,
     run_id: str = "r",
 ) -> PromptLog:
     """One promptlog row.  Only the run's LAST row carries outcome/tool_failures
     (that's how ``set_run_outcome`` stamps it); ``messages`` holds the tool-result
-    turns (browse sections) the I/O tally reads off the final prompt.  ``target``
-    is ``None`` for chat-run fixtures (chat stamps no run_target); ``run_id`` is
-    fixed per fixture so whole-render literals are exact."""
+    turns (browse sections) the I/O tally reads off the final prompt, and
+    ``trailing`` the tail no later call carried (#1778 — NULL for the overwhelming
+    majority of runs, which round-trip every result).  ``target`` is ``None`` for
+    chat-run fixtures (chat stamps no run_target); ``run_id`` is fixed per fixture
+    so whole-render literals are exact."""
     message: dict = {"role": "assistant", "content": "", "tool_calls": calls}
     return PromptLog(
         model="m",
@@ -77,6 +80,7 @@ def _prompt(
         run_outcome=outcome,
         run_reason=reason,
         tool_failures=tool_failures,
+        trailing_messages=trailing,
     )
 
 
@@ -657,6 +661,87 @@ def test_project_run_origin_message_bare_and_fused_forms():
         ),
     )
     assert project_run([fused]).origin_message == utterance
+
+
+def _terminal_write_run(*, trailing: str | None) -> list[PromptLog]:
+    """A run that ended the instant its ``collection_write`` came back failed — the
+    shape every gap case shares (``max_steps`` on a tool step, a write-gate STOP, a
+    reroll abort, an exception): the call is durable in ``response``, but its result
+    had no next call to ride into."""
+    call = _call(
+        "collection_write",
+        {"memory": "shelf", "entries": [{"key": "price", "content": "$42"}]},
+        call_id="w1",
+    )
+    return [
+        _prompt(
+            [call],
+            run_id="tail-fixed",
+            target=None,
+            messages=json.dumps([{"role": "user", "content": "log the new shelf price"}]),
+            trailing=trailing,
+        )
+    ]
+
+
+def test_render_run_calls_terminal_result_rides_the_run_tail_full_literal():
+    """A run that ended immediately after executing a tool renders that call AND its
+    result (#1778), whole-output.
+
+    A tool result is otherwise written down only as a side effect of riding into the
+    NEXT call's ``messages``, so a run with no next call recorded its terminal outcome
+    nowhere — and those are exactly the runs worth reading afterwards (a failed final
+    attempt, a write-gate STOP, ``max_steps`` on a tool step).  The trailing tail the
+    loop stamps at close closes it: the step renders ``=> <result>`` like every other.
+
+    The paired assertion is the load-bearing half — the SAME run without a tail renders
+    the call bare, which is the bug: indistinguishable from a call whose result was
+    empty."""
+    tail = json.dumps(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    _call(
+                        "collection_write",
+                        {"memory": "shelf", "entries": [{"key": "price", "content": "$42"}]},
+                        call_id="w1",
+                    )
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "w1",
+                "content": "Memory 'shelf' not found — did you mean 'shelves'?",
+                PennyConstants.TOOL_RESULT_SUCCESS_KEY: False,
+            },
+        ]
+    )
+    run = _terminal_write_run(trailing=tail)
+    assert (
+        render_run_calls(run)
+        == """\
+run tail-fixed
+user: log the new shelf price
+    step 1: collection_write(memory='shelf', entries='$42') => Memory 'shelf' not found \
+— did you mean 'shelves'?"""
+    )
+    # The projection the skill extractor reads is complete too: the terminal call now
+    # pairs with its result AND its structural execution stamp, so a failed final call
+    # is certified-as-failed rather than merely unstamped.
+    projection = project_run(run)
+    assert projection.results["w1"] == "Memory 'shelf' not found — did you mean 'shelves'?"
+    assert projection.steps[0].success is False
+    # Without the tail (every pre-#1778 row) the same run renders the call bare — the
+    # gap this closes.
+    assert (
+        render_run_calls(_terminal_write_run(trailing=None))
+        == """\
+run tail-fixed
+user: log the new shelf price
+    step 1: collection_write(memory='shelf', entries='$42')"""
+    )
 
 
 def test_render_run_calls_empty_history():

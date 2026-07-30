@@ -364,6 +364,48 @@ def test_report_renders_passed_fragile(tmp_path, monkeypatch) -> None:
     assert "| actual | 📥 You tried to use `browse` but it didn't work: down |" in text
 
 
+def test_report_renders_the_terminal_call_and_result_from_the_run_tail(
+    tmp_path, monkeypatch
+) -> None:
+    """A sample whose run ended the instant a tool returned renders that call AND its
+    result (#1778).
+
+    The transcript is built from what each promptlog row CARRIED, and a terminal result
+    rides into no later call — so the harness rendered the call and simply stopped, which
+    is indistinguishable from a run where nothing happened.  The trailing tail the loop
+    stamps at close is walked alongside the carried turns, so the transcript cannot be
+    missing an entry — and the terminal failure is visible to the fragile probe, which
+    reads the same turns."""
+    monkeypatch.setenv("EVAL_REPORT_DIR", str(tmp_path))
+    monkeypatch.delenv("EVAL_BASELINE", raising=False)
+    db = _make_db(tmp_path)
+    arguments = {"memory": "shelf"}
+    call = {"id": "s1", "function": {"name": "collection_set", "arguments": json.dumps(arguments)}}
+    _log_prompt(
+        db,
+        messages=[{"role": "user", "content": "attach the skill"}],
+        response={"choices": [{"message": {"tool_calls": [call]}}]},
+    )
+    frame = Tool.format_result(
+        "collection_set",
+        arguments,
+        ToolResult(message="Memory 'shelf' not found.", success=False),
+    )
+    db.messages.set_run_trailing_messages(
+        "r1",
+        [
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "s1", "content": frame},
+        ],
+    )
+    result = SampleResult.graded([Check("attached the skill", ok=False, anchor="collection_set(")])
+    _write_sample_report(db, "tail-case", 0, result=result, reply="")
+    text = (tmp_path / "tail-case.md").read_text()
+    assert '| actual | 🔧 collection_set({"memory": "shelf"}) | ❌ C1 |' in text
+    assert f"| actual | 📥 {report.escape_cell(frame)} |" in text
+    assert sample_is_fragile(db)
+
+
 def test_report_banner_and_verdict_carry_the_failure_cause(tmp_path, monkeypatch) -> None:
     # The banner + the failed check's verdict carry the structural cause (#1725): a behavioral
     # miss reads ``❌ fail · 0/1 (0.00) · behavioral`` on the banner and ``· behavioral`` on the
