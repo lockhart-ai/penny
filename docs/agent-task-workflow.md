@@ -68,7 +68,27 @@ The golden rule underneath all of it: **stay in scope, keep the tree isolated, a
 - **Right after `gh pr create`: read back the PR's real state** — `gh pr view <n> --json mergeable,autoMergeRequest`. If `mergeable` is `CONFLICTING`, fix it *now* (rebase in place, `git push --force-with-lease`, re-flag `--auto`; CI verifies) — never leave a conflicted PR sitting while you report success.
 - **Green gate → flagged PR is ONE uninterrupted sequence.** Your deliverable is a PR that exists, is merge-when-ready flagged, and is being shepherded — not a commit. Do not end your turn anywhere between the green §4 gate and the flagged PR (two agents in one fleet stalled exactly in that window: work committed, nothing published, nothing left running to wake them).
 - Commit message ends with the `Co-Authored-By:` trailer; PR body ends with the `🤖 Generated with Claude Code` trailer.
-- PR body: what changed + why, the scope, **test evidence** (`EXIT_CODE=0`), eval results if applicable (or the "Model-facing changes" inventory under an epic-wide deferral), and `Closes #<issue>`.
+- **PR body format — REQUIRED, this exact shape:**
+
+  ```markdown
+  Because
+  * <the problem, stated as a problem — what was wrong, what it cost, how it showed up>
+
+  This commit
+  * <what changed, in terms of behaviour>
+
+  <further detail only if it is genuinely needed>
+  ```
+
+  **`Because` is the motivation, not a preamble.** It says what was broken and why anyone should care — the symptom, who or what it hurt, the evidence. A reader who knows nothing about the ticket should finish it understanding why this work exists.
+
+  **`This commit` is what changed, in behaviour.** Not a tour of the diff. "A blank optional string is now refused with a message naming the field" — not "added a validator to `OptionalText` and rewrote two tests". The diff is already on the PR; restating it in prose adds nothing and buries the part only you can supply.
+
+  Then, and only if the reader genuinely needs it: the test evidence (`EXIT_CODE=0`, counts), eval results or the "Model-facing changes" inventory under an epic-wide deferral, anything you judged and want on the record, open questions you resolved conservatively, and `Closes #<issue>`.
+
+  **The failure mode this replaces** (observed across a whole fleet, every PR): bodies that narrate the changes file by file and never state the problem. They read as a changelog written by someone who already knows why — which is exactly the reader who does not need it. If your body could be reconstructed by reading the diff, you have written the wrong thing.
+
+  Keep it short. A small PR deserves two bullets and nothing else; length is not diligence.
 
 ## 8. Shepherd the PR to merge (stay alive until MERGED)
 You are **not done when the PR opens.** Do not exit — stay alive and shepherd the PR until it is **merged**, so a red CI or a moved `main` never sits unattended (that's exactly how a green PR silently rots).
