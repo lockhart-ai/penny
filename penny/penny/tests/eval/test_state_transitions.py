@@ -15,6 +15,12 @@ shapes are the later beats' business):
     elicit → learn  "go to the site, find the price, remember it"   → runs it once, remembers
     learn → apply   "now do that hourly until 10pm and tell me"     → a live watch
 
+Each case's seeded state is the PRECEDING beat's terminal state and nothing
+more — one edge is one message answered against where the last edge stopped.
+Replaying earlier turns is not neutral: the apply case seeded the instigating
+ask as well, and the classifier duly read "the task being worked on" as a setup
+still being specified, which it no longer was.
+
 **Learning attaches nothing** (#1706, replacing #1687's run-end auto-attach): the
 machine makes teaching and instantiating two clear turns, so the demonstrated
 round leaves a naive collection_write behind — a collection with a value in it
@@ -71,10 +77,6 @@ from penny.tools.micro_context import ParameterLabel, ParameterVerdict, SkillLab
 pytestmark = pytest.mark.eval
 
 _FAMILY = "state-transitions"
-
-# The instigating ask (turn 1 of the script) — the message the machine is parked
-# on when a later edge is under test.
-_AUCTION_ASK = f"hey can you watch the auction at {LISTING_URL} for me?"
 
 # elicit → learn: the user answers the teach question with the steps.
 _TEACH_TURN = f"yeah go to {LISTING_URL}, find the price, and remember it"
@@ -450,11 +452,14 @@ def learn_to_apply_fixture_skill() -> SkillDraft:
     )
 
 
-# What the round reported, and the offer the learn instruction ends every round
-# with — the message the user is answering, and the reason this edge exists.
+# The learn round's closing reply, in the shape LEARN_INSTRUCTION asks for: what
+# each step produced, what she now knows how to do, and the offer to set it
+# running.  That last clause is the message this edge's user turn answers — an
+# acceptance is only an acceptance of something.
 _PENNY_REPORT = (
-    f"Opened the listing, found {_PRICE}, and saved it to {_WATCH_COLLECTION}. "
-    "Want me to keep an eye on it for you from now on?"
+    f"Opened the listing, found the price ({_PRICE}), and saved it to "
+    f"{_WATCH_COLLECTION}. I know how to do that now — read a listing page and "
+    "record the price it shows. Want me to keep it up to date on its own?"
 )
 
 # learn → apply: the offer taken up.  It names a cadence, an end condition, and
@@ -463,16 +468,23 @@ _APPLY_TURN = "perfect — do that every hour until 10pm tonight and tell me if 
 
 
 def _seed_demonstrated_round(db: Database) -> None:
-    """Lay down the state a completed teach round leaves: the conversation up to
-    and including the offer, the collection the round wrote into (holding the
-    price, attached to nothing), and the machine parked in learn on the
-    instigating ask."""
-    ask_id = db.messages.log_message(
-        direction=PennyConstants.MessageDirection.INCOMING,
-        sender=TEST_SENDER,
-        content=_AUCTION_ASK,
-    )
-    db.messages.log_message(
+    """Lay down the state the PRECEDING beat ends in, item for item — this edge
+    starts where ``elicit → learn`` stops, so its precondition is that beat's
+    scored terminal state and nothing else:
+
+    * the teach turn that opened the learn round, and Penny's closing report —
+      she ran it, and she says what she now knows how to do
+    * the collection her naive write created, holding the price, carrying no
+      skill and no program and no schedule (learning instantiates nothing)
+    * a learned skill in the registry (seeded by the case's ``seed_skills``)
+    * the machine parked in ``learn``, anchored to the teach turn
+
+    The instigating ask ("can you watch this for me?") is deliberately ABSENT.
+    It belongs to the beat before — ``idle → elicit`` — and seeding it made the
+    classifier read "the task being worked on" as a setup still being specified,
+    which is a fair reading of a request that has not been carried out yet.  It
+    has been: that is what the learn round did."""
+    teach_id = db.messages.log_message(
         direction=PennyConstants.MessageDirection.INCOMING,
         sender=TEST_SENDER,
         content=_TEACH_TURN,
@@ -487,7 +499,7 @@ def _seed_demonstrated_round(db: Database) -> None:
         [EntryInput(key=_DEMO_KEY, content=_PRICE)],
         author=PennyConstants.CHAT_AGENT_NAME,
     )
-    _park(db, ConversationState.LEARN, anchor_message_id=ask_id)
+    _park(db, ConversationState.LEARN, anchor_message_id=teach_id)
 
 
 def _instantiated(db: Database):
