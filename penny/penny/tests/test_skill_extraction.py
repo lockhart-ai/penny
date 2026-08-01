@@ -1389,9 +1389,15 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     Both placeholder ORIGINS ride in the one fixture — the entry key the
     assistant invented (#1770) and the write target the attachment decides
     (#1777) — so the demonstrated collection and the demonstrated key are BOTH
-    absent from the render, which is the property the enactment case leans on."""
+    absent from the render, which is the property the enactment case leans on.
+
+    Since #1803 the fixture carries ONE parameter, not two: what the routine is
+    ABOUT is baked into the step and never asked for again, so only the page is
+    left to bind.  That is the shape the measured `elicit → learn` beat now
+    produces 8 times out of 8, and this pin is what keeps the enactment case
+    starting from it."""
     skill = learn_to_apply_fixture_skill()
-    assert sorted(parameter.name for parameter in skill.parameters) == ["url", "what_to_find"]
+    assert sorted(parameter.name for parameter in skill.parameters) == ["url"]
     placeholders = [
         substitution
         for step in skill.steps
@@ -1405,8 +1411,11 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     # The harm placeholders exist to prevent: a collector re-running this skill
     # must write neither the demonstrated key nor the demonstrated collection
     # back every cycle — and the ambient recipe must promise neither.
-    rendered = render_skill(skill.steps, {"url": "https://example.test", "what_to_find": "x"})
+    rendered = render_skill(skill.steps, {"url": "https://example.test"})
     assert "aurora deck 2 price" not in rendered
     assert "aurora-deck-2-price" not in rendered
+    # The constant renders VERBATIM — a leaf no substitution covers is a baked
+    # value, so the routine still states what it pulls off the page.
+    assert "the current price" in rendered
     assert "{what to call the entry it saves}" in rendered
     assert f"{{{WRITE_TARGET_DESCRIPTION}}}" in rendered

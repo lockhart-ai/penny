@@ -52,7 +52,7 @@ from penny.database.skills import (
 # has to be the SHAPE run-end extraction really produces (two bindable
 # parameters and one placeholder), and re-implementing that mapping here would
 # be a fixture that drifts from the pipeline it stands in for.
-from penny.skill_extraction import _apply_parameter_labels
+from penny.skill_extraction import _apply_parameter_labels, _constant_keys
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
@@ -66,7 +66,7 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 from penny.tests.eval.test_watch_journey import AURORA_LISTING_499, LISTING_URL
-from penny.tools.micro_context import ParameterLabel, ParameterVerdict, SkillLabel
+from penny.tools.micro_context import ParameterLabel, ParameterVerdict, SkillLabel, SkillShape
 
 pytestmark = pytest.mark.eval
 
@@ -404,11 +404,17 @@ _VERDICTS = {
 def learn_to_apply_fixture_skill() -> SkillDraft:
     """The skill that round leaves in the registry, built by the PRODUCTION
     pipeline over its ledger — ``distill_steps`` for the structure, the real
-    verdict application for the labels, with a hand-written ``SkillLabel``
-    standing in for the one live naming draw.  So the case's starting world is
-    the shape extraction actually produces, not a convenient copy of it: two
-    bindable parameters the conversation can supply, and a placeholder no user
-    could."""
+    verdict application for the labels, with a hand-written ``SkillLabel`` and
+    ``SkillShape`` standing in for the two live run-end draws.  So the case's
+    starting world is the shape extraction actually produces, not a convenient
+    copy of it.
+
+    Since #1803 that shape is ONE bindable parameter — the page — plus the value
+    the routine is ABOUT, baked into the step and never asked for again, and a
+    placeholder no user could supply.  It used to be two bindable parameters, and
+    the measured `elicit → learn` beat now produces this shape 8 times out of 8, so
+    seeding the old one would park this case on a world the preceding beat can no
+    longer hand it."""
     # The registry as this fixture's round saw it — #1783 marks a leaf whose
     # demonstrated value names one of Penny's collections, so the destination is
     # only adjudicated as one if the collection actually existed.
@@ -422,9 +428,17 @@ def learn_to_apply_fixture_skill() -> SkillDraft:
             assert value in _VERDICTS, f"fixture has no verdict for {sub.parameter!r} = {value!r}"
             verdicts[sub.parameter] = _VERDICTS[value]
     label = SkillLabel(name=_SKILL_NAME, description=_SKILL_DESCRIPTION, parameters=verdicts)
-    steps, parameters = _apply_parameter_labels(steps, parameters, label)
-    assert sorted(p.name for p in parameters) == ["url", "what_to_find"], (
-        f"the fixture skill must carry exactly the two user-supplied parameters: {parameters}"
+    # The shape draw's half: the routine is ABOUT what to find, and POINTED AT the
+    # page.  Mapped home through the production seam, so the fixture cannot encode a
+    # split the real pipeline could not produce.
+    shape = SkillShape(
+        name=_SKILL_NAME, description=_SKILL_DESCRIPTION, fixed=frozenset({"what to find"})
+    )
+    steps, parameters = _apply_parameter_labels(
+        steps, parameters, label, _constant_keys(label, shape)
+    )
+    assert sorted(p.name for p in parameters) == ["url"], (
+        f"the fixture skill must carry exactly the page as its one parameter: {parameters}"
     )
     return SkillDraft(
         name=_SKILL_NAME,
