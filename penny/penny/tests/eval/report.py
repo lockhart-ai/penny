@@ -405,8 +405,11 @@ def fold_sample(number: int, banner: str, body: str) -> str:
     return f"<details><summary>{SAMPLE_ROW} {number} — {banner}</summary>\n\n{body}\n\n</details>"
 
 
-_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
-_SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={_BLOCK_START})")
+# The seam a sample block opens on — the folded form and the legacy bare heading. Public because
+# it is also the ONLY place a run comment may be cut when it exceeds GitHub's comment cap (#1808):
+# one definition of "a sample starts here", shared by the re-normalizer and the splitter.
+SAMPLE_BLOCK_START = rf"(?:<details><summary>{SAMPLE_ROW} |#### {SAMPLE_ROW} )\d+ — "
+_SAMPLE_BOUNDARY = re.compile(rf"\n\n(?={SAMPLE_BLOCK_START})")
 _FOLDED_SAMPLE = re.compile(
     rf"\A<details><summary>{SAMPLE_ROW} (\d+) — (.*?)</summary>\n\n(.*)\n\n</details>\Z", re.DOTALL
 )

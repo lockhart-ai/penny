@@ -25,6 +25,12 @@ EVAL_ARTIFACTS_MOUNT := /penny/eval-artifacts
 # The marker `make eval-report` stamps into a posted run dir (#1757). Must match
 # `penny.tests.eval.checkpoint.POSTED_MARKER` — the recipe checks it host-side.
 POSTED_MARKER := .posted
+# Where `make eval-report` stages what it posts (#1808): the assembled body, and the
+# comment parts the splitter cuts it into when it exceeds GitHub's 64K comment cap.
+# Inside the run dir (so it rides the durable artifact home and is diagnosable after
+# the fact) but in a SUBDIR, so it is never mistaken for a run dir itself.
+COMMENT_SUBDIR := comment
+COMMENT_BODY := body.md
 # Alias for the make binary used to mint the token inside the eval-report recipe. Referenced
 # through this alias, NOT the literal `$(MAKE)`, on purpose: GNU make executes any recipe line
 # containing the literal `$(MAKE)`/`${MAKE}` even under `-n` (recursive-make tracing), and
@@ -254,6 +260,12 @@ assemble: $(if $(LOCAL),,build)
 # existing comment URL and exits 0. Fails loudly (never a silent no-op) when PR is unset, the run dir
 # is missing, the token is empty, or the assembled output is empty. `make -n eval-report PR=<n>`
 # shows the same durable-home resolution (`-v <primary>/data/eval-artifacts:/penny/eval-artifacts`).
+# OVER THE 64K CAP (#1808): GitHub refuses a comment body over 65,536 chars and an 8-sample chat beat
+# assembles to ~290K, so the body is staged into <run>/$(COMMENT_SUBDIR)/ and cut there by
+# `penny.tests.eval.comment_split` — on SAMPLE-FOLD boundaries only, each part headed `report N of M`,
+# posted in order, and `.posted` stamped with the FIRST part's URL so idempotency + the unreviewed-run
+# banner stay honest. The splitter also REFUSES a body opening with build noise (`docker compose`,
+# `GIT_COMMIT=`, `#1 [internal]`) — the pollution a hand-piped `make assemble` publishes.
 eval-report: $(if $(LOCAL),,build)
 	@if [ -z "$(PR)" ]; then \
 		echo "eval-report: PR is required — usage: make eval-report PR=<n> [RUN=<run-dir-name>] [FORCE=1]" >&2; \
@@ -277,14 +289,19 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: re-post with FORCE=1"; \
 		exit 0; \
 	fi; \
-	body="$$(mktemp "$${TMPDIR:-/tmp}/eval-report.XXXXXX")"; \
-	trap 'rm -f "$$body"' EXIT; \
-	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble $(if $(EVAL_FULL),--full,) "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$body"; then \
+	host_parts="$$host_dir/$(COMMENT_SUBDIR)"; \
+	mount_parts="$(EVAL_ARTIFACTS_MOUNT)/$$run/$(COMMENT_SUBDIR)"; \
+	mkdir -p "$$host_parts"; \
+	if ! $(EVAL_RUN) env EVAL_BASELINE="$${EVAL_BASELINE}" python -m penny.tests.eval.assemble "$(EVAL_ARTIFACTS_MOUNT)/$$run" > "$$host_parts/$(COMMENT_BODY)"; then \
 		echo "eval-report: assemble failed for $$run" >&2; \
 		exit 1; \
 	fi; \
-	if [ ! -s "$$body" ]; then \
+	if [ ! -s "$$host_parts/$(COMMENT_BODY)" ]; then \
 		echo "eval-report: assemble produced no output for $$run — is it a completed run?" >&2; \
+		exit 1; \
+	fi; \
+	if ! names="$$($(EVAL_RUN) python -m penny.tests.eval.comment_split "$$mount_parts/$(COMMENT_BODY)" "$$mount_parts")"; then \
+		echo "eval-report: could not prepare $$run for posting" >&2; \
 		exit 1; \
 	fi; \
 	tok="$$($(SUBMAKE) token)"; \
@@ -292,13 +309,18 @@ eval-report: $(if $(LOCAL),,build)
 		echo "eval-report: make token returned empty — run from the primary checkout with a real .env" >&2; \
 		exit 1; \
 	fi; \
-	url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$body")"; \
-	if [ -z "$$url" ]; then \
-		echo "eval-report: gh pr comment returned no URL" >&2; \
-		exit 1; \
-	fi; \
-	printf '%s\n' "$$url" > "$$host_dir/$(POSTED_MARKER)"; \
-	echo "eval-report: posted $$run → PR #$(PR) comment $$url"
+	first=""; \
+	for name in $$names; do \
+		url="$$(GH_TOKEN=$$tok gh pr comment "$(PR)" --body-file "$$host_parts/$$name")"; \
+		if [ -z "$$url" ]; then \
+			echo "eval-report: gh pr comment returned no URL for $$name$${first:+ (already posted: $$first)}" >&2; \
+			exit 1; \
+		fi; \
+		echo "eval-report: posted $$name → $$url"; \
+		if [ -z "$$first" ]; then first="$$url"; fi; \
+	done; \
+	printf '%s\n' "$$first" > "$$host_dir/$(POSTED_MARKER)"; \
+	echo "eval-report: posted $$run → PR #$(PR) as $$(printf '%s\n' $$names | wc -l | tr -d ' ') comment(s); marker → $$first"
 
 migrate-test: $(if $(LOCAL),,build)
 	$(RUN) python -m penny.database.migrate --test

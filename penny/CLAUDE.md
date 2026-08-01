@@ -809,6 +809,24 @@ in-container by the recipes so it reads the mounted home; the Makefile checks th
 recipes reuse the #1734 `EVAL_ARTIFACTS_HOST`/`_MOUNT` derivation, so `make -n eval-report` shows the
 same `-v <primary>/data/eval-artifacts:/penny/eval-artifacts` mount from any worktree.
 
+**Past the 64K comment cap, a run posts as MANY comments (#1808).** GitHub refuses a comment body over
+65,536 characters, and `eval-report` had no split path — so an over-cap run could not be posted at all by
+the supported route (`GraphQL: Body is too long … (addComment)`), and one 8-sample chat beat assembles to
+~290K *after* #1763's hoisting. The recipe now stages the assembled body into `<run-dir>/comment/body.md`
+and cuts it with the pure, plain-tested `penny/tests/eval/comment_split.py` (`sample_fold_segments` /
+`partition_on_sample_folds` / `render_parts` / `split_run_comment` + the two guards + a CLI): **the only
+legal seam is a sample-fold boundary** (`report.SAMPLE_BLOCK_START`, single-sourced with the assembler's
+re-normalizer — a cut inside a `<details>` renders as broken markup), so **concatenating the parts
+reproduces the document byte for byte** — nothing dropped, summarised, or re-wrapped
+(collapsed-never-means-removed, applied to posting). Each part is headed `(report N of M — split for
+GitHub's 64K comment cap; content verbatim)`; a run that FITS is ONE part with no header (posting is
+byte-identical to before); the run header opens the document so it lands on part 1; `.posted` holds the
+**first** part's URL so idempotency + the unreviewed-run banner stay honest; the budget is **~58K**, not
+64K (the header, and GitHub counting differently from `wc -c`). Two loud refusals guard what is posted:
+a body **opening with build noise** (`docker compose`, `GIT_COMMIT=`, `#1 [internal]` — what a hand-piped
+`make assemble` publishes; it happened, and eight comments had to be deleted), and a **single sample fold
+over the hard cap**, which no legal cut can shrink.
+
 #### Every model-facing change ships a durable eval contract — validated per change, not batched
 
 Any change that alters how the model behaves — a prompt/`extraction_prompt` edit,

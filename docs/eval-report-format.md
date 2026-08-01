@@ -53,6 +53,34 @@ report). Two mechanisms close that gap:
   PR=<n> …`), visible in the session transcript where it can't be un-seen. It **warns, never blocks**: an
   intentional multi-run sweep stays possible; the debt is just undeniable.
 
+**Over GitHub's 64K comment cap: the report SPLITS, it is never trimmed (#1808).** GitHub refuses a
+comment body over 65,536 characters, and a real run blows straight past it — one 8-sample chat beat
+assembles to ~290K *after* #1763's shared-prompt hoisting, and ~172K of a 32-sample run is thinking
+blocks and transcript tables, all distinct. So `eval-report` posts a run as **as many comments as it
+takes**, cut by the pure `penny/tests/eval/comment_split.py`:
+
+- **The only legal seam is a sample-fold boundary** — the blank line before a sample's opening
+  `<details>` (`report.SAMPLE_BLOCK_START`, single-sourced with the assembler's re-normalizer). A cut
+  inside a fold renders as broken markup, so it never happens. Concatenating the parts reproduces the
+  assembled document **byte for byte**: nothing is dropped, summarised, or re-wrapped
+  (collapsed-never-means-removed, applied to posting).
+- **Each part is headed** `(report N of M — split for GitHub's 64K comment cap; content verbatim)`, so a
+  reader knows there is more and that nothing was cut out of it. A run that FITS is one part and carries
+  no header — there is no "more" to announce, and it posts byte-identically to before the splitter
+  existed. The run header (identity · RESULT · gate · flips) opens the document, so it lands on part 1.
+- **`.posted` holds the FIRST part's URL**, so idempotency and the unreviewed-run banner stay honest.
+- **Budget is ~58K per part**, not the full 64K: the part header, and GitHub counting a body's length
+  differently from `wc -c`, both eat into the cap.
+- **The body is guarded before anything is posted.** `make assemble` echoes its recipe and the whole
+  `docker compose build` log to stdout, so piping *it* (instead of invoking the containerized module
+  directly) yields a comment opening with `GIT_COMMIT=…` / `docker compose build penny` /
+  `#1 [internal] …`. That happened — eight comments had to be deleted and replaced — so a body opening
+  with build noise is now **refused loudly** rather than published. A single sample fold larger than the
+  hard cap (which no legal cut can shrink) is refused the same way, naming the fold.
+
+The staged body and its parts are written to `<run-dir>/comment/` (`body.md`, `part-01.md`, …), so what
+was posted is inspectable after the fact; like every artifact they stay local and are never committed.
+
 **Marker semantics.** A run dir with a `manifest.json` is a **completed run**; a run dir also carrying a
 `.posted` marker is a **posted (reviewed) run**. A **lever-less ephemeral run writes no `manifest.json`**
 (#1734), so it is never a run dir here and never appears in the banner — by design: those runs leave no
