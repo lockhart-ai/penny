@@ -338,6 +338,84 @@ def test_distill_does_not_bind_a_trivial_overlap():
     assert content.kind == SkillSubKind.HOLE
 
 
+# ── #1809: a page is not a returned value — a mid-token match never binds ──────
+#
+# A browse WITHOUT ``extract`` returns the PAGE, so the payload a leaf is tested
+# against is a document, and a document contains most short strings by accident.
+# The listing's own URL carries the product's slug, so a write key the assistant
+# slugs from the same product is a substring of the payload — while the values the
+# round genuinely copied out sit against punctuation ('$499.', '"Aurora Deck 2"').
+
+_FAUX_LISTING_URL = "https://faux-market.example/aurora-deck-2"
+_FAUX_LISTING_PAGE = (
+    "You opened the Aurora Deck 2 listing (browse result)\n"
+    f"## browse {_FAUX_LISTING_URL}:\n"
+    '"Aurora Deck 2" — the listed price is $499.\n'
+    f"Permalink: {_FAUX_LISTING_URL}\n"
+    "In stock."
+)
+
+# The recipe the round distils to, whichever label the assistant picked: named slots
+# for the two keys IT chose, the fetched values for the two contents it copied.
+_LISTING_RECIPE = (
+    "1. browse(queries=[{queries}])\n"
+    "2. collection_write(memory={memory}, entries=["
+    "{'key': {key}, 'content': the value from step 1}, "
+    "{'key': {key-2}, 'content': the value from step 1}])"
+)
+
+
+@pytest.mark.parametrize("write_key", ["aurora-deck-2", "aurora-deck-2-price"])
+def test_a_write_key_inside_the_pages_url_is_not_a_binding(write_key):
+    """A key that appears in the browsed page only as a FRAGMENT of its URL never came
+    from the browse — it stays a candidate parameter (#1809).
+
+    Plain containment made the classification turn on an accident of the page: the same
+    round, the same leaf, two labels — 'aurora-deck-2' is inside the listing's own URL
+    and false-bound to the price, while 'aurora-deck-2-price' is not and classified
+    correctly.  The consequence was a routine that wrote each cycle's price under a key
+    that was also the price, so nothing ever overwrote anything.  A binding means the
+    model COPIED the result, so the value must fill the tokens it lands in; a slice out
+    of the middle of one ('…example/aurora-deck-2') is a coincidence of characters.
+
+    Both labels now agree — and the two values the round DID copy still bind even
+    though each sits against punctuation in the page ('is $499.', '"Aurora Deck 2"'),
+    which is what keeps the narrowing from costing real bindings."""
+    inputs = [
+        DistillInput(
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": [_FAUX_LISTING_URL]},
+            result=_FAUX_LISTING_PAGE,
+        ),
+        DistillInput(
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "prices",
+                "entries": [
+                    {"key": write_key, "content": "$499"},
+                    {"key": "listing-title", "content": "Aurora Deck 2"},
+                ],
+            },
+            result=_WRITE_OK,
+        ),
+    ]
+    steps, parameters = distill_steps(inputs, _ATTACHMENT_NAMES)
+    subs = {tuple(s.path): s for s in steps[1].substitutions}
+
+    assert subs[("entries", 0, "key")].kind == SkillSubKind.HOLE
+    assert {parameter.name for parameter in parameters} == {"queries", "memory", "key", "key-2"}
+    # Both copied values bind despite their punctuation margins — the price to the
+    # figure the page states, the title to the quoted heading.
+    for path in (("entries", 0, "content"), ("entries", 1, "content")):
+        assert subs[path].kind == SkillSubKind.BINDING
+        assert subs[path].step == 1
+    # The recipe therefore reads the right way round — a named slot for each key, the
+    # fetched value for each content — and never names the demonstrated label.
+    assert render_skill(steps) == _LISTING_RECIPE
+
+
 def test_distill_strips_the_top_level_reasoning_thinkaloud():
     """#1661: the universal top-level ``reasoning`` think-aloud every real call carries
     is stripped at distill — it adds NO hole, never lands in a stored step's

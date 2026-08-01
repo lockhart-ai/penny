@@ -11,10 +11,12 @@ non-``done`` tool-call ordinals out, never re-emitting them.  Each argument leaf
 a copied call is factored by **provenance** — derived STRUCTURALLY from the ledger,
 never by matching the user's prose (#1659):
 
-* a value that **equals, is contained in, or wraps** a prior selected step's
+* a value that **equals, fills whole tokens of, or wraps** a prior selected step's
   result → a **binding** (rendered "the value from step N"), because in the
   source run it *came from* that step (a wrapped result binds too — the arg
-  ``Price: $499`` over a browse that returned ``$499``);
+  ``Price: $499`` over a browse that returned ``$499``; a value sliced out of the
+  middle of a token does NOT, since a fetched page contains most short strings by
+  accident — #1809);
 * **every other string leaf** → a **candidate** required parameter (the model binds
   it per instantiation); identical values collapse to ONE shared candidate.  A
   parameter is ``required`` by construction — an unbound one is a loud refusal at
@@ -287,28 +289,78 @@ def _result_payload(result: str) -> str:
     return body.strip()
 
 
+def _enclosing_token(payload: str, start: int, end: int) -> tuple[int, int]:
+    """The bounds of the whitespace-delimited run of ``payload`` enclosing the match at
+    ``[start, end)`` — the token the match sits in (the two tokens at either end, when
+    the match spans several)."""
+    opens_at = start
+    while opens_at > 0 and not payload[opens_at - 1].isspace():
+        opens_at -= 1
+    closes_at = end
+    while closes_at < len(payload) and not payload[closes_at].isspace():
+        closes_at += 1
+    return opens_at, closes_at
+
+
+def _occurs_as_whole_token(value: str, payload: str) -> bool:
+    """Whether ``value`` occupies a WHOLE token of ``payload`` — the copied-out-of-a
+    -result test (#1809), as opposed to a coincidence of characters.
+
+    A payload is not always a returned value: a browse without ``extract`` returns a
+    PAGE, and a page contains most short strings by accident.  What distinguishes a
+    value the model *copied out of* the result from one that merely appears inside it
+    is that a copy takes whole tokens — a field, a figure, a phrase — never a fragment
+    sliced out of the middle of one.  So the match must fill its enclosing
+    whitespace-delimited token(s) up to their PUNCTUATION margins: what sits between
+    the token's edge and the match may be punctuation (``is $499.`` and
+    ``"Aurora Deck 2"`` are copies of ``$499`` and ``Aurora Deck 2``) but never letters
+    or digits.  ``aurora-deck-2`` inside ``https://faux-market.example/aurora-deck-2``
+    is the motivating case and fails exactly there — the margin is
+    ``https://faux-market.example/``, not punctuation — where plain containment bound
+    the write key the assistant chose to the price the step fetched, and the learned
+    routine then wrote every cycle's price under a key that was also the price.
+    """
+    start = payload.find(value)
+    while start != -1:
+        end = start + len(value)
+        opens_at, closes_at = _enclosing_token(payload, start, end)
+        margins = f"{payload[opens_at:start]}{payload[end:closes_at]}"
+        if not any(character.isalnum() for character in margins):
+            return True
+        start = payload.find(value, start + 1)
+    return False
+
+
 def _binding_step(value: str, index: int, selected: list[DistillInput]) -> int | None:
     """The skill ordinal (1-based) of the latest PRIOR selected step whose result the
     value flowed from, or ``None`` when none produced it (then it is a parameter).
 
     Comparison is against each prior result's PAYLOAD (``_result_payload`` — the frame
-    stripped off, #1665), not the framed text.  A value binds when it **equals or is
-    contained in** a prior payload (the model copied the tool output verbatim) OR
-    **contains** a prior payload (it wrapped the output — ``Price: $499`` over a
-    returned ``$499``).  Guarded against degenerate matches: a blank payload never
-    binds, and the shared content must be non-trivial (``_MIN_BINDING_OVERLAP`` chars)
-    so a one-character coincidence can't manufacture a binding.  No fuzzy matching or
-    thresholds — strict containment on the payload is what makes the wraps direction
-    fire without loosening anything (#1661's LCS analysis showed loosening false-binds
-    topic names)."""
+    stripped off, #1665), not the framed text.  A value binds when it **equals or fills
+    whole tokens of** a prior payload (the model copied the tool output verbatim,
+    ``_occurs_as_whole_token`` — #1809) OR **contains** a prior payload (it wrapped the
+    output — ``Price: $499`` over a returned ``$499``).  Guarded against degenerate
+    matches: a blank payload never binds, and the shared content must be non-trivial
+    (``_MIN_BINDING_OVERLAP`` chars) so a one-character coincidence can't manufacture a
+    binding.  No fuzzy matching and no thresholds — every test here is exact-match, which
+    is what lets the wraps direction fire without loosening anything (#1661's LCS
+    analysis showed loosening false-binds topic names).
+
+    The two directions are deliberately ASYMMETRIC.  *Wraps* stays plain containment:
+    the whole result sits inside the argument, so there is nothing for a coincidence to
+    exploit.  *Contained-in* is the direction exposed to bulk — the payload may be an
+    entire fetched page, where a short arg turning up somewhere is worth nothing — so it
+    additionally demands that the arg fill the tokens it lands in."""
     stripped_value = value.strip()
     for prior in range(index - 1, -1, -1):
         payload = _result_payload(selected[prior].result)
         if not payload:
             continue
-        if len(stripped_value) >= _MIN_BINDING_OVERLAP and value in payload:
+        if len(stripped_value) >= _MIN_BINDING_OVERLAP and _occurs_as_whole_token(
+            stripped_value, payload
+        ):
             return prior + 1
-        if len(payload) >= _MIN_BINDING_OVERLAP and payload in value:
+        if len(payload) >= _MIN_BINDING_OVERLAP and payload in stripped_value:
             return prior + 1
     return None
 
@@ -334,9 +386,10 @@ def distill_steps(
     ``reasoning`` think-aloud is stripped from each call's arguments FIRST (#1661) —
     run narration, never routine — so it is neither classified nor stored.  Each
     remaining string leaf is then classified the SAME way regardless of which tool it
-    sits on or which argument it fills (#1783): a value that **equals / is contained in
-    / wraps** a prior selected step's result is a **binding** (it came from that step);
-    **every other** string leaf is a required **parameter**, with identical values
+    sits on or which argument it fills (#1783): a value that **equals / fills whole
+    tokens of / wraps** a prior selected step's result is a **binding** (it came from
+    that step); **every other** string leaf is a required **parameter**, with identical
+    values
     collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
     a constant.  That last rule is a DEFAULT, not a determination — it holds only
     when the user supplied the value, which structure cannot decide; the run-end
