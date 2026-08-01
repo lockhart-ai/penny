@@ -281,6 +281,13 @@ A comprehensive checklist for reviewing pull requests against the project's esta
 
 ## 7. Prompt Engineering
 
+### Shape-Independence (skills are arbitrary tool sequences)
+- [ ] No rule keyed to a specific **tool name**, **argument position**, or the phrasing of the sample that motivated it — a skill is a *learned* sequence of tool calls and a plugin can add new ones, so an enumeration is wrong by construction
+- [ ] The test applied before writing such a rule: *what happens when a tool I have never heard of does this?* "Not covered" means the rule is keyed to the wrong thing
+- [ ] A structural mark set once and read everywhere, rather than a name-set re-derived at each site
+- [ ] Model-facing text names the **state or principle**, never the verb — "configuring the routine is the turn", not "don't browse" (which fixes one sample and misses an email-only skill over-running identically)
+- [ ] Eval fixtures obey the same rule: a pool coheres with the state it claims, and never lends its own phrasing to the prompt under test
+
 ### System Prompt Structure
 - [ ] Consistent `##` / `###` header hierarchy to delineate sections
 - [ ] Standard structure: `## Identity` → `## Context` (with `###` subsections) → `## Instructions`
