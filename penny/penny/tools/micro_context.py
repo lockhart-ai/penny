@@ -485,31 +485,17 @@ class MicroContextResult(BaseModel):
 
 
 class ParameterVerdict(StrEnum):
-    """What ROLE a candidate's demonstrated value plays in the routine
-    (#1770/#1803) — the closed union, and the only thing that makes an unexplained
-    leaf a parameter rather than a default.
+    """Where a candidate parameter's demonstrated value came from (#1770) — the
+    closed union the labeller decides per candidate, and the only thing that makes
+    an unexplained leaf a parameter rather than a default.
 
-    ``PARAMETER`` = the USER supplied it and the routine is POINTED AT it, so it is
-    a real skill input rebound per instantiation.  ``CONSTANT`` = the user supplied
-    it and the routine is ABOUT it, so it stays baked in the step and is never asked
-    for again.  ``PLACEHOLDER`` = the assistant derived it from a step's result or
-    invented it while working, so no user could ever supply it — it renders as a
-    placeholder carrying the labeller's description, never as the frozen
-    demonstrated value.
-
-    **Two draws decide this union, and the split is deliberate (#1803).**  The
-    labeller answers only the PROVENANCE question — did the user give it, or did the
-    assistant produce it — and it answers that well; PARAMETER and PLACEHOLDER are
-    its whole vocabulary.  ``CONSTANT`` is a promotion applied afterwards from the
-    SHAPE draw (``shape_skill``), which decides the routine's name and what it is
-    about together.  Folding all three into one draw was measured and rejected: three
-    flat cases, two of them opening "the user gave it", collapsed the working
-    provenance binary (the placeholder direction went 4/5 → 2/5).  A value's origin
-    and a value's role are different questions, and asking them separately is what
-    keeps the first one answerable."""
+    ``PARAMETER`` = the USER supplied it (verbatim or reworded), so it is a real
+    skill input the model rebinds per instantiation.  ``PLACEHOLDER`` = the
+    assistant derived it from a step's result or invented it while working, so no
+    user could ever supply it — it renders as a placeholder carrying the labeller's
+    description, never as the frozen demonstrated value."""
 
     PARAMETER = "parameter"
-    CONSTANT = "constant"
     PLACEHOLDER = "placeholder"
 
 

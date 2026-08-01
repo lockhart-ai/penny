@@ -326,10 +326,11 @@ class SkillExtractor:
         fallback_name = _slug_name(projection.origin_message)
         fallback_description = projection.origin_message or f"Skill: {fallback_name}"
         label = await self._label_skill(steps, parameters, projection)
-        label = _with_shape(label, await self._shape_skill(label, steps, projection))
-        name = _slug_name(label.name) if label is not None else fallback_name
-        description = label.description if label is not None else fallback_description
-        steps, parameters = _apply_parameter_labels(steps, parameters, label)
+        shape = await self._shape_skill(label, steps, projection)
+        name, description = _naming(label, shape, fallback_name, fallback_description)
+        steps, parameters = _apply_parameter_labels(
+            steps, parameters, label, _constant_keys(label, shape)
+        )
         return SkillDraft(
             name=name,
             intent=description,
@@ -609,28 +610,40 @@ def build_shape_content(
     )
 
 
-def _with_shape(label: SkillLabel | None, shape: SkillShape | None) -> SkillLabel | None:
-    """The two draws merged into the one artifact the rest of extraction reads
-    (#1803): the shape's name and description replace the labeller's, and every value
-    it called FIXED is promoted from PARAMETER to CONSTANT.
+def _naming(
+    label: SkillLabel | None,
+    shape: SkillShape | None,
+    fallback_name: str,
+    fallback_description: str,
+) -> tuple[str, str]:
+    """The routine's name + description, from the FIRST draw that produced one (#1803):
+    the shape draw, then the labeller, then the deterministic slug.
 
-    Taking the name from the shape draw is the point rather than a detail — it wrote
-    the name and the constants in one decision, so they cannot disagree, which is the
-    whole defect this closes.  With no shape (the draw failed, or there was nothing to
-    decide) the labeller's artifact passes through untouched: pre-#1803 behaviour, no
-    constants, every value bindable."""
+    The shape draw wins because it wrote the name in the same decision as the
+    constants, so the two cannot disagree — which is the whole defect this closes.
+    Each fallback is a rung down, and naming never blocks extraction."""
+    if shape is not None:
+        return _slug_name(shape.name), shape.description
+    if label is not None:
+        return _slug_name(label.name), label.description
+    return fallback_name, fallback_description
+
+
+def _constant_keys(label: SkillLabel | None, shape: SkillShape | None) -> frozenset[str]:
+    """The CURRENT (arg-derived) keys of the values the shape draw called CONSTANT
+    (#1803), mapped home through the semantic names the labeller gave them.
+
+    The two draws stay in their own types — the shape draw's answer never becomes a
+    ``ParameterVerdict``, which is the labeller's output and predates this. They meet
+    here, in the extractor that orchestrates both, and nowhere else. An unmatched name
+    simply yields no key: the shape draw membership-validates its own answer, so this
+    is belt and braces rather than a silent drop."""
     if label is None or shape is None:
-        return label
-    parameters = {
-        current: (
-            param.model_copy(update={"verdict": ParameterVerdict.CONSTANT})
-            if param.verdict == ParameterVerdict.PARAMETER and param.name in shape.fixed
-            else param
-        )
+        return frozenset()
+    return frozenset(
+        current
         for current, param in label.parameters.items()
-    }
-    return label.model_copy(
-        update={"name": shape.name, "description": shape.description, "parameters": parameters}
+        if param.verdict == ParameterVerdict.PARAMETER and param.name in shape.fixed
     )
 
 
@@ -716,6 +729,7 @@ def _apply_parameter_labels(
     steps: list[SkillStep],
     parameters: list[SkillParameter],
     label: SkillLabel | None,
+    constant_keys: frozenset[str] = frozenset(),
 ) -> tuple[list[SkillStep], list[SkillParameter]]:
     """Apply each candidate's ROLE (#1668/#1770/#1783/#1803) — the three-way the two
     draws settled between them.
@@ -723,8 +737,10 @@ def _apply_parameter_labels(
     A PARAMETER relabels the candidate with its hardened semantic name + description,
     maps the rename through every leaf site, and CLEARS any attachment mark there (a
     value the user chose is theirs to bind, never something the attachment overwrites).
-    A CONSTANT is what the routine is ABOUT, so it stops being a parameter and its leaf
-    sites lose their substitutions entirely — a leaf nothing covers renders verbatim,
+    A key in ``constant_keys`` — the SHAPE draw's answer, arriving as its own argument
+    rather than as a verdict, since the verdict union is the labeller's — is what the
+    routine is ABOUT, so it stops being a parameter and its leaf sites lose their
+    substitutions entirely — a leaf nothing covers renders verbatim,
     which is precisely a baked value, so no new render path exists for it. A
     PLACEHOLDER says the user never supplied that value, so its leaf sites become
     placeholder substitutions carrying the labeller's description, and any attachment
@@ -753,7 +769,7 @@ def _apply_parameter_labels(
         if param_label is not None and param_label.verdict == ParameterVerdict.PLACEHOLDER:
             placeholders[parameter.name] = param_label.description
             continue
-        if param_label is not None and param_label.verdict == ParameterVerdict.CONSTANT:
+        if parameter.name in constant_keys:
             constants.add(parameter.name)
             continue
         named.append(_relabelled(parameter, param_label, rename, used))

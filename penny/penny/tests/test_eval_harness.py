@@ -934,7 +934,7 @@ def _three_micro_context_ledger(db: Database) -> None:
     )
     _log_prompt(
         db,
-        agent_name=PennyConstants.PARAMETER_LABELLER_AGENT_NAME,
+        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
         messages=[
             {"role": "system", "content": "Name the routine."},
             {"role": "user", "content": "steps: browse"},
@@ -978,7 +978,7 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "\n"
         "</details>\n"
         "\n"
-        "<details><summary>system prompt — parameter-labeller (17 chars)</summary>\n"
+        "<details><summary>system prompt — skill-namer (17 chars)</summary>\n"
         "\n"
         "Name the routine.\n"
         "\n"
@@ -1001,10 +1001,9 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "| actual | 📥 You opened the page (browse result) · 1642 |  |\n"
         "| 💭 | <details><summary>thinking</summary>the source says 1,642 m</details> |  |\n"
         '| actual | 🤖 "Lake Baikal — 1,642 m." |  |\n'
-        "| actual | 🧩 parameter-labeller ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (parameter-labeller)</summary>"
-        "a generic name</details> |  |\n"
-        "| actual | 🧩 parameter-labeller → NAME: look-up-lake-depth |  |\n"
+        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
+        "| 💭 | <details><summary>thinking (skill-namer)</summary>a generic name</details> |  |\n"
+        "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
         "\n"
         "</details>\n"
         "\n"

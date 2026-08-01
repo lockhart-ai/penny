@@ -413,20 +413,13 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
-    # The ledger identity of the run-end PARAMETER-LABELLING micro-context
-    # (#1665/#1770) — the SECOND customer of the micro-context machinery.  After a
-    # qualifying chat run is distilled, one single-shot model call rules on each
-    # candidate parameter: did the USER supply that value (a real parameter) or did
-    # the assistant produce it (a placeholder)?
-    #
-    # It was called `skill-namer` until #1803, when naming moved to the shape draw
-    # below.  The old identity had become a lie — it no longer decides the skill's
-    # name — and a lying actor label cost real review time: reading a transcript for
-    # the draw that names the routine landed on this one, which does not.  Renamed
-    # rather than reused, so a historical `skill-namer` row is unambiguously the
-    # pre-#1803 combined draw.
-    PARAMETER_LABELLER_AGENT_NAME = "parameter-labeller"
-    PARAMETER_LABELLER_PROMPT_TYPE = "parameter_labelling"
+    # The ledger identity of a run-end skill-naming micro-context (#1665) — the
+    # SECOND customer of the micro-context machinery.  After a qualifying chat run
+    # is distilled, one single-shot model call writes a GENERIC name + description
+    # for the routine (the tagged NAME:/DESCRIPTION: contract); it logs its own
+    # promptlog rows under this agent/prompt type so run traces attribute it.
+    SKILL_NAMING_AGENT_NAME = "skill-namer"
+    SKILL_NAMING_PROMPT_TYPE = "skill_naming"
     # The ledger identity of a conversation-state classification (#1706) — the
     # THIRD customer of the micro-context machinery.  Once per incoming message a
     # single-shot model call picks the machine's next state from the CURRENT
