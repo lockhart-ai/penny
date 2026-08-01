@@ -742,7 +742,7 @@ by its ledger identity and each 🧩 row is labelled with it (`🧩 state-classi
 matching that context's system-prompt row. Where a batch splices is a declared **`MicroPlacement`** —
 the causal relationship, not the agent: `DURING_CALL` (browse-extract → after the `extract=` browse
 call that spawned it, the unchanged FIFO pairing) · `TURN_HEAD` (state-classifier → right after the
-user turn it decided, since the classifier runs before the chat agent) · `RUN_CLOSE` (skill-namer →
+user turn it decided, since the classifier runs before the chat agent) · `RUN_CLOSE` (parameter-labeller + skill-shaper →
 closing the turn, after the final reply). One generic walk drains the ledger-ordered batch queue at
 those anchors, so a fourth customer is a row in `MICRO_CONTEXT_PLACEMENTS`, not new code; a batch
 left unmatched renders at the end rather than vanishing (collapsed never means dropped, #1753).

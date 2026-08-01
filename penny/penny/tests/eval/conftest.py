@@ -1175,7 +1175,7 @@ class MicroPlacement(StrEnum):
 MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
-    PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    PennyConstants.PARAMETER_LABELLER_AGENT_NAME: MicroPlacement.RUN_CLOSE,
     PennyConstants.SKILL_SHAPE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
 }
 
@@ -2716,7 +2716,7 @@ def _log_demonstration(
 # (what the routine IS).  One list, so the report and the reroll signal can never
 # disagree about who spoke at the end of a run.
 RUN_END_CUSTOMERS = (
-    PennyConstants.SKILL_NAMING_AGENT_NAME,
+    PennyConstants.PARAMETER_LABELLER_AGENT_NAME,
     PennyConstants.SKILL_SHAPE_AGENT_NAME,
 )
 
