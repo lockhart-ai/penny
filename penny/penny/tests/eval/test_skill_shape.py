@@ -54,6 +54,13 @@ _DEMONSTRATION = f"read {_LISTING}, find the current price, and remember it"
 # really produces.  Its one-line descriptions are deliberately absent: they describe
 # every value as a fill-in slot, which argued the decision under test (see
 # ``ShapeableValue``).
+# The labeller's one-line summary of the round, verbatim from the same measured run.
+# Its ROUTINE description is passed to the shaper where its PER-VALUE descriptions are
+# not: this one states what the round was FOR, which is the question under test.
+_SUMMARY = (
+    "Keep track of a specific item's current price by fetching its page and storing the value."
+)
+
 _URL = ShapeableValue(name="url", current="queries", demonstrated=_LISTING)
 _WHAT_TO_FIND = ShapeableValue(
     name="what_to_find", current="extract", demonstrated="the current price"
@@ -80,6 +87,7 @@ async def test_the_value_the_routine_is_about_becomes_a_constant(shape_eval: Sha
         case_id="shape-value-the-routine-is-about-is-constant",
         values=[_URL, _WHAT_TO_FIND],
         constants=["what_to_find"],
+        round_summary=_SUMMARY,
         conversation=[_ASK, _DEMONSTRATION],
         min_pass_rate=None,
         family=_FAMILY,

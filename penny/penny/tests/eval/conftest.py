@@ -2931,6 +2931,10 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
     mangled by a labeller parse slip), and a miss could not be attributed to the
     draw under test. The labeller has its own contract next door.
 
+    Its inputs are all fixtures: the user's turns, the labeller's one-line summary of
+    the round, and the values it kept — each authored, so the draw sees the same thing
+    every sample.
+
     Everything the draw consumes is built by PRODUCTION code — ``build_shape_content``
     renders the content and ``MicroContext.shape_skill`` makes the call, so the case
     exercises the shipped prompt and the shipped parse. Synthetic here means the
@@ -2944,6 +2948,7 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
         values: Sequence[ShapeableValue],
         constants: Sequence[str],
         conversation: Sequence[str],
+        round_summary: str = "",
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -2955,7 +2960,7 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
         turns: list[tuple[str, str]] = [
             (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
         ]
-        content = build_shape_content(list(values), "", turns)
+        content = build_shape_content(list(values), "", turns, round_summary)
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()

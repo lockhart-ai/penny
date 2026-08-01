@@ -385,7 +385,8 @@ class SkillExtractor:
         if not values:
             return None
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        content = build_shape_content(values, projection.origin_message, conversation)
+        summary = label.description if label is not None else ""
+        content = build_shape_content(values, projection.origin_message, conversation, summary)
         return await self._micro_context.shape_skill(
             content, [value.name for value in values], run_target=self._agent_name
         )
@@ -591,6 +592,7 @@ def build_shape_content(
     values: list[ShapeableValue],
     origin_message: str,
     conversation: list[tuple[str, str]],
+    round_summary: str = "",
 ) -> str:
     """The shape micro-context's content (#1803): what the USER asked for, then the
     values the routine used.  PUBLIC because the shape eval builds it too — that case
@@ -606,16 +608,21 @@ def build_shape_content(
     reason correctly to the wrong answer (#1770).
 
     Each value renders as its name and the value it was demonstrated with, and nothing
-    else — see :class:`ShapeableValue` for why the labeller's description is dropped."""
+    else — see :class:`ShapeableValue` for why the labeller's PER-VALUE description is
+    dropped.  The labeller's ROUTINE description is the opposite case and is passed:
+    it is a statement of what the round was FOR ("track a marketplace item's current
+    price…"), which is the very thing this draw has to settle, and it reads the user's
+    words for it rather than describing a slot to fill."""
     incoming = PennyConstants.MessageDirection.INCOMING
     asks = [content for direction, content in conversation if direction == incoming]
     if origin_message and origin_message not in asks:
         asks.append(origin_message)
     lines = "\n".join(f"- {value.name} = {value.demonstrated!r}" for value in values)
-    return (
-        f"What the user asked for:\n{'\n'.join(asks)}\n\n"
-        f"The values the routine used to do it:\n{lines}"
-    )
+    parts = [f"What the user asked for:\n{'\n'.join(asks)}"]
+    if round_summary:
+        parts.append(f"What the round did, in one line:\n{round_summary}")
+    parts.append(f"The values the routine used to do it:\n{lines}")
+    return "\n\n".join(parts)
 
 
 def _naming(
