@@ -108,6 +108,16 @@ _UNTAGGED_DRAW_BUDGET = 2
 # produced them, so no substring test can reach them (and #1659 already ruled prose
 # matching out); the question "did the USER provide this?" has an answer in every
 # case and is a judgment, which is why the labeller is the right instrument.
+#
+# Why the response is GROUPED BY VERDICT (#1807): the judgment was right and the
+# TRANSCRIPTION was wrong — in every observed failure the thinking concluded "treat as
+# PARAM" and the line came out ``PLACEHOLDER``, always sitting inside a run of genuine
+# placeholder lines.  Asked for one line per candidate, the model drafts the line and
+# writes the tag last as a prefix, so a run of placeholders sweeps the odd parameter in
+# with it.  Asked for the two GROUPS, the split itself is the thing being written and a
+# candidate's group is settled before any of its line is.  The parse is unchanged and
+# stays ORDER-AGNOSTIC: grouping is what the contract asks for, never what it requires,
+# so an interleaved draw still maps every candidate exactly as before.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
 PARAM_TAG = "PARAM"
@@ -149,17 +159,20 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "instruction naming what to pull from the page (e.g. 'the current price') — "
     "there is no CSS-selector, XPath, or pattern machinery in this system, so never "
     "name or describe one that way.\n"
-    "Respond with these tagged lines and nothing else:\n"
+    "Respond in exactly this shape and nothing else:\n"
     f"{NAME_TAG} <a short generic verb-noun name>\n"
     f"{DESCRIPTION_TAG} <one line: the user intent it serves, then the mechanics>\n"
+    "then the group of candidates THE USER GAVE, one line each:\n"
     f"{PARAM_TAG} <current name>: <semantic_name> {_PARAM_DESC_SEPARATOR} <one-line "
-    "description>   (the user gave it)\n"
+    "description>\n"
+    "then the group of candidates THE ASSISTANT PRODUCED, one line each:\n"
     f"{PLACEHOLDER_TAG} <current name>: <one-line description of what belongs "
-    "there>   (the assistant produced it)\n"
-    "Write ONE line for EVERY candidate parameter — a "
-    f"{PARAM_TAG} line or a {PLACEHOLDER_TAG} line, never both and never neither — "
-    "repeating its CURRENT name exactly so it maps back; use a single lowercase "
-    "word or snake_case for <semantic_name>.\n"
+    "there>\n"
+    "Sort every candidate into one of those two groups BEFORE you write either group, "
+    "then write the groups in that order — every candidate appears in exactly one "
+    "group, never both and never neither, repeating its CURRENT name exactly so it "
+    "maps back. A group with no candidates in it is left out entirely. Use a single "
+    "lowercase word or snake_case for <semantic_name>.\n"
     "Write nothing else — no preamble, no explanation, no restating the routine."
 )
 

@@ -780,7 +780,12 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     collector re-running the skill would write that stale phrase into the collection
     every cycle, forever — so the attached prompt is asserted WHOLE: the user's two
     values are bound, the assistant's two are placeholders, and neither demonstrated
-    phrase appears anywhere."""
+    phrase appears anywhere.
+
+    The draw here is GROUPED BY VERDICT, the shape the contract asks for (#1807), and
+    the same draw INTERLEAVED lands identically: grouping is what the prompt asks of the
+    model, never what the parse requires of it, so a draw that ignores the grouping is
+    still mapped candidate for candidate rather than partly dropped."""
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price on a listing page and record it.\n"
@@ -827,6 +832,23 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     row = db.memories.get("aurora-prices")
     assert row is not None
     assert row.skill_name is None and row.extraction_prompt is None
+
+    # The SAME verdicts drawn out of group order (#1807) — the parse reads lines, not
+    # blocks, so the ungrouped draw produces the identical skill.
+    interleaved = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price on a listing page and record it.\n"
+        "PLACEHOLDER key: a short label for the second entry\n"
+        "PARAM queries: url — the listing page to read\n"
+        "PLACEHOLDER content: a note about the page you just read\n"
+        "PARAM extract: what_to_find — what to pull from the page"
+    )
+    _log_run(db, "run-B", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
+
+    ungrouped = await _extractor(db, model=interleaved).extract("run-B")
+
+    assert isinstance(ungrouped, SkillExtracted)
+    assert render_skill_full(ungrouped.skill) == render_skill_full(result.skill)
 
 
 # ── #1783: the collection name is adjudicated like every other leaf ────────────
@@ -908,10 +930,13 @@ async def test_two_user_named_destinations_stay_two_parameters(db):
 
 
 def test_naming_system_prompt_whole_render():
-    """Whole-render literal of the labelling contract (#1665/#1668/#1770): the framing
-    and its inputs, the three numbered asks — intent, then the generic routine name,
-    then the per-candidate WHERE-DID-THIS-COME-FROM verdict as two named cases — and
-    the enumerated output shape with one line required per candidate."""
+    """Whole-render literal of the labelling contract (#1665/#1668/#1770/#1807): the
+    framing and its inputs, the three numbered asks — intent, then the generic routine
+    name, then the per-candidate WHERE-DID-THIS-COME-FROM verdict as two named cases —
+    and the enumerated output shape, which asks for the candidates GROUPED BY VERDICT
+    (#1807: the verdict was reached correctly and transcribed wrongly, always inside a
+    run of the other tag, so the split is what gets written rather than a tag prefixed
+    to each drafted line)."""
     assert SKILL_NAMING_SYSTEM_PROMPT == (
         "You are a naming step. You are given the conversation that led to the "
         "construction of a reusable routine, the routine itself — a numbered list of "
@@ -945,16 +970,18 @@ def test_naming_system_prompt_whole_render():
         "instruction naming what to pull from the page (e.g. 'the current price') — "
         "there is no CSS-selector, XPath, or pattern machinery in this system, so never "
         "name or describe one that way.\n"
-        "Respond with these tagged lines and nothing else:\n"
+        "Respond in exactly this shape and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: the user intent it serves, then the mechanics>\n"
-        "PARAM <current name>: <semantic_name> — <one-line description>   "
-        "(the user gave it)\n"
-        "PLACEHOLDER <current name>: <one-line description of what belongs there>   "
-        "(the assistant produced it)\n"
-        "Write ONE line for EVERY candidate parameter — a PARAM line or a PLACEHOLDER "
-        "line, never both and never neither — repeating its CURRENT name exactly so it "
-        "maps back; use a single lowercase word or snake_case for <semantic_name>.\n"
+        "then the group of candidates THE USER GAVE, one line each:\n"
+        "PARAM <current name>: <semantic_name> — <one-line description>\n"
+        "then the group of candidates THE ASSISTANT PRODUCED, one line each:\n"
+        "PLACEHOLDER <current name>: <one-line description of what belongs there>\n"
+        "Sort every candidate into one of those two groups BEFORE you write either "
+        "group, then write the groups in that order — every candidate appears in "
+        "exactly one group, never both and never neither, repeating its CURRENT name "
+        "exactly so it maps back. A group with no candidates in it is left out "
+        "entirely. Use a single lowercase word or snake_case for <semantic_name>.\n"
         "Write nothing else — no preamble, no explanation, no restating the routine."
     )
 
