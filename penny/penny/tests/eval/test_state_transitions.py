@@ -162,6 +162,49 @@ def _untraceable_parameters(db: Database) -> list[str]:
     return untraceable
 
 
+def _find_instruction_role(db: Database) -> str | None:
+    """What role the learned skill gives the browse ``extract`` leaf — the value that
+    says WHAT to pull off the page (#1803).
+
+    ``"constant"`` when NO substitution covers it: a leaf nothing covers renders
+    verbatim, which is exactly a baked value. Otherwise the substitution's own kind
+    (``hole`` = still asked for, ``placeholder`` = nobody can supply it). ``None`` when
+    no skill or no browse step exists, which the caller reads as nothing to score.
+
+    Read STRUCTURALLY off the leaf's path rather than by matching the demonstrated
+    text, because what the assistant passes to ``extract`` is its own wording of the
+    user's intent ("the price" / "the current price") and is not predictable. This case
+    is a browse round, so naming that step is the same fixture-anchoring
+    ``_untraceable_parameters`` already relies on — nothing in production keys off a
+    tool name."""
+    for skill in db.skills.list_all():
+        for step in steps_from_json(skill.steps):
+            if step.tool != "browse":
+                continue
+            covering = [sub for sub in step.substitutions if sub.path == ["extract"]]
+            return covering[0].kind.value if covering else "constant"
+    return None
+
+
+def _page_is_bindable(db: Database) -> bool:
+    """A required parameter was demonstrated with the PAGE — so the routine can be
+    pointed at a different listing next time.
+
+    Checks the value, never the label, for the reason ``_untraceable_parameters``
+    gives: a correctly-named ``url`` parameter contains neither the address nor any
+    word the user used."""
+    for skill in db.skills.list_all():
+        required = {p.name for p in parameters_from_json(skill.parameters) if p.required}
+        for step in steps_from_json(skill.steps):
+            for sub in step.substitutions:
+                if (
+                    sub.parameter in required
+                    and LISTING_URL.lower() in str(_leaf_at(step.arguments, sub.path)).lower()
+                ):
+                    return True
+    return False
+
+
 def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[Check]:
     """The demonstrated round ran, and NOTHING was instantiated.
 
@@ -213,6 +256,29 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
         )
         if created
         else Check.na("state: nothing it created was scheduled (no trigger, no notify)"),
+        # #1803: the round supplies the page AND what to find on it, both from the
+        # user — but only one of them varies between uses.  The skill is a price
+        # watcher, so the price is what it IS (baked, never asked for again) and the
+        # page is what it is POINTED AT (a parameter).  Before the shape draw both
+        # were required parameters, which is why the routine could not fire from the
+        # natural second ask.
+        Check(
+            "state: the page stays a parameter (a new listing can be bound)",
+            _page_is_bindable(db),
+            kind="state",
+        ),
+        Check(
+            "state: what to find is baked, not asked for again",
+            _find_instruction_role(db) == "constant",
+            rationale=(
+                None
+                if (role := _find_instruction_role(db)) == "constant"
+                else f"the extract leaf is a {role}"
+            ),
+            kind="state",
+        )
+        if _find_instruction_role(db) is not None
+        else Check.na("state: what to find is baked, not asked for again"),
         Check(
             "state: every required parameter is one the user supplied",
             not _untraceable_parameters(db),
