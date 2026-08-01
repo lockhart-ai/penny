@@ -765,6 +765,95 @@ async def test_semantic_names_are_hardened_slugged_and_deduped(db):
     assert "{page_url_2}" in rendered
 
 
+# ── #1814: the output shape is declared, so tolerance and strictness are one rule ─
+
+
+@pytest.mark.asyncio
+async def test_a_cosmetically_variant_verdict_line_still_carries_its_verdict(db):
+    """Everything the DECLARED shape now tolerates, in one draw (#1814).
+
+    The motivating failure: a verdict line arrived with an EN-dash where the parser
+    partitioned on an em-dash, so the split found nothing and the entire remainder
+    became the parameter's semantic name — a 60-character "name" carrying its own
+    description, persisted as the skill's binding key, with no reroll because the
+    parse had "succeeded".  Any whitespace-delimited dash variant now separates the
+    name from its description (a hyphen INSIDE a name has no spaces around it, so it
+    is never mistaken for the separator).  A line may also arrive decorated with a
+    list marker or bold, a payload may arrive quoted, and a PARAM line may carry no
+    description at all — none of that is the model getting the contract wrong."""
+    model = _naming_model(
+        "**NAME:** Watch a listing price\n"
+        'DESCRIPTION: "Look up a price and record it."\n'
+        "- PARAM queries: url – the page to look at\n"
+        "* **PARAM extract: what_to_find**"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert result.skill.name == "watch-a-listing-price"
+    assert result.skill.description == "Look up a price and record it."
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("url", "the page to look at", True),  # the EN-dash split name from description
+        ("what_to_find", None, True),  # no description offered — still a real parameter
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_swallowed_its_description_is_no_verdict_at_all(db):
+    """The backstop for whatever tolerance doesn't reach (#1814): a semantic name is
+    a TOKEN, not a sentence, so a line whose "name" swallowed its own description is
+    MALFORMED — and a malformed line is no verdict, never good data.  The candidate
+    keeps its arg-derived required parameter, which is the flaky-draw-safe direction
+    and the whole point: the name is the skill's binding key, and a key nobody could
+    ever bind is worse than no verdict at all.  A near-miss tag (``PARAMETRIC``) is
+    not a verdict line either, so the write target keeps its unadjudicated fallback."""
+    model = _naming_model(
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Look up a price and record it.\n"
+        "PARAM queries: url — the page to look at\n"
+        'PARAM extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
+        "PARAMETRIC memory: not a verdict line"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("url", "the page to look at", True),
+        ("extract", None, True),  # malformed line → no verdict → the default survives
+    ]
+    steps = steps_from_json(result.skill.steps)
+    target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
+    assert target.kind == SkillSubKind.PLACEHOLDER
+    assert target.description == WRITE_TARGET_DESCRIPTION  # PARAMETRIC adjudicated nothing
+
+
+@pytest.mark.asyncio
+async def test_a_draw_missing_a_required_line_is_rerolled_then_falls_back(db):
+    """The other half of the declaration (#1814): the REQUIRED lines stay strict.  A
+    draw carrying per-candidate verdicts but no ``NAME:`` never parses, so it is
+    rerolled once on the unchanged context and then falls back to the deterministic
+    slug — the per-item lines being best-effort does NOT make the draw as a whole
+    best-effort."""
+    model = _naming_model(
+        "DESCRIPTION: Look up a price and record it.\nPARAM queries: url — the page to look at"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
+    assert len(model.requests) == 2  # the draw + exactly one reroll, then the fallback
+    # No verdict survived the failed draw, so every candidate keeps its arg-derived name.
+    assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
+
+
 # ── #1770: only USER-PROVIDED values are parameters; the rest are placeholders ─
 
 

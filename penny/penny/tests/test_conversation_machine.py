@@ -429,6 +429,20 @@ async def test_classify_untagged_draw_is_rerolled_then_stays():
 
 
 @pytest.mark.asyncio
+async def test_classify_tolerates_a_decorated_or_quoted_draw():
+    """The declared shape's tolerance (#1814) reaches the classifier too: a draw
+    whose tag arrives bolded or list-marked, or whose state name arrives wrapped in
+    quotes, is the model getting the contract RIGHT in a cosmetically different way.
+    Membership is exact, so without tolerance a correct decision would have been
+    read as out-of-union, rerolled, and then held the machine where it stood."""
+    model = _responds('- **STATE:** "learn"')
+    decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
+    assert decision.outcome == StateDrawOutcome.DECIDED
+    assert decision.state == ConversationState.LEARN
+    assert len(model.requests) == 1  # no reroll — the draw was valid all along
+
+
+@pytest.mark.asyncio
 async def test_classify_reroll_can_recover():
     """The one contract-violation reroll re-draws on the unchanged context — a
     valid second draw decides the transition."""

@@ -504,6 +504,25 @@ async def test_micro_context_not_present_reason_stays_single_line():
     assert "lot 42" not in result.reason
 
 
+@pytest.mark.asyncio
+async def test_micro_context_tolerates_a_decorated_tag_line_and_keeps_the_value_verbatim():
+    """Tolerance is declared ONCE and applied to the TAG'S OWN LINE only (#1814): a
+    draw whose opening tag arrives bolded, list-marked or quoted still parses, while
+    the value's later lines are returned untouched — a markdown digest is the value,
+    not grammar, so stripping decoration from it would corrupt what was extracted."""
+    digest = "**Notable lots:**\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
+    model = _responds(f"- **{EXTRACTED_TAG}** {digest}")
+    result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert result.outcome == MicroExtractOutcome.EXTRACTED
+    # Line 1 lost its decoration with the tag; every later line is byte-identical.
+    assert result.value == "Notable lots:\n- Lot 42: 275 zorkmids\n- Lot 99: 512 zorkmids"
+
+    quoted = _responds(f'{NOT_PRESENT_TAG} "{_NOT_PRESENT_REASON}"')
+    reason = await MicroContext(cast(Any, quoted)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert reason.outcome == MicroExtractOutcome.NOT_PRESENT
+    assert reason.reason == _NOT_PRESENT_REASON
+
+
 def test_micro_context_system_prompt_declares_multiline_contract():
     """Whole-render literal of the extraction system prompt (#1682): the first line
     must OPEN with a tag, an EXTRACTED value may be a multi-line digest / list, and a
