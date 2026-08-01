@@ -381,7 +381,7 @@ class SkillExtractor:
         if not values:
             return None
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        content = _shape_content(values, projection, conversation)
+        content = build_shape_content(values, projection.origin_message, conversation)
         return await self._micro_context.shape_skill(
             content, [value.name for value in values], run_target=self._agent_name
         )
@@ -520,7 +520,7 @@ def _naming_content(
     return "\n\n".join(parts)
 
 
-class _ShapeableValue(NamedTuple):
+class ShapeableValue(NamedTuple):
     """One value the SHAPE draw decides over (#1803): the labeller's semantic ``name``
     (the anchor the draw repeats back, and the parameter's eventual binding key), the
     ``current`` arg-derived key the verdict maps home to, its one-line ``description``,
@@ -533,7 +533,7 @@ class _ShapeableValue(NamedTuple):
     demonstrated: str
 
 
-def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[_ShapeableValue]:
+def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[ShapeableValue]:
     """The values the shape draw may decide over (#1803) — the ones the labeller
     adjudicated as PARAMETER, in step order.
 
@@ -549,7 +549,7 @@ def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[
         return []
     marked = _attachment_marked(steps)
     return [
-        _ShapeableValue(
+        ShapeableValue(
             name=param.name,
             current=current,
             description=param.description,
@@ -573,13 +573,15 @@ def _attachment_marked(steps: list[SkillStep]) -> frozenset[str]:
     )
 
 
-def _shape_content(
-    values: list[_ShapeableValue],
-    projection: RunProjection,
+def build_shape_content(
+    values: list[ShapeableValue],
+    origin_message: str,
     conversation: list[tuple[str, str]],
 ) -> str:
     """The shape micro-context's content (#1803): what the USER asked for, then the
-    values the routine used.
+    values the routine used.  PUBLIC because the shape eval builds it too — that case
+    hands the draw synthetic values standing in for what the labeller would have
+    emitted, so it must go through THIS function and not a copy that can drift.
 
     Only the user's turns are rendered.  The question is what the routine is FOR, and
     the user is the only one who can say — the assistant's replies describe how it was
@@ -590,8 +592,8 @@ def _shape_content(
     reason correctly to the wrong answer (#1770)."""
     incoming = PennyConstants.MessageDirection.INCOMING
     asks = [content for direction, content in conversation if direction == incoming]
-    if projection.origin_message and projection.origin_message not in asks:
-        asks.append(projection.origin_message)
+    if origin_message and origin_message not in asks:
+        asks.append(origin_message)
     lines = "\n".join(
         f"- {value.name}: {value.description or '(no description)'}; "
         f"demonstrated value: {value.demonstrated!r}"

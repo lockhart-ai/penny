@@ -49,7 +49,12 @@ from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
-from penny.skill_extraction import SkillExtracted, SkillExtractor
+from penny.skill_extraction import (
+    ShapeableValue,
+    SkillExtracted,
+    SkillExtractor,
+    build_shape_content,
+)
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
@@ -67,7 +72,7 @@ from penny.text_validity import (
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.memory_tools import collector_tool_surface
-from penny.tools.micro_context import StateDrawOutcome
+from penny.tools.micro_context import MicroContext, SkillShape, StateDrawOutcome
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
@@ -2905,6 +2910,155 @@ async def _learn_and_render(
         "the freeze checks are vacuous without it"
     )
     return extracted.skill, prompt
+
+
+ShapeEval = Callable[..., Awaitable[None]]
+
+
+def _score_shape(
+    shape: SkillShape | None,
+    values: Sequence[ShapeableValue],
+    constants: Sequence[str],
+) -> list[Check]:
+    """The shape case's graded checks (#1803), read off the draw's own typed result.
+
+    One check per value — is the routine ABOUT it, or merely pointed AT it — because
+    that is the whole decision.  Scoring the returned ``SkillShape`` rather than a
+    persisted skill is deliberate: the plumbing from a constant to a baked leaf is
+    pinned deterministically in ``tests/test_skill_extraction.py``, so this case spends
+    its live-model budget on the judgment and nothing else.
+
+    A refused draw fails every check with its reason named, never silently: the
+    degraded state (everything stays a parameter) is honest behaviour, but it is not
+    the decision the case is asking for.
+
+    The drawn NAME and DESCRIPTION ride along ADVISORY (``scored=False``).  They are
+    half the decision — a routine that names itself for a value it then demands is the
+    whole defect — but "is this name grounded in the user's intent" is a judgment no
+    scorer should fake.  Rendered so a reader sees what the draw committed to, never
+    scored."""
+    expected = frozenset(constants)
+    checks: list[Check] = []
+    for value in values:
+        about = value.name in expected
+        role = "about it (constant)" if about else "pointed at it (parameter)"
+        if shape is None:
+            checks.append(
+                Check(
+                    f"{role}: {value.name!r}",
+                    False,
+                    kind="state",
+                    rationale="the draw was refused — every value stayed a parameter",
+                )
+            )
+            continue
+        drawn_constant = value.name in shape.fixed
+        checks.append(
+            Check(
+                f"{role}: {value.name!r}",
+                drawn_constant == about,
+                kind="state",
+                rationale=None if drawn_constant == about else "the draw decided the other way",
+            )
+        )
+    if shape is not None:
+        checks.append(Check(f"named it {shape.name!r}", True, kind="state", scored=False))
+        checks.append(
+            Check(f"described it {shape.description!r}", True, kind="state", scored=False)
+        )
+    return checks
+
+
+@pytest.fixture
+def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEval:
+    """Drive the run-end SHAPE micro-context (#1803) N times, and NOTHING else.
+
+    The labeller is not run. Its output — the values it kept, with their semantic
+    names and one-line descriptions — is supplied as a FIXTURE, so the only live
+    variable in the case is the shape draw's own judgment. That isolation is the
+    point: driving both draws handed this decision a different input every sample
+    (three different names for the same value across five samples, one of them
+    mangled by a labeller parse slip), and a miss could not be attributed to the
+    draw under test. The labeller has its own contract next door.
+
+    Everything the draw consumes is built by PRODUCTION code — ``build_shape_content``
+    renders the content and ``MicroContext.shape_skill`` makes the call, so the case
+    exercises the shipped prompt and the shipped parse. Synthetic here means the
+    VALUES are authored, never the prompt (an eval that swaps in an artificial prompt
+    measures nothing about what ships).
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        values: Sequence[ShapeableValue],
+        constants: Sequence[str],
+        conversation: Sequence[str],
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+        timeout: float = 60.0,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        turns: list[tuple[str, str]] = [
+            (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
+        ]
+        content = build_shape_content(list(values), "", turns)
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    micro = MicroContext(penny.model_client)
+                    try:
+                        shape = await asyncio.wait_for(
+                            micro.shape_skill(
+                                content,
+                                [value.name for value in values],
+                                run_target=penny.chat_agent.name,
+                            ),
+                            timeout=timeout,
+                        )
+                        scored = _score_shape(shape, values, constants)
+                        result = _guarded_graded(list(scored), [])
+                        result.fragile = result.passed and _run_end_rerolled(penny.db)
+                        results.append(result)
+                        _stamp_cause(penny.db, result)
+                    except TimeoutError:
+                        result = SampleResult.binary(["no shape draw within timeout"])
+                        _stamp_cause(penny.db, result, timed_out=True)
+                        results.append(result)
+                    _write_classifier_report(
+                        penny.db,
+                        case_id,
+                        sample_index,
+                        result=result,
+                        phrasing=conversation[-1] if conversation else "",
+                        agent_names=(PennyConstants.SKILL_SHAPE_AGENT_NAME,),
+                    )
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                    perf.add(penny.db.messages.prompt_perf())
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
 
 
 @pytest.fixture
