@@ -1176,6 +1176,7 @@ MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
     PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    PennyConstants.SKILL_SHAPE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
 }
 
 _NUDGE_FRAMES = (
@@ -2771,14 +2772,44 @@ def _placeholder_checks(value: str, kinds: dict[str, str], prompt: str) -> list[
     ]
 
 
+def _constant_checks(value: str, skill: Skill, kinds: dict[str, str], prompt: str) -> list[Check]:
+    """A value the routine is ABOUT was baked in rather than asked for (#1803).
+
+    A constant carries no substitution at all — a leaf nothing covers renders verbatim —
+    so its signature is absence from ``_leaf_kinds`` plus survival in the rendered
+    prompt.  The second half is what makes it useful rather than merely dropped: the
+    collector must still run against that value."""
+    baked = value not in kinds
+    return [
+        Check(
+            f"value the routine is named for was baked, not asked for: {value!r}",
+            baked,
+            kind="state",
+            rationale=None if baked else f"became {kinds.get(value)}",
+        ),
+        Check(
+            f"the baked value still runs: {value!r}",
+            value in prompt,
+            kind="state",
+        ),
+    ]
+
+
 def _score_labelling(
-    skill: Skill, prompt: str, user_values: Sequence[str], assistant_values: Sequence[str]
+    skill: Skill,
+    prompt: str,
+    user_values: Sequence[str],
+    assistant_values: Sequence[str],
+    constant_values: Sequence[str] = (),
 ) -> list[Check]:
-    """The labelling case's graded checks (#1770), read off the learned skill and the
-    prompt rendered from it: the values the user supplied against the ones the assistant
-    produced."""
+    """The run-end case's graded checks (#1770/#1803), read off the learned skill and
+    the prompt rendered from it: what the user supplied and varies, what the routine is
+    ABOUT, and what the assistant produced — the three roles a leaf can play, settled
+    across the labelling draw (provenance) and the shape draw (role)."""
     kinds = _leaf_kinds(skill)
     checks = [_kept_parameter_check(value, kinds) for value in user_values]
+    for value in constant_values:
+        checks.extend(_constant_checks(value, skill, kinds, prompt))
     for value in assistant_values:
         checks.extend(_placeholder_checks(value, kinds, prompt))
     return checks
@@ -2883,6 +2914,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         target: str,
         user_values: Sequence[str],
         assistant_values: Sequence[str],
+        constant_values: Sequence[str] = (),
         conversation: Sequence[str] = (),
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
@@ -2911,7 +2943,9 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         skill, prompt = await asyncio.wait_for(
                             _learn_and_render(extractor, run_id, target), timeout=timeout
                         )
-                        scored = _score_labelling(skill, prompt, user_values, assistant_values)
+                        scored = _score_labelling(
+                            skill, prompt, user_values, assistant_values, constant_values
+                        )
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and len(_labeller_rows(penny.db)) > 1
                         results.append(result)

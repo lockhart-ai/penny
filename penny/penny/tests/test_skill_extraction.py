@@ -64,7 +64,7 @@ from penny.tests.eval.test_state_transitions import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
-from penny.tools.micro_context import SKILL_NAMING_SYSTEM_PROMPT
+from penny.tools.micro_context import SKILL_NAMING_SYSTEM_PROMPT, SKILL_SHAPE_SYSTEM_PROMPT
 from penny.tools.skill_tools import render_skill_brief, render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
@@ -512,6 +512,23 @@ def _naming_model(content: str) -> MockLlmClient:
     return model
 
 
+def _two_draw_model(naming: str, shape: str) -> MockLlmClient:
+    """A model client answering the two run-end draws SEPARATELY (#1803), dispatched
+    on the system prompt each carries — the labeller's provenance verdicts, then the
+    shape draw's name + what the routine is about.  Distinct answers are the point:
+    the two draws are two questions, and a test that fed both the same text could not
+    show which one decided anything."""
+    model = MockLlmClient()
+
+    def respond(request: dict, _count: int) -> LlmResponse:
+        system = request["messages"][0]["content"]
+        drawn = shape if system == SKILL_SHAPE_SYSTEM_PROMPT else naming
+        return LlmResponse(message=LlmMessage(role="assistant", content=drawn))
+
+    model.set_response_handler(respond)
+    return model
+
+
 # ── #1665: orientation verbs excluded from steps AND the qualifying read ───────
 
 
@@ -949,6 +966,125 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     assert render_skill_full(ungrouped.skill) == render_skill_full(result.skill)
 
 
+# ── #1803: what the routine is ABOUT is baked; what it is pointed at is asked ──
+
+# The labelling draw is the same in every case below — both values came from the
+# user, which is the whole difficulty: provenance cannot separate them.
+_BOTH_USER_SUPPLIED = (
+    "NAME: Record a listing price\n"
+    "DESCRIPTION: Read a listing and store what it costs.\n"
+    "PARAM queries: url — the listing page to check\n"
+    "PARAM extract: what_to_find — what to pull off the page"
+)
+
+
+@pytest.mark.asyncio
+async def test_the_value_the_routine_is_named_for_becomes_a_constant(db):
+    """A skill must not name itself for a value it then asks the user to supply
+    (#1803).  Real extractions did: `record-product-price` declaring a required
+    `what_to_extract` whose own description offered "price" as the example — so the
+    routine could not fire from the natural second ask ("watch the price at <url>"),
+    routing to `request` for a value its own name already gave.
+
+    Provenance cannot fix this, and the labeller is right not to try: the user
+    supplied BOTH values, and nothing in the demonstrated round says which of them
+    will vary next time.  So a second draw decides what the routine IS — and because
+    it writes the name and the constants together, the two cannot contradict."""
+    model = _two_draw_model(
+        _BOTH_USER_SUPPLIED,
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Keep an eye on what a listing costs.\n"
+        "FIXED what_to_find\n"
+        "ASKED url",
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    # The name and description are the SHAPE draw's — the same decision as the
+    # constants, which is what stops a price watcher from asking what to watch.
+    assert result.skill.name == "watch-a-listing-price"
+    assert result.skill.description == "Keep an eye on what a listing costs."
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description) for p in params] == [("url", "the listing page to check")]
+    # And it FIRES from a page alone — the failure that motivated the whole ticket.
+    assert unbound_required_parameters(params, {"url": "https://example.test"}) == []
+
+    # The constant renders as its value, not as a blank to fill: a leaf no
+    # substitution covers is exactly a baked value, so no new render path exists.
+    steps = steps_from_json(result.skill.steps)
+    assert steps[0].arguments["extract"] == "the current price"
+    assert not [sub for sub in steps[0].substitutions if sub.path == ["extract"]], (
+        "a constant leaf carries no substitution"
+    )
+    rendered = render_skill(steps, {"url": "https://example.test"})
+    assert "the current price" in rendered
+    assert "{the current price}" not in rendered and "{what_to_find}" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_routine_is_never_all_constant_so_it_stays_bindable(db):
+    """The over-correction guard, and the floor the shape prompt states (#1803): a
+    draw that bakes EVERY value is refused, because a routine with nothing left to
+    ask for can only ever repeat the one thing it was demonstrated with.
+
+    That dead end has been reached from the other side already — two runs produced
+    `watch-a-price` with every leaf placeholdered, so not even the page could be
+    re-bound.  Baking everything arrives at the same place by a new route, so the
+    floor is structural: the draw is a contract violation, and the degraded state is
+    the honest one — the labeller's name, no constants, every value bindable."""
+    model = _two_draw_model(
+        _BOTH_USER_SUPPLIED,
+        "NAME: Watch the aurora deck 2 price\n"
+        "DESCRIPTION: Check that one listing and record its price.\n"
+        "FIXED what_to_find\n"
+        "FIXED url",
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [p.name for p in params] == ["url", "what_to_find"]
+    assert unbound_required_parameters(params, {"url": "u", "what_to_find": "w"}) == []
+    # Refused, so the shape draw decided NOTHING — including the name.
+    assert result.skill.name == "record-a-listing-price"
+
+
+@pytest.mark.asyncio
+async def test_the_attachment_target_is_never_offered_as_a_constant(db):
+    """Where the routine WRITES is decided by what it is applied to, not by what it
+    is about (#1783), so an attachment-marked leaf is withheld from the shape draw
+    entirely — there is no way to bake it, whatever the draw says.
+
+    Baking it would make a rendered program name the collection the routine was
+    demonstrated on rather than the one it runs against, which is the single thing
+    the retarget seam exists to prevent.  Keyed to the MARK, not to any tool name:
+    a skill is an arbitrary sequence, and a plugin's write is marked the same way."""
+    model = _two_draw_model(
+        _BOTH_USER_SUPPLIED + "\nPARAM memory: destination — the collection to write into",
+        # The draw names the destination anyway — and it changes nothing.
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Keep an eye on what a listing costs.\n"
+        "FIXED destination\n"
+        "ASKED url\n"
+        "ASKED what_to_find",
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    memory_leaf = [sub for sub in steps[1].substitutions if sub.path == ["memory"]]
+    assert [(sub.kind, sub.parameter) for sub in memory_leaf] == [
+        (SkillSubKind.HOLE, "destination")
+    ], "the destination stays a bindable leaf, never baked"
+    assert _DEMO_COLLECTION not in render_skill(steps, {})
+
+
 # ── #1783: the collection name is adjudicated like every other leaf ────────────
 
 
@@ -1025,6 +1161,52 @@ async def test_two_user_named_destinations_stay_two_parameters(db):
     rendered = render_skill(steps, {"live_list": "current-prices", "archive": "price-history"})
     assert "collection_write(memory='current-prices'" in rendered
     assert "collection_write(memory='price-history'" in rendered
+
+
+def test_shape_system_prompt_whole_render():
+    """Whole-render literal of the shape contract (#1803): the framing and its two
+    inputs, the two numbered asks — name the routine, then the per-value ABOUT-vs-
+    POINTED-AT decision as two named cases — the coherence rule tying the two asks
+    together, the floor that keeps a routine bindable, and the enumerated output
+    shape with one line required per value.
+
+    The worked example is deliberately a FILING routine, not the price watcher these
+    tests demonstrate: an example drawn from the case in hand teaches pattern-matching
+    on that case, and a skill is an arbitrary tool sequence a plugin may have supplied
+    the verbs for."""
+    assert SKILL_SHAPE_SYSTEM_PROMPT == (
+        "You are deciding what a reusable routine IS. You are given what the user "
+        "asked for, and the values the routine used to carry it out. Every one of "
+        "those values came from the user. Do two things:\n"
+        "1. Name and describe the ROUTINE: a short verb-noun name for the KIND of "
+        "task, generic — never the specific instance — and one line saying what it "
+        "is for.\n"
+        "2. Decide, for EVERY value, which of two cases it is:\n"
+        "   - FIXED. The routine is ABOUT this value. Running it with a different "
+        "one would be a DIFFERENT routine, not the same routine on new input, so it "
+        "is never asked for again — it is part of what the routine does.\n"
+        "   - ASKED. The routine is POINTED AT this value. Running it with a "
+        "different one is the same routine doing the same thing somewhere else, so "
+        "it is asked for every time the routine is set up.\n"
+        "   The name and description you just wrote decide this, and have to agree "
+        "with it: a value they commit to is FIXED, a value they leave open is "
+        "ASKED. For example, a routine demonstrated by filing one receipt into one "
+        "folder is 'file receipts' when what makes it that routine is receipts "
+        "(FIXED) and the folder is chosen each time (ASKED) — or 'file emails into "
+        "a folder' when both are chosen each time. Both are real routines; which "
+        "one you are naming is the decision you are making here.\n"
+        "   At least one value is always ASKED. A routine with nothing left to ask "
+        "for can only ever repeat the one thing it was demonstrated with, which "
+        "makes it a record of what happened rather than a routine.\n"
+        "Respond with these tagged lines and nothing else:\n"
+        "NAME: <a short generic verb-noun name>\n"
+        "DESCRIPTION: <one line: what the routine is for>\n"
+        "FIXED <value name>   (the routine is about it)\n"
+        "ASKED <value name>   (the routine is pointed at it)\n"
+        "Write ONE line for EVERY value, repeating its name exactly so it maps "
+        "back.\n"
+        "Write nothing else — no preamble, no explanation, no restating the routine."
+    )
 
 
 def test_naming_system_prompt_whole_render():

@@ -299,6 +299,69 @@ _SKILL_NAMING_INSTRUCTION = (
     "it if they did, describing what belongs there if they did not."
 )
 
+# ── Fourth customer: the routine's SHAPE — what it is ABOUT (#1803) ────────────
+# The labeller above answers where each value CAME FROM.  It cannot also answer
+# what the routine IS, because those are decided from different evidence and the
+# second one has no answer inside a single demonstrated round: "keep an eye on the
+# aurora deck 2 price" hands over two values, both from the user, and nothing in
+# that round says which of them will vary the next time.  Deciding it anyway is
+# what produced skills that named themselves for a value and then demanded it —
+# `record-product-price` requiring a `what_to_extract` its own name already gave,
+# so the routine could not fire from the natural second ask.
+#
+# So the question moves to its own draw, over a deliberately SMALLER space: what
+# the user asked for, and the values the labeller kept.  Naming the routine and
+# deciding what it is about are ONE decision here, which is what stops the two
+# halves from contradicting — a skill cannot call itself a price watcher and then
+# ask what to watch, because the same draw wrote both.
+#
+# The model does NOT invent the structure (the rejected template attempt): the
+# closed set of values is handed to it and it picks a case for each, exactly as
+# every other customer of this machinery does.
+FIXED_TAG = "FIXED"
+ASKED_TAG = "ASKED"
+
+SKILL_SHAPE_SYSTEM_PROMPT = (
+    "You are deciding what a reusable routine IS. You are given what the user "
+    "asked for, and the values the routine used to carry it out. Every one of "
+    "those values came from the user. Do two things:\n"
+    "1. Name and describe the ROUTINE: a short verb-noun name for the KIND of "
+    "task, generic — never the specific instance — and one line saying what it "
+    "is for.\n"
+    "2. Decide, for EVERY value, which of two cases it is:\n"
+    "   - FIXED. The routine is ABOUT this value. Running it with a different "
+    "one would be a DIFFERENT routine, not the same routine on new input, so it "
+    "is never asked for again — it is part of what the routine does.\n"
+    "   - ASKED. The routine is POINTED AT this value. Running it with a "
+    "different one is the same routine doing the same thing somewhere else, so "
+    "it is asked for every time the routine is set up.\n"
+    "   The name and description you just wrote decide this, and have to agree "
+    "with it: a value they commit to is FIXED, a value they leave open is "
+    "ASKED. For example, a routine demonstrated by filing one receipt into one "
+    "folder is 'file receipts' when what makes it that routine is receipts "
+    "(FIXED) and the folder is chosen each time (ASKED) — or 'file emails into "
+    "a folder' when both are chosen each time. Both are real routines; which "
+    "one you are naming is the decision you are making here.\n"
+    "   At least one value is always ASKED. A routine with nothing left to ask "
+    "for can only ever repeat the one thing it was demonstrated with, which "
+    "makes it a record of what happened rather than a routine.\n"
+    "Respond with these tagged lines and nothing else:\n"
+    f"{NAME_TAG} <a short generic verb-noun name>\n"
+    f"{DESCRIPTION_TAG} <one line: what the routine is for>\n"
+    f"{FIXED_TAG} <value name>   (the routine is about it)\n"
+    f"{ASKED_TAG} <value name>   (the routine is pointed at it)\n"
+    "Write ONE line for EVERY value, repeating its name exactly so it maps "
+    "back.\n"
+    "Write nothing else — no preamble, no explanation, no restating the routine."
+)
+
+# The single per-call ask; what the user wanted + the values are the content.
+_SKILL_SHAPE_INSTRUCTION = (
+    "Name this routine by the kind of task it does, describe it in one line, and say "
+    "for every value whether the routine is about it or merely pointed at it."
+)
+
+
 # ── Third customer: conversation-state classification (#1706) ──────────────────
 # The classifier contract is a THIRD declared shape riding the SAME poison-screen +
 # reroll machinery (``_valid_draw``): given a small conversation slice and a closed
@@ -412,17 +475,31 @@ class MicroContextResult(BaseModel):
 
 
 class ParameterVerdict(StrEnum):
-    """Where a candidate parameter's demonstrated value came from (#1770) — the
-    closed union the labeller decides per candidate, and the only thing that makes
-    an unexplained leaf a parameter rather than a default.
+    """What ROLE a candidate's demonstrated value plays in the routine
+    (#1770/#1803) — the closed union, and the only thing that makes an unexplained
+    leaf a parameter rather than a default.
 
-    ``PARAMETER`` = the USER supplied it (verbatim or reworded), so it is a real
-    skill input the model rebinds per instantiation.  ``PLACEHOLDER`` = the
-    assistant derived it from a step's result or invented it while working, so no
-    user could ever supply it — it renders as a placeholder carrying the labeller's
-    description, never as the frozen demonstrated value."""
+    ``PARAMETER`` = the USER supplied it and the routine is POINTED AT it, so it is
+    a real skill input rebound per instantiation.  ``CONSTANT`` = the user supplied
+    it and the routine is ABOUT it, so it stays baked in the step and is never asked
+    for again.  ``PLACEHOLDER`` = the assistant derived it from a step's result or
+    invented it while working, so no user could ever supply it — it renders as a
+    placeholder carrying the labeller's description, never as the frozen
+    demonstrated value.
+
+    **Two draws decide this union, and the split is deliberate (#1803).**  The
+    labeller answers only the PROVENANCE question — did the user give it, or did the
+    assistant produce it — and it answers that well; PARAMETER and PLACEHOLDER are
+    its whole vocabulary.  ``CONSTANT`` is a promotion applied afterwards from the
+    SHAPE draw (``shape_skill``), which decides the routine's name and what it is
+    about together.  Folding all three into one draw was measured and rejected: three
+    flat cases, two of them opening "the user gave it", collapsed the working
+    provenance binary (the placeholder direction went 4/5 → 2/5).  A value's origin
+    and a value's role are different questions, and asking them separately is what
+    keeps the first one answerable."""
 
     PARAMETER = "parameter"
+    CONSTANT = "constant"
     PLACEHOLDER = "placeholder"
 
 
@@ -459,6 +536,23 @@ class SkillLabel(BaseModel):
     name: str
     description: str
     parameters: dict[str, ParameterLabel] = {}
+
+
+class SkillShape(BaseModel):
+    """The shape micro-context's typed result (#1803): what the routine IS — a
+    GENERIC verb-noun ``name`` + one-line ``description``, and ``fixed``, the values
+    the routine is ABOUT rather than pointed at.
+
+    ``name``/``description`` are non-blank by construction and SUPERSEDE the
+    labeller's, because they were written together with ``fixed`` — that is the
+    whole point of the second draw, and taking the name from one draw and the
+    constants from another would re-open the contradiction (#1803).  ``fixed`` is
+    validated for MEMBERSHIP against the offered values and can never cover all of
+    them: a routine with nothing left to bind can only repeat its demonstration."""
+
+    name: str
+    description: str
+    fixed: frozenset[str] = frozenset()
 
 
 class StateDrawOutcome(StrEnum):
@@ -579,6 +673,62 @@ class MicroContext:
         if isinstance(drawn, DrawFailure):
             return None
         return _skill_label(drawn)
+
+    async def shape_skill(
+        self, content: str, values: Sequence[str], *, run_target: str | None = None
+    ) -> SkillShape | None:
+        """Decide what a distilled routine IS (#1803) — its GENERIC name +
+        description and which of ``values`` it is ABOUT — the FOURTH customer of this
+        machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
+        with the shape system prompt and its own ledger attribution, then a
+        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``FIXED`` or
+        ``ASKED`` line per value).
+
+        Two things make a draw a contract violation — one reroll of the unchanged
+        context, then ``None``: a missing name or description (as for the labeller),
+        and a draw marking EVERY value fixed, which would leave a routine nothing to
+        bind and so able only to repeat its own demonstration.  ``None`` degrades to
+        the labeller's name with no constants at all: every value stays a bindable
+        parameter, which is exactly the pre-#1803 behaviour, so the shape draw can
+        only ever ADD the distinction and never cost a skill its parameters."""
+        for _ in range(_UNTAGGED_DRAW_BUDGET):
+            draw = await self._draw_clean(
+                content,
+                _SKILL_SHAPE_INSTRUCTION,
+                run_target,
+                system_prompt=SKILL_SHAPE_SYSTEM_PROMPT,
+                agent_name=PennyConstants.SKILL_SHAPE_AGENT_NAME,
+                prompt_type=PennyConstants.SKILL_SHAPE_PROMPT_TYPE,
+            )
+            if draw is None:
+                return None
+            shape = self._parse_shape(draw, values)
+            if shape is not None:
+                return shape
+            logger.warning("Skill-shape output invalid — one reroll of the unchanged context")
+        logger.warning("Skill-shape output invalid after reroll — every value stays a parameter")
+        return None
+
+    @staticmethod
+    def _parse_shape(draw: str, values: Sequence[str]) -> SkillShape | None:
+        """Deterministic parse of the shape contract — a ``NAME:`` line, a
+        ``DESCRIPTION:`` line (each with a non-blank payload), and per-value
+        ``FIXED``/``ASKED`` lines, MEMBERSHIP-filtered against ``values`` (a line
+        naming something that was never offered addresses nothing and is dropped).
+
+        A value with no line stays ASKED — absence is never a verdict here either
+        (#1770's rule), and the flaky-draw-safe direction is the one that keeps the
+        skill bindable.  Marking every offered value fixed IS a violation: the
+        prompt states the floor, and a draw that ignores it would produce a routine
+        that can only repeat its demonstration."""
+        name = _tagged_payload(draw, NAME_TAG)
+        description = _tagged_payload(draw, DESCRIPTION_TAG)
+        if name is None or description is None:
+            return None
+        fixed = _parse_fixed_values(draw) & set(values)
+        if values and fixed == set(values):
+            return None
+        return SkillShape(name=name, description=description, fixed=frozenset(fixed))
 
     async def classify_state(
         self,

@@ -428,6 +428,14 @@ class PennyConstants:
     # replayable from production history.
     STATE_CLASSIFIER_AGENT_NAME = "state-classifier"
     STATE_CLASSIFIER_PROMPT_TYPE = "state_classifier"
+    # The ledger identity of a run-end skill-SHAPE micro-context (#1803) — the
+    # FOURTH customer of the micro-context machinery.  After the labeller says where
+    # each value came from, one more single-shot model call decides what the routine
+    # IS: its name and which of the kept values it is ABOUT rather than pointed at
+    # (the tagged NAME:/DESCRIPTION:/FIXED/ASKED contract).  Its own agent/prompt
+    # type, so a run trace shows the two draws as the two questions they are.
+    SKILL_SHAPE_AGENT_NAME = "skill-shaper"
+    SKILL_SHAPE_PROMPT_TYPE = "skill_shape"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

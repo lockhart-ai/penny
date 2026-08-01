@@ -126,3 +126,42 @@ async def test_user_supplied_values_stay_parameters(labeller_eval: LabellerEval)
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
+
+
+# ── Case 3: the value the routine is NAMED for is baked, not asked for ─────────
+
+
+@pytest.mark.asyncio
+async def test_the_value_the_routine_is_named_for_becomes_a_constant(
+    labeller_eval: LabellerEval,
+):
+    """A skill must not name itself for a value it then asks the user to supply
+    (#1803).  Real extractions did: `record-product-price` declaring a required
+    `what_to_extract` whose own description offered "price" as the example — so the
+    routine could not fire from the natural second ask, routing to `request` for a
+    value its own name already gave.
+
+    The same round as case 2, scored on the third role: the page VARIES between uses
+    and stays a parameter, while what the routine is FOR is baked in.
+
+    **The scored direction is one of two coherent answers, and it is the one this
+    ask asks for.**  A round demonstrating "keep an eye on the aurora deck 2 price"
+    could honestly become a price watcher pointed at a page (the price baked) OR a
+    pull-anything-off-a-page routine (both values asked for), and the shape draw is
+    free to write either — what it may never do is commit to one in the name and the
+    other in the parameters.  Scoring the first reads the user's stated intent as the
+    tiebreak: they said *the price*.  Report-only until that reading is confirmed
+    against a real run — a scorer that encodes the wrong intent would fail the model
+    for being right, which is the failure this suite exists to avoid."""
+    await labeller_eval(
+        case_id="labelling-named-value-is-constant",
+        utterance=_UTTERANCE,
+        conversation=[_ASK],
+        calls=[_BROWSE, _PLAIN_WRITE],
+        target=_TARGET,
+        user_values=[_LISTING],
+        constant_values=["the current price"],
+        assistant_values=[],
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
