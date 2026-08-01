@@ -42,7 +42,6 @@ from penny.tools.memory_tools import (
     MemoryMetadataTool,
     ReadRunCallsTool,
     ReadSimilarTool,
-    TestExtractionPromptTool,
     UpdateEntryTool,
 )
 from penny.tools.models import ToolResult
@@ -491,17 +490,4 @@ class TestMemoryLifecycleNarration:
         assert (
             DoneTool.to_result_narration({}, ToolResult(message="ok"))
             == "You wrapped up the cycle:"
-        )
-
-    def test_test_extraction_prompt(self):
-        args = {"memory": "games"}
-        assert (
-            TestExtractionPromptTool.to_result_narration(args, ToolResult(message="ok"))
-            == "You ran the `games` collector to test it:"
-        )
-        assert (
-            TestExtractionPromptTool.to_result_narration(
-                args, ToolResult(message="e", success=False)
-            )
-            == "You ran the `games` collector to test it, but the cycle didn't succeed:"
         )

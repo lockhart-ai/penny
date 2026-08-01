@@ -246,7 +246,6 @@ class Penny:
             config=config,
             embedding_model_client=self.embedding_model_client,
         )
-        self.chat_agent.set_collector(self.collector)
         # Deterministic task (no LLM) that delivers queued send_message output
         # once the autonomous-send cooldown clears.
         self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)

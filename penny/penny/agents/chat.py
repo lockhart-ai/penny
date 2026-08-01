@@ -24,14 +24,13 @@ from penny.skill_extraction import NoExtraction, SkillExtracted, SkillExtractor
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
-from penny.tools.memory_tools import TestExtractionPromptTool, collector_tool_surface
+from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.tools.skill_tools import render_skill_brief
 from penny.validation.outcomes import LoopContext
 from penny.validation.response_validators import CallAsTextValidator, SkillNarrationValidator
 
 if TYPE_CHECKING:
-    from penny.agents.collector import Collector
     from penny.llm.image_client import OllamaImageClient
     from penny.llm.models import LlmResponse
 
@@ -99,7 +98,6 @@ class ChatAgent(Agent):
         # agents inherit the True default to keep tools available so they
         # can call ``done`` / ``send_message`` on the final step.
         self._keep_tools_on_final_step = False
-        self._collector: Collector | None = None
         # Present only when an image model is configured — mirrors the retired
         # /draw command's conditionality; enables the generate_image tool.
         self._image_client = image_client
@@ -127,10 +125,6 @@ class ChatAgent(Agent):
         # re-narrates (chat turns are sequential, so one field suffices; no leak).
         self._extraction_run_id: str | None = None
 
-    def set_collector(self, collector: Collector) -> None:
-        """Bind the Collector so test_extraction_prompt is available in chat."""
-        self._collector = collector
-
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         tools = super().get_tools(run_id)
         # Notification mute/unmute is a chat-driven action over the MuteState row
@@ -138,8 +132,6 @@ class ChatAgent(Agent):
         # surface — the model dispatches to them from natural language.
         tools.append(NotificationsMuteTool(self.db))
         tools.append(NotificationsUnmuteTool(self.db))
-        if self._collector is not None:
-            tools.append(TestExtractionPromptTool(self._collector))
         if self._image_client is not None:
             tools.append(
                 GenerateImageTool(self._image_client, self.db, self._embedding_model_client)

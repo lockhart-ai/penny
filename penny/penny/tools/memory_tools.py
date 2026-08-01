@@ -108,7 +108,6 @@ from penny.tools.models import NoArgs, ToolResult
 from penny.tools.skill_tools import SkillReadTool
 
 if TYPE_CHECKING:
-    from penny.agents.collector import Collector
     from penny.llm.client import LlmClient
 
 logger = logging.getLogger(__name__)
@@ -3153,47 +3152,6 @@ class DoneTool(Tool):
 
 
 # ── On-demand collector trigger ─────────────────────────────────────────────
-
-
-class TestExtractionPromptTool(Tool):
-    """Immediately run the collector for a named collection, bypassing the schedule."""
-
-    name = "test_extraction_prompt"
-    timeout = 300.0  # collector cycles include browse calls that can take several minutes
-    description = (
-        "Immediately trigger one collector cycle for the named collection, bypassing "
-        "the normal idle-gated schedule.  Use this while authoring or refining an "
-        "extraction_prompt to verify the collector reads the right sources and writes "
-        "the expected entries.  Returns the cycle's structural outcome and tool trace."
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "memory": {"type": "string", "description": "Collection name to test"},
-        },
-        "required": ["memory"],
-    }
-    args_model = MemoryNameArgs
-
-    @classmethod
-    def to_result_narration(cls, arguments: dict, result: ToolResult) -> str:
-        memory = _memory_name(arguments, "a collection")
-        if not result.success:
-            return f"You ran the {memory} collector to test it, but the cycle didn't succeed:"
-        return f"You ran the {memory} collector to test it:"
-
-    def __init__(self, collector: Collector) -> None:
-        self._collector = collector
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        args = MemoryNameArgs(**kwargs)
-        success, summary = await self._collector.run_for(args.memory)
-        marker = "✅" if success else "❌"
-        # ``success`` must flow into the structured field, not live only in the ❌
-        # marker text — otherwise every failure path (not-found, archived, no/short
-        # prompt, cycle failure) reads as a passing call to ``record.failed`` /
-        # ``tool_failures`` / run-health accounting.
-        return ToolResult(message=f"{marker} {summary}", success=success)
 
 
 # ── Factory ─────────────────────────────────────────────────────────────────

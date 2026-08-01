@@ -152,8 +152,11 @@ class Collector(BackgroundAgent):
     async def run_for(self, collection_name: str) -> tuple[bool, str]:
         """Run one extraction cycle for the named collection, bypassing readiness checks.
 
-        Used by the chat agent's TestExtractionPromptTool to trigger on-demand
-        cycles while authoring or refining an extraction_prompt.  Returns
+        The USER's on-demand trigger — the addon surfaces' "run this now" control
+        (browser + iOS).  Deliberately not reachable from the model: a chat tool that
+        ran a cycle on request let a setup turn immediately execute the job it had
+        just scheduled, so the turn both scheduled and ran, which is not what the
+        user asked for and is not how the job will behave afterwards.  Returns
         ``(success, message)`` where ``message`` is either an error description
         or the cycle's ``done()`` summary prefixed with "Collector cycle complete.".
         """
