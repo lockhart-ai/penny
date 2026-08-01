@@ -47,6 +47,7 @@ from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
+from penny.responses import PennyResponse
 from penny.skill_extraction import (
     ShapeableValue,
     build_naming_content,
@@ -1549,6 +1550,21 @@ def _write_sample_report(
         handle.write(report.render_sample(transcript) + "\n\n")
 
 
+# How many times a sample is driven when the MODEL CALL ITSELF fails — the transport
+# erroring, not Penny deciding anything.  Such a run ends with the model-error reply and
+# no work done, which scored as a BEHAVIOURAL failure and dragged a case's mean down for
+# a reason the model never controlled (observed: a learn → apply sample scored 0.22 that
+# way, with every state check red because the collection was never created).  A retry
+# gets a fresh server and a fresh DB, so the sample is driven from the same clean world
+# rather than continuing on top of the failed turn.
+_MODEL_CALL_ATTEMPTS = 3
+
+
+class _ModelCallError(Exception):
+    """Raised when a sample's reply is the model-error reply — infrastructure, not
+    behaviour, so the sample is re-driven rather than scored."""
+
+
 # A chat-eval runner: (case_id, message, scorer, optional seeder) -> asserts threshold.
 ChatEval = Callable[..., Awaitable[None]]
 
@@ -1611,75 +1627,90 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
         results: list[SampleResult] = []
         perf = _Perf()
         for sample_index in range(samples):
-            server = MockSignalServer()
-            await server.start()
-            try:
-                config = _real_model_config(
-                    make_config,
-                    signal_api_url=f"http://localhost:{server.port}",
-                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
-                )
-                async with run_penny_with_server(config, server) as penny:
-                    seed_user(penny.db)
-                    if seed is not None:
-                        seed(penny.db)
-                    await _embed_seeds(penny)
-                    if seed_skills:
-                        await _seed_eval_skills(penny, seed_skills)
-                    if browse is not None:
-                        install_browse(penny, browse)
-                    if prepare is not None:
-                        prepare(penny)
-                    # A recovery case wraps the chat agent's model client to force
-                    # one bad response (e.g. a bracket-wrapped key) deterministically.
-                    # Keep the wrapper: its ``bail_injected`` flag is the only proof
-                    # the sabotage fired — the raw response is persisted inside the
-                    # REAL client before the wrapper mutates it, so the promptlog
-                    # never shows the injected form and can't be probed for it.
-                    wrapper: _InjectingClient | None = None
-                    if wrap_client is not None:
-                        wrapper = wrap_client(penny.chat_agent._model_client)
-                        penny.chat_agent._model_client = wrapper
-                    before = collection_names(penny.db)
-                    try:
-                        reply = ""
-                        for turn in turns:
-                            await server.push_message(sender=TEST_SENDER, content=turn)
-                            response = await server.wait_for_message(timeout=timeout)
-                            reply = str(response.get("message", ""))
-                        scored = list(score(penny.db, before, reply))
-                        if _scorer_is_graded(scored):
-                            guards: list[Check] = []
-                            if wrapper is not None:
-                                guards = [_bail_fired_check(wrapper.bail_injected)]
-                            result = _guarded_graded(scored, guards)
-                        else:
-                            fails = [s for s in scored if isinstance(s, str)]  # binary scorer
-                            if wrapper is not None and not wrapper.bail_injected:
-                                fails.append("forced bail never fired — contract not exercised")
-                            result = SampleResult.binary(fails)
-                        results.append(result)
-                        _stamp_cause(penny.db, result)
-                        _write_sample_report(
-                            penny.db,
-                            case_id,
-                            sample_index,
-                            result=result,
-                            reply=reply,
-                            driven=turns,
+            for attempt in range(_MODEL_CALL_ATTEMPTS):
+                server = MockSignalServer()
+                await server.start()
+                try:
+                    config = _real_model_config(
+                        make_config,
+                        signal_api_url=f"http://localhost:{server.port}",
+                        db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                    )
+                    async with run_penny_with_server(config, server) as penny:
+                        seed_user(penny.db)
+                        if seed is not None:
+                            seed(penny.db)
+                        await _embed_seeds(penny)
+                        if seed_skills:
+                            await _seed_eval_skills(penny, seed_skills)
+                        if browse is not None:
+                            install_browse(penny, browse)
+                        if prepare is not None:
+                            prepare(penny)
+                        # A recovery case wraps the chat agent's model client to force
+                        # one bad response (e.g. a bracket-wrapped key) deterministically.
+                        # Keep the wrapper: its ``bail_injected`` flag is the only proof
+                        # the sabotage fired — the raw response is persisted inside the
+                        # REAL client before the wrapper mutates it, so the promptlog
+                        # never shows the injected form and can't be probed for it.
+                        wrapper: _InjectingClient | None = None
+                        if wrap_client is not None:
+                            wrapper = wrap_client(penny.chat_agent._model_client)
+                            penny.chat_agent._model_client = wrapper
+                        before = collection_names(penny.db)
+                        try:
+                            reply = ""
+                            for turn in turns:
+                                await server.push_message(sender=TEST_SENDER, content=turn)
+                                response = await server.wait_for_message(timeout=timeout)
+                                reply = str(response.get("message", ""))
+                                if (
+                                    reply == PennyResponse.AGENT_MODEL_ERROR
+                                    and attempt + 1 < _MODEL_CALL_ATTEMPTS
+                                ):
+                                    raise _ModelCallError
+                            scored = list(score(penny.db, before, reply))
+                            if _scorer_is_graded(scored):
+                                guards: list[Check] = []
+                                if wrapper is not None:
+                                    guards = [_bail_fired_check(wrapper.bail_injected)]
+                                result = _guarded_graded(scored, guards)
+                            else:
+                                fails = [s for s in scored if isinstance(s, str)]  # binary scorer
+                                if wrapper is not None and not wrapper.bail_injected:
+                                    fails.append("forced bail never fired — contract not exercised")
+                                result = SampleResult.binary(fails)
+                            results.append(result)
+                            _stamp_cause(penny.db, result)
+                            _write_sample_report(
+                                penny.db,
+                                case_id,
+                                sample_index,
+                                result=result,
+                                reply=reply,
+                                driven=turns,
+                            )
+                        except TimeoutError:
+                            timed_out = SampleResult.binary(["no reply within timeout"])
+                            _stamp_cause(penny.db, timed_out, timed_out=True)
+                            results.append(timed_out)
+                            # Emit the timeout sample's block too, so the transcript's sample count
+                            # always matches N — a silently-dropped sample is invisible degradation
+                            # (#1725/F2). No completed turn → the placeholder block.
+                            _write_sample_report(penny.db, case_id, sample_index, result=timed_out)
+                        _dump_thinking(
+                            penny.db, case_id, sample_index, failed=not results[-1].passed
                         )
-                    except TimeoutError:
-                        timed_out = SampleResult.binary(["no reply within timeout"])
-                        _stamp_cause(penny.db, timed_out, timed_out=True)
-                        results.append(timed_out)
-                        # Emit the timeout sample's block too, so the transcript's sample count
-                        # always matches N — a silently-dropped sample is invisible degradation
-                        # (#1725/F2). No completed turn → the placeholder block.
-                        _write_sample_report(penny.db, case_id, sample_index, result=timed_out)
-                    _dump_thinking(penny.db, case_id, sample_index, failed=not results[-1].passed)
-                    perf.add(penny.db.messages.prompt_perf())
-            finally:
-                await server.stop()
+                        perf.add(penny.db.messages.prompt_perf())
+                except _ModelCallError:
+                    print(
+                        f"  ↻ {case_id} sample {sample_index}: the model call failed — "
+                        f"retrying ({attempt + 1} of {_MODEL_CALL_ATTEMPTS})"
+                    )
+                    continue
+                finally:
+                    await server.stop()
+                break
         eval_artifacts.record_case(
             case_id=case_id,
             family=family,
