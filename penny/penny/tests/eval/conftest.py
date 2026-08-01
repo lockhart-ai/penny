@@ -1059,7 +1059,9 @@ def _render_call(function: dict) -> str:
     return f"{name}({rendered})"
 
 
-def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
+def _sample_turns(
+    rows: list[PromptLog], reply: str, driven: Sequence[str] = ()
+) -> list[tuple[str, str]]:
     """(actor, content) for every turn of the sample, across ALL promptlog rows — so a
     multi-turn conversation shows EVERY turn's tool calls, not just the last turn's.
 
@@ -1069,9 +1071,19 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
     ever took (``_row_turns``).  Walking every row and de-duplicating by (actor, content)
     yields each user turn, tool call, tool result, and intermediate reply exactly once, in
     order.  The final reply (the last response's text, which is in no messages array) is
-    appended last.  System prompt omitted."""
+    appended last.  System prompt omitted.
+
+    ``driven`` is what the harness actually PUSHED.  A case may seed prior conversation to
+    stand the world up (the state a preceding beat ends in), and the chat agent replays that
+    history into its ``messages`` array where it is byte-identical to a turn the sample
+    drove — so without this the transcript opened a step for a message nobody sent this
+    sample, and the classifier, anchored to the first turn head, rendered under it instead of
+    under the message it actually judged.  Seeded turns are context, not steps: they are in
+    the system prompt, the classifier's own slice, and the DB.  Empty ``driven`` keeps the
+    old behaviour, so a case that seeds nothing renders byte-identically."""
     turns: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    pushed = {content.strip() for content in driven}
 
     def emit(actor: str, content: str) -> None:
         if content and (actor, content) not in seen:
@@ -1082,6 +1094,8 @@ def _sample_turns(rows: list[PromptLog], reply: str) -> list[tuple[str, str]]:
         for message in _row_turns(row):
             role, content = message.get("role"), message.get("content") or ""
             if role == "user":
+                if pushed and content.strip() not in pushed:
+                    continue  # seeded history, not a turn this sample drove
                 emit(_ACTOR["user"], content)
             elif role == "tool":
                 emit(_ACTOR["tool"], content)
@@ -1502,7 +1516,13 @@ def _build_transcript(
 
 
 def _write_sample_report(
-    db: Database, case_id: str, sample_index: int, *, result: SampleResult, reply: str = ""
+    db: Database,
+    case_id: str,
+    sample_index: int,
+    *,
+    result: SampleResult,
+    reply: str = "",
+    driven: Sequence[str] = (),
 ) -> None:
     """Append one sample's transcript-integrated block to ``EVAL_REPORT_DIR/<case_id>.md`` (#1725
     iteration-6). No-op off-report. Builds the report model from the persisted promptlog + the
@@ -1519,7 +1539,7 @@ def _write_sample_report(
     baseline = baseline_from_env()
     # Stamp fragile (same EVAL_REPORT_DIR gate as the artifact write) so it rides into the artifact.
     result.fragile = result.passed and sample_is_fragile(db)
-    turns = _sample_turns(main_rows, reply)
+    turns = _sample_turns(main_rows, reply, driven)
     transcript = _build_transcript(
         db, result, turns, main_rows, rows, baseline, case_id, sample_index
     )
@@ -1641,7 +1661,12 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                         results.append(result)
                         _stamp_cause(penny.db, result)
                         _write_sample_report(
-                            penny.db, case_id, sample_index, result=result, reply=reply
+                            penny.db,
+                            case_id,
+                            sample_index,
+                            result=result,
+                            reply=reply,
+                            driven=turns,
                         )
                     except TimeoutError:
                         timed_out = SampleResult.binary(["no reply within timeout"])
