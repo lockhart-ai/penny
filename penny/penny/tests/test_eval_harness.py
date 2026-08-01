@@ -16,7 +16,6 @@ calls into machinery a later change removed fails inside ``make check``, not onl
 from __future__ import annotations
 
 import json
-from typing import Any, cast
 
 import pytest
 
@@ -26,9 +25,8 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
+from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
-from penny.skill_extraction import SkillExtractor
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -46,8 +44,7 @@ from penny.tests.eval.conftest import (
     _cycle_recovered_check,
     _frame_attributes_to,
     _guarded_graded,
-    _learn_and_render,
-    _log_demonstration,
+    _labelling_input,
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
@@ -58,10 +55,13 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
-from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
-from penny.tools.memory_tools import collector_tool_surface
+from penny.tools.micro_context import (
+    ParameterLabel,
+    ParameterVerdict,
+    SkillLabel,
+)
 from penny.tools.models import ToolResult
 
 
@@ -1047,83 +1047,82 @@ _LABELLER_VERDICTS = (
 )
 
 
-def _labeller_extractor(db: Database, verdicts: str) -> SkillExtractor:
-    """The REAL ``SkillExtractor`` the labeller runner builds, over a text model whose
-    every draw returns ``verdicts`` — so the only thing faked is the labelling draw."""
-    model = MockLlmClient()
-    model.set_response_handler(
-        lambda _request, _count: LlmResponse(message=LlmMessage(role="assistant", content=verdicts))
-    )
-    client = cast(Any, model)
-    return SkillExtractor(
-        db,
-        cast(Any, MockLlmClient()),
-        client,
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
-        collector_tool_surface=collector_tool_surface(db, client),
-    )
+def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
+    """The labelling runner's input, WHOLE, plus the value→candidate map its scoring
+    keys on (#1770/#1803).
 
-
-@pytest.mark.asyncio
-async def test_learn_and_render_builds_the_prompt_the_freeze_checks_read(tmp_path) -> None:
-    # #1782: the runner used to reach the prompt through `attach_to_created_collection`,
-    # which #1768 removed with the run-end auto-attach — so both labeller cases raised
-    # `AttributeError` and the file was dead.  The runner renders the learned skill
-    # itself now, through the two functions the instantiation seam composes.  This
-    # drives the REAL extractor, so a helper calling a method that no longer exists
-    # fails HERE, inside `make check`, instead of only on the deselected GPU run.
-    db = _make_db(tmp_path, "labeller")
-    db.memories.create_collection(_LABELLER_TARGET, "price notes", created_by_run_id="run-A")
-    _log_demonstration(db, "run-A", _LABELLER_UTTERANCE, [_LABELLER_BROWSE, _LABELLER_WRITE])
-
-    skill, prompt = await _learn_and_render(
-        _labeller_extractor(db, _LABELLER_VERDICTS), "run-A", _LABELLER_TARGET
+    The case drives ``label_skill`` alone, so its input has to be built from the
+    fixture ledger by the SHIPPED renderer — this pins that it is, and that a helper
+    calling machinery a later change removed fails HERE, inside ``make check``,
+    instead of only on the deselected GPU run."""
+    content, by_value = _labelling_input(
+        [_LABELLER_BROWSE, _LABELLER_WRITE],
+        _LABELLER_TARGET,
+        _LABELLER_UTTERANCE,
+        ["can you keep an eye on the aurora deck 2 price for me?"],
     )
 
-    # The prompt a collector would run, WHOLE.  The user's two values are bound
-    # verbatim (which is what lets a mislabelled leaf be caught at all), the write
-    # target is retargeted onto the collection, and each assistant-produced leaf shows
-    # WHAT BELONGS THERE — never its demonstrated phrase.
-    assert prompt == (
-        "1. browse(queries=['aurora deck 2 price'], extract='the current price')\n"
-        "2. collection_write(memory='aurora-prices', entries=["
-        "{'key': 'aurora deck 2 price', 'content': the value from step 1}, "
-        "{'key': {a short label for the second entry}, "
-        "'content': {a note about the page you just read}}])"
+    assert content == (
+        "Conversation that led to the construction of this routine "
+        "(the LAST user turn is the one that demonstrated it):\n"
+        "user: can you keep an eye on the aurora deck 2 price for me?\n"
+        "user: read the aurora deck 2 listing, find the current price, and remember it\n"
+        "\n"
+        "Routine steps:\n"
+        "1. browse(queries=[{queries}], extract={extract})\n"
+        "2. collection_write(memory={memory}, entries=["
+        "{'key': {queries}, 'content': the value from step 1}, "
+        "{'key': {key}, 'content': {content}}])\n"
+        "\n"
+        "Candidate parameters (each currently named after the tool arg it fills):\n"
+        # queries[0] and entries[0].key hold the SAME demonstrated value, so the
+        # distiller collapses them into one candidate filling both sites.
+        "- queries: fills browse.queries[0], collection_write.entries[0].key; "
+        "demonstrated value: 'aurora deck 2 price'\n"
+        "- extract: fills browse.extract; demonstrated value: 'the current price'\n"
+        "- memory: fills collection_write.memory; demonstrated value: 'aurora-prices'\n"
+        "- key: fills collection_write.entries[1].key; "
+        "demonstrated value: 'aurora deck 2 page source'\n"
+        "- content: fills collection_write.entries[1].content; "
+        "demonstrated value: 'Page source for the Aurora Deck 2 listing'"
+    )
+    # Keyed by VALUE, because the case's expectations are stated in values.
+    assert by_value[_LABELLER_INVENTED_KEY] == "key"
+    assert by_value[_LABELLER_INVENTED_CONTENT] == "content"
+    assert by_value["the current price"] == "extract"
+
+
+def test_score_labelling_reads_the_verdicts_and_absence_falls_both_ways() -> None:
+    """The labelling case's scoring over a fixture draw (#1770): the user's values
+    stayed bindable parameters, the assistant's became placeholders.
+
+    And the asymmetry absence has.  A user value with NO verdict keeps its arg-derived
+    required parameter, so it is still bindable and the check holds; an assistant value
+    with no verdict keeps that same required parameter — which nobody could ever
+    supply, the exact harm the verdict exists to prevent — so it does not."""
+    by_value = {"the current price": "extract", _LABELLER_INVENTED_KEY: "key"}
+    label = SkillLabel(
+        name="watch a listing price",
+        description="Look up a price on a listing page and record it.",
+        parameters={
+            "extract": ParameterLabel(
+                verdict=ParameterVerdict.PARAMETER, name="what_to_find", description="what to pull"
+            ),
+            "key": ParameterLabel(
+                verdict=ParameterVerdict.PLACEHOLDER, description="a short label"
+            ),
+        },
     )
 
-    # And the case's own scoring over that pair: every check green, none vacuous.
-    checks = _score_labelling(
-        skill,
-        prompt,
-        ["aurora deck 2 price", "the current price"],
-        [_LABELLER_INVENTED_KEY, _LABELLER_INVENTED_CONTENT],
-    )
-    assert [(check.label, check.ok) for check in checks] == [
-        ("user value stayed a parameter: 'aurora deck 2 price'", True),
+    scored = _score_labelling(label, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
+    assert [(check.label, check.ok) for check in scored] == [
         ("user value stayed a parameter: 'the current price'", True),
         ("assistant value became a placeholder: 'aurora deck 2 page source'", True),
-        ("assistant value not frozen into the prompt: 'aurora deck 2 page source'", True),
-        (
-            "assistant value became a placeholder: 'Page source for the Aurora Deck 2 listing'",
-            True,
-        ),
-        (
-            "assistant value not frozen into the prompt: "
-            "'Page source for the Aurora Deck 2 listing'",
-            True,
-        ),
     ]
 
-
-@pytest.mark.asyncio
-async def test_learn_and_render_fails_loudly_when_the_fixture_never_qualifies(tmp_path) -> None:
-    # The loud half of the helper: a demonstration that doesn't qualify as a skill must
-    # stop the sample, not score the not-frozen checks green against an empty prompt.
-    db = _make_db(tmp_path, "labeller-gate")
-    _log_demonstration(db, "run-B", _LABELLER_UTTERANCE, [_LABELLER_BROWSE])
-
-    with pytest.raises(AssertionError, match="must qualify as a skill"):
-        await _learn_and_render(
-            _labeller_extractor(db, _LABELLER_VERDICTS), "run-B", _LABELLER_TARGET
-        )
+    silent = SkillLabel(name="n", description="d", parameters={})
+    quiet = _score_labelling(silent, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
+    assert [(check.label, check.ok) for check in quiet] == [
+        ("user value stayed a parameter: 'the current price'", True),
+        ("assistant value became a placeholder: 'aurora deck 2 page source'", False),
+    ]

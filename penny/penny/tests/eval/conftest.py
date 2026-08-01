@@ -35,15 +35,13 @@ from penny.conversation_machine import (
 from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.message_store import PromptPerf
-from penny.database.models import MemoryRow, PromptLog, Skill
-from penny.database.skill_store import steps_from_json
+from penny.database.models import MemoryRow, PromptLog
 from penny.database.skills import (
+    DistillInput,
     SkillDraft,
     SkillParameter,
     SkillStep,
-    SkillSubKind,
-    render_skill,
-    retarget_writes,
+    distill_steps,
 )
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
@@ -51,8 +49,7 @@ from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.skill_extraction import (
     ShapeableValue,
-    SkillExtracted,
-    SkillExtractor,
+    build_naming_content,
     build_shape_content,
 )
 from penny.startup import get_restart_message
@@ -71,8 +68,13 @@ from penny.text_validity import (
 )
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
-from penny.tools.memory_tools import collector_tool_surface
-from penny.tools.micro_context import MicroContext, SkillShape, StateDrawOutcome
+from penny.tools.micro_context import (
+    MicroContext,
+    ParameterVerdict,
+    SkillLabel,
+    SkillShape,
+    StateDrawOutcome,
+)
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
 SAMPLES = int(os.environ.get("EVAL_SAMPLES", "5"))
@@ -2750,166 +2752,114 @@ def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
     return node if isinstance(node, str) else None
 
 
-def _leaf_kinds(skill: Skill) -> dict[str, str]:
-    """Every substituted leaf of a learned skill as ``{demonstrated value: kind}`` —
-    the identity that survives labelling.  Keyed by VALUE, not by name, because the
-    semantic name is the model's to choose: the contract is about WHICH leaves stayed
-    bindable parameters, never what they ended up called."""
-    kinds: dict[str, str] = {}
-    for step in steps_from_json(skill.steps):
-        for sub in step.substitutions:
-            value = _leaf_string(step.arguments, sub.path)
-            if value is not None:
-                kinds[value] = sub.kind.value
-    return kinds
+def _run_end_rerolled(db: Database) -> bool:
+    """Did EITHER run-end customer draw more than once (#1770/#1803) — the fragile
+    signal, a sample that only got there by recovering.
+
+    Counted PER customer, never in total: a run end is two draws by design, so a
+    total would mark every sample fragile and the signal would mean nothing."""
+    return any(len(_micro_context_rows(db, agent)) > 1 for agent in RUN_END_CUSTOMERS)
 
 
-def _kept_parameter_check(value: str, kinds: dict[str, str]) -> Check:
-    """A USER-supplied value stayed a bindable parameter — the direction that keeps a
-    learned skill instantiable at all."""
-    kept = kinds.get(value) == SkillSubKind.HOLE.value
+def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
+    """The string leaf a substitution's JSON path addresses in a step's verbatim
+    arguments — the demonstrated value — or ``None`` when the path doesn't resolve to
+    one."""
+    node: object = arguments
+    for part in path:
+        if isinstance(node, dict) and isinstance(part, str):
+            node = node.get(part)
+        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
+            node = node[part]
+        else:
+            return None
+    return node if isinstance(node, str) else None
+
+
+def _labelling_input(
+    calls: Sequence[DemoCall], target: str, utterance: str, conversation: Sequence[str]
+) -> tuple[str, dict[str, str]]:
+    """The labeller's content, and the ``{demonstrated value: current name}`` map its
+    verdicts are keyed by.
+
+    Distillation is DETERMINISTIC Python, so a fixture ledger fixes the labeller's
+    input exactly — no live draw sits upstream of this case.  The content is rendered
+    by ``build_naming_content``, the shipped function, so the case exercises the
+    shipped prompt rather than a copy that can drift.
+
+    The map is keyed by VALUE because the case's expectations are stated in values:
+    the semantic name is the model's to choose, and the contract is about which leaves
+    stayed bindable, never what they ended up called."""
+    inputs = [
+        DistillInput(source_ordinal=index, tool=name, arguments=arguments, result=result)
+        for index, (name, arguments, result, _ok) in enumerate(calls, start=1)
+    ]
+    steps, parameters = distill_steps(inputs, frozenset({target}))
+    turns: list[tuple[str, str]] = [
+        (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
+    ]
+    content = build_naming_content(steps, parameters, utterance, turns)
+    by_value = {
+        value: sub.parameter
+        for step in steps
+        for sub in step.substitutions
+        if sub.parameter is not None
+        and (value := _leaf_string(step.arguments, sub.path)) is not None
+    }
+    return content, by_value
+
+
+def _verdict_check(
+    value: str,
+    expected: ParameterVerdict,
+    label: SkillLabel | None,
+    by_value: dict[str, str],
+) -> Check:
+    """One value's verdict, read off the labeller's OWN typed result (#1770).
+
+    Scoring the draw rather than the persisted skill is what keeps this case the
+    labeller's: everything downstream of the verdict — applying it, rendering it — is
+    deterministic Python pinned in ``tests/test_skill_extraction.py``, and since #1803
+    a SECOND model draw sits in that chain, so an end-state assertion would be
+    measuring two draws and calling it one.
+
+    ABSENCE is not a verdict, and which direction it falls depends on the expectation.
+    A user-supplied value with no line keeps its arg-derived REQUIRED parameter, so it
+    is still bindable and the check holds.  An assistant-produced value with no line
+    keeps that same required parameter — which no user could ever supply, the exact
+    #1770 harm — so it does not."""
+    current = by_value.get(value)
+    verdict = label.parameters.get(current or "") if label is not None else None
+    if expected == ParameterVerdict.PARAMETER:
+        ok = verdict is None or verdict.verdict == ParameterVerdict.PARAMETER
+        role = "user value stayed a parameter"
+    else:
+        ok = verdict is not None and verdict.verdict == ParameterVerdict.PLACEHOLDER
+        role = "assistant value became a placeholder"
+    drawn = "no verdict" if verdict is None else verdict.verdict.value
     return Check(
-        f"user value stayed a parameter: {value!r}",
-        kept,
+        f"{role}: {value!r}",
+        ok,
         kind="state",
-        rationale=None if kept else f"became {kinds.get(value)}",
+        rationale=None if ok else f"drew {drawn}",
     )
-
-
-def _placeholder_checks(value: str, kinds: dict[str, str], prompt: str) -> list[Check]:
-    """An ASSISTANT-produced value became a placeholder AND its demonstrated phrase is
-    absent from the prompt a collector would actually run.  The second check is the
-    harm itself — a frozen phrase re-written into the collection every cycle, forever —
-    so it is scored, not advisory."""
-    placeholder = kinds.get(value) == SkillSubKind.PLACEHOLDER.value
-    return [
-        Check(
-            f"assistant value became a placeholder: {value!r}",
-            placeholder,
-            kind="state",
-            rationale=None if placeholder else f"stayed {kinds.get(value)}",
-        ),
-        Check(
-            f"assistant value not frozen into the prompt: {value!r}",
-            value not in prompt,
-            kind="state",
-        ),
-    ]
-
-
-def _constant_checks(value: str, skill: Skill, kinds: dict[str, str], prompt: str) -> list[Check]:
-    """A value the routine is ABOUT was baked in rather than asked for (#1803).
-
-    A constant carries no substitution at all — a leaf nothing covers renders verbatim —
-    so its signature is absence from ``_leaf_kinds`` plus survival in the rendered
-    prompt.  The second half is what makes it useful rather than merely dropped: the
-    collector must still run against that value."""
-    baked = value not in kinds
-    return [
-        Check(
-            f"value the routine is named for was baked, not asked for: {value!r}",
-            baked,
-            kind="state",
-            rationale=None if baked else f"became {kinds.get(value)}",
-        ),
-        Check(
-            f"the baked value still runs: {value!r}",
-            value in prompt,
-            kind="state",
-        ),
-    ]
 
 
 def _score_labelling(
-    skill: Skill,
-    prompt: str,
+    label: SkillLabel | None,
+    by_value: dict[str, str],
     user_values: Sequence[str],
     assistant_values: Sequence[str],
-    constant_values: Sequence[str] = (),
 ) -> list[Check]:
-    """The run-end case's graded checks (#1770/#1803), read off the learned skill and
-    the prompt rendered from it: what the user supplied and varies, what the routine is
-    ABOUT, and what the assistant produced — the three roles a leaf can play, settled
-    across the labelling draw (provenance) and the shape draw (role)."""
-    kinds = _leaf_kinds(skill)
-    checks = [_kept_parameter_check(value, kinds) for value in user_values]
-    for value in constant_values:
-        checks.extend(_constant_checks(value, skill, kinds, prompt))
-    for value in assistant_values:
-        checks.extend(_placeholder_checks(value, kinds, prompt))
-    return checks
-
-
-def _seed_demonstration(
-    penny: Penny, run_id: str, *, conversation: Sequence[str], target: str
-) -> SkillExtractor:
-    """Lay down one sample's fixture world — the conversation turns that carry the
-    user's intent, the collection the round wrote into (stamped as created by that run,
-    the way a demonstrated round leaves it), and the demonstration itself — and return
-    the REAL extractor, constructed exactly as ``ChatAgent`` constructs it."""
-    seed_user(penny.db)
-    for turn in conversation:
-        penny.db.messages.log_message(direction="incoming", sender=TEST_SENDER, content=turn)
-    penny.db.memories.create_collection(
-        target, "what the demonstrated round wrote into", created_by_run_id=run_id
-    )
-    return SkillExtractor(
-        penny.db,
-        penny.embedding_model_client,
-        penny.model_client,
-        agent_name=penny.chat_agent.name,
-        collector_tool_surface=collector_tool_surface(penny.db, penny.model_client),
-    )
-
-
-def _demonstrated_bindings(skill: Skill) -> dict[str, str]:
-    """Each real parameter's DEMONSTRATED value, read off the steps' verbatim arguments
-    by the substitution paths.  Only ``HOLE`` leaves are read: a ``PLACEHOLDER`` leaf is
-    by definition not user-suppliable, so binding it would BE the freeze the verdict
-    exists to prevent — and would make the not-frozen checks green by construction.
-
-    Binding is what gives those checks teeth: a leaf the labeller kept a parameter
-    renders as its demonstrated value, so an assistant-produced phrase mislabelled as a
-    parameter shows up in the prompt and the check fails.  Rendered unbound, every
-    parameter would come out as ``{name}`` and no phrase could ever be caught."""
-    bindings: dict[str, str] = {}
-    for step in steps_from_json(skill.steps):
-        for sub in step.substitutions:
-            if sub.kind != SkillSubKind.HOLE or sub.parameter is None:
-                continue
-            value = _leaf_string(step.arguments, sub.path)
-            if value is not None:
-                bindings[sub.parameter] = value
-    return bindings
-
-
-async def _learn_and_render(
-    extractor: SkillExtractor, run_id: str, target: str
-) -> tuple[Skill, str]:
-    """Run the production pipeline over the fixture ledger — distil → label — then
-    RENDER the learned skill as the ``extraction_prompt`` a collector would run, and
-    return ``(skill, prompt)``.
-
-    Learning attaches nothing (#1706): the run-end auto-attach is gone, so the prompt is
-    produced here through the same two functions the instantiation seam composes
-    (``retarget_writes`` onto the round's collection, then ``render_skill`` with the
-    demonstrated bindings) rather than by routing the case through an attach.
-
-    Both halves fail LOUDLY when the fixture doesn't reach them: a demonstration that
-    never qualifies, or a render that produces nothing, would otherwise score the
-    not-frozen-into-the-prompt checks green against an empty string — a broken case
-    reading as half-passed."""
-    extracted = await extractor.extract(run_id)
-    assert isinstance(extracted, SkillExtracted), (
-        f"the fixture demonstration must qualify as a skill: {extracted}"
-    )
-    steps = retarget_writes(steps_from_json(extracted.skill.steps), target)
-    prompt = render_skill(steps, _demonstrated_bindings(extracted.skill))
-    assert prompt, (
-        f"rendering the learned skill onto {target} must produce an extraction_prompt — "
-        "the freeze checks are vacuous without it"
-    )
-    return extracted.skill, prompt
+    """The labelling case's graded checks (#1770), read off the returned ``SkillLabel``:
+    the values the user supplied stayed bindable parameters, and the ones the assistant
+    produced became placeholders."""
+    return [
+        _verdict_check(value, ParameterVerdict.PARAMETER, label, by_value) for value in user_values
+    ] + [
+        _verdict_check(value, ParameterVerdict.PLACEHOLDER, label, by_value)
+        for value in assistant_values
+    ]
 
 
 ShapeEval = Callable[..., Awaitable[None]]
@@ -3063,17 +3013,19 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
 
 @pytest.fixture
 def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> LabellerEval:
-    """Drive the run-end skill labeller (#1770) N times — the production extraction
-    pipeline over a FIXTURE ledger, so the only live variable is the labelling draw.
+    """Drive the run-end PARAMETER LABELLER (#1770) N times, and NOTHING else.
 
-    Each sample is hermetic (own DB + real-model Penny, mirroring ``classifier_eval``):
-    the case's conversation turns and demonstrated tool calls are written into the
-    ledger, the collection the round wrote into is stamped as created by that run, and
-    the REAL ``SkillExtractor`` distils → labels exactly as the chat turn does.  Scoring
-    is runner-owned and reads the LEARNED SKILL plus the prompt rendered from it (#1706:
-    learning attaches nothing, so the render is the case's own step): which leaves the
-    labeller kept bindable, and whether any assistant-produced phrase got frozen into
-    the ``extraction_prompt`` a collector would run.
+    The labeller answers one question — did the USER supply this value, or did the
+    assistant produce it — and this case measures that answer directly: the returned
+    ``SkillLabel``'s per-candidate verdicts.  Its input is a FIXTURE ledger through
+    DETERMINISTIC distillation, so nothing live sits upstream of the draw either.
+
+    It used to drive the whole extractor and score the persisted skill.  That was a
+    faithful proxy while the labeller was the only model call in the chain — everything
+    after it is deterministic Python — and #1803 broke the proxy by inserting a SECOND
+    draw, whose constants legitimately remove the very substitutions those checks read.
+    This case is the labeller's, so it scores the labeller: see ``test_skill_shape.py``
+    for the other draw, and the deferred end-to-end case for pipeline assertions.
 
     The demonstration is a fixture precisely so the case measures the JUDGMENT and
     never polices what a round chose to write — if a round writes two entries, two
@@ -3088,7 +3040,6 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         target: str,
         user_values: Sequence[str],
         assistant_values: Sequence[str],
-        constant_values: Sequence[str] = (),
         conversation: Sequence[str] = (),
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
@@ -3098,7 +3049,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        run_id = "demo-run"
+        content, by_value = _labelling_input(calls, target, utterance, conversation)
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()
@@ -3109,17 +3060,13 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
                 async with run_penny_with_server(config, server) as penny:
-                    extractor = _seed_demonstration(
-                        penny, run_id, conversation=conversation, target=target
-                    )
-                    _log_demonstration(penny.db, run_id, utterance, calls)
+                    micro = MicroContext(penny.model_client)
                     try:
-                        skill, prompt = await asyncio.wait_for(
-                            _learn_and_render(extractor, run_id, target), timeout=timeout
+                        label = await asyncio.wait_for(
+                            micro.label_skill(content, run_target=penny.chat_agent.name),
+                            timeout=timeout,
                         )
-                        scored = _score_labelling(
-                            skill, prompt, user_values, assistant_values, constant_values
-                        )
+                        scored = _score_labelling(label, by_value, user_values, assistant_values)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
@@ -3134,7 +3081,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         sample_index,
                         result=result,
                         phrasing=utterance,
-                        agent_names=RUN_END_CUSTOMERS,
+                        agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())

@@ -64,6 +64,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -358,7 +359,9 @@ class SkillExtractor:
         its own ledger attribution.  ``None`` on any failure — the caller falls back to
         the slug + arg-derived names."""
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        content = _naming_content(steps, parameters, projection, conversation)
+        content = build_naming_content(
+            steps, parameters, projection.origin_message, conversation, _find_phrases(projection)
+        )
         return await self._micro_context.label_skill(content, run_target=self._agent_name)
 
     async def _shape_skill(
@@ -471,11 +474,12 @@ class SkillExtractor:
         return None
 
 
-def _naming_content(
+def build_naming_content(
     steps: list[SkillStep],
     parameters: list[SkillParameter],
-    projection: RunProjection,
+    origin_message: str,
     conversation: list[tuple[str, str]],
+    find_phrases: Sequence[str] = (),
 ) -> str:
     """The naming micro-context's content (#1665/#1668/#1770): the numbered recipe
     (parameters as ``{variables}``), the message that first demonstrated it, any
@@ -484,7 +488,12 @@ def _naming_content(
     candidate's current arg-derived name, demonstrated value, and the arg site(s) it
     fills — so the model can both relabel each semantically and judge whether the USER
     supplied its value at all.  They are named *candidates* because the distiller's
-    "everything else is a parameter" is a default the labeller adjudicates."""
+    "everything else is a parameter" is a default the labeller adjudicates.
+
+    PUBLIC because the labelling eval builds it too: that case drives ``label_skill``
+    alone, so it must render the same content production renders and not a copy that
+    can drift.  Takes the origin message and find phrases directly rather than a whole
+    projection — they are all it ever read from one."""
     # The demonstrating message is a USER turn, and it must be rendered as one.
     # Presented under its own unattributed heading, the labeller read the
     # conversation block as the only record of what the user said, did not find
@@ -494,8 +503,8 @@ def _naming_content(
     # the URL directly").  So it joins the conversation, deduped in case the
     # recent-turns window already carries it.
     turns = [*conversation]
-    demonstration = (PennyConstants.MessageDirection.INCOMING, projection.origin_message)
-    if projection.origin_message and demonstration not in turns:
+    demonstration = (PennyConstants.MessageDirection.INCOMING, origin_message)
+    if origin_message and demonstration not in turns:
         turns.append(demonstration)
     parts = []
     if turns:
@@ -509,7 +518,6 @@ def _naming_content(
             f"(the LAST user turn is the one that demonstrated it):\n{rendered}"
         )
     parts.append(f"Routine steps:\n{render_skill(steps)}")
-    find_phrases = _find_phrases(projection)
     if find_phrases:
         parts.append("Search phrases used to look for a skill:\n" + "\n".join(find_phrases))
     param_lines = _parameter_lines(steps, parameters)
