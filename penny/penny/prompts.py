@@ -113,10 +113,9 @@ class Prompt:
         "call, binding what they told you.\n\n"
         "Then tell them what you set up and what will happen. Only say it is "
         "running if the call came back confirming it.\n\n"
-        "Setting it up IS this turn. Don't run it once to show them, don't look "
-        "anything up, don't fetch a fresh value to put in your reply — the job "
-        "does that itself, on the schedule they just gave you, and the first "
-        "run is the first thing they'll hear about.\n\n"
+        "Setting it up is the whole turn. You are configuring the routine, not "
+        "carrying it out — it runs itself on the schedule they just gave you, "
+        "and its first run is the first thing they'll hear about.\n\n"
     )
 
     REQUEST_INSTRUCTION = (
