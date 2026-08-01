@@ -49,21 +49,14 @@ _LISTING = "https://faux-market.example/aurora-deck-2"
 _ASK = "can you keep an eye on the aurora deck 2 price for me?"
 _DEMONSTRATION = f"read {_LISTING}, find the current price, and remember it"
 
-# What the labeller emitted for this round in the measured run of 2026-08-01 — copied
-# rather than invented, so the fixture is what the upstream draw really produces.
-_URL = ShapeableValue(
-    name="url",
-    current="queries",
-    description="the full URL of the listing page to fetch.",
-    demonstrated=_LISTING,
-)
+# The semantic names the labeller emitted for this round in the measured run of
+# 2026-08-01 — copied rather than invented, so the fixture is what the upstream draw
+# really produces.  Its one-line descriptions are deliberately absent: they describe
+# every value as a fill-in slot, which argued the decision under test (see
+# ``ShapeableValue``).
+_URL = ShapeableValue(name="url", current="queries", demonstrated=_LISTING)
 _WHAT_TO_FIND = ShapeableValue(
-    name="what_to_find",
-    current="extract",
-    description=(
-        'plain-language phrase describing the information to pull, e.g., "the current price".'
-    ),
-    demonstrated="the current price",
+    name="what_to_find", current="extract", demonstrated="the current price"
 )
 
 

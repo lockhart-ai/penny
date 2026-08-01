@@ -523,13 +523,19 @@ def _naming_content(
 class ShapeableValue(NamedTuple):
     """One value the SHAPE draw decides over (#1803): the labeller's semantic ``name``
     (the anchor the draw repeats back, and the parameter's eventual binding key), the
-    ``current`` arg-derived key the verdict maps home to, its one-line ``description``,
-    and the ``demonstrated`` value — without which "is the routine ABOUT this?" cannot
-    be answered at all."""
+    ``current`` arg-derived key the verdict maps home to, and the ``demonstrated``
+    value — without which "is the routine ABOUT this?" cannot be answered at all.
+
+    The labeller's one-line description is deliberately NOT carried across.  It is
+    written to answer "what should someone supply here", so it describes every value
+    as a fill-in slot — *"plain-language phrase describing the information to pull"* —
+    and a draw shown that reads it as an argument for PARAMETER, which is what four of
+    five draws did.  Correct reasoning over a description that had already decided the
+    question; the name and the demonstrated value say what the value IS without
+    arguing what role it plays."""
 
     name: str
     current: str
-    description: str
     demonstrated: str
 
 
@@ -552,7 +558,6 @@ def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[
         ShapeableValue(
             name=param.name,
             current=current,
-            description=param.description,
             demonstrated=_parameter_facts(steps, current)[0],
         )
         for current, param in label.parameters.items()
@@ -589,16 +594,15 @@ def build_shape_content(
     whatever it happened to do.  The demonstrating message joins them as the last
     turn (deduped, since the recent window may already carry it): it is a user turn,
     and the labelling draw already proved that hiding who was speaking makes the model
-    reason correctly to the wrong answer (#1770)."""
+    reason correctly to the wrong answer (#1770).
+
+    Each value renders as its name and the value it was demonstrated with, and nothing
+    else — see :class:`ShapeableValue` for why the labeller's description is dropped."""
     incoming = PennyConstants.MessageDirection.INCOMING
     asks = [content for direction, content in conversation if direction == incoming]
     if origin_message and origin_message not in asks:
         asks.append(origin_message)
-    lines = "\n".join(
-        f"- {value.name}: {value.description or '(no description)'}; "
-        f"demonstrated value: {value.demonstrated!r}"
-        for value in values
-    )
+    lines = "\n".join(f"- {value.name} = {value.demonstrated!r}" for value in values)
     return (
         f"What the user asked for:\n{'\n'.join(asks)}\n\n"
         f"The values the routine used to do it:\n{lines}"
