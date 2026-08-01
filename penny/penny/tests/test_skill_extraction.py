@@ -1165,10 +1165,10 @@ async def test_two_user_named_destinations_stay_two_parameters(db):
 
 def test_shape_system_prompt_whole_render():
     """Whole-render literal of the shape contract (#1803): the framing and its two
-    inputs, the two numbered asks — name the routine, then the per-value ABOUT-vs-
-    POINTED-AT decision as two named cases — the coherence rule tying the two asks
-    together, the floor that keeps a routine bindable, and the enumerated output
-    shape with one line required per value.
+    inputs, the three numbered asks — the CORE USER INTENT first, then the name
+    written from it, then the per-value ABOUT-vs-POINTED-AT decision as two named
+    cases — the coherence rule tying them together, the floor that keeps a routine
+    bindable, and the enumerated output shape with one line required per value.
 
     The worked example is deliberately a FILING routine, not the price watcher these
     tests demonstrate: an example drawn from the case in hand teaches pattern-matching
@@ -1177,11 +1177,15 @@ def test_shape_system_prompt_whole_render():
     assert SKILL_SHAPE_SYSTEM_PROMPT == (
         "You are deciding what a reusable routine IS. You are given what the user "
         "asked for, and the values the routine used to carry it out. Every one of "
-        "those values came from the user. Do two things:\n"
-        "1. Name and describe the ROUTINE: a short verb-noun name for the KIND of "
-        "task, generic — never the specific instance — and one line saying what it "
-        "is for.\n"
-        "2. Decide, for EVERY value, which of two cases it is:\n"
+        "those values came from the user. Do three things:\n"
+        "1. From what the user asked for, extract the CORE USER INTENT — what they "
+        "were trying to get done when they asked. Their own words are the evidence: "
+        "the values are HOW it was carried out, not what it was FOR.\n"
+        "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
+        "the KIND of task, generic — never the specific instance — and one line "
+        "saying what it is for. Never mechanics alone ('fetch and store data' says "
+        "nothing about when to reach for it).\n"
+        "3. Decide, for EVERY value, which of two cases it is:\n"
         "   - CONSTANT. The routine is ABOUT this value. Running it with a "
         "different one would be a DIFFERENT routine, not the same routine on new "
         "input, so it is never asked for again — it is part of what the routine "
@@ -1189,7 +1193,7 @@ def test_shape_system_prompt_whole_render():
         "   - PARAMETER. The routine is POINTED AT this value. Running it with a "
         "different one is the same routine doing the same thing somewhere else, so "
         "it is asked for every time the routine is set up.\n"
-        "   The name and description you just wrote decide this, and have to agree "
+        "   The intent and the name you just wrote decide this, and have to agree "
         "with it: a value they commit to is a CONSTANT, a value they leave open is "
         "a PARAMETER. For example, a routine demonstrated by filing one receipt into "
         "one folder is 'file receipts' when what makes it that routine is receipts "
