@@ -321,6 +321,38 @@ _SKILL_NAMING_INSTRUCTION = (
 CONSTANT_TAG = "CONSTANT"
 PARAMETER_TAG = "PARAMETER"
 
+_SHAPE_NAME_LINE = LineSpec(
+    tag=NAME_TAG,
+    fields=(FieldSpec(name=DrawField.NAME, placeholder="<a short generic verb-noun name>"),),
+)
+_SHAPE_DESCRIPTION_LINE = LineSpec(
+    tag=DESCRIPTION_TAG,
+    fields=(
+        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the routine is for>"),
+    ),
+)
+# The per-value role lines are PER_ITEM for the same reason the labeller's verdict
+# lines are (#1770/#1814): a value with no line simply has no role, which the caller
+# reads as PARAMETER — the direction that keeps the skill bindable.  The value name is
+# ``FieldShape.NAME`` because it is matched against the offered set, so a name carrying
+# a trailing gloss is a malformed line, not a near-miss to be salvaged — which is why
+# the contract block below renders from these specs and no longer glosses each tag
+# inline: a draw echoed the gloss back, and under a declared shape that is malformed
+# rather than tolerated.
+_CONSTANT_LINE = LineSpec(
+    tag=CONSTANT_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(FieldSpec(name=DrawField.VALUE, placeholder="<value name>", shape=FieldShape.NAME),),
+)
+_PARAMETER_LINE = LineSpec(
+    tag=PARAMETER_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(FieldSpec(name=DrawField.VALUE, placeholder="<value name>", shape=FieldShape.NAME),),
+)
+SKILL_SHAPE_SHAPE = MicroContextShape(
+    lines=(_SHAPE_NAME_LINE, _SHAPE_DESCRIPTION_LINE, _CONSTANT_LINE, _PARAMETER_LINE)
+)
+
 SKILL_SHAPE_SYSTEM_PROMPT = (
     "You are deciding what a reusable routine IS. You are given what the user "
     "asked for once, a one-line summary of what was done for them, and the values "
@@ -363,12 +395,12 @@ SKILL_SHAPE_SYSTEM_PROMPT = (
     "constant is one that has to be told everything it was already told — if "
     "their ask named what to do, say so.\n"
     "Respond with these tagged lines and nothing else:\n"
-    f"{NAME_TAG} <a short generic verb-noun name>\n"
-    f"{DESCRIPTION_TAG} <one line: what the routine is for>\n"
-    f"{CONSTANT_TAG} <value name>   (the routine is about it)\n"
-    f"{PARAMETER_TAG} <value name>   (the routine is pointed at it)\n"
+    f"{render_line(_SHAPE_NAME_LINE)}\n"
+    f"{render_line(_SHAPE_DESCRIPTION_LINE)}\n"
+    f"{render_line(_CONSTANT_LINE)}   (the routine is about it)\n"
+    f"{render_line(_PARAMETER_LINE)}   (the routine is pointed at it)\n"
     "Write ONE line for EVERY value, repeating its name exactly so it maps "
-    "back.\n"
+    "back — the name ALONE, with nothing after it.\n"
     "Write nothing else — no preamble, no explanation, no restating the routine."
 )
 
@@ -682,56 +714,29 @@ class MicroContext:
     ) -> SkillShape | None:
         """Decide what a distilled routine IS (#1803) — its GENERIC name +
         description and which of ``values`` it is ABOUT — the FOURTH customer of this
-        machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
-        with the shape system prompt and its own ledger attribution, then a
-        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``CONSTANT`` or
-        ``PARAMETER`` line per value).
+        machinery.  Rides the SAME ``_valid_draw`` step as the other three against its
+        own declared shape (:data:`SKILL_SHAPE_SHAPE`), plus the runtime constraint a
+        static shape cannot carry: the drawn constants must not cover EVERY offered
+        value, which would leave a routine nothing to bind and so able only to repeat
+        its own demonstration.
 
-        Two things make a draw a contract violation — one reroll of the unchanged
-        context, then ``None``: a missing name or description (as for the labeller),
-        and a draw marking EVERY value fixed, which would leave a routine nothing to
-        bind and so able only to repeat its own demonstration.  ``None`` degrades to
-        the labeller's name with no constants at all: every value stays a bindable
-        parameter, which is exactly the pre-#1803 behaviour, so the shape draw can
-        only ever ADD the distinction and never cost a skill its parameters."""
-        for _ in range(_UNTAGGED_DRAW_BUDGET):
-            draw = await self._draw_clean(
-                content,
-                _SKILL_SHAPE_INSTRUCTION,
-                run_target,
-                system_prompt=SKILL_SHAPE_SYSTEM_PROMPT,
-                agent_name=PennyConstants.SKILL_SHAPE_AGENT_NAME,
-                prompt_type=PennyConstants.SKILL_SHAPE_PROMPT_TYPE,
-            )
-            if draw is None:
-                return None
-            shape = self._parse_shape(draw, values)
-            if shape is not None:
-                return shape
-            logger.warning("Skill-shape output invalid — one reroll of the unchanged context")
-        logger.warning("Skill-shape output invalid after reroll — every value stays a parameter")
-        return None
-
-    @staticmethod
-    def _parse_shape(draw: str, values: Sequence[str]) -> SkillShape | None:
-        """Deterministic parse of the shape contract — a ``NAME:`` line, a
-        ``DESCRIPTION:`` line (each with a non-blank payload), and per-value
-        ``CONSTANT``/``PARAMETER`` lines, MEMBERSHIP-filtered against ``values`` (a line
-        naming something that was never offered addresses nothing and is dropped).
-
-        A value with no line stays a PARAMETER — absence is never a verdict here either
-        (#1770's rule), and the flaky-draw-safe direction is the one that keeps the
-        skill bindable.  Marking every offered value fixed IS a violation: the
-        prompt states the floor, and a draw that ignores it would produce a routine
-        that can only repeat its demonstration."""
-        name = _tagged_payload(draw, NAME_TAG)
-        description = _tagged_payload(draw, DESCRIPTION_TAG)
-        if name is None or description is None:
+        ``None`` on any failure degrades to the labeller's name with no constants at
+        all — every value stays a bindable parameter, exactly the pre-#1803 behaviour,
+        so the shape draw can only ever ADD the distinction, never cost a skill its
+        parameters."""
+        drawn = await self._valid_draw(
+            content,
+            _SKILL_SHAPE_INSTRUCTION,
+            run_target,
+            shape=SKILL_SHAPE_SHAPE,
+            accepts=lambda parsed: _leaves_something_bindable(parsed, values),
+            system_prompt=SKILL_SHAPE_SYSTEM_PROMPT,
+            agent_name=PennyConstants.SKILL_SHAPE_AGENT_NAME,
+            prompt_type=PennyConstants.SKILL_SHAPE_PROMPT_TYPE,
+        )
+        if isinstance(drawn, DrawFailure):
             return None
-        fixed = _parse_fixed_values(draw) & set(values)
-        if values and fixed == set(values):
-            return None
-        return SkillShape(name=name, description=description, fixed=frozenset(fixed))
+        return _skill_shape(drawn, values)
 
     async def classify_state(
         self,
@@ -930,6 +935,43 @@ def _parameter_labels(items: Sequence[ParsedLine]) -> dict[str, ParameterLabel]:
             repeated.add(current)
         labels[current] = _parameter_label(item)
     return {name: label for name, label in labels.items() if name not in repeated}
+
+
+def _drawn_constants(drawn: ParsedDraw, values: Sequence[str]) -> frozenset[str]:
+    """The offered values the draw marked CONSTANT (#1803), MEMBERSHIP-filtered.
+
+    A ``PARAMETER`` line for the same value CONTRADICTS the constant and wins — the
+    bindable direction is the safe one, the same rule the labeller's repeated-line
+    drop encodes.  A line naming something never offered addresses nothing, so it is
+    dropped rather than invented into a constant."""
+    offered = set(values)
+    roles = {
+        tag: {
+            value
+            for item in drawn.items
+            if item.tag == tag and (value := item.fields[DrawField.VALUE]) in offered
+        }
+        for tag in (CONSTANT_TAG, PARAMETER_TAG)
+    }
+    return frozenset(roles[CONSTANT_TAG] - roles[PARAMETER_TAG])
+
+
+def _leaves_something_bindable(drawn: ParsedDraw, values: Sequence[str]) -> bool:
+    """The floor the shape prompt states, enforced (#1803): a draw may not mark EVERY
+    offered value constant.  A routine that needs nothing said to it can only repeat
+    the one occasion it was shown, so this is a contract violation like any other —
+    one reroll of the unchanged context, then honest degradation."""
+    return not values or _drawn_constants(drawn, values) != set(values)
+
+
+def _skill_shape(drawn: ParsedDraw, values: Sequence[str]) -> SkillShape:
+    """The shape draw read by FIELD NAME — what the routine is called, what it is for,
+    and which values it is ABOUT."""
+    return SkillShape(
+        name=drawn.field(NAME_TAG, DrawField.NAME) or "",
+        description=drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION) or "",
+        fixed=_drawn_constants(drawn, values),
+    )
 
 
 def _parameter_label(item: ParsedLine) -> ParameterLabel:

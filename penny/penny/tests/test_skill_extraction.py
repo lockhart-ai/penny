@@ -1221,7 +1221,7 @@ def test_shape_system_prompt_whole_render():
         "CONSTANT <value name>   (the routine is about it)\n"
         "PARAMETER <value name>   (the routine is pointed at it)\n"
         "Write ONE line for EVERY value, repeating its name exactly so it maps "
-        "back.\n"
+        "back — the name ALONE, with nothing after it.\n"
         "Write nothing else — no preamble, no explanation, no restating the routine."
     )
 
