@@ -318,8 +318,8 @@ _SKILL_NAMING_INSTRUCTION = (
 # The model does NOT invent the structure (the rejected template attempt): the
 # closed set of values is handed to it and it picks a case for each, exactly as
 # every other customer of this machinery does.
-FIXED_TAG = "FIXED"
-ASKED_TAG = "ASKED"
+CONSTANT_TAG = "CONSTANT"
+PARAMETER_TAG = "PARAMETER"
 
 SKILL_SHAPE_SYSTEM_PROMPT = (
     "You are deciding what a reusable routine IS. You are given what the user "
@@ -329,27 +329,28 @@ SKILL_SHAPE_SYSTEM_PROMPT = (
     "task, generic — never the specific instance — and one line saying what it "
     "is for.\n"
     "2. Decide, for EVERY value, which of two cases it is:\n"
-    "   - FIXED. The routine is ABOUT this value. Running it with a different "
-    "one would be a DIFFERENT routine, not the same routine on new input, so it "
-    "is never asked for again — it is part of what the routine does.\n"
-    "   - ASKED. The routine is POINTED AT this value. Running it with a "
+    "   - CONSTANT. The routine is ABOUT this value. Running it with a "
+    "different one would be a DIFFERENT routine, not the same routine on new "
+    "input, so it is never asked for again — it is part of what the routine "
+    "does.\n"
+    "   - PARAMETER. The routine is POINTED AT this value. Running it with a "
     "different one is the same routine doing the same thing somewhere else, so "
     "it is asked for every time the routine is set up.\n"
     "   The name and description you just wrote decide this, and have to agree "
-    "with it: a value they commit to is FIXED, a value they leave open is "
-    "ASKED. For example, a routine demonstrated by filing one receipt into one "
-    "folder is 'file receipts' when what makes it that routine is receipts "
-    "(FIXED) and the folder is chosen each time (ASKED) — or 'file emails into "
+    "with it: a value they commit to is a CONSTANT, a value they leave open is "
+    "a PARAMETER. For example, a routine demonstrated by filing one receipt into "
+    "one folder is 'file receipts' when what makes it that routine is receipts "
+    "(CONSTANT) and the folder is chosen each time (PARAMETER) — or 'file emails into "
     "a folder' when both are chosen each time. Both are real routines; which "
     "one you are naming is the decision you are making here.\n"
-    "   At least one value is always ASKED. A routine with nothing left to ask "
-    "for can only ever repeat the one thing it was demonstrated with, which "
+    "   At least one value is always a PARAMETER. A routine with nothing left to "
+    "ask for can only ever repeat the one thing it was demonstrated with, which "
     "makes it a record of what happened rather than a routine.\n"
     "Respond with these tagged lines and nothing else:\n"
     f"{NAME_TAG} <a short generic verb-noun name>\n"
     f"{DESCRIPTION_TAG} <one line: what the routine is for>\n"
-    f"{FIXED_TAG} <value name>   (the routine is about it)\n"
-    f"{ASKED_TAG} <value name>   (the routine is pointed at it)\n"
+    f"{CONSTANT_TAG} <value name>   (the routine is about it)\n"
+    f"{PARAMETER_TAG} <value name>   (the routine is pointed at it)\n"
     "Write ONE line for EVERY value, repeating its name exactly so it maps "
     "back.\n"
     "Write nothing else — no preamble, no explanation, no restating the routine."
@@ -681,8 +682,8 @@ class MicroContext:
         description and which of ``values`` it is ABOUT — the FOURTH customer of this
         machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
         with the shape system prompt and its own ledger attribution, then a
-        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``FIXED`` or
-        ``ASKED`` line per value).
+        deterministic tag parse (``NAME:`` / ``DESCRIPTION:`` / one ``CONSTANT`` or
+        ``PARAMETER`` line per value).
 
         Two things make a draw a contract violation — one reroll of the unchanged
         context, then ``None``: a missing name or description (as for the labeller),
@@ -713,10 +714,10 @@ class MicroContext:
     def _parse_shape(draw: str, values: Sequence[str]) -> SkillShape | None:
         """Deterministic parse of the shape contract — a ``NAME:`` line, a
         ``DESCRIPTION:`` line (each with a non-blank payload), and per-value
-        ``FIXED``/``ASKED`` lines, MEMBERSHIP-filtered against ``values`` (a line
+        ``CONSTANT``/``PARAMETER`` lines, MEMBERSHIP-filtered against ``values`` (a line
         naming something that was never offered addresses nothing and is dropped).
 
-        A value with no line stays ASKED — absence is never a verdict here either
+        A value with no line stays a PARAMETER — absence is never a verdict here either
         (#1770's rule), and the flaky-draw-safe direction is the one that keeps the
         skill bindable.  Marking every offered value fixed IS a violation: the
         prompt states the floor, and a draw that ignores it would produce a routine

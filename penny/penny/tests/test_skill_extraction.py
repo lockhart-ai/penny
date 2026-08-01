@@ -994,8 +994,8 @@ async def test_the_value_the_routine_is_named_for_becomes_a_constant(db):
         _BOTH_USER_SUPPLIED,
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Keep an eye on what a listing costs.\n"
-        "FIXED what_to_find\n"
-        "ASKED url",
+        "CONSTANT what_to_find\n"
+        "PARAMETER url",
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1038,8 +1038,8 @@ async def test_a_routine_is_never_all_constant_so_it_stays_bindable(db):
         _BOTH_USER_SUPPLIED,
         "NAME: Watch the aurora deck 2 price\n"
         "DESCRIPTION: Check that one listing and record its price.\n"
-        "FIXED what_to_find\n"
-        "FIXED url",
+        "CONSTANT what_to_find\n"
+        "CONSTANT url",
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1068,9 +1068,9 @@ async def test_the_attachment_target_is_never_offered_as_a_constant(db):
         # The draw names the destination anyway — and it changes nothing.
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Keep an eye on what a listing costs.\n"
-        "FIXED destination\n"
-        "ASKED url\n"
-        "ASKED what_to_find",
+        "CONSTANT destination\n"
+        "PARAMETER url\n"
+        "PARAMETER what_to_find",
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1182,27 +1182,28 @@ def test_shape_system_prompt_whole_render():
         "task, generic — never the specific instance — and one line saying what it "
         "is for.\n"
         "2. Decide, for EVERY value, which of two cases it is:\n"
-        "   - FIXED. The routine is ABOUT this value. Running it with a different "
-        "one would be a DIFFERENT routine, not the same routine on new input, so it "
-        "is never asked for again — it is part of what the routine does.\n"
-        "   - ASKED. The routine is POINTED AT this value. Running it with a "
+        "   - CONSTANT. The routine is ABOUT this value. Running it with a "
+        "different one would be a DIFFERENT routine, not the same routine on new "
+        "input, so it is never asked for again — it is part of what the routine "
+        "does.\n"
+        "   - PARAMETER. The routine is POINTED AT this value. Running it with a "
         "different one is the same routine doing the same thing somewhere else, so "
         "it is asked for every time the routine is set up.\n"
         "   The name and description you just wrote decide this, and have to agree "
-        "with it: a value they commit to is FIXED, a value they leave open is "
-        "ASKED. For example, a routine demonstrated by filing one receipt into one "
-        "folder is 'file receipts' when what makes it that routine is receipts "
-        "(FIXED) and the folder is chosen each time (ASKED) — or 'file emails into "
+        "with it: a value they commit to is a CONSTANT, a value they leave open is "
+        "a PARAMETER. For example, a routine demonstrated by filing one receipt into "
+        "one folder is 'file receipts' when what makes it that routine is receipts "
+        "(CONSTANT) and the folder is chosen each time (PARAMETER) — or 'file emails into "
         "a folder' when both are chosen each time. Both are real routines; which "
         "one you are naming is the decision you are making here.\n"
-        "   At least one value is always ASKED. A routine with nothing left to ask "
-        "for can only ever repeat the one thing it was demonstrated with, which "
+        "   At least one value is always a PARAMETER. A routine with nothing left to "
+        "ask for can only ever repeat the one thing it was demonstrated with, which "
         "makes it a record of what happened rather than a routine.\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the routine is for>\n"
-        "FIXED <value name>   (the routine is about it)\n"
-        "ASKED <value name>   (the routine is pointed at it)\n"
+        "CONSTANT <value name>   (the routine is about it)\n"
+        "PARAMETER <value name>   (the routine is pointed at it)\n"
         "Write ONE line for EVERY value, repeating its name exactly so it maps "
         "back.\n"
         "Write nothing else — no preamble, no explanation, no restating the routine."

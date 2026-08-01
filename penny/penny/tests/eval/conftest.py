@@ -2410,12 +2410,17 @@ def _score_classifier(
     return checks
 
 
-def _micro_context_rows(db: Database, agent_name: str) -> list[PromptLog]:
-    """The sample's micro-context promptlog rows for ``agent_name``, oldest first —
-    one per draw, so a reroll shows as a second row (the fragile signal and the
-    transcript's second 🧩 pair both read off this).  Shared by every single-draw
-    customer: the state classifier and the skill labeller."""
-    return [row for row in _sample_prompt_rows(db) if row.agent_name == agent_name]
+def _micro_context_rows(db: Database, *agent_names: str) -> list[PromptLog]:
+    """The sample's micro-context promptlog rows for the named customers, in LEDGER
+    order — one per draw, so a reroll shows as a second row (the fragile signal and
+    the transcript's second 🧩 pair both read off this).
+
+    Takes SEVERAL customers because a run end is not one draw (#1803): the labeller
+    rules on provenance and the shape draw decides what the routine is, and a report
+    naming only one of them renders a transcript that cannot show the decision the
+    case is scoring — which is how a shipped second draw read as never built."""
+    wanted = frozenset(agent_names)
+    return [row for row in _sample_prompt_rows(db) if (row.agent_name or "") in wanted]
 
 
 def _classifier_rows(db: Database) -> list[PromptLog]:
@@ -2485,18 +2490,20 @@ def _write_classifier_report(
     *,
     result: SampleResult,
     phrasing: str,
-    agent_name: str = PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+    agent_names: Sequence[str] = (PennyConstants.STATE_CLASSIFIER_AGENT_NAME,),
 ) -> None:
-    """One single-draw micro-context sample's transcript block — hand-built (the
+    """One micro-context sample's transcript block — hand-built (the
     generic extractor is chat-run-shaped; this sample is one step whose actor is the
     🧩 micro-context, the spec's official sub-model actor), rendered by the SAME pure
     report grammar and appended to the same ``<case_id>.md``. No-op off-report.
-    ``agent_name`` selects the customer's rows (classifier by default, the skill
-    labeller for #1770's case)."""
+    ``agent_names`` selects the customers' rows, rendered in one ledger-ordered
+    stream (the classifier by default; the run-end labeller AND shape draw for the
+    skill cases, #1770/#1803) — each 🧩 pair carries its own context label, so two
+    customers read as the two actors they are."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     if not report_dir:
         return
-    rows = _micro_context_rows(db, agent_name)
+    rows = _micro_context_rows(db, *agent_names)
     if not rows:
         transcript = report.SampleTranscript(
             sample_index + 1,
@@ -2705,9 +2712,22 @@ def _log_demonstration(
     )
 
 
-def _labeller_rows(db: Database) -> list[PromptLog]:
-    """The sample's skill-labelling rows (#1770) — more than one means a reroll."""
-    return _micro_context_rows(db, PennyConstants.SKILL_NAMING_AGENT_NAME)
+# The customers that draw at run end: the labeller (provenance) and the shape draw
+# (what the routine IS).  One list, so the report and the reroll signal can never
+# disagree about who spoke at the end of a run.
+RUN_END_CUSTOMERS = (
+    PennyConstants.SKILL_NAMING_AGENT_NAME,
+    PennyConstants.SKILL_SHAPE_AGENT_NAME,
+)
+
+
+def _run_end_rerolled(db: Database) -> bool:
+    """Did EITHER run-end customer draw more than once (#1770/#1803) — the fragile
+    signal, a sample that only got there by recovering.
+
+    Counted PER customer, never in total: a run end is two draws by design, so a
+    total would mark every sample fragile and the signal would mean nothing."""
+    return any(len(_micro_context_rows(db, agent)) > 1 for agent in RUN_END_CUSTOMERS)
 
 
 def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
@@ -2947,7 +2967,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                             skill, prompt, user_values, assistant_values, constant_values
                         )
                         result = _guarded_graded(list(scored), [])
-                        result.fragile = result.passed and len(_labeller_rows(penny.db)) > 1
+                        result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
                         _stamp_cause(penny.db, result)
                     except TimeoutError:
@@ -2960,7 +2980,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         sample_index,
                         result=result,
                         phrasing=utterance,
-                        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+                        agent_names=RUN_END_CUSTOMERS,
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
