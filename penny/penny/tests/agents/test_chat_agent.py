@@ -29,7 +29,7 @@ from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
-from penny.tools.skill_tools import render_skill_full
+from penny.tools.skill_tools import render_skill_brief
 
 # ── 1. Full integration (happy path) ─────────────────────────────────────
 
@@ -395,12 +395,14 @@ async def test_run_end_extracts_and_narrates_a_skill(
         assert skill.description == ask
 
         # The injected narration frame IS the SKILL_LEARNED_NARRATION template filled
-        # with the rendered recipe + the demonstrated-on origin message (#1665) — the
-        # model narrates from the render, not memory.  The shared mock handler doesn't
-        # speak the NAME:/DESCRIPTION: naming contract, so naming falls back to the
-        # deterministic slug + the ask as the description (extraction never blocks).
+        # with the BRIEF render + the demonstrated-on origin message (#1665/#1804) —
+        # the model narrates from the render, not memory, and what it is handed to
+        # relay is a description rather than a recipe.  The shared mock handler
+        # doesn't speak the NAME:/DESCRIPTION: naming contract, so naming falls back
+        # to the deterministic slug + the ask as the description (extraction never
+        # blocks).
         assert captured["frame"] == Prompt.SKILL_LEARNED_NARRATION.format(
-            skill=render_skill_full(skill), demonstrated_on=ask
+            skill=render_skill_brief(skill), demonstrated_on=ask
         )
 
         # Extraction ran EXACTLY once — the re-reply found the run already handled.

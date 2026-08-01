@@ -277,9 +277,12 @@ class Prompt:
     )
 
     # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
-    # what it did this turn (#1658).  It carries the FULL rendered skill so the model
-    # narrates from the render, not from memory (SAID==DID): name, trigger, numbered
-    # recipe, required parameters.  The model re-replies telling the user what it learned.
+    # what it did this turn (#1658).  It carries the BRIEF render (#1804) — name,
+    # what it's for, what it needs — so the model narrates from the render, not from
+    # memory (SAID==DID).  Deliberately NOT the numbered recipe (#1799): what this
+    # frame asks for is a description a person can act on, and a block of tool calls
+    # sitting in front of that request is a block that gets read aloud.  Nothing here
+    # forbids showing tool syntax; there is simply none to show.
     SKILL_LEARNED_NARRATION = (
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"
@@ -289,9 +292,9 @@ class Prompt:
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
         "that you've learned this routine: name it by what it does generally (not "
-        "just this one instance), say plainly what it does (the steps), and name "
-        "what you'd need from them to run it again (its required parameters). Then "
-        "offer to set it running on a schedule if they'd like."
+        "just this one instance), say plainly what it does, and name what you'd need "
+        "from them to run it again. Then offer to set it running on a schedule if "
+        "they'd like."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

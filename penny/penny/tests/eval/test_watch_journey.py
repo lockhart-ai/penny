@@ -749,7 +749,8 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
 
 # The SkillNarrationValidator's injected frame (Prompt.SKILL_LEARNED_NARRATION) —
 # a stable slice; its presence in the prompt log proves the extraction fired and
-# the model was handed the RENDERED recipe to narrate from.
+# the model was handed the render to narrate from (the BRIEF one since #1804 —
+# what the routine is and what it needs, not its numbered calls).
 _LEARNED_FRAME_MARKER = "You just learned a reusable skill"
 
 

@@ -26,7 +26,7 @@ from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import TestExtractionPromptTool, collector_tool_surface
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
-from penny.tools.skill_tools import render_skill_full
+from penny.tools.skill_tools import render_skill_brief
 from penny.validation.outcomes import LoopContext
 from penny.validation.response_validators import CallAsTextValidator, SkillNarrationValidator
 
@@ -192,8 +192,10 @@ class ChatAgent(Agent):
 
     async def _extract_and_frame_skill(self, run_id: str) -> str | None:
         """Extract a skill from this run and, on success, build the narration frame
-        (the same ``render_skill_full`` render the read surface shows) so the model
-        narrates from the render, not from memory.  ``None`` when the run did not
+        so the model narrates from the render, not from memory.  The render is the
+        BRIEF one (#1804/#1799): what the routine is and what it needs, in prose —
+        the facts the model is asked to relay, and nothing shaped like a tool call
+        for it to read aloud to the user instead.  ``None`` when the run did not
         qualify — the gate is logged, never silently swallowed."""
         result = await self._skill_extractor.extract(run_id)
         match result:
@@ -203,7 +205,7 @@ class ChatAgent(Agent):
                 # what it did and offering, apply binds it when the user says so —
                 # so the framework no longer folds the two together at run end.
                 return Prompt.SKILL_LEARNED_NARRATION.format(
-                    skill=render_skill_full(skill), demonstrated_on=origin
+                    skill=render_skill_brief(skill), demonstrated_on=origin
                 )
             case NoExtraction(gate=gate):
                 logger.debug("No skill extracted from run %s (%s)", run_id, gate)
@@ -375,8 +377,9 @@ class ChatAgent(Agent):
         ``skills`` recall — is re-homed by #1471 onto the header's **Skills and
         rules** section: the taught-skill registry (``db.skills``, the sole
         skills store — the legacy ``skills`` collection retired with #1624)
-        renders deterministically, so a taught behavior fires ambiently (0
-        calls) with its full recipe one guess-free ``skill_read`` hop away.
+        renders deterministically as one row each — what a skill is and what it
+        needs (#1804) — so a taught behavior is instantiable ambiently (0 calls)
+        with its full recipe one guess-free ``skill_read`` hop away.
         Background agents keep the base envelope (profile + inventory) and never
         see this header — it is the chat entry point's opening state.
         """

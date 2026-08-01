@@ -65,7 +65,7 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.micro_context import SKILL_NAMING_SYSTEM_PROMPT
-from penny.tools.skill_tools import render_skill_full
+from penny.tools.skill_tools import render_skill_brief, render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
 
@@ -803,10 +803,10 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
     ]
     assert unbound_required_parameters(params, {"url": "u", "what_to_find": "w"}) == []
 
-    # The whole-skill render (what `skill_read` returns and the ambient Skills section
-    # shows): only the real parameters are listed, and every leaf no user can bind —
-    # each assistant-produced value AND the write target (#1777) — shows WHAT BELONGS
-    # THERE in placeholder syntax, never the demonstrated value.
+    # The whole-skill render (what `skill_read` returns — the one surface the recipe
+    # is the answer on, #1804): only the real parameters are listed, and every leaf no
+    # user can bind — each assistant-produced value AND the write target (#1777) —
+    # shows WHAT BELONGS THERE in placeholder syntax, never the demonstrated value.
     assert render_skill_full(result.skill) == (
         "skill 'watch-a-listing-price'\n"
         "what it's for: Look up a price on a listing page and record it.\n"
@@ -819,6 +819,15 @@ async def test_placeholder_verdict_drops_the_parameter_and_never_freezes_its_val
         "{'key': {url}, 'content': the value from step 1}, "
         "{'key': {a short label for the second entry}, "
         "'content': {a note about the page you just read}}])"
+    )
+
+    # The BRIEF render (#1804) — the same skill as the ambient section and the
+    # narration frame see it: what it is and what it needs, each parameter named with
+    # what to supply for it, and no step, no tool name, no placeholder syntax.
+    assert render_skill_brief(result.skill) == (
+        "watch-a-listing-price — Look up a price on a listing page and record it. "
+        "(needs: url — the listing page to read; what_to_find — what to pull from "
+        "the page)"
     )
 
     # The collection the round wrote into is left exactly as the round left it:
@@ -988,14 +997,17 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     assert "name" not in names and "description" not in names and "skill" not in names
 
 
-# ── #1665: the run-end narration frame (whole-render literal) ──────────────────
+# ── #1665/#1804: the run-end narration frame (whole-render literal) ────────────
 
 
 def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on():
-    """The narration frame (#1665) renders the GENERIC skill (name · intent ·
-    parameters · steps, via the shared render_skill_full) AND a line naming the
-    INSTANCE it was demonstrated on — whole-render literal, model-facing 'parameters'
-    vocabulary."""
+    """The narration frame (#1665) renders the GENERIC skill — name · intent · what
+    it needs, via render_skill_brief — AND a line naming the INSTANCE it was
+    demonstrated on: whole-render literal.
+
+    The frame asks for a description a person can act on, so what it hands the model
+    is a description (#1804/#1799).  Nothing in it is shaped like a call, so the
+    reciting-the-recipe reading the numbered render invited is not available."""
     skill = Skill(
         name="watch-a-listing-price",
         steps=_WATCH_STEPS,
@@ -1005,26 +1017,46 @@ def test_skill_learned_narration_frame_renders_generic_name_and_demonstrated_on(
         author="chat",
     )
     frame = Prompt.SKILL_LEARNED_NARRATION.format(
-        skill=render_skill_full(skill),
+        skill=render_skill_brief(skill),
         demonstrated_on="watch the aurora deck 2 price and remember it",
     )
     assert frame == (
         "You just learned a reusable skill from what you did in this conversation — "
         "it's saved automatically, and here is exactly what it captured:\n\n"
-        "skill 'watch-a-listing-price'\n"
-        "what it's for: Watch a listing page's price and record it.\n"
-        "parameters:\n"
-        "  - url (required)\n"
-        "steps:\n"
-        "  1. browse(queries=[{url}])\n\n"
+        "watch-a-listing-price — Watch a listing page's price and record it. "
+        "(needs: url)\n\n"
         "You demonstrated it on: watch the aurora deck 2 price and remember it\n\n"
         "Reply to the user now. FIRST answer what they actually asked: report the "
         "outcome of this round — the value you found and where you stored it — since "
         "this reply is the only one they receive. THEN tell them, in your own words, "
         "that you've learned this routine: name it "
         "by what it does generally (not just this one instance), say plainly what it "
-        "does (the steps), and name what you'd need from them to run it again (its "
-        "required parameters). Then offer to set it running on a schedule if they'd like."
+        "does, and name what you'd need from them to run it again. Then offer to set "
+        "it running on a schedule if they'd like."
+    )
+    # The leak #1799 recorded — `browse(queries=[{url}])` read aloud to the user —
+    # has no source here: the frame carries no step, no tool name, and no brace
+    # placeholder for the model to copy.
+    assert "browse" not in frame and "{" not in frame
+
+
+def test_skill_brief_render_omits_the_needs_tail_when_a_routine_needs_nothing():
+    """A skill is an ARBITRARY tool sequence (#1783), so the brief render must hold
+    at both extremes: a routine with no parameters carries no ``(needs: …)`` tail at
+    all — the line reads as a plain ``name — what it's for``, not an empty "needs:
+    none" a reader has to parse before ignoring — and step count never shows,
+    however many tools the routine spans."""
+    skill = Skill(
+        name="tidy-the-receipts-folder",
+        steps=_WATCH_STEPS,
+        parameters="[]",
+        intent="File receipts into the folder they belong in.",
+        description="File receipts into the folder they belong in.",
+        author="chat",
+    )
+
+    assert render_skill_brief(skill) == (
+        "tidy-the-receipts-folder — File receipts into the folder they belong in."
     )
 
 

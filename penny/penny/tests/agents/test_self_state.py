@@ -202,9 +202,10 @@ def _add_skill(
     parameters: str = "[]",
 ) -> None:
     """A taught skill (the ``skill`` registry, #1590) — the taught-skill feed of the
-    Skills-and-rules section, which renders each skill's FULL recipe ambiently
-    (#1665, the same ``render_skill_full`` ``skill_read`` returns).  Pass real
-    ``steps``/``parameters`` JSON to exercise the recipe render."""
+    Skills-and-rules section, which renders one ROW per skill (#1804,
+    ``render_skill_brief``: what it's for and what it needs).  Pass real
+    ``steps``/``parameters`` JSON so a test can show the steps stay OUT of the
+    ambient render while the parameters come through."""
     session.add(
         Skill(
             name=name,
@@ -598,11 +599,12 @@ def test_self_state_archived_heavy_render(db):
 
 
 def test_self_state_taught_skills_only_render(db):
-    """The taught-skill registry renders each skill's FULL recipe (#1665) — name,
-    intent, holes, and numbered steps, name order — the section's sole feed.  This is
-    the 0-call FIRING surface: the model acts on this text directly, with no
-    instantiation to retarget anything, so a scoped write must show the #1777
-    placeholder and never the collection the skill was demonstrated against."""
+    """The taught-skill registry renders ONE ROW per skill (#1804) — name, what it's
+    for, what it needs, name order — the section's sole feed, in the same ``- <name>
+    — <clauses>`` shape the sections above it use, so several skills are a list to
+    skim.  What a row does NOT carry is the numbered recipe: this is a 0-call
+    INSTANTIATION surface (the parameter names are the binding keys), not a surface
+    anything is carried out from, and the steps stay one ``skill_read`` away."""
     with Session(db.engine) as session:
         _add_skill(
             session,
@@ -623,6 +625,10 @@ def test_self_state_taught_skills_only_render(db):
         session.commit()
     actual = SelfStateHeader(db, None).render()
     assert actual == _TAUGHT_SKILLS_ONLY
+    # No recipe reaches this surface at all — so neither the tool-call dialect nor
+    # anything a step's arguments carry (the demonstrated collection #1777 had to
+    # placeholder away) can appear here.
+    assert "browse(" not in actual and "collection_write(" not in actual
     assert "demonstrated-on-collection" not in actual
 
 
@@ -1006,23 +1012,12 @@ _KITCHEN_SINK = (
     "- reminder (collection, 0 entries) — one-off reminder\n"
     "\n"
     "### Skills and rules\n"
-    "Skills you've been taught — full recipe each; fire or instantiate directly, "
-    "no lookup needed:\n"
-    "skill 'Track a shipment'\n"
-    "what it's for: track my package from acme and tell me when it moves\n"
-    "parameters:\n"
-    "  - tracking (required)\n"
-    "steps:\n"
-    "  1. browse(queries=[{tracking}])\n"
-    "\n"
-    "skill 'Watch a page field'\n"
-    "what it's for: watch the price on a product page and ping me when it drops\n"
-    "parameters:\n"
-    "  - url (required)\n"
-    "steps:\n"
-    "  1. browse(queries=[{url}])\n"
-    "  2. collection_write(memory={the collection this is set up on}, "
-    "entries=[{'key': 'price', 'content': the value from step 1}])\n"
+    "Skills you've been taught — what each one does and what it needs from the user "
+    "to run. For one's exact steps: skill_read(name=<name>).\n"
+    "- Track a shipment — track my package from acme and tell me when it moves "
+    "(needs: tracking)\n"
+    "- Watch a page field — watch the price on a product page and ping me when it "
+    "drops (needs: url)\n"
     "\n"
     "### About the user\n"
     "- name: Alex\n"
@@ -1201,23 +1196,12 @@ _TAUGHT_SKILLS_ONLY = (
     "(no stores yet)\n"
     "\n"
     "### Skills and rules\n"
-    "Skills you've been taught — full recipe each; fire or instantiate directly, "
-    "no lookup needed:\n"
-    "skill 'Track a shipment'\n"
-    "what it's for: track my package from acme and tell me when it moves\n"
-    "parameters:\n"
-    "  - tracking (required)\n"
-    "steps:\n"
-    "  1. browse(queries=[{tracking}])\n"
-    "\n"
-    "skill 'Watch a page field'\n"
-    "what it's for: watch the price on a product page and ping me when it drops\n"
-    "parameters:\n"
-    "  - url (required)\n"
-    "steps:\n"
-    "  1. browse(queries=[{url}])\n"
-    "  2. collection_write(memory={the collection this is set up on}, "
-    "entries=[{'key': 'price', 'content': the value from step 1}])\n"
+    "Skills you've been taught — what each one does and what it needs from the user "
+    "to run. For one's exact steps: skill_read(name=<name>).\n"
+    "- Track a shipment — track my package from acme and tell me when it moves "
+    "(needs: tracking)\n"
+    "- Watch a page field — watch the price on a product page and ping me when it "
+    "drops (needs: url)\n"
     "\n"
     "### About the user\n"
     "(no profile set yet)\n"

@@ -6,8 +6,12 @@ distilled deterministically from a qualifying chat run's own ledger at run end
 parameters.
 The model's only skill actions are resolve (``find``), READ (``skill_read``, here),
 and instantiate/attach (``collection_set(skill=…)`` / ``collection_set(skill=…)``).
-``skill_read`` renders the versionless registry; ``render_skill_full`` is the shared
-whole-skill render (the read surface AND the run-end narration frame use it).
+``skill_read`` renders the versionless registry.  Two renders live here, because the
+consumers want different things (#1804): ``render_skill_full`` — name, intent,
+parameters AND the numbered tool-call recipe — is what an explicit read of ONE skill
+returns, the one place the steps are the answer; ``render_skill_brief`` — what a skill
+IS and what it NEEDS, on one line — is what the surfaces that JUDGE a skill read (the
+ambient ``### Skills and rules`` section every turn, and the run-end narration frame).
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from penny.tools.base import Tool
 from penny.tools.models import ToolResult
 from penny.tools.skill_args import SkillReadArgs
 
-# ── Full render (shared by the read surface and the run-end narration frame) ───
+# ── The two renders: brief (what it is) and full (how it is carried out) ──────
 
 _STEP_INDENT = "  "
 
@@ -44,13 +48,58 @@ def _parameters_block(parameters: list[SkillParameter]) -> str:
     return "\n".join(lines)
 
 
+def _needs_clause(parameters: list[SkillParameter]) -> str:
+    """The ``(needs: <parameter> — <what to supply>; …)`` tail of the brief render:
+    one entry per SKILL-level parameter, the semantic ``name`` being the binding key
+    at instantiation and the description saying what to supply for it (omitted
+    cleanly when None).  A parameter-less skill gets NO tail — the line renders
+    byte-identically to one that never had parameters, rather than asserting an
+    empty "needs: none" the reader has to parse before ignoring.
+
+    No required/optional marking here: every parameter ``distill_steps`` produces is
+    required by construction, so "needs" is the whole truth on this surface, and the
+    ``required``/``optional`` precision stays in ``render_skill_full`` — one
+    ``skill_read(name=<name>)`` away — where it can be honest about a shape this
+    codebase does not yet produce."""
+    if not parameters:
+        return ""
+    needs = "; ".join(
+        f"{parameter.name} — {parameter.description}" if parameter.description else parameter.name
+        for parameter in parameters
+    )
+    return f" (needs: {needs})"
+
+
+def render_skill_brief(skill: Skill) -> str:
+    """What a skill IS and what it NEEDS, on ONE line (#1804): ``<name> — <what it's
+    for> (needs: <parameter> — <what to supply>; …)``.
+
+    This is what a surface JUDGING a skill wants — enough to decide whether the skill
+    covers the ask and to bind its parameters — and it is deliberately all a judging
+    surface gets.  The numbered recipe is how the routine is CARRIED OUT, which no
+    chat turn does any more (the collector runs it, from the ``extraction_prompt``
+    rendered at instantiation), so on a surface read every turn it is context cost
+    for a decision it does not inform.
+
+    One line whatever the skill is: eight steps across four plugin tools render the
+    same as two, because steps do not render at all here, and a routine that needs
+    nothing simply carries no tail.  (Deliberately the same shape as the state
+    classifier's ``SkillCandidate.render`` — the two surfaces judge coverage from the
+    same facts in the same words, so they cannot disagree from having been shown
+    different evidence.  Not single-sourced: ``conversation_machine`` is a leaf that
+    must not import the database package this module pulls in.)"""
+    return f"{skill.name} — {skill.intent}{_needs_clause(parameters_from_json(skill.parameters))}"
+
+
 def render_skill_full(skill: Skill) -> str:
     """The whole skill as text (#1668, the code owner's sketch) — its name, what it's
     for, the ``parameters:`` block (semantic names + descriptions), and the numbered
     recipe (parameters shown as ``{name}``, display form == invocation form).
-    ``skill_read`` returns it for one skill, and the run-end narration frame (#1658)
-    embeds it so the model narrates what it just learned FROM the render, not from
-    memory; the ambient Skills section renders it wholesale."""
+
+    ``skill_read`` returns it for ONE skill, and that is now its only consumer
+    (#1804): an explicit read of a single skill is the one place the steps are what
+    was asked for.  The surfaces that merely judge a skill read
+    :func:`render_skill_brief` instead."""
     steps = steps_from_json(skill.steps)
     parameters = parameters_from_json(skill.parameters)
     recipe = "\n".join(f"{_STEP_INDENT}{line}" for line in render_skill(steps).splitlines())

@@ -28,15 +28,17 @@ one guess-free tool call from the detail). Sections:
   #1568) appear.
 - **Your memory** — the map of stores (collections + logs): names + one-line
   scope. The index for an anchored lookup, never the content.
-- **Skills and rules** — the pinned firing channel for taught skills (#1471),
-  each rendered as its FULL recipe (#1665). Rendered deterministically (all of
-  them, verbatim + wholesale, never a relevance guess) — the same
-  ``render_skill_full`` ``skill_read`` returns — so a taught behavior fires
-  *ambiently* AND is instantiable with **no lookup**: name, intent, parameters, and
-  numbered steps are all in the prompt, so firing and instantiation both cost
-  **0 calls** (n=0 beats n=1). One feed: the taught-skill registry (``db.skills``,
-  #1590) — the sole skills store. (The legacy ``skills`` collection's
-  standing-rules feed retired with the collection, #1624/migration 0092.)
+- **Skills and rules** — the taught-skill registry (#1471), one ROW per skill:
+  name, what it's for, and what it needs (``render_skill_brief``, #1804).
+  Rendered deterministically (all of them, wholesale, never a relevance guess),
+  so instantiation costs **0 calls** — the parameters are the binding keys and
+  they are in the prompt. NOT the numbered recipe (#1804): nothing on the chat
+  path carries out a skill's steps any more, so on a section read every turn the
+  recipe was context cost for a decision it does not inform; it stays one
+  ``skill_read(name=<name>)`` away. One feed: the taught-skill registry
+  (``db.skills``, #1590) — the sole skills store. (The legacy ``skills``
+  collection's standing-rules feed retired with the collection, #1624/migration
+  0092.)
 - **About the user** — the durable user-fact core (name, timezone, location):
   deterministic facts, not a relevance guess, so personality survives without a
   lookup.
@@ -60,7 +62,7 @@ from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
 from penny.tools.collection_instantiation import render_trigger_clause
-from penny.tools.skill_tools import render_skill_full
+from penny.tools.skill_tools import render_skill_brief
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -95,13 +97,16 @@ class SelfStateHeader:
     )
     NO_PROFILE = "(no profile set yet)"
 
-    # The taught-skill feed renders each skill's FULL recipe VERBATIM (#1665), so the
-    # label must NOT imply a needed lookup: the parameters are ambient, so firing AND
-    # instantiation are both zero-call.  ``skill_read`` remains for archived/explicit
-    # reads but is no longer a drill-down the label points at.
+    # The taught-skill feed renders what each skill IS and what it NEEDS (#1804), so
+    # the label says exactly that — and names the one call that reaches what it does
+    # NOT carry, the numbered recipe, in the canonical call notation so the rendered
+    # token IS the argument (n≤1, and no bare tool name to hallucinate a call from).
+    # It stays a DESCRIPTION of the rows, never an instruction: what to do with a
+    # skill this turn is the state's own instruction, and a second copy here could
+    # only contradict it.
     TAUGHT_SKILLS_LABEL = (
-        "Skills you've been taught — full recipe each; fire or instantiate directly, "
-        "no lookup needed:"
+        "Skills you've been taught — what each one does and what it needs from the "
+        "user to run. For one's exact steps: skill_read(name=<name>)."
     )
 
     # The overflow tail each bounded section shows when it has more rows than its
@@ -369,23 +374,25 @@ class SelfStateHeader:
     # ── Skills and rules ─────────────────────────────────────────────────────
 
     def _skills_section(self) -> str:
-        """The pinned firing channel for taught skills (#1471), each rendered as its
-        FULL recipe (#1665).
+        """The taught-skill registry (#1471) — ONE ROW per skill, the same ``- <name>
+        — <clauses>`` shape the mechanisms and store-map sections use, so several
+        skills are a list to skim rather than one undifferentiated block (#1804).
 
-        Renders ALL of the taught-skill registry (no relevance gating, no budget cap
-        — wholesale; trimming is a later tuning knob) and each skill VERBATIM AND
-        WHOLESALE via the SAME ``render_skill_full`` the ``skill_read`` tool returns
-        (single-sourced): name, what-it's-for, parameters with required-ness +
-        descriptions, numbered steps. So a taught behavior fires ambiently AND is
-        instantiable with NO lookup — its parameters are in the prompt (n=0 beats
-        n=1). The section collapses to one honest placeholder when nothing has been
-        taught. (The legacy standing-rules feed retired with the ``skills``
-        collection, #1624.)"""
+        Renders ALL of it (no relevance gating, no budget cap — wholesale; gates are
+        what HID skills), each row via ``render_skill_brief``: what the skill is for
+        and what it needs. Instantiation still costs 0 calls — the parameter names
+        are the binding keys and they are right here. What a row does NOT carry is
+        the numbered recipe: no chat state carries out a skill's steps (the collector
+        does, from the prompt rendered at instantiation), so on a section read every
+        turn it was cost against a decision it does not inform — and it is one
+        ``skill_read(name=<name>)`` away, which the label names. The section
+        collapses to one honest placeholder when nothing has been taught. (The legacy
+        standing-rules feed retired with the ``skills`` collection, #1624.)"""
         skills = self.db.skills.list_all()
         if not skills:
             return "\n".join([self.SKILLS_HEADER, self.EMPTY_SKILLS])
-        recipes = "\n\n".join(render_skill_full(skill) for skill in skills)
-        return "\n".join([self.SKILLS_HEADER, self.TAUGHT_SKILLS_LABEL, recipes])
+        rows = "\n".join(f"- {render_skill_brief(skill)}" for skill in skills)
+        return "\n".join([self.SKILLS_HEADER, self.TAUGHT_SKILLS_LABEL, rows])
 
     # ── Durable user-fact core ───────────────────────────────────────────────
 
