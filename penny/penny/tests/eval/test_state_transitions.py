@@ -15,6 +15,10 @@ shapes are the later beats' business):
     elicit → learn  "go to the site, find the price, remember it"   → runs it once, remembers
     learn → apply   "now do that hourly until 10pm and tell me"     → a live watch
 
+and the edge that SKIPS that journey, which is what learning it was for:
+
+    idle → apply    "watch <a different page> hourly until 10pm"    → straight to a live watch
+
 **Learning attaches nothing** (#1706, replacing #1687's run-end auto-attach): the
 machine makes teaching and instantiating two clear turns, so the demonstrated
 round leaves a naive collection_write behind — a collection with a value in it
@@ -544,6 +548,172 @@ async def test_learn_to_apply_instantiates_the_taught_skill(chat_eval: ChatEval)
         seed=_seed_demonstrated_round,
         seed_skills=[learn_to_apply_fixture_skill()],
         score=_score_learn_to_apply,
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+# ── idle → apply: the second time, with no round to lean on ───────────────────
+
+# A DIFFERENT listing from the one the skill was taught on.  The page can only
+# have come from this message, so binding it proves she read the ask rather than
+# replaying the demonstration — which the same-page shape could not distinguish.
+_OTHER_LISTING = "https://faux-market.example/nebula-handheld"
+
+# Everything in one message: the page, how often, until when, and to be told.
+# No prior round, no parked state, no conversation — the whole point of the edge
+# is that a learned skill fires from a cold start.
+_SELF_CONTAINED_ASK = (
+    f"hey can you watch the price at {_OTHER_LISTING} every hour "
+    "until 10pm tonight and tell me if it changes?"
+)
+
+# The distractor: a second skill that is plausibly adjacent (it also reads a page
+# on a schedule) but is about something else.  Binding it instead is a scored
+# miss, so "a skill was applied" cannot pass by picking any skill at all.
+_DISTRACTOR_SKILL = "collect a cafe's daily specials"
+
+
+def _distractor_skill() -> SkillDraft:
+    """A second registry entry, so the apply turn has to choose.  Built the same
+    way as the taught one — real steps, real parameters — because a candidate the
+    classifier can see but chat cannot bind would test nothing."""
+    steps, parameters = distill_steps(
+        [
+            DistillInput(
+                source_ordinal=1,
+                tool="browse",
+                arguments={
+                    "queries": ["https://faux-cafe.example/menu"],
+                    "extract": "today's specials",
+                },
+                result="You opened the cafe menu (browse result)\nSoup of the day: leek",
+            ),
+            DistillInput(
+                source_ordinal=2,
+                tool="collection_write",
+                arguments={
+                    "memory": "cafe-specials",
+                    "entries": [{"key": "todays special", "content": "Soup of the day: leek"}],
+                },
+                result=(
+                    "You saved an entry to cafe-specials: (collection_write result)\nWrote 1 entry."
+                ),
+            ),
+        ],
+        frozenset({"cafe-specials"}),
+    )
+    return SkillDraft(
+        name=_DISTRACTOR_SKILL,
+        intent="read a cafe menu page and record the day's specials",
+        description="read a cafe menu page and record the day's specials",
+        steps=steps,
+        parameters=parameters,
+        source_run_id="distractor-round",
+    )
+
+
+def _score_idle_to_apply(db: Database, before: set[str], reply: str) -> list[Check]:
+    """A known skill fires from a cold start: the job exists, on the terms the one
+    message gave, bound to the page THAT message named.
+
+    Nothing is seeded but the skills, so every value has to come out of the ask —
+    where the previous edge could take the page from the round it followed, this
+    one has nothing to fall back on.  A collection is CREATED here rather than
+    adopted, which is correct: there is no prior round and no existing home."""
+    row = _instantiated(db)
+    bound = _bound_values(row) if row else []
+    sets = count_tool_calls(db, "collection_set")
+    return [
+        Check(
+            "state: she set the job up with collection_set",
+            tool_was_called(db, "collection_set"),
+            kind="state",
+        ),
+        Check(
+            "state: the covering skill was applied (not the distractor)",
+            row is not None and row.skill_name == slug_skill_name(_SKILL_NAME),
+            rationale=(
+                None
+                if row is not None and row.skill_name == slug_skill_name(_SKILL_NAME)
+                else f"skill_name {row.skill_name if row else None}"
+            ),
+            kind="state",
+        ),
+        Check(
+            "state: the skill's program was rendered into it",
+            row is not None and bool(row.extraction_prompt),
+            kind="state",
+        ),
+        Check(
+            "state: the page THIS message named is what she bound",
+            any(_OTHER_LISTING in value for value in bound),
+            rationale=f"bound {bound}",
+            kind="state",
+        ),
+        Check(
+            "state: it runs hourly (the cadence they asked for)",
+            row is not None and row.collector_interval_seconds == 3600,
+            rationale=f"interval {row and row.collector_interval_seconds}",
+            kind="state",
+        ),
+        Check(
+            "state: it stops tonight (the end condition they gave)",
+            row is not None and row.expires_at is not None,
+            kind="state",
+        ),
+        Check(
+            "state: it will tell them when the price moves",
+            row is not None and bool(row.notify),
+            kind="state",
+        ),
+        Check(
+            "state: she set it running instead of running it now (no browse)",
+            tool_not_called(db, "browse"),
+            kind="state",
+        ),
+        Check(
+            "reply: she says what will happen now, naming the cadence",
+            any(token in reply.lower() for token in ("hour", "60 min")),
+            kind="reply",
+        ),
+        Check(
+            "calls: one collection_set call",
+            sets == 1,
+            rationale=f"{sets} calls" if sets != 1 else None,
+            scored=False,
+            kind="proc",
+        ),
+        Check(
+            "calls: the machine landed in apply",
+            _landed_state(db) == ConversationState.APPLY.value,
+            rationale=f"landed in {_landed_state(db)}",
+            scored=False,
+            kind="spine",
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+            kind="proc",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_fires_a_known_skill_from_a_cold_start(chat_eval: ChatEval) -> None:
+    """idle → apply: no round, no parked state, no conversation — just a skill in
+    the registry and one message carrying the page, the cadence, the end
+    condition and the notify ask.  She sets it up once, binds the page the
+    MESSAGE named (a different listing from the one she was taught on, so a
+    replay of the demonstration is distinguishable from reading the ask), picks
+    the covering skill over the distractor, and does not run it now."""
+    await chat_eval(
+        case_id="transition-idle-to-apply",
+        message=_SELF_CONTAINED_ASK,
+        seed_skills=[learn_to_apply_fixture_skill(), _distractor_skill()],
+        score=_score_idle_to_apply,
         min_pass_rate=None,
         timeout=240.0,
         family=_FAMILY,
