@@ -58,6 +58,7 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.test_skill_framing import INSTANCE_PARTICULARS
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.micro_context import (
@@ -1252,3 +1253,53 @@ def test_score_framing_is_exact_and_reads_name_then_description() -> None:
     refused = _score_framing(None, [page], ())
     assert [check.ok for check in refused] == [False, False, False]
     assert "the draw was refused" in (refused[0].rationale or "")
+
+
+def _generic_check(framing: SkillFraming) -> Check:
+    """The genericity check for a framing, scored against the framing case's OWN
+    instance list — imported, never copied, so this pin cannot drift from what the eval
+    actually scores with."""
+    page = ParameterFamily("the page", ("url", "page"))
+    return next(
+        check
+        for check in _score_framing(framing, [page], INSTANCE_PARTICULARS)
+        if "KIND of task" in check.label
+    )
+
+
+def test_a_kind_word_is_not_the_occasion_the_code_owners_exemplars() -> None:
+    """The kind-vs-instance calibration, pinned as the two draws that motivated it
+    (#1824).
+
+    The genericity check scores a framing for naming the KIND of task rather than the
+    one occasion, and the first pooled run scored nine CORRECT framings wrong because
+    the case's instance list had picked up the pool's category nouns.  A skill that
+    watches ferry timetables SHOULD say "ferry"; a skill that reads a bakery's specials
+    SHOULD say "bakery" — that is what each one IS.  What neither may say is WHICH: the
+    operator, the slug, the demonstrated value.
+
+    Both directions ride here, so the rule cannot be re-broken in either — the two
+    draws the code owner quoted pass, and the same two subjects named as THIS bakery
+    and THIS ferry still fail."""
+    soup = SkillFraming(
+        name="fetch-soup",
+        description="Retrieves and logs the soup of the day from a bakery specials page",
+        parameters=[FramedParameter(name="url", description="the page")],
+    )
+    ferry = SkillFraming(
+        name="monitor_ferry_schedule",
+        description="watches a ferry timetable page for changes in the earliest and "
+        "latest departure times",
+        parameters=[FramedParameter(name="url", description="the page")],
+    )
+    assert _generic_check(soup).ok is True
+    assert _generic_check(ferry).ok is True
+
+    this_bakery = soup.model_copy(
+        update={"description": "Logs the soup of the day from the corner-bakery specials page"}
+    )
+    this_ferry = ferry.model_copy(
+        update={"description": "watches the harbour ferry timetable for departure changes"}
+    )
+    assert _generic_check(this_bakery).ok is False
+    assert _generic_check(this_ferry).ok is False

@@ -1095,6 +1095,17 @@ def test_framing_system_prompt_whole_render():
     then the name written from it, then the re-supply question as two named cases), the
     floor that keeps a skill bindable, and the enumerated output shape.
 
+    **A parameter can only describe information the user DID provide**, and that
+    constraint lives INSIDE the PARAMETER case rather than as a trailing imperative —
+    because that is where the reasoning it corrects actually walks.  A measured draw
+    asked for a `storage_path` reasoning, verbatim, *"They haven't given a file path…
+    I'd say need to provide storage_path"*: a need the ask never mentioned, invented at
+    the moment the model was deciding what a parameter IS.  So the definition itself
+    says a parameter is one of the pieces they provided, and names the two shapes of
+    unmentioned need (somewhere to keep it, what to call an entry) as the skill's own
+    business.  The paired guard is the two-destinations case, where the user DID name
+    the places and they must stay parameters.
+
     Nothing here mentions a tool call, an argument or a value the routine used: the
     interface is decided from the ask, and the pipeline this replaces failed by asking
     this question of implementation artifacts.  The worked example is deliberately a
@@ -1119,9 +1130,14 @@ def test_framing_system_prompt_whole_render():
         "particular thing they named. For each one, ask: given the skill you just "
         "described, would they have to say it AGAIN to set this skill up on a new "
         "occasion?\n"
-        "   - YES → it is a PARAMETER. The skill works the same way whatever it is, "
-        "so it cannot be known until they say. Give it a short name (a single "
-        "lowercase word or snake_case) and one line saying what to supply for it.\n"
+        "   - YES → it is a PARAMETER: one of the pieces of information they "
+        "THEMSELVES PROVIDED that your framing does not already carry. The skill "
+        "works the same way whatever it is, so it cannot be known until they say it. "
+        "If they never said it, it cannot be a parameter at all — a need they never "
+        "mentioned (somewhere to keep the result, when they never said where; what to "
+        "call an entry, when they never named one) is the skill's own business to "
+        "settle. Give it a short name (a single lowercase word or snake_case) and one "
+        "line saying what to supply for it.\n"
         "   - NO → the name and description you just wrote already carry it, so it is "
         "not a parameter and gets no line at all. Asking for it would be asking them "
         "to tell you what they came to you for.\n"

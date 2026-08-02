@@ -40,9 +40,25 @@ pytestmark = pytest.mark.eval
 
 _FAMILY = "skill-framing"
 
-# The particulars of the occasions these asks name.  A framing that carries any of them
-# has named the instance rather than the kind of task.
-_INSTANCE = ("aurora", "deck", "faux-market", "499", "harbour", "ferry", "bakery", "summit")
+# The PARTICULARS of the occasions these asks name — a framing carrying any of them has
+# named the instance instead of the kind of task.
+#
+# KIND-words are deliberately absent, and the distinction is the whole point (the code
+# owner's ruling after they cost nine samples in ``run-20260802T144944Z``): a skill that
+# watches ferry timetables SHOULD say "ferry", and one that reads a bakery's specials
+# SHOULD say "bakery" — that is what it IS.  What it must never say is which ferry,
+# which bakery, which listing.  So the operator, the slug and the demonstrated value are
+# instance; the noun for the thing is not.
+INSTANCE_PARTICULARS = (
+    "aurora",
+    "deck",
+    "faux-market",
+    "499",
+    "harbour",
+    "summit",
+    "corner-bakery",
+    "ridge-trails",
+)
 
 # The one piece a journey-register ask always leaves open: the page they pointed at.
 # Wide, because a parameter for it is as likely to be named for the thing as for its
@@ -114,7 +130,7 @@ async def test_the_page_is_the_only_parameter(framing_eval: FramingEval):
             ["pull up https://ridge-trails.example/summit-loop and save whether the trail's open"],
         ],
         expected=[_PAGE],
-        instance=_INSTANCE,
+        instance=INSTANCE_PARTICULARS,
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
@@ -154,7 +170,7 @@ async def test_a_two_piece_ask_still_asks_only_for_the_page(framing_eval: Framin
             ],
         ],
         expected=[_PAGE],
-        instance=_INSTANCE,
+        instance=INSTANCE_PARTICULARS,
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
@@ -195,7 +211,7 @@ async def test_two_named_destinations_are_two_parameters(framing_eval: FramingEv
             ],
         ],
         expected=[_PAGE, _WHERE_TO_PUT_IT._replace(count=2)],
-        instance=_INSTANCE,
+        instance=INSTANCE_PARTICULARS,
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
