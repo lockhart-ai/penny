@@ -937,10 +937,17 @@ async def test_a_cosmetically_variant_line_still_carries_its_label(db):
     whitespace-delimited dash variant now separates the name from its description (a
     hyphen INSIDE a name has no spaces around it, so it is never mistaken for the
     separator).  A line may also arrive decorated with a list marker or bold, and a
-    payload may arrive quoted — none of that is the model getting the contract wrong."""
+    payload may arrive quoted — none of that is the model getting the contract wrong.
+
+    A ZERO-WIDTH character inside the TAG is the same family (#1824): invisible, decided
+    by nothing, and before the tolerance it ate the whole line.  A measured run drew
+    ``PLACEHO<U+200B>LDER`` on three of four lines after writing the first correctly,
+    costing six of eight checks with the names themselves perfectly good.  Note this is
+    tolerance, NOT fuzzy tag matching — the sibling test pins that a genuine misspelling
+    still fails its line."""
     model = _two_draw_model(
         "- PLACEHOLDER queries: page_url – the page to look at\n"
-        "* **PLACEHOLDER extract: what_to_pull — what to pull from the page**",
+        "* **PLACEHO\u200bLDER extract: what_to_pull — what to pull from the page**",
         "**NAME:** Watch a listing price\n"
         'DESCRIPTION: "Look up a price and record it."\n'
         "- PARAMETER url – the page to watch",
@@ -956,7 +963,7 @@ async def test_a_cosmetically_variant_line_still_carries_its_label(db):
     assert [(p.name, p.description) for p in params] == [("url", "the page to watch")]
     rendered = render_skill(steps_from_json(result.skill.steps))
     assert "queries=[{the page to look at}]" in rendered  # the EN-dash split the line
-    assert "extract={what to pull from the page}" in rendered
+    assert "extract={what to pull from the page}" in rendered  # the zero-width tag survived
 
 
 @pytest.mark.asyncio
@@ -965,10 +972,16 @@ async def test_a_name_that_swallowed_its_description_is_no_label_at_all(db):
     TOKEN, not a sentence, so a line whose "name" swallowed its own description is
     MALFORMED — and a malformed line is no label, never good data.  The leaf keeps its
     arg-derived name, which is the legible direction.  A near-miss tag
-    (``PLACEHOLDERS``) is not a label line either."""
+    (``PLACEHOLDERS``) is not a label line either.
+
+    Nor is a MISSPELLED one (``PLACEHALDER``, a real draw, #1824): the zero-width
+    tolerance strips an invisible transport artifact out of a tag, and stops exactly
+    there — a tag the model got WRONG is a different fact from one the transport
+    mangled, and fuzzy tag matching is how ``PARAMETRIC`` becomes a verdict."""
     model = _two_draw_model(
         "PLACEHOLDER queries: page_url — the page to look at\n"
         'PLACEHOLDER extract: what_to_pull | the descriptor to look for (e.g., "price")\n'
+        "PLACEHALDER key: entry_key — a misspelled tag is no label\n"
         "PLACEHOLDERS memory: not a label line",
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price and record it.\n"
@@ -982,6 +995,9 @@ async def test_a_name_that_swallowed_its_description_is_no_label_at_all(db):
     rendered = render_skill(steps_from_json(result.skill.steps))
     assert "extract={extract}" in rendered  # malformed line → no label → the fallback
     steps = steps_from_json(result.skill.steps)
+    assert "entry_key" not in [sub.name for step in steps for sub in step.substitutions], (
+        "the misspelled tag labelled nothing — no fuzzy matching reached it"
+    )
     target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
     assert target.kind == SkillSubKind.PLACEHOLDER
     assert target.description == WRITE_TARGET_DESCRIPTION  # PLACEHOLDERS labelled nothing

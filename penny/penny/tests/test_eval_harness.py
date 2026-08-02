@@ -39,7 +39,6 @@ from penny.tests.eval.artifacts import (
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     Check,
-    LeafSlot,
     ParameterFamily,
     SampleResult,
     _assert_threshold,
@@ -1113,110 +1112,143 @@ def test_framing_input_renders_the_ask_and_nothing_else() -> None:
     ) == ("What the user asked for:\ncan you keep an eye on the aurora deck 2 price for me?")
 
 
-def test_score_leaf_labelling_reads_names_coverage_and_topic() -> None:
-    """The leaf-labelling case's scoring over a fixture draw (#1824): each spot is
-    checked for a WELL-FORMED label (a name that hardens to a usable binding key plus a
-    non-blank description) and for being ON TOPIC, matched broadly against an
-    alternatives set rather than an expected string.
+def test_score_leaf_labelling_scores_well_formedness_not_phrasing() -> None:
+    """The leaf-labelling case's scoring over a fixture draw (#1824): a spot passes when
+    its line is WELL-FORMED — a name that hardens to a usable binding key plus a
+    non-blank description — and the label itself rides along advisory.
 
-    And the two ways a spot can miss: no line came back for it at all, and a value the
+    Phrasing is deliberately NOT scored (the code owner's ruling): a draw calling the
+    extract spot ``price_target`` and describing it as what to pull off the page is
+    valid, and an alternatives set narrow enough to reject that wording would be
+    rejecting the draw for being phrased differently rather than for being wrong.
+
+    And the two ways a spot can miss: no usable line came back for it, and a value the
     case asserts that the ledger never distilled — a BROKEN CASE, which fails loudly
     naming the value, because a drifted fixture scoring green measures nothing."""
     by_value = {"the current price": "extract", _LABELLER_INVENTED_KEY: "key"}
     labels = LeafLabels(
         placeholders={
-            "extract": LeafPlaceholder(name="what_to_pull", description="what to read off the page")
+            "extract": LeafPlaceholder(
+                name="price_target",
+                description="Natural-language description of what to scrape from that page",
+            )
         }
     )
-    slots = [
-        LeafSlot("the current price", ("pull", "read", "extract")),
-        LeafSlot(_LABELLER_INVENTED_KEY, ("key", "label")),
-    ]
+    slots = ["the current price", _LABELLER_INVENTED_KEY]
 
     scored = _score_leaf_labelling(labels, slots, by_value)
-    assert [(check.label, check.ok) for check in scored] == [
+    assert [(check.label, check.ok) for check in scored if check.scored] == [
         ("named the spot holding 'the current price'", True),
-        ("described what belongs there for 'the current price'", True),
         ("named the spot holding 'aurora deck 2 page source'", False),
-        ("described what belongs there for 'aurora deck 2 page source'", False),
     ]
+    # The advisory pair renders what the draw committed to, and watches for selector
+    # SYNTAX — never for ordinary verbs like "scrape", which describe the job correctly.
+    advisory = [check.label for check in scored if not check.scored]
+    assert advisory == [
+        "drew 'price_target' — 'Natural-language description of what to scrape from that page'",
+        "no selector syntax for 'the current price'",
+    ]
+    assert [check.ok for check in scored if not check.scored] == [True, True]
 
-    off_topic = LeafLabels(
-        placeholders={"extract": LeafPlaceholder(name="thing", description="a value")}
+    selector = LeafLabels(
+        placeholders={
+            "extract": LeafPlaceholder(
+                name="price_selector", description="a CSS selector locating the price"
+            )
+        }
     )
-    assert [check.ok for check in _score_leaf_labelling(off_topic, slots[:1], by_value)] == [
-        True,
-        False,
+    watched = _score_leaf_labelling(selector, slots[:1], by_value)
+    assert [(check.ok, check.scored) for check in watched] == [
+        (True, True),  # still a well-formed label — the scored check is unaffected
+        (True, False),
+        (False, False),  # the advisory watch fires on the CSS claim
     ]
 
-    drifted = _score_leaf_labelling(labels, [LeafSlot("nothing distilled this", ())], by_value)
+    # A name that hardens to nothing is not a usable binding key.
+    unusable = LeafLabels(placeholders={"extract": LeafPlaceholder(name="---", description="x")})
+    assert [check.ok for check in _score_leaf_labelling(unusable, slots[:1], by_value)][0] is False
+
+    drifted = _score_leaf_labelling(labels, ["nothing distilled this"], by_value)
     assert [(check.label, check.ok) for check in drifted] == [
         ("named the spot holding 'nothing distilled this'", False)
     ]
     assert "not among the distilled placeholders" in (drifted[0].rationale or "")
 
 
-def test_score_framing_reads_the_signature_in_both_directions() -> None:
-    """The framing case's scoring over a fixture draw (#1824): an EXPECTED family is
-    carried by at least its count of distinct parameters, an ABSENT one by none, a
-    CARRIED piece survives either in the framing or as a parameter, and the framing
-    names the kind of task rather than the occasion.
+def test_score_framing_is_exact_and_reads_name_then_description() -> None:
+    """The framing case's scoring over a fixture draw (#1824): every expected family is
+    covered by at least its count of distinct parameters, NOTHING ELSE is asked for, and
+    the framing names the kind of task rather than the occasion.
 
-    Family order is the disambiguation: a parameter named for the page counts as the
-    page even when its name also mentions what is on that page, which is why the
-    expected families are classified before the absent ones."""
+    Exactness is the contract (the code owner's ruling): a signature that also asks for
+    what to look for is wrong however that extra parameter is named.
+
+    And the classification rule that ruling repaired: a parameter is matched on its NAME
+    first and only then on its DESCRIPTION, so an abbreviation the family never
+    enumerated (``price_col``) still lands by what its description says, while a
+    destination whose description merely mentions the page is not read as the page."""
     page = ParameterFamily("the page", ("url", "page"))
-    what = ParameterFamily("what to look for", ("price", "find"))
     framing = SkillFraming(
         name="watch a listing price",
         description="Keep an eye on what a listing costs.",
-        parameters=[FramedParameter(name="price_page_url", description="the page")],
+        parameters=[FramedParameter(name="product_page_url", description="the page to check")],
     )
 
-    scored = _score_framing(framing, [page], [what], [], ("aurora", "deck"))
+    scored = _score_framing(framing, [page], ("aurora", "deck"))
     assert [(check.label, check.ok) for check in scored if check.scored] == [
         ("the page is a parameter", True),
-        ("what to look for is not a parameter", True),
+        ("asks for nothing else", True),
         ("framed the KIND of task, not the occasion", True),
     ]
 
-    # Two named destinations are TWO parameters, so a family can require a count.
+    # The extra parameter the floor case exists to catch — the exactness check fails it
+    # whatever it is called, and names it in the rationale.
+    extra = SkillFraming(
+        name="watch a listing value",
+        description="Keep an eye on a listing.",
+        parameters=[
+            FramedParameter(name="url", description="the page"),
+            FramedParameter(name="what_to_find", description="what to look for on it"),
+        ],
+    )
+    exactness = [check for check in _score_framing(extra, [page], ()) if check.scored][1]
+    assert (exactness.label, exactness.ok) == ("asks for nothing else", False)
+    assert "also asked for: what_to_find" in (exactness.rationale or "")
+
+    # Two named destinations are TWO parameters, matched by DESCRIPTION when the names
+    # are abbreviations no family enumerates (the measured `price_col` / `seller_col`
+    # draw, which name-only matching scored as a miss when it was correct).
     where = ParameterFamily("where to put it", ("collection", "log"), count=2)
     two = SkillFraming(
         name="file two readings",
         description="Record two readings in the places you are given.",
         parameters=[
-            FramedParameter(name="price_collection", description="one place"),
-            FramedParameter(name="rating_log", description="the other"),
+            FramedParameter(name="url", description="the full URL to fetch"),
+            FramedParameter(name="price_col", description="name of the collection for the price"),
+            FramedParameter(name="seller_col", description="name of the collection for the rating"),
         ],
     )
-    assert [check.ok for check in _score_framing(two, [where], [], [], ()) if check.scored] == [
-        True,
-        True,
+    # Four scored checks now: one per expected family, then exactness, then generic.
+    assert [
+        (check.label, check.ok) for check in _score_framing(two, [page, where], ()) if check.scored
+    ] == [
+        ("the page is a parameter", True),
+        ("where to put it is a parameter", True),
+        ("asks for nothing else", True),
+        ("framed the KIND of task, not the occasion", True),
     ]
 
-    # A piece the ask named survives EITHER way — in the framing or as a parameter —
-    # and only vanishing entirely is scored wrong.
-    rating = ParameterFamily("the thing to watch", ("rating",))
-    carried = SkillFraming(
-        name="watch a seller rating",
-        description="Keep an eye on a listing's seller rating.",
+    # A framing that carries the occasion's own words is not generic by any reading.
+    instance_named = SkillFraming(
+        name="watch the aurora deck 2 price",
+        description="Check that one listing.",
         parameters=[FramedParameter(name="url", description="the page")],
     )
-    assert [
-        check.ok for check in _score_framing(carried, [], [], [rating], ()) if check.scored
-    ] == [True, True]
-    lost = SkillFraming(
-        name="watch a listing",
-        description="Keep an eye on a listing.",
-        parameters=[FramedParameter(name="url", description="the page")],
-    )
-    assert [check.ok for check in _score_framing(lost, [], [], [rating], ()) if check.scored] == [
-        False,
-        True,
-    ]
+    named = _score_framing(instance_named, [page], ("aurora",))
+    generic = next(check for check in named if "KIND of task" in check.label)
+    assert generic.ok is False
 
     # A refused draw fails every check with its reason named, never silently.
-    refused = _score_framing(None, [page], [what], [], ())
+    refused = _score_framing(None, [page], ())
     assert [check.ok for check in refused] == [False, False, False]
     assert "the draw was refused" in (refused[0].rationale or "")

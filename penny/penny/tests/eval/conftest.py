@@ -72,6 +72,7 @@ from penny.text_validity import (
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
+    FramedParameter,
     LeafLabels,
     MicroContext,
     SkillFraming,
@@ -2878,107 +2879,117 @@ def _leaf_labelling_input(
     return content, by_value, [parameter.name for parameter in parameters]
 
 
-class LeafSlot(NamedTuple):
-    """One placeholder a leaf-labelling case scores (#1824): the ``value`` that sat in
-    that spot in the demonstration (how the case names it — the arg-derived key is the
-    distiller's to mint) and ``about``, the words a label for that spot could
-    plausibly use.
+class LeafRound(NamedTuple):
+    """One demonstrated routine in a leaf-labelling POOL (#1824): the ledger it
+    distils from, the collection it wrote to, and the demonstrated ``slots`` whose
+    spots the draw must name.
 
-    ``about`` is an ALTERNATIVES set matched broadly against the drawn name plus its
-    description, never an expected string: what is being measured is that the draw
-    described THAT spot rather than a neighbouring one, and any of several wordings
-    does that."""
+    A pool of these is what makes N samples cover input SPACE rather than re-rolling
+    one point — the same doctrine the classifier evals' phrasing pools encode.  The
+    single frozen fixture this replaces measured one routine N times, which reads as a
+    score but is one demonstration's luck."""
 
-    value: str
-    about: tuple[str, ...]
+    calls: tuple[DemoCall, ...]
+    target: str
+    slots: tuple[str, ...]
 
 
-def _leaf_checks(
-    labels: LeafLabels | None, slot: LeafSlot, by_value: dict[str, str]
-) -> list[Check]:
-    """One slot's two checks (#1824): it came back with a WELL-FORMED label (a name
-    that hardens to a usable binding key plus a non-blank description), and that label
-    is ON TOPIC for the spot it names.
+# Actual selector SYNTAX, named as the mechanism — the misconception worth watching
+# (this system has no selector, pattern or query machinery).  Keyed to the syntax
+# names ONLY, never to ordinary verbs like "scrape" or "extract", which describe the
+# job correctly.  ADVISORY: it renders for a reader and scores nothing, because the
+# fix for it is a prompt lever measured on its own round, not a naming failure.
+_SELECTOR_SYNTAX = ("css", "xpath", "regex", "queryselector", "query selector")
 
-    A slot that is not among the distilled placeholders at all is a BROKEN CASE, not a
-    naming failure, and fails LOUDLY naming the value: the fixture ledger has drifted
-    from what the case asserts, and a drifted fixture that scores green measures
-    nothing."""
-    current = by_value.get(slot.value)
+
+def _leaf_checks(labels: LeafLabels | None, value: str, by_value: dict[str, str]) -> list[Check]:
+    """One spot's checks (#1824): SCORED — the draw returned a WELL-FORMED label for
+    it (a name that hardens to a usable binding key plus a non-blank description).
+    ADVISORY — the label itself, rendered so a reader sees what the draw committed to,
+    and whether it described selector syntax this system does not have.
+
+    Every well-formed line passes, by the code owner's ruling: a plausible semantic
+    name with a non-empty description IS the job, and an alternatives set narrow enough
+    to reject one good wording rejects the draw for being phrased differently rather
+    than for being wrong.
+
+    A value that is not among the distilled placeholders at all is a BROKEN CASE, not a
+    naming failure, and fails LOUDLY naming it: the fixture ledger has drifted from what
+    the case asserts, and a drifted fixture that scores green measures nothing."""
+    current = by_value.get(value)
     if current is None:
-        drift = f"{slot.value!r} is not among the distilled placeholders — the fixture has drifted"
-        return [
-            Check(f"named the spot holding {slot.value!r}", False, kind="state", rationale=drift)
-        ]
+        drift = f"{value!r} is not among the distilled placeholders — the fixture has drifted"
+        return [Check(f"named the spot holding {value!r}", False, kind="state", rationale=drift)]
     label = labels.placeholders.get(current) if labels is not None else None
     if label is None:
         return [
             Check(
-                f"named the spot holding {slot.value!r}",
+                f"named the spot holding {value!r}",
                 False,
                 kind="state",
-                rationale="no line came back for it",
-            ),
-            Check(f"described what belongs there for {slot.value!r}", False, kind="state"),
+                rationale="no usable line came back for it",
+            )
         ]
     key = slug_parameter_name(label.name)
+    drawn = f"{label.name!r} — {label.description!r}"
     return [
         Check(
-            f"named the spot holding {slot.value!r}",
+            f"named the spot holding {value!r}",
             bool(key) and not is_blank(label.description),
             kind="state",
-            rationale=f"drew name {label.name!r} → key {key!r}, description {label.description!r}",
+            rationale=f"drew {drawn} → key {key!r}",
         ),
+        Check(f"drew {drawn}", True, kind="state", scored=False),
         Check(
-            f"described what belongs there for {slot.value!r}",
-            _mentions_any(f"{label.name} {label.description}", slot.about),
+            f"no selector syntax for {value!r}",
+            not _mentions_any(f"{label.name} {label.description}", _SELECTOR_SYNTAX),
             kind="state",
-            rationale=f"drew {label.name!r} — {label.description!r}",
+            scored=False,
         ),
     ]
 
 
 def _mentions_any(text: str, words: Sequence[str]) -> bool:
-    """Broad semantic match: does ``text`` use any of these words?  Case-folded
-    substring containment over an ALTERNATIVES set — the loosest test that still
-    distinguishes one spot's subject from another's."""
+    """Broad match: does ``text`` use any of these words?  Case-folded substring
+    containment over an ALTERNATIVES set — the loosest test that still separates one
+    subject from another."""
     lowered = text.lower()
     return any(word.lower() in lowered for word in words)
 
 
 def _score_leaf_labelling(
-    labels: LeafLabels | None, slots: Sequence[LeafSlot], by_value: dict[str, str]
+    labels: LeafLabels | None, slots: Sequence[str], by_value: dict[str, str]
 ) -> list[Check]:
-    """The leaf-labelling case's graded checks (#1824), read off the returned
-    ``LeafLabels``: every offered spot came back with a well-formed, on-topic label.
+    """The leaf-labelling case's checks (#1824), read off the returned ``LeafLabels``:
+    every offered spot came back with a well-formed label.
 
-    There is no verdict to score here and no wrong-verdict failure mode left — every
-    leaf is a placeholder by construction — so what the case measures is naming
-    QUALITY and COVERAGE, which is the whole of this draw's job."""
-    return [check for slot in slots for check in _leaf_checks(labels, slot, by_value)]
+    There is no verdict to score and no wrong-verdict failure mode left — every leaf is
+    a placeholder by construction — so what this measures is COVERAGE and
+    WELL-FORMEDNESS, which is the whole of this draw's job."""
+    return [check for value in slots for check in _leaf_checks(labels, value, by_value)]
 
 
 @pytest.fixture
 def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval:
-    """Drive the run-end LEAF LABELLER (#1824) N times, and NOTHING else.
+    """Drive the run-end LEAF LABELLER (#1824) N times over a POOL of demonstrated
+    routines (sample i → ``pool[i % len(pool)]``), and NOTHING else.
 
-    The labeller answers one question — what belongs in this spot — and this case
-    measures that answer directly: the returned ``LeafLabels``.  Its input is a FIXTURE
-    ledger through DETERMINISTIC distillation, so nothing live sits upstream of the
-    draw either, and it is the routine's calls ALONE: the fixture has no conversation
-    to leak, because the production content has none to render.
+    The pool is the point: one frozen routine measured N times reports how one
+    demonstration's phrasing happened to land, where a pool of the same SHAPE across
+    varied domains reports the judgment.  Each round's input is a FIXTURE ledger
+    through DETERMINISTIC distillation, so nothing live sits upstream of the draw
+    either, and it is the routine's calls ALONE: the fixture has no conversation to
+    leak, because the production content has none to render.
 
     The demonstration is a fixture precisely so the case measures the JUDGMENT and
     never polices what a round chose to write — if a round writes two entries, two
-    entries are the skill (the code owner's ruling on #1770, unchanged here).
+    entries are the skill (the code owner's ruling on #1770, unchanged).
     """
 
     async def _run(
         *,
         case_id: str,
-        calls: Sequence[DemoCall],
-        target: str,
-        slots: Sequence[LeafSlot],
+        pool: Sequence[LeafRound],
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -2987,8 +2998,11 @@ def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        content, by_value, offered = _leaf_labelling_input(calls, target)
         for sample_index in range(samples):
+            demonstration = pool[sample_index % len(pool)]
+            content, by_value, offered = _leaf_labelling_input(
+                demonstration.calls, demonstration.target
+            )
             server = MockSignalServer()
             await server.start()
             try:
@@ -3004,7 +3018,7 @@ def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval
                             micro.label_leaves(content, offered, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_leaf_labelling(labels, slots, by_value)
+                        scored = _score_leaf_labelling(labels, demonstration.slots, by_value)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
@@ -3018,7 +3032,7 @@ def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval
                         case_id,
                         sample_index,
                         result=result,
-                        phrasing=_FIXTURE_ROUND_PHRASING,
+                        phrasing=f"(fixture routine: {demonstration.slots[0]})",
                         agent_names=(PennyConstants.LEAF_LABELLING_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
@@ -3039,93 +3053,100 @@ def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval
     return _run
 
 
-# What opens a leaf-labelling sample's transcript.  The draw is handed a routine, not
-# a turn — there is no user message anywhere in its context — so the step opens with
-# the fixture itself rather than an utterance the model never saw.
-_FIXTURE_ROUND_PHRASING = "(fixture routine — the labeller sees the calls, nothing else)"
-
-
 FramingEval = Callable[..., Awaitable[None]]
 
 
 class ParameterFamily(NamedTuple):
-    """One piece of information a framing case reasons about (#1824): a ``label`` for
-    the report and the ``tokens`` a parameter about that piece would use in its name.
-
-    Matched on the parameter NAME, tokenized — the name is the binding key, the part
-    of a framing the user actually has to type, and the part a scorer can read without
-    guessing at prose.  ``count`` is how many DISTINCT parameters must land in the
-    family (two named destinations are two parameters, not one)."""
+    """One piece of information a framing case expects the signature to ask for
+    (#1824): a ``label`` for the report, the ``tokens`` a parameter about that piece
+    would use, and how many DISTINCT parameters must land in it (two named
+    destinations are two parameters, not one)."""
 
     label: str
     tokens: tuple[str, ...]
     count: int = 1
 
 
-def _parameter_tokens(name: str) -> set[str]:
-    """A parameter name as its word tokens — ``product_page_url`` → {product, page,
-    url} — so a family matches on meaning-carrying words rather than on the exact
-    compound the draw happened to write."""
-    return {token for token in re.split(r"[^a-z0-9]+", name.lower()) if token}
+def _parameter_tokens(text: str) -> set[str]:
+    """Text as its word tokens — ``product_page_url`` → {product, page, url} — so a
+    family matches on meaning-carrying words rather than on the exact compound the draw
+    happened to write."""
+    return {token for token in re.split(r"[^a-z0-9]+", text.lower()) if token}
 
 
-def _family_of(name: str, families: Sequence[ParameterFamily]) -> ParameterFamily | None:
-    """The FIRST family whose tokens the parameter name uses, in the order the case
-    lists them — expected families first, then the ones it expects absent.
+def _family_of(
+    parameter: FramedParameter, families: Sequence[ParameterFamily]
+) -> ParameterFamily | None:
+    """The family a drawn parameter belongs to — matched on its NAME first, and only
+    then on its DESCRIPTION (#1824, the code owner's ruling).
 
-    Order is the disambiguation: a parameter named for the page it fetches is the page
-    parameter even when its name also mentions what is on that page, and classifying it
-    to the first family it matches keeps one parameter from being scored twice in
-    opposite directions."""
-    tokens = _parameter_tokens(name)
-    return next((family for family in families if tokens & set(family.tokens)), None)
+    Name-first is what keeps the two passes from fighting: ``price_col`` names no
+    family's token but its description says "the collection where the price is stored",
+    which is unambiguously a destination — while a destination parameter whose
+    description merely MENTIONS the page must not be read as the page.  Scoring the
+    name alone scored that exact draw as a miss when it was correct; scoring both in one
+    pass would misread the other direction."""
+    by_name = next(
+        (family for family in families if _parameter_tokens(parameter.name) & set(family.tokens)),
+        None,
+    )
+    if by_name is not None:
+        return by_name
+    described = _parameter_tokens(parameter.description)
+    return next((family for family in families if described & set(family.tokens)), None)
 
 
 def _framing_checks(
-    framing: SkillFraming | None,
-    expected: Sequence[ParameterFamily],
-    absent: Sequence[ParameterFamily],
+    framing: SkillFraming | None, expected: Sequence[ParameterFamily]
 ) -> list[Check]:
-    """One check per family the case names: an EXPECTED family is carried by at least
-    ``count`` distinct parameters, an ABSENT one by none.
+    """The signature is EXACTLY what the case says it is (#1824): one check per
+    expected family (covered by at least its ``count`` distinct parameters), plus one
+    that NOTHING ELSE is asked for.
 
-    A refused draw fails every check with its reason named, never silently: the
-    degraded state (no parameters at all) is honest behaviour, but it is not the
-    framing the case is asking for."""
-    order = [*expected, *absent]
+    Exactness is the code owner's ruling and it is the sharper contract: a skill that
+    asks for the page AND what to look for is wrong in the same way whether the extra
+    parameter is the task, a destination, or something nobody named — the framing was
+    supposed to carry it.
+
+    A refused draw fails every check with its reason named, never silently: the degraded
+    state (no parameters at all) is honest behaviour, but it is not the framing asked
+    for."""
+    labels = [f"{family.label} is a parameter" for family in expected]
     if framing is None:
         refused = "the draw was refused — the skill would fall back to the slug"
         return [
-            Check(_family_label(family, expected), False, kind="state", rationale=refused)
-            for family in order
+            Check(label, False, kind="state", rationale=refused)
+            for label in [*labels, _NOTHING_ELSE_ASKED]
         ]
-    matched: dict[str, list[str]] = {family.label: [] for family in order}
+    matched: dict[str, list[str]] = {family.label: [] for family in expected}
+    unexpected: list[str] = []
     for parameter in framing.parameters:
-        family = _family_of(parameter.name, order)
-        if family is not None:
-            matched[family.label].append(parameter.name)
+        family = _family_of(parameter, expected)
+        (matched[family.label] if family is not None else unexpected).append(parameter.name)
     drawn = ", ".join(parameter.name for parameter in framing.parameters) or "(none)"
-    return [
+    checks = [
         Check(
-            _family_label(family, expected),
-            len(matched[family.label]) >= family.count
-            if family in expected
-            else not matched[family.label],
+            label,
+            len(matched[family.label]) >= family.count,
             kind="state",
             rationale=f"drew parameters: {drawn}",
         )
-        for family in order
+        for label, family in zip(labels, expected, strict=True)
     ]
-
-
-def _family_label(family: ParameterFamily, expected: Sequence[ParameterFamily]) -> str:
-    """One family's check label, stating the direction the case asked for — so a
-    refused draw and a scored one name the same expectation the same way."""
-    return (
-        f"{family.label} is a parameter"
-        if family in expected
-        else (f"{family.label} is not a parameter")
+    checks.append(
+        Check(
+            _NOTHING_ELSE_ASKED,
+            not unexpected,
+            kind="state",
+            rationale=f"also asked for: {', '.join(unexpected)}" if unexpected else None,
+        )
     )
+    return checks
+
+
+# The exactness check's label — one string, so a refused draw and a scored one name the
+# same expectation identically.
+_NOTHING_ELSE_ASKED = "asks for nothing else"
 
 
 def _generic_framing_check(framing: SkillFraming | None, instance: Sequence[str]) -> Check:
@@ -3147,48 +3168,21 @@ def _generic_framing_check(framing: SkillFraming | None, instance: Sequence[str]
     )
 
 
-def _carried_check(framing: SkillFraming | None, piece: ParameterFamily) -> Check:
-    """The ask's piece did not VANISH (#1824): either the framing carries it (its name
-    or description says it) or a parameter asks for it.
-
-    Both are coherent framings of the same ask — a skill that watches one particular
-    thing, or one pointed at whatever the user names — and the draw is free to write
-    either.  What it may never do is drop the piece entirely, which is the only
-    direction a scorer should call wrong."""
-    if framing is None:
-        return Check(f"{piece.label} survives the framing", False, kind="state")
-    carried = _mentions_any(f"{framing.name} {framing.description}", piece.tokens)
-    asked = any(_parameter_tokens(p.name) & set(piece.tokens) for p in framing.parameters)
-    where = "in the framing" if carried else ("as a parameter" if asked else "nowhere")
-    return Check(
-        f"{piece.label} survives the framing",
-        carried or asked,
-        kind="state",
-        rationale=f"carried {where}",
-    )
-
-
 def _score_framing(
     framing: SkillFraming | None,
     expected: Sequence[ParameterFamily],
-    absent: Sequence[ParameterFamily],
-    carried: Sequence[ParameterFamily],
     instance: Sequence[str],
 ) -> list[Check]:
     """The framing case's graded checks (#1824), read off the draw's own typed result:
-    which pieces of the ask became parameters, which did not, which survived either
-    way, and whether the framing generalizes past the occasion.
+    the signature asks for exactly the pieces the ask leaves open, and the framing
+    generalizes past the occasion.
 
     Scoring the returned ``SkillFraming`` rather than a persisted skill is deliberate:
     the plumbing from a framed parameter to a stored one is pinned deterministically in
-    ``tests/test_skill_extraction.py``, so this case spends its live-model budget on
-    the judgment and nothing else.  The drawn NAME and DESCRIPTION also ride along
-    ADVISORY (``scored=False``) so a reader sees what the draw committed to."""
-    checks = [
-        *_framing_checks(framing, expected, absent),
-        *[_carried_check(framing, piece) for piece in carried],
-        _generic_framing_check(framing, instance),
-    ]
+    ``tests/test_skill_extraction.py``, so this case spends its live-model budget on the
+    judgment and nothing else.  The drawn NAME and DESCRIPTION also ride along ADVISORY
+    (``scored=False``) so a reader sees what the draw committed to."""
+    checks = [*_framing_checks(framing, expected), _generic_framing_check(framing, instance)]
     if framing is not None:
         checks.append(Check(f"named it {framing.name!r}", True, kind="state", scored=False))
         checks.append(
@@ -3199,7 +3193,8 @@ def _score_framing(
 
 @pytest.fixture
 def framing_eval(make_config: Callable[..., Config], tmp_path, request) -> FramingEval:
-    """Drive the run-end SKILL FRAMER (#1824) N times, and NOTHING else.
+    """Drive the run-end SKILL FRAMER (#1824) N times over a POOL of asks (sample i →
+    ``pool[i % len(pool)]``), and NOTHING else.
 
     The framer's whole input is what the user asked for, so the case is exactly that:
     their turns, rendered by ``build_framing_content`` — the shipped function — and the
@@ -3207,17 +3202,17 @@ def framing_eval(make_config: Callable[..., Config], tmp_path, request) -> Frami
     which is the design under test: the leaf labeller runs on the calls, this runs on
     the ask, and neither reads the other's output.
 
-    Synthetic means the ASK is authored, never the prompt (an eval that swaps in an
-    artificial prompt measures nothing about what ships).
+    Each pool entry is a whole conversation in the JOURNEY REGISTER — the way a user
+    actually asks — so N samples sweep how the question is put rather than re-rolling
+    one wording.  Synthetic means the ASK is authored, never the prompt (an eval that
+    swaps in an artificial prompt measures nothing about what ships).
     """
 
     async def _run(
         *,
         case_id: str,
-        conversation: Sequence[str],
+        pool: Sequence[Sequence[str]],
         expected: Sequence[ParameterFamily] = (),
-        absent: Sequence[ParameterFamily] = (),
-        carried: Sequence[ParameterFamily] = (),
         instance: Sequence[str] = (),
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
@@ -3227,11 +3222,12 @@ def framing_eval(make_config: Callable[..., Config], tmp_path, request) -> Frami
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        turns: list[tuple[str, str]] = [
-            (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
-        ]
-        content = build_framing_content("", turns)
         for sample_index in range(samples):
+            conversation = pool[sample_index % len(pool)]
+            turns: list[tuple[str, str]] = [
+                (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
+            ]
+            content = build_framing_content("", turns)
             server = MockSignalServer()
             await server.start()
             try:
@@ -3247,7 +3243,7 @@ def framing_eval(make_config: Callable[..., Config], tmp_path, request) -> Frami
                             micro.frame_skill(content, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_framing(framing, expected, absent, carried, instance)
+                        scored = _score_framing(framing, expected, instance)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)

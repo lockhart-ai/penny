@@ -197,6 +197,16 @@ _DASH_SEPARATOR_RE = re.compile(r"\s+[-‐‑‒–—―−]+\s+")
 _LIST_MARKER_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
 _BOLD_DECORATION = "**"
 
+# ZERO-WIDTH characters anywhere in the tag's line.  A transport artifact in the same
+# family as the en-dash-for-em-dash draw: invisible, decided by nothing, and it silently
+# eats the whole line — a measured run drew ``PLACEHO<U+200B>LDER`` on three of four
+# lines after writing the first correctly, costing six of eight checks with the names
+# themselves perfectly good (#1824).  Stripping it is tolerance, NOT fuzzy tag matching:
+# a genuine misspelling (``PLACEHALDER``) still fails its line and degrades legibly to
+# the arg-derived name, because a tag the model got WRONG is a different fact from a tag
+# the transport mangled.
+_ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u2060\ufeff]")
+
 # One matched pair of quotes WRAPPING a whole field value — straight or smart.
 # Positional and conservative: a quoted phrase inside a description is untouched.
 # This is what lets ``STATE: "apply"`` decide instead of failing membership.
@@ -377,9 +387,11 @@ def _tag_payload(line: str, tag: str) -> str | None:
 
 
 def _undecorate(line: str) -> str:
-    """A line stripped of the markdown decoration a draw is allowed to get wrong: a
-    leading list marker and any ``**bold**``."""
-    return _LIST_MARKER_RE.sub("", line.strip()).replace(_BOLD_DECORATION, "").strip()
+    """A line stripped of what a draw is allowed to get cosmetically wrong: a leading
+    list marker, any ``**bold**``, and any ZERO-WIDTH character (a transport artifact
+    that is invisible in the draw and otherwise eats the whole line)."""
+    plain = _ZERO_WIDTH_RE.sub("", line)
+    return _LIST_MARKER_RE.sub("", plain.strip()).replace(_BOLD_DECORATION, "").strip()
 
 
 def _unquote(value: str) -> str:
