@@ -1216,25 +1216,18 @@ def test_score_framing_is_exact_and_reads_name_then_description() -> None:
     assert (exactness.label, exactness.ok) == ("asks for nothing else", False)
     assert "also asked for: what_to_find" in (exactness.rationale or "")
 
-    # Two named destinations are TWO parameters, matched by DESCRIPTION when the names
-    # are abbreviations no family enumerates (the measured `price_col` / `seller_col`
-    # draw, which name-only matching scored as a miss when it was correct).
-    where = ParameterFamily("where to put it", ("collection", "log"), count=2)
-    two = SkillFraming(
-        name="file two readings",
-        description="Record two readings in the places you are given.",
-        parameters=[
-            FramedParameter(name="url", description="the full URL to fetch"),
-            FramedParameter(name="price_col", description="name of the collection for the price"),
-            FramedParameter(name="seller_col", description="name of the collection for the rating"),
-        ],
+    # A parameter whose NAME names no family still lands by what its DESCRIPTION says —
+    # the rule the measured `price_col` draw earned, where name-only matching scored a
+    # correct framing as a miss.  It matters wherever a draw abbreviates.
+    abbreviated = SkillFraming(
+        name="watch a listing price",
+        description="Keep an eye on what a listing costs.",
+        parameters=[FramedParameter(name="src", description="the page to fetch each run")],
     )
-    # Four scored checks now: one per expected family, then exactness, then generic.
     assert [
-        (check.label, check.ok) for check in _score_framing(two, [page, where], ()) if check.scored
+        (check.label, check.ok) for check in _score_framing(abbreviated, [page], ()) if check.scored
     ] == [
         ("the page is a parameter", True),
-        ("where to put it is a parameter", True),
         ("asks for nothing else", True),
         ("framed the KIND of task, not the occasion", True),
     ]

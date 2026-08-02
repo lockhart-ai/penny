@@ -3058,13 +3058,11 @@ FramingEval = Callable[..., Awaitable[None]]
 
 class ParameterFamily(NamedTuple):
     """One piece of information a framing case expects the signature to ask for
-    (#1824): a ``label`` for the report, the ``tokens`` a parameter about that piece
-    would use, and how many DISTINCT parameters must land in it (two named
-    destinations are two parameters, not one)."""
+    (#1824): a ``label`` for the report and the ``tokens`` a parameter about that piece
+    would use."""
 
     label: str
     tokens: tuple[str, ...]
-    count: int = 1
 
 
 def _parameter_tokens(text: str) -> set[str]:
@@ -3100,8 +3098,8 @@ def _framing_checks(
     framing: SkillFraming | None, expected: Sequence[ParameterFamily]
 ) -> list[Check]:
     """The signature is EXACTLY what the case says it is (#1824): one check per
-    expected family (covered by at least its ``count`` distinct parameters), plus one
-    that NOTHING ELSE is asked for.
+    expected family (some parameter lands in it), plus one that NOTHING ELSE is asked
+    for.
 
     Exactness is the code owner's ruling and it is the sharper contract: a skill that
     asks for the page AND what to look for is wrong in the same way whether the extra
@@ -3127,7 +3125,7 @@ def _framing_checks(
     checks = [
         Check(
             label,
-            len(matched[family.label]) >= family.count,
+            bool(matched[family.label]),
             kind="state",
             rationale=f"drew parameters: {drawn}",
         )

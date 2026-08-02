@@ -27,6 +27,14 @@ destination, or something nobody named — the framing was supposed to carry it.
 reads the drawn parameter NAMES first and their DESCRIPTIONS second, as token families,
 never as expected strings; the framing's own name and description ride along advisory.
 
+**Both cases are journey-register, and that is a standing rule, not a coincidence.**  An
+isolated eval mirrors the journey's distribution — so a pool shape the journey never
+produces does not belong here however interesting the judgment it probes.  A case where
+the user explicitly names collections to file results in ("save the soup to my soup-log
+collection") was removed for exactly that reason; what it covered — a user-named
+destination staying a parameter (#1783) — is recorded as an open gap on #1824 and comes
+back when the journey grows a destination-naming beat, in that beat's real phrasing.
+
 All content is synthetic (faux-market / harbour-ferry / corner-bakery / ridge-trails).
 """
 
@@ -67,30 +75,6 @@ _PAGE = ParameterFamily(
     "the page they named",
     ("url", "page", "link", "address", "site", "listing", "uri", "webpage", "source"),
 )
-
-# Where a result goes, when the ask actually named somewhere.  Wide for the same
-# reason: a destination parameter is as likely to be named for the place the user
-# called it as for the idea of a place.
-_WHERE_TO_PUT_IT = ParameterFamily(
-    "where to put it",
-    (
-        "collection",
-        "memory",
-        "store",
-        "storage",
-        "destination",
-        "folder",
-        "log",
-        "notes",
-        "where",
-        "place",
-        "file",
-        "save",
-        "target",
-        "bucket",
-    ),
-)
-
 
 # ── Case 1: the floor case — the page is the only thing left to say ────────────
 
@@ -170,47 +154,6 @@ async def test_a_two_piece_ask_still_asks_only_for_the_page(framing_eval: Framin
             ],
         ],
         expected=[_PAGE],
-        instance=INSTANCE_PARTICULARS,
-        min_pass_rate=None,  # report-only until sample-verified with the code owner
-        family=_FAMILY,
-    )
-
-
-# ── Case 3: two destinations the user named — two more parameters ──────────────
-
-
-@pytest.mark.asyncio
-async def test_two_named_destinations_are_two_parameters(framing_eval: FramingEval):
-    """The user names two different places to put two different results.
-
-    A framing carries what the skill IS — pulling two facts off a page and filing them —
-    but it cannot carry WHICH two places, and there are two of them, so the signature has
-    to ask for both.  One destination parameter is as wrong as none: the skill would
-    silently file two results into one place, which is not what was asked for.  This is
-    the case that would break a signature keyed to "the destination" rather than to what
-    the ask named, and it is the direction that keeps user-named destinations reachable
-    at all."""
-    await framing_eval(
-        case_id="framing-two-destinations-are-two-parameters",
-        pool=[
-            [
-                "go to https://faux-market.example/aurora-deck-2, put the price in my "
-                "price-log collection and the seller rating in my seller-notes collection"
-            ],
-            [
-                "read https://harbour-ferry.example/timetable — first sailing goes in my "
-                "morning-runs collection, last sailing in my evening-runs collection"
-            ],
-            [
-                "check https://corner-bakery.example/specials, save the soup to my "
-                "soup-log collection and the bread to my bread-log collection"
-            ],
-            [
-                "pull https://ridge-trails.example/summit-loop, trail status into my "
-                "trail-status collection and snow depth into my snow-depth collection"
-            ],
-        ],
-        expected=[_PAGE, _WHERE_TO_PUT_IT._replace(count=2)],
         instance=INSTANCE_PARTICULARS,
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
