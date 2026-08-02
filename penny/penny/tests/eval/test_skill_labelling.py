@@ -22,8 +22,13 @@ the round and vary only the judgment.
 
 The SHAPE draw that decides the routine's name and which values are constant
 (#1803) is a different micro-context answering a different question, and it has
-its own contract in ``test_skill_shape.py`` — these two cases are the labeller's,
+its own contract in ``test_skill_shape.py`` — these cases are the labeller's,
 and they run when the LABELLER changes.
+
+Cases 1 and 2 are #1770's two directions.  Cases 3 and 4 (#1821) port the two shapes
+the elicit → learn beat loses to this draw — the assistant's own wording of the user's
+ask, and a write key assembled out of the user's materials — down to where the judgment
+is actually made, as a minimal pair differing only in the write key.
 
 All content is synthetic (aurora / faux-market).
 """
@@ -128,6 +133,99 @@ async def test_user_supplied_values_stay_parameters(labeller_eval: LabellerEval)
         target=_TARGET,
         user_values=_USER_VALUES,
         assistant_values=[],
+        min_pass_rate=None,  # report-only until sample-verified with the code owner
+        family=_FAMILY,
+    )
+
+
+# ── Cases 3 & 4: the beat's two failure shapes, ported down to the labeller ────
+#
+# The elicit → learn beat fails on the labeller, not on the round: three of its four
+# failed samples lose the extract instruction and one loses the write key, and both
+# losses are decided in this draw.  Scoring them HERE isolates the judgment — the beat
+# runs a live chat turn whose demonstration varies sample to sample, so a verdict
+# measured there is measured through whatever wording the chat model happened to use.
+#
+# The two cases are a MINIMAL PAIR over the same round: identical conversation, browse
+# and collection, differing only in the write key — which is the one value whose right
+# answer is contested.  Anything that moves one and not the other moved the key
+# judgment and nothing else.
+_TEACH_TURN = f"yeah go to {_LISTING}, find the price, and remember it"
+
+# What the assistant DECIDED, in the demonstrated round:
+#   - the extract instruction, which says the user's ask in the assistant's own words
+#   - the collection, which their ask never named
+#   - the write key, built for a filing scheme nobody asked for
+_ASSISTANT_WORDED_EXTRACT = "the price shown on the product page"
+_PICKED_COLLECTION = "prices"
+_BUILT_KEY = "Aurora Deck 2 price"
+_SLUGGED_KEY = "Aurora Deck 2"
+
+_PICKED_WRITE_OK = (
+    f"You saved an entry to {_PICKED_COLLECTION}: (collection_write result)\nWrote 1 entry."
+)
+
+_WORDED_BROWSE = (
+    "browse",
+    {"queries": [_LISTING], "extract": _ASSISTANT_WORDED_EXTRACT},
+    f"You opened the Aurora Deck 2 listing (browse result)\n{_PRICE}",
+    True,
+)
+
+
+def _write_keyed(key: str) -> tuple[str, dict, str, bool]:
+    """The round's write, under one candidate key — the pair's only variable."""
+    return (
+        "collection_write",
+        {"memory": _PICKED_COLLECTION, "entries": [{"key": key, "content": _PRICE}]},
+        _PICKED_WRITE_OK,
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_assistants_wording_of_their_ask_stays_a_parameter(
+    labeller_eval: LabellerEval,
+):
+    """The value the user asked for, in the assistant's words, is still the user's.
+
+    The failing shape, ported: asked where the extract instruction "came from", the
+    draw answered on AUTHORSHIP — the user said "find the price", the assistant typed
+    the instruction, therefore the assistant produced it — and a placeholder is
+    withheld from the shape draw, so nothing downstream can bake what to find and the
+    routine asks for it again every time it runs.  Whoever typed the string is not the
+    question; whose ask decided what it says is."""
+    await labeller_eval(
+        case_id="labelling-their-ask-in-the-assistants-words",
+        utterance=_TEACH_TURN,
+        calls=[_WORDED_BROWSE, _write_keyed(_BUILT_KEY)],
+        target=_PICKED_COLLECTION,
+        user_values=[_LISTING, _ASSISTANT_WORDED_EXTRACT],
+        assistant_values=[_PICKED_COLLECTION, _BUILT_KEY],
+        min_pass_rate=None,  # report-only until sample-verified with the code owner
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_key_assembled_from_their_own_materials_becomes_a_placeholder(
+    labeller_eval: LabellerEval,
+):
+    """The sneaky direction, and the guard the case above needs.
+
+    The same round files the price under the listing's own name — words the user did
+    supply, for a filing decision they never made.  Ruling that theirs leaves a
+    required parameter nobody can supply, which is the #1770 harm arriving by the back
+    door: reusing their materials does not make a value theirs when their ask never
+    named the thing it is for.  It is the minimal pair of the case above, so a lever
+    that wins one by conceding the other shows up here as a loss."""
+    await labeller_eval(
+        case_id="labelling-key-assembled-from-their-materials",
+        utterance=_TEACH_TURN,
+        calls=[_WORDED_BROWSE, _write_keyed(_SLUGGED_KEY)],
+        target=_PICKED_COLLECTION,
+        user_values=[_LISTING, _ASSISTANT_WORDED_EXTRACT],
+        assistant_values=[_PICKED_COLLECTION, _SLUGGED_KEY],
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
