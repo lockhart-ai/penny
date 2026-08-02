@@ -3186,6 +3186,13 @@ def _score_framing(
         checks.append(
             Check(f"described it {framing.description!r}", True, kind="state", scored=False)
         )
+        # The enumeration the draw wrote before choosing (#1824), rendered so a reader
+        # can see WHAT was on the list when a parameter looks wrong — the question a
+        # miss raises is whether the piece was enumerated and mis-decided, or never
+        # enumerated at all.  Advisory: the pieces are the draw's working, and scoring
+        # its working would be scoring a procedure rather than an answer.
+        pieces = " · ".join(framing.pieces) or "(none)"
+        checks.append(Check(f"enumerated: {pieces}", True, kind="state", scored=False))
     return checks
 
 

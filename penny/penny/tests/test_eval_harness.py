@@ -1192,6 +1192,7 @@ def test_score_framing_is_exact_and_reads_name_then_description() -> None:
     framing = SkillFraming(
         name="watch a listing price",
         description="Keep an eye on what a listing costs.",
+        pieces=["the listing page", "the price on it"],
         parameters=[FramedParameter(name="product_page_url", description="the page to check")],
     )
 
@@ -1200,6 +1201,14 @@ def test_score_framing_is_exact_and_reads_name_then_description() -> None:
         ("the page is a parameter", True),
         ("asks for nothing else", True),
         ("framed the KIND of task, not the occasion", True),
+    ]
+    # The enumeration renders ADVISORY (#1824) — it is the draw's working shown, so a
+    # reader can tell a piece that was enumerated and mis-decided from one never
+    # enumerated at all; scoring it would be scoring a procedure rather than an answer.
+    assert [check.label for check in scored if not check.scored] == [
+        "named it 'watch a listing price'",
+        "described it 'Keep an eye on what a listing costs.'",
+        "enumerated: the listing page · the price on it",
     ]
 
     # The extra parameter the floor case exists to catch — the exactness check fails it

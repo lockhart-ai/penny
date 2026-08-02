@@ -249,6 +249,7 @@ _LEAF_LABELLING_INSTRUCTION = (
 # is what stops a skill from calling itself a price watcher and then asking what to
 # watch (#1803's defect, now closed by construction rather than by a second opinion).
 PARAMETER_TAG = "PARAMETER"
+PIECE_TAG = "PIECE"
 
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
@@ -262,6 +263,22 @@ _FRAMING_DESCRIPTION_LINE = LineSpec(
     fields=(
         FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the skill is for>"),
     ),
+)
+# The ENUMERATION, written before anything is chosen (#1824): one line per particular
+# thing the ask handed over.  ``FieldShape.TEXT`` because a piece is a short noun phrase
+# ("the page they named", "today's soup"), not a binding key.
+#
+# It is the #1807 move applied to a different draw: make the SPLIT the thing being
+# written.  The measured over-ask derives parameters from what the SKILL would need —
+# *"They also might need a storage location? … Parameters needed: … storage_location"* —
+# and never walks the per-piece question at all, so an imperative placed inside that
+# question is never reached.  Written first, the enumeration is the list the parameters
+# are chosen FROM, and an operational need nobody mentioned cannot be written as a
+# PARAMETER because it was never enumerable as a PIECE.
+_PIECE_LINE = LineSpec(
+    tag=PIECE_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(FieldSpec(name=DrawField.VALUE, placeholder="<one thing their ask named>"),),
 )
 # The parameter lines are PER_ITEM: a malformed one costs that parameter and nothing
 # else.  The name declares ``FieldShape.NAME`` because it is the skill's BINDING KEY at
@@ -281,13 +298,13 @@ _FRAMED_PARAMETER_LINE = LineSpec(
     ),
 )
 SKILL_FRAMING_SHAPE = MicroContextShape(
-    lines=(_FRAMING_NAME_LINE, _FRAMING_DESCRIPTION_LINE, _FRAMED_PARAMETER_LINE)
+    lines=(_FRAMING_NAME_LINE, _FRAMING_DESCRIPTION_LINE, _PIECE_LINE, _FRAMED_PARAMETER_LINE)
 )
 
 SKILL_FRAMING_SYSTEM_PROMPT = (
     "You are writing what a reusable skill IS: what it is called, what it is for, and "
     "what someone has to say to set it up. All you are given is what the user asked "
-    "for, in their own words. Do three things:\n"
+    "for, in their own words. Do four things:\n"
     "1. From their ask, work out what they were trying to get done. Their own words "
     "are the only evidence, and the point of the ask is what the skill is for.\n"
     "2. Name and describe the SKILL by that: a short verb-noun name for the KIND of "
@@ -295,16 +312,21 @@ SKILL_FRAMING_SYSTEM_PROMPT = (
     "before any mechanics. A description that falls back on the information being "
     "specified, where the ask named something particular, has dropped the point of the "
     "ask — say what it actually was.\n"
-    "3. Now take the pieces of information their ask handed over — every particular "
-    "thing they named. For each one, ask: given the skill you just described, would "
-    "they have to say it AGAIN to set this skill up on a new occasion?\n"
+    "3. WRITE DOWN the pieces of information their ask handed over: one PIECE line per "
+    "particular thing they named, before you decide anything about any of them. This "
+    "is the list the next step chooses from, and nothing that is not on it can come out "
+    "of this step at all.\n"
+    "4. Now take each PIECE you wrote, in turn, and ask: given the skill you just "
+    "described, would they have to say it AGAIN to set this skill up on a new "
+    "occasion?\n"
     "   - YES → it is a PARAMETER: one of the pieces of information they THEMSELVES "
     "PROVIDED that your framing does not already carry. The skill works the same way "
     "whatever it is, so it cannot be known until they say it. If they never said it, "
     "it cannot be a parameter at all — a need they never mentioned (somewhere to keep "
     "the result, when they never said where; what to call an entry, when they never "
-    "named one) is the skill's own business to settle. Give it a short name (a single "
-    "lowercase word or snake_case) and one line saying what to supply for it.\n"
+    "named one) never reached your list, and is the skill's own business to settle. "
+    "Give it a short name (a single lowercase word or snake_case) and one line saying "
+    "what to supply for it.\n"
     "   - NO → the name and description you just wrote already carry it, so it is not "
     "a parameter and gets no line at all. Asking for it would be asking them to tell "
     "you what they came to you for.\n"
@@ -318,10 +340,13 @@ SKILL_FRAMING_SYSTEM_PROMPT = (
     "Respond with these tagged lines and nothing else:\n"
     f"{render_line(_FRAMING_NAME_LINE)}\n"
     f"{render_line(_FRAMING_DESCRIPTION_LINE)}\n"
+    f"{render_line(_PIECE_LINE)}\n"
     f"{render_line(_FRAMED_PARAMETER_LINE)}\n"
-    "Write ONE line per parameter, and none for anything the framing already carries. "
-    "At least one piece is always a parameter: a skill with nothing left to say to it "
-    "can only ever repeat the one occasion it was asked for.\n"
+    "Write every PIECE line before any PARAMETER line, and give each parameter one of "
+    "the pieces you wrote. Write ONE line per parameter, and none for anything the "
+    "framing already carries. At least one piece is always a parameter: a skill with "
+    "nothing left to say to it can only ever repeat the one occasion it was asked "
+    "for.\n"
     "Write nothing else — no preamble, no explanation, no restating the ask."
 )
 
@@ -487,10 +512,17 @@ class SkillFraming(BaseModel):
     the deterministic slug — framing never blocks extraction).  ``parameters`` is
     non-empty by the same contract: a skill with nothing left to say to it can only
     repeat the occasion it was taught on, so an empty draw is a violation, rerolled
-    once and then degraded honestly."""
+    once and then degraded honestly.
+
+    ``pieces`` is the ENUMERATION the draw wrote before choosing (#1824) — every
+    particular thing the ask handed over, which the parameters are then selected from.
+    It is the draw's own working, made visible: nothing downstream consumes it, and it
+    is carried so a reader (and the eval) can see WHAT was enumerated when a parameter
+    looks wrong."""
 
     name: str
     description: str
+    pieces: list[str] = []
     parameters: list[FramedParameter] = []
 
 
@@ -854,10 +886,16 @@ def _frames_a_parameter(drawn: ParsedDraw) -> bool:
 
 def _framed_parameters(items: Sequence[ParsedLine]) -> list[FramedParameter]:
     """The drawn parameters in draw order, first line per NAME winning — a name is a
-    binding key, so a repeat is the same parameter described twice, never two."""
+    binding key, so a repeat is the same parameter described twice, never two.
+
+    Selected BY TAG: ``items`` carries every PER_ITEM line the shape declares, and since
+    #1824's enumeration that includes the PIECE lines, which carry different fields
+    entirely."""
     parameters: list[FramedParameter] = []
     seen: set[str] = set()
     for item in items:
+        if item.tag != PARAMETER_TAG:
+            continue
         name = item.fields[DrawField.NAME]
         if name in seen:
             continue
@@ -866,6 +904,16 @@ def _framed_parameters(items: Sequence[ParsedLine]) -> list[FramedParameter]:
             FramedParameter(name=name, description=item.fields[DrawField.DESCRIPTION])
         )
     return parameters
+
+
+def _drawn_pieces(items: Sequence[ParsedLine]) -> list[str]:
+    """The enumeration the draw wrote, in order (#1824) — what the parameters were
+    chosen FROM.
+
+    Carried on the typed result so the eval can render it and read the enumeration's
+    quality; the extractor consumes nothing from it, because the pieces are the draw's
+    own working shown rather than new data about the skill."""
+    return [item.fields[DrawField.VALUE] for item in items if item.tag == PIECE_TAG]
 
 
 def _skill_framing(drawn: ParsedDraw) -> SkillFraming | None:
@@ -879,7 +927,10 @@ def _skill_framing(drawn: ParsedDraw) -> SkillFraming | None:
     if name is None or description is None:
         return None
     return SkillFraming(
-        name=name, description=description, parameters=_framed_parameters(drawn.items)
+        name=name,
+        description=description,
+        pieces=_drawn_pieces(drawn.items),
+        parameters=_framed_parameters(drawn.items),
     )
 
 

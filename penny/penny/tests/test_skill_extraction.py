@@ -716,9 +716,16 @@ async def test_a_framing_that_asks_for_nothing_is_refused(db):
     So it is a contract violation like any other — one reroll of the unchanged context,
     then honest degradation to the slug.  (Whether an empty signature should instead be
     legal is a real question; it is refused here because the shape it replaces refused
-    the mirror case, and the answer is the code owner's.)"""
+    the mirror case, and the answer is the code owner's.)
+
+    The draw ENUMERATES pieces and still names no parameter (#1824) — so the floor is
+    about the signature, not about whether the draw did its working: writing the list
+    and then choosing nothing from it is the same empty skill."""
     model = _naming_model(
-        "NAME: Watch the aurora deck 2 price\nDESCRIPTION: Check that one listing."
+        "NAME: Watch the aurora deck 2 price\n"
+        "DESCRIPTION: Check that one listing.\n"
+        "PIECE the listing page\n"
+        "PIECE the price on it"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -741,10 +748,18 @@ async def test_framed_parameters_become_the_skills_parameters(db):
 
     Where a bound parameter meets a leaf of the program is deliberately NOT decided
     here — the run-time join is #1824's follow-on — so this asserts the SIGNATURE,
-    which is what instantiation validates against."""
+    which is what instantiation validates against.
+
+    The draw also carries its PIECE enumeration (#1824), and the two PER_ITEM line
+    kinds share one ``items`` list: the parameters are selected BY TAG, so a piece can
+    never arrive as a nameless parameter (it carries different fields entirely) and a
+    piece the draw did NOT promote leaves no trace in the signature."""
     model = _naming_model(
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Look up a price on a listing page and record it.\n"
+        "PIECE the listing page they named\n"
+        "PIECE the price to look for\n"
+        "PIECE how often to check\n"
         "PARAMETER url — the page to look at\n"
         "PARAMETER what_to_find — what to pull from it"
     )
@@ -1091,9 +1106,17 @@ async def test_two_destinations_are_two_named_placeholders_and_two_parameters(db
 
 def test_framing_system_prompt_whole_render():
     """Whole-render literal of the framing contract (#1824): the framing and its ONE
-    input — what the user asked for — the three numbered asks (the point of the ask,
-    then the name written from it, then the re-supply question as two named cases), the
-    floor that keeps a skill bindable, and the enumerated output shape.
+    input — what the user asked for — the four numbered asks (the point of the ask, the
+    name written from it, the ENUMERATION written down, then the re-supply question as
+    two named cases), the floor that keeps a skill bindable, and the enumerated output
+    shape.
+
+    **The enumeration is written OUTPUT, not silent reasoning** — the #1807 move applied
+    to this draw: make the split the thing being written.  The measured over-ask never
+    walked the per-piece question at all (*"They also might need a storage location? …
+    Parameters needed: … storage_location"*), so an imperative inside that question was
+    never reached; with the pieces written first, a parameter must name one of them, and
+    an operational need nobody mentioned was never enumerable as a piece.
 
     **A parameter can only describe information the user DID provide**, and that
     constraint lives INSIDE the PARAMETER case rather than as a trailing imperative —
@@ -1117,7 +1140,7 @@ def test_framing_system_prompt_whole_render():
     assert SKILL_FRAMING_SYSTEM_PROMPT == (
         "You are writing what a reusable skill IS: what it is called, what it is for, "
         "and what someone has to say to set it up. All you are given is what the user "
-        "asked for, in their own words. Do three things:\n"
+        "asked for, in their own words. Do four things:\n"
         "1. From their ask, work out what they were trying to get done. Their own "
         "words are the only evidence, and the point of the ask is what the skill is "
         "for.\n"
@@ -1126,8 +1149,11 @@ def test_framing_system_prompt_whole_render():
         "for before any mechanics. A description that falls back on the information "
         "being specified, where the ask named something particular, has dropped the "
         "point of the ask — say what it actually was.\n"
-        "3. Now take the pieces of information their ask handed over — every "
-        "particular thing they named. For each one, ask: given the skill you just "
+        "3. WRITE DOWN the pieces of information their ask handed over: one PIECE "
+        "line per particular thing they named, before you decide anything about any "
+        "of them. This is the list the next step chooses from, and nothing that is "
+        "not on it can come out of this step at all.\n"
+        "4. Now take each PIECE you wrote, in turn, and ask: given the skill you just "
         "described, would they have to say it AGAIN to set this skill up on a new "
         "occasion?\n"
         "   - YES → it is a PARAMETER: one of the pieces of information they "
@@ -1135,9 +1161,9 @@ def test_framing_system_prompt_whole_render():
         "works the same way whatever it is, so it cannot be known until they say it. "
         "If they never said it, it cannot be a parameter at all — a need they never "
         "mentioned (somewhere to keep the result, when they never said where; what to "
-        "call an entry, when they never named one) is the skill's own business to "
-        "settle. Give it a short name (a single lowercase word or snake_case) and one "
-        "line saying what to supply for it.\n"
+        "call an entry, when they never named one) never reached your list, and is "
+        "the skill's own business to settle. Give it a short name (a single lowercase "
+        "word or snake_case) and one line saying what to supply for it.\n"
         "   - NO → the name and description you just wrote already carry it, so it is "
         "not a parameter and gets no line at all. Asking for it would be asking them "
         "to tell you what they came to you for.\n"
@@ -1152,10 +1178,13 @@ def test_framing_system_prompt_whole_render():
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the skill is for>\n"
+        "PIECE <one thing their ask named>\n"
         "PARAMETER <parameter_name> — <one line: what to supply for it>\n"
-        "Write ONE line per parameter, and none for anything the framing already "
-        "carries. At least one piece is always a parameter: a skill with nothing left "
-        "to say to it can only ever repeat the one occasion it was asked for.\n"
+        "Write every PIECE line before any PARAMETER line, and give each parameter "
+        "one of the pieces you wrote. Write ONE line per parameter, and none for "
+        "anything the framing already carries. At least one piece is always a "
+        "parameter: a skill with nothing left to say to it can only ever repeat the "
+        "one occasion it was asked for.\n"
         "Write nothing else — no preamble, no explanation, no restating the ask."
     )
 
