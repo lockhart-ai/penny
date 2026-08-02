@@ -15,10 +15,11 @@ ONCE, at the interface.  So it is asked here, positively: given what this skill 
 name and description this same draw writes), which of the pieces they handed over must
 they say again?
 
-**Each case sweeps a POOL of asks in the journey register** (sample i →
-``pool[i % len(pool)]``) — a marketplace listing, a ferry timetable, a bakery's
-specials, a trail report — so N samples sweep how the question is PUT rather than
-re-rolling one wording.
+**The floor case sweeps the code owner's ruled fixture set** (sample i →
+``pool[i % len(pool)]``) — eight teach turns across everyday domains, each handing over
+a url and one thing to find, so N samples sweep how the question is PUT rather than
+re-rolling one wording.  They are the SAME eight the leaf module's rounds are built
+from, so a finding on one draw is readable against the other.
 
 **The contract is EXACT** (the code owner's ruling): a case names the families the
 signature must ask for, and NOTHING ELSE may be asked.  A skill that asks for the page
@@ -66,6 +67,10 @@ INSTANCE_PARTICULARS = (
     "summit",
     "corner-bakery",
     "ridge-trails",
+    "harborseals",
+    "bay-tides",
+    "town-library",
+    "birding-club",
 )
 
 # The one piece a journey-register ask always leaves open: the page they pointed at.
@@ -91,6 +96,14 @@ async def test_the_page_is_the_only_parameter(framing_eval: FramingEval):
     about a destination belongs in the signature either — and the exactness check is
     what makes both of those one contract rather than a list of things to avoid.
 
+    The pool is the code owner's ruled fixture set: eight teach turns, each providing a
+    url + one thing to find + "remember it", and each a SINGLE turn — the teach turn is
+    the whole learn-step input.  No instigating turn NAMES the subject, because the
+    journey's own instigating ask is deictic ("watch this auction for me") and the
+    subject's name exists only on the page; a subject-naming turn produced 4 of 6 misses
+    in `run-20260802T161131Z` and was non-journey phrasing inherited from the #1803
+    shaper fixture.  "remember it" contributes nothing to the signature.
+
     Report-only until the reading is confirmed against a real run: a scorer encoding the
     wrong intent would fail the model for being right, which is the failure this suite
     exists to avoid."""
@@ -98,20 +111,34 @@ async def test_the_page_is_the_only_parameter(framing_eval: FramingEval):
         case_id="framing-floor-case-page-is-the-only-parameter",
         pool=[
             [
-                "can you keep an eye on the aurora deck 2 price for me?",
-                "yeah go to https://faux-market.example/aurora-deck-2, find the price, "
-                "and remember it",
+                "read https://harbour-ferry.example/timetable, find the time of the "
+                "first sailing, and remember it"
             ],
             [
-                "have a look at https://harbour-ferry.example/timetable, find the time of "
-                "the first sailing, and remember it"
+                "open https://corner-bakery.example/specials, look for the soup of the "
+                "day, and remember it"
             ],
             [
-                "i keep missing the good soup",
-                "check https://corner-bakery.example/specials for what the soup of the day "
-                "is and keep track of it",
+                "check https://ridge-trails.example/summit-loop and remember whether "
+                "the trail's open"
             ],
-            ["pull up https://ridge-trails.example/summit-loop and save whether the trail's open"],
+            [
+                "pull up https://harborseals.example/colony-count, find the colony "
+                "count, and remember it"
+            ],
+            [
+                "sure — go to https://bay-tides.example/table, find this morning's low "
+                "tide time, and remember it"
+            ],
+            [
+                "it's easy: read https://town-library.example/new-arrivals, find the "
+                "newest mystery title, and remember it"
+            ],
+            [
+                "ok: 1. open https://birding-club.example/sightings 2. find the latest "
+                "sighting 3. remember it"
+            ],
+            ["grab the price off https://faux-market.example/aurora-deck-2 and remember it"],
         ],
         expected=[_PAGE],
         instance=INSTANCE_PARTICULARS,

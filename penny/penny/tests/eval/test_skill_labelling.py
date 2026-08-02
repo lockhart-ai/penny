@@ -8,11 +8,10 @@ no conversation exists in its content to leak an interface question into it.
 
 **Each case sweeps a POOL of routines, not one frozen fixture.**  Sample i draws
 ``pool[i % len(pool)]``, the same doctrine the classifier evals' phrasing pools encode:
-one demonstration measured sixteen times reports how that demonstration happened to
-land, where four routines of the same SHAPE across different everyday domains report
-the judgment.  The pools are deliberately mundane — a marketplace listing, a ferry
-timetable, a bakery's specials, a trail report — the register a real teach round
-arrives in.
+one demonstration measured N times reports how that demonstration happened to land,
+where eight routines of the same SHAPE across different everyday domains report the
+judgment.  The eight are the code owner's ruled fixture set — the SAME teach turns the
+framer's floor case sweeps, so a finding on one draw is readable against the other.
 
 **What is scored, and what is not.**  A spot passes when its line is WELL-FORMED: a
 plausible semantic name that hardens to a usable binding key, plus a non-empty
@@ -70,17 +69,11 @@ def _calls(
     )
 
 
-# The four rounds the pools are built from — same SHAPE (browse one page for one fact,
-# write it), different domains and values, so a sample's result is about the judgment
-# rather than about one listing.
+# The eight rounds the pools are built from — one per teach turn in the code owner's
+# ruled fixture set, the SAME set the framer's floor case sweeps.  Same SHAPE every time
+# (browse one page for one fact, write it down), different domains and values, so a
+# sample's result is about the judgment rather than about one demonstration.
 _ROUNDS = (
-    {
-        "url": "https://faux-market.example/aurora-deck-2",
-        "extract": "the price shown on the product page",
-        "found": "$499",
-        "memory": "prices",
-        "opened": "You opened the Aurora Deck 2 listing",
-    },
     {
         "url": "https://harbour-ferry.example/timetable",
         "extract": "the time of the first sailing",
@@ -90,29 +83,82 @@ _ROUNDS = (
     },
     {
         "url": "https://corner-bakery.example/specials",
-        "extract": "what the soup of the day is",
+        "extract": "the soup of the day",
         "found": "carrot and coriander",
         "memory": "specials",
         "opened": "You opened the corner bakery specials board",
     },
     {
         "url": "https://ridge-trails.example/summit-loop",
-        "extract": "the trail status",
+        "extract": "whether the trail is open",
         "found": "open, muddy in places",
         "memory": "trail-notes",
-        "opened": "You opened the summit loop trail report",
+        "opened": "You opened the summit loop trail page",
+    },
+    {
+        "url": "https://harborseals.example/colony-count",
+        "extract": "the colony count",
+        "found": "48 hauled out",
+        "memory": "colony-counts",
+        "opened": "You opened the colony count page",
+    },
+    {
+        "url": "https://bay-tides.example/table",
+        "extract": "this morning's low tide time",
+        "found": "05:12",
+        "memory": "tides",
+        "opened": "You opened the bay tide table",
+    },
+    {
+        "url": "https://town-library.example/new-arrivals",
+        "extract": "the newest mystery title",
+        "found": "The Quiet Harbour",
+        "memory": "new-arrivals",
+        "opened": "You opened the town library new arrivals list",
+    },
+    {
+        "url": "https://birding-club.example/sightings",
+        "extract": "the latest sighting",
+        "found": "kingfisher at the weir",
+        "memory": "sightings",
+        "opened": "You opened the birding club sightings board",
+    },
+    {
+        "url": "https://faux-market.example/aurora-deck-2",
+        "extract": "the price shown on the product page",
+        "found": "$499",
+        "memory": "prices",
+        "opened": "You opened the Aurora Deck 2 listing",
     },
 )
 
 # The keys each round's write used — the half the two cases vary.  A DESCRIBED key says
 # what the entry is; an ASSEMBLED one is the page's own name, slugged out of what the
 # user pasted.
-_DESCRIBED_KEYS = ("Aurora Deck 2 price", "first sailing", "soup of the day", "summit loop status")
-_ASSEMBLED_KEYS = ("Aurora Deck 2", "Harbour Ferry", "Corner Bakery", "Summit Loop")
+_DESCRIBED_KEYS = (
+    "first sailing",
+    "soup of the day",
+    "summit loop status",
+    "colony count",
+    "morning low tide",
+    "newest mystery title",
+    "latest sighting",
+    "Aurora Deck 2 price",
+)
+_ASSEMBLED_KEYS = (
+    "Harbour Ferry",
+    "Corner Bakery",
+    "Summit Loop",
+    "Harborseals",
+    "Bay Tides",
+    "Town Library",
+    "Birding Club",
+    "Aurora Deck 2",
+)
 
 
 def _pool(keys: tuple[str, ...]) -> list[LeafRound]:
-    """One case's pool: the four rounds under the given write keys, each declaring the
+    """One case's pool: the eight rounds under the given write keys, each declaring the
     four spots whose names are scored."""
     return [
         LeafRound(
