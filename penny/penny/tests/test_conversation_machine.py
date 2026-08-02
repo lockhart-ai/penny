@@ -774,6 +774,26 @@ def test_elicit_instruction_whole_render():
     )
 
 
+def test_apply_instruction_whole_render():
+    """The whole instruction, verbatim — pinned so an edit is a visible diff.
+
+    ONE coherent statement, not a boundary policed twice: the call to make, then the
+    scope of the turn (configuring is all of it, the routine runs itself afterwards),
+    then what to report and the one condition on claiming it is running.  It was
+    patched by accretion once — a third paragraph restating the reporting boundary from
+    another angle — which is the drift this literal makes visible."""
+    assert Prompt.APPLY_INSTRUCTION == (
+        "A skill you already know does what the user is asking, and they have "
+        "given you everything it needs. Set it up now, in one `collection_set` "
+        "call, binding what they told you.\n\n"
+        "Configuring it is the whole turn — you are not carrying the routine out "
+        "yourself. Once it is set up it runs itself on the schedule they just "
+        "gave you, and its first run is the first thing they'll hear about.\n\n"
+        "Then tell them what you set up and what will happen. Say it is running "
+        "only if the call came back confirming it.\n\n"
+    )
+
+
 def test_no_instruction_carries_a_task_shape_or_an_example_phrasing():
     """An instruction describes the STATE, never a kind of task or a form of
     words a user might use.  Both leaked in from #1687 — an example filter quoted

@@ -363,9 +363,9 @@ SKILL_SHAPE_SYSTEM_PROMPT = (
     "same thing: the values are HOW it was carried out, not what it was FOR.\n"
     "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
     "the KIND of task, generic — never the specific instance — and one line that "
-    "states the intent it serves before any mechanics. If your description says "
-    "'a specified piece of information' where the intent said something "
-    "particular, it has dropped the intent — say what the intent actually was.\n"
+    "states the intent it serves before any mechanics. A description that falls "
+    "back on a specified piece of information where the intent named something "
+    "particular has dropped the intent — say what the intent actually was.\n"
     "3. Now picture the user coming back later to set this routine running "
     "again, on a new occasion. What is the MINIMAL information they would have "
     "to give you? Decide every value on that one question:\n"
@@ -383,12 +383,12 @@ SKILL_SHAPE_SYSTEM_PROMPT = (
     "thing they NAMED as the point of the task is something they would expect "
     "you to know by now, so it is a CONSTANT — and if the name you wrote in "
     "step 2 leaves it open, the name is what is wrong, not this answer.\n"
-    "   For example, after 'file the receipts from this sender into my tax "
-    "folder': they named receipts as the point, so 'file receipts' needs only "
-    "the sender and the folder next time. Had they said 'file whatever I point "
-    "you at', they named nothing, and every value would be a PARAMETER. Both "
-    "are real routines — their ask is what tells you which one you were "
-    "taught.\n"
+    "   For example, after being asked to file the receipts from a particular "
+    "sender into a tax folder: they named receipts as the point, so a routine "
+    "that files receipts needs only the sender and the folder next time. Had "
+    "they asked instead to file whatever they point you at, they named nothing, "
+    "and every value would be a PARAMETER. Both are real routines — their ask "
+    "is what tells you which one you were taught.\n"
     "   At least one value is always a PARAMETER: a routine that needs nothing "
     "said to it can only ever repeat the one occasion it was shown, which makes "
     "it a record of what happened rather than a routine. And a routine with NO "
@@ -964,14 +964,20 @@ def _leaves_something_bindable(drawn: ParsedDraw, values: Sequence[str]) -> bool
     return not values or _drawn_constants(drawn, values) != set(values)
 
 
-def _skill_shape(drawn: ParsedDraw, values: Sequence[str]) -> SkillShape:
+def _skill_shape(drawn: ParsedDraw, values: Sequence[str]) -> SkillShape | None:
     """The shape draw read by FIELD NAME — what the routine is called, what it is for,
-    and which values it is ABOUT."""
-    return SkillShape(
-        name=drawn.field(NAME_TAG, DrawField.NAME) or "",
-        description=drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION) or "",
-        fixed=_drawn_constants(drawn, values),
-    )
+    and which values it is ABOUT.  ``None`` only if a required line somehow went missing
+    — the same belt-and-braces guard :func:`_skill_label` keeps, since both lines are
+    REQUIRED in the declared shape and a draw missing either never parses.
+
+    A blank name reaches nothing: the caller degrades to the labeller's name, which is
+    the documented floor, rather than shipping a routine slugged from an empty string
+    with an empty description."""
+    name = drawn.field(NAME_TAG, DrawField.NAME)
+    description = drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION)
+    if name is None or description is None:
+        return None
+    return SkillShape(name=name, description=description, fixed=_drawn_constants(drawn, values))
 
 
 def _parameter_label(item: ParsedLine) -> ParameterLabel:

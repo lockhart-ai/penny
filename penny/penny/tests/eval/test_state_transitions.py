@@ -164,11 +164,17 @@ def _untraceable_parameters(db: Database) -> list[str]:
     return untraceable
 
 
+# The role of a leaf NO substitution covers — it renders verbatim, which is exactly a
+# baked value.  Deliberately NOT a ``SkillSubKind`` member: that enum names kinds of
+# SUBSTITUTION, and a constant is the absence of one.
+_ROLE_CONSTANT = "constant"
+
+
 def _find_instruction_role(db: Database) -> str | None:
     """What role the learned skill gives the browse ``extract`` leaf — the value that
     says WHAT to pull off the page (#1803).
 
-    ``"constant"`` when NO substitution covers it: a leaf nothing covers renders
+    :data:`_ROLE_CONSTANT` when NO substitution covers it: a leaf nothing covers renders
     verbatim, which is exactly a baked value. Otherwise the substitution's own kind
     (``hole`` = still asked for, ``placeholder`` = nobody can supply it). ``None`` when
     no skill or no browse step exists, which the caller reads as nothing to score.
@@ -184,7 +190,7 @@ def _find_instruction_role(db: Database) -> str | None:
             if step.tool != "browse":
                 continue
             covering = [sub for sub in step.substitutions if sub.path == ["extract"]]
-            return covering[0].kind.value if covering else "constant"
+            return covering[0].kind.value if covering else _ROLE_CONSTANT
     return None
 
 
@@ -217,6 +223,7 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
     created = new_collections(db, before)
     written = _entries_written_by_this_run(db)
     instantiated = [row for row in db.memories.list_all() if row.skill_name is not None]
+    find_role = _find_instruction_role(db)
     return [
         Check(
             "state: she browsed the listing (the demonstrated fetch happened)",
@@ -271,15 +278,13 @@ def _score_elicit_to_learn(db: Database, before: set[str], reply: str) -> list[C
         ),
         Check(
             "state: what to find is baked, not asked for again",
-            _find_instruction_role(db) == "constant",
+            find_role == _ROLE_CONSTANT,
             rationale=(
-                None
-                if (role := _find_instruction_role(db)) == "constant"
-                else f"the extract leaf is a {role}"
+                None if find_role == _ROLE_CONSTANT else f"the extract leaf is a {find_role}"
             ),
             kind="state",
         )
-        if _find_instruction_role(db) is not None
+        if find_role is not None
         else Check.na("state: what to find is baked, not asked for again"),
         Check(
             "state: every required parameter is one the user supplied",

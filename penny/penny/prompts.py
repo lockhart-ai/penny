@@ -111,11 +111,11 @@ class Prompt:
         "A skill you already know does what the user is asking, and they have "
         "given you everything it needs. Set it up now, in one `collection_set` "
         "call, binding what they told you.\n\n"
-        "Then tell them what you set up and what will happen. Only say it is "
-        "running if the call came back confirming it.\n\n"
-        "Setting it up is the whole turn. You are configuring the routine, not "
-        "carrying it out — it runs itself on the schedule they just gave you, "
-        "and its first run is the first thing they'll hear about.\n\n"
+        "Configuring it is the whole turn — you are not carrying the routine out "
+        "yourself. Once it is set up it runs itself on the schedule they just "
+        "gave you, and its first run is the first thing they'll hear about.\n\n"
+        "Then tell them what you set up and what will happen. Say it is running "
+        "only if the call came back confirming it.\n\n"
     )
 
     REQUEST_INSTRUCTION = (

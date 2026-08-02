@@ -326,8 +326,12 @@ class SkillExtractor:
         )
         fallback_name = _slug_name(projection.origin_message)
         fallback_description = projection.origin_message or f"Skill: {fallback_name}"
-        label = await self._label_skill(steps, parameters, projection)
-        shape = await self._shape_skill(label, steps, projection)
+        # ONE bounded read of the recent turns, passed to both draws: they read the
+        # same window, and issuing the identical query twice per extraction only
+        # invites the two draws to disagree about what the user said.
+        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
+        label = await self._label_skill(steps, parameters, projection, conversation)
+        shape = await self._shape_skill(label, steps, projection.origin_message, conversation)
         name, description = _naming(label, shape, fallback_name, fallback_description)
         steps, parameters = _apply_parameter_labels(
             steps, parameters, label, _constant_keys(label, shape)
@@ -346,6 +350,7 @@ class SkillExtractor:
         steps: list[SkillStep],
         parameters: list[SkillParameter],
         projection: RunProjection,
+        conversation: list[tuple[str, str]],
     ) -> SkillLabel | None:
         """One single-shot naming micro-context over the rendered routine
         (#1665/#1668/#1770).
@@ -358,7 +363,6 @@ class SkillExtractor:
         or a placeholder description (they did not) — poison-screened + one reroll,
         its own ledger attribution.  ``None`` on any failure — the caller falls back to
         the slug + arg-derived names."""
-        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         content = build_naming_content(
             steps, parameters, projection.origin_message, conversation, _find_phrases(projection)
         )
@@ -368,25 +372,28 @@ class SkillExtractor:
         self,
         label: SkillLabel | None,
         steps: list[SkillStep],
-        projection: RunProjection,
+        origin_message: str,
+        conversation: list[tuple[str, str]],
     ) -> SkillShape | None:
         """One single-shot SHAPE micro-context over the routine's kept values (#1803).
 
         Content = what the USER asked for (their turns, nothing the assistant said)
-        + the values the labeller kept, each with its semantic name, description, and
-        demonstrated value.  Deliberately smaller than the labelling content: the
-        question is what the routine is FOR, and the steps, the arg sites, and the
-        assistant's own wording are all evidence about how it was carried out.
+        + the values the labeller kept, each with its semantic name and the value it
+        was demonstrated with — the labeller's per-value DESCRIPTION is deliberately
+        dropped (see :class:`ShapeableValue`).  Deliberately smaller than the labelling
+        content: the question is what the routine is FOR, and the steps, the arg sites,
+        and the assistant's own wording are all evidence about how it was carried out.
+
+        Takes the origin message directly rather than a whole projection — it is all it
+        ever read from one, the same narrowing ``build_naming_content`` got.
 
         Skipped — ``None``, so nothing changes — when the labelling draw failed
         outright or kept nothing shapeable, since there is then no closed set of
         values to decide over."""
         values = _shapeable_values(label, steps)
-        if not values:
+        if label is None or not values:
             return None
-        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        summary = label.description if label is not None else ""
-        content = build_shape_content(values, projection.origin_message, conversation, summary)
+        content = build_shape_content(values, origin_message, conversation, label.description)
         return await self._micro_context.shape_skill(
             content, [value.name for value in values], run_target=self._agent_name
         )
@@ -566,13 +573,13 @@ def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[
     marked = _attachment_marked(steps)
     return [
         ShapeableValue(
-            name=param.name,
+            name=parameter.name,
             current=current,
             demonstrated=_parameter_facts(steps, current)[0],
         )
-        for current, param in label.parameters.items()
-        if param.verdict == ParameterVerdict.PARAMETER
-        and not is_blank(param.name)
+        for current, parameter in label.parameters.items()
+        if parameter.verdict == ParameterVerdict.PARAMETER
+        and not is_blank(parameter.name)
         and current not in marked
     ]
 
@@ -592,7 +599,7 @@ def build_shape_content(
     values: list[ShapeableValue],
     origin_message: str,
     conversation: list[tuple[str, str]],
-    round_summary: str = "",
+    round_summary: str,
 ) -> str:
     """The shape micro-context's content (#1803): what the USER asked for, then the
     values the routine used.  PUBLIC because the shape eval builds it too — that case
@@ -657,8 +664,8 @@ def _constant_keys(label: SkillLabel | None, shape: SkillShape | None) -> frozen
         return frozenset()
     return frozenset(
         current
-        for current, param in label.parameters.items()
-        if param.verdict == ParameterVerdict.PARAMETER and param.name in shape.fixed
+        for current, parameter in label.parameters.items()
+        if parameter.verdict == ParameterVerdict.PARAMETER and parameter.name in shape.fixed
     )
 
 

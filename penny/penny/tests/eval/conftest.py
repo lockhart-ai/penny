@@ -1159,15 +1159,22 @@ def _place_checks(
     return placed, leftover
 
 
-def _sample_db_path(tmp_path, case_id: str, sample_index: int) -> str:
+def _sample_db_path(tmp_path, case_id: str, sample_index: int, attempt: int = 0) -> str:
     """Where a sample's hermetic DB lives.  When ``EVAL_REPORT_DIR`` is set the DB
     persists BESIDE the reports (the mounted dir survives the ``--rm`` container),
     so a run's raw promptlog can be re-read after the fact — same doctrine as the
-    transcripts: the evidence always survives the run.  Unset → tmp_path as before."""
+    transcripts: the evidence always survives the run.  Unset → tmp_path as before.
+
+    ``attempt`` keys a RE-DRIVEN sample onto its own file (#1803 review): nothing
+    deletes a sample's DB, so a retry handed the same path would re-seed over the
+    failed attempt's rows and inherit its ``messagelog``/``promptlog`` — the failed
+    turn replayed into the next attempt's context and into its transcript.  The first
+    attempt keeps the unsuffixed name, so a runner that never retries is unchanged."""
     report_dir = os.environ.get("EVAL_REPORT_DIR")
     base = Path(report_dir) if report_dir else tmp_path
     Path(base).mkdir(parents=True, exist_ok=True)
-    return str(Path(base) / f"{case_id}-{sample_index}.db")
+    suffix = f"-attempt{attempt + 1}" if attempt else ""
+    return str(Path(base) / f"{case_id}-{sample_index}{suffix}.db")
 
 
 # ── Transcript extraction: promptlog → report.SampleTranscript (#1725 iteration-6) ──
@@ -1555,8 +1562,10 @@ def _write_sample_report(
 # no work done, which scored as a BEHAVIOURAL failure and dragged a case's mean down for
 # a reason the model never controlled (observed: a learn → apply sample scored 0.22 that
 # way, with every state check red because the collection was never created).  A retry
-# gets a fresh server and a fresh DB, so the sample is driven from the same clean world
-# rather than continuing on top of the failed turn.
+# gets a fresh server and a fresh DB — the DB path is keyed on the ATTEMPT
+# (``_sample_db_path``), since nothing deletes the file and a reused path would re-seed
+# over the failed attempt's rows and replay its turn — so the sample is driven from the
+# same clean world rather than continuing on top of the failed turn.
 _MODEL_CALL_ATTEMPTS = 3
 
 
@@ -1581,6 +1590,109 @@ def _conversation_turns(message: str | None, messages: Sequence[str] | None) -> 
             raise ValueError("chat_eval `messages` must contain at least one turn")
         return list(messages)
     raise ValueError("chat_eval needs exactly one of `message` or `messages`")
+
+
+async def _seed_sample(
+    penny: Penny,
+    *,
+    seed: Seeder | None,
+    seed_skills: Sequence[SkillDraft] | None,
+    browse: list[CannedPage] | None,
+    prepare: Preparer | None,
+) -> None:
+    """Lay a sample's world down before its first turn: the user, the case's own seed,
+    the embeddings those seeds need, any fixture skills, the canned browse, and the
+    case's late hook."""
+    seed_user(penny.db)
+    if seed is not None:
+        seed(penny.db)
+    await _embed_seeds(penny)
+    if seed_skills:
+        await _seed_eval_skills(penny, seed_skills)
+    if browse is not None:
+        install_browse(penny, browse)
+    if prepare is not None:
+        prepare(penny)
+
+
+async def _drive_turns(
+    server: MockSignalServer, turns: Sequence[str], *, timeout: float, retryable: bool
+) -> str:
+    """Push each user turn and wait for its reply, returning the LAST one.
+
+    A model-error reply raises :class:`_ModelCallError` while an attempt remains — that
+    reply is the transport failing, not Penny deciding anything, so the sample is
+    re-driven from a clean world rather than scored as behaviour."""
+    reply = ""
+    for turn in turns:
+        await server.push_message(sender=TEST_SENDER, content=turn)
+        response = await server.wait_for_message(timeout=timeout)
+        reply = str(response.get("message", ""))
+        if reply == PennyResponse.AGENT_MODEL_ERROR and retryable:
+            raise _ModelCallError
+    return reply
+
+
+def _scored_sample(
+    db: Database,
+    before: set[str],
+    reply: str,
+    score: Scorer,
+    wrapper: _InjectingClient | None,
+) -> SampleResult:
+    """One sample's result from its scorer — graded ``Check``s or binary failure
+    strings — with the forced-bail guard folded in when the case wrapped the client."""
+    scored = list(score(db, before, reply))
+    if _scorer_is_graded(scored):
+        guards = [_bail_fired_check(wrapper.bail_injected)] if wrapper is not None else []
+        return _guarded_graded(scored, guards)
+    fails = [s for s in scored if isinstance(s, str)]  # binary scorer
+    if wrapper is not None and not wrapper.bail_injected:
+        fails.append("forced bail never fired — contract not exercised")
+    return SampleResult.binary(fails)
+
+
+async def _drive_sample(
+    penny: Penny,
+    server: MockSignalServer,
+    *,
+    case_id: str,
+    sample_index: int,
+    turns: Sequence[str],
+    score: Scorer,
+    wrap_client: Callable[[LlmClient], _InjectingClient] | None,
+    timeout: float,
+    retryable: bool,
+) -> SampleResult:
+    """ONE attempt at one sample against an already-seeded Penny: drive the turns,
+    score them, write the sample's report block and dump its thinking.
+
+    A timeout counts as a failed sample, not a crash, and still emits its placeholder
+    block so the transcript's sample count always matches N (#1725/F2).  Raises
+    :class:`_ModelCallError` when the model call itself failed and an attempt remains."""
+    # A recovery case wraps the chat agent's model client to force one bad response
+    # (e.g. a bracket-wrapped key) deterministically.  Keep the wrapper: its
+    # ``bail_injected`` flag is the only proof the sabotage fired — the raw response is
+    # persisted inside the REAL client before the wrapper mutates it, so the promptlog
+    # never shows the injected form and can't be probed for it.
+    wrapper: _InjectingClient | None = None
+    if wrap_client is not None:
+        wrapper = wrap_client(penny.chat_agent._model_client)
+        penny.chat_agent._model_client = wrapper
+    before = collection_names(penny.db)
+    try:
+        reply = await _drive_turns(server, turns, timeout=timeout, retryable=retryable)
+        result = _scored_sample(penny.db, before, reply, score, wrapper)
+        _stamp_cause(penny.db, result)
+        _write_sample_report(
+            penny.db, case_id, sample_index, result=result, reply=reply, driven=turns
+        )
+    except TimeoutError:
+        result = SampleResult.binary(["no reply within timeout"])
+        _stamp_cause(penny.db, result, timed_out=True)
+        _write_sample_report(penny.db, case_id, sample_index, result=result)
+    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+    return result
 
 
 @pytest.fixture
@@ -1634,72 +1746,28 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                     config = _real_model_config(
                         make_config,
                         signal_api_url=f"http://localhost:{server.port}",
-                        db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                        db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
                     )
                     async with run_penny_with_server(config, server) as penny:
-                        seed_user(penny.db)
-                        if seed is not None:
-                            seed(penny.db)
-                        await _embed_seeds(penny)
-                        if seed_skills:
-                            await _seed_eval_skills(penny, seed_skills)
-                        if browse is not None:
-                            install_browse(penny, browse)
-                        if prepare is not None:
-                            prepare(penny)
-                        # A recovery case wraps the chat agent's model client to force
-                        # one bad response (e.g. a bracket-wrapped key) deterministically.
-                        # Keep the wrapper: its ``bail_injected`` flag is the only proof
-                        # the sabotage fired — the raw response is persisted inside the
-                        # REAL client before the wrapper mutates it, so the promptlog
-                        # never shows the injected form and can't be probed for it.
-                        wrapper: _InjectingClient | None = None
-                        if wrap_client is not None:
-                            wrapper = wrap_client(penny.chat_agent._model_client)
-                            penny.chat_agent._model_client = wrapper
-                        before = collection_names(penny.db)
-                        try:
-                            reply = ""
-                            for turn in turns:
-                                await server.push_message(sender=TEST_SENDER, content=turn)
-                                response = await server.wait_for_message(timeout=timeout)
-                                reply = str(response.get("message", ""))
-                                if (
-                                    reply == PennyResponse.AGENT_MODEL_ERROR
-                                    and attempt + 1 < _MODEL_CALL_ATTEMPTS
-                                ):
-                                    raise _ModelCallError
-                            scored = list(score(penny.db, before, reply))
-                            if _scorer_is_graded(scored):
-                                guards: list[Check] = []
-                                if wrapper is not None:
-                                    guards = [_bail_fired_check(wrapper.bail_injected)]
-                                result = _guarded_graded(scored, guards)
-                            else:
-                                fails = [s for s in scored if isinstance(s, str)]  # binary scorer
-                                if wrapper is not None and not wrapper.bail_injected:
-                                    fails.append("forced bail never fired — contract not exercised")
-                                result = SampleResult.binary(fails)
-                            results.append(result)
-                            _stamp_cause(penny.db, result)
-                            _write_sample_report(
-                                penny.db,
-                                case_id,
-                                sample_index,
-                                result=result,
-                                reply=reply,
-                                driven=turns,
+                        await _seed_sample(
+                            penny,
+                            seed=seed,
+                            seed_skills=seed_skills,
+                            browse=browse,
+                            prepare=prepare,
+                        )
+                        results.append(
+                            await _drive_sample(
+                                penny,
+                                server,
+                                case_id=case_id,
+                                sample_index=sample_index,
+                                turns=turns,
+                                score=score,
+                                wrap_client=wrap_client,
+                                timeout=timeout,
+                                retryable=attempt + 1 < _MODEL_CALL_ATTEMPTS,
                             )
-                        except TimeoutError:
-                            timed_out = SampleResult.binary(["no reply within timeout"])
-                            _stamp_cause(penny.db, timed_out, timed_out=True)
-                            results.append(timed_out)
-                            # Emit the timeout sample's block too, so the transcript's sample count
-                            # always matches N — a silently-dropped sample is invisible degradation
-                            # (#1725/F2). No completed turn → the placeholder block.
-                            _write_sample_report(penny.db, case_id, sample_index, result=timed_out)
-                        _dump_thinking(
-                            penny.db, case_id, sample_index, failed=not results[-1].passed
                         )
                         perf.add(penny.db.messages.prompt_perf())
                 except _ModelCallError:
@@ -2483,7 +2551,7 @@ def _micro_context_rows(db: Database, *agent_names: str) -> list[PromptLog]:
     naming only one of them renders a transcript that cannot show the decision the
     case is scoring — which is how a shipped second draw read as never built."""
     wanted = frozenset(agent_names)
-    return [row for row in _sample_prompt_rows(db) if (row.agent_name or "") in wanted]
+    return [row for row in _sample_prompt_rows(db) if row.agent_name in wanted]
 
 
 def _classifier_rows(db: Database) -> list[PromptLog]:
@@ -2737,42 +2805,11 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
 # ── Fourth micro-context customer: run-end skill labelling (#1770) ─────────────
 
 # One demonstrated tool call as a case fixture: tool name, verbatim arguments, its
-# framed result, and whether it succeeded — the shape ``_log_demonstration`` writes
-# into the ledger, mirroring what a real chat run leaves behind.
+# framed result, and whether it succeeded — the shape a real chat run leaves behind in
+# the ledger, which is what ``_labelling_input`` renders the labeller's content from.
 DemoCall = tuple[str, dict, str, bool]
 
 LabellerEval = Callable[..., Awaitable[None]]
-
-
-def _log_demonstration(
-    db: Database, run_id: str, utterance: str, calls: Sequence[DemoCall]
-) -> None:
-    """Log one chat run REAL-SHAPED — the bare utterance turn, each call carrying the
-    framework's top-level ``reasoning`` think-aloud (#1661) and each result carrying
-    its structural per-call success stamp (#1600).  The demonstration is a FIXTURE
-    ledger, not a driven round: the case measures the labeller's judgment over a fixed
-    routine, and deliberately asserts nothing about what a round chooses to write."""
-    tool_calls = []
-    tool_turns: list[dict] = []
-    for index, (name, args, result, success) in enumerate(calls, start=1):
-        call_id = f"c{index}"
-        arguments = json.dumps({**args, "reasoning": f"step {index}: doing {name}"})
-        tool_calls.append({"id": call_id, "function": {"name": name, "arguments": arguments}})
-        tool_turns.append(
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result,
-                PennyConstants.TOOL_RESULT_SUCCESS_KEY: success,
-            }
-        )
-    db.messages.log_prompt(
-        model="m",
-        messages=[{"role": "user", "content": utterance}, *tool_turns],
-        response={"choices": [{"message": {"tool_calls": tool_calls}}]},
-        run_id=run_id,
-        agent_name=PennyConstants.CHAT_AGENT_NAME,
-    )
 
 
 # The customers that draw at run end: the labeller (provenance) and the shape draw
@@ -2782,30 +2819,6 @@ RUN_END_CUSTOMERS = (
     PennyConstants.SKILL_NAMING_AGENT_NAME,
     PennyConstants.SKILL_SHAPE_AGENT_NAME,
 )
-
-
-def _run_end_rerolled(db: Database) -> bool:
-    """Did EITHER run-end customer draw more than once (#1770/#1803) — the fragile
-    signal, a sample that only got there by recovering.
-
-    Counted PER customer, never in total: a run end is two draws by design, so a
-    total would mark every sample fragile and the signal would mean nothing."""
-    return any(len(_micro_context_rows(db, agent)) > 1 for agent in RUN_END_CUSTOMERS)
-
-
-def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
-    """The string leaf a substitution's JSON path addresses in a step's verbatim
-    arguments — the demonstrated value — or ``None`` when the path doesn't resolve to
-    one."""
-    node: object = arguments
-    for part in path:
-        if isinstance(node, dict) and isinstance(part, str):
-            node = node.get(part)
-        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
-            node = node[part]
-        else:
-            return None
-    return node if isinstance(node, str) else None
 
 
 def _run_end_rerolled(db: Database) -> bool:
@@ -2883,15 +2896,30 @@ def _verdict_check(
     A user-supplied value with no line keeps its arg-derived REQUIRED parameter, so it
     is still bindable and the check holds.  An assistant-produced value with no line
     keeps that same required parameter — which no user could ever supply, the exact
-    #1770 harm — so it does not."""
+    #1770 harm — so it does not.
+
+    An expected value that is not among the distilled candidates at all is a BROKEN
+    CASE, not a verdict of any kind, and fails LOUDLY naming the value: the fixture
+    ledger has drifted from what the case asserts, and a drifted fixture that scores
+    green is a case measuring nothing."""
+    role = (
+        "user value stayed a parameter"
+        if expected == ParameterVerdict.PARAMETER
+        else "assistant value became a placeholder"
+    )
     current = by_value.get(value)
-    verdict = label.parameters.get(current or "") if label is not None else None
+    if current is None:
+        return Check(
+            f"{role}: {value!r}",
+            False,
+            kind="state",
+            rationale=f"{value!r} is not among the distilled candidates — the fixture has drifted",
+        )
+    verdict = label.parameters.get(current) if label is not None else None
     if expected == ParameterVerdict.PARAMETER:
         ok = verdict is None or verdict.verdict == ParameterVerdict.PARAMETER
-        role = "user value stayed a parameter"
     else:
         ok = verdict is not None and verdict.verdict == ParameterVerdict.PLACEHOLDER
-        role = "assistant value became a placeholder"
     drawn = "no verdict" if verdict is None else verdict.verdict.value
     return Check(
         f"{role}: {value!r}",

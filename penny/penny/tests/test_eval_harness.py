@@ -27,6 +27,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
+from penny.skill_extraction import ShapeableValue, build_shape_content
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -1092,6 +1093,60 @@ def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
     assert by_value["the current price"] == "extract"
 
 
+_SHAPE_LISTING = "https://faux-market.example/aurora-deck-2"
+_SHAPE_ASK = "can you keep an eye on the aurora deck 2 price for me?"
+_SHAPE_VALUES = [
+    ShapeableValue(name="url", current="queries", demonstrated=_SHAPE_LISTING),
+    ShapeableValue(name="what_to_find", current="extract", demonstrated="the current price"),
+]
+
+
+def test_shape_input_renders_the_ask_the_round_and_the_values() -> None:
+    """The shape micro-context's content, WHOLE (#1803) — the surface the shape draw
+    actually reads, built by the SHIPPED renderer the eval case also calls.
+
+    Everything the render can vary is folded in.  The assistant's turn is dropped (only
+    the user can say what a routine is FOR), the demonstrating message joins the asks
+    as the last user turn, the labeller's ROUTINE summary renders as its own section
+    (its PER-VALUE descriptions never do — see ``ShapeableValue``), and each value is
+    its semantic name beside the value it was demonstrated with."""
+    content = build_shape_content(
+        _SHAPE_VALUES,
+        _LABELLER_UTTERANCE,
+        [
+            (PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK),
+            (PennyConstants.MessageDirection.OUTGOING, "sure — which listing did you mean?"),
+        ],
+        "Keep track of an item's current price by fetching its page and storing the value.",
+    )
+
+    assert content == (
+        "What the user asked for:\n"
+        "can you keep an eye on the aurora deck 2 price for me?\n"
+        "read the aurora deck 2 listing, find the current price, and remember it\n"
+        "\n"
+        "What the round did, in one line:\n"
+        "Keep track of an item's current price by fetching its page and storing the value.\n"
+        "\n"
+        "The values the routine used to do it:\n"
+        "- url = 'https://faux-market.example/aurora-deck-2'\n"
+        "- what_to_find = 'the current price'"
+    )
+
+    # The other two shapes the render has: the demonstrating message already inside the
+    # recent window (rendered ONCE, never doubled), and a labelling draw that produced
+    # no routine summary (the section is absent, not an empty heading).
+    assert build_shape_content(
+        _SHAPE_VALUES[:1], _SHAPE_ASK, [(PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK)], ""
+    ) == (
+        "What the user asked for:\n"
+        "can you keep an eye on the aurora deck 2 price for me?\n"
+        "\n"
+        "The values the routine used to do it:\n"
+        "- url = 'https://faux-market.example/aurora-deck-2'"
+    )
+
+
 def test_score_labelling_reads_the_verdicts_and_absence_falls_both_ways() -> None:
     """The labelling case's scoring over a fixture draw (#1770): the user's values
     stayed bindable parameters, the assistant's became placeholders.
@@ -1126,3 +1181,12 @@ def test_score_labelling_reads_the_verdicts_and_absence_falls_both_ways() -> Non
         ("user value stayed a parameter: 'the current price'", True),
         ("assistant value became a placeholder: 'aurora deck 2 page source'", False),
     ]
+
+    # A value the case asserts but the ledger never distilled is a BROKEN CASE, not a
+    # verdict of any kind: it fails loudly naming the value, because a drifted fixture
+    # scoring green is a case measuring nothing.
+    drifted = _score_labelling(label, by_value, ["a value nothing distilled"], [])
+    assert [(check.label, check.ok) for check in drifted] == [
+        ("user value stayed a parameter: 'a value nothing distilled'", False)
+    ]
+    assert "not among the distilled candidates" in (drifted[0].rationale or "")

@@ -49,18 +49,17 @@ _LISTING = "https://faux-market.example/aurora-deck-2"
 _ASK = "can you keep an eye on the aurora deck 2 price for me?"
 _DEMONSTRATION = f"read {_LISTING}, find the current price, and remember it"
 
-# The semantic names the labeller emitted for this round in the measured run of
-# 2026-08-01 — copied rather than invented, so the fixture is what the upstream draw
-# really produces.  Its one-line descriptions are deliberately absent: they describe
-# every value as a fill-in slot, which argued the decision under test (see
-# ``ShapeableValue``).
-# The labeller's one-line summary of the round, verbatim from the same measured run.
-# Its ROUTINE description is passed to the shaper where its PER-VALUE descriptions are
-# not: this one states what the round was FOR, which is the question under test.
+# The labeller's one-line summary of the round, verbatim from a measured run.  Its
+# ROUTINE description is passed to the shaper where its PER-VALUE descriptions are not:
+# this one states what the round was FOR, which is the question under test.
 _SUMMARY = (
     "Keep track of a specific item's current price by fetching its page and storing the value."
 )
 
+# The semantic names the labeller emitted for this round in the same measured run —
+# copied rather than invented, so the fixture is what the upstream draw really produces.
+# Its one-line descriptions are deliberately absent: they describe every value as a
+# fill-in slot, which argued the decision under test (see ``ShapeableValue``).
 _URL = ShapeableValue(name="url", current="queries", demonstrated=_LISTING)
 _WHAT_TO_FIND = ShapeableValue(
     name="what_to_find", current="extract", demonstrated="the current price"

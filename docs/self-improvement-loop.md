@@ -253,8 +253,10 @@ like `browse`/`send_message` need capture regardless):
 
 Done. The Phase-2 sandbox is wrapped as the **`prompt_test`** tool
 (`penny/tools/prompt_test.py` → `Collector.dry_run`): the sandboxed sibling of
-`TestExtractionPromptTool` (which runs `collector.run_for` *for real*) — the
-delta is capture-don't-apply. We chose the **capturing-tool-surface** sandbox
+running a cycle *for real* via `Collector.run_for`, which is no longer reachable
+from the model at all — triggering a cycle on demand is the addon surfaces'
+control, with no chat tool in front of it — and the delta is
+capture-don't-apply. We chose the **capturing-tool-surface** sandbox
 over snapshot/clone: a throwaway `_DryRunCollector` runs the candidate cycle in
 place with side-effecting tools captured, browse stubbed, and the log-read
 cursor never committed (non-consuming reads via the `_should_commit_cursor`

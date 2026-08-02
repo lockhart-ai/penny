@@ -64,7 +64,11 @@ from penny.tests.eval.test_state_transitions import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
-from penny.tools.micro_context import SKILL_NAMING_SYSTEM_PROMPT, SKILL_SHAPE_SYSTEM_PROMPT
+from penny.tools.micro_context import (
+    SKILL_NAMING_SYSTEM_PROMPT,
+    SKILL_SHAPE_SYSTEM_PROMPT,
+    MicroContext,
+)
 from penny.tools.skill_tools import render_skill_brief, render_skill_full
 
 # ── Real-shaped fixtures: a fictional "watch the aurora deck 2 price" demo ──────
@@ -1054,6 +1058,55 @@ async def test_a_routine_is_never_all_constant_so_it_stays_bindable(db):
 
 
 @pytest.mark.asyncio
+async def test_a_value_named_on_both_lines_stays_a_parameter(db):
+    """A draw that names the SAME value on a CONSTANT line AND a PARAMETER line has
+    contradicted itself, and the BINDABLE direction wins (#1803) — the same rule the
+    labeller's repeated-line drop encodes, for the same reason: a routine that lost a
+    parameter to a stray line can never be pointed anywhere new, while one that kept a
+    needless parameter merely asks a question it could have answered itself.
+
+    The draw is otherwise VALID — both required lines are there and something is left
+    bindable — so the shape's NAME still stands.  That is what makes this a
+    contradiction rule rather than a refusal: only the contradicted value is dropped."""
+    model = _two_draw_model(
+        _BOTH_USER_SUPPLIED,
+        "NAME: Watch a listing price\n"
+        "DESCRIPTION: Keep an eye on what a listing costs.\n"
+        "CONSTANT what_to_find\n"
+        "PARAMETER what_to_find\n"
+        "PARAMETER url",
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    params = parameters_from_json(result.skill.parameters)
+    assert [p.name for p in params] == ["url", "what_to_find"], "the contradicted value is kept"
+    steps = steps_from_json(result.skill.steps)
+    assert [sub.parameter for sub in steps[0].substitutions if sub.path == ["extract"]] == [
+        "what_to_find"
+    ], "the contradicted leaf is still a bindable hole, not a baked constant"
+    # The draw itself was valid, so it named the routine — only the one line was dropped.
+    assert result.skill.name == "watch-a-listing-price"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_offered_set_is_not_read_as_everything_being_constant():
+    """The bindable floor is about what the DRAW did, so an empty offered set is not a
+    draw that baked everything (#1803).  Without that short-circuit the emptiness would
+    satisfy "the constants cover every value" and every draw would be refused — a
+    contract violation manufactured from having nothing to decide."""
+    drawn = "NAME: Watch a listing price\nDESCRIPTION: Keep an eye on what a listing costs.\n"
+
+    shape = await MicroContext(cast(Any, _naming_model(drawn))).shape_skill("content", [])
+
+    assert shape is not None, "an empty offered set is not a refusal"
+    assert shape.fixed == frozenset()
+    assert shape.name == "Watch a listing price"
+
+
+@pytest.mark.asyncio
 async def test_the_attachment_target_is_never_offered_as_a_constant(db):
     """Where the routine WRITES is decided by what it is applied to, not by what it
     is about (#1783), so an attachment-marked leaf is withheld from the shape draw
@@ -1064,7 +1117,7 @@ async def test_the_attachment_target_is_never_offered_as_a_constant(db):
     the retarget seam exists to prevent.  Keyed to the MARK, not to any tool name:
     a skill is an arbitrary sequence, and a plugin's write is marked the same way."""
     model = _two_draw_model(
-        _BOTH_USER_SUPPLIED + "\nPARAM memory: destination — the collection to write into",
+        f"{_BOTH_USER_SUPPLIED}\nPARAM memory: destination — the collection to write into",
         # The draw names the destination anyway — and it changes nothing.
         "NAME: Watch a listing price\n"
         "DESCRIPTION: Keep an eye on what a listing costs.\n"
@@ -1173,7 +1226,8 @@ def test_shape_system_prompt_whole_render():
     The worked example is deliberately a FILING routine, not the price watcher these
     tests demonstrate: an example drawn from the case in hand teaches pattern-matching
     on that case, and a skill is an arbitrary tool sequence a plugin may have supplied
-    the verbs for."""
+    the verbs for.  It is also told as unquoted PROSE: a quoted example value is copied
+    verbatim, and the one thing this prompt asks the model to compose is a name."""
     assert SKILL_SHAPE_SYSTEM_PROMPT == (
         "You are deciding what a reusable routine IS. You are given what the user "
         "asked for once, a one-line summary of what was done for them, and the values "
@@ -1184,9 +1238,9 @@ def test_shape_system_prompt_whole_render():
         "same thing: the values are HOW it was carried out, not what it was FOR.\n"
         "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
         "the KIND of task, generic — never the specific instance — and one line that "
-        "states the intent it serves before any mechanics. If your description says "
-        "'a specified piece of information' where the intent said something "
-        "particular, it has dropped the intent — say what the intent actually was.\n"
+        "states the intent it serves before any mechanics. A description that falls "
+        "back on a specified piece of information where the intent named something "
+        "particular has dropped the intent — say what the intent actually was.\n"
         "3. Now picture the user coming back later to set this routine running "
         "again, on a new occasion. What is the MINIMAL information they would have "
         "to give you? Decide every value on that one question:\n"
@@ -1204,12 +1258,12 @@ def test_shape_system_prompt_whole_render():
         "thing they NAMED as the point of the task is something they would expect "
         "you to know by now, so it is a CONSTANT — and if the name you wrote in "
         "step 2 leaves it open, the name is what is wrong, not this answer.\n"
-        "   For example, after 'file the receipts from this sender into my tax "
-        "folder': they named receipts as the point, so 'file receipts' needs only "
-        "the sender and the folder next time. Had they said 'file whatever I point "
-        "you at', they named nothing, and every value would be a PARAMETER. Both "
-        "are real routines — their ask is what tells you which one you were "
-        "taught.\n"
+        "   For example, after being asked to file the receipts from a particular "
+        "sender into a tax folder: they named receipts as the point, so a routine "
+        "that files receipts needs only the sender and the folder next time. Had "
+        "they asked instead to file whatever they point you at, they named nothing, "
+        "and every value would be a PARAMETER. Both are real routines — their ask "
+        "is what tells you which one you were taught.\n"
         "   At least one value is always a PARAMETER: a routine that needs nothing "
         "said to it can only ever repeat the one occasion it was shown, which makes "
         "it a record of what happened rather than a routine. And a routine with NO "
