@@ -402,3 +402,4 @@ Tests cover the full message flow (search, response, threading, typing indicator
 ## License
 
 MIT
+
