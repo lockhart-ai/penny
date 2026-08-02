@@ -27,9 +27,9 @@ reroll because the parse had "succeeded".  Tolerance is now declared once and
 A violation of a REQUIRED part of the shape is rerolled on the unchanged context
 and then fails honestly, per customer (``EXTRACTION_FAILED`` / ``INVALID`` /
 the naming fallback).  A violation of an OPTIONAL or PER_ITEM line is simply an
-ABSENT line — the labeller's per-candidate verdicts are best-effort by design, so
-a bad line costs that one candidate its verdict and nothing else, and absence is
-still never a verdict (#1770).
+ABSENT line — the labeller's per-spot labels are best-effort by design, so a bad
+line costs that one spot its label and nothing else, and absence never changes
+what the spot means (#1770).
 
 The single call is screened by the same degeneracy / leaked-Harmony-envelope
 detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`): poison
@@ -64,7 +64,6 @@ from penny.tools.micro_context_shape import (
     LineSpec,
     MicroContextShape,
     ParsedDraw,
-    ParsedLine,
     PayloadSpan,
     Separator,
     parse_draw,
@@ -159,61 +158,42 @@ _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
 # never promoted to a value; after the reroll the customer fails honestly.
 _INVALID_DRAW_BUDGET = 2
 
-# ── Second customer: run-end skill naming (#1665/#1668/#1770) ──────────────────
-# The naming contract is a DIFFERENT declared shape riding the SAME poison-screen
-# + reroll machinery (``_valid_draw``): given a distilled routine AND its candidate
-# parameters, write a GENERIC verb-noun name + a one-line generic description AND —
-# per candidate — a VERDICT: the user supplied this value (a real parameter, named
-# semantically) or they did not (a placeholder).  Every tag is enumerated on both
-# sides of the interface, exactly like EXTRACTED:/NOT_PRESENT: — the system prompt
-# renders them from the shape and the shared parse reads them deterministically.
-# Each line is keyed by the candidate's CURRENT (arg-derived) name, so the system
-# owns an unambiguous mapping back; the model writes LABELS and VERDICTS only.
+# ── Second customer: run-end LEAF LABELLING (#1824/#1827/#1828) ────────────────
+# The labelling contract is a DIFFERENT declared shape riding the SAME poison-screen
+# + reroll machinery (``_valid_draw``): given a demonstrated routine and every SPOT in
+# it that gets filled each run, write a semantic NAME + a one-line description for
+# EVERY spot — and nothing else.  One line per spot, keyed by the spot's CURRENT
+# (arg-derived) name, so the system owns an unambiguous mapping back; the model writes
+# LABELS only.
 #
-# Why a verdict at all (#1770): the distiller classifies an unexplained string leaf
-# as a required parameter BY DEFAULT — a default that is wrong for a value the model
-# derived-and-transformed from a tool result or invented outright, since neither can
-# ever be supplied by a user.  Those two origins share no literal span with what
-# produced them, so no substring test can reach them (and #1659 already ruled prose
-# matching out); the question "did the USER provide this?" has an answer in every
-# case and is a judgment, which is why the labeller is the right instrument.
+# It judges NOTHING (#1824).  The pipeline it replaces asked this same draw where each
+# value came from and then, in a second draw, what the routine was about — and the
+# per-candidate verdict pinned at ~0.7-0.8 across three independent wording
+# interventions (#1821), with the error compounding geometrically as a routine gains
+# leaves.  The inversion: every leaf is a placeholder unconditionally, so there is no
+# origin question left to get wrong, and the routine's INTERFACE — its name,
+# description and parameters — is decided from the user's ask alone by a separate
+# customer (the framer).  Neither draw sees the other's evidence, which is what stops
+# them contradicting each other.
 #
-# Why the response is GROUPED BY VERDICT (#1807): the judgment was right and the
-# TRANSCRIPTION was wrong — in every observed failure the thinking concluded "treat as
-# PARAM" and the line came out ``PLACEHOLDER``, always sitting inside a run of genuine
-# placeholder lines.  Asked for one line per candidate, the model drafts the line and
-# writes the tag last as a prefix, so a run of placeholders sweeps the odd parameter in
-# with it.  Asked for the two GROUPS, the split itself is the thing being written and a
-# candidate's group is settled before any of its line is.  The parse is unchanged and
-# stays ORDER-AGNOSTIC: grouping is what the contract asks for, never what it requires,
-# so an interleaved draw still maps every candidate exactly as before.
-NAME_TAG = "NAME:"
-DESCRIPTION_TAG = "DESCRIPTION:"
-PARAM_TAG = "PARAM"
+# So the ``PARAM`` line, the ``NAME:``/``DESCRIPTION:`` lines, the verdict union and
+# the grouped-by-verdict response structure (#1807) are all gone from this customer.
+# What survives is the PER_ITEM best-effort rule (#1770/#1814): a spot with no line,
+# or with a malformed one, simply has no label and keeps its arg-derived name —
+# absence is never a drop, and a malformed line is still never read as good data.
 PLACEHOLDER_TAG = "PLACEHOLDER"
 
-_SKILL_NAME_LINE = LineSpec(
-    tag=NAME_TAG,
-    fields=(FieldSpec(name=DrawField.NAME, placeholder="<a short generic verb-noun name>"),),
-)
-_SKILL_DESCRIPTION_LINE = LineSpec(
-    tag=DESCRIPTION_TAG,
-    fields=(
-        FieldSpec(
-            name=DrawField.DESCRIPTION,
-            placeholder="<one line: the user intent it serves, then the mechanics>",
-        ),
-    ),
-)
-# The per-candidate verdict lines are PER_ITEM — best-effort BY DESIGN (#1770).  A
-# candidate with no line, or with a malformed one, simply has no verdict, which the
-# caller reads as "keep the arg-derived required parameter": absence is never a drop,
-# and a flaky draw can never silently delete a real parameter.  What #1814 changed is
-# the OTHER half — a malformed line is no longer accepted as good data.  The semantic
-# name declares ``FieldShape.NAME`` because it becomes the skill's binding key, so a
-# "name" that is really a name plus its own description is a malformed line.
-_PARAM_LINE = LineSpec(
-    tag=PARAM_TAG,
+# The one line this customer emits, once per offered spot.  The semantic name declares
+# ``FieldShape.NAME`` because it is the spot's identity downstream (the binding key the
+# runtime join will bind against), so a "name" that is really a name plus its own
+# description is a malformed line rather than a value.  Its description is OPTIONAL in
+# the grammar — a line that stops after the name still names the spot — which is what
+# lets the labelling eval score "did it say what belongs there" as its own miss instead
+# of losing the whole line to the parse.  The CONSUMER is where a blank one is caught:
+# the description is what the leaf renders as, so ``_apply_leaf_labels`` reads a blank
+# one as no label rather than rendering an empty slot.
+_PLACEHOLDER_LINE = LineSpec(
+    tag=PLACEHOLDER_TAG,
     role=LineRole.PER_ITEM,
     fields=(
         FieldSpec(name=DrawField.CURRENT, placeholder="<current name>", separator=Separator.COLON),
@@ -223,80 +203,47 @@ _PARAM_LINE = LineSpec(
             shape=FieldShape.NAME,
             separator=Separator.DASH,
         ),
-        FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one-line description>", required=False),
-    ),
-)
-_PLACEHOLDER_LINE = LineSpec(
-    tag=PLACEHOLDER_TAG,
-    role=LineRole.PER_ITEM,
-    fields=(
-        FieldSpec(name=DrawField.CURRENT, placeholder="<current name>", separator=Separator.COLON),
         FieldSpec(
             name=DrawField.DESCRIPTION,
-            placeholder="<one-line description of what belongs there>",
+            placeholder="<one-line description of what belongs there each run>",
+            required=False,
         ),
     ),
 )
-SKILL_NAMING_SHAPE = MicroContextShape(
-    lines=(_SKILL_NAME_LINE, _SKILL_DESCRIPTION_LINE, _PARAM_LINE, _PLACEHOLDER_LINE)
-)
+SKILL_NAMING_SHAPE = MicroContextShape(lines=(_PLACEHOLDER_LINE,))
 
 SKILL_NAMING_SYSTEM_PROMPT = (
-    "You are a naming step. You are given the conversation that led to the "
-    "construction of a reusable routine, the routine itself — a numbered list of "
-    "tool calls with fill-in-the-blank {parameters} — the message that first "
-    "demonstrated it, and the routine's candidate parameters (each currently named "
-    "after the tool argument it fills, and shown with the value it was demonstrated "
-    "with). Do three things:\n"
-    "1. From the conversation, extract the CORE USER INTENT — what the user was "
-    "trying to get done when they asked for this (e.g. keeping an eye on a "
-    "listing's price). The routine exists to serve that intent.\n"
-    "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
-    "the KIND of task (e.g. 'watch a listing price for changes'), generic — never "
-    "the specific instance — and never mechanics alone ('fetch and store data' "
-    "says nothing about when to reach for it).\n"
-    "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
-    "from. There are two cases:\n"
-    "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
-    "they asked to be found, a label they chose, a place they said to keep it — "
-    "including when the assistant "
-    "reworded it ('the current price' for their \"find the price\"). This is a real "
-    "parameter: name it by what the value MEANS to the user (e.g. 'url', "
-    "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
-    "describe in one line what to supply for it.\n"
-    "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
-    "returned, or wrote it itself while carrying the task out — a summary, a note, "
-    "a caption about a page, a place it picked itself to keep the results in. The "
-    "user never said it and could not supply it, so it "
-    "is NOT a parameter: it is a placeholder, and you describe in one line what "
-    "belongs in that spot each time the routine runs.\n"
-    "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "
-    "instruction naming what to pull from the page (e.g. 'the current price') — "
-    "there is no CSS-selector, XPath, or pattern machinery in this system, so never "
-    "name or describe one that way.\n"
-    "Respond in exactly this shape and nothing else:\n"
-    f"{render_line(_SKILL_NAME_LINE)}\n"
-    f"{render_line(_SKILL_DESCRIPTION_LINE)}\n"
-    "then the group of candidates THE USER GAVE, one line each:\n"
-    f"{render_line(_PARAM_LINE)}\n"
-    "then the group of candidates THE ASSISTANT PRODUCED, one line each:\n"
+    "You are a naming step. A routine has just been demonstrated once, and every "
+    "spot in it that gets filled in again each time it runs has been pulled out for "
+    "you to name. Naming those spots is your whole job: they are all placeholders "
+    "already, so nothing here asks where a value came from or what the routine as a "
+    "whole should be called.\n"
+    "You are given:\n"
+    "- The conversation that led to the routine — the last user turn is the one that "
+    "demonstrated it\n"
+    "- The routine's numbered steps, each spot shown as {its current name}\n"
+    "- The placeholders — every spot, with the argument site(s) it fills and the "
+    "value it was demonstrated with\n"
+    "Do this for EVERY placeholder you are given:\n"
+    "1. Work out what that spot IS — the conversation says what the routine is for, "
+    "its step says what the value is used to do, and the demonstrated value says what "
+    "kind of thing goes there.\n"
+    "2. Name it for what it is in this routine (e.g. listing_page, entry_key), NOT "
+    "for the tool argument it happens to fill and NOT for the one value it was "
+    "demonstrated with — a new value goes there every run.\n"
+    "3. Describe in one line what belongs in that spot each time the routine runs.\n"
+    "A spot that holds an INSTRUCTION rather than a value — what to look for wherever "
+    "the routine reads, e.g. the spot filling browse.extract with the current price — "
+    "is PLAIN LANGUAGE: there is no CSS-selector, XPath, or pattern machinery in this "
+    "system, so NEVER name or describe one that way.\n"
+    "Respond with one line per placeholder and nothing else:\n"
     f"{render_line(_PLACEHOLDER_LINE)}\n"
-    "Sort every candidate into one of those two groups BEFORE you write either group, "
-    "then write the groups in that order — every candidate appears in exactly one "
-    "group, never both and never neither, repeating its CURRENT name exactly so it "
-    "maps back. A group with no candidates in it is left out entirely. Use a single "
-    "lowercase word or snake_case for <semantic_name>.\n"
-    "Write nothing else — no preamble, no explanation, no restating the routine."
-)
-
-# The single per-call ask; the routine + its candidate parameters are the content.
-# Fixed, so the caller only supplies the content (the naming contract is a property
-# of this customer, not a per-call parameter).
-_SKILL_NAMING_INSTRUCTION = (
-    "Extract the user's core intent from the conversation, name this routine by that "
-    "intent, describe it in one line (intent first, mechanics second), and for every "
-    "candidate parameter say whether the user gave that value — naming and describing "
-    "it if they did, describing what belongs there if they did not."
+    "Write ONE line for EVERY placeholder you were given, and none for anything else, "
+    "repeating its CURRENT name exactly so it maps back. Two spots are never the same "
+    "spot: give each its own name. Use a single lowercase word or snake_case for "
+    "<semantic_name>.\n"
+    "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
+    "routine."
 )
 
 # ── Fourth customer: the routine's SHAPE — what it is ABOUT (#1803) ────────────
@@ -318,6 +265,13 @@ _SKILL_NAMING_INSTRUCTION = (
 # The model does NOT invent the structure (the rejected template attempt): the
 # closed set of values is handed to it and it picks a case for each, exactly as
 # every other customer of this machinery does.
+#
+# Since #1828 it no longer fires from the run-end pipeline: it decided over the values
+# a per-candidate VERDICT kept, and the labeller draws no verdicts.  Contract, prompt
+# and parse are untouched — its own eval drives it, and its refusal rules stay pinned
+# deterministically — so the question is intact for whichever beat re-homes it.
+NAME_TAG = "NAME:"
+DESCRIPTION_TAG = "DESCRIPTION:"
 CONSTANT_TAG = "CONSTANT"
 PARAMETER_TAG = "PARAMETER"
 
@@ -482,12 +436,13 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "the messages."
 )
 
-# The classifier's user turn is the rendered situation ALONE — no
-# ``Instruction:``/``Content:`` wrapper.  That frame is the extraction
-# customer's (natural for "here's a page, pull X out"); the classifier's ask
-# lives entirely in its system prompt, so wrapping the slice would just repeat
-# the instruction and label a structured situation as bulk content.
-_STATE_USER_TEMPLATE = "{content}"
+# A user turn that is the rendered document ALONE — no ``Instruction:``/``Content:``
+# wrapper.  That frame is the extraction customer's (natural for "here's a page, pull X
+# out"); a customer whose ask lives entirely in its system prompt would only repeat the
+# instruction by wrapping, and would label a structured situation as bulk content.  The
+# classifier established it; the leaf labeller reads the same way (#1828), so it is
+# named for the SHAPE of the turn rather than for either customer.
+_BARE_CONTENT_TEMPLATE = "{content}"
 
 
 class MicroExtractOutcome(StrEnum):
@@ -523,54 +478,33 @@ class MicroContextResult(BaseModel):
     reason: str = ""
 
 
-class ParameterVerdict(StrEnum):
-    """Where a candidate parameter's demonstrated value came from (#1770) — the
-    closed union the labeller decides per candidate, and the only thing that makes
-    an unexplained leaf a parameter rather than a default.
+class LeafLabel(BaseModel):
+    """One spot's label from the leaf labeller (#1828): the ``name`` it drew for what
+    that spot IS, and the one-line ``description`` of what belongs there each run.
 
-    ``PARAMETER`` = the USER supplied it (verbatim or reworded), so it is a real
-    skill input the model rebinds per instantiation.  ``PLACEHOLDER`` = the
-    assistant derived it from a step's result or invented it while working, so no
-    user could ever supply it — it renders as a placeholder carrying the labeller's
-    description, never as the frozen demonstrated value."""
+    ``name`` is carried VERBATIM as the model wrote it — hardening it into a binding
+    key is :func:`penny.skill_extraction.slug_parameter_name`'s, applied where the name
+    becomes a key rather than here, so what the draw committed to stays readable in the
+    ledger and in an eval report.  ``description`` is empty only when the line stopped
+    after the name (the grammar's one optional field)."""
 
-    PARAMETER = "parameter"
-    PLACEHOLDER = "placeholder"
-
-
-class ParameterLabel(BaseModel):
-    """One candidate parameter's verdict + label from the naming micro-context
-    (#1668/#1770).  ``verdict`` is the decision; ``name`` carries the generic
-    semantic name (what the value means, not the tool arg it fills) on
-    :attr:`ParameterVerdict.PARAMETER` and is EMPTY on
-    :attr:`ParameterVerdict.PLACEHOLDER` (a placeholder is not a parameter, so it
-    has no binding key); ``description`` carries the one-line what-to-supply on
-    either.  Keyed back to the CURRENT arg-derived name by the parse, so the
-    caller's rename/conversion is unambiguous."""
-
-    verdict: ParameterVerdict
-    name: str = ""
+    name: str
     description: str = ""
 
 
-class SkillLabel(BaseModel):
-    """The run-end naming micro-context's typed result (#1665/#1668/#1770): a GENERIC
-    verb-noun ``name`` + one-line ``description`` for the distilled routine, plus a
-    per-candidate verdict+label keyed by the candidate's CURRENT (arg-derived)
-    name.  ``name``/``description`` are non-blank by construction (they are REQUIRED
-    lines of the declared shape, so a draw missing either never parses and the caller
-    falls back to the deterministic slug — naming never blocks extraction);
-    ``parameters`` may be empty or partial.
+class SkillLabels(BaseModel):
+    """The leaf labeller's typed result (#1828): every offered spot's label, keyed by
+    the spot's CURRENT (arg-derived) name — the anchor the input document renders
+    verbatim, so the map home needs no guess.
 
-    Absence is deliberately NOT a verdict: a candidate with no line — or with a
-    malformed one — keeps its current meaning (the arg-derived required parameter),
-    because overloading absence to mean "drop it" would let one flaky draw silently
-    delete a real parameter, and extraction must never block or degrade on the
-    rewrite."""
+    It carries NO routine name, description or parameters: the routine's interface is
+    decided from the user's ask alone, by the framer, and this draw never sees that
+    question (#1824).  ``labels`` may be partial — a spot with no line, or with a
+    malformed one, simply has no label and keeps its arg-derived name, because
+    overloading absence to mean anything else would let one flaky draw quietly change
+    a routine (#1770's absence-is-never-a-drop, unchanged)."""
 
-    name: str
-    description: str
-    parameters: dict[str, ParameterLabel] = {}
+    labels: dict[str, LeafLabel] = {}
 
 
 class SkillShape(BaseModel):
@@ -682,32 +616,33 @@ class MicroContext:
 
     async def label_skill(
         self, content: str, *, run_target: str | None = None
-    ) -> SkillLabel | None:
-        """Write a GENERIC name + description for a distilled routine AND, per
-        candidate parameter, a VERDICT (#1665/#1668/#1770) — the second customer of
-        this machinery.  Rides the SAME poison-screen + reroll draw loop as
-        ``extract``, with the naming system prompt, its own ledger attribution and
-        its own declared shape (:data:`SKILL_NAMING_SHAPE`).
+    ) -> SkillLabels | None:
+        """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
+        this machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
+        with the labelling system prompt, its own ledger attribution, its own declared
+        shape (:data:`SKILL_NAMING_SHAPE`) and the bare-content user turn (the rendered
+        document IS the whole ask, so there is no instruction to wrap it in).
 
-        Returns the label, or ``None`` on ANY failure (poison exhausted, or the
-        model never produced both the REQUIRED name and description lines) — the
-        caller falls back to the deterministic slug, so run-end skill extraction
-        NEVER blocks on the rewrite.  Per-candidate verdicts are best-effort by
-        declaration (``LineRole.PER_ITEM``): a candidate whose line is absent or
-        malformed simply has no verdict, which the caller reads as "keep the
-        arg-derived required parameter" — absence is never a drop."""
+        Returns the labels, or ``None`` when the draw came back with no usable line at
+        all (poison exhausted, or nothing that parsed as a ``PLACEHOLDER`` line even
+        after the reroll) — the caller then keeps every spot's arg-derived name, so
+        run-end extraction NEVER blocks on the rewrite.  Per-spot labels are
+        best-effort by declaration (``LineRole.PER_ITEM``): one absent or malformed
+        line costs that spot its label and nothing else."""
         drawn = await self._valid_draw(
             content,
-            _SKILL_NAMING_INSTRUCTION,
+            "",
             run_target,
             shape=SKILL_NAMING_SHAPE,
+            accepts=_labelled_something,
             system_prompt=SKILL_NAMING_SYSTEM_PROMPT,
             agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
+            user_template=_BARE_CONTENT_TEMPLATE,
         )
         if isinstance(drawn, DrawFailure):
             return None
-        return _skill_label(drawn)
+        return _leaf_labels(drawn)
 
     async def shape_skill(
         self, content: str, values: Sequence[str], *, run_target: str | None = None
@@ -775,7 +710,7 @@ class MicroContext:
             system_prompt=STATE_CLASSIFIER_SYSTEM_PROMPT,
             agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
             prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
-            user_template=_STATE_USER_TEMPLATE,
+            user_template=_BARE_CONTENT_TEMPLATE,
         )
         if isinstance(drawn, DrawFailure):
             return StateDraw(outcome=_STATE_FAILURES[drawn])
@@ -905,36 +840,38 @@ def _extraction_result(drawn: ParsedDraw) -> MicroContextResult:
     return MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason=reason)
 
 
-def _skill_label(drawn: ParsedDraw) -> SkillLabel | None:
-    """The typed label for a valid naming draw: the REQUIRED routine name +
-    description, plus whatever per-candidate verdicts the PER_ITEM lines carried.
-    ``None`` only if a required line somehow went missing — the caller falls back to
-    the deterministic slug rather than shipping a partial label."""
-    name = drawn.field(NAME_TAG, DrawField.NAME)
-    description = drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION)
-    if name is None or description is None:
-        return None
-    return SkillLabel(name=name, description=description, parameters=_parameter_labels(drawn.items))
+def _labelled_something(drawn: ParsedDraw) -> bool:
+    """The one runtime constraint the labelling shape can't carry (#1828): a draw has
+    to have labelled SOMETHING.
+
+    Every line of this contract is PER_ITEM, so a draw of pure prose parses to an empty
+    result rather than to a violation — and "the model wrote no line at all" is a
+    different event from "one spot's line was malformed".  The first is worth the one
+    reroll every other customer gets (the ``shape_skill`` precedent, where "the draw
+    left nothing bindable" rides in the same way); the second stays best-effort and
+    costs that spot its label alone."""
+    return bool(drawn.items)
 
 
-def _parameter_labels(items: Sequence[ParsedLine]) -> dict[str, ParameterLabel]:
-    """Every per-candidate verdict line as a ``{current_name: ParameterLabel}`` map
-    (#1668/#1770).  The grammar already carved and shape-checked each line; what is
-    left here is the SEMANTIC rule the grammar can't express — a candidate named on
-    MORE THAN ONE line is a contradictory draw (the contract asks for exactly one
-    line each) and is dropped, because letting the last line win would let a stray
-    trailing ``PLACEHOLDER`` delete a real parameter, the exact failure
-    absence-is-not-a-drop exists to prevent.  A dropped line is simply an absent
-    verdict, which the caller reads as "keep the arg-derived required parameter" —
-    the flaky-draw-safe direction."""
-    labels: dict[str, ParameterLabel] = {}
+def _leaf_labels(drawn: ParsedDraw) -> SkillLabels:
+    """Every drawn line as a ``{current_name: LeafLabel}`` map (#1828).  The grammar
+    already carved and shape-checked each line; what is left here is the SEMANTIC rule
+    the grammar can't express — a spot named on MORE THAN ONE line is a contradictory
+    draw (the contract asks for exactly one line each) and is dropped, because letting
+    the last line win would let a stray trailing line silently rename a spot.  A
+    dropped line is simply an absent label, which the caller reads as "keep the
+    arg-derived name" — the flaky-draw-safe direction."""
+    labels: dict[str, LeafLabel] = {}
     repeated: set[str] = set()
-    for item in items:
+    for item in drawn.items:
         current = item.fields[DrawField.CURRENT]
         if current in labels:
             repeated.add(current)
-        labels[current] = _parameter_label(item)
-    return {name: label for name, label in labels.items() if name not in repeated}
+        labels[current] = LeafLabel(
+            name=item.fields[DrawField.SEMANTIC],
+            description=item.fields.get(DrawField.DESCRIPTION, ""),
+        )
+    return SkillLabels(labels={n: label for n, label in labels.items() if n not in repeated})
 
 
 def _drawn_constants(drawn: ParsedDraw, values: Sequence[str]) -> frozenset[str]:
@@ -978,22 +915,6 @@ def _skill_shape(drawn: ParsedDraw, values: Sequence[str]) -> SkillShape | None:
     if name is None or description is None:
         return None
     return SkillShape(name=name, description=description, fixed=_drawn_constants(drawn, values))
-
-
-def _parameter_label(item: ParsedLine) -> ParameterLabel:
-    """One carved verdict line as its typed label — a ``PARAM`` line's semantic name
-    plus its optional description (the user gave that value), or a ``PLACEHOLDER``
-    line's required description (the assistant produced it, so there is no binding
-    key, only what belongs in that spot)."""
-    if item.tag == PARAM_TAG:
-        return ParameterLabel(
-            verdict=ParameterVerdict.PARAMETER,
-            name=item.fields[DrawField.SEMANTIC],
-            description=item.fields.get(DrawField.DESCRIPTION, ""),
-        )
-    return ParameterLabel(
-        verdict=ParameterVerdict.PLACEHOLDER, description=item.fields[DrawField.DESCRIPTION]
-    )
 
 
 def _state_is_bound(

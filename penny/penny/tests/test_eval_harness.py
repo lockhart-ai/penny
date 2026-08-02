@@ -7,10 +7,11 @@ not-applicable (``ignored``) third state, the fragile-pass verdict, the dual str
 RESULT line, and the ``tool_not_called`` negative-constraint primitive.  Whole-render literal
 assertions cover every new report shape.
 
-The labeller runner's learn → render step (#1770/#1782) is pinned here too, driving the REAL
-``SkillExtractor`` over a fixture ledger and a mocked labelling draw — a runner helper that
-calls into machinery a later change removed fails inside ``make check``, not only on the
-``eval``-marked run the marker deselects.
+The labeller runner's learn → render step (#1770/#1782/#1828) is pinned here too — the
+fixture ledger through the SHIPPED distiller and renderer, and the five agreed cases' input
+documents byte-for-byte — so a runner helper that calls into machinery a later change
+removed, or a fixture that drifts from the pair its case claims, fails inside ``make
+check`` rather than only on the ``eval``-marked run the marker deselects.
 """
 
 from __future__ import annotations
@@ -56,13 +57,10 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
-from penny.tools.micro_context import (
-    ParameterLabel,
-    ParameterVerdict,
-    SkillLabel,
-)
+from penny.tools.micro_context import LeafLabel, SkillLabels
 from penny.tools.models import ToolResult
 
 
@@ -1011,13 +1009,15 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
     )
 
 
-# ── The labeller runner's learn → render step (#1770 / #1782) ─────────────────
+# ── The labeller runner's learn → render step (#1828) ─────────────────────────
 
-# The eval case's fixture demonstration, in miniature: the round recorded the price
-# AND a second entry it composed itself about the page it had just read.  Synthetic
-# throughout (aurora / faux-market).
+# A demonstration in miniature: the round recorded the price AND a second entry the
+# assistant composed itself about the page it had just read — five spots over two
+# steps, including one filling two sites.  Synthetic throughout (aurora / faux-market).
 _LABELLER_TARGET = "aurora-prices"
 _LABELLER_UTTERANCE = "read the aurora deck 2 listing, find the current price, and remember it"
+_LABELLER_ASK = "can you keep an eye on the aurora deck 2 price for me?"
+_LABELLER_ELICIT = "sure — walk me through it once? what should i read and what should i save?"
 _LABELLER_BROWSE = (
     "browse",
     {"queries": ["aurora deck 2 price"], "extract": "the current price"},
@@ -1038,35 +1038,38 @@ _LABELLER_WRITE = (
     "You saved entries to aurora-prices: (collection_write result)\nWrote 2 entries.",
     True,
 )
-_LABELLER_VERDICTS = (
-    "NAME: Watch a listing price\n"
-    "DESCRIPTION: Look up a price on a listing page and record it.\n"
-    "PARAM queries: url — the listing page to read\n"
-    "PARAM extract: what_to_find — what to pull from the page\n"
-    "PLACEHOLDER key: a short label for the second entry\n"
-    "PLACEHOLDER content: a note about the page you just read"
-)
+_LABELLER_CONVERSATION = [
+    (PennyConstants.MessageDirection.INCOMING, _LABELLER_ASK),
+    (PennyConstants.MessageDirection.OUTGOING, _LABELLER_ELICIT),
+]
 
 
-def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
-    """The labelling runner's input, WHOLE, plus the value→candidate map its scoring
-    keys on (#1770/#1803).
+def test_labelling_input_renders_the_routine_and_maps_spots_home() -> None:
+    """The labelling runner's input, WHOLE, plus the value→spot map its scoring keys on
+    (#1828).
 
-    The case drives ``label_skill`` alone, so its input has to be built from the
-    fixture ledger by the SHIPPED renderer — this pins that it is, and that a helper
-    calling machinery a later change removed fails HERE, inside ``make check``,
-    instead of only on the deselected GPU run."""
+    The case drives ``label_skill`` alone, so its input has to be built from the fixture
+    ledger by the SHIPPED renderer — this pins that it is, and that a helper calling
+    machinery a later change removed fails HERE, inside ``make check``, instead of only
+    on the deselected GPU run.
+
+    Everything the render can vary is folded in: the elicit turn renders as ``penny:``
+    (the conversation is a conversation, not a list of asks), the demonstrating message
+    joins as the last ``user:`` turn, a spot filling two sites states both joined by
+    ``and``, and the find-phrases section is gone with the routine naming that consumed
+    it."""
     content, by_value = _labelling_input(
         [_LABELLER_BROWSE, _LABELLER_WRITE],
         _LABELLER_TARGET,
         _LABELLER_UTTERANCE,
-        ["can you keep an eye on the aurora deck 2 price for me?"],
+        _LABELLER_CONVERSATION,
     )
 
     assert content == (
         "Conversation that led to the construction of this routine "
         "(the LAST user turn is the one that demonstrated it):\n"
         "user: can you keep an eye on the aurora deck 2 price for me?\n"
+        "penny: sure — walk me through it once? what should i read and what should i save?\n"
         "user: read the aurora deck 2 listing, find the current price, and remember it\n"
         "\n"
         "Routine steps:\n"
@@ -1075,10 +1078,10 @@ def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
         "{'key': {queries}, 'content': the value from step 1}, "
         "{'key': {key}, 'content': {content}}])\n"
         "\n"
-        "Candidate parameters (each currently named after the tool arg it fills):\n"
+        "Placeholders (each currently named after the tool arg it fills):\n"
         # queries[0] and entries[0].key hold the SAME demonstrated value, so the
-        # distiller collapses them into one candidate filling both sites.
-        "- queries: fills browse.queries[0], collection_write.entries[0].key; "
+        # distiller collapses them into ONE spot filling both sites.
+        "- queries: fills browse.queries[0] and collection_write.entries[0].key; "
         "demonstrated value: 'aurora deck 2 price'\n"
         "- extract: fills browse.extract; demonstrated value: 'the current price'\n"
         "- memory: fills collection_write.memory; demonstrated value: 'aurora-prices'\n"
@@ -1091,6 +1094,27 @@ def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
     assert by_value[_LABELLER_INVENTED_KEY] == "key"
     assert by_value[_LABELLER_INVENTED_CONTENT] == "content"
     assert by_value["the current price"] == "extract"
+
+
+@pytest.mark.parametrize("fixture", LABELLING_FIXTURES, ids=lambda f: f.case_id)
+def test_each_labelling_case_renders_exactly_the_document_it_claims(fixture) -> None:
+    """Per-case drift probe (#1828): each agreed case's fixture ledger, through the
+    SHIPPED distiller and renderer, produces EXACTLY the input document the case pins —
+    every spot, its arg sites, its demonstrated value, and the conversation's speakers.
+
+    The pairs on the ticket are input/output pairs, so a fixture that has drifted from
+    its input is a case measuring something nobody agreed to.  It has to fail here, in
+    ``make check``, rather than after an hour of GPU time — which is also why the
+    document lives beside the fixture rather than in this file: one place, so the probe
+    and the live run can never check two different things."""
+    content, by_value = _labelling_input(
+        fixture.calls, fixture.target, fixture.utterance, fixture.conversation
+    )
+
+    assert content == fixture.rendered_input
+    # And the case scores the spots that document actually offers — a leaf named in the
+    # case but absent from the distilled set would score as a broken fixture at run time.
+    assert sorted(by_value) == sorted(fixture.leaves)
 
 
 _SHAPE_LISTING = "https://faux-market.example/aurora-deck-2"
@@ -1147,46 +1171,113 @@ def test_shape_input_renders_the_ask_the_round_and_the_values() -> None:
     )
 
 
-def test_score_labelling_reads_the_verdicts_and_absence_falls_both_ways() -> None:
-    """The labelling case's scoring over a fixture draw (#1770): the user's values
-    stayed bindable parameters, the assistant's became placeholders.
-
-    And the asymmetry absence has.  A user value with NO verdict keeps its arg-derived
-    required parameter, so it is still bindable and the check holds; an assistant value
-    with no verdict keeps that same required parameter — which nobody could ever
-    supply, the exact harm the verdict exists to prevent — so it does not."""
+def test_score_labelling_grades_each_spot_and_carries_the_labels_advisory() -> None:
+    """The labelling case's scoring over a fixture draw (#1828): per offered spot, a
+    line came back · its name hardens to a usable binding key · it is not the arg name
+    handed back · its description says what belongs there.  Every drawn label then rides
+    ADVISORY, so a report shows verbatim what the model committed to."""
     by_value = {"the current price": "extract", _LABELLER_INVENTED_KEY: "key"}
-    label = SkillLabel(
-        name="watch a listing price",
-        description="Look up a price on a listing page and record it.",
-        parameters={
-            "extract": ParameterLabel(
-                verdict=ParameterVerdict.PARAMETER, name="what_to_find", description="what to pull"
-            ),
-            "key": ParameterLabel(
-                verdict=ParameterVerdict.PLACEHOLDER, description="a short label"
-            ),
-        },
+    labels = SkillLabels(
+        labels={
+            "extract": LeafLabel(name="value_to_find", description="what to pull off the page"),
+            "key": LeafLabel(name="entry key", description="what to call the entry it saves"),
+        }
     )
 
-    scored = _score_labelling(label, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
-    assert [(check.label, check.ok) for check in scored] == [
-        ("user value stayed a parameter: 'the current price'", True),
-        ("assistant value became a placeholder: 'aurora deck 2 page source'", True),
+    scored = _score_labelling(labels, by_value, list(by_value), (), "")
+    assert [(check.label, check.ok, check.scored) for check in scored] == [
+        ("a line came back: 'the current price'", True, True),
+        ("name is a usable binding key: 'the current price'", True, True),
+        ("name is not the arg name: 'the current price'", True, True),
+        ("description says what belongs there: 'the current price'", True, True),
+        ("a line came back: 'aurora deck 2 page source'", True, True),
+        ("name is a usable binding key: 'aurora deck 2 page source'", True, True),
+        ("name is not the arg name: 'aurora deck 2 page source'", True, True),
+        ("description says what belongs there: 'aurora deck 2 page source'", True, True),
+        ("drew extract: 'value_to_find' — 'what to pull off the page'", True, False),
+        ("drew key: 'entry key' — 'what to call the entry it saves'", True, False),
     ]
 
-    silent = SkillLabel(name="n", description="d", parameters={})
-    quiet = _score_labelling(silent, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
-    assert [(check.label, check.ok) for check in quiet] == [
-        ("user value stayed a parameter: 'the current price'", True),
-        ("assistant value became a placeholder: 'aurora deck 2 page source'", False),
+    # A spot the draw skipped is ONE miss, not four: the three checks that depend on a
+    # line are NOT APPLICABLE without one, so a silent draw reads as silent rather than
+    # as four separate failures.
+    partial = SkillLabels(labels={"extract": LeafLabel(name="value_to_find", description="")})
+    quiet = _score_labelling(partial, by_value, list(by_value), (), "")
+    assert [(check.label, check.ok, check.ignored) for check in quiet[3:8]] == [
+        ("description says what belongs there: 'the current price'", False, False),
+        ("a line came back: 'aurora deck 2 page source'", False, False),
+        ("name is a usable binding key: 'aurora deck 2 page source'", True, True),
+        ("name is not the arg name: 'aurora deck 2 page source'", True, True),
+        ("description says what belongs there: 'aurora deck 2 page source'", True, True),
     ]
 
-    # A value the case asserts but the ledger never distilled is a BROKEN CASE, not a
-    # verdict of any kind: it fails loudly naming the value, because a drifted fixture
+    # The name handed back is the arg name it was shown — the spot was described, not
+    # named — and a name that hardens to nothing could never be a binding key.
+    echoed = SkillLabels(
+        labels={
+            "extract": LeafLabel(name="Extract", description="what to pull"),
+            "key": LeafLabel(name="!!", description="a label"),
+        }
+    )
+    lazy = _score_labelling(echoed, by_value, list(by_value), (), "")
+    assert [(check.label, check.ok) for check in lazy if not check.ok] == [
+        ("name is not the arg name: 'the current price'", False),
+        ("name is a usable binding key: 'aurora deck 2 page source'", False),
+    ]
+
+    # A value the case asserts but the ledger never distilled is a BROKEN FIXTURE, not
+    # a naming miss: it fails loudly naming the value, because a drifted fixture
     # scoring green is a case measuring nothing.
-    drifted = _score_labelling(label, by_value, ["a value nothing distilled"], [])
-    assert [(check.label, check.ok) for check in drifted] == [
-        ("user value stayed a parameter: 'a value nothing distilled'", False)
+    drifted = _score_labelling(labels, by_value, ["a value nothing distilled"], (), "")
+    assert [(check.label, check.ok) for check in drifted][:1] == [
+        ("a line came back: 'a value nothing distilled'", False)
     ]
-    assert "not among the distilled candidates" in (drifted[0].rationale or "")
+    assert "not among the distilled placeholders" in (drifted[0].rationale or "")
+
+
+def test_score_labelling_reads_the_two_structural_claims() -> None:
+    """The two claims only some cases make (#1828).
+
+    Two spots on one argument must draw DIFFERENT names — one name for both loses which
+    site is which.  And a spot filling TWO sites must resolve to exactly one label:
+    splitting it either repeats the spot's current name (contradictory lines the parse
+    drops) or keys a line to a spot nobody offered, which is a spot invented rather
+    than named."""
+    two_sources = {"citydesk.example/front": "queries", "harborpost.example/front": "queries-2"}
+    pair = ("citydesk.example/front", "harborpost.example/front")
+    collapsed = SkillLabels(
+        labels={
+            "queries": LeafLabel(name="news_page", description="a front page"),
+            "queries-2": LeafLabel(name="news page", description="the other front page"),
+        }
+    )
+
+    [check] = [c for c in _score_labelling(collapsed, two_sources, (), [pair], "") if c.scored]
+    assert (check.label, check.ok, check.rationale) == (
+        "distinct names: 'citydesk.example/front' vs 'harborpost.example/front'",
+        False,
+        "both drew 'news_page'",
+    )
+
+    told_apart = SkillLabels(
+        labels={
+            "queries": LeafLabel(name="first_news_site", description="the first front page"),
+            "queries-2": LeafLabel(name="second_news_site", description="the second front page"),
+        }
+    )
+    [ok_check] = [c for c in _score_labelling(told_apart, two_sources, (), [pair], "") if c.scored]
+    assert ok_check.ok
+
+    shared = {"VLT": "queries", "the share price": "extract"}
+    split = SkillLabels(
+        labels={
+            "queries": LeafLabel(name="ticker_symbol", description="the symbol to look up"),
+            "key": LeafLabel(name="entry_key", description="what to file it under"),
+        }
+    )
+    [claim] = [c for c in _score_labelling(split, shared, (), (), "VLT") if c.scored]
+    assert (claim.label, claim.ok, claim.rationale) == (
+        "one label for the shared spot: 'VLT'",
+        False,
+        "also labelled ['key'] — spots nobody offered",
+    )

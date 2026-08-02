@@ -50,15 +50,16 @@ from penny.database.skills import (
     WRITE_TARGET_DESCRIPTION,
     DistillInput,
     SkillDraft,
+    SkillParameter,
+    SkillStep,
     distill_steps,
     slug_skill_name,
 )
 
-# The production verdict-application, used as itself: this case's fixture skill
-# has to be the SHAPE run-end extraction really produces (two bindable
-# parameters and one placeholder), and re-implementing that mapping here would
-# be a fixture that drifts from the pipeline it stands in for.
-from penny.skill_extraction import _apply_parameter_labels, _constant_keys
+# The production label-application, used as itself: this case's fixture skill has to
+# be the SHAPE run-end extraction really produces, and re-implementing that mapping
+# here would be a fixture that drifts from the pipeline it stands in for.
+from penny.skill_extraction import _apply_leaf_labels
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
@@ -72,7 +73,7 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 from penny.tests.eval.test_watch_journey import AURORA_LISTING_499, LISTING_URL
-from penny.tools.micro_context import ParameterLabel, ParameterVerdict, SkillLabel, SkillShape
+from penny.tools.micro_context import LeafLabel, SkillLabels
 
 pytestmark = pytest.mark.eval
 
@@ -376,83 +377,88 @@ _DEMONSTRATED_ROUND = [
     ),
 ]
 
-# The labeller's verdict per candidate (#1770), keyed by the DEMONSTRATED VALUE
-# rather than by the arg-derived name the distiller happens to mint — so the
-# fixture states what it means (which values the user supplied) and cannot go
-# quietly stale if that naming changes.  The user named the page and said what
-# to find; the entry's key is the assistant's own label, so it is a placeholder
-# and its demonstrated phrase must never be frozen into the recipe.
-_VERDICTS = {
-    LISTING_URL: ParameterLabel(
-        verdict=ParameterVerdict.PARAMETER,
-        name="url",
-        description="the listing page to check",
-    ),
-    _EXTRACT: ParameterLabel(
-        verdict=ParameterVerdict.PARAMETER,
-        name="what to find",
-        description="what to pull off the page",
-    ),
-    _DEMO_KEY: ParameterLabel(
-        verdict=ParameterVerdict.PLACEHOLDER,
-        description="what to call the entry it saves",
-    ),
-    # The destination became an ordinary judged leaf in #1783.  This round's user
-    # said "go to <url>, find the price, and remember it" and named no collection,
-    # so Penny chose it — a placeholder the attachment fills, which is precisely
-    # what the apply turn under test then binds.
-    _WATCH_COLLECTION: ParameterLabel(
-        verdict=ParameterVerdict.PLACEHOLDER,
-        description=WRITE_TARGET_DESCRIPTION,
-    ),
+# The labeller's line per spot (#1828), keyed by the DEMONSTRATED VALUE rather than
+# by the arg-derived name the distiller happens to mint — so the fixture states what
+# it means and cannot go quietly stale if that naming changes.  Only the two spots
+# that stay placeholders are listed: the entry key Penny chose, and the destination,
+# which this round's user never named ("go to <url>, find the price, and remember
+# it"), so what the routine is applied to fills it — precisely what the apply turn
+# under test then binds.
+_LABELS = {
+    _DEMO_KEY: LeafLabel(name="entry_key", description="what to call the entry it saves"),
+    _WATCH_COLLECTION: LeafLabel(name="storage_collection", description=WRITE_TARGET_DESCRIPTION),
 }
+
+# The FRAMER's half, hand-written until that beat lands (#1824).  The labeller names
+# every spot and decides nothing about the interface, so nothing in the pipeline yet
+# says what a routine is called or what must be re-supplied to run it again.  This
+# round's ask — watch this piece and tell me if the price changes — makes the page the
+# one thing to re-say and the price what the routine IS, so the page becomes the `url`
+# parameter and what-to-find is baked into the step.  How a bound parameter lands on a
+# named placeholder is the runtime-join beat's question; what this fixture pins is the
+# WORLD the enactment case starts from, which is unchanged.
+_FRAMED_PARAMETER = SkillParameter(
+    name="url", required=True, description="the listing page to check"
+)
+_FRAMED_BOUND_SPOT = "queries"  # the arg-derived spot the framing binds
+_FRAMED_BAKED_SPOT = "extract"  # the arg-derived spot the framing makes a constant
+
+
+def _apply_framing(steps: list[SkillStep]) -> list[SkillStep]:
+    """The framer's leaf rewrite: the bound spot takes the parameter's name, and the
+    baked one loses its substitution entirely — a leaf nothing covers renders verbatim,
+    which is exactly a value the routine is ABOUT."""
+    framed = []
+    for step in steps:
+        substitutions = [
+            sub.model_copy(update={"parameter": _FRAMED_PARAMETER.name})
+            if sub.parameter == _FRAMED_BOUND_SPOT
+            else sub
+            for sub in step.substitutions
+            if sub.parameter != _FRAMED_BAKED_SPOT
+        ]
+        framed.append(step.model_copy(update={"substitutions": substitutions}))
+    return framed
 
 
 def learn_to_apply_fixture_skill() -> SkillDraft:
-    """The skill that round leaves in the registry, built by the PRODUCTION
-    pipeline over its ledger — ``distill_steps`` for the structure, the real
-    verdict application for the labels, with a hand-written ``SkillLabel`` and
-    ``SkillShape`` standing in for the two live run-end draws.  So the case's
-    starting world is the shape extraction actually produces, not a convenient
-    copy of it.
+    """The skill that round leaves in the registry, built by the PRODUCTION pipeline
+    over its ledger — ``distill_steps`` for the structure and the real label
+    application for the spots, with hand-written ``SkillLabels`` standing in for the
+    live run-end draw and ``_apply_framing`` standing in for the framer beat.  So the
+    case's starting world is the shape extraction produces, not a convenient copy of
+    it.
 
-    Since #1803 that shape is ONE bindable parameter — the page — plus the value
-    the routine is ABOUT, baked into the step and never asked for again, and a
-    placeholder no user could supply.  It used to be two bindable parameters, and
-    the measured `elicit → learn` beat now produces this shape 8 times out of 8, so
-    seeding the old one would park this case on a world the preceding beat can no
-    longer hand it."""
+    That shape is ONE bindable parameter — the page — plus the value the routine is
+    ABOUT, baked into the step and never asked for again, and two placeholders no user
+    could supply.  The measured `elicit → learn` beat produces it 8 times out of 8, so
+    seeding anything else would park this case on a world the preceding beat cannot
+    hand it."""
     # The registry as this fixture's round saw it — #1783 marks a leaf whose
     # demonstrated value names one of Penny's collections, so the destination is
-    # only adjudicated as one if the collection actually existed.
+    # only marked if the collection actually existed.
     steps, parameters = distill_steps(_DEMONSTRATED_ROUND, frozenset({_WATCH_COLLECTION}))
-    verdicts = {}
+    labels: dict[str, LeafLabel] = {}
     for step in steps:
         for sub in step.substitutions:
             if sub.parameter is None:
                 continue
             value = str(_leaf_at(step.arguments, sub.path))
-            assert value in _VERDICTS, f"fixture has no verdict for {sub.parameter!r} = {value!r}"
-            verdicts[sub.parameter] = _VERDICTS[value]
-    label = SkillLabel(name=_SKILL_NAME, description=_SKILL_DESCRIPTION, parameters=verdicts)
-    # The shape draw's half: the routine is ABOUT what to find, and POINTED AT the
-    # page.  Mapped home through the production seam, so the fixture cannot encode a
-    # split the real pipeline could not produce.
-    shape = SkillShape(
-        name=_SKILL_NAME, description=_SKILL_DESCRIPTION, fixed=frozenset({"what to find"})
+            if value in _LABELS:
+                labels[sub.parameter] = _LABELS[value]
+    # Every authored label must map home: one that doesn't is a fixture whose ledger has
+    # drifted from what it claims, and it fails LOUDLY here rather than quietly seeding
+    # the enactment case a world with one placeholder missing.
+    assert len(labels) == len(_LABELS), (
+        f"the fixture's labels must all map home — matched {sorted(labels)} of {sorted(_LABELS)}"
     )
-    steps, parameters = _apply_parameter_labels(
-        steps, parameters, label, _constant_keys(label, shape)
-    )
-    assert sorted(p.name for p in parameters) == ["url"], (
-        f"the fixture skill must carry exactly the page as its one parameter: {parameters}"
-    )
+    steps, _ = _apply_leaf_labels(steps, parameters, SkillLabels(labels=labels))
     return SkillDraft(
         name=_SKILL_NAME,
         intent=_SKILL_DESCRIPTION,
         description=_SKILL_DESCRIPTION,
-        steps=steps,
-        parameters=parameters,
+        steps=_apply_framing(steps),
+        parameters=[_FRAMED_PARAMETER],
         source_run_id="demonstrated-round",
     )
 

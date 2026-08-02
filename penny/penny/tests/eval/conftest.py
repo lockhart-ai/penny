@@ -52,6 +52,7 @@ from penny.skill_extraction import (
     ShapeableValue,
     build_naming_content,
     build_shape_content,
+    slug_parameter_name,
 )
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
@@ -71,8 +72,7 @@ from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
     MicroContext,
-    ParameterVerdict,
-    SkillLabel,
+    SkillLabels,
     SkillShape,
     StateDrawOutcome,
 )
@@ -2802,12 +2802,18 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
     return _run
 
 
-# ── Fourth micro-context customer: run-end skill labelling (#1770) ─────────────
+# ── Run-end LEAF LABELLING (#1828) ────────────────────────────────────────────
 
 # One demonstrated tool call as a case fixture: tool name, verbatim arguments, its
 # framed result, and whether it succeeded — the shape a real chat run leaves behind in
 # the ledger, which is what ``_labelling_input`` renders the labeller's content from.
 DemoCall = tuple[str, dict, str, bool]
+
+# One conversation turn as a case fixture: its DIRECTION and its text.  The direction
+# is carried because the elicit round is half the evidence — the assistant's "walk me
+# through it once" is what makes the next user turn a demonstration — and a block that
+# renders both speakers as ``user:`` describes a conversation that never happened.
+DemoTurn = tuple[str, str]
 
 LabellerEval = Callable[..., Awaitable[None]]
 
@@ -2846,10 +2852,10 @@ def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
 
 
 def _labelling_input(
-    calls: Sequence[DemoCall], target: str, utterance: str, conversation: Sequence[str]
+    calls: Sequence[DemoCall], target: str, utterance: str, conversation: Sequence[DemoTurn]
 ) -> tuple[str, dict[str, str]]:
     """The labeller's content, and the ``{demonstrated value: current name}`` map its
-    verdicts are keyed by.
+    labels are keyed by.
 
     Distillation is DETERMINISTIC Python, so a fixture ledger fixes the labeller's
     input exactly — no live draw sits upstream of this case.  The content is rendered
@@ -2857,17 +2863,14 @@ def _labelling_input(
     shipped prompt rather than a copy that can drift.
 
     The map is keyed by VALUE because the case's expectations are stated in values:
-    the semantic name is the model's to choose, and the contract is about which leaves
-    stayed bindable, never what they ended up called."""
+    the semantic name is the model's to choose, and the contract is about which SPOTS
+    it named, never what it ended up calling them."""
     inputs = [
         DistillInput(source_ordinal=index, tool=name, arguments=arguments, result=result)
         for index, (name, arguments, result, _ok) in enumerate(calls, start=1)
     ]
     steps, parameters = distill_steps(inputs, frozenset({target}))
-    turns: list[tuple[str, str]] = [
-        (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
-    ]
-    content = build_naming_content(steps, parameters, utterance, turns)
+    content = build_naming_content(steps, parameters, utterance, list(conversation))
     by_value = {
         value: sub.parameter
         for step in steps
@@ -2878,72 +2881,152 @@ def _labelling_input(
     return content, by_value
 
 
-def _verdict_check(
-    value: str,
-    expected: ParameterVerdict,
-    label: SkillLabel | None,
-    by_value: dict[str, str],
-) -> Check:
-    """One value's verdict, read off the labeller's OWN typed result (#1770).
-
-    Scoring the draw rather than the persisted skill is what keeps this case the
-    labeller's: everything downstream of the verdict — applying it, rendering it — is
-    deterministic Python pinned in ``tests/test_skill_extraction.py``, and since #1803
-    a SECOND model draw sits in that chain, so an end-state assertion would be
-    measuring two draws and calling it one.
-
-    ABSENCE is not a verdict, and which direction it falls depends on the expectation.
-    A user-supplied value with no line keeps its arg-derived REQUIRED parameter, so it
-    is still bindable and the check holds.  An assistant-produced value with no line
-    keeps that same required parameter — which no user could ever supply, the exact
-    #1770 harm — so it does not.
-
-    An expected value that is not among the distilled candidates at all is a BROKEN
-    CASE, not a verdict of any kind, and fails LOUDLY naming the value: the fixture
-    ledger has drifted from what the case asserts, and a drifted fixture that scores
-    green is a case measuring nothing."""
-    role = (
-        "user value stayed a parameter"
-        if expected == ParameterVerdict.PARAMETER
-        else "assistant value became a placeholder"
+def _drifted(value: str, label: str) -> Check:
+    """A case value that is not among the distilled spots at all — a BROKEN FIXTURE,
+    failed LOUDLY naming the value rather than quietly as a naming miss.  The ledger
+    has drifted from what the case asserts, and a drifted fixture that scores green is
+    a case measuring nothing."""
+    return Check(
+        label,
+        False,
+        kind="state",
+        rationale=f"{value!r} is not among the distilled placeholders — the fixture has drifted",
     )
+
+
+def _leaf_checks(value: str, labels: SkillLabels | None, by_value: dict[str, str]) -> list[Check]:
+    """One offered spot's checks (#1828), read off the labeller's OWN typed result.
+
+    Scoring the draw rather than a persisted skill is what keeps this case the
+    labeller's: everything downstream — applying a label, rendering it — is
+    deterministic Python pinned in ``tests/test_skill_extraction.py``.
+
+    Four things, in the order they depend on each other: a line came back for the spot
+    · its name hardens to a usable binding key through the SHIPPED hardener (imported,
+    never re-implemented here) · the name is not the arg name handed back verbatim (a
+    spot named ``queries`` again has been described, not named) · its description says
+    what belongs there.  With no line, the last three are NOT APPLICABLE rather than
+    three extra failures: the miss is one miss, and inflating it would make a silent
+    draw look four times worse than it is."""
     current = by_value.get(value)
     if current is None:
-        return Check(
-            f"{role}: {value!r}",
-            False,
+        return [_drifted(value, f"a line came back: {value!r}")]
+    label = labels.labels.get(current) if labels is not None else None
+    if label is None:
+        return [
+            Check(f"a line came back: {value!r}", False, kind="state", rationale="no line drawn"),
+            Check.na(f"name is a usable binding key: {value!r}", kind="state"),
+            Check.na(f"name is not the arg name: {value!r}", kind="state"),
+            Check.na(f"description says what belongs there: {value!r}", kind="state"),
+        ]
+    hardened = slug_parameter_name(label.name)
+    return [
+        Check(f"a line came back: {value!r}", True, kind="state"),
+        Check(
+            f"name is a usable binding key: {value!r}",
+            bool(hardened),
             kind="state",
-            rationale=f"{value!r} is not among the distilled candidates — the fixture has drifted",
-        )
-    verdict = label.parameters.get(current) if label is not None else None
-    if expected == ParameterVerdict.PARAMETER:
-        ok = verdict is None or verdict.verdict == ParameterVerdict.PARAMETER
-    else:
-        ok = verdict is not None and verdict.verdict == ParameterVerdict.PLACEHOLDER
-    drawn = "no verdict" if verdict is None else verdict.verdict.value
+            rationale=None if hardened else f"{label.name!r} hardens to nothing",
+        ),
+        Check(
+            f"name is not the arg name: {value!r}",
+            hardened != slug_parameter_name(current),
+            kind="state",
+            rationale=None if hardened != slug_parameter_name(current) else "echoed the arg name",
+        ),
+        Check(
+            f"description says what belongs there: {value!r}",
+            bool(label.description.strip()),
+            kind="state",
+            rationale=None if label.description.strip() else "no description",
+        ),
+    ]
+
+
+def _distinct_names_check(
+    pair: tuple[str, str], labels: SkillLabels | None, by_value: dict[str, str]
+) -> Check:
+    """Two spots on the SAME argument drew DIFFERENT names (#1828) — the disambiguation
+    the two-source case exists to measure.  A labeller that calls both of them
+    ``news_page`` has collapsed a distinction the routine depends on: at run time each
+    spot takes its own value, and one name for two spots cannot say which is which."""
+    first, second = pair
+    label = f"distinct names: {first!r} vs {second!r}"
+    currents = [by_value.get(value) for value in pair]
+    missing = [value for value, current in zip(pair, currents, strict=True) if current is None]
+    if missing:
+        return _drifted(missing[0], label)
+    drawn = [
+        labels.labels.get(current) if labels is not None and current is not None else None
+        for current in currents
+    ]
+    if any(one is None for one in drawn):
+        return Check(label, False, kind="state", rationale="one of the two drew no line")
+    names = [slug_parameter_name(one.name) for one in drawn if one is not None]
+    ok = names[0] != names[1]
     return Check(
-        f"{role}: {value!r}",
+        label,
         ok,
         kind="state",
-        rationale=None if ok else f"drew {drawn}",
+        rationale=None if ok else f"both drew {names[0]!r}",
+    )
+
+
+def _shared_spot_check(value: str, labels: SkillLabels | None, by_value: dict[str, str]) -> Check:
+    """The spot filling TWO argument sites drew exactly ONE label (#1828).
+
+    Equal values at two sites are structurally one spot, so the contract is one line
+    covering both uses.  A draw that splits it either repeats the spot's current name
+    (contradictory lines, dropped by the parse — no label at all) or keys its second
+    line to a name that was never offered, which is what this also catches: a line for
+    something nobody asked about is a spot invented, not named."""
+    label = f"one label for the shared spot: {value!r}"
+    current = by_value.get(value)
+    if current is None:
+        return _drifted(value, label)
+    drawn = labels.labels if labels is not None else {}
+    stray = sorted(set(drawn) - set(by_value.values()))
+    if current not in drawn:
+        return Check(label, False, kind="state", rationale="the shared spot drew no single line")
+    return Check(
+        label,
+        not stray,
+        kind="state",
+        rationale=None if not stray else f"also labelled {stray} — spots nobody offered",
     )
 
 
 def _score_labelling(
-    label: SkillLabel | None,
+    labels: SkillLabels | None,
     by_value: dict[str, str],
-    user_values: Sequence[str],
-    assistant_values: Sequence[str],
+    leaves: Sequence[str],
+    distinct_names: Sequence[tuple[str, str]],
+    shared_spot: str,
 ) -> list[Check]:
-    """The labelling case's graded checks (#1770), read off the returned ``SkillLabel``:
-    the values the user supplied stayed bindable parameters, and the ones the assistant
-    produced became placeholders."""
-    return [
-        _verdict_check(value, ParameterVerdict.PARAMETER, label, by_value) for value in user_values
-    ] + [
-        _verdict_check(value, ParameterVerdict.PLACEHOLDER, label, by_value)
-        for value in assistant_values
-    ]
+    """The labelling case's checks (#1828), read off the returned ``SkillLabels``: every
+    offered spot got a usable name and a description of what belongs there, plus each
+    case's own structural claim.
+
+    The drawn labels then ride along ADVISORY (``scored=False``, the ``_score_shape``
+    precedent), so every report shows verbatim what the model committed to — whether a
+    name is WELL judged is a reading no scorer should fake, and it is what the reference
+    outputs on the ticket are read against at review."""
+    checks: list[Check] = []
+    for value in leaves:
+        checks.extend(_leaf_checks(value, labels, by_value))
+    checks.extend(_distinct_names_check(pair, labels, by_value) for pair in distinct_names)
+    if shared_spot:
+        checks.append(_shared_spot_check(shared_spot, labels, by_value))
+    for current, label in sorted((labels.labels if labels is not None else {}).items()):
+        checks.append(
+            Check(
+                f"drew {current}: {label.name!r} — {label.description!r}",
+                True,
+                kind="state",
+                scored=False,
+            )
+        )
+    return checks
 
 
 ShapeEval = Callable[..., Awaitable[None]]
@@ -3102,23 +3185,17 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
 
 @pytest.fixture
 def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> LabellerEval:
-    """Drive the run-end PARAMETER LABELLER (#1770) N times, and NOTHING else.
+    """Drive the run-end LEAF LABELLER (#1828) N times, and NOTHING else.
 
-    The labeller answers one question — did the USER supply this value, or did the
-    assistant produce it — and this case measures that answer directly: the returned
-    ``SkillLabel``'s per-candidate verdicts.  Its input is a FIXTURE ledger through
-    DETERMINISTIC distillation, so nothing live sits upstream of the draw either.
+    The labeller has one job — name every spot in the demonstrated routine and say what
+    belongs there each run — and this case measures that answer directly: the returned
+    ``SkillLabels``.  Its input is a FIXTURE ledger through DETERMINISTIC distillation,
+    so nothing live sits upstream of the draw either, and everything downstream of it
+    is deterministic Python pinned in ``make check``.
 
-    It used to drive the whole extractor and score the persisted skill.  That was a
-    faithful proxy while the labeller was the only model call in the chain — everything
-    after it is deterministic Python — and #1803 broke the proxy by inserting a SECOND
-    draw, whose constants legitimately remove the very substitutions those checks read.
-    This case is the labeller's, so it scores the labeller: see ``test_skill_shape.py``
-    for the other draw, and the deferred end-to-end case for pipeline assertions.
-
-    The demonstration is a fixture precisely so the case measures the JUDGMENT and
-    never polices what a round chose to write — if a round writes two entries, two
-    entries are the skill (the code owner's ruling on #1770).
+    The demonstration is a fixture precisely so the case measures the NAMING and never
+    polices what a round chose to write — if a round writes two entries, two entries
+    are the skill (the code owner's ruling on #1770, unchanged).
     """
 
     async def _run(
@@ -3127,9 +3204,10 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         utterance: str,
         calls: Sequence[DemoCall],
         target: str,
-        user_values: Sequence[str],
-        assistant_values: Sequence[str],
-        conversation: Sequence[str] = (),
+        leaves: Sequence[str],
+        conversation: Sequence[DemoTurn] = (),
+        distinct_names: Sequence[tuple[str, str]] = (),
+        shared_spot: str = "",
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -3151,11 +3229,13 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                 async with run_penny_with_server(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
-                        label = await asyncio.wait_for(
+                        labels = await asyncio.wait_for(
                             micro.label_skill(content, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_labelling(label, by_value, user_values, assistant_values)
+                        scored = _score_labelling(
+                            labels, by_value, leaves, distinct_names, shared_spot
+                        )
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
