@@ -178,6 +178,19 @@ _INVALID_DRAW_BUDGET = 2
 # matching out); the question "did the USER provide this?" has an answer in every
 # case and is a judgment, which is why the labeller is the right instrument.
 #
+# Why the deciding question is WHO DECIDED WHAT THE VALUE SAYS (#1821): asked where a
+# value "came from", the model reads it as who WROTE the string and answers on
+# authorship — a demonstration that reworded the user's "find the price" into 'the price
+# shown on the product page' was ruled assistant-produced ("so assistant had to create
+# that extract argument"), which withholds the value from the shape draw and leaves the
+# rendered routine with a hole where the user's own intent belongs.  So the two cases
+# turn on WHO SETTLED WHAT IT SAYS: their ask decided it, in any wording it was carried
+# out in (the paraphrase example moves from an aside INTO the test), versus the
+# assistant deciding it — picking it, deriving it from a step's result, or ASSEMBLING it
+# out of the user's own materials for a purpose their ask never named.  That last clause
+# is the paired over-correction guard: a storage key slugged from the user's own URL
+# reuses their words for a thing they never asked for, and is the assistant's.
+#
 # Why the response is GROUPED BY VERDICT (#1807): the judgment was right and the
 # TRANSCRIPTION was wrong — in every observed failure the thinking concluded "treat as
 # PARAM" and the line came out ``PLACEHOLDER``, always sitting inside a run of genuine
@@ -255,19 +268,23 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "the KIND of task (e.g. 'watch a listing price for changes'), generic — never "
     "the specific instance — and never mechanics alone ('fetch and store data' "
     "says nothing about when to reach for it).\n"
-    "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
-    "from. There are two cases:\n"
-    "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
+    "3. Decide, for EVERY candidate parameter, WHO DECIDED WHAT THE VALUE SAYS — "
+    "not who wrote the string it is written in. There are two cases:\n"
+    "   - THE USER GAVE IT. Their ask decided it — a page they named, a thing "
     "they asked to be found, a label they chose, a place they said to keep it — "
-    "including when the assistant "
-    "reworded it ('the current price' for their \"find the price\"). This is a real "
+    "in ANY wording, however the assistant transcribed or expanded it while "
+    "carrying the task out: 'the current price' is still theirs when what they "
+    'asked for was "find the price". This is a real '
     "parameter: name it by what the value MEANS to the user (e.g. 'url', "
     "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
     "describe in one line what to supply for it.\n"
-    "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
-    "returned, or wrote it itself while carrying the task out — a summary, a note, "
-    "a caption about a page, a place it picked itself to keep the results in. The "
-    "user never said it and could not supply it, so it "
+    "   - THE ASSISTANT PRODUCED IT. The assistant decided what it says — it "
+    "picked the value, derived it from what a step returned, or ASSEMBLED it out "
+    "of the user's own materials for a purpose their ask never named: something "
+    "to file the result under, somewhere to keep it, a summary or a caption "
+    "about what it read. The user's words inside such a value do not make it "
+    "theirs when they never asked for that thing at all. They could not supply "
+    "it, so it "
     "is NOT a parameter: it is a placeholder, and you describe in one line what "
     "belongs in that spot each time the routine runs.\n"
     "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "

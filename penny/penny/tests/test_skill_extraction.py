@@ -1281,13 +1281,16 @@ def test_shape_system_prompt_whole_render():
 
 
 def test_naming_system_prompt_whole_render():
-    """Whole-render literal of the labelling contract (#1665/#1668/#1770/#1807): the
-    framing and its inputs, the three numbered asks — intent, then the generic routine
-    name, then the per-candidate WHERE-DID-THIS-COME-FROM verdict as two named cases —
-    and the enumerated output shape, which asks for the candidates GROUPED BY VERDICT
-    (#1807: the verdict was reached correctly and transcribed wrongly, always inside a
-    run of the other tag, so the split is what gets written rather than a tag prefixed
-    to each drafted line)."""
+    """Whole-render literal of the labelling contract (#1665/#1668/#1770/#1807/#1821):
+    the framing and its inputs, the three numbered asks — intent, then the generic
+    routine name, then the per-candidate WHO-DECIDED-WHAT-THIS-SAYS verdict as two named
+    cases (#1821: "where did it come from" was answered on authorship, so a paraphrase
+    of the user's own ask read as assistant-produced; the paraphrase example is now the
+    deciding test, and assembling the user's materials for a purpose they never named is
+    its paired over-correction guard) — and the enumerated output shape, which asks for
+    the candidates GROUPED BY VERDICT (#1807: the verdict was reached correctly and
+    transcribed wrongly, always inside a run of the other tag, so the split is what gets
+    written rather than a tag prefixed to each drafted line)."""
     assert SKILL_NAMING_SYSTEM_PROMPT == (
         "You are a naming step. You are given the conversation that led to the "
         "construction of a reusable routine, the routine itself — a numbered list of "
@@ -1302,19 +1305,23 @@ def test_naming_system_prompt_whole_render():
         "the KIND of task (e.g. 'watch a listing price for changes'), generic — never "
         "the specific instance — and never mechanics alone ('fetch and store data' "
         "says nothing about when to reach for it).\n"
-        "3. Decide, for EVERY candidate parameter, where its demonstrated value came "
-        "from. There are two cases:\n"
-        "   - THE USER GAVE IT. It came from the user — a page they named, a thing "
+        "3. Decide, for EVERY candidate parameter, WHO DECIDED WHAT THE VALUE SAYS — "
+        "not who wrote the string it is written in. There are two cases:\n"
+        "   - THE USER GAVE IT. Their ask decided it — a page they named, a thing "
         "they asked to be found, a label they chose, a place they said to keep it — "
-        "including when the assistant "
-        "reworded it ('the current price' for their \"find the price\"). This is a real "
+        "in ANY wording, however the assistant transcribed or expanded it while "
+        "carrying the task out: 'the current price' is still theirs when what they "
+        'asked for was "find the price". This is a real '
         "parameter: name it by what the value MEANS to the user (e.g. 'url', "
         "'what_to_find', 'label'), NOT the tool argument it happens to fill, and "
         "describe in one line what to supply for it.\n"
-        "   - THE ASSISTANT PRODUCED IT. The assistant worked it out from what a step "
-        "returned, or wrote it itself while carrying the task out — a summary, a note, "
-        "a caption about a page, a place it picked itself to keep the results in. The "
-        "user never said it and could not supply it, so it "
+        "   - THE ASSISTANT PRODUCED IT. The assistant decided what it says — it "
+        "picked the value, derived it from what a step returned, or ASSEMBLED it out "
+        "of the user's own materials for a purpose their ask never named: something "
+        "to file the result under, somewhere to keep it, a summary or a caption "
+        "about what it read. The user's words inside such a value do not make it "
+        "theirs when they never asked for that thing at all. They could not supply "
+        "it, so it "
         "is NOT a parameter: it is a placeholder, and you describe in one line what "
         "belongs in that spot each time the routine runs.\n"
         "   A parameter filling browse's extract argument is a PLAIN-LANGUAGE "
