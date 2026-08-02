@@ -413,13 +413,15 @@ class PennyConstants:
     # bulk page content never enters the parent run's context.
     BROWSE_EXTRACT_AGENT_NAME = "browse-extract"
     BROWSE_MICRO_CONTEXT_PROMPT_TYPE = "browse_micro_context"
-    # The ledger identity of a run-end skill-naming micro-context (#1665) — the
-    # SECOND customer of the micro-context machinery.  After a qualifying chat run
-    # is distilled, one single-shot model call writes a GENERIC name + description
-    # for the routine (the tagged NAME:/DESCRIPTION: contract); it logs its own
-    # promptlog rows under this agent/prompt type so run traces attribute it.
-    SKILL_NAMING_AGENT_NAME = "skill-namer"
-    SKILL_NAMING_PROMPT_TYPE = "skill_naming"
+    # The ledger identity of a run-end LEAF LABELLER (#1824, reshaping #1665's
+    # namer) — the SECOND customer of the micro-context machinery.  After a
+    # qualifying chat run is distilled, one single-shot model call names every
+    # placeholder in its tool calls (the tagged PLACEHOLDER contract) from the calls
+    # alone; it logs its own promptlog rows under this agent/prompt type so run
+    # traces attribute it.  Renamed with the role: a draw that no longer names the
+    # skill must not keep answering to "skill-namer" in the ledger.
+    LEAF_LABELLING_AGENT_NAME = "leaf-labeller"
+    LEAF_LABELLING_PROMPT_TYPE = "leaf_labelling"
     # The ledger identity of a conversation-state classification (#1706) — the
     # THIRD customer of the micro-context machinery.  Once per incoming message a
     # single-shot model call picks the machine's next state from the CURRENT
@@ -428,14 +430,15 @@ class PennyConstants:
     # replayable from production history.
     STATE_CLASSIFIER_AGENT_NAME = "state-classifier"
     STATE_CLASSIFIER_PROMPT_TYPE = "state_classifier"
-    # The ledger identity of a run-end skill-SHAPE micro-context (#1803) — the
-    # FOURTH customer of the micro-context machinery.  After the labeller says where
-    # each value came from, one more single-shot model call decides what the routine
-    # IS: its name and which of the kept values it is ABOUT rather than pointed at
-    # (the tagged NAME:/DESCRIPTION:/FIXED/ASKED contract).  Its own agent/prompt
-    # type, so a run trace shows the two draws as the two questions they are.
-    SKILL_SHAPE_AGENT_NAME = "skill-shaper"
-    SKILL_SHAPE_PROMPT_TYPE = "skill_shape"
+    # The ledger identity of a run-end SKILL FRAMER (#1824, reshaping #1803's
+    # shaper) — the FOURTH customer of the micro-context machinery.  From the user's
+    # own messages alone, one single-shot model call writes the skill's public
+    # signature: its name, its description, and the parameters someone must supply
+    # to set it up again (the tagged NAME:/DESCRIPTION:/PARAMETER contract).  Its own
+    # agent/prompt type, so a run trace shows the two draws as the two questions they
+    # are — the implementation's names and the interface's signature.
+    SKILL_FRAMING_AGENT_NAME = "skill-framer"
+    SKILL_FRAMING_PROMPT_TYPE = "skill_framing"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

@@ -19,10 +19,8 @@ never by matching the user's prose (#1659):
   accident — #1809);
 * **every other string leaf** → a **candidate** required parameter (the model binds
   it per instantiation); identical values collapse to ONE shared candidate.  A
-  parameter is ``required`` by construction — an unbound one is a loud refusal at
-  instantiation, never a silent default (no-silent-fallbacks).  Candidates get
-  arg-derived names at distill; the run-end naming micro-context then relabels them
-  semantically AND adjudicates each one (#1668/#1770).
+  candidate gets an arg-derived name at distill, which the run-end LEAF LABELLER then
+  replaces with a name for the SPOT plus a line of what belongs there (#1824).
 
 **Every** unexplained leaf goes through that one process, whatever tool it sits on
 and whatever argument it fills (#1783).  A skill is a learned sequence of ARBITRARY
@@ -31,24 +29,22 @@ target, no privileged argument, no tool whitelist.  Several reads, writes, brows
 and plugin calls in one routine are not special cases — they are more leaves through
 the same process.
 
-That candidate rule is a **default, not a determination** — it assumes an unexplained
-value came from the user, which is false for a value the model derived-and-
-transformed from a result or invented outright (neither shares a literal span with
-what produced it, so no substring test can reach them, and #1659 ruled prose
-matching out).  The user-provenance question is a judgment, so it lives in
-model-space: the labeller answers "did the USER provide this?" per candidate and
-returns either a semantic name (a real parameter) or a placeholder description.  A
-candidate with no verdict keeps the default — absence is never a drop.
+Every such candidate is a **placeholder** (#1824): the run-end LEAF LABELLER NAMES
+each one — a semantic name for the spot plus one line of what belongs there each run
+— and what the SKILL asks for is decided separately, from the user's ask alone, by
+the skill framer.  A candidate the draw never covered keeps its arg-derived name,
+per leaf.  The question this replaced — "did the USER provide this value?", asked
+once per candidate — was an interface question asked of implementation artifacts,
+and it pinned at ~0.7-0.8 across three independent wordings (#1821/#1823).
 
 The one leaf a user cannot bind and the *attachment* can is the ATTACHMENT MARK
 (#1783, :attr:`SkillSubstitution.attachment`): a leaf whose demonstrated value named
 one of Penny's own COLLECTIONS.  "Apply this routine to C" is what decides such a
-leaf, so when the labeller judges it internally-chosen the render seam binds it to C
-(:func:`retarget_writes`) instead of freezing the demonstration's collection into the
-recipe.  The mark is registry-derived, not tool-derived — distillation is handed the
-collection names and compares VALUES — and a leaf the labeller judged
-user-supplied keeps its parameter and is never rebound, so a routine whose two
-destinations the user named binds two destinations, with no mechanism added for it.
+leaf, so the render seam binds every marked leaf to C (:func:`retarget_writes`)
+instead of freezing the demonstration's collection into the recipe.  The mark is
+registry-derived, not tool-derived — distillation is handed the collection names and
+compares VALUES.  Since #1824 no draw clears it: joining a framed parameter to a
+particular leaf is the run-time join, and that is #1824's follow-on.
 
 This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), and the load-bearing render
@@ -96,23 +92,27 @@ class SkillSubstitution(BaseModel):
     ``HOLE`` names the parameter that fills it at instantiation (``parameter`` is
     the parameter's semantic name — the binding key at instantiation); a
     ``BINDING`` names the prior *skill* step (1-based ordinal) whose result flows
-    into it; a ``PLACEHOLDER`` carries a one-line ``description`` of what belongs
-    there each run — the leaf the labeller judged the ASSISTANT to have produced
-    (derived from a result, or invented outright, #1770), whose demonstrated value
-    must never be frozen into the recipe.
+    into it; a ``PLACEHOLDER`` carries the leaf labeller's semantic ``name`` for the
+    spot plus a one-line ``description`` of what belongs there each run, and never
+    the demonstrated value.  Since #1824 EVERY unexplained leaf is a placeholder:
+    naming the spot is an implementation question the calls answer, and what a skill
+    ASKS FOR is decided once, at the interface, from the user's own ask.  (The
+    ``name`` is the anchor the run-time join binds against; where it surfaces in a
+    rendered program is #1824's follow-on, so nothing reads it yet — it is written
+    now so a skill taught on the way there does not lose it.)
 
     ``attachment`` is the ATTACHMENT MARK (#1783): this leaf's demonstrated value
     named one of Penny's own COLLECTIONS, so *what the routine is attached to* is what
     decides it.  Set at distill by comparing values against the registry (never a tool
-    name), and CLEARED when the labeller judges the user supplied the value — a user's
-    choice is a parameter they bind, not something the attachment overwrites.  A
-    surviving mark is what :func:`retarget_writes` binds at the render seam.
+    name); since #1824 nothing clears it, and it is what :func:`retarget_writes` binds
+    at the render seam.
     """
 
     path: list[str | int]
     kind: SkillSubKind
     parameter: str | None = None  # set when kind == HOLE — the parameter's semantic name
     step: int | None = None  # set when kind == BINDING — the skill-relative ordinal
+    name: str | None = None  # set when kind == PLACEHOLDER — what the spot is called
     description: str | None = None  # set when kind == PLACEHOLDER — what belongs there
     attachment: bool = False  # the attached collection fills this leaf (#1783)
 
@@ -391,18 +391,18 @@ def distill_steps(
     that step); **every other** string leaf is a required **parameter**, with identical
     values
     collapsing to one shared parameter.  A non-string leaf (a number/bool) is always
-    a constant.  That last rule is a DEFAULT, not a determination — it holds only
-    when the user supplied the value, which structure cannot decide; the run-end
-    naming micro-context relabels each one semantically AND adjudicates it, turning
-    an assistant-produced leaf into a placeholder (#1668/#1770).
+    a constant.  A candidate parameter is what the run-end LEAF LABELLER then NAMES:
+    every one becomes a placeholder carrying a name for the spot and a one-line
+    what-belongs-here, because what the SKILL asks for is a separate question decided
+    from the user's ask alone (#1824).
 
     ``attachment_names`` are the names of Penny's own COLLECTIONS (the caller reads them
     off the registry).  An UNEXPLAINED leaf whose demonstrated VALUE is one of them
     additionally carries the attachment mark — see
     :attr:`SkillSubstitution.attachment` — because attaching the routine somewhere is
     what decides a leaf that named a collection.  The mark rides ALONGSIDE the ordinary
-    classification: the leaf is still a candidate the labeller adjudicates, and a
-    user-supplied verdict clears it.  A leaf that BOUND is never marked, whatever its
+    classification: the leaf is still a candidate the labeller names, and nothing
+    clears the mark (#1824).  A leaf that BOUND is never marked, whatever its
     value: its provenance is already explained (it came from a prior step), so nothing
     is left for an attachment to decide, and marking it would let the render seam
     overwrite a real binding with the collection's name."""
@@ -477,10 +477,9 @@ class _BindingRef(BaseModel):
 
 
 class _DescribedSlot(BaseModel):
-    """Render sentinel: a leaf no user binds — a value the labeller judged the assistant
-    to have produced (#1770), including one still awaiting its attachment (#1783) —
-    shown in the SAME placeholder syntax as an
-    unbound parameter but carrying the one-line description of what belongs there,
+    """Render sentinel: a NAMED PLACEHOLDER — since #1824 every unexplained leaf, plus
+    any still awaiting its attachment (#1783) — shown in the SAME placeholder syntax as
+    an unbound parameter but carrying the one-line description of what belongs there,
     never the demonstrated value.  Freezing that value is the failure this exists to
     prevent: a collector re-running the skill would write the demonstration's stale
     phrase into the collection every cycle, forever, and a reader of the recipe would
@@ -491,9 +490,9 @@ class _DescribedSlot(BaseModel):
 
 def _marker_for(sub: SkillSubstitution, params: dict[str, str]) -> Any:
     # Each kind's payload read defensively, as its siblings are: the labelling parse
-    # rejects a PLACEHOLDER verdict with a blank description (there would be nothing to
-    # render in the leaf's place) and an unadjudicated marked leaf falls back to
-    # ``WRITE_TARGET_DESCRIPTION``, so an empty one never reaches here in practice.
+    # rejects a line with a blank description (there would be nothing to render in the
+    # leaf's place) and an unlabelled leaf falls back to its arg-derived name — or, when
+    # marked, to ``WRITE_TARGET_DESCRIPTION`` — so an empty one never reaches here.
     if sub.kind == SkillSubKind.PLACEHOLDER:
         return _DescribedSlot(description=sub.description or "")
     if sub.kind == SkillSubKind.HOLE:
@@ -586,14 +585,14 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
     so each leaf still carrying :attr:`SkillSubstitution.attachment` at instantiation is
     bound to C's own name: the rendered copy takes the value and drops the substitution,
     so the render prints the collection instead of the placeholder.  Nothing here knows
-    which tools a skill contains — it reads the MARK distillation left and the labeller
-    let stand, so a write, a read of the routine's own collection, or a tool nobody has
-    enumerated all bind identically, and a leaf the labeller judged USER-supplied kept no
-    mark and stays the parameter the user binds.
+    which tools a skill contains — it reads the MARK distillation left, so a write, a
+    read of the routine's own collection, or a tool nobody has enumerated all bind
+    identically.
 
-    Two leaves marked and unbound therefore both land on C — not a collapse rule, the
-    OUTCOME of two verdicts that said "the assistant chose this"; two destinations the
-    user named are two parameters and stay distinct.
+    Two marked leaves therefore both land on C.  Since #1824 no draw clears a mark, so
+    telling two destinations apart is the run-time join's job — explicitly the
+    follow-on ticket — and until then the ask that named both is carried by the skill's
+    PARAMETERS rather than by its leaves.
 
     Runs at the render/instantiation seam (``render_skill_prompt``), on BOTH the one-call
     ``collection_set(skill=…)`` and the adopt path, so the rendered ``extraction_prompt``

@@ -53,12 +53,12 @@ def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
         ),
         report.Event(report.EventKind.RESULT, "You opened wiki (browse result) · 1642"),
         report.Event(report.EventKind.REPLY, "Lake Baikal, 1,642 m.", thinking=""),
-        report.Event(report.EventKind.MICRO_IN, "steps: browse", context="skill-namer"),
+        report.Event(report.EventKind.MICRO_IN, "steps: browse", context="leaf-labeller"),
         report.Event(
             report.EventKind.MICRO_OUT,
             "NAME: look-up-a-lake-depth",
             thinking="generic name",
-            context="skill-namer",
+            context="leaf-labeller",
         ),
     ]
     checks = [
@@ -111,9 +111,9 @@ def test_clean_pass_folds_whole_with_system_prompts_and_micro_context() -> None:
         "| actual | 📥 You opened wiki (browse result) · 1642 |  |\n"
         "| 💭 | 💭 (empty) |  |\n"
         "| actual | 🤖 Lake Baikal, 1,642 m. | ✅ C2 |\n"
-        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (skill-namer)</summary>generic name</details> |  |\n"
-        "| actual | 🧩 skill-namer → NAME: look-up-a-lake-depth |  |\n"
+        "| actual | 🧩 leaf-labeller ← user turn: steps: browse |  |\n"
+        "| 💭 | <details><summary>thinking (leaf-labeller)</summary>generic name</details> |  |\n"
+        "| actual | 🧩 leaf-labeller → NAME: look-up-a-lake-depth |  |\n"
         "\n"
         "</details>"
     )

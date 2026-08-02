@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -49,9 +50,9 @@ from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.responses import PennyResponse
 from penny.skill_extraction import (
-    ShapeableValue,
-    build_naming_content,
-    build_shape_content,
+    build_framing_content,
+    build_leaf_labelling_content,
+    slug_parameter_name,
 )
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
@@ -63,6 +64,7 @@ from penny.tests.eval.fixtures import CannedPage, SynthCollection
 from penny.tests.mocks.signal_server import MockSignalServer
 from penny.text_validity import (
     has_leaked_harmony_envelope,
+    is_blank,
     is_call_fragment_reply,
     is_degenerate_run,
     is_degenerate_tool_name,
@@ -70,10 +72,9 @@ from penny.text_validity import (
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
+    LeafLabels,
     MicroContext,
-    ParameterVerdict,
-    SkillLabel,
-    SkillShape,
+    SkillFraming,
     StateDrawOutcome,
 )
 
@@ -1204,8 +1205,8 @@ class MicroPlacement(StrEnum):
 MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
-    PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
-    PennyConstants.SKILL_SHAPE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    PennyConstants.LEAF_LABELLING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    PennyConstants.SKILL_FRAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
 }
 
 _NUDGE_FRAMES = (
@@ -2802,27 +2803,28 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
     return _run
 
 
-# ── Fourth micro-context customer: run-end skill labelling (#1770) ─────────────
+# ── The two run-end micro-context customers (#1824) ───────────────────────────
 
 # One demonstrated tool call as a case fixture: tool name, verbatim arguments, its
 # framed result, and whether it succeeded — the shape a real chat run leaves behind in
-# the ledger, which is what ``_labelling_input`` renders the labeller's content from.
+# the ledger, which is what ``_leaf_labelling_input`` renders the labeller's content
+# from.
 DemoCall = tuple[str, dict, str, bool]
 
-LabellerEval = Callable[..., Awaitable[None]]
+LeafEval = Callable[..., Awaitable[None]]
 
 
-# The customers that draw at run end: the labeller (provenance) and the shape draw
-# (what the routine IS).  One list, so the report and the reroll signal can never
-# disagree about who spoke at the end of a run.
+# The customers that draw at run end: the leaf labeller (the implementation's names)
+# and the skill framer (the interface's signature).  One list, so the report and the
+# reroll signal can never disagree about who spoke at the end of a run.
 RUN_END_CUSTOMERS = (
-    PennyConstants.SKILL_NAMING_AGENT_NAME,
-    PennyConstants.SKILL_SHAPE_AGENT_NAME,
+    PennyConstants.LEAF_LABELLING_AGENT_NAME,
+    PennyConstants.SKILL_FRAMING_AGENT_NAME,
 )
 
 
 def _run_end_rerolled(db: Database) -> bool:
-    """Did EITHER run-end customer draw more than once (#1770/#1803) — the fragile
+    """Did EITHER run-end customer draw more than once (#1824) — the fragile
     signal, a sample that only got there by recovering.
 
     Counted PER customer, never in total: a run end is two draws by design, so a
@@ -2845,29 +2847,27 @@ def _leaf_string(arguments: dict, path: Sequence[str | int]) -> str | None:
     return node if isinstance(node, str) else None
 
 
-def _labelling_input(
-    calls: Sequence[DemoCall], target: str, utterance: str, conversation: Sequence[str]
-) -> tuple[str, dict[str, str]]:
-    """The labeller's content, and the ``{demonstrated value: current name}`` map its
-    verdicts are keyed by.
+def _leaf_labelling_input(
+    calls: Sequence[DemoCall], target: str
+) -> tuple[str, dict[str, str], list[str]]:
+    """The leaf labeller's content, the ``{value that first time: current name}`` map
+    its labels are keyed by, and the offered placeholder names.
 
     Distillation is DETERMINISTIC Python, so a fixture ledger fixes the labeller's
     input exactly — no live draw sits upstream of this case.  The content is rendered
-    by ``build_naming_content``, the shipped function, so the case exercises the
-    shipped prompt rather than a copy that can drift.
+    by ``build_leaf_labelling_content``, the shipped function, so the case exercises
+    the shipped prompt rather than a copy that can drift — and, like production, it
+    carries NO conversation: the case cannot accidentally hand this draw the ask.
 
     The map is keyed by VALUE because the case's expectations are stated in values:
-    the semantic name is the model's to choose, and the contract is about which leaves
-    stayed bindable, never what they ended up called."""
+    the name is the model's to choose, and the contract is about which spots got a
+    usable name, never what they ended up called."""
     inputs = [
         DistillInput(source_ordinal=index, tool=name, arguments=arguments, result=result)
         for index, (name, arguments, result, _ok) in enumerate(calls, start=1)
     ]
     steps, parameters = distill_steps(inputs, frozenset({target}))
-    turns: list[tuple[str, str]] = [
-        (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
-    ]
-    content = build_naming_content(steps, parameters, utterance, turns)
+    content = build_leaf_labelling_content(steps, parameters)
     by_value = {
         value: sub.parameter
         for step in steps
@@ -2875,164 +2875,110 @@ def _labelling_input(
         if sub.parameter is not None
         and (value := _leaf_string(step.arguments, sub.path)) is not None
     }
-    return content, by_value
+    return content, by_value, [parameter.name for parameter in parameters]
 
 
-def _verdict_check(
-    value: str,
-    expected: ParameterVerdict,
-    label: SkillLabel | None,
-    by_value: dict[str, str],
-) -> Check:
-    """One value's verdict, read off the labeller's OWN typed result (#1770).
+class LeafSlot(NamedTuple):
+    """One placeholder a leaf-labelling case scores (#1824): the ``value`` that sat in
+    that spot in the demonstration (how the case names it — the arg-derived key is the
+    distiller's to mint) and ``about``, the words a label for that spot could
+    plausibly use.
 
-    Scoring the draw rather than the persisted skill is what keeps this case the
-    labeller's: everything downstream of the verdict — applying it, rendering it — is
-    deterministic Python pinned in ``tests/test_skill_extraction.py``, and since #1803
-    a SECOND model draw sits in that chain, so an end-state assertion would be
-    measuring two draws and calling it one.
+    ``about`` is an ALTERNATIVES set matched broadly against the drawn name plus its
+    description, never an expected string: what is being measured is that the draw
+    described THAT spot rather than a neighbouring one, and any of several wordings
+    does that."""
 
-    ABSENCE is not a verdict, and which direction it falls depends on the expectation.
-    A user-supplied value with no line keeps its arg-derived REQUIRED parameter, so it
-    is still bindable and the check holds.  An assistant-produced value with no line
-    keeps that same required parameter — which no user could ever supply, the exact
-    #1770 harm — so it does not.
-
-    An expected value that is not among the distilled candidates at all is a BROKEN
-    CASE, not a verdict of any kind, and fails LOUDLY naming the value: the fixture
-    ledger has drifted from what the case asserts, and a drifted fixture that scores
-    green is a case measuring nothing."""
-    role = (
-        "user value stayed a parameter"
-        if expected == ParameterVerdict.PARAMETER
-        else "assistant value became a placeholder"
-    )
-    current = by_value.get(value)
-    if current is None:
-        return Check(
-            f"{role}: {value!r}",
-            False,
-            kind="state",
-            rationale=f"{value!r} is not among the distilled candidates — the fixture has drifted",
-        )
-    verdict = label.parameters.get(current) if label is not None else None
-    if expected == ParameterVerdict.PARAMETER:
-        ok = verdict is None or verdict.verdict == ParameterVerdict.PARAMETER
-    else:
-        ok = verdict is not None and verdict.verdict == ParameterVerdict.PLACEHOLDER
-    drawn = "no verdict" if verdict is None else verdict.verdict.value
-    return Check(
-        f"{role}: {value!r}",
-        ok,
-        kind="state",
-        rationale=None if ok else f"drew {drawn}",
-    )
+    value: str
+    about: tuple[str, ...]
 
 
-def _score_labelling(
-    label: SkillLabel | None,
-    by_value: dict[str, str],
-    user_values: Sequence[str],
-    assistant_values: Sequence[str],
+def _leaf_checks(
+    labels: LeafLabels | None, slot: LeafSlot, by_value: dict[str, str]
 ) -> list[Check]:
-    """The labelling case's graded checks (#1770), read off the returned ``SkillLabel``:
-    the values the user supplied stayed bindable parameters, and the ones the assistant
-    produced became placeholders."""
+    """One slot's two checks (#1824): it came back with a WELL-FORMED label (a name
+    that hardens to a usable binding key plus a non-blank description), and that label
+    is ON TOPIC for the spot it names.
+
+    A slot that is not among the distilled placeholders at all is a BROKEN CASE, not a
+    naming failure, and fails LOUDLY naming the value: the fixture ledger has drifted
+    from what the case asserts, and a drifted fixture that scores green measures
+    nothing."""
+    current = by_value.get(slot.value)
+    if current is None:
+        drift = f"{slot.value!r} is not among the distilled placeholders — the fixture has drifted"
+        return [
+            Check(f"named the spot holding {slot.value!r}", False, kind="state", rationale=drift)
+        ]
+    label = labels.placeholders.get(current) if labels is not None else None
+    if label is None:
+        return [
+            Check(
+                f"named the spot holding {slot.value!r}",
+                False,
+                kind="state",
+                rationale="no line came back for it",
+            ),
+            Check(f"described what belongs there for {slot.value!r}", False, kind="state"),
+        ]
+    key = slug_parameter_name(label.name)
     return [
-        _verdict_check(value, ParameterVerdict.PARAMETER, label, by_value) for value in user_values
-    ] + [
-        _verdict_check(value, ParameterVerdict.PLACEHOLDER, label, by_value)
-        for value in assistant_values
+        Check(
+            f"named the spot holding {slot.value!r}",
+            bool(key) and not is_blank(label.description),
+            kind="state",
+            rationale=f"drew name {label.name!r} → key {key!r}, description {label.description!r}",
+        ),
+        Check(
+            f"described what belongs there for {slot.value!r}",
+            _mentions_any(f"{label.name} {label.description}", slot.about),
+            kind="state",
+            rationale=f"drew {label.name!r} — {label.description!r}",
+        ),
     ]
 
 
-ShapeEval = Callable[..., Awaitable[None]]
+def _mentions_any(text: str, words: Sequence[str]) -> bool:
+    """Broad semantic match: does ``text`` use any of these words?  Case-folded
+    substring containment over an ALTERNATIVES set — the loosest test that still
+    distinguishes one spot's subject from another's."""
+    lowered = text.lower()
+    return any(word.lower() in lowered for word in words)
 
 
-def _score_shape(
-    shape: SkillShape | None,
-    values: Sequence[ShapeableValue],
-    constants: Sequence[str],
+def _score_leaf_labelling(
+    labels: LeafLabels | None, slots: Sequence[LeafSlot], by_value: dict[str, str]
 ) -> list[Check]:
-    """The shape case's graded checks (#1803), read off the draw's own typed result.
+    """The leaf-labelling case's graded checks (#1824), read off the returned
+    ``LeafLabels``: every offered spot came back with a well-formed, on-topic label.
 
-    One check per value — is the routine ABOUT it, or merely pointed AT it — because
-    that is the whole decision.  Scoring the returned ``SkillShape`` rather than a
-    persisted skill is deliberate: the plumbing from a constant to a baked leaf is
-    pinned deterministically in ``tests/test_skill_extraction.py``, so this case spends
-    its live-model budget on the judgment and nothing else.
-
-    A refused draw fails every check with its reason named, never silently: the
-    degraded state (everything stays a parameter) is honest behaviour, but it is not
-    the decision the case is asking for.
-
-    The drawn NAME and DESCRIPTION ride along ADVISORY (``scored=False``).  They are
-    half the decision — a routine that names itself for a value it then demands is the
-    whole defect — but "is this name grounded in the user's intent" is a judgment no
-    scorer should fake.  Rendered so a reader sees what the draw committed to, never
-    scored."""
-    expected = frozenset(constants)
-    checks: list[Check] = []
-    for value in values:
-        about = value.name in expected
-        role = "about it (constant)" if about else "pointed at it (parameter)"
-        if shape is None:
-            checks.append(
-                Check(
-                    f"{role}: {value.name!r}",
-                    False,
-                    kind="state",
-                    rationale="the draw was refused — every value stayed a parameter",
-                )
-            )
-            continue
-        drawn_constant = value.name in shape.fixed
-        checks.append(
-            Check(
-                f"{role}: {value.name!r}",
-                drawn_constant == about,
-                kind="state",
-                rationale=None if drawn_constant == about else "the draw decided the other way",
-            )
-        )
-    if shape is not None:
-        checks.append(Check(f"named it {shape.name!r}", True, kind="state", scored=False))
-        checks.append(
-            Check(f"described it {shape.description!r}", True, kind="state", scored=False)
-        )
-    return checks
+    There is no verdict to score here and no wrong-verdict failure mode left — every
+    leaf is a placeholder by construction — so what the case measures is naming
+    QUALITY and COVERAGE, which is the whole of this draw's job."""
+    return [check for slot in slots for check in _leaf_checks(labels, slot, by_value)]
 
 
 @pytest.fixture
-def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEval:
-    """Drive the run-end SHAPE micro-context (#1803) N times, and NOTHING else.
+def leaf_eval(make_config: Callable[..., Config], tmp_path, request) -> LeafEval:
+    """Drive the run-end LEAF LABELLER (#1824) N times, and NOTHING else.
 
-    The labeller is not run. Its output — the values it kept, with their semantic
-    names and one-line descriptions — is supplied as a FIXTURE, so the only live
-    variable in the case is the shape draw's own judgment. That isolation is the
-    point: driving both draws handed this decision a different input every sample
-    (three different names for the same value across five samples, one of them
-    mangled by a labeller parse slip), and a miss could not be attributed to the
-    draw under test. The labeller has its own contract next door.
+    The labeller answers one question — what belongs in this spot — and this case
+    measures that answer directly: the returned ``LeafLabels``.  Its input is a FIXTURE
+    ledger through DETERMINISTIC distillation, so nothing live sits upstream of the
+    draw either, and it is the routine's calls ALONE: the fixture has no conversation
+    to leak, because the production content has none to render.
 
-    Its inputs are all fixtures: the user's turns, the labeller's one-line summary of
-    the round, and the values it kept — each authored, so the draw sees the same thing
-    every sample.
-
-    Everything the draw consumes is built by PRODUCTION code — ``build_shape_content``
-    renders the content and ``MicroContext.shape_skill`` makes the call, so the case
-    exercises the shipped prompt and the shipped parse. Synthetic here means the
-    VALUES are authored, never the prompt (an eval that swaps in an artificial prompt
-    measures nothing about what ships).
+    The demonstration is a fixture precisely so the case measures the JUDGMENT and
+    never polices what a round chose to write — if a round writes two entries, two
+    entries are the skill (the code owner's ruling on #1770, unchanged here).
     """
 
     async def _run(
         *,
         case_id: str,
-        values: Sequence[ShapeableValue],
-        constants: Sequence[str],
-        conversation: Sequence[str],
-        round_summary: str = "",
+        calls: Sequence[DemoCall],
+        target: str,
+        slots: Sequence[LeafSlot],
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -3041,10 +2987,7 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        turns: list[tuple[str, str]] = [
-            (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
-        ]
-        content = build_shape_content(list(values), "", turns, round_summary)
+        content, by_value, offered = _leaf_labelling_input(calls, target)
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()
@@ -3057,21 +3000,17 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
                 async with run_penny_with_server(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
-                        shape = await asyncio.wait_for(
-                            micro.shape_skill(
-                                content,
-                                [value.name for value in values],
-                                run_target=penny.chat_agent.name,
-                            ),
+                        labels = await asyncio.wait_for(
+                            micro.label_leaves(content, offered, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_shape(shape, values, constants)
+                        scored = _score_leaf_labelling(labels, slots, by_value)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
                         _stamp_cause(penny.db, result)
                     except TimeoutError:
-                        result = SampleResult.binary(["no shape draw within timeout"])
+                        result = SampleResult.binary(["no label within timeout"])
                         _stamp_cause(penny.db, result, timed_out=True)
                         results.append(result)
                     _write_classifier_report(
@@ -3079,8 +3018,8 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
                         case_id,
                         sample_index,
                         result=result,
-                        phrasing=conversation[-1] if conversation else "",
-                        agent_names=(PennyConstants.SKILL_SHAPE_AGENT_NAME,),
+                        phrasing=_FIXTURE_ROUND_PHRASING,
+                        agent_names=(PennyConstants.LEAF_LABELLING_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())
@@ -3100,36 +3039,186 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
     return _run
 
 
+# What opens a leaf-labelling sample's transcript.  The draw is handed a routine, not
+# a turn — there is no user message anywhere in its context — so the step opens with
+# the fixture itself rather than an utterance the model never saw.
+_FIXTURE_ROUND_PHRASING = "(fixture routine — the labeller sees the calls, nothing else)"
+
+
+FramingEval = Callable[..., Awaitable[None]]
+
+
+class ParameterFamily(NamedTuple):
+    """One piece of information a framing case reasons about (#1824): a ``label`` for
+    the report and the ``tokens`` a parameter about that piece would use in its name.
+
+    Matched on the parameter NAME, tokenized — the name is the binding key, the part
+    of a framing the user actually has to type, and the part a scorer can read without
+    guessing at prose.  ``count`` is how many DISTINCT parameters must land in the
+    family (two named destinations are two parameters, not one)."""
+
+    label: str
+    tokens: tuple[str, ...]
+    count: int = 1
+
+
+def _parameter_tokens(name: str) -> set[str]:
+    """A parameter name as its word tokens — ``product_page_url`` → {product, page,
+    url} — so a family matches on meaning-carrying words rather than on the exact
+    compound the draw happened to write."""
+    return {token for token in re.split(r"[^a-z0-9]+", name.lower()) if token}
+
+
+def _family_of(name: str, families: Sequence[ParameterFamily]) -> ParameterFamily | None:
+    """The FIRST family whose tokens the parameter name uses, in the order the case
+    lists them — expected families first, then the ones it expects absent.
+
+    Order is the disambiguation: a parameter named for the page it fetches is the page
+    parameter even when its name also mentions what is on that page, and classifying it
+    to the first family it matches keeps one parameter from being scored twice in
+    opposite directions."""
+    tokens = _parameter_tokens(name)
+    return next((family for family in families if tokens & set(family.tokens)), None)
+
+
+def _framing_checks(
+    framing: SkillFraming | None,
+    expected: Sequence[ParameterFamily],
+    absent: Sequence[ParameterFamily],
+) -> list[Check]:
+    """One check per family the case names: an EXPECTED family is carried by at least
+    ``count`` distinct parameters, an ABSENT one by none.
+
+    A refused draw fails every check with its reason named, never silently: the
+    degraded state (no parameters at all) is honest behaviour, but it is not the
+    framing the case is asking for."""
+    order = [*expected, *absent]
+    if framing is None:
+        refused = "the draw was refused — the skill would fall back to the slug"
+        return [
+            Check(_family_label(family, expected), False, kind="state", rationale=refused)
+            for family in order
+        ]
+    matched: dict[str, list[str]] = {family.label: [] for family in order}
+    for parameter in framing.parameters:
+        family = _family_of(parameter.name, order)
+        if family is not None:
+            matched[family.label].append(parameter.name)
+    drawn = ", ".join(parameter.name for parameter in framing.parameters) or "(none)"
+    return [
+        Check(
+            _family_label(family, expected),
+            len(matched[family.label]) >= family.count
+            if family in expected
+            else not matched[family.label],
+            kind="state",
+            rationale=f"drew parameters: {drawn}",
+        )
+        for family in order
+    ]
+
+
+def _family_label(family: ParameterFamily, expected: Sequence[ParameterFamily]) -> str:
+    """One family's check label, stating the direction the case asked for — so a
+    refused draw and a scored one name the same expectation the same way."""
+    return (
+        f"{family.label} is a parameter"
+        if family in expected
+        else (f"{family.label} is not a parameter")
+    )
+
+
+def _generic_framing_check(framing: SkillFraming | None, instance: Sequence[str]) -> Check:
+    """The framing names the KIND of task, not the one occasion (#1824): none of the
+    demonstration's own particulars appear in the name or the description.
+
+    Structural on purpose — "is this name well-judged" is a reading no scorer should
+    fake — but a framing that carries the instance's own words is not generic by any
+    reading, which makes this the half of that judgment a machine can hold."""
+    if framing is None:
+        return Check("framed the KIND of task, not the occasion", False, kind="state")
+    text = f"{framing.name} {framing.description}"
+    leaked = [word for word in instance if word.lower() in text.lower()]
+    return Check(
+        "framed the KIND of task, not the occasion",
+        not leaked,
+        kind="state",
+        rationale=f"named it {framing.name!r} — {framing.description!r}",
+    )
+
+
+def _carried_check(framing: SkillFraming | None, piece: ParameterFamily) -> Check:
+    """The ask's piece did not VANISH (#1824): either the framing carries it (its name
+    or description says it) or a parameter asks for it.
+
+    Both are coherent framings of the same ask — a skill that watches one particular
+    thing, or one pointed at whatever the user names — and the draw is free to write
+    either.  What it may never do is drop the piece entirely, which is the only
+    direction a scorer should call wrong."""
+    if framing is None:
+        return Check(f"{piece.label} survives the framing", False, kind="state")
+    carried = _mentions_any(f"{framing.name} {framing.description}", piece.tokens)
+    asked = any(_parameter_tokens(p.name) & set(piece.tokens) for p in framing.parameters)
+    where = "in the framing" if carried else ("as a parameter" if asked else "nowhere")
+    return Check(
+        f"{piece.label} survives the framing",
+        carried or asked,
+        kind="state",
+        rationale=f"carried {where}",
+    )
+
+
+def _score_framing(
+    framing: SkillFraming | None,
+    expected: Sequence[ParameterFamily],
+    absent: Sequence[ParameterFamily],
+    carried: Sequence[ParameterFamily],
+    instance: Sequence[str],
+) -> list[Check]:
+    """The framing case's graded checks (#1824), read off the draw's own typed result:
+    which pieces of the ask became parameters, which did not, which survived either
+    way, and whether the framing generalizes past the occasion.
+
+    Scoring the returned ``SkillFraming`` rather than a persisted skill is deliberate:
+    the plumbing from a framed parameter to a stored one is pinned deterministically in
+    ``tests/test_skill_extraction.py``, so this case spends its live-model budget on
+    the judgment and nothing else.  The drawn NAME and DESCRIPTION also ride along
+    ADVISORY (``scored=False``) so a reader sees what the draw committed to."""
+    checks = [
+        *_framing_checks(framing, expected, absent),
+        *[_carried_check(framing, piece) for piece in carried],
+        _generic_framing_check(framing, instance),
+    ]
+    if framing is not None:
+        checks.append(Check(f"named it {framing.name!r}", True, kind="state", scored=False))
+        checks.append(
+            Check(f"described it {framing.description!r}", True, kind="state", scored=False)
+        )
+    return checks
+
+
 @pytest.fixture
-def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> LabellerEval:
-    """Drive the run-end PARAMETER LABELLER (#1770) N times, and NOTHING else.
+def framing_eval(make_config: Callable[..., Config], tmp_path, request) -> FramingEval:
+    """Drive the run-end SKILL FRAMER (#1824) N times, and NOTHING else.
 
-    The labeller answers one question — did the USER supply this value, or did the
-    assistant produce it — and this case measures that answer directly: the returned
-    ``SkillLabel``'s per-candidate verdicts.  Its input is a FIXTURE ledger through
-    DETERMINISTIC distillation, so nothing live sits upstream of the draw either.
+    The framer's whole input is what the user asked for, so the case is exactly that:
+    their turns, rendered by ``build_framing_content`` — the shipped function — and the
+    call made by ``MicroContext.frame_skill``.  Nothing about the routine reaches it,
+    which is the design under test: the leaf labeller runs on the calls, this runs on
+    the ask, and neither reads the other's output.
 
-    It used to drive the whole extractor and score the persisted skill.  That was a
-    faithful proxy while the labeller was the only model call in the chain — everything
-    after it is deterministic Python — and #1803 broke the proxy by inserting a SECOND
-    draw, whose constants legitimately remove the very substitutions those checks read.
-    This case is the labeller's, so it scores the labeller: see ``test_skill_shape.py``
-    for the other draw, and the deferred end-to-end case for pipeline assertions.
-
-    The demonstration is a fixture precisely so the case measures the JUDGMENT and
-    never polices what a round chose to write — if a round writes two entries, two
-    entries are the skill (the code owner's ruling on #1770).
+    Synthetic means the ASK is authored, never the prompt (an eval that swaps in an
+    artificial prompt measures nothing about what ships).
     """
 
     async def _run(
         *,
         case_id: str,
-        utterance: str,
-        calls: Sequence[DemoCall],
-        target: str,
-        user_values: Sequence[str],
-        assistant_values: Sequence[str],
-        conversation: Sequence[str] = (),
+        conversation: Sequence[str],
+        expected: Sequence[ParameterFamily] = (),
+        absent: Sequence[ParameterFamily] = (),
+        carried: Sequence[ParameterFamily] = (),
+        instance: Sequence[str] = (),
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -3138,7 +3227,10 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        content, by_value = _labelling_input(calls, target, utterance, conversation)
+        turns: list[tuple[str, str]] = [
+            (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
+        ]
+        content = build_framing_content("", turns)
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()
@@ -3151,17 +3243,17 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                 async with run_penny_with_server(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
-                        label = await asyncio.wait_for(
-                            micro.label_skill(content, run_target=penny.chat_agent.name),
+                        framing = await asyncio.wait_for(
+                            micro.frame_skill(content, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_labelling(label, by_value, user_values, assistant_values)
+                        scored = _score_framing(framing, expected, absent, carried, instance)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
                         _stamp_cause(penny.db, result)
                     except TimeoutError:
-                        result = SampleResult.binary(["no label within timeout"])
+                        result = SampleResult.binary(["no framing draw within timeout"])
                         _stamp_cause(penny.db, result, timed_out=True)
                         results.append(result)
                     _write_classifier_report(
@@ -3169,8 +3261,8 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         case_id,
                         sample_index,
                         result=result,
-                        phrasing=utterance,
-                        agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
+                        phrasing=conversation[-1] if conversation else "",
+                        agent_names=(PennyConstants.SKILL_FRAMING_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())

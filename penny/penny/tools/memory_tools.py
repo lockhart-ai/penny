@@ -535,9 +535,10 @@ def render_skill_prompt(
     applying a routine to a collection is what DECIDES a leaf that named a collection
     and nobody supplied, so the placeholder the stored skill carries there is BOUND to
     the collection's own name — the rendered program never lies about the collection it
-    acts on, on either the one-call create or the adopt path.  A leaf the labeller
-    judged the USER to have chosen carries no mark and stays a parameter ``params``
-    binds, so a routine the user gave two destinations keeps them distinct."""
+    acts on, on either the one-call create or the adopt path.  Since #1824 no draw
+    clears a mark, so a routine the user gave two destinations carries both as declared
+    PARAMETERS while both leaves still land on the target — joining a parameter to a
+    particular leaf is the run-time join, #1824's follow-on."""
     missing = unbound_required_parameters(parameters_from_json(skill.parameters), params)
     if missing:
         return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)

@@ -24,30 +24,31 @@ retired tool produced, now fired by the run finishing instead of a model call.
   tool whitelist).  A leaf whose demonstrated value named one of Penny's own
   COLLECTIONS additionally carries the attachment mark, so the collection the routine
   is attached to can fill it (see ``SkillSubstitution.attachment``).
-* **name + adjudicate** — a GENERIC verb-noun label + a one-line generic description,
-  written by a single-shot naming micro-context (#1665, the SECOND customer of the
-  micro-context machinery) over the distilled routine — so a skill is named by its
-  CONTRACT ("look up a price on a listing page and record it"), not by the instance
-  ("read-the-aurora-deck-2-listing"), and cross-instance ``find`` can match it.  The
-  same draw decides, per CANDIDATE parameter, whether the USER supplied that value
-  (#1770): one they did is a real parameter (semantic name + description); one the
-  assistant derived from a result or invented is a **placeholder** — dropped from the
-  parameter list and rendered as what belongs there, never as the frozen demonstrated
-  value.  On ANY naming failure the fallback is the deterministic slug of the
-  triggering message (URLs removed, ≤6 words) + that message as the description, and
-  every candidate keeps its arg-derived required parameter — extraction NEVER blocks
-  on the rewrite, and a missing verdict never deletes a parameter.
-* **shape** — a SECOND single-shot micro-context (#1803, the FOURTH customer) then
-  decides what the routine IS: its name and which of the kept values it is ABOUT
-  rather than pointed at.  A value the routine is about becomes a CONSTANT — baked
-  into the step, never asked for again — so a skill can no longer name itself for a
-  value and then demand it (`record-product-price` requiring a `what_to_extract` its
-  own name already gave, which stopped the routine firing from the natural second
-  ask).  It is a separate draw because provenance and role are different questions
-  answered from different evidence, and folding them into one collapsed the
-  provenance binary that already worked.  Name and constants come out TOGETHER, which
-  is what makes them unable to contradict.  Its failure costs nothing: every value
-  stays a bindable parameter under the labeller's name.
+* **label the leaves** — every candidate leaf is a PLACEHOLDER, unconditionally, and a
+  single-shot LEAF LABELLER (#1824, the SECOND customer of the micro-context
+  machinery) NAMES each one: a semantic name for the spot plus one line of what belongs
+  there each run.  Its whole input is the routine's calls — the IMPLEMENTATION — and it
+  decides nothing about the skill.  A leaf it never covers keeps its arg-derived name,
+  per leaf, so extraction never blocks on the naming.
+* **frame the skill** — an INDEPENDENT single-shot SKILL FRAMER (#1824, the FOURTH
+  customer) writes the skill's public signature from the user's own messages alone —
+  the INTERFACE: a GENERIC verb-noun name ("look up a price on a listing page and
+  record it", never "read-the-aurora-deck-2-listing", so cross-instance ``find`` can
+  match it), a one-line description, and the parameters someone must supply to set it
+  up on a new occasion.  Name, description and parameters come out of ONE decision,
+  which is what stops a skill from naming itself for something it then asks for.  On
+  ANY failure the fallback is the deterministic slug of the triggering message (URLs
+  removed, ≤6 words) + that message as the description, with no parameters declared.
+
+  Neither draw reads the other's output, and neither sees the other's input: they can
+  run in either order or at once.  That separation is the ticket's whole point — the
+  pipeline it replaces asked ONE draw, per leaf, whether the USER supplied that value,
+  which is an interface question asked of implementation artifacts.  Measured across
+  three independent wordings, that verdict pinned at ~0.7-0.8 and would not move
+  (#1821/#1823): a reworded extract instruction and a storage key slugged out of the
+  user's own URL are both the user's words re-worded by the assistant, and what
+  separates them is whether the THING the value is for was asked for — a question about
+  the round, asked once, not about a string, asked four times.
 * **dedup (REPLACE semantics)** — exact name match → REPLACE; else a same-shape,
   same-meaning skill (the GENERIC ``description_embedding`` converges cross-instance)
   → REPLACE keeping ITS name; otherwise insert.
@@ -64,9 +65,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
 from enum import StrEnum
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 from similarity.embeddings import cosine_similarity
@@ -94,11 +94,10 @@ from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.text_validity import is_blank
 from penny.tools.micro_context import (
+    LeafLabels,
+    LeafPlaceholder,
     MicroContext,
-    ParameterLabel,
-    ParameterVerdict,
-    SkillLabel,
-    SkillShape,
+    SkillFraming,
 )
 
 if TYPE_CHECKING:
@@ -124,18 +123,12 @@ WRITE_SHAPED_TOOLS = frozenset(
 # qualifying CONTENT read: a find + write run is a pure write (the storage atom),
 # not a skill.  The qualifying read must be a content read (browse, log_read,
 # collection_read_latest, read_similar, collection_get, entry reads).
-# Preceding conversation turns fed to the naming step — the user's instigating
+# Preceding conversation turns fed to the FRAMING step — the user's instigating
 # ask ('can you watch …') usually sits a turn or two before the demonstration,
 # and the skill's name/description must carry that INTENT (#1658).
-_NAMING_CONVERSATION_TURNS = 6
+_FRAMING_CONVERSATION_TURNS = 6
 
 ORIENTATION_TOOLS = frozenset({"find", "skill_read", "memory_metadata", "collection_catalog"})
-
-# The resolve-by-meaning verb (and its arg): its ``query`` phrases seed the run-end
-# naming micro-context (#1665's step-1 doctrine sends the GENERIC task phrase to
-# find), a naming signal even though the find call itself is dropped from the recipe.
-_FIND_TOOL = "find"
-_FIND_QUERY_ARG = "query"
 
 _DONE_TOOL = PennyConstants.DONE_TOOL_NAME
 
@@ -184,15 +177,6 @@ SkillExtractionResult = SkillExtracted | NoExtraction
 def _runnable_steps(projection: RunProjection) -> list[RunProjectionStep]:
     """Every non-``done`` step of the run (the demonstration's real tool calls)."""
     return [step for step in projection.steps if step.call.name != _DONE_TOOL]
-
-
-def _leaf_at(arguments: dict, path: list[str | int]):
-    """The argument leaf a substitution's JSON path addresses (the step carries the
-    call's VERBATIM arguments, so the demonstrated value is still in place)."""
-    node = arguments
-    for key in path:
-        node = node[key]
-    return node
 
 
 def _certified_steps(
@@ -303,100 +287,67 @@ class SkillExtractor:
         projection: RunProjection,
         certified: list[RunProjectionStep],
     ) -> SkillDraft:
-        """Distil the certified steps into structured steps + candidate parameters,
-        name the skill GENERICALLY and adjudicate each candidate via a single-shot
-        micro-context (#1665/#1668/#1770 — a verb-noun name + description, then per
-        candidate either a semantic name/description or a placeholder verdict), and
-        bundle it for the store.
+        """Distil the certified steps, then take the two INDEPENDENT run-end draws and
+        bundle the result for the store (#1824).
 
-        On ANY naming failure the fallback is the deterministic slug of the triggering
-        message + that message as the description, and candidates keep their
-        arg-derived names as required parameters — the model writes LABELS and
-        VERDICTS only; steps are untouched otherwise, and extraction never blocks on
-        the rewrite.
+        The two draws answer two questions from two disjoint inputs, and neither reads
+        the other's output — they could run in either order or at once.  The LEAF
+        LABELLER names every placeholder in the routine's calls, from the calls alone
+        (the implementation).  The SKILL FRAMER writes the skill's name, description and
+        parameters, from the user's own messages alone (the interface).
 
-        The SHAPE draw (#1803) then decides what the routine IS — its name and which
-        of the kept values it is ABOUT — and its verdict supersedes the labeller's
-        name, because a name written apart from that decision is what let a skill
-        call itself a price watcher and then ask what to watch.  It runs only when
-        there is something to decide, and its own failure costs nothing: every value
-        stays a bindable parameter under the labeller's name."""
+        Each failure degrades on its own: a failed labelling leaves every placeholder
+        under its arg-derived name, and a failed framing falls back to the deterministic
+        slug of the triggering message with no parameters.  Extraction never blocks on
+        either."""
         steps, parameters = distill_steps(
             self._distill_inputs(projection, certified), self._attachment_names()
         )
-        fallback_name = _slug_name(projection.origin_message)
-        fallback_description = projection.origin_message or f"Skill: {fallback_name}"
-        # ONE bounded read of the recent turns, passed to both draws: they read the
-        # same window, and issuing the identical query twice per extraction only
-        # invites the two draws to disagree about what the user said.
-        conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
-        label = await self._label_skill(steps, parameters, projection, conversation)
-        shape = await self._shape_skill(label, steps, projection.origin_message, conversation)
-        name, description = _naming(label, shape, fallback_name, fallback_description)
-        steps, parameters = _apply_parameter_labels(
-            steps, parameters, label, _constant_keys(label, shape)
-        )
+        conversation = self._db.messages.recent_conversation(_FRAMING_CONVERSATION_TURNS)
+        leaves = await self._label_leaves(steps, parameters)
+        framing = await self._frame_skill(projection.origin_message, conversation)
+        name, description = _naming(framing, projection.origin_message)
         return SkillDraft(
             name=name,
             intent=description,
             description=description,
-            steps=steps,
-            parameters=parameters,
+            steps=_apply_leaf_labels(steps, parameters, leaves),
+            parameters=_declared_parameters(framing),
             source_run_id=run_id,
         )
 
-    async def _label_skill(
-        self,
-        steps: list[SkillStep],
-        parameters: list[SkillParameter],
-        projection: RunProjection,
-        conversation: list[tuple[str, str]],
-    ) -> SkillLabel | None:
-        """One single-shot naming micro-context over the rendered routine
-        (#1665/#1668/#1770).
+    async def _label_leaves(
+        self, steps: list[SkillStep], parameters: list[SkillParameter]
+    ) -> LeafLabels | None:
+        """One single-shot LEAF LABELLING micro-context over the routine's calls (#1824).
 
-        Content = the numbered recipe with parameters as ``{variables}`` + the
-        triggering message + the run's ``find`` query phrases + the CANDIDATE parameter
-        list (each candidate's current arg-derived name, demonstrated value, and the
-        arg site(s) it fills); the micro-context writes a GENERIC name + description
-        AND, per candidate, either a semantic name/description (the user supplied it)
-        or a placeholder description (they did not) — poison-screened + one reroll,
-        its own ledger attribution.  ``None`` on any failure — the caller falls back to
-        the slug + arg-derived names."""
-        content = build_naming_content(
-            steps, parameters, projection.origin_message, conversation, _find_phrases(projection)
+        Content = the numbered recipe + one line per placeholder (its current
+        arg-derived name, the value that sat there in the demonstration, and the arg
+        site(s) it fills) — and NOTHING the user said.  Naming a spot is answered by the
+        calls it sits between; handing this draw the conversation is what made it answer
+        an interface question it has no business being asked.
+
+        ``None`` on any failure — every placeholder then keeps its arg-derived name."""
+        content = build_leaf_labelling_content(steps, parameters)
+        return await self._micro_context.label_leaves(
+            content, [parameter.name for parameter in parameters], run_target=self._agent_name
         )
-        return await self._micro_context.label_skill(content, run_target=self._agent_name)
 
-    async def _shape_skill(
-        self,
-        label: SkillLabel | None,
-        steps: list[SkillStep],
-        origin_message: str,
-        conversation: list[tuple[str, str]],
-    ) -> SkillShape | None:
-        """One single-shot SHAPE micro-context over the routine's kept values (#1803).
+    async def _frame_skill(
+        self, origin_message: str, conversation: list[tuple[str, str]]
+    ) -> SkillFraming | None:
+        """One single-shot SKILL FRAMING micro-context over the user's ask (#1824).
 
-        Content = what the USER asked for (their turns, nothing the assistant said)
-        + the values the labeller kept, each with its semantic name and the value it
-        was demonstrated with — the labeller's per-value DESCRIPTION is deliberately
-        dropped (see :class:`ShapeableValue`).  Deliberately smaller than the labelling
-        content: the question is what the routine is FOR, and the steps, the arg sites,
-        and the assistant's own wording are all evidence about how it was carried out.
+        Content = the user's own turns and nothing else — not the calls, not the values
+        they carried, not the labeller's names.  What a skill IS and what it ASKS FOR
+        are decided by what was asked for; the calls are how that ask was carried out
+        this once, and every measured attempt to read the interface off them hit the
+        same ceiling (#1821/#1823).
 
-        Takes the origin message directly rather than a whole projection — it is all it
-        ever read from one, the same narrowing ``build_naming_content`` got.
-
-        Skipped — ``None``, so nothing changes — when the labelling draw failed
-        outright or kept nothing shapeable, since there is then no closed set of
-        values to decide over."""
-        values = _shapeable_values(label, steps)
-        if label is None or not values:
-            return None
-        content = build_shape_content(values, origin_message, conversation, label.description)
-        return await self._micro_context.shape_skill(
-            content, [value.name for value in values], run_target=self._agent_name
-        )
+        ``None`` on any failure — the caller falls back to the slug of the triggering
+        message with no parameters."""
+        content = build_framing_content(origin_message, conversation)
+        return await self._micro_context.frame_skill(content, run_target=self._agent_name)
 
     def _attachment_names(self) -> frozenset[str]:
         """The names of Penny's own COLLECTIONS — the things a routine can be ATTACHED
@@ -482,203 +433,70 @@ class SkillExtractor:
         return None
 
 
-def build_naming_content(
-    steps: list[SkillStep],
-    parameters: list[SkillParameter],
-    origin_message: str,
-    conversation: list[tuple[str, str]],
-    find_phrases: Sequence[str] = (),
-) -> str:
-    """The naming micro-context's content (#1665/#1668/#1770): the numbered recipe
-    (parameters as ``{variables}``), the message that first demonstrated it, any
-    ``find`` query phrases from the run (the generic task phrases the step-1 doctrine
-    sends to find — a naming signal), and the CANDIDATE parameter list — each
-    candidate's current arg-derived name, demonstrated value, and the arg site(s) it
-    fills — so the model can both relabel each semantically and judge whether the USER
-    supplied its value at all.  They are named *candidates* because the distiller's
-    "everything else is a parameter" is a default the labeller adjudicates.
+def build_leaf_labelling_content(steps: list[SkillStep], parameters: list[SkillParameter]) -> str:
+    """The leaf labeller's content (#1824): the numbered recipe (placeholders as
+    ``{variables}``) and one line per placeholder — its current arg-derived name, the
+    value that sat there in the demonstration, and the arg site(s) it fills.
 
-    PUBLIC because the labelling eval builds it too: that case drives ``label_skill``
-    alone, so it must render the same content production renders and not a copy that
-    can drift.  Takes the origin message and find phrases directly rather than a whole
-    projection — they are all it ever read from one."""
-    # The demonstrating message is a USER turn, and it must be rendered as one.
-    # Presented under its own unattributed heading, the labeller read the
-    # conversation block as the only record of what the user said, did not find
-    # the demonstrated values there, and concluded the assistant had produced
-    # them — correct reasoning over a presentation that hid who was speaking
-    # (#1770; the thinking traces say it in as many words: "the user didn't give
-    # the URL directly").  So it joins the conversation, deduped in case the
-    # recent-turns window already carries it.
-    turns = [*conversation]
-    demonstration = (PennyConstants.MessageDirection.INCOMING, origin_message)
-    if origin_message and demonstration not in turns:
-        turns.append(demonstration)
-    parts = []
-    if turns:
-        rendered = "\n".join(
-            f"{'user' if direction == PennyConstants.MessageDirection.INCOMING else 'penny'}: "
-            f"{content}"
-            for direction, content in turns
-        )
+    NOTHING the user said is rendered here, and that omission is the design.  Naming a
+    spot is answered by the call it sits in and the calls around it; the conversation
+    only ever bore on whether the user SUPPLIED that value, which is an interface
+    question this draw is no longer asked (#1824).  Handing it the ask again would put
+    the same category error back.
+
+    PUBLIC because the leaf-labelling eval builds it too: that case drives
+    ``label_leaves`` alone, so it must render the same content production renders and
+    not a copy that can drift."""
+    parts = [f"Routine steps, in the order they ran:\n{render_skill(steps)}"]
+    placeholder_lines = _placeholder_lines(steps, parameters)
+    if placeholder_lines:
         parts.append(
-            "Conversation that led to the construction of this routine "
-            f"(the LAST user turn is the one that demonstrated it):\n{rendered}"
-        )
-    parts.append(f"Routine steps:\n{render_skill(steps)}")
-    if find_phrases:
-        parts.append("Search phrases used to look for a skill:\n" + "\n".join(find_phrases))
-    param_lines = _parameter_lines(steps, parameters)
-    if param_lines:
-        parts.append(
-            "Candidate parameters (each currently named after the tool arg it fills):\n"
-            + param_lines
+            "Placeholders to name (each currently named after the tool argument it "
+            f"fills):\n{placeholder_lines}"
         )
     return "\n\n".join(parts)
 
 
-class ShapeableValue(NamedTuple):
-    """One value the SHAPE draw decides over (#1803): the labeller's semantic ``name``
-    (the anchor the draw repeats back, and the parameter's eventual binding key), the
-    ``current`` arg-derived key the verdict maps home to, and the ``demonstrated``
-    value — without which "is the routine ABOUT this?" cannot be answered at all.
+def build_framing_content(origin_message: str, conversation: list[tuple[str, str]]) -> str:
+    """The skill framer's content (#1824): what the USER asked for, and nothing else.
 
-    The labeller's one-line description is deliberately NOT carried across.  It is
-    written to answer "what should someone supply here", so it describes every value
-    as a fill-in slot — *"plain-language phrase describing the information to pull"* —
-    and a draw shown that reads it as an argument for PARAMETER, which is what four of
-    five draws did.  Correct reasoning over a description that had already decided the
-    question; the name and the demonstrated value say what the value IS without
-    arguing what role it plays."""
+    Only their turns are rendered — not the calls, not the values those calls carried,
+    not the labeller's names.  What a skill IS and what it ASKS FOR are decided by what
+    was asked for; the calls are how that ask was carried out this once, and every
+    measured attempt to read the interface off them hit the same ceiling
+    (#1821/#1823).  The demonstrating message joins the turns as the last one (deduped,
+    since the recent window may already carry it).
 
-    name: str
-    current: str
-    demonstrated: str
-
-
-def _shapeable_values(label: SkillLabel | None, steps: list[SkillStep]) -> list[ShapeableValue]:
-    """The values the shape draw may decide over (#1803) — the ones the labeller
-    adjudicated as PARAMETER, in step order.
-
-    Three exclusions, each because the value is not the draw's to decide.  A
-    PLACEHOLDER never reached the user, so there is nothing they could have meant it
-    to be about.  A candidate the labeller never covered is already in its
-    per-candidate fallback, and absence stays absence rather than becoming input to a
-    second judgment.  And an ATTACHMENT-MARKED leaf is decided by where the routine is
-    APPLIED (#1783) — baking it would make a rendered program name a collection it was
-    demonstrated on rather than the one it runs against, which is the one thing the
-    retarget seam exists to prevent.  Keyed to the MARK, not to any tool name."""
-    if label is None:
-        return []
-    marked = _attachment_marked(steps)
-    return [
-        ShapeableValue(
-            name=parameter.name,
-            current=current,
-            demonstrated=_parameter_facts(steps, current)[0],
-        )
-        for current, parameter in label.parameters.items()
-        if parameter.verdict == ParameterVerdict.PARAMETER
-        and not is_blank(parameter.name)
-        and current not in marked
-    ]
-
-
-def _attachment_marked(steps: list[SkillStep]) -> frozenset[str]:
-    """The candidate names carrying the attachment mark at any leaf (#1783) — what
-    applying the routine somewhere decides, and so never a constant."""
-    return frozenset(
-        sub.parameter
-        for step in steps
-        for sub in step.substitutions
-        if sub.attachment and sub.parameter is not None
-    )
-
-
-def build_shape_content(
-    values: list[ShapeableValue],
-    origin_message: str,
-    conversation: list[tuple[str, str]],
-    round_summary: str,
-) -> str:
-    """The shape micro-context's content (#1803): what the USER asked for, then the
-    values the routine used.  PUBLIC because the shape eval builds it too — that case
-    hands the draw synthetic values standing in for what the labeller would have
-    emitted, so it must go through THIS function and not a copy that can drift.
-
-    Only the user's turns are rendered.  The question is what the routine is FOR, and
-    the user is the only one who can say — the assistant's replies describe how it was
-    carried out, which is the evidence that led the model to name a routine after
-    whatever it happened to do.  The demonstrating message joins them as the last
-    turn (deduped, since the recent window may already carry it): it is a user turn,
-    and the labelling draw already proved that hiding who was speaking makes the model
-    reason correctly to the wrong answer (#1770).
-
-    Each value renders as its name and the value it was demonstrated with, and nothing
-    else — see :class:`ShapeableValue` for why the labeller's PER-VALUE description is
-    dropped.  The labeller's ROUTINE description is the opposite case and is passed:
-    it is a statement of what the round was FOR ("track a marketplace item's current
-    price…"), which is the very thing this draw has to settle, and it reads the user's
-    words for it rather than describing a slot to fill."""
+    PUBLIC because the framing eval builds it too — same reason as its sibling."""
     incoming = PennyConstants.MessageDirection.INCOMING
     asks = [content for direction, content in conversation if direction == incoming]
     if origin_message and origin_message not in asks:
         asks.append(origin_message)
-    lines = "\n".join(f"- {value.name} = {value.demonstrated!r}" for value in values)
-    parts = [f"What the user asked for:\n{'\n'.join(asks)}"]
-    if round_summary:
-        parts.append(f"What the round did, in one line:\n{round_summary}")
-    parts.append(f"The values the routine used to do it:\n{lines}")
-    return "\n\n".join(parts)
+    return f"What the user asked for:\n{'\n'.join(asks)}"
 
 
-def _naming(
-    label: SkillLabel | None,
-    shape: SkillShape | None,
-    fallback_name: str,
-    fallback_description: str,
-) -> tuple[str, str]:
-    """The routine's name + description, from the FIRST draw that produced one (#1803):
-    the shape draw, then the labeller, then the deterministic slug.
+def _naming(framing: SkillFraming | None, origin_message: str) -> tuple[str, str]:
+    """The skill's name + description: the framer's, else the deterministic fallback —
+    the slug of the triggering message plus that message (#1824).
 
-    The shape draw wins because it wrote the name in the same decision as the
-    constants, so the two cannot disagree — which is the whole defect this closes.
-    Each fallback is a rung down, and naming never blocks extraction."""
-    if shape is not None:
-        return _slug_name(shape.name), shape.description
-    if label is not None:
-        return _slug_name(label.name), label.description
-    return fallback_name, fallback_description
+    The framer owns both because it wrote them in the same decision as the parameters,
+    so a skill cannot name itself for something it then asks for.  A failed draw is one
+    rung down, never a block."""
+    if framing is not None:
+        return _slug_name(framing.name), framing.description
+    fallback_name = _slug_name(origin_message)
+    return fallback_name, origin_message or f"Skill: {fallback_name}"
 
 
-def _constant_keys(label: SkillLabel | None, shape: SkillShape | None) -> frozenset[str]:
-    """The CURRENT (arg-derived) keys of the values the shape draw called CONSTANT
-    (#1803), mapped home through the semantic names the labeller gave them.
-
-    The two draws stay in their own types — the shape draw's answer never becomes a
-    ``ParameterVerdict``, which is the labeller's output and predates this. They meet
-    here, in the extractor that orchestrates both, and nowhere else. An unmatched name
-    simply yields no key: the shape draw membership-validates its own answer, so this
-    is belt and braces rather than a silent drop."""
-    if label is None or shape is None:
-        return frozenset()
-    return frozenset(
-        current
-        for current, parameter in label.parameters.items()
-        if parameter.verdict == ParameterVerdict.PARAMETER and parameter.name in shape.fixed
-    )
-
-
-def _parameter_lines(steps: list[SkillStep], parameters: list[SkillParameter]) -> str:
-    """One line per candidate parameter for the naming content (#1668/#1770): its
-    current name, the value it was demonstrated with, and the tool-arg site(s) it fills
-    — the facts the model needs both to give it a semantic name and description and to
-    judge whether the user supplied that value."""
+def _placeholder_lines(steps: list[SkillStep], parameters: list[SkillParameter]) -> str:
+    """One line per placeholder for the leaf-labelling content (#1824): its current
+    arg-derived name, the value it held in the demonstration, and the tool-arg site(s)
+    it fills — the facts a name for the spot is read off."""
     lines: list[str] = []
     for parameter in parameters:
         value, sites = _parameter_facts(steps, parameter.name)
         site_text = ", ".join(sites) if sites else "(unknown)"
-        lines.append(f"- {parameter.name}: fills {site_text}; demonstrated value: {value!r}")
+        lines.append(f"- {parameter.name}: fills {site_text}; value that first time: {value!r}")
     return "\n".join(lines)
 
 
@@ -737,102 +555,112 @@ _PARAM_WHITESPACE = re.compile(r"\s+")
 _PARAM_NON_IDENTIFIER = re.compile(r"[^a-z0-9_]")
 
 
-def _slug_parameter_name(raw: str) -> str:
-    """Harden a model-written semantic parameter name into an identifier-safe binding
-    key (#1668, load-bearing — the name is the params binding key at instantiation):
-    lowercase, whitespace → underscores, strip anything but ``[a-z0-9_]``, trim stray
-    underscores.  Empty when nothing survives (the caller then keeps the arg-derived
-    name — per-parameter fallback)."""
+def slug_parameter_name(raw: str) -> str:
+    """Harden a model-written semantic name into an identifier-safe binding key (#1668,
+    load-bearing — the name is the params binding key at instantiation): lowercase,
+    whitespace → underscores, strip anything but ``[a-z0-9_]``, trim stray underscores.
+    Empty when nothing survives (the caller then keeps the arg-derived name — per-name
+    fallback).
+
+    PUBLIC because the leaf-labelling eval asserts a drawn name HARDENS to a usable
+    key, and it must assert the shipped rule rather than a copy of it that can drift."""
     lowered = _PARAM_WHITESPACE.sub("_", raw.strip().lower())
     return _PARAM_NON_IDENTIFIER.sub("", lowered).strip("_")
 
 
-def _apply_parameter_labels(
+def _apply_leaf_labels(
     steps: list[SkillStep],
     parameters: list[SkillParameter],
-    label: SkillLabel | None,
-    constant_keys: frozenset[str] = frozenset(),
-) -> tuple[list[SkillStep], list[SkillParameter]]:
-    """Apply each candidate's ROLE (#1668/#1770/#1783/#1803) — the three-way the two
-    draws settled between them.
+    leaves: LeafLabels | None,
+) -> list[SkillStep]:
+    """Turn EVERY candidate leaf into a named PLACEHOLDER (#1824).
 
-    A PARAMETER relabels the candidate with its hardened semantic name + description,
-    maps the rename through every leaf site, and CLEARS any attachment mark there (a
-    value the user chose is theirs to bind, never something the attachment overwrites).
-    A key in ``constant_keys`` — the SHAPE draw's answer, arriving as its own argument
-    rather than as a verdict, since the verdict union is the labeller's — is what the
-    routine is ABOUT, so it stops being a parameter and its leaf sites lose their
-    substitutions entirely — a leaf nothing covers renders verbatim,
-    which is precisely a baked value, so no new render path exists for it. A
-    PLACEHOLDER says the user never supplied that value, so its leaf sites become
-    placeholder substitutions carrying the labeller's description, and any attachment
-    mark stands.
+    There is no role left to decide here.  A leaf is a spot in a tool call, the leaf
+    labeller says what belongs in it, and what the SKILL asks for is the framer's
+    answer to a different question — so this pass only ever carries a name and a
+    description onto the leaves the distiller already found.
 
-    A candidate the label doesn't cover — or whose semantic name slugs to empty — keeps
-    its arg-derived required parameter (per-candidate fallback, not all-or-nothing, and
-    absence is never a drop), EXCEPT at an attachment-marked leaf: nobody can bind what
-    the attachment decides, so an unadjudicated marked leaf falls back to a placeholder
-    carrying the fixed ``WRITE_TARGET_DESCRIPTION`` (#1777's string, kept as exactly
-    that fallback).  A name collision gets a numeric suffix, since the name is the
-    binding key.  ``label is None`` (the whole draw failed) runs the same pass with no
-    verdicts, so the marked-leaf fallback still applies."""
-    verdicts = label.parameters if label is not None else {}
-    adjudicated = frozenset(verdicts)
-    attachment_filled = _attachment_filled(steps, adjudicated)
-    rename: dict[str, str] = {}
-    placeholders: dict[str, str] = {}
-    constants: set[str] = set()
-    used: set[str] = set()
-    named: list[SkillParameter] = []
-    for parameter in parameters:
-        param_label = verdicts.get(parameter.name)
-        if parameter.name in attachment_filled:
-            continue  # every site is the attachment's to fill — not a parameter at all
-        if param_label is not None and param_label.verdict == ParameterVerdict.PLACEHOLDER:
-            placeholders[parameter.name] = param_label.description
-            continue
-        if parameter.name in constant_keys:
-            constants.add(parameter.name)
-            continue
-        named.append(_relabelled(parameter, param_label, rename, used))
-    rewritten = [
-        _rewrite_step_leaves(step, rename, placeholders, frozenset(constants), adjudicated)
-        for step in steps
-    ]
-    return rewritten, named
+    Three fallbacks, each per leaf rather than all-or-nothing: a leaf the draw never
+    covered takes its arg-derived name as its description, so the recipe still renders
+    a legible ``{extract}`` instead of an empty slot; a leaf whose drawn name slugs to
+    nothing keeps the arg-derived one; and an uncovered ATTACHMENT-MARKED leaf takes
+    the fixed ``WRITE_TARGET_DESCRIPTION`` (#1777's string, kept as exactly that
+    fallback) because what fills it is decided by where the routine is applied.  Marks
+    and step-result bindings are untouched: both are structural facts about the calls,
+    and no draw has a say in either."""
+    drawn = _drawn_labels(leaves, parameters)
+    return [_placeholder_step(step, drawn) for step in steps]
 
 
-def _attachment_filled(steps: list[SkillStep], adjudicated: frozenset[str]) -> frozenset[str]:
-    """The candidates the ATTACHMENT fills outright (#1783) — every one of whose leaf
-    sites is marked and none of which the labeller adjudicated.  They are dropped
-    before naming rather than after: a declared parameter nobody's call reads would be
-    a required input instantiation refuses to proceed without and nothing consumes, and
-    reserving its name would push a real parameter onto a numeric suffix for nothing."""
-    sites: dict[str, list[bool]] = {}
-    for step in steps:
-        for sub in step.substitutions:
-            if sub.kind == SkillSubKind.HOLE and sub.parameter:
-                sites.setdefault(sub.parameter, []).append(sub.attachment)
-    return frozenset(
-        name for name, marks in sites.items() if all(marks) and name not in adjudicated
+def _drawn_labels(
+    leaves: LeafLabels | None, parameters: list[SkillParameter]
+) -> dict[str, LeafPlaceholder]:
+    """The WELL-FORMED label per candidate leaf, keyed by its arg-derived name — the
+    ones the draw actually covered, so a leaf's absence from this map is exactly "no
+    label came back for it" and the fallbacks read off one fact."""
+    labels = leaves.placeholders if leaves is not None else {}
+    offered = {parameter.name for parameter in parameters}
+    return {
+        current: label
+        for current, label in labels.items()
+        if current in offered and not is_blank(label.description)
+    }
+
+
+def _placeholder_step(step: SkillStep, drawn: dict[str, LeafPlaceholder]) -> SkillStep:
+    """A copy of ``step`` with every ``HOLE`` substitution rewritten as a named
+    PLACEHOLDER; bindings and every other substitution pass through untouched."""
+    return step.model_copy(
+        update={"substitutions": [_placeholder_leaf(sub, drawn) for sub in step.substitutions]}
     )
 
 
-def _relabelled(
-    parameter: SkillParameter,
-    param_label: ParameterLabel | None,
-    rename: dict[str, str],
-    used: set[str],
-) -> SkillParameter:
-    """One real parameter under its semantic label (#1668): the hardened name (falling
-    back to the arg-derived one when the label is absent or slugs to empty), made
-    unique, recorded in ``rename`` for the leaf sites, plus the one-line description."""
-    candidate = _slug_parameter_name(param_label.name) if param_label is not None else ""
-    final = _unique_name(candidate or parameter.name, used)
-    used.add(final)
-    rename[parameter.name] = final
-    description = param_label.description if param_label and param_label.description else None
-    return parameter.model_copy(update={"name": final, "description": description})
+def _placeholder_leaf(
+    sub: SkillSubstitution, drawn: dict[str, LeafPlaceholder]
+) -> SkillSubstitution:
+    """One substitution as a named placeholder — or unchanged, when it is not a
+    candidate leaf (a step-result binding stays deterministic work).
+
+    An unlabelled leaf falls back to its arg-derived name, which renders exactly as the
+    recipe rendered before any draw; an unlabelled ATTACHMENT-MARKED one falls back to
+    the fixed write-target wording instead, since what fills it is decided by where the
+    routine is applied.  The mark rides along either way, for the render seam."""
+    if sub.kind != SkillSubKind.HOLE or sub.parameter is None:
+        return sub
+    label = drawn.get(sub.parameter)
+    fallback = WRITE_TARGET_DESCRIPTION if sub.attachment else sub.parameter
+    return sub.model_copy(
+        update={
+            "kind": SkillSubKind.PLACEHOLDER,
+            "parameter": None,
+            "name": (slug_parameter_name(label.name) or sub.parameter) if label else sub.parameter,
+            "description": label.description if label else fallback,
+        }
+    )
+
+
+def _declared_parameters(framing: SkillFraming | None) -> list[SkillParameter]:
+    """The skill's declared parameters — the FRAMER's answer, hardened (#1824).
+
+    Every name is slugged into an identifier (it is the binding key at instantiation,
+    ``params={name: value}``) and made unique; one that slugs to nothing is dropped,
+    since a parameter nobody can name is not bindable.  A failed framing declares none:
+    the skill still renders and still reads, it just asks for nothing until it is
+    re-taught."""
+    if framing is None:
+        return []
+    used: set[str] = set()
+    parameters: list[SkillParameter] = []
+    for drawn in framing.parameters:
+        slug = slug_parameter_name(drawn.name)
+        if not slug:
+            continue
+        name = _unique_name(slug, used)
+        used.add(name)
+        parameters.append(
+            SkillParameter(name=name, required=True, description=drawn.description or None)
+        )
+    return parameters
 
 
 def _unique_name(candidate: str, used: set[str]) -> str:
@@ -844,85 +672,6 @@ def _unique_name(candidate: str, used: set[str]) -> str:
     while f"{candidate}_{suffix}" in used:
         suffix += 1
     return f"{candidate}_{suffix}"
-
-
-def _rewrite_step_leaves(
-    step: SkillStep,
-    rename: dict[str, str],
-    placeholders: dict[str, str],
-    constants: frozenset[str],
-    adjudicated: frozenset[str],
-) -> SkillStep:
-    """A copy of ``step`` with every ``HOLE`` substitution resolved against the
-    verdicts (#1668/#1770/#1783/#1803): a real parameter's ``parameter`` field is
-    remapped through ``rename`` (so every leaf site follows it to the semantic name and
-    the render substitutes by that name); a candidate called a PLACEHOLDER becomes a
-    ``PLACEHOLDER`` substitution carrying its description, so the render shows what
-    belongs there instead of freezing the demonstrated value; and a CONSTANT loses its
-    substitution entirely — a leaf no substitution covers renders verbatim, which is
-    exactly what a value the routine is ABOUT should do."""
-    subs = [
-        rewritten
-        for sub in step.substitutions
-        if (rewritten := _rewrite_substitution(sub, rename, placeholders, constants, adjudicated))
-        is not None
-    ]
-    return step.model_copy(update={"substitutions": subs})
-
-
-def _rewrite_substitution(
-    sub: SkillSubstitution,
-    rename: dict[str, str],
-    placeholders: dict[str, str],
-    constants: frozenset[str],
-    adjudicated: frozenset[str],
-) -> SkillSubstitution | None:
-    """One substitution under the verdicts — renamed, converted to a placeholder,
-    DROPPED (a constant: the leaf keeps its demonstrated value, which is what makes
-    this routine this routine, #1803), or left exactly as it was (a binding, or a
-    parameter with no verdict)."""
-    if sub.kind != SkillSubKind.HOLE or sub.parameter is None:
-        return sub
-    if sub.parameter in constants:
-        return None
-    if sub.parameter in placeholders:
-        return _as_placeholder(sub, placeholders[sub.parameter])
-    if sub.attachment and sub.parameter not in adjudicated:
-        # Nobody can bind what the attachment decides, and no draw described it — so the
-        # fixed fallback string stands in, and the mark survives for the render seam.
-        return _as_placeholder(sub, WRITE_TARGET_DESCRIPTION)
-    if sub.parameter in rename:
-        # A verdict said the USER supplied this, so it is a parameter they bind — the
-        # attachment must not overwrite it, and the mark is cleared.
-        return sub.model_copy(update={"parameter": rename[sub.parameter], "attachment": False})
-    return sub
-
-
-def _as_placeholder(sub: SkillSubstitution, description: str) -> SkillSubstitution:
-    """``sub`` as a PLACEHOLDER carrying ``description`` — the leaf renders as what
-    belongs there, never the demonstrated value.  Any attachment mark rides along: an
-    internally-chosen leaf that named a collection is still the attachment's to fill."""
-    return sub.model_copy(
-        update={
-            "kind": SkillSubKind.PLACEHOLDER,
-            "parameter": None,
-            "description": description,
-        }
-    )
-
-
-def _find_phrases(projection: RunProjection) -> list[str]:
-    """The non-blank ``find(query=…)`` phrases across the run's steps — the generic
-    task phrases (#1665's step-1 doctrine sends the GENERIC task to find), a naming
-    signal even though the find call itself is dropped from the recipe."""
-    phrases: list[str] = []
-    for step in projection.steps:
-        if step.call.name != _FIND_TOOL:
-            continue
-        query = step.call.arguments.get(_FIND_QUERY_ARG)
-        if isinstance(query, str) and query.strip():
-            phrases.append(query.strip())
-    return phrases
 
 
 def _tool_sequence(steps: list[SkillStep]) -> list[str]:

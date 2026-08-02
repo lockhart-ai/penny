@@ -1,29 +1,29 @@
-"""Live-model contract for the run-end skill LABELLER (#1770).
+"""Live-model contract for the run-end LEAF LABELLER (#1824), in isolation.
 
-The distiller classifies every unexplained string leaf of a demonstrated round as a
-required parameter.  That is a *default*, not a determination: it holds only when the
-user supplied the value, and it is wrong for a value the assistant derived from a tool
-result or invented outright — producing a skill with a required parameter no user could
-ever supply.  Neither of those origins shares a literal span with what produced it, so
-no string test can reach them (and #1659 already ruled prose matching out) — the
-question "did the USER provide this?" is a judgment, which is what these cases measure.
+Every leaf of a demonstrated round is a placeholder, unconditionally, and this draw's
+entire job is to NAME each one: a short semantic name for the spot plus one line of
+what belongs there each time the routine runs.  Its whole input is the routine's tool
+calls — the implementation — so these cases hand it a FIXTURE ledger and nothing else:
+no conversation exists in its content to leak an interface question into it.
 
-Each case hands the labeller a FIXTURE demonstration (a ledger, not a driven round) and
-scores two things off persisted state: the values the user really did supply stayed
-bindable parameters, and the ones the assistant produced became placeholders whose
-demonstrated phrase is NOT frozen into the ``extraction_prompt`` a collector would run.
-Freezing is the specific harm — a collector re-running the skill would write that stale
-phrase into the collection on every cycle, forever.
+**What is no longer measured, and why.**  Until #1824 this same draw also ruled, per
+candidate, whether the USER supplied that value — and the case that motivated the
+suite scored an assistant-composed entry NOT becoming a required parameter.  That
+invariant is now true BY CONSTRUCTION: a leaf cannot become a parameter at all, since
+what a skill asks for is decided once, at the interface, from the user's own ask
+(``test_skill_framing.py``).  So the old guard case is retired into what is left worth
+measuring on this draw — naming QUALITY and COVERAGE — and the assembled-key shape it
+used to catch becomes an ordinary naming case: the storage key simply gets a sensible
+descriptive name, with no wrong-verdict failure mode left behind it.
 
-Deliberately NOT scored: what a demonstrated round chooses to write.  If a round writes
-two entries, two entries are the skill — that is the model's latitude, adjustable later
-by the user and Penny discussing it (the code owner's ruling on #1770).  These cases fix
-the round and vary only the judgment.
+Scoring stays deliberately broad: a spot's label is checked for being WELL-FORMED (a
+name that hardens to a usable binding key, a non-blank description) and ON TOPIC (any
+of several plausible wordings), never against an expected string — the name is the
+model's to choose.
 
-The SHAPE draw that decides the routine's name and which values are constant
-(#1803) is a different micro-context answering a different question, and it has
-its own contract in ``test_skill_shape.py`` — these two cases are the labeller's,
-and they run when the LABELLER changes.
+Deliberately NOT scored: what a demonstrated round chooses to write.  If a round
+writes two entries, two entries are the skill — the code owner's ruling on #1770,
+unchanged.  These cases fix the round and vary only the judgment.
 
 All content is synthetic (aurora / faux-market).
 """
@@ -32,102 +32,102 @@ from __future__ import annotations
 
 import pytest
 
-from penny.tests.eval.conftest import LabellerEval
+from penny.tests.eval.conftest import LeafEval, LeafSlot
 
 pytestmark = pytest.mark.eval
 
-_FAMILY = "skill-labelling"
+_FAMILY = "leaf-labelling"
 
-_TARGET = "aurora-prices"
+_TARGET = "prices"
 _PRICE = "$499"
 _LISTING = "https://faux-market.example/aurora-deck-2"
+_EXTRACT = "the price shown on the product page"
 
-# What the user said, one turn before the demonstration and in the demonstrating
-# message itself — the only place a real parameter can come from.
-_ASK = "can you keep an eye on the aurora deck 2 price for me?"
-_UTTERANCE = f"read {_LISTING}, find the current price, and remember it"
-
-# The values the USER supplied: the page they named and the thing they asked to be
-# found (reworded by the assistant into browse's extract instruction — a paraphrase is
-# still the user's, which is the boundary case the prompt names explicitly).
-_USER_VALUES = [_LISTING, "the current price"]
-
+# The floor-case round: read a page for one fact, then write that fact down.  The
+# price BINDS to step 1 (structural dataflow), so it is not offered — bindings survive
+# as deterministic work and this draw never sees them.
 _BROWSE = (
     "browse",
-    {"queries": [_LISTING], "extract": "the current price"},
+    {"queries": [_LISTING], "extract": _EXTRACT},
     f"You opened the Aurora Deck 2 listing (browse result)\n{_PRICE}",
     True,
 )
-_WRITE_OK = "You saved entries to aurora-prices: (collection_write result)\nWrote 2 entries."
 
 
-# ── Case 1: the motivating shape — a second entry the assistant composed itself ─
+def _write(key: str) -> tuple[str, dict, str, bool]:
+    """The round's write, under whichever key the case varies."""
+    return (
+        "collection_write",
+        {"memory": _TARGET, "entries": [{"key": key, "content": _PRICE}]},
+        f"You saved an entry to {_TARGET}: (collection_write result)\nWrote 1 entry.",
+        True,
+    )
 
-# The round recorded the price AND a note it wrote ABOUT the page it had just read.
-# Neither leaf of that second entry came from the user: the key is a label the
-# assistant chose, the content a sentence it composed.
-_INVENTED_KEY = "aurora deck 2 page source"
-_INVENTED_CONTENT = "Page source for the Aurora Deck 2 listing"
-_WRITE_WITH_NOTE = (
-    "collection_write",
-    {
-        "memory": _TARGET,
-        "entries": [
-            {"key": "aurora deck 2 price", "content": _PRICE},
-            {"key": _INVENTED_KEY, "content": _INVENTED_CONTENT},
-        ],
-    },
-    _WRITE_OK,
-    True,
+
+# What each spot in that round holds, and the words a label for it could plausibly
+# use.  Alternatives, matched broadly — several wordings describe the same spot, and
+# the contract is that the draw described THAT spot rather than a neighbouring one.
+_PAGE_SLOT = LeafSlot(_LISTING, ("url", "page", "address", "link", "site", "listing"))
+_WHAT_TO_PULL_SLOT = LeafSlot(
+    _EXTRACT, ("extract", "pull", "find", "information", "detail", "value", "look for", "data")
+)
+_DESTINATION_SLOT = LeafSlot(
+    _TARGET, ("collection", "memory", "store", "storage", "destination", "where", "save", "write")
 )
 
 
+# ── Case 1: the floor case — every spot in a two-call routine gets a usable name ─
+
+
 @pytest.mark.asyncio
-async def test_assistant_composed_entry_becomes_a_placeholder(labeller_eval: LabellerEval):
-    """The motivating case: a round that also wrote a note it composed itself must not
-    turn that note into a required parameter.  The user's page and what-to-find stay
-    parameters; the assistant's label and note become placeholders, and neither phrase
-    is frozen into the collector's prompt."""
-    await labeller_eval(
-        case_id="labelling-assistant-composed-entry",
-        utterance=_UTTERANCE,
-        conversation=[_ASK],
-        calls=[_BROWSE, _WRITE_WITH_NOTE],
+async def test_every_placeholder_in_the_floor_case_is_named(leaf_eval: LeafEval):
+    """The floor case: a browse + write routine whose every offered spot must come back
+    with a well-formed, on-topic label.
+
+    This is the coverage direction — a spot with no line keeps its arg-derived name,
+    which is legible but says nothing about what belongs there, and a routine full of
+    those is a program nobody can fill in.  Four spots, four names, each hardening to a
+    usable binding key."""
+    await leaf_eval(
+        case_id="leaf-floor-case-every-placeholder-named",
+        calls=[_BROWSE, _write("Aurora Deck 2 price")],
         target=_TARGET,
-        user_values=_USER_VALUES,
-        assistant_values=[_INVENTED_KEY, _INVENTED_CONTENT],
+        slots=[
+            _PAGE_SLOT,
+            _WHAT_TO_PULL_SLOT,
+            _DESTINATION_SLOT,
+            LeafSlot(
+                "Aurora Deck 2 price", ("key", "label", "name", "entry", "identifier", "title")
+            ),
+        ],
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )
 
 
-# ── Case 2: the over-correction guard — a plain round has no placeholders ──────
-
-_PLAIN_WRITE = (
-    "collection_write",
-    {
-        "memory": _TARGET,
-        "entries": [{"key": "aurora deck 2 price", "content": _PRICE}],
-    },
-    "You saved an entry to aurora-prices: (collection_write result)\nWrote 1 entry.",
-    True,
-)
+# ── Case 2: the assembled key — a spot whose value the round built for itself ───
 
 
 @pytest.mark.asyncio
-async def test_user_supplied_values_stay_parameters(labeller_eval: LabellerEval):
-    """The other direction, and the one that matters most: a clean round whose every
-    unexplained leaf really did come from the user must keep ALL of them as bindable
-    parameters.  A labeller that hedged toward 'placeholder' would leave a skill nobody
-    can instantiate — the same defect from the opposite side."""
-    await labeller_eval(
-        case_id="labelling-user-values-stay-parameters",
-        utterance=_UTTERANCE,
-        conversation=[_ASK],
-        calls=[_BROWSE, _PLAIN_WRITE],
+async def test_an_assembled_storage_key_gets_a_descriptive_name(leaf_eval: LeafEval):
+    """The shape that used to be the hard case: a write key the round assembled out of
+    the page's own slug (``'Aurora Deck 2'``), which reads as the user's words for a
+    filing decision they never made.
+
+    Under the per-leaf verdict pipeline that ambiguity was the whole difficulty — call
+    it theirs and the skill demands a label nobody supplied.  There is no verdict left
+    to get wrong, so what remains is whether the draw describes the SPOT (what the entry
+    gets filed under each run) rather than the value it held once."""
+    await leaf_eval(
+        case_id="leaf-assembled-key-gets-a-descriptive-name",
+        calls=[_BROWSE, _write("Aurora Deck 2")],
         target=_TARGET,
-        user_values=_USER_VALUES,
-        assistant_values=[],
+        slots=[
+            _PAGE_SLOT,
+            _WHAT_TO_PULL_SLOT,
+            _DESTINATION_SLOT,
+            LeafSlot("Aurora Deck 2", ("key", "label", "name", "entry", "identifier", "title")),
+        ],
         min_pass_rate=None,  # report-only until sample-verified with the code owner
         family=_FAMILY,
     )

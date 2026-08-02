@@ -27,7 +27,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
-from penny.skill_extraction import ShapeableValue, build_shape_content
+from penny.skill_extraction import build_framing_content
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -39,14 +39,17 @@ from penny.tests.eval.artifacts import (
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     Check,
+    LeafSlot,
+    ParameterFamily,
     SampleResult,
     _assert_threshold,
     _bail_fired_check,
     _cycle_recovered_check,
     _frame_attributes_to,
     _guarded_graded,
-    _labelling_input,
-    _score_labelling,
+    _leaf_labelling_input,
+    _score_framing,
+    _score_leaf_labelling,
     _scorer_is_graded,
     _stamp_cause,
     _write_sample_report,
@@ -59,9 +62,10 @@ from penny.tests.eval.conftest import (
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.micro_context import (
-    ParameterLabel,
-    ParameterVerdict,
-    SkillLabel,
+    FramedParameter,
+    LeafLabels,
+    LeafPlaceholder,
+    SkillFraming,
 )
 from penny.tools.models import ToolResult
 
@@ -935,7 +939,7 @@ def _three_micro_context_ledger(db: Database) -> None:
     )
     _log_prompt(
         db,
-        agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
+        agent_name=PennyConstants.LEAF_LABELLING_AGENT_NAME,
         messages=[
             {"role": "system", "content": "Name the routine."},
             {"role": "user", "content": "steps: browse"},
@@ -979,7 +983,7 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "\n"
         "</details>\n"
         "\n"
-        "<details><summary>system prompt — skill-namer (17 chars)</summary>\n"
+        "<details><summary>system prompt — leaf-labeller (17 chars)</summary>\n"
         "\n"
         "Name the routine.\n"
         "\n"
@@ -1002,16 +1006,16 @@ def test_every_micro_context_renders_as_an_actor_in_ledger_order(tmp_path, monke
         "| actual | 📥 You opened the page (browse result) · 1642 |  |\n"
         "| 💭 | <details><summary>thinking</summary>the source says 1,642 m</details> |  |\n"
         '| actual | 🤖 "Lake Baikal — 1,642 m." |  |\n'
-        "| actual | 🧩 skill-namer ← user turn: steps: browse |  |\n"
-        "| 💭 | <details><summary>thinking (skill-namer)</summary>a generic name</details> |  |\n"
-        "| actual | 🧩 skill-namer → NAME: look-up-lake-depth |  |\n"
+        "| actual | 🧩 leaf-labeller ← user turn: steps: browse |  |\n"
+        "| 💭 | <details><summary>thinking (leaf-labeller)</summary>a generic name</details> |  |\n"
+        "| actual | 🧩 leaf-labeller → NAME: look-up-lake-depth |  |\n"
         "\n"
         "</details>\n"
         "\n"
     )
 
 
-# ── The labeller runner's learn → render step (#1770 / #1782) ─────────────────
+# ── The two run-end runners' input + scoring (#1824) ──────────────────────────
 
 # The eval case's fixture demonstration, in miniature: the round recorded the price
 # AND a second entry it composed itself about the page it had just read.  Synthetic
@@ -1038,155 +1042,181 @@ _LABELLER_WRITE = (
     "You saved entries to aurora-prices: (collection_write result)\nWrote 2 entries.",
     True,
 )
-_LABELLER_VERDICTS = (
-    "NAME: Watch a listing price\n"
-    "DESCRIPTION: Look up a price on a listing page and record it.\n"
-    "PARAM queries: url — the listing page to read\n"
-    "PARAM extract: what_to_find — what to pull from the page\n"
-    "PLACEHOLDER key: a short label for the second entry\n"
-    "PLACEHOLDER content: a note about the page you just read"
-)
 
 
-def test_labelling_input_renders_the_routine_and_maps_verdicts_home() -> None:
-    """The labelling runner's input, WHOLE, plus the value→candidate map its scoring
-    keys on (#1770/#1803).
+def test_leaf_labelling_input_renders_the_routine_and_maps_labels_home() -> None:
+    """The leaf-labelling runner's input, WHOLE, plus the value→placeholder map its
+    scoring keys on (#1824).
 
-    The case drives ``label_skill`` alone, so its input has to be built from the
+    The case drives ``label_leaves`` alone, so its input has to be built from the
     fixture ledger by the SHIPPED renderer — this pins that it is, and that a helper
-    calling machinery a later change removed fails HERE, inside ``make check``,
-    instead of only on the deselected GPU run."""
-    content, by_value = _labelling_input(
-        [_LABELLER_BROWSE, _LABELLER_WRITE],
-        _LABELLER_TARGET,
-        _LABELLER_UTTERANCE,
-        ["can you keep an eye on the aurora deck 2 price for me?"],
+    calling machinery a later change removed fails HERE, inside ``make check``, instead
+    of only on the deselected GPU run.  It also pins the omission that IS the design:
+    no conversation appears anywhere in this content."""
+    content, by_value, offered = _leaf_labelling_input(
+        [_LABELLER_BROWSE, _LABELLER_WRITE], _LABELLER_TARGET
     )
 
     assert content == (
-        "Conversation that led to the construction of this routine "
-        "(the LAST user turn is the one that demonstrated it):\n"
-        "user: can you keep an eye on the aurora deck 2 price for me?\n"
-        "user: read the aurora deck 2 listing, find the current price, and remember it\n"
-        "\n"
-        "Routine steps:\n"
+        "Routine steps, in the order they ran:\n"
         "1. browse(queries=[{queries}], extract={extract})\n"
         "2. collection_write(memory={memory}, entries=["
         "{'key': {queries}, 'content': the value from step 1}, "
         "{'key': {key}, 'content': {content}}])\n"
         "\n"
-        "Candidate parameters (each currently named after the tool arg it fills):\n"
+        "Placeholders to name (each currently named after the tool argument it fills):\n"
         # queries[0] and entries[0].key hold the SAME demonstrated value, so the
-        # distiller collapses them into one candidate filling both sites.
+        # distiller collapses them into one placeholder filling both sites.
         "- queries: fills browse.queries[0], collection_write.entries[0].key; "
-        "demonstrated value: 'aurora deck 2 price'\n"
-        "- extract: fills browse.extract; demonstrated value: 'the current price'\n"
-        "- memory: fills collection_write.memory; demonstrated value: 'aurora-prices'\n"
+        "value that first time: 'aurora deck 2 price'\n"
+        "- extract: fills browse.extract; value that first time: 'the current price'\n"
+        "- memory: fills collection_write.memory; value that first time: 'aurora-prices'\n"
         "- key: fills collection_write.entries[1].key; "
-        "demonstrated value: 'aurora deck 2 page source'\n"
+        "value that first time: 'aurora deck 2 page source'\n"
         "- content: fills collection_write.entries[1].content; "
-        "demonstrated value: 'Page source for the Aurora Deck 2 listing'"
+        "value that first time: 'Page source for the Aurora Deck 2 listing'"
     )
+    assert _LABELLER_UTTERANCE not in content, "the labeller is never shown the ask"
     # Keyed by VALUE, because the case's expectations are stated in values.
     assert by_value[_LABELLER_INVENTED_KEY] == "key"
     assert by_value[_LABELLER_INVENTED_CONTENT] == "content"
     assert by_value["the current price"] == "extract"
+    assert offered == ["queries", "extract", "memory", "key", "content"]
 
 
-_SHAPE_LISTING = "https://faux-market.example/aurora-deck-2"
-_SHAPE_ASK = "can you keep an eye on the aurora deck 2 price for me?"
-_SHAPE_VALUES = [
-    ShapeableValue(name="url", current="queries", demonstrated=_SHAPE_LISTING),
-    ShapeableValue(name="what_to_find", current="extract", demonstrated="the current price"),
-]
+_FRAMING_ASK = "can you keep an eye on the aurora deck 2 price for me?"
 
 
-def test_shape_input_renders_the_ask_the_round_and_the_values() -> None:
-    """The shape micro-context's content, WHOLE (#1803) — the surface the shape draw
+def test_framing_input_renders_the_ask_and_nothing_else() -> None:
+    """The framing micro-context's content, WHOLE (#1824) — the surface the framer
     actually reads, built by the SHIPPED renderer the eval case also calls.
 
-    Everything the render can vary is folded in.  The assistant's turn is dropped (only
-    the user can say what a routine is FOR), the demonstrating message joins the asks
-    as the last user turn, the labeller's ROUTINE summary renders as its own section
-    (its PER-VALUE descriptions never do — see ``ShapeableValue``), and each value is
-    its semantic name beside the value it was demonstrated with."""
-    content = build_shape_content(
-        _SHAPE_VALUES,
+    Everything the render can vary is folded in: the assistant's turn is dropped (only
+    the user can say what a skill is FOR), and the demonstrating message joins the asks
+    as the last user turn — deduped, so a recent window that already carries it renders
+    it once."""
+    content = build_framing_content(
         _LABELLER_UTTERANCE,
         [
-            (PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK),
+            (PennyConstants.MessageDirection.INCOMING, _FRAMING_ASK),
             (PennyConstants.MessageDirection.OUTGOING, "sure — which listing did you mean?"),
         ],
-        "Keep track of an item's current price by fetching its page and storing the value.",
     )
 
     assert content == (
         "What the user asked for:\n"
         "can you keep an eye on the aurora deck 2 price for me?\n"
-        "read the aurora deck 2 listing, find the current price, and remember it\n"
-        "\n"
-        "What the round did, in one line:\n"
-        "Keep track of an item's current price by fetching its page and storing the value.\n"
-        "\n"
-        "The values the routine used to do it:\n"
-        "- url = 'https://faux-market.example/aurora-deck-2'\n"
-        "- what_to_find = 'the current price'"
+        "read the aurora deck 2 listing, find the current price, and remember it"
     )
-
-    # The other two shapes the render has: the demonstrating message already inside the
-    # recent window (rendered ONCE, never doubled), and a labelling draw that produced
-    # no routine summary (the section is absent, not an empty heading).
-    assert build_shape_content(
-        _SHAPE_VALUES[:1], _SHAPE_ASK, [(PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK)], ""
-    ) == (
-        "What the user asked for:\n"
-        "can you keep an eye on the aurora deck 2 price for me?\n"
-        "\n"
-        "The values the routine used to do it:\n"
-        "- url = 'https://faux-market.example/aurora-deck-2'"
-    )
+    assert build_framing_content(
+        _FRAMING_ASK, [(PennyConstants.MessageDirection.INCOMING, _FRAMING_ASK)]
+    ) == ("What the user asked for:\ncan you keep an eye on the aurora deck 2 price for me?")
 
 
-def test_score_labelling_reads_the_verdicts_and_absence_falls_both_ways() -> None:
-    """The labelling case's scoring over a fixture draw (#1770): the user's values
-    stayed bindable parameters, the assistant's became placeholders.
+def test_score_leaf_labelling_reads_names_coverage_and_topic() -> None:
+    """The leaf-labelling case's scoring over a fixture draw (#1824): each spot is
+    checked for a WELL-FORMED label (a name that hardens to a usable binding key plus a
+    non-blank description) and for being ON TOPIC, matched broadly against an
+    alternatives set rather than an expected string.
 
-    And the asymmetry absence has.  A user value with NO verdict keeps its arg-derived
-    required parameter, so it is still bindable and the check holds; an assistant value
-    with no verdict keeps that same required parameter — which nobody could ever
-    supply, the exact harm the verdict exists to prevent — so it does not."""
+    And the two ways a spot can miss: no line came back for it at all, and a value the
+    case asserts that the ledger never distilled — a BROKEN CASE, which fails loudly
+    naming the value, because a drifted fixture scoring green measures nothing."""
     by_value = {"the current price": "extract", _LABELLER_INVENTED_KEY: "key"}
-    label = SkillLabel(
+    labels = LeafLabels(
+        placeholders={
+            "extract": LeafPlaceholder(name="what_to_pull", description="what to read off the page")
+        }
+    )
+    slots = [
+        LeafSlot("the current price", ("pull", "read", "extract")),
+        LeafSlot(_LABELLER_INVENTED_KEY, ("key", "label")),
+    ]
+
+    scored = _score_leaf_labelling(labels, slots, by_value)
+    assert [(check.label, check.ok) for check in scored] == [
+        ("named the spot holding 'the current price'", True),
+        ("described what belongs there for 'the current price'", True),
+        ("named the spot holding 'aurora deck 2 page source'", False),
+        ("described what belongs there for 'aurora deck 2 page source'", False),
+    ]
+
+    off_topic = LeafLabels(
+        placeholders={"extract": LeafPlaceholder(name="thing", description="a value")}
+    )
+    assert [check.ok for check in _score_leaf_labelling(off_topic, slots[:1], by_value)] == [
+        True,
+        False,
+    ]
+
+    drifted = _score_leaf_labelling(labels, [LeafSlot("nothing distilled this", ())], by_value)
+    assert [(check.label, check.ok) for check in drifted] == [
+        ("named the spot holding 'nothing distilled this'", False)
+    ]
+    assert "not among the distilled placeholders" in (drifted[0].rationale or "")
+
+
+def test_score_framing_reads_the_signature_in_both_directions() -> None:
+    """The framing case's scoring over a fixture draw (#1824): an EXPECTED family is
+    carried by at least its count of distinct parameters, an ABSENT one by none, a
+    CARRIED piece survives either in the framing or as a parameter, and the framing
+    names the kind of task rather than the occasion.
+
+    Family order is the disambiguation: a parameter named for the page counts as the
+    page even when its name also mentions what is on that page, which is why the
+    expected families are classified before the absent ones."""
+    page = ParameterFamily("the page", ("url", "page"))
+    what = ParameterFamily("what to look for", ("price", "find"))
+    framing = SkillFraming(
         name="watch a listing price",
-        description="Look up a price on a listing page and record it.",
-        parameters={
-            "extract": ParameterLabel(
-                verdict=ParameterVerdict.PARAMETER, name="what_to_find", description="what to pull"
-            ),
-            "key": ParameterLabel(
-                verdict=ParameterVerdict.PLACEHOLDER, description="a short label"
-            ),
-        },
+        description="Keep an eye on what a listing costs.",
+        parameters=[FramedParameter(name="price_page_url", description="the page")],
     )
 
-    scored = _score_labelling(label, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
-    assert [(check.label, check.ok) for check in scored] == [
-        ("user value stayed a parameter: 'the current price'", True),
-        ("assistant value became a placeholder: 'aurora deck 2 page source'", True),
+    scored = _score_framing(framing, [page], [what], [], ("aurora", "deck"))
+    assert [(check.label, check.ok) for check in scored if check.scored] == [
+        ("the page is a parameter", True),
+        ("what to look for is not a parameter", True),
+        ("framed the KIND of task, not the occasion", True),
     ]
 
-    silent = SkillLabel(name="n", description="d", parameters={})
-    quiet = _score_labelling(silent, by_value, ["the current price"], [_LABELLER_INVENTED_KEY])
-    assert [(check.label, check.ok) for check in quiet] == [
-        ("user value stayed a parameter: 'the current price'", True),
-        ("assistant value became a placeholder: 'aurora deck 2 page source'", False),
+    # Two named destinations are TWO parameters, so a family can require a count.
+    where = ParameterFamily("where to put it", ("collection", "log"), count=2)
+    two = SkillFraming(
+        name="file two readings",
+        description="Record two readings in the places you are given.",
+        parameters=[
+            FramedParameter(name="price_collection", description="one place"),
+            FramedParameter(name="rating_log", description="the other"),
+        ],
+    )
+    assert [check.ok for check in _score_framing(two, [where], [], [], ()) if check.scored] == [
+        True,
+        True,
     ]
 
-    # A value the case asserts but the ledger never distilled is a BROKEN CASE, not a
-    # verdict of any kind: it fails loudly naming the value, because a drifted fixture
-    # scoring green is a case measuring nothing.
-    drifted = _score_labelling(label, by_value, ["a value nothing distilled"], [])
-    assert [(check.label, check.ok) for check in drifted] == [
-        ("user value stayed a parameter: 'a value nothing distilled'", False)
+    # A piece the ask named survives EITHER way — in the framing or as a parameter —
+    # and only vanishing entirely is scored wrong.
+    rating = ParameterFamily("the thing to watch", ("rating",))
+    carried = SkillFraming(
+        name="watch a seller rating",
+        description="Keep an eye on a listing's seller rating.",
+        parameters=[FramedParameter(name="url", description="the page")],
+    )
+    assert [
+        check.ok for check in _score_framing(carried, [], [], [rating], ()) if check.scored
+    ] == [True, True]
+    lost = SkillFraming(
+        name="watch a listing",
+        description="Keep an eye on a listing.",
+        parameters=[FramedParameter(name="url", description="the page")],
+    )
+    assert [check.ok for check in _score_framing(lost, [], [], [rating], ()) if check.scored] == [
+        False,
+        True,
     ]
-    assert "not among the distilled candidates" in (drifted[0].rationale or "")
+
+    # A refused draw fails every check with its reason named, never silently.
+    refused = _score_framing(None, [page], [what], [], ())
+    assert [check.ok for check in refused] == [False, False, False]
+    assert "the draw was refused" in (refused[0].rationale or "")
