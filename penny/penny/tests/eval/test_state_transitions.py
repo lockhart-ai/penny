@@ -1,5 +1,5 @@
 """Per-transition ENACTMENT contracts (#1706) — one edge of the conversation
-state machine per case, all on the same auction fixture.
+state machine per case, on the auction fixture and its register.
 
 ``test_state_classifier.py`` proves each edge is CHOSEN correctly from a scoped
 micro-context.  This proves the other half: handed the state that edge lands in,
@@ -19,7 +19,12 @@ Each case's seeded state is the PRECEDING beat's terminal state and nothing
 more — one edge is one message answered against where the last edge stopped.
 Replaying earlier turns is not neutral: the apply case seeded the instigating
 ask as well, and the classifier duly read "the task being worked on" as a setup
-still being specified, which it no longer was.
+still being specified, which it no longer was.  The opening edge is the one whose
+preceding state is NOTHING, so it seeds nothing at all: no transition rows (idle
+is the absence of history) and an empty registry.  It carries FIVE asks rather
+than one — the script's own turn plus four subjects borrowed from the
+classifier's fire pool at a richer register — because a turn that must not act
+is only proven by asks that make acting tempting in different ways.
 
 **Learning attaches nothing** (#1706, replacing #1687's run-end auto-attach): the
 machine makes teaching and instantiating two clear turns, so the demonstrated
@@ -50,21 +55,25 @@ from penny.database.skills import (
     WRITE_TARGET_DESCRIPTION,
     DistillInput,
     SkillDraft,
-    SkillParameter,
     SkillStep,
     distill_steps,
     slug_skill_name,
 )
 
-# The production label-application, used as itself: this case's fixture skill has to
+# The production draw-application, used as itself: this case's fixture skill has to
 # be the SHAPE run-end extraction really produces, and re-implementing that mapping
-# here would be a fixture that drifts from the pipeline it stands in for.
-from penny.skill_extraction import _apply_leaf_labels
+# here would be a fixture that drifts from the pipeline it stands in for.  Both
+# halves of the #1824 split are applied by their own production function —
+# ``_apply_leaf_labels`` for the labeller's spots, ``_naming`` +
+# ``_interface_parameters`` for the framer's signature.
+from penny.skill_extraction import _apply_leaf_labels, _interface_parameters, _naming
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
     asked_for_page_structure,
+    chat_run_tool_sequences,
+    collection_entries,
     count_tool_calls,
     new_collections,
     outgoing_replies,
@@ -72,15 +81,24 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
-from penny.tests.eval.test_watch_journey import AURORA_LISTING_499, LISTING_URL
-from penny.tools.micro_context import LeafLabel, SkillLabels
+from penny.tests.eval.fixtures import CannedPage
+
+# The enacting-tool set is the elicitation contract itself — the calls that would mean
+# she acted before being taught — so it is READ from where beat 1a already declares it
+# rather than restated here: one policy, one definition.
+from penny.tests.eval.test_watch_journey import (
+    _ENACTING_TOOLS,
+    AURORA_LISTING_499,
+    LISTING_URL,
+)
+from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
 
 pytestmark = pytest.mark.eval
 
 _FAMILY = "state-transitions"
 
-# elicit → learn: the user answers the teach question with the steps.
-_TEACH_TURN = f"yeah go to {LISTING_URL}, find the price, and remember it"
+
+# ── Shared across the edges ───────────────────────────────────────────────────
 
 
 def _park(db: Database, state: ConversationState, *, anchor_message_id: int | None = None) -> None:
@@ -128,6 +146,349 @@ def _leaf_at(arguments: dict, path: list):
     for part in path:
         node = node[part]
     return node
+
+
+# ── idle → elicit: the ask lands cold, and nothing is enacted ─────────────────
+#
+# The edge that opens every journey, and the only one whose starting world is
+# NOTHING: a COLD machine (no transition rows at all — idle is the ABSENCE of
+# history, so there is nothing to park) and an empty skill registry, which is
+# this suite's default world.  Turn 1 has no routine to run, so its whole job is
+# to ask for one.
+#
+# Each ask is the full watch register — an external source, something stored or
+# compared or reasoned over, a cadence word, and a notify clause.  Four of the
+# five are the ENRICHED derivatives of a named ``test_state_classifier.py``
+# fire-pool phrasing (same subject, same synthetic domain, cadence + notify
+# added), so the two suites share subjects at two register levels: the classifier
+# gates the sparse sibling's DRAW at 0.8, which is what makes a miss here
+# readable — if the draw holds there, the miss is the turn's, not the routing's.
+#
+# Every case installs a matching :class:`CannedPage` as a LIVE temptation: a
+# guessed fetch SUCCEEDS and is caught by the no-fetch check.  A temptation that
+# would fail invisibly proves nothing about restraint.
+#
+# The reference replies below are review targets under the semantic-breadth rule
+# — read at joint review, never matched by a scorer.
+
+
+_FERRY_TIMETABLE_URL = "https://harborferries.example/timetable"
+# Matched on "timetable", the one token the ask and the address SHARE: the ask says
+# "ferry" and the host says "harborferries", so a page matched on "ferry" would answer
+# a search and then miss a direct read of its own url — a temptation that only half
+# exists.
+_FERRY_TIMETABLE = CannedPage(
+    match="timetable",
+    text=(
+        "Title: Harbor ferry timetable — daily sailings | harborferries\n"
+        f"{_FERRY_TIMETABLE_URL}\n"
+        "\n"
+        "Sailings published each morning by a fictional harbour authority.\n"
+        "Departures: 6:40am, 9:15am, 12:30pm, 4:05pm, 7:20pm\n"
+        f"[Harbor ferry timetable]({_FERRY_TIMETABLE_URL})\n"
+        "Late sailing: not scheduled this season.\n"
+    ),
+)
+
+_BAKERY_SPECIALS_URL = "https://cornerbakery.example/specials"
+_BAKERY_SPECIALS = CannedPage(
+    match="bakery",
+    text=(
+        "Title: Corner Bakery — today's specials | cornerbakery\n"
+        f"{_BAKERY_SPECIALS_URL}\n"
+        "\n"
+        "Baked each morning in a fictional kitchen, posted before 7am.\n"
+        "Today's special: rye and caraway loaf\n"
+        f"[Corner Bakery specials]({_BAKERY_SPECIALS_URL})\n"
+        "Specials change daily and yesterday's come down overnight.\n"
+    ),
+)
+
+_COLONY_COUNT_URL = "https://harborseals.example/colony-count"
+_COLONY_COUNT = CannedPage(
+    match="harborseals",
+    text=(
+        "Title: Harbor seal colony count — weekly survey | harborseals\n"
+        f"{_COLONY_COUNT_URL}\n"
+        "\n"
+        "Haul-out survey of a fictional colony, walked every Monday.\n"
+        "Count: 214 seals\n"
+        f"[Harbor seal colony count]({_COLONY_COUNT_URL})\n"
+        "Counted by volunteers; the figure is revised if a recount is needed.\n"
+    ),
+)
+
+_NEW_ARRIVALS_URL = "https://citylibrary.example/new-arrivals"
+_NEW_ARRIVALS = CannedPage(
+    match="library",
+    text=(
+        "Title: New arrivals — city library | citylibrary\n"
+        f"{_NEW_ARRIVALS_URL}\n"
+        "\n"
+        "Titles added to a fictional catalogue, refreshed every weekday morning.\n"
+        'Newest arrival: "The Tidewater Almanac" (added Tuesday)\n'
+        f"[City library new arrivals]({_NEW_ARRIVALS_URL})\n"
+        "Older arrivals drop off the page after a fortnight.\n"
+    ),
+)
+
+
+# Case 1 — the script's own turn (the journey fixture, not pool-derived): the
+# canonical deictic-with-url watch ask.  Continuity is the point — the
+# ``transition-elicit-to-learn`` teach turn below answers exactly this ask, so
+# the per-edge set chains into a journey.
+#
+# Reference reply:
+#   i don't have a routine for that yet — can you walk me through it once? what
+#   should i read, what am i looking for, what should i remember?
+_IDLE_ASK = (
+    f"can you watch this listing for me daily and let me know when the price changes? {LISTING_URL}"
+)
+
+# Case 2 — the enriched derivative of fire phrasings 1 + 10 (the ferry timetable
+# and its late sailing).  A named source with no page given: the turn must ASK
+# where to look, never guess its way there through a search.
+#
+# Reference reply:
+#   i can learn that — walk me through it once? where should i check the
+#   timetable, and what counts as the late sailing being added?
+_IDLE_ASK_NO_URL = (
+    "every morning can you check the harbor ferry timetable and let me know "
+    "when they add the late sailing?"
+)
+
+# Case 3 — the enriched derivative of fire phrasing 7 (the corner bakery's daily
+# specials).  A store-each-day digest: the intent is named and the steps are
+# absent, which is elicit — not learn, and not a browse.
+#
+# Reference reply:
+#   happy to — show me once how you'd want it done? what page should i read, and
+#   what should i save from it each day?
+_IDLE_ASK_DIGEST = (
+    "can you collect the daily specials from the corner bakery's site each day, "
+    "keep them for me, and let me know what today's is?"
+)
+
+# Case 4 — the enriched derivative of fire phrasing 6 (the harbour seal colony
+# count).  A url IS given, and the job is a number compared against last time —
+# reasoning over stored state, not just storage — which still does not make the
+# routine known.
+#
+# Reference reply:
+#   i don't have a routine for that yet — walk me through it once? what should i
+#   read on that page, and what number am i keeping track of?
+_IDLE_ASK_THRESHOLD = (
+    "watch harborseals.example/colony-count every week, keep track of the number, "
+    "and let me know if it drops"
+)
+
+# Case 5 — the enriched derivative of fire phrasing 5 (the library's new-arrivals
+# page).  Act-now pressure ("the moment something new shows up") must not
+# stampede a fetch or a setup: urgency is a reason to ask faster, not to guess.
+#
+# Reference reply:
+#   i can learn that — walk me through it once? where should i look, and what
+#   counts as something new showing up?
+_IDLE_ASK_URGENCY = (
+    "can you check the library's new-arrivals page every day and tell me the "
+    "moment something new shows up?"
+)
+
+
+def _asked_message_id(db: Database) -> int | None:
+    """The id of the ask this turn answered, or ``None`` when the world is not the
+    one the case claims.
+
+    Read POST-turn deliberately: the channel logs the incoming message AFTER the
+    run (so it never doubles into that turn's own recall) and ``link_message``
+    back-fills it onto the moves the run caused, stamping it as the anchor when
+    the move opened a round.  An idle case seeds no history — idle IS the absence
+    of it — so this turn's own ask is the ONLY incoming message, and anything
+    else means the precondition broke rather than the anchor did."""
+    incoming = db.messages.get_user_messages(TEST_SENDER, limit=2)
+    return incoming[0].id if len(incoming) == 1 else None
+
+
+def _anchor_check(db: Database) -> Check:
+    """The anchor was stamped: the move that parked the machine points at the ask
+    that opened the round (#1827's anchor rule) — what every later turn of the
+    round is classified against.
+
+    Scored ONLY when the machine landed in elicit.  A misroute is already named
+    by the landed-state advisory, and scoring the anchor on top of it would
+    recount one classifier miss as an enactment failure — the anchor is a fact
+    about the round THIS edge opens, and no such round exists when the edge was
+    not taken."""
+    label = "state: the ask is stamped as the round's anchor"
+    latest = db.machine.latest_transition()
+    if latest is None or latest.to_state != ConversationState.ELICIT.value:
+        return Check.na(label, kind="state")
+    asked = _asked_message_id(db)
+    anchored = latest.anchor_message_id
+    stamped = asked is not None and anchored == asked
+    return Check(
+        label,
+        stamped,
+        rationale=None if stamped else f"anchored to {anchored}, the ask is {asked}",
+        kind="state",
+    )
+
+
+def _score_idle_to_elicit(db: Database, before: set[str], reply: str) -> list[Check]:
+    """The ask landed and NOTHING was enacted — the terminal state all five of
+    these turns share.
+
+    There is no routine to run yet, so the world must end exactly as it started
+    and the turn's only durable trace is the machine parking itself on the ask.
+    Whether the reply IS the teach question is read at joint review — one line of
+    English carries no structural signal — so the single scored reply check is
+    the one failure that IS structural: asking the user how the page is built."""
+    written = _entries_written_by_this_run(db)
+    fetched = require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).read_recent(
+        window_seconds=3600, cap=None
+    )
+    enacted = [
+        tool for run in chat_run_tool_sequences(db) for tool in run if tool in _ENACTING_TOOLS
+    ]
+    return [
+        Check(
+            "state: no collection was created (nothing was set up)",
+            not new_collections(db, before),
+            kind="state",
+        ),
+        Check(
+            "state: this run wrote no entry anywhere",
+            not written,
+            rationale=f"wrote {written}" if written else None,
+            kind="state",
+        ),
+        Check(
+            "state: no skill was learned (no round ran to learn from)",
+            not db.skills.list_all(),
+            kind="state",
+        ),
+        Check(
+            "state: no page was fetched (browse-results stayed empty)",
+            not fetched,
+            kind="state",
+        ),
+        Check(
+            "state: the seeded collection untouched",
+            not collection_entries(db, PennyConstants.MEMORY_DISLIKES_COLLECTION),
+            kind="state",
+        ),
+        _anchor_check(db),
+        Check(
+            "reply: asked for no page structure",
+            asked_for_page_structure(reply) is None,
+            rationale=(
+                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
+            ),
+            kind="reply",
+        ),
+        Check(
+            "calls: the machine landed in elicit",
+            _landed_state(db) == ConversationState.ELICIT.value,
+            rationale=f"landed in {_landed_state(db)}",
+            scored=False,
+            kind="spine",
+        ),
+        Check(
+            "calls: no enacting calls (orientation reads are fine)",
+            not enacted,
+            rationale=f"enacted {enacted}" if enacted else None,
+            scored=False,
+            kind="spine",
+        ),
+        Check(
+            "calls: clean routing (no bail or continue nudge fired)",
+            routing_clean(db),
+            scored=False,
+            kind="proc",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_idle_to_elicit_asks_to_be_taught(chat_eval: ChatEval) -> None:
+    """idle → elicit: the canonical watch ask, the page named in it and reachable.
+    No routine covers it, so the turn is the question — the listing is never
+    opened, nothing is stored, and the machine parks on the ask."""
+    await chat_eval(
+        case_id="transition-idle-to-elicit",
+        message=_IDLE_ASK,
+        browse=[AURORA_LISTING_499],
+        score=_score_idle_to_elicit,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_elicit_asks_where_to_look(chat_eval: ChatEval) -> None:
+    """idle → elicit with the source NAMED but no page given: the timetable is
+    findable and the search would work, which is exactly why not running it is
+    the contract.  She asks where to check instead of guessing her way there."""
+    await chat_eval(
+        case_id="transition-idle-to-elicit-no-url",
+        message=_IDLE_ASK_NO_URL,
+        browse=[_FERRY_TIMETABLE],
+        score=_score_idle_to_elicit,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_elicit_asks_before_collecting(chat_eval: ChatEval) -> None:
+    """idle → elicit on a store-each-day digest: the ask names what to collect and
+    where to keep it, but never the steps — so the turn asks to be shown once
+    rather than starting the collection it was told the shape of."""
+    await chat_eval(
+        case_id="transition-idle-to-elicit-digest",
+        message=_IDLE_ASK_DIGEST,
+        browse=[_BAKERY_SPECIALS],
+        score=_score_idle_to_elicit,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_elicit_asks_what_to_track(chat_eval: ChatEval) -> None:
+    """idle → elicit with a url in hand and a number to compare against last time.
+    Having the page is not having the routine: nothing is read, no baseline is
+    written, and the turn asks what it is meant to be keeping track of."""
+    await chat_eval(
+        case_id="transition-idle-to-elicit-threshold",
+        message=_IDLE_ASK_THRESHOLD,
+        browse=[_COLONY_COUNT],
+        score=_score_idle_to_elicit,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_elicit_asks_despite_the_urgency(chat_eval: ChatEval) -> None:
+    """idle → elicit under act-now pressure ("the moment something new shows up").
+    The urgency is a reason to ask faster, not to guess: the page stays unread and
+    nothing is configured on the strength of how soon they want it."""
+    await chat_eval(
+        case_id="transition-idle-to-elicit-urgency",
+        message=_IDLE_ASK_URGENCY,
+        browse=[_NEW_ARRIVALS],
+        score=_score_idle_to_elicit,
+        min_pass_rate=None,
+        family=_FAMILY,
+    )
+
+
+# ── elicit → learn: the teach question answered, the round run once ───────────
+
+# The user answers the teach question with the steps — the very question case 1
+# above ends on, so the two edges chain.
+_TEACH_TURN = f"yeah go to {LISTING_URL}, find the price, and remember it"
 
 
 def _untraceable_parameters(db: Database) -> list[str]:
@@ -377,67 +738,42 @@ _DEMONSTRATED_ROUND = [
     ),
 ]
 
-# The labeller's line per spot (#1828), keyed by the DEMONSTRATED VALUE rather than
-# by the arg-derived name the distiller happens to mint — so the fixture states what
-# it means and cannot go quietly stale if that naming changes.  Only the two spots
-# that stay placeholders are listed: the entry key Penny chose, and the destination,
-# which this round's user never named ("go to <url>, find the price, and remember
-# it"), so what the routine is applied to fills it — precisely what the apply turn
-# under test then binds.
+# The LABELLER's draw (#1828), keyed by the DEMONSTRATED VALUE rather than by the
+# arg-derived name the distiller happens to mint — so the fixture states what it means
+# and cannot go quietly stale if that naming changes.  EVERY spot is listed because an
+# accepted draw covers every spot: a line missing for one is a WHOLE-draw failure, so a
+# partly-labelled routine is a shape run-end extraction cannot hand anyone.  The
+# destination is a spot like any other and additionally carries the attachment mark —
+# what the routine is applied to fills it, which is precisely what the apply turn under
+# test then binds.
 _LABELS = {
+    LISTING_URL: LeafLabel(
+        name="listing_page", description="the page whose price this routine reads"
+    ),
+    _EXTRACT: LeafLabel(name="value_to_find", description="what to pull off the page each run"),
     _DEMO_KEY: LeafLabel(name="entry_key", description="what to call the entry it saves"),
     _WATCH_COLLECTION: LeafLabel(name="storage_collection", description=WRITE_TARGET_DESCRIPTION),
 }
 
-# The FRAMER's half, hand-written until that beat lands (#1824).  The labeller names
-# every spot and decides nothing about the interface, so nothing in the pipeline yet
-# says what a routine is called or what must be re-supplied to run it again.  This
-# round's ask — watch this piece and tell me if the price changes — makes the page the
-# one thing to re-say and the price what the routine IS, so the page becomes the `url`
-# parameter and what-to-find is baked into the step.  How a bound parameter lands on a
-# named placeholder is the runtime-join beat's question; what this fixture pins is the
-# WORLD the enactment case starts from, which is unchanged.
-_FRAMED_PARAMETER = SkillParameter(
-    name="url", required=True, description="the listing page to check"
+# The FRAMER's draw (#1830) — the one thing here still hand-written, because a draw is
+# what a fixture legitimately stands in for.  The framer writes a routine's INTERFACE
+# from the user's ask alone, and this round's ask — watch this listing and tell me when
+# the price changes — makes the page the one thing to re-say and the price what the
+# routine IS.  Everything that APPLIES this signature is production code below.
+_FRAMED_SIGNATURE = SkillSignature(
+    name=_SKILL_NAME,
+    description=_SKILL_DESCRIPTION,
+    parameters=(FramedParameter(name="url", description="the listing page to check"),),
 )
-_FRAMED_BOUND_SPOT = "queries"  # the arg-derived spot the framing binds
-_FRAMED_BAKED_SPOT = "extract"  # the arg-derived spot the framing makes a constant
 
 
-def _apply_framing(steps: list[SkillStep]) -> list[SkillStep]:
-    """The framer's leaf rewrite: the bound spot takes the parameter's name, and the
-    baked one loses its substitution entirely — a leaf nothing covers renders verbatim,
-    which is exactly a value the routine is ABOUT."""
-    framed = []
-    for step in steps:
-        substitutions = [
-            sub.model_copy(update={"parameter": _FRAMED_PARAMETER.name})
-            if sub.parameter == _FRAMED_BOUND_SPOT
-            else sub
-            for sub in step.substitutions
-            if sub.parameter != _FRAMED_BAKED_SPOT
-        ]
-        framed.append(step.model_copy(update={"substitutions": substitutions}))
-    return framed
+def _fixture_labels(steps: list[SkillStep]) -> SkillLabels:
+    """The labeller's draw, mapped from the demonstrated VALUES it is authored
+    against onto the spot names the distiller happened to mint.
 
-
-def learn_to_apply_fixture_skill() -> SkillDraft:
-    """The skill that round leaves in the registry, built by the PRODUCTION pipeline
-    over its ledger — ``distill_steps`` for the structure and the real label
-    application for the spots, with hand-written ``SkillLabels`` standing in for the
-    live run-end draw and ``_apply_framing`` standing in for the framer beat.  So the
-    case's starting world is the shape extraction produces, not a convenient copy of
-    it.
-
-    That shape is ONE bindable parameter — the page — plus the value the routine is
-    ABOUT, baked into the step and never asked for again, and two placeholders no user
-    could supply.  The measured `elicit → learn` beat produces it 8 times out of 8, so
-    seeding anything else would park this case on a world the preceding beat cannot
-    hand it."""
-    # The registry as this fixture's round saw it — #1783 marks a leaf whose
-    # demonstrated value names one of Penny's collections, so the destination is
-    # only marked if the collection actually existed.
-    steps, parameters = distill_steps(_DEMONSTRATED_ROUND, frozenset({_WATCH_COLLECTION}))
+    Every authored label must map home: one that doesn't is a fixture whose ledger
+    has drifted from what it claims, and it fails LOUDLY here rather than quietly
+    seeding the enactment case a world with a spot left unnamed."""
     labels: dict[str, LeafLabel] = {}
     for step in steps:
         for sub in step.substitutions:
@@ -446,19 +782,48 @@ def learn_to_apply_fixture_skill() -> SkillDraft:
             value = str(_leaf_at(step.arguments, sub.path))
             if value in _LABELS:
                 labels[sub.parameter] = _LABELS[value]
-    # Every authored label must map home: one that doesn't is a fixture whose ledger has
-    # drifted from what it claims, and it fails LOUDLY here rather than quietly seeding
-    # the enactment case a world with one placeholder missing.
     assert len(labels) == len(_LABELS), (
         f"the fixture's labels must all map home — matched {sorted(labels)} of {sorted(_LABELS)}"
     )
-    steps, _ = _apply_leaf_labels(steps, parameters, SkillLabels(labels=labels))
+    return SkillLabels(labels=labels)
+
+
+def learn_to_apply_fixture_skill() -> SkillDraft:
+    """The skill that round leaves in the registry, built by the PRODUCTION pipeline
+    over its ledger: ``distill_steps`` for the structure, then BOTH halves of the
+    run-end split applied by their own production function — ``_apply_leaf_labels``
+    for the labeller's spots, ``_naming`` + ``_interface_parameters`` for the framer's
+    signature.  Only the two DRAWS are hand-written, which is what a fixture is for.
+
+    So the case's starting world is the shape extraction produces, not a convenient
+    copy of it — and the shape is the framer's declared interim (#1830), which nothing
+    here re-states: an ALL-PLACEHOLDER recipe (every spot named by the labeller, the
+    write target still carrying its attachment mark) over ONE skill-level parameter,
+    the page.  Nothing joins that parameter to a leaf yet — that is the runtime-join
+    beat — so it is the registry row, ``collection_set``'s unbound-parameter check,
+    and job identity that carry it, which is exactly what the apply turn under test
+    has to satisfy."""
+    # The registry as this fixture's round saw it — #1783 marks a leaf whose
+    # demonstrated value names one of Penny's collections, so the destination is
+    # only marked if the collection actually existed.
+    steps, parameters = distill_steps(_DEMONSTRATED_ROUND, frozenset({_WATCH_COLLECTION}))
+    steps, distilled = _apply_leaf_labels(steps, parameters, _fixture_labels(steps))
+    name, description = _naming(_FRAMED_SIGNATURE, _TEACH_TURN)
+    framed = _interface_parameters(_FRAMED_SIGNATURE, distilled)
+    # The framer's parameter is the one thing the apply turn must supply, so a
+    # production application that stopped carrying the signature through would seed a
+    # routine nothing could be pointed at — silently, and the apply case would report
+    # it as the model's failure.  It fails here instead.
+    framed_names = [parameter.name for parameter in framed]
+    assert framed_names == [parameter.name for parameter in _FRAMED_SIGNATURE.parameters], (
+        f"the framed interface must survive application — got {framed_names}"
+    )
     return SkillDraft(
-        name=_SKILL_NAME,
-        intent=_SKILL_DESCRIPTION,
-        description=_SKILL_DESCRIPTION,
-        steps=_apply_framing(steps),
-        parameters=[_FRAMED_PARAMETER],
+        name=name,
+        intent=description,
+        description=description,
+        steps=steps,
+        parameters=framed,
         source_run_id="demonstrated-round",
     )
 

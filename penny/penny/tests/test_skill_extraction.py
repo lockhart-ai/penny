@@ -1460,23 +1460,24 @@ def test_skill_brief_render_omits_the_needs_tail_when_a_routine_needs_nothing():
 def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     """The learn → apply enactment case (#1706) starts from the world a completed
     teach round leaves behind, and builds its fixture skill by running THIS
-    module's label application over that round's ledger rather than hand-writing
-    the result.  Pin that here, where it costs no GPU: a distiller or labeller
-    change that reshapes the skill fails a plain test instead of quietly handing
-    the live case an easier — or impossible — starting world.  (It has already
-    earned this: #1777 made the write target a placeholder, and this pin is what
-    reported the reshape rather than the eval discovering it on a GPU run.)
+    module's own draw-application over that round's ledger rather than
+    hand-writing the result — the labeller's spots through ``_apply_leaf_labels``,
+    the framer's signature through ``_naming`` + ``_interface_parameters``.  Pin
+    that here, where it costs no GPU: a distiller, labeller or framer change that
+    reshapes the skill fails a plain test instead of quietly handing the live case
+    an easier — or impossible — starting world.  (It has already earned this:
+    #1777 made the write target a placeholder, and this pin is what reported the
+    reshape rather than the eval discovering it on a GPU run.)
 
-    Both placeholder kinds ride in the one fixture — the entry key Penny chose
-    and the write target the attachment decides (#1777) — so the demonstrated
-    collection and the demonstrated key are BOTH absent from the render, which
-    is the property the enactment case leans on.
-
-    The fixture carries ONE parameter: what the routine is ABOUT is baked into
-    the step and never asked for again, so only the page is left to bind.  Since
-    #1828 the labeller decides none of that — the interface is the FRAMER's, from
-    the user's ask alone — so the fixture stands in for that beat explicitly
-    while pinning the same world the measured `elicit → learn` beat produces."""
+    The shape is the framer's declared interim (#1830): the recipe is ALL
+    placeholders — the labeller covers every spot or its draw fails whole, so a
+    partly-named routine is not a state extraction can reach — and the interface
+    is ONE skill-level parameter, the page, joined to no leaf yet.  Nothing the
+    round demonstrated survives into the render: not the collection, not the key,
+    not the page, not what it pulled off it.  That is the harm placeholders exist
+    to prevent — a collector re-running this routine writing the demonstration's
+    own values back every cycle — and it is the property the enactment case leans
+    on when the apply turn has to supply the page itself."""
     skill = learn_to_apply_fixture_skill()
     assert sorted(parameter.name for parameter in skill.parameters) == ["url"]
     placeholders = [
@@ -1486,17 +1487,19 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
         if substitution.kind == SkillSubKind.PLACEHOLDER
     ]
     assert [substitution.description for substitution in placeholders] == [
+        "the page whose price this routine reads",
+        "what to pull off the page each run",
         WRITE_TARGET_DESCRIPTION,
         "what to call the entry it saves",
     ]
-    # The harm placeholders exist to prevent: a collector re-running this skill
-    # must write neither the demonstrated key nor the demonstrated collection
-    # back every cycle — and the ambient recipe must promise neither.
-    rendered = render_skill(skill.steps, {"url": "https://example.test"})
-    assert "aurora deck 2 price" not in rendered
-    assert "aurora-deck-2-price" not in rendered
-    # The constant renders VERBATIM — a leaf no substitution covers is a baked
-    # value, so the routine still states what it pulls off the page.
-    assert "the current price" in rendered
-    assert "{what to call the entry it saves}" in rendered
-    assert f"{{{WRITE_TARGET_DESCRIPTION}}}" in rendered
+    # The whole recipe, verbatim — every spot says what belongs there and NOTHING the
+    # round demonstrated survives into it: not the collection, not the key, not the
+    # page, not what it pulled off the page.  Binding the framer's parameter changes
+    # nothing here, because nothing joins it to a leaf yet (#1830's declared interim).
+    assert render_skill(skill.steps, {"url": "https://example.test"}) == (
+        "1. browse(queries=[{the page whose price this routine reads}], "
+        "extract={what to pull off the page each run})\n"
+        f"2. collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}, "
+        "entries=[{'key': {what to call the entry it saves}, "
+        "'content': the value from step 1}])"
+    )
