@@ -1242,6 +1242,42 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
     }
 
 
+def test_the_page_family_classifies_by_name_only() -> None:
+    """The description fallback is dropped for the page/url family (#1830, the code
+    owner's ruling on the first run).
+
+    The motivating draw: a `city` parameter whose description said *name of the location
+    on the site to read*.  Two IDENTICAL draws scored opposite ways, because that
+    passing mention of the site could promote one of them to the page — the scorer
+    answering for a draw that never named a page at all.  A page is NAMED as one.
+
+    The fallback stays for every other family, which is what lets a well-judged name the
+    tokens don't anticipate still land via its description."""
+    page = ParameterFamily("url", ("url", "page", "site"), name_only=True)
+    search = ParameterFamily("ticket search", ("search", "query"), name_only=False)
+    city = FramedParameter(name="city", description="name of the location on the site to read")
+
+    named_city = SkillSignature(
+        name="temperature-recorder", description="record a daily high", parameters=(city,)
+    )
+    graded = _by_label(_score_framing(named_city, (page,), ()))
+    assert graded["asks for the url"] == (False, "no parameter answers it")
+    assert graded["asks for nothing else"] == (True, None)
+
+    # A non-page family still reads its description when no name matched anywhere.
+    by_description = SkillSignature(
+        name="ticket-price-watcher",
+        description="watch an event's cheapest ticket price",
+        parameters=(FramedParameter(name="whats_on", description="the search to run"),),
+    )
+    assert _by_label(_score_framing(by_description, (search,), ()))[
+        "asks for the ticket search"
+    ] == (
+        True,
+        None,
+    )
+
+
 def _by_label(checks) -> dict[str, tuple[bool, str | None]]:
     """A scored list indexed by check label — the diff-join key each check is named
     for."""

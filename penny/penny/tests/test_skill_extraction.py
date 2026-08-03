@@ -1242,6 +1242,13 @@ def test_framing_system_prompt_whole_render():
     running.  A rule keyed to the wording in front of it would simply not fire for the
     next shape nobody enumerated.
 
+    The **one-value schema** rides in the output-contract block rather than the
+    reasoning, because it is a fact about the LINE, not a judgment the model makes: the
+    first run's two-sources case drew one `sites — list of URLs` parameter in all five
+    samples, which was a rational reading of a contract nobody had stated.  It is
+    positive ("takes ONE value … one line for each of them"), so the several-things case
+    is answered rather than forbidden.
+
     The worked example is deliberately a FILING routine, not the look-up-and-remember
     shape the cases use: an example drawn from the case in hand teaches pattern-matching
     on that case, and a skill is an arbitrary tool sequence a plugin may have supplied
@@ -1275,15 +1282,15 @@ def test_framing_system_prompt_whole_render():
         "at, they named nothing, and what to file is a parameter. Both are real routines; "
         "the ask is what tells you which one you were taught.\n"
         "There is ALWAYS at least one parameter: a routine that needs nothing said to it "
-        "can only ever repeat the one occasion it was shown, and that is not a routine. "
-        "Write a separate line for each distinct thing they would have to say — two of "
-        "them named is two parameters, never one combined.\n"
+        "can only ever repeat the one occasion it was shown, and that is not a routine.\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
-        "Use a single lowercase word or snake_case for <parameter_name>, and give each "
-        "parameter its own line and its own name.\n"
+        "Each PARAMETER line takes ONE value — a single thing the user says, which fills "
+        "it whole. A routine pointed at several things has one line for each of them, so "
+        "two things named is two PARAMETER lines. Use a single lowercase word or "
+        "snake_case for <parameter_name>, and give each parameter its own name.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
         "conversation."
     )

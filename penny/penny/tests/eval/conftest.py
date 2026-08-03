@@ -3050,10 +3050,17 @@ class ParameterFamily(NamedTuple):
     breadth the code owner agreed to: a drawn parameter belongs to this family when its
     name (or, only when no family matched the name, its description) uses any of them.
     So ``page_to_watch`` lands on the family the reference calls ``url``, while an extra
-    parameter nobody asked for lands nowhere and shows up in the count."""
+    parameter nobody asked for lands nowhere and shows up in the count.
+
+    ``name_only`` drops the description fallback for this family — the code owner's
+    ruling on the first run, where two IDENTICAL `city` draws scored opposite ways
+    because one of their descriptions happened to mention the site the location sits on.
+    A PAGE is named as one; reading "the page" out of a description that merely refers
+    to a page is the scorer inventing an answer the draw did not give."""
 
     label: str
     tokens: tuple[str, ...]
+    name_only: bool = False
 
 
 def _tokens(text: str) -> set[str]:
@@ -3075,11 +3082,16 @@ def _classified(
     any description is read, and a family a name already claimed is closed to the
     description fallback.  Otherwise a description that merely mentions the page in
     passing ("the search that finds the listings on a page") would make a second
-    parameter read as the page as well, and the set would look complete when it is
-    not."""
+    parameter read as the page as well, and the set would look complete when it is not.
+
+    A ``name_only`` family sits out the description pass entirely — the page/url
+    tightening from the first run's review: a parameter is the page when it is NAMED as
+    the page, and no description-level mention promotes one that isn't."""
     by_name = {p.name: _matching_family(p.name, families) for p in signature.parameters}
     claimed = {family.label for family in by_name.values() if family is not None}
-    open_families = [family for family in families if family.label not in claimed]
+    open_families = [
+        family for family in families if family.label not in claimed and not family.name_only
+    ]
     grouped: dict[str, list[FramedParameter]] = {family.label: [] for family in families}
     for parameter in signature.parameters:
         family = by_name[parameter.name] or _matching_family(parameter.description, open_families)

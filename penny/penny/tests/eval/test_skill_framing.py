@@ -7,14 +7,18 @@ occasion.  It never sees the tool calls; the leaf labeller, which names the rout
 implementation, never sees the ask (#1824).  Nothing is offered to it: it MINTS the
 parameters by reading what the user said.
 
-Five cases, all the same look-up → find → remember shape, varying topic, how much the
-ask names, and how many pieces genuinely have to be re-supplied:
+Seven cases, all the same look-up → find → remember shape, deliberately spanning the
+three multiplicity shapes — one argument, two of the SAME type, two of DIFFERENT types —
+while varying topic, how much the ask names, and how many pieces have to be re-supplied:
 
 * ``frame-availability-page-only`` — the ask names the point, so what to check bakes.
 * ``frame-two-sources-two-parameters`` — two pages named: TWO distinct parameters.
 * ``frame-ticker-only-parameter`` — "tell me when it moves" contributes no parameter.
 * ``frame-single-turn-floor`` — one turn: the finding bakes, the page survives.
 * ``frame-search-parameter`` — the look-up is a text search, not a page.
+* ``frame-two-types-page-and-title`` — a page + a title: two pieces, different types.
+* ``frame-two-same-type-symbols`` — two symbols, where a single list parameter is most
+  tempting and each must stay its own scalar.
 
 Each case's input is the round's USER turns, rendered by the shipped
 ``build_framing_content`` — never hand-written — so the draw reads exactly what
@@ -73,10 +77,20 @@ async def _run_case(framer_eval: FramerEval, fixture: FramingFixture) -> None:
     )
 
 
-# The breadth agreed for "the page/search the routine is pointed at" — a piece the user
-# re-supplies that is a place to go.  Shared by the two page cases because it is the same
-# piece under two topics; a case that needs to tell two of them apart adds ordinals.
+# The breadth agreed for "the page the routine is pointed at" — a piece the user
+# re-supplies that is a place to go.  Shared by the page cases because it is the same
+# piece under three topics; a case that needs to tell two of them apart adds ordinals.
+#
+# A page family is NAME-ONLY (the code owner's ruling on the first run): a parameter is
+# the page when it is NAMED as the page.  Two identical `city — name of the location on
+# the site …` draws scored opposite ways when a description-level mention of "site"
+# could promote one, which is the scorer answering for the draw.
 _PLACE_TOKENS = ("url", "page", "link", "address", "site", "source", "product", "listing")
+
+
+def _page_family(label: str, *extra: str) -> ParameterFamily:
+    """The page/url family for a case, name-only, with any case-specific words."""
+    return ParameterFamily(label, (*_PLACE_TOKENS, *extra), name_only=True)
 
 
 # ── Case 1: the ask names the point, so only the page is left to say ──────────
@@ -98,7 +112,7 @@ _AVAILABILITY = FramingFixture(
         "when it's back in stock\n"
         "go to bookbarn.example/atlas-of-clouds, check whether it's in stock, and remember that"
     ),
-    parameters=(ParameterFamily("url", _PLACE_TOKENS),),
+    parameters=(_page_family("url"),),
     instance_tokens=("bookbarn", "atlas", "clouds"),
 )
 
@@ -193,7 +207,7 @@ _SINGLE_TURN = FramingFixture(
     case_id="frame-single-turn-floor",
     turns=("go to weather.example/lisbon, find today's high temperature, and remember it",),
     rendered_input="go to weather.example/lisbon, find today's high temperature, and remember it",
-    parameters=(ParameterFamily("url", (*_PLACE_TOKENS, "forecast", "weather")),),
+    parameters=(_page_family("url", "forecast", "weather"),),
     instance_tokens=("lisbon",),
 )
 
@@ -240,6 +254,88 @@ async def test_a_search_is_the_parameter_and_the_cheapest_price_is_the_framing(
     await _run_case(framer_eval, _SEARCH)
 
 
+# ── Case 6: two re-suppliable pieces of DIFFERENT types ───────────────────────
+#
+# Reference output (read at review, never matched):
+#   NAME: catalog-checker
+#   DESCRIPTION: check whether a book is available in a library catalog
+#   PARAMETER catalog_page — the catalog page to check
+#   PARAMETER title — the book to look for
+
+_PAGE_AND_TITLE = FramingFixture(
+    case_id="frame-two-types-page-and-title",
+    turns=(
+        "can you watch the library catalog for a book i'm waiting on?",
+        "open town-library.example/catalog, find The Glass Harbour, and remember "
+        "whether it's available",
+    ),
+    rendered_input=(
+        "can you watch the library catalog for a book i'm waiting on?\n"
+        "open town-library.example/catalog, find The Glass Harbour, and remember "
+        "whether it's available"
+    ),
+    parameters=(
+        _page_family("catalog page", "catalog"),
+        ParameterFamily("title", ("title", "book", "item", "name")),
+    ),
+    instance_tokens=("glass", "harbour"),
+)
+
+
+@pytest.mark.asyncio
+async def test_two_pieces_of_different_types_are_two_parameters(framer_eval: FramerEval):
+    """Availability bakes, exactly as it does when the ask names one page — but here the
+    thing being looked for is not IN the address, it is looked up ON the page, so the
+    page and the book are two re-suppliable pieces of different types.
+
+    The contrast with the page-only case is the whole point: what the framing carries is
+    the finding, not the number of things the routine is pointed at."""
+    await _run_case(framer_eval, _PAGE_AND_TITLE)
+
+
+# ── Case 7: two of the SAME type, where the list temptation is strongest ──────
+#
+# Reference output (read at review, never matched):
+#   NAME: stock-tracker
+#   DESCRIPTION: track each given stock's share price
+#   PARAMETER first_ticker — the first stock symbol to track
+#   PARAMETER second_ticker — the second stock symbol to track
+
+_TWO_SYMBOLS = FramingFixture(
+    case_id="frame-two-same-type-symbols",
+    turns=(
+        "can you keep an eye on a couple of stocks for me?",
+        "look up VLT and MERI, find each share price, and remember them",
+    ),
+    rendered_input=(
+        "can you keep an eye on a couple of stocks for me?\n"
+        "look up VLT and MERI, find each share price, and remember them"
+    ),
+    parameters=(
+        ParameterFamily("first ticker", ("first", "one", "1", "primary")),
+        ParameterFamily("second ticker", ("second", "two", "2", "secondary", "other")),
+    ),
+    instance_tokens=("vlt", "meri"),
+)
+
+
+@pytest.mark.asyncio
+async def test_two_symbols_of_the_same_type_stay_two_scalar_parameters(framer_eval: FramerEval):
+    """Two things of the SAME type in one ask are where a single list parameter is most
+    tempting — and a list is not a parameter: what a user says fills one whole.  The
+    share price bakes into the framing exactly as it does for one symbol, and the count
+    lives in the parameters rather than in a description that promises "two"."""
+    await _run_case(framer_eval, _TWO_SYMBOLS)
+
+
 # Every case, for the deterministic drift probes in ``make check`` — one place, so the
 # probes and the live runs can never be checking two different fixtures.
-FIXTURES = (_AVAILABILITY, _TWO_SOURCES, _TICKER, _SINGLE_TURN, _SEARCH)
+FIXTURES = (
+    _AVAILABILITY,
+    _TWO_SOURCES,
+    _TICKER,
+    _SINGLE_TURN,
+    _SEARCH,
+    _PAGE_AND_TITLE,
+    _TWO_SYMBOLS,
+)
