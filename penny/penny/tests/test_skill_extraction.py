@@ -1248,6 +1248,17 @@ def test_framing_system_prompt_whole_render():
     two things of the same kind (run 3) · the value's own KIND, never a piece decomposed
     out of it (run 4) · no examples in the description (run 5).
 
+    Round 7 added the one clause the rewrite still lacked, and the failing sample named
+    the gap in its own thinking: *"separate parameters for each but that's not
+    scalable... they'd need to set up per site?"*.  The rule that two things are two
+    parameters was already there and understood — what was missing was PERMISSION that
+    several parameters is a normal shape for a routine, not a design smell to be talked
+    out of.  So the bullet now grants it outright ("it's okay to have multiple
+    individual parameters when the user provided multiple individual pieces of
+    information") before restating the naming half.  A model reasoning its way to a
+    worse answer out of unstated architectural anxiety is a presentation defect like any
+    other.
+
     Two deliberate absences the code owner ruled on directly.  There is **no worked
     example of a filled line** in this version — its return, if the value-echo class
     comes back, is a measurement rather than an assumption.  And the type nouns 'url'
@@ -1281,8 +1292,10 @@ def test_framing_system_prompt_whole_render():
         "you at a website, 'url'; if they named a topic, 'topic'. Generic snake_case, "
         "never the particular site or thing's own name.\n"
         "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
-        "a url, never a city pulled out of one, and never a list. Two things of the same "
-        "kind are two parameters with names that tell them apart: 'first_plot', "
+        "a url, never a city pulled out of one, and never a list. Create one parameter for "
+        "each unique piece of information the user provided — it's okay to have multiple "
+        "individual parameters when the user provided multiple individual pieces of "
+        "information. Two of the same kind get names that tell them apart: 'first_plot', "
         "'second_plot'.\n"
         "   - description: one line saying what to supply. Do not include examples.\n"
         "\n"
