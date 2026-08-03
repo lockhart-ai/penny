@@ -30,19 +30,43 @@ is really "present what X needs in a form the model can act on." Work in that or
 Present well for the common case; structure deterministically for the tail. Everything below is
 *how* to present; the reject-and-teach and process sections are the guardrail half.
 
-## The four that matter most
+## The five that matter most
 
 If you remember nothing else:
 
-1. **Numbered lists for instructions** — one action per step.
-2. **Explicit tool-call examples** — `N. tool(args) — description`, every call named the same way.
-3. **Positive framing for the positive case** — state what TO do, in order.
-4. **Emphatic `NEVER` / `ALWAYS` / `IMPORTANT` for specific negative cases** — reserved for the
+1. **Plain words** — short declarative sentences, common words, one idea each.
+2. **Numbered lists for instructions** — one action per step.
+3. **Explicit tool-call examples** — `N. tool(args) — description`, every call named the same way.
+4. **Positive framing for the positive case** — state what TO do, in order, and **permit** the
+   intended shape where the model might infer it is disfavoured.
+5. **Emphatic `NEVER` / `ALWAYS` / `IMPORTANT` for specific negative cases** — reserved for the
    concrete pitfalls, not general nagging.
 
-The split in 3 + 4 is the whole reconciliation: **positive spine for the happy path, emphatic
-guards for the specific things the model gets wrong.** The rest of this doc is detail and
-evidence behind these.
+The split in 4 + 5 is the whole reconciliation: **positive spine for the happy path, explicit
+permission where the model would otherwise talk itself out of the right answer, emphatic guards
+for the specific things the model gets wrong.** The rest of this doc is detail and evidence
+behind these.
+
+## Write plain words, not a precision dialect
+
+Write the prompt for the model as its reader: short declarative sentences, common words, one idea
+per sentence. The pull runs the other way — a prompt is read by maintainers and argued over in
+review, so it drifts toward defensible, hedged, back-referencing phrasing ("the value from this
+occasion"). That register is a private dialect the model has never read anywhere, and it loses to
+plain phrasing of the *same* rules.
+
+*Measured* (#1830, PR #1831 — seven baselined runs against one prompt): five rounds of surgical
+clause-patching went 2-for-5, and round 3 — a precise restatement of the parameter-line contract —
+regressed **every** case (suite **0.93 → 0.70**) by *inducing the failure it targeted*: the check
+it was written to fix, "the framing is generic", flipped pass→fail across most samples, and the
+next round's whole job was replacing the misread round-3 sentences. A wholesale plain-language
+rewrite of the same contract — half the length, **3476 → 1790 characters** — took the suite to
+**0.97**, moved the case that had been stuck at **0.75** to **1.00**, and cleared two persistent
+failure classes on first contact (behavioural failures **7 → 2**).
+
+The test: read the sentence aloud. If it only parses because you know which earlier clause it
+points back at, the model is reading it cold and it doesn't. See *The anti-pattern: accretion* for
+when to stop patching and rewrite.
 
 ## Structure the task as read → plan → execute
 
@@ -100,9 +124,17 @@ Two corollaries, both measured on this codebase:
    `log_read(memory='x')`" rule was worth **5/5 vs 0/5** on the tweak-STEPS case. Softening
    it to "match the tools" collapsed it. A vague rule is a dropped rule.
 
-5. **Positive spine, negative guards.** Default to stating what TO do, in order. Add
-   `NEVER …` / `DON'T …` guards for the *specific* pitfalls you've seen the model hit. Both
-   are fine; the negative guard is for a concrete failure mode, not general nagging.
+5. **Positive spine, explicit permission, negative guards.** Default to stating what TO do, in
+   order. Add `NEVER …` / `DON'T …` guards for the *specific* pitfalls you've seen the model hit —
+   a concrete failure mode, not general nagging. And where the model might infer the intended
+   shape is disfavoured, **bless it outright**: a model can hold a rule and still argue itself out
+   of it on an unstated norm it brought with it. *Measured:* with "a parameter holds ONE value …
+   never a list" sitting in the prompt, the thinking trace read "might be separate parameters for
+   each but that's not scalable" — and it merged two things into one parameter anyway. One added
+   clause — "Create one parameter for each unique piece of information the user provided — it's
+   okay to have multiple individual parameters when the user provided multiple individual pieces
+   of information" — took that case from **0.76 to 1.00** with no other change (#1830, PR #1831).
+   A prohibition says which door is shut; it does not say the open one may be walked through.
 
 6. **Declare what's ground truth.** When the model must judge against evidence, tell it what's
    authoritative: "the tool calls you OBSERVED are ground truth — they are what actually ran."
@@ -219,6 +251,12 @@ emphatic load-bearing rules included deliberately. *Clean ≠ vague:* rewriting 
 every specific discriminating rule (see #4). The failure mode to avoid is the mess of
 accretion, not emphasis itself.
 
+**The trigger is the second patch.** Once a prompt has been patched twice for the same behaviour,
+the next change is a wholesale rewrite, not a third patch. Writing each added sentence cleanly is
+not enough: every patch is drafted against the sentences beside it, so the *whole* accretes a
+dialect while no single line looks wrong. *Measured* (#1830, PR #1831): five patch rounds went
+2-for-5 and one regressed every case; the wholesale rewrite that replaced all five beat all five.
+
 ## gpt-oss:20b specifics (things it gets wrong)
 
 - **Skips a terminal/secondary step** (the send after the write; the `done()`) — make each its
@@ -290,7 +328,8 @@ others to catch a regression you introduced.
   the result **before** committing. A prompt you wrote but didn't run tells you nothing.
 - **Change ONE lever at a time.** Learned the hard way: rewriting style + structure + the
   specific rule at once made a regression un-attributable and cost ~14 eval rounds chasing
-  ghosts. If you change five things and it regresses, you've learned nothing.
+  ghosts. If you change five things and it regresses, you've learned nothing. A wholesale
+  rewrite *is* one lever — as long as it carries the same rules and only the wording changes.
 - **Read the model's thinking on a failure**, not just the scorer line — that's where the
   reason lives (the harness auto-dumps it for failed samples).
 - **Check the scorer before blaming the model.** A surprising 0/N is as often a too-strict
