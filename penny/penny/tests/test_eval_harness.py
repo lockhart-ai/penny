@@ -28,7 +28,7 @@ from penny.constants import PennyConstants
 from penny.database import Database
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
-from penny.skill_extraction import ShapeableValue, build_shape_content
+from penny.skill_extraction import build_framing_content
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
     CaseArtifact,
@@ -40,6 +40,7 @@ from penny.tests.eval.artifacts import (
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     Check,
+    ParameterFamily,
     SampleResult,
     _assert_threshold,
     _bail_fired_check,
@@ -47,6 +48,7 @@ from penny.tests.eval.conftest import (
     _frame_attributes_to,
     _guarded_graded,
     _labelling_input,
+    _score_framing,
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
@@ -57,10 +59,11 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
-from penny.tools.micro_context import LeafLabel, SkillLabels
+from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
 from penny.tools.models import ToolResult
 
 
@@ -1117,58 +1120,132 @@ def test_each_labelling_case_renders_exactly_the_document_it_claims(fixture) -> 
     assert sorted(by_value) == sorted(fixture.leaves)
 
 
-_SHAPE_LISTING = "https://faux-market.example/aurora-deck-2"
-_SHAPE_ASK = "can you keep an eye on the aurora deck 2 price for me?"
-_SHAPE_VALUES = [
-    ShapeableValue(name="url", current="queries", demonstrated=_SHAPE_LISTING),
-    ShapeableValue(name="what_to_find", current="extract", demonstrated="the current price"),
-]
+_FRAMING_ASK = "can you keep an eye on the aurora deck 2 price for me?"
 
 
-def test_shape_input_renders_the_ask_the_round_and_the_values() -> None:
-    """The shape micro-context's content, WHOLE (#1803) — the surface the shape draw
-    actually reads, built by the SHIPPED renderer the eval case also calls.
+def test_framing_input_renders_the_users_turns_and_nothing_else() -> None:
+    """The framer's content, WHOLE (#1830) — the surface the framing draw actually
+    reads, built by the SHIPPED renderer the eval case also calls.
 
-    Everything the render can vary is folded in.  The assistant's turn is dropped (only
-    the user can say what a routine is FOR), the demonstrating message joins the asks
-    as the last user turn, the labeller's ROUTINE summary renders as its own section
-    (its PER-VALUE descriptions never do — see ``ShapeableValue``), and each value is
-    its semantic name beside the value it was demonstrated with."""
-    content = build_shape_content(
-        _SHAPE_VALUES,
+    It is the user's turns, one per line, and NOTHING else: no headings, no values, no
+    summary of what the round did.  The assistant's turns are dropped (its replies
+    describe how the round was carried out, which is exactly what a routine must not be
+    named after), and the demonstrating message joins the asks as the last user turn."""
+    content = build_framing_content(
         _LABELLER_UTTERANCE,
         [
-            (PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK),
+            (PennyConstants.MessageDirection.INCOMING, _FRAMING_ASK),
             (PennyConstants.MessageDirection.OUTGOING, "sure — which listing did you mean?"),
         ],
-        "Keep track of an item's current price by fetching its page and storing the value.",
     )
 
     assert content == (
-        "What the user asked for:\n"
         "can you keep an eye on the aurora deck 2 price for me?\n"
-        "read the aurora deck 2 listing, find the current price, and remember it\n"
-        "\n"
-        "What the round did, in one line:\n"
-        "Keep track of an item's current price by fetching its page and storing the value.\n"
-        "\n"
-        "The values the routine used to do it:\n"
-        "- url = 'https://faux-market.example/aurora-deck-2'\n"
-        "- what_to_find = 'the current price'"
+        "read the aurora deck 2 listing, find the current price, and remember it"
     )
 
-    # The other two shapes the render has: the demonstrating message already inside the
-    # recent window (rendered ONCE, never doubled), and a labelling draw that produced
-    # no routine summary (the section is absent, not an empty heading).
-    assert build_shape_content(
-        _SHAPE_VALUES[:1], _SHAPE_ASK, [(PennyConstants.MessageDirection.INCOMING, _SHAPE_ASK)], ""
-    ) == (
-        "What the user asked for:\n"
-        "can you keep an eye on the aurora deck 2 price for me?\n"
-        "\n"
-        "The values the routine used to do it:\n"
-        "- url = 'https://faux-market.example/aurora-deck-2'"
+    # The demonstrating message already inside the recent window renders ONCE, never
+    # doubled — and a round with nothing but that one turn is one line.
+    assert (
+        build_framing_content(
+            _FRAMING_ASK, [(PennyConstants.MessageDirection.INCOMING, _FRAMING_ASK)]
+        )
+        == _FRAMING_ASK
     )
+
+
+@pytest.mark.parametrize("fixture", FRAMING_FIXTURES, ids=lambda f: f.case_id)
+def test_each_framing_case_renders_exactly_the_document_it_claims(fixture) -> None:
+    """Per-case drift probe (#1830): each agreed case's user turns, through the SHIPPED
+    renderer, produce EXACTLY the input document the case pins.
+
+    The pairs on the ticket are input/output pairs, so a fixture that has drifted from
+    its input is a case measuring something nobody agreed to.  It has to fail here, in
+    ``make check``, rather than after an hour of GPU time."""
+    content = build_framing_content(
+        "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in fixture.turns]
+    )
+
+    assert content == fixture.rendered_input
+
+
+def test_score_framing_grades_the_parameter_set_exactly() -> None:
+    """The framing case's scoring over a fixture draw (#1830): each expected family
+    answered by exactly one drawn parameter, nothing else asked for, and the framing
+    generic — with every drawn value riding ADVISORY so a report shows verbatim what the
+    model committed to.
+
+    Semantic breadth is the families' job: ``page_to_watch`` answers the family the
+    reference calls ``url``.  Name-first classification is what keeps the second
+    parameter's description — which mentions a page in passing — from answering it a
+    second time."""
+    families = (
+        ParameterFamily("url", ("url", "page", "link")),
+        ParameterFamily("ticket search", ("search", "query", "event")),
+    )
+    signature = SkillSignature(
+        name="ticket-price-watcher",
+        description="watch an event's cheapest ticket price",
+        parameters=(
+            FramedParameter(name="page_to_watch", description="the listing page to check"),
+            FramedParameter(name="event_search", description="the search that finds the page"),
+        ),
+    )
+
+    scored = _score_framing(signature, families, ("aurora", "fest"))
+    assert [(check.label, check.ok, check.scored) for check in scored] == [
+        ("asks for the url", True, True),
+        ("asks for the ticket search", True, True),
+        ("asks for nothing else", True, True),
+        ("the framing is generic", True, True),
+        ("named it 'ticket-price-watcher'", True, False),
+        ('described it "watch an event\'s cheapest ticket price"', True, False),
+        ("asks 'page_to_watch' — 'the listing page to check'", True, False),
+        ("asks 'event_search' — 'the search that finds the page'", True, False),
+    ]
+
+    # An EXTRA parameter is caught by the count, and a family nothing answers by its own
+    # check — the two halves of "the set is exact".
+    extra = signature.model_copy(
+        update={
+            "parameters": (
+                *signature.parameters,
+                FramedParameter(name="where_to_save", description="the collection to write to"),
+            )
+        }
+    )
+    graded = _by_label(_score_framing(extra, families, ()))
+    assert graded["asks for nothing else"] == (False, "drew 3, expected 2")
+
+    # A family nothing answers is its own miss, and one two parameters answer says so.
+    missing = signature.model_copy(update={"parameters": signature.parameters[:1]})
+    assert _by_label(_score_framing(missing, families, ()))["asks for the ticket search"] == (
+        False,
+        "no parameter answers it",
+    )
+
+    # The occasion in the framing is a structural miss, naming the words it used.
+    occasional = signature.model_copy(update={"description": "watch aurora fest ticket prices"})
+    framing = _by_label(_score_framing(occasional, families, ("aurora", "fest")))
+    assert framing["the framing is generic"] == (False, "named the occasion: aurora, fest")
+
+    # A refused draw fails every scored check with its reason named, never silently.
+    refused = _score_framing(None, families, ("aurora",))
+    assert [(check.label, check.ok) for check in refused] == [
+        ("asks for the url", False),
+        ("asks for the ticket search", False),
+        ("asks for nothing else", False),
+        ("the framing is generic", False),
+    ]
+    assert {check.rationale for check in refused} == {
+        "the draw was refused — no signature came back"
+    }
+
+
+def _by_label(checks) -> dict[str, tuple[bool, str | None]]:
+    """A scored list indexed by check label — the diff-join key each check is named
+    for."""
+    return {check.label: (check.ok, check.rationale) for check in checks}
 
 
 def test_score_labelling_grades_each_spot_and_carries_the_labels_advisory() -> None:

@@ -39,6 +39,10 @@ and an incomplete draw is then a violation like any other — the leaf labeller 
 exactly that (#1828), so a decayed tag costs the whole draw rather than one item its
 line.  The grammar stays permissive so the customer can be strict where it can check;
 tightening PER_ITEM here would take that choice away from the customers that can't.
+A customer that MINTS its items rather than choosing from an offered set has no such
+comparison to make, so the parse also COUNTS the tag-carrying lines it dropped
+(:attr:`ParsedDraw.malformed`) — that is how the skill framer refuses a draw carrying a
+broken line without an offered set to notice the gap (#1830).
 
 Dependency-light leaf: pydantic + ``text_validity`` only, so the tools package and
 anything that declares a shape import it without a cycle.
@@ -170,12 +174,22 @@ class ParsedLine(BaseModel):
 class ParsedDraw(BaseModel):
     """A draw read against its declared shape: the singular lines keyed by tag, and
     the per-item lines in draw order.  Customers read it by FIELD NAME (:meth:`field`)
-    — there is no string left to partition."""
+    — there is no string left to partition.
+
+    ``malformed`` counts the PER_ITEM lines that CARRIED a declared tag and did not
+    carve into its fields — the ones :func:`_find_items` drops.  The grammar drops them
+    because best-effort is the permissive default (a customer that cannot check its
+    items keeps the #1770 "absence is never a verdict" read), but a customer that wants
+    "an accepted draw never contains an invalid line" (#1828) has to be able to SEE
+    them: the leaf labeller sees them indirectly, as a spot its offered set says went
+    unnamed, while a customer that MINTS its items has no offered set to compare
+    against and would otherwise accept a draw with a broken line in it."""
 
     model_config = ConfigDict(frozen=True)
 
     singles: dict[str, ParsedLine] = {}
     items: tuple[ParsedLine, ...] = ()
+    malformed: int = 0
 
     def field(self, tag: str, name: str) -> str | None:
         """The named field of the singular line tagged ``tag``, or ``None`` when that
@@ -251,7 +265,8 @@ def parse_draw(draw: str, shape: MicroContextShape) -> ParsedDraw | None:
             return None
     if not _alternatives_satisfied(shape, singles):
         return None
-    return ParsedDraw(singles=singles, items=_find_items(lines, shape))
+    items, malformed = _find_items(lines, shape)
+    return ParsedDraw(singles=singles, items=items, malformed=malformed)
 
 
 def _find_line(lines: list[str], spec: LineSpec) -> ParsedLine | None:
@@ -270,13 +285,18 @@ def _find_line(lines: list[str], spec: LineSpec) -> ParsedLine | None:
     return None
 
 
-def _find_items(lines: list[str], shape: MicroContextShape) -> tuple[ParsedLine, ...]:
-    """Every PER_ITEM line, in draw order, carved into its fields.  A malformed one
-    is DROPPED — those lines are best-effort by design, so a bad line costs its own
-    item a verdict and nothing else.  What changed is that a malformed line is no
-    longer accepted as good data."""
+def _find_items(lines: list[str], shape: MicroContextShape) -> tuple[tuple[ParsedLine, ...], int]:
+    """Every PER_ITEM line, in draw order, carved into its fields — and how many
+    tag-carrying lines did NOT carve.
+
+    A malformed one is DROPPED from the items, because best-effort is the permissive
+    default: a bad line costs its own item a verdict and nothing else.  It is COUNTED
+    because dropping it in silence is what lets a customer that MINTS its items accept
+    a draw with a broken line in it (#1830); what the count MEANS stays the customer's,
+    declared as a runtime constraint."""
     specs = [spec for spec in shape.lines if spec.role is LineRole.PER_ITEM]
     items: list[ParsedLine] = []
+    malformed = 0
     for line in lines:
         undecorated = _undecorate(line)
         for spec in specs:
@@ -284,10 +304,12 @@ def _find_items(lines: list[str], shape: MicroContextShape) -> tuple[ParsedLine,
             if payload is None:
                 continue
             fields = _carve(payload, spec.fields)
-            if fields is not None:
+            if fields is None:
+                malformed += 1
+            else:
                 items.append(ParsedLine(tag=spec.tag, fields=fields))
             break
-    return tuple(items)
+    return tuple(items), malformed
 
 
 def _alternatives_satisfied(shape: MicroContextShape, singles: dict[str, ParsedLine]) -> bool:

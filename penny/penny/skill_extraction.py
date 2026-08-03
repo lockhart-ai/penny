@@ -33,14 +33,17 @@ retired tool produced, now fired by the run finishing instead of a model call.
   extra leaf).  A labelled spot renders as what belongs there, never as the frozen
   demonstrated value; one the draw missed keeps its arg-derived name.  Extraction
   NEVER blocks on the rewrite.
-* **the interface, INTERIM** — a skill's name, description and parameters are decided
-  from the user's ask alone by the FRAMER, and that beat lands next (#1824).  Until it
-  does, the name/description are the deterministic slug of the triggering message
-  (URLs removed, ≤6 words) + that message, and a fully-labelled routine comes out with
-  NO parameters: stated here, on #1828, as a decision rather than discovered as a
-  surprise.  ``shape_skill`` (#1803, the FOURTH customer) no longer fires from this
-  pipeline — it decided which values a routine was ABOUT, over a closed set of values
-  the labeller's verdicts produced, and there are no verdicts any more.
+* **frame** — the routine's INTERFACE, written from the user's ask ALONE by a second
+  single-shot micro-context beside the labeller (#1830, the FOURTH customer): a generic
+  name, a one-line description, and one parameter per piece the user would have to say
+  again to set the routine up on a new occasion.  It never sees the tool calls and the
+  labeller never sees the ask, which is what stops the two halves contradicting each
+  other (#1824).  A failed framing falls to the deterministic slug of the triggering
+  message (URLs removed, ≤6 words) with nothing to bind.
+  **Interim, declared**: nothing joins a framed parameter to a leaf of the rendered
+  program yet (the runtime-join beat), so the parameters live at SKILL level — rendered
+  in the registry, enforced at ``collection_set``, decisive for job identity — over a
+  recipe that still reads in the labeller's placeholder descriptions.
 * **dedup (REPLACE semantics)** — exact name match → REPLACE; else a same-shape,
   same-meaning skill (the GENERIC ``description_embedding`` converges cross-instance)
   → REPLACE keeping ITS name; otherwise insert.
@@ -58,7 +61,7 @@ import json
 import logging
 import re
 from enum import StrEnum
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 from similarity.embeddings import cosine_similarity
@@ -85,7 +88,7 @@ from penny.database.skills import (
 from penny.llm.similarity import embed_text
 from penny.prompts import Prompt
 from penny.text_validity import is_blank
-from penny.tools.micro_context import MicroContext, SkillLabels
+from penny.tools.micro_context import MicroContext, SkillLabels, SkillSignature
 
 if TYPE_CHECKING:
     from penny.llm.client import LlmClient
@@ -209,6 +212,46 @@ def _slug_name(origin_message: str) -> str:
     return "-".join(words[:_NAME_MAX_WORDS]) or _FALLBACK_NAME
 
 
+def _naming(signature: SkillSignature | None, origin_message: str) -> tuple[str, str]:
+    """What the routine is CALLED and what it is FOR — the framer's answer, else the
+    deterministic slug of the triggering message (#1830).
+
+    The framer's name is carried VERBATIM: it is prose the user reads back in the
+    ambient registry, and resolving a skill by name is tolerant by construction
+    (name-or-meaning, #1591).  Only a PARAMETER name is hardened, because that one is a
+    key something binds against."""
+    if signature is not None:
+        return signature.name, signature.description
+    name = _slug_name(origin_message)
+    return name, origin_message or f"Skill: {name}"
+
+
+def _interface_parameters(
+    signature: SkillSignature | None, distilled: list[SkillParameter]
+) -> list[SkillParameter]:
+    """What the routine ASKS FOR — the framer's parameters, else the failure rung.
+
+    The framer owns the interface, so its parameters ARE the skill's: minted from the
+    ask, they name pieces of the user's own request rather than tool arguments, and
+    they carry the one-line what-to-supply the ambient ``needs:`` row renders.
+
+    **The declared interim of this beat**: nothing joins a framed parameter to a leaf
+    of the rendered program yet — that is the runtime-join beat.  So the parameters
+    live at SKILL level over an all-placeholder recipe: the registry row renders them,
+    ``collection_set`` enforces that each one is bound, and job identity (``is_same_job``
+    tier 1: same skill + same params) works again — while the program itself still
+    reads in the labeller's descriptions.
+
+    With no framing, the skill falls back to whatever the labelling pass left: nothing
+    when every spot was named, and the arg-derived spots when that draw failed too."""
+    if signature is None:
+        return distilled
+    return [
+        SkillParameter(name=parameter.name, required=True, description=parameter.description)
+        for parameter in signature.parameters
+    ]
+
+
 class SkillExtractor:
     """The run-end skill-extraction pipeline — one instance per chat agent, holding
     its DB + embedding client (threaded, never ambient state)."""
@@ -283,32 +326,29 @@ class SkillExtractor:
         projection: RunProjection,
         certified: list[RunProjectionStep],
     ) -> SkillDraft:
-        """Distil the certified steps into structured steps + spots, label every spot
-        via a single-shot micro-context (#1828 — a semantic name + one line of what
-        belongs there, per spot), and bundle it for the store.
+        """Distil the certified steps into structured steps + spots, then run the two
+        run-end draws that split the routine in half (#1824) and bundle the result.
 
-        The name and description are the deterministic slug of the triggering message
-        for now: naming the routine and deciding its parameters is the FRAMER's
-        decision from the user's ask alone (#1824), and that beat lands next.  So a
-        freshly taught skill comes out slug-named and parameter-less, which is stated
-        on #1828 as a decision rather than discovered as a surprise.
-
-        The labelling draw's failure costs nothing either way: every spot simply keeps
-        its arg-derived name, and extraction never blocks on the rewrite."""
+        The LABELLER names every spot in the implementation, from the demonstration;
+        the FRAMER writes the interface — name, description, parameters — from the
+        user's ask alone.  They share no evidence and no outputs, and either may fail
+        alone: a failed labelling leaves every spot with its arg-derived name, a failed
+        framing leaves the routine slug-named with no parameters.  Extraction never
+        blocks on either."""
         steps, parameters = distill_steps(
             self._distill_inputs(projection, certified), self._attachment_names()
         )
-        name = _slug_name(projection.origin_message)
-        description = projection.origin_message or f"Skill: {name}"
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         labels = await self._label_skill(steps, parameters, projection, conversation)
+        signature = await self._frame_skill(projection, conversation)
         steps, parameters = _apply_leaf_labels(steps, parameters, labels)
+        name, description = _naming(signature, projection.origin_message)
         return SkillDraft(
             name=name,
             intent=description,
             description=description,
             steps=steps,
-            parameters=parameters,
+            parameters=_interface_parameters(signature, parameters),
             source_run_id=run_id,
         )
 
@@ -335,6 +375,20 @@ class SkillExtractor:
         return await self._micro_context.label_skill(
             content, [parameter.name for parameter in parameters], run_target=self._agent_name
         )
+
+    async def _frame_skill(
+        self, projection: RunProjection, conversation: list[tuple[str, str]]
+    ) -> SkillSignature | None:
+        """One single-shot framing micro-context over the user's ask (#1830).
+
+        Content = the round's user turns and nothing else, so the interface is decided
+        from what they wanted rather than from what the round happened to do.  The draw
+        writes the routine's name, its one-line description, and one parameter line per
+        piece the user would have to say again — accepted only when it minted at least
+        one well-formed, distinctly-named parameter.  ``None`` otherwise, and the caller
+        falls back to the deterministic slug with nothing to bind."""
+        content = build_framing_content(projection.origin_message, conversation)
+        return await self._micro_context.frame_skill(content, run_target=self._agent_name)
 
     def _attachment_names(self) -> frozenset[str]:
         """The names of Penny's own COLLECTIONS — the things a routine can be ATTACHED
@@ -373,7 +427,12 @@ class SkillExtractor:
         """Embed the GENERIC description, resolve the dedup target
         (name-or-shape+meaning), and upsert — REPLACE by name, so a re-demonstration
         of the same routine overwrites the prior skill in place.  ``origin_message``
-        (the demonstrated-on instance) rides back for the narration frame (#1665)."""
+        (the demonstrated-on instance) rides back for the narration frame (#1665).
+
+        The embedding anchors on the FRAMER's description now (#1830) — a statement of
+        the kind of task, which is what makes two demonstrations of the same routine on
+        different occasions converge; before the framer landed this anchored on the
+        triggering message itself, which is the occasion rather than the kind."""
         embedding = await embed_text(self._embedding, draft.description)
         target_name = self._dedup_target(draft, embedding)
         if target_name != draft.name:
@@ -474,67 +533,29 @@ def build_naming_content(
     return "\n\n".join(parts)
 
 
-class ShapeableValue(NamedTuple):
-    """One value the SHAPE draw decides over (#1803): the semantic ``name`` (the anchor
-    the draw repeats back), the ``current`` arg-derived key the answer maps home to,
-    and the ``demonstrated`` value — without which "is the routine ABOUT this?" cannot
-    be answered at all.
+def build_framing_content(origin_message: str, conversation: list[tuple[str, str]]) -> str:
+    """The framer's content (#1830): the round's USER turns, one per line, and NOTHING
+    else — no headings, no values, no summary of what was done.
 
-    Since #1828 the run-end pipeline no longer produces these: the shape draw decided
-    over the values a per-candidate VERDICT kept, and there are no verdicts any more.
-    The draw and its contract are untouched, and its own eval (``test_skill_shape.py``)
-    drives it with authored values — which is what this type and
-    :func:`build_shape_content` serve until the framer beat settles where the question
-    lives.
+    That emptiness is the contract.  What a routine is FOR, and what someone would have
+    to say to set it running again, is answered by the ask; every other thing a round
+    leaves behind is evidence of HOW it was carried out, and a draw shown that reasons
+    from the mechanics instead (this is measured: a values list handed over with the ask
+    argued four of five draws into treating every value as something to be supplied).
+    The assistant's own turns go the same way — its replies describe what it did, which
+    is exactly what a routine must not be named after.
 
-    A per-value description is deliberately NOT carried across.  It is
-    written to answer "what should someone supply here", so it describes every value
-    as a fill-in slot — *"plain-language phrase describing the information to pull"* —
-    and a draw shown that reads it as an argument for PARAMETER, which is what four of
-    five draws did.  Correct reasoning over a description that had already decided the
-    question; the name and the demonstrated value say what the value IS without
-    arguing what role it plays."""
+    The demonstrating message joins the user's turns as the last one (deduped, since the
+    recent window may already carry it): it is a user turn like the rest, and hiding who
+    was speaking is what once made a draw reason correctly to the wrong answer (#1770).
 
-    name: str
-    current: str
-    demonstrated: str
-
-
-def build_shape_content(
-    values: list[ShapeableValue],
-    origin_message: str,
-    conversation: list[tuple[str, str]],
-    round_summary: str,
-) -> str:
-    """The shape micro-context's content (#1803): what the USER asked for, then the
-    values the routine used.  PUBLIC because the shape eval builds it — that case hands
-    the draw authored values, so it must go through THIS function and not a copy that
-    can drift; since #1828 it is the only caller (see :class:`ShapeableValue`).
-
-    Only the user's turns are rendered.  The question is what the routine is FOR, and
-    the user is the only one who can say — the assistant's replies describe how it was
-    carried out, which is the evidence that led the model to name a routine after
-    whatever it happened to do.  The demonstrating message joins them as the last
-    turn (deduped, since the recent window may already carry it): it is a user turn,
-    and the labelling draw already proved that hiding who was speaking makes the model
-    reason correctly to the wrong answer (#1770).
-
-    Each value renders as its name and the value it was demonstrated with, and nothing
-    else — see :class:`ShapeableValue` for why the labeller's PER-VALUE description is
-    dropped.  The labeller's ROUTINE description is the opposite case and is passed:
-    it is a statement of what the round was FOR ("track a marketplace item's current
-    price…"), which is the very thing this draw has to settle, and it reads the user's
-    words for it rather than describing a slot to fill."""
+    PUBLIC because the framing eval builds it: that case drives ``frame_skill`` alone,
+    so its input must be rendered by THIS function rather than a copy that can drift."""
     incoming = PennyConstants.MessageDirection.INCOMING
     asks = [content for direction, content in conversation if direction == incoming]
     if origin_message and origin_message not in asks:
         asks.append(origin_message)
-    lines = "\n".join(f"- {value.name} = {value.demonstrated!r}" for value in values)
-    parts = [f"What the user asked for:\n{'\n'.join(asks)}"]
-    if round_summary:
-        parts.append(f"What the round did, in one line:\n{round_summary}")
-    parts.append(f"The values the routine used to do it:\n{lines}")
-    return "\n\n".join(parts)
+    return "\n".join(asks)
 
 
 def _placeholder_lines(steps: list[SkillStep], parameters: list[SkillParameter]) -> str:
@@ -603,25 +624,7 @@ def _child_at(node: object, part: str | int) -> object:
     return None
 
 
-# ── Leaf labels: apply, and the binding-key hardening rule (#1668/#1828) ───────
-
-_PARAM_WHITESPACE = re.compile(r"\s+")
-_PARAM_NON_IDENTIFIER = re.compile(r"[^a-z0-9_]")
-
-
-def slug_parameter_name(raw: str) -> str:
-    """Harden a model-written semantic name into an identifier-safe binding key
-    (#1668, load-bearing — a skill's parameter name is its binding key at
-    instantiation, ``params={'url': …}``): lowercase, whitespace → underscores, strip
-    anything but ``[a-z0-9_]``, trim stray underscores.  Empty when nothing survives.
-
-    PUBLIC since #1828, because the rule outlived its caller for one beat: the leaf
-    labeller draws a semantic name per spot, but where that name lands as a key is the
-    runtime-join beat's question, so nothing binds one today.  The labelling eval
-    scores "did the draw produce a usable binding key" through THIS function rather
-    than a copy of it, so the check can never drift from the rule it is checking."""
-    lowered = _PARAM_WHITESPACE.sub("_", raw.strip().lower())
-    return _PARAM_NON_IDENTIFIER.sub("", lowered).strip("_")
+# ── Leaf labels: apply (#1770/#1828) ──────────────────────────────────────────
 
 
 def _apply_leaf_labels(

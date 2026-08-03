@@ -185,7 +185,7 @@ context and read by one generic walk (a fourth customer is a data row, not new c
 |---|---|---|
 | in-call | `browse-extract` — runs while `browse` executes | right after the `extract=` browse call that spawned it (FIFO-paired; a multi-page `extract` browse renders one pair per page) |
 | turn-head | `state-classifier` — draws before the chat agent | at the head of the turn it decided, right after that user turn |
-| run-close | `skill-namer` — labels the routine at run end; `skill-shaper` — names it and marks its constants | closing the turn, after the final reply |
+| run-close | `skill-namer` — labels every spot in the routine at run end; `skill-framer` — writes its name, description and parameters from the user's ask | closing the turn, after the final reply |
 
 The main-loop context never sees what a sub-model read — only the typed value returns — so the
 report is the one place these exchanges are visible. Before #1773 only the browse-extract batch was

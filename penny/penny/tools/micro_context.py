@@ -30,9 +30,10 @@ the naming fallback).  A violation of an OPTIONAL or PER_ITEM line is simply an
 ABSENT line at the GRAMMAR level — but whether absence is acceptable is the
 CUSTOMER's to declare, as a runtime constraint (``accepts``): the leaf labeller
 requires a well-formed line for every spot it offered, so a decayed tag is a
-whole-draw failure rather than one spot quietly unnamed (#1828), while a customer
-with no checkable coverage keeps the best-effort read.  An accepted draw never
-contains an invalid line.
+whole-draw failure rather than one spot quietly unnamed (#1828), and the framer —
+which offers nothing and MINTS its lines — refuses a draw whose dropped-line count
+is non-zero (#1830), while a customer with no checkable coverage keeps the
+best-effort read.  An accepted draw never contains an invalid line.
 
 The single call is screened by the same degeneracy / leaked-Harmony-envelope
 detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`): poison
@@ -49,6 +50,7 @@ run's context: the parent only ever sees the returned :class:`MicroContextResult
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from enum import StrEnum
@@ -262,123 +264,130 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "routine."
 )
 
-# ── Fourth customer: the routine's SHAPE — what it is ABOUT (#1803) ────────────
-# The labeller above answers where each value CAME FROM.  It cannot also answer
-# what the routine IS, because those are decided from different evidence and the
-# second one has no answer inside a single demonstrated round: "keep an eye on the
-# aurora deck 2 price" hands over two values, both from the user, and nothing in
-# that round says which of them will vary the next time.  Deciding it anyway is
-# what produced skills that named themselves for a value and then demanded it —
-# `record-product-price` requiring a `what_to_extract` its own name already gave,
-# so the routine could not fire from the natural second ask.
+# ── Fourth customer: the routine's INTERFACE — the framer (#1830) ──────────────
+# The labeller above names every spot in the routine's IMPLEMENTATION.  What the
+# routine IS — what to call it, what it is for, and what its user has to say to set
+# it running again — is a different question from different evidence, so it is a
+# different draw, and the two share no inputs and no outputs (#1824).
 #
-# So the question moves to its own draw, over a deliberately SMALLER space: what
-# the user asked for, and the values the labeller kept.  Naming the routine and
-# deciding what it is about are ONE decision here, which is what stops the two
-# halves from contradicting — a skill cannot call itself a price watcher and then
-# ask what to watch, because the same draw wrote both.
+# This one is asked of the ASK ALONE: the user's own turns of the round, and nothing
+# else — no tool calls, no values, no labeller output.  Nothing offers it a set to
+# sort; it MINTS the parameters by reading what the user said and deciding which
+# pieces of it they would have to say again.
 #
-# The model does NOT invent the structure (the rejected template attempt): the
-# closed set of values is handed to it and it picks a case for each, exactly as
-# every other customer of this machinery does.
+# The failure it exists to prevent is a routine that names itself for a value and
+# then demands it — `record-product-price` requiring a `what_to_extract` its own name
+# already gave, so the routine could not fire from the natural second ask.  Writing
+# the name and the parameters in ONE decision is what makes that incoherence
+# unavailable: a skill cannot call itself a price watcher and then ask what to watch,
+# because the same draw wrote both.
 #
-# Since #1828 it no longer fires from the run-end pipeline: it decided over the values
-# a per-candidate VERDICT kept, and the labeller draws no verdicts.  Contract, prompt
-# and parse are untouched — its own eval drives it, and its refusal rules stay pinned
-# deterministically — so the question is intact for whichever beat re-homes it.
+# And an accepted draw never contains an invalid line (#1828's ruling, carried to a
+# customer with nothing offered): a malformed PARAMETER line or the same parameter
+# twice is a contract violation like any other — one reroll on the unchanged context,
+# then an honest WHOLE-draw failure.  With no offered set, the missing-line gap the
+# labeller notices is invisible here, so the parse's dropped-line count
+# (``ParsedDraw.malformed``) is what makes the same rule checkable.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
-CONSTANT_TAG = "CONSTANT"
 PARAMETER_TAG = "PARAMETER"
 
-_SHAPE_NAME_LINE = LineSpec(
+_FRAME_NAME_LINE = LineSpec(
     tag=NAME_TAG,
     fields=(FieldSpec(name=DrawField.NAME, placeholder="<a short generic verb-noun name>"),),
 )
-_SHAPE_DESCRIPTION_LINE = LineSpec(
+_FRAME_DESCRIPTION_LINE = LineSpec(
     tag=DESCRIPTION_TAG,
     fields=(
         FieldSpec(name=DrawField.DESCRIPTION, placeholder="<one line: what the routine is for>"),
     ),
 )
-# The per-value role lines are PER_ITEM for the same reason the labeller's verdict
-# lines are (#1770/#1814): a value with no line simply has no role, which the caller
-# reads as PARAMETER — the direction that keeps the skill bindable.  The value name is
-# ``FieldShape.NAME`` because it is matched against the offered set, so a name carrying
-# a trailing gloss is a malformed line, not a near-miss to be salvaged — which is why
-# the contract block below renders from these specs and no longer glosses each tag
-# inline: a draw echoed the gloss back, and under a declared shape that is malformed
-# rather than tolerated.
-_CONSTANT_LINE = LineSpec(
-    tag=CONSTANT_TAG,
-    role=LineRole.PER_ITEM,
-    fields=(FieldSpec(name=DrawField.VALUE, placeholder="<value name>", shape=FieldShape.NAME),),
-)
+# One line per MINTED parameter, carved in two fields exactly like the labeller's
+# placeholder line: the name declares ``FieldShape.NAME`` because it IS the binding key
+# at instantiation (``params={<name>: …}``), so a "name" carrying its own description is
+# a malformed line rather than a 60-character key; the description is REQUIRED because
+# it is what the routine's `needs:` row renders — a parameter nobody can be told what to
+# supply for is not an interface.
 _PARAMETER_LINE = LineSpec(
     tag=PARAMETER_TAG,
     role=LineRole.PER_ITEM,
-    fields=(FieldSpec(name=DrawField.VALUE, placeholder="<value name>", shape=FieldShape.NAME),),
+    fields=(
+        FieldSpec(
+            name=DrawField.NAME,
+            placeholder="<parameter_name>",
+            shape=FieldShape.NAME,
+            separator=Separator.DASH,
+        ),
+        FieldSpec(
+            name=DrawField.DESCRIPTION,
+            placeholder="<one line: what the user supplies for it>",
+        ),
+    ),
 )
-SKILL_SHAPE_SHAPE = MicroContextShape(
-    lines=(_SHAPE_NAME_LINE, _SHAPE_DESCRIPTION_LINE, _CONSTANT_LINE, _PARAMETER_LINE)
+SKILL_FRAME_SHAPE = MicroContextShape(
+    lines=(_FRAME_NAME_LINE, _FRAME_DESCRIPTION_LINE, _PARAMETER_LINE)
 )
 
-SKILL_SHAPE_SYSTEM_PROMPT = (
-    "You are deciding what a reusable routine IS. You are given what the user "
-    "asked for once, a one-line summary of what was done for them, and the values "
-    "used to carry it out that time. Do three things:\n"
-    "1. From what the user asked for, extract the CORE USER INTENT — what they "
-    "were trying to get done when they asked. Their own words are the evidence, "
-    "and the one-line summary of what the round did is a second reading of the "
-    "same thing: the values are HOW it was carried out, not what it was FOR.\n"
-    "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
-    "the KIND of task, generic — never the specific instance — and one line that "
-    "states the intent it serves before any mechanics. A description that falls "
-    "back on a specified piece of information where the intent named something "
-    "particular has dropped the intent — say what the intent actually was.\n"
-    "3. Now picture the user coming back later to set this routine running "
-    "again, on a new occasion. What is the MINIMAL information they would have "
-    "to give you? Decide every value on that one question:\n"
-    "   - PARAMETER. They would have to say it again. The routine works the "
-    "same way whatever it is, so it cannot be known until they say — it is "
-    "asked for every time the routine is set up.\n"
-    "   - CONSTANT. They would NOT have to say it again, because the routine "
-    "already IS that. Saying it would be repeating what the name has already "
-    "promised. It stays fixed, and asking for it would be asking the user to "
-    "tell you what they came to you for.\n"
-    "   That the user supplied a value the first time settles nothing here: "
-    "they supplied all of them while showing you what to do. The question is "
-    "only what they would still have to supply once you already know how.\n"
-    "   THE USER'S OWN WORDS DECIDE THIS, not the name you happened to pick. A "
-    "thing they NAMED as the point of the task is something they would expect "
-    "you to know by now, so it is a CONSTANT — and if the name you wrote in "
-    "step 2 leaves it open, the name is what is wrong, not this answer.\n"
-    "   For example, after being asked to file the receipts from a particular "
-    "sender into a tax folder: they named receipts as the point, so a routine "
-    "that files receipts needs only the sender and the folder next time. Had "
-    "they asked instead to file whatever they point you at, they named nothing, "
-    "and every value would be a PARAMETER. Both are real routines — their ask "
-    "is what tells you which one you were taught.\n"
-    "   At least one value is always a PARAMETER: a routine that needs nothing "
-    "said to it can only ever repeat the one occasion it was shown, which makes "
-    "it a record of what happened rather than a routine. And a routine with NO "
-    "constant is one that has to be told everything it was already told — if "
-    "their ask named what to do, say so.\n"
+SKILL_FRAME_SYSTEM_PROMPT = (
+    "You are writing the public interface of a routine the assistant has just been "
+    "taught. All you are given is what the USER said while asking for it and walking "
+    "through it — their own words, one turn per line. That is deliberate: what a "
+    "routine is for, and what someone has to say to set it up, is answered by the ask "
+    "and by nothing else.\n"
+    "Do this:\n"
+    "1. Read the ask for what the user was trying to GET DONE. A routine is the KIND "
+    "of task, never the one occasion, so name it and describe it generically — and "
+    "fold what they said to look for INTO that framing rather than leaving it to be "
+    "supplied later: what a routine goes and finds is part of what it IS.\n"
+    "2. Now picture them coming back later to set the same routine running on a new "
+    "occasion. What is the MINIMAL information they would have to give you? Write one "
+    "PARAMETER line for each such piece.\n"
+    "3. Anything the framing already carries is NOT a parameter. They named it as the "
+    "point of the task, so asking for it would be asking them to tell you what they "
+    "came to you for — and if the name and description you wrote leave it open, those "
+    "are what is wrong, not this answer. Where the results are kept is never a "
+    "parameter either: the assistant manages its own storage, and nobody has to say "
+    "where things go. Neither is how often it should run, nor whether they want to be "
+    "told about it — those are settled when the routine is set running, and are no "
+    "part of what it is.\n"
+    "THEIR OWN WORDS DECIDE THIS. Asked to file the receipts from a particular sender "
+    "into a tax folder, they named receipts as the point, so a routine that files "
+    "receipts asks only for the sender. Asked instead to file whatever they point you "
+    "at, they named nothing, and what to file is a parameter. Both are real routines; "
+    "the ask is what tells you which one you were taught.\n"
+    "There is ALWAYS at least one parameter: a routine that needs nothing said to it "
+    "can only ever repeat the one occasion it was shown, and that is not a routine. "
+    "Write a separate line for each distinct thing they would have to say — two of "
+    "them named is two parameters, never one combined.\n"
     "Respond with these tagged lines and nothing else:\n"
-    f"{render_line(_SHAPE_NAME_LINE)}\n"
-    f"{render_line(_SHAPE_DESCRIPTION_LINE)}\n"
-    f"{render_line(_CONSTANT_LINE)}   (the routine is about it)\n"
-    f"{render_line(_PARAMETER_LINE)}   (the routine is pointed at it)\n"
-    "Write ONE line for EVERY value, repeating its name exactly so it maps "
-    "back — the name ALONE, with nothing after it.\n"
-    "Write nothing else — no preamble, no explanation, no restating the routine."
+    f"{render_line(_FRAME_NAME_LINE)}\n"
+    f"{render_line(_FRAME_DESCRIPTION_LINE)}\n"
+    f"{render_line(_PARAMETER_LINE)}\n"
+    "Use a single lowercase word or snake_case for <parameter_name>, and give each "
+    "parameter its own line and its own name.\n"
+    "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
+    "conversation."
 )
 
-# The single per-call ask; what the user wanted + the values are the content.
-_SKILL_SHAPE_INSTRUCTION = (
-    "Name this routine by the kind of task it does, describe it in one line, and say "
-    "for every value whether the routine is about it or merely pointed at it."
-)
+# The rule a model-written name must survive to be a BINDING KEY (#1668) — lowercase,
+# whitespace to underscores, nothing outside ``[a-z0-9_]``, no stray underscores, and
+# EMPTY when nothing survives (a name that could never be bound).  Load-bearing: a
+# skill's parameter name is what instantiation keys on (``params={'url': …}``), and
+# display form == invocation form everywhere it renders.
+#
+# It lives beside the draws that produce such names rather than in the extraction
+# pipeline that used to own it, because the FRAMER mints the key inside its own draw —
+# so the rule has to be reachable from here, and this module is the leaf the pipeline
+# imports rather than the other way round.  Public: the labelling eval scores "did the
+# draw produce a usable binding key" through THIS function, never a copy of it.
+_PARAM_WHITESPACE = re.compile(r"\s+")
+_PARAM_NON_IDENTIFIER = re.compile(r"[^a-z0-9_]")
+
+
+def slug_parameter_name(raw: str) -> str:
+    """Harden a model-written semantic name into an identifier-safe binding key."""
+    lowered = _PARAM_WHITESPACE.sub("_", raw.strip().lower())
+    return _PARAM_NON_IDENTIFIER.sub("", lowered).strip("_")
 
 
 # ── Third customer: conversation-state classification (#1706) ──────────────────
@@ -499,10 +508,11 @@ class LeafLabel(BaseModel):
     that spot IS, and the one-line ``description`` of what belongs there each run.
 
     ``name`` is carried VERBATIM as the model wrote it — hardening it into a binding
-    key is :func:`penny.skill_extraction.slug_parameter_name`'s, applied where the name
-    becomes a key rather than here, so what the draw committed to stays readable in the
-    ledger and in an eval report.  ``description`` is empty only when the line stopped
-    after the name (the grammar's one optional field)."""
+    key is :func:`slug_parameter_name`'s, applied where the name becomes a key rather
+    than here, so what the draw committed to stays readable in the ledger and in an
+    eval report (a spot's identity is its CURRENT name; this one is a label on it).
+    ``description`` is empty only when the line stopped after the name (the grammar's
+    one optional field)."""
 
     name: str
     description: str = ""
@@ -522,21 +532,32 @@ class SkillLabels(BaseModel):
     labels: dict[str, LeafLabel] = {}
 
 
-class SkillShape(BaseModel):
-    """The shape micro-context's typed result (#1803): what the routine IS — a
-    GENERIC verb-noun ``name`` + one-line ``description``, and ``fixed``, the values
-    the routine is ABOUT rather than pointed at.
+class FramedParameter(BaseModel):
+    """One parameter the framer MINTED (#1830): the ``name`` a user's binding will be
+    keyed by (``params={<name>: …}``) and the one line of what they supply for it.
 
-    ``name``/``description`` are non-blank by construction and SUPERSEDE the
-    labeller's, because they were written together with ``fixed`` — that is the
-    whole point of the second draw, and taking the name from one draw and the
-    constants from another would re-open the contradiction (#1803).  ``fixed`` is
-    validated for MEMBERSHIP against the offered values and can never cover all of
-    them: a routine with nothing left to bind can only repeat its demonstration."""
+    Unlike a :class:`LeafLabel`'s name, this one is HARDENED here rather than
+    downstream — it is not a label on something that already has an identity, it IS
+    the identity, so the draw's own result carries the key instantiation will use."""
 
     name: str
     description: str
-    fixed: frozenset[str] = frozenset()
+
+
+class SkillSignature(BaseModel):
+    """The framer's typed result (#1830): a routine's whole public interface, written
+    from the user's ask alone — a GENERIC verb-noun ``name``, a one-line
+    ``description``, and the ordered ``parameters`` the user would have to say again.
+
+    All three come out of ONE decision, which is what stops them contradicting: a
+    routine cannot name itself for something it then asks for, because the same draw
+    wrote both.  ``parameters`` is never empty and never repeats a name — a draw that
+    asked for nothing, or asked for one thing twice, is refused before it reaches
+    here."""
+
+    name: str
+    description: str
+    parameters: tuple[FramedParameter, ...] = ()
 
 
 class StateDrawOutcome(StrEnum):
@@ -659,34 +680,38 @@ class MicroContext:
             return None
         return _leaf_labels(drawn)
 
-    async def shape_skill(
-        self, content: str, values: Sequence[str], *, run_target: str | None = None
-    ) -> SkillShape | None:
-        """Decide what a distilled routine IS (#1803) — its GENERIC name +
-        description and which of ``values`` it is ABOUT — the FOURTH customer of this
-        machinery.  Rides the SAME ``_valid_draw`` step as the other three against its
-        own declared shape (:data:`SKILL_SHAPE_SHAPE`), plus the runtime constraint a
-        static shape cannot carry: the drawn constants must not cover EVERY offered
-        value, which would leave a routine nothing to bind and so able only to repeat
-        its own demonstration.
+    async def frame_skill(
+        self, content: str, *, run_target: str | None = None
+    ) -> SkillSignature | None:
+        """Write a routine's public INTERFACE from the user's ask alone (#1830) — the
+        FOURTH customer of this machinery.  Rides the SAME ``_valid_draw`` step as the
+        other three against its own declared shape (:data:`SKILL_FRAME_SHAPE`) and the
+        bare-content user turn (the rendered ask IS the whole document), plus the
+        runtime constraint a static shape cannot carry: the draw must mint at least one
+        well-formed parameter, carry no broken PARAMETER line, and never name the same
+        parameter twice.
 
-        ``None`` on any failure degrades to the labeller's name with no constants at
-        all — every value stays a bindable parameter, exactly the pre-#1803 behaviour,
-        so the shape draw can only ever ADD the distinction, never cost a skill its
-        parameters."""
+        It takes NO offered set — that is the point.  ``content`` is the user's own
+        turns and nothing else, so the parameters are minted from the ask rather than
+        sorted out of a list somebody else produced (#1824).
+
+        ``None`` on any failure; the caller falls back to the deterministic slug with
+        no parameters, which is honest degradation rather than a half-written
+        interface."""
         drawn = await self._valid_draw(
             content,
-            _SKILL_SHAPE_INSTRUCTION,
+            "",
             run_target,
-            shape=SKILL_SHAPE_SHAPE,
-            accepts=lambda parsed: _leaves_something_bindable(parsed, values),
-            system_prompt=SKILL_SHAPE_SYSTEM_PROMPT,
-            agent_name=PennyConstants.SKILL_SHAPE_AGENT_NAME,
-            prompt_type=PennyConstants.SKILL_SHAPE_PROMPT_TYPE,
+            shape=SKILL_FRAME_SHAPE,
+            accepts=_mints_a_usable_signature,
+            system_prompt=SKILL_FRAME_SYSTEM_PROMPT,
+            agent_name=PennyConstants.SKILL_FRAME_AGENT_NAME,
+            prompt_type=PennyConstants.SKILL_FRAME_PROMPT_TYPE,
+            user_template=_BARE_CONTENT_TEMPLATE,
         )
         if isinstance(drawn, DrawFailure):
             return None
-        return _skill_shape(drawn, values)
+        return _skill_signature(drawn)
 
     async def classify_state(
         self,
@@ -894,47 +919,51 @@ def _leaf_labels(drawn: ParsedDraw) -> SkillLabels:
     )
 
 
-def _drawn_constants(drawn: ParsedDraw, values: Sequence[str]) -> frozenset[str]:
-    """The offered values the draw marked CONSTANT (#1803), MEMBERSHIP-filtered.
+def _mints_a_usable_signature(drawn: ParsedDraw) -> bool:
+    """The runtime constraint the framing shape can't carry (#1830) — and the whole of
+    what makes an accepted signature usable, with nothing offered to check it against.
 
-    A ``PARAMETER`` line for the same value CONTRADICTS the constant and wins — the
-    bindable direction is the safe one, the same rule the labeller's repeated-line
-    drop encodes.  A line naming something never offered addresses nothing, so it is
-    dropped rather than invented into a constant."""
-    offered = set(values)
-    roles = {
-        tag: {
-            value
-            for item in drawn.items
-            if item.tag == tag and (value := item.fields[DrawField.VALUE]) in offered
-        }
-        for tag in (CONSTANT_TAG, PARAMETER_TAG)
-    }
-    return frozenset(roles[CONSTANT_TAG] - roles[PARAMETER_TAG])
+    Three ways to violate it, each answered the same way (one reroll on the unchanged
+    context, then an honest whole-draw failure).  NO parameter is the floor the prompt
+    states: a routine that needs nothing said to it can only repeat the one occasion it
+    was shown.  A MALFORMED line is a line the parse dropped — the grammar's
+    best-effort default is wrong for a customer with no offered set, because there is
+    no gap for it to show up as, so the drop is counted and refused instead.  A
+    REPEATED name is a contradictory draw, and a parameter's name is its binding key:
+    two lines under one key means one of them silently disappears at instantiation.
 
-
-def _leaves_something_bindable(drawn: ParsedDraw, values: Sequence[str]) -> bool:
-    """The floor the shape prompt states, enforced (#1803): a draw may not mark EVERY
-    offered value constant.  A routine that needs nothing said to it can only repeat
-    the one occasion it was shown, so this is a contract violation like any other —
-    one reroll of the unchanged context, then honest degradation."""
-    return not values or _drawn_constants(drawn, values) != set(values)
+    Names are compared HARDENED, because that is what they become — ``Page URL`` and
+    ``page_url`` are one key, not two."""
+    if drawn.malformed:
+        return False
+    keys = [slug_parameter_name(item.fields[DrawField.NAME]) for item in drawn.items]
+    return bool(keys) and all(keys) and len(set(keys)) == len(keys)
 
 
-def _skill_shape(drawn: ParsedDraw, values: Sequence[str]) -> SkillShape | None:
-    """The shape draw read by FIELD NAME — what the routine is called, what it is for,
-    and which values it is ABOUT.  ``None`` only if a required line somehow went missing
-    — the same belt-and-braces guard :func:`_skill_label` keeps, since both lines are
-    REQUIRED in the declared shape and a draw missing either never parses.
+def _skill_signature(drawn: ParsedDraw) -> SkillSignature | None:
+    """The framing draw read by FIELD NAME — what the routine is called, what it is
+    for, and what its user has to supply.  ``None`` only if a REQUIRED line somehow went
+    missing, which the declared shape already refuses; kept as the belt-and-braces guard
+    so a blank interface can never be persisted.
 
-    A blank name reaches nothing: the caller degrades to the labeller's name, which is
-    the documented floor, rather than shipping a routine slugged from an empty string
-    with an empty description."""
+    Parameter names are hardened through :func:`slug_parameter_name` HERE, unlike a
+    leaf label's: this name is not a description of something that already has an
+    identity, it is the binding key itself."""
     name = drawn.field(NAME_TAG, DrawField.NAME)
     description = drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION)
     if name is None or description is None:
         return None
-    return SkillShape(name=name, description=description, fixed=_drawn_constants(drawn, values))
+    return SkillSignature(
+        name=name,
+        description=description,
+        parameters=tuple(
+            FramedParameter(
+                name=slug_parameter_name(item.fields[DrawField.NAME]),
+                description=item.fields[DrawField.DESCRIPTION],
+            )
+            for item in drawn.items
+        ),
+    )
 
 
 def _state_is_bound(

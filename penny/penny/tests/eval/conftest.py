@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,12 +49,7 @@ from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFu
 from penny.llm.similarity import embed_text
 from penny.penny import Penny
 from penny.responses import PennyResponse
-from penny.skill_extraction import (
-    ShapeableValue,
-    build_naming_content,
-    build_shape_content,
-    slug_parameter_name,
-)
+from penny.skill_extraction import build_framing_content, build_naming_content
 from penny.startup import get_restart_message
 from penny.tests.conftest import TEST_SENDER, require_memory, run_penny_with_server
 from penny.tests.eval import artifacts as eval_artifacts
@@ -71,10 +67,12 @@ from penny.text_validity import (
 from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
+    FramedParameter,
     MicroContext,
     SkillLabels,
-    SkillShape,
+    SkillSignature,
     StateDrawOutcome,
+    slug_parameter_name,
 )
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -1194,7 +1192,8 @@ class MicroPlacement(StrEnum):
     # draw selects the instruction the turn is answered under) — its events belong at the head of
     # the turn it decides, right after the user turn that provoked it.
     TURN_HEAD = "turn_head"
-    # It ran AFTER the run's last action (the run-end skill labeller) — its events close the turn.
+    # It ran AFTER the run's last action (the run-end labeller and framer) — its events close the
+    # turn.
     RUN_CLOSE = "run_close"
 
 
@@ -1205,7 +1204,7 @@ MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
     PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
-    PennyConstants.SKILL_SHAPE_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    PennyConstants.SKILL_FRAME_AGENT_NAME: MicroPlacement.RUN_CLOSE,
 }
 
 _NUDGE_FRAMES = (
@@ -2818,17 +2817,17 @@ DemoTurn = tuple[str, str]
 LabellerEval = Callable[..., Awaitable[None]]
 
 
-# The customers that draw at run end: the labeller (provenance) and the shape draw
-# (what the routine IS).  One list, so the report and the reroll signal can never
-# disagree about who spoke at the end of a run.
+# The customers that draw at run end: the LABELLER (every spot in the implementation)
+# and the FRAMER (the interface, from the ask alone).  One list, so the report and the
+# reroll signal can never disagree about who spoke at the end of a run.
 RUN_END_CUSTOMERS = (
     PennyConstants.SKILL_NAMING_AGENT_NAME,
-    PennyConstants.SKILL_SHAPE_AGENT_NAME,
+    PennyConstants.SKILL_FRAME_AGENT_NAME,
 )
 
 
 def _run_end_rerolled(db: Database) -> bool:
-    """Did EITHER run-end customer draw more than once (#1770/#1803) — the fragile
+    """Did EITHER run-end customer draw more than once (#1828/#1830) — the fragile
     signal, a sample that only got there by recovering.
 
     Counted PER customer, never in total: a run end is two draws by design, so a
@@ -3010,8 +3009,9 @@ def _score_labelling(
     offered spot got a usable name and a description of what belongs there, plus each
     case's own structural claim.
 
-    The drawn labels then ride along ADVISORY (``scored=False``, the ``_score_shape``
-    precedent), so every report shows verbatim what the model committed to — whether a
+    The drawn labels then ride along ADVISORY (``scored=False``, the same rule
+    ``_score_framing`` keeps), so every report shows verbatim what the model committed
+    to — whether a
     name is WELL judged is a reading no scorer should fake, and it is what the reference
     outputs on the ticket are read against at review."""
     checks: list[Check] = []
@@ -3032,93 +3032,191 @@ def _score_labelling(
     return checks
 
 
-ShapeEval = Callable[..., Awaitable[None]]
+FramerEval = Callable[..., Awaitable[None]]
+
+# A word token of a drawn name or description — what family classification and the
+# generic-framing check both read.  Word-boundary, never substring: a description
+# saying "festival" must not read as the instance token "fest", while the instance
+# itself tokenises to it.
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-def _score_shape(
-    shape: SkillShape | None,
-    values: Sequence[ShapeableValue],
-    constants: Sequence[str],
+class ParameterFamily(NamedTuple):
+    """One parameter the ask genuinely requires, as the SET of things it could
+    reasonably be called (#1830).
+
+    ``label`` is the reference name from the agreed pair — the diff-join key a check is
+    named for, never a string the model has to produce.  ``tokens`` is the semantic
+    breadth the code owner agreed to: a drawn parameter belongs to this family when its
+    name (or, only when no family matched the name, its description) uses any of them.
+    So ``page_to_watch`` lands on the family the reference calls ``url``, while an extra
+    parameter nobody asked for lands nowhere and shows up in the count."""
+
+    label: str
+    tokens: tuple[str, ...]
+
+
+def _tokens(text: str) -> set[str]:
+    """A drawn string's word tokens, lowercased — ``first_site`` → ``{first, site}``."""
+    return set(_TOKEN_RE.findall(text.lower()))
+
+
+def _matching_family(text: str, families: Sequence[ParameterFamily]) -> ParameterFamily | None:
+    """The first family whose agreed tokens ``text`` uses, or ``None``."""
+    return next((f for f in families if _tokens(text) & set(f.tokens)), None)
+
+
+def _classified(
+    signature: SkillSignature, families: Sequence[ParameterFamily]
+) -> dict[str, list[FramedParameter]]:
+    """Every drawn parameter grouped under the family it answers, NAME FIRST (#1830).
+
+    A parameter's name is its identity, so the name pass runs over ALL of them before
+    any description is read, and a family a name already claimed is closed to the
+    description fallback.  Otherwise a description that merely mentions the page in
+    passing ("the search that finds the listings on a page") would make a second
+    parameter read as the page as well, and the set would look complete when it is
+    not."""
+    by_name = {p.name: _matching_family(p.name, families) for p in signature.parameters}
+    claimed = {family.label for family in by_name.values() if family is not None}
+    open_families = [family for family in families if family.label not in claimed]
+    grouped: dict[str, list[FramedParameter]] = {family.label: [] for family in families}
+    for parameter in signature.parameters:
+        family = by_name[parameter.name] or _matching_family(parameter.description, open_families)
+        if family is not None:
+            grouped[family.label].append(parameter)
+    return grouped
+
+
+def _generic_framing_check(signature: SkillSignature, instance_tokens: Sequence[str]) -> Check:
+    """The name and description are the KIND of task, never the occasion (#1830).
+
+    Structural, not a judgment: none of the case's instance tokens — the book, the two
+    papers, the ticker, the city, the festival — may appear in either.  A framing that
+    carries one has named the occasion it was taught on, which is the routine that can
+    only ever run once."""
+    used = sorted(_tokens(f"{signature.name} {signature.description}") & set(instance_tokens))
+    return Check(
+        "the framing is generic",
+        not used,
+        kind="state",
+        rationale=None if not used else f"named the occasion: {', '.join(used)}",
+    )
+
+
+def _score_framing(
+    signature: SkillSignature | None,
+    families: Sequence[ParameterFamily],
+    instance_tokens: Sequence[str],
 ) -> list[Check]:
-    """The shape case's graded checks (#1803), read off the draw's own typed result.
+    """The framing case's graded checks (#1830), read off the draw's own typed result.
 
-    One check per value — is the routine ABOUT it, or merely pointed AT it — because
-    that is the whole decision.  Scoring the returned ``SkillShape`` rather than a
-    persisted skill is deliberate: the plumbing from a constant to a baked leaf is
-    pinned deterministically in ``tests/test_skill_extraction.py``, so this case spends
-    its live-model budget on the judgment and nothing else.
+    The parameter SET is the contract, and it is EXACT: each expected family is answered
+    by exactly one drawn parameter, and the total count matches — which is the same
+    check as "nothing else was asked for", since anything extra is a piece the user
+    would be made to re-supply that their own ask already settled.  Semantic breadth
+    lives in the families (a reference name is a target, never a string to match), so a
+    well-judged different word passes and a missing or invented parameter does not.
 
-    A refused draw fails every check with its reason named, never silently: the
-    degraded state (everything stays a parameter) is honest behaviour, but it is not
-    the decision the case is asking for.
+    Plus the structural generic-framing check: the occasion never appears in the name
+    or the description.
 
-    The drawn NAME and DESCRIPTION ride along ADVISORY (``scored=False``).  They are
-    half the decision — a routine that names itself for a value it then demands is the
-    whole defect — but "is this name grounded in the user's intent" is a judgment no
-    scorer should fake.  Rendered so a reader sees what the draw committed to, never
-    scored."""
-    expected = frozenset(constants)
-    checks: list[Check] = []
-    for value in values:
-        about = value.name in expected
-        role = "about it (constant)" if about else "pointed at it (parameter)"
-        if shape is None:
-            checks.append(
-                Check(
-                    f"{role}: {value.name!r}",
-                    False,
-                    kind="state",
-                    rationale="the draw was refused — every value stayed a parameter",
-                )
-            )
-            continue
-        drawn_constant = value.name in shape.fixed
-        checks.append(
+    The drawn NAME, DESCRIPTION and every parameter then ride ADVISORY
+    (``scored=False``) — whether a name is WELL judged is read at joint review against
+    the reference outputs on the ticket, and no scorer should fake that."""
+    if signature is None:
+        return _refused_framing(families)
+    grouped = _classified(signature, families)
+    return [
+        *(_family_check(family, grouped[family.label]) for family in families),
+        _exact_count_check(signature, families),
+        _generic_framing_check(signature, instance_tokens),
+        *_framing_advisories(signature),
+    ]
+
+
+def _refused_framing(families: Sequence[ParameterFamily]) -> list[Check]:
+    """A refused draw fails every scored check with its reason named, never silently.
+    The degraded state — a slug-named routine with nothing to bind — is honest
+    behaviour, but it is not the decision the case is asking for."""
+    refused = "the draw was refused — no signature came back"
+    return [
+        *(
+            Check(f"asks for the {family.label}", False, kind="state", rationale=refused)
+            for family in families
+        ),
+        Check("asks for nothing else", False, kind="state", rationale=refused),
+        Check("the framing is generic", False, kind="state", rationale=refused),
+    ]
+
+
+def _family_check(family: ParameterFamily, matched: Sequence[FramedParameter]) -> Check:
+    """One expected piece of the ask, answered by exactly one drawn parameter — nothing
+    answering it is a piece the routine can no longer be pointed at, and two answering it
+    is the same piece asked for twice."""
+    rationale = None
+    if not matched:
+        rationale = "no parameter answers it"
+    elif len(matched) > 1:
+        rationale = f"{len(matched)} answer it: {', '.join(p.name for p in matched)}"
+    return Check(
+        f"asks for the {family.label}", len(matched) == 1, kind="state", rationale=rationale
+    )
+
+
+def _exact_count_check(signature: SkillSignature, families: Sequence[ParameterFamily]) -> Check:
+    """Nothing else was asked for — the same check as the count, since anything extra is
+    a piece the user would be made to re-supply that their own ask already settled."""
+    drawn = len(signature.parameters)
+    return Check(
+        "asks for nothing else",
+        drawn == len(families),
+        kind="state",
+        rationale=None if drawn == len(families) else f"drew {drawn}, expected {len(families)}",
+    )
+
+
+def _framing_advisories(signature: SkillSignature) -> list[Check]:
+    """What the draw committed to, verbatim and UNSCORED — whether a name is WELL judged
+    is read at joint review against the reference outputs on the ticket, and no scorer
+    should fake that."""
+    return [
+        Check(f"named it {signature.name!r}", True, kind="state", scored=False),
+        Check(f"described it {signature.description!r}", True, kind="state", scored=False),
+        *(
             Check(
-                f"{role}: {value.name!r}",
-                drawn_constant == about,
+                f"asks {p.name!r} — {p.description!r}",
+                True,
                 kind="state",
-                rationale=None if drawn_constant == about else "the draw decided the other way",
+                scored=False,
             )
-        )
-    if shape is not None:
-        checks.append(Check(f"named it {shape.name!r}", True, kind="state", scored=False))
-        checks.append(
-            Check(f"described it {shape.description!r}", True, kind="state", scored=False)
-        )
-    return checks
+            for p in signature.parameters
+        ),
+    ]
 
 
 @pytest.fixture
-def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEval:
-    """Drive the run-end SHAPE micro-context (#1803) N times, and NOTHING else.
+def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> FramerEval:
+    """Drive the run-end skill FRAMER (#1830) N times, and NOTHING else.
 
-    The labeller is not run. Its output — the values it kept, with their semantic
-    names and one-line descriptions — is supplied as a FIXTURE, so the only live
-    variable in the case is the shape draw's own judgment. That isolation is the
-    point: driving both draws handed this decision a different input every sample
-    (three different names for the same value across five samples, one of them
-    mangled by a labeller parse slip), and a miss could not be attributed to the
-    draw under test. The labeller has its own contract next door.
+    The framer's whole input is the round's USER turns, so the case IS those turns —
+    there is no upstream draw to isolate it from and nothing else to fixture.  The
+    labeller is not run: it decides the implementation from the demonstration, this
+    decides the interface from the ask, and neither sees the other's evidence (#1824).
 
-    Its inputs are all fixtures: the user's turns, the labeller's one-line summary of
-    the round, and the values it kept — each authored, so the draw sees the same thing
-    every sample.
-
-    Everything the draw consumes is built by PRODUCTION code — ``build_shape_content``
-    renders the content and ``MicroContext.shape_skill`` makes the call, so the case
-    exercises the shipped prompt and the shipped parse. Synthetic here means the
-    VALUES are authored, never the prompt (an eval that swaps in an artificial prompt
-    measures nothing about what ships).
+    Everything the draw consumes is built by PRODUCTION code — ``build_framing_content``
+    renders the document and ``MicroContext.frame_skill`` makes the call — so the case
+    exercises the shipped prompt and the shipped parse.  Synthetic here means the TURNS
+    are authored, never the prompt (an eval that swaps in an artificial prompt measures
+    nothing about what ships).
     """
 
     async def _run(
         *,
         case_id: str,
-        values: Sequence[ShapeableValue],
-        constants: Sequence[str],
-        conversation: Sequence[str],
-        round_summary: str = "",
+        turns: Sequence[str],
+        parameters: Sequence[ParameterFamily],
+        instance_tokens: Sequence[str],
         samples: int = SAMPLES,
         min_pass_rate: float | None = 0.75,
         timeout: float = 60.0,
@@ -3127,10 +3225,9 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
         eval_artifacts.begin_case(case_id)
         results: list[SampleResult] = []
         perf = _Perf()
-        turns: list[tuple[str, str]] = [
-            (PennyConstants.MessageDirection.INCOMING, turn) for turn in conversation
-        ]
-        content = build_shape_content(list(values), "", turns, round_summary)
+        content = build_framing_content(
+            "", [(PennyConstants.MessageDirection.INCOMING, turn) for turn in turns]
+        )
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()
@@ -3143,21 +3240,17 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
                 async with run_penny_with_server(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
-                        shape = await asyncio.wait_for(
-                            micro.shape_skill(
-                                content,
-                                [value.name for value in values],
-                                run_target=penny.chat_agent.name,
-                            ),
+                        signature = await asyncio.wait_for(
+                            micro.frame_skill(content, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
-                        scored = _score_shape(shape, values, constants)
+                        scored = _score_framing(signature, parameters, instance_tokens)
                         result = _guarded_graded(list(scored), [])
                         result.fragile = result.passed and _run_end_rerolled(penny.db)
                         results.append(result)
                         _stamp_cause(penny.db, result)
                     except TimeoutError:
-                        result = SampleResult.binary(["no shape draw within timeout"])
+                        result = SampleResult.binary(["no framing draw within timeout"])
                         _stamp_cause(penny.db, result, timed_out=True)
                         results.append(result)
                     _write_classifier_report(
@@ -3165,8 +3258,8 @@ def shape_eval(make_config: Callable[..., Config], tmp_path, request) -> ShapeEv
                         case_id,
                         sample_index,
                         result=result,
-                        phrasing=conversation[-1] if conversation else "",
-                        agent_names=(PennyConstants.SKILL_SHAPE_AGENT_NAME,),
+                        phrasing=turns[-1] if turns else "",
+                        agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(penny.db.messages.prompt_perf())

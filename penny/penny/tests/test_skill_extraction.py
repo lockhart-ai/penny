@@ -12,15 +12,16 @@ value binds against a prior result's PAYLOAD (the frame stripped) while a topic-
 key still doesn't · the run-end narration frame renders the name plus the
 demonstrated-on instance.
 
-The #1828 inversion: the run-end draw NAMES every spot and judges nothing.  A
+The #1824 inversion, both halves.  The LABELLER names every spot and judges nothing: a
 labelled spot becomes a placeholder carrying what belongs there — never the frozen
-demonstrated value — so a fully-labelled routine comes out with NO parameters and a
-slug name until the framer beat decides the interface; a spot the draw missed,
-malformed, or named twice keeps its arg-derived required parameter (absence is never a
-drop); an attachment-marked leaf is a placeholder either way, because a destination is
-never a parameter (#1827).  The labelling system prompt rides as a whole-render
-literal, and the SHAPE draw — no longer called from this pipeline — keeps its own
-parse/refusal rules pinned directly against ``MicroContext.shape_skill``.
+demonstrated value — while a spot the draw missed, malformed, or named twice keeps its
+arg-derived required parameter, and an attachment-marked leaf is a placeholder either
+way because a destination is never a parameter (#1827).  The FRAMER writes the
+interface from the user's ask alone (#1830) — the name, the description and the
+parameters — and its every violation class is pinned against
+``MicroContext.frame_skill`` with the reroll count asserted, since "no partial salvage"
+is a claim about how many times the model was asked.  Both system prompts ride as
+whole-render literals, and the two draws are shown provably different documents.
 
 All content is synthetic (aurora / faux-market).
 """
@@ -31,6 +32,7 @@ import json
 from typing import Any, cast
 
 import pytest
+from similarity.dedup import JobSide, is_same_job
 
 from penny.constants import PennyConstants
 from penny.database import Database
@@ -57,17 +59,17 @@ from penny.skill_extraction import (
     NoExtraction,
     SkillExtracted,
     SkillExtractor,
-    slug_parameter_name,
 )
 from penny.tests.eval.test_state_transitions import learn_to_apply_fixture_skill
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import migrated_db
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.micro_context import (
+    SKILL_FRAME_SYSTEM_PROMPT,
     SKILL_NAMING_SYSTEM_PROMPT,
-    SKILL_SHAPE_SYSTEM_PROMPT,
     MicroContext,
-    SkillShape,
+    SkillSignature,
+    slug_parameter_name,
 )
 from penny.tools.skill_tools import render_skill_brief, render_skill_full
 
@@ -507,13 +509,47 @@ _INVENTED_WRITE_ARGS = {
 _INVENTED_WRITE = ("collection_write", _INVENTED_WRITE_ARGS, _WRITE_OK, True)
 
 
-def _naming_model(content: str) -> MockLlmClient:
-    """A text model client whose every chat returns ``content`` (the naming draw)."""
+def _run_end_model(*, labels: str = "", framing: str = "") -> MockLlmClient:
+    """A text model client answering each RUN-END draw with its own canned output.
+
+    The labeller and the framer share a client and differ only in their system prompt,
+    so dispatching on it is what keeps a case's labelling fixture out of the framer's
+    answer and vice versa — which is the point of the split: neither draw sees the
+    other's evidence (#1824).  A draw with nothing canned for it gets an empty output,
+    which violates its contract and takes the honest fallback — exactly the state a case
+    that only cares about the other half wants."""
     model = MockLlmClient()
-    model.set_response_handler(
-        lambda _request, _count: LlmResponse(message=LlmMessage(role="assistant", content=content))
-    )
+
+    def respond(request: dict, _count: int) -> LlmResponse:
+        drawn = framing if _system(request) == SKILL_FRAME_SYSTEM_PROMPT else labels
+        return LlmResponse(message=LlmMessage(role="assistant", content=drawn))
+
+    model.set_response_handler(respond)
     return model
+
+
+def _system(request: dict) -> str:
+    """One logged request's system prompt — which run-end customer made it."""
+    return next(
+        (m.get("content", "") for m in request["messages"] if m.get("role") == "system"), ""
+    )
+
+
+def _draws(model: MockLlmClient, system_prompt: str) -> int:
+    """How many times ONE run-end customer drew.  Counted by its system prompt because
+    the two share a client: "the draw plus exactly one reroll" is a claim about one
+    customer, and a total would move whenever the other one's luck changed."""
+    return sum(1 for request in model.requests if _system(request) == system_prompt)
+
+
+def _last_request(model: MockLlmClient, system_prompt: str) -> dict:
+    """The most recent request ONE run-end customer made."""
+    return next(r for r in reversed(model.requests) if _system(r) == system_prompt)
+
+
+def _user_turn(request: dict) -> str:
+    """One logged request's user turn — the whole document a micro-context read."""
+    return next((m.get("content", "") for m in request["messages"] if m.get("role") == "user"), "")
 
 
 # ── #1665: orientation verbs excluded from steps AND the qualifying read ───────
@@ -575,58 +611,60 @@ async def test_wrapped_write_value_binds_against_the_result_payload(db):
     assert "key" in hole_names  # the topic-name key did NOT false-bind — it's a parameter
 
 
-# ── #1665: generic naming via the micro-context, slug fallback ────────────────
+# ── #1824: the two run-end draws share no evidence ────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_the_labelling_draw_reads_the_conversation_and_never_names_the_routine(db):
-    """The labelling draw is shown the conversation that led to the routine, with each
-    turn attributed to its speaker (#1770/#1828) — the elicit round as ``penny:``, the
-    demonstrating message as the last ``user:`` turn.
+async def test_the_two_run_end_draws_are_shown_different_evidence(db):
+    """Implementation and interface are decided apart, so the two draws are handed
+    different documents (#1824) — and this is where that separation is real rather than
+    declared.
 
-    Presented under its own unattributed heading, the draw once read the conversation as
-    the only record of what the user said and reasoned correctly to the wrong answer;
-    attribution is what fixed it, and the elicit turn is now part of the evidence rather
-    than a second voice pretending to be the user.
+    The LABELLER is shown the conversation that led to the routine with each turn
+    attributed to its speaker (#1770/#1828) — the elicit round as ``penny:``, the
+    demonstrating message as the last ``user:`` turn — plus the numbered steps and every
+    spot in them.  Presented under its own unattributed heading, the draw once read the
+    conversation as the only record of what the user said and reasoned correctly to the
+    wrong answer; attribution is what fixed it.
 
-    What it does NOT do is name the routine: the skill's name and description are the
-    deterministic slug of the triggering message until the framer beat lands (#1824)."""
-    model = _naming_model(
+    The FRAMER is shown the user's own turns and NOTHING else (#1830): no assistant
+    turns, no steps, no spots.  It never learns which tools ran, and the labeller never
+    learns what the user wanted, which is what stops the two contradicting each other.
+    Both user turns are the whole ask, and neither turn is repeated."""
+    labels = (
         "PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
         "PLACEHOLDER memory: storage_collection — the collection this is set up on"
     )
+    model = _run_end_model(labels=labels)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     # The instigating ask precedes the demonstration in the conversation, and Penny's
     # elicit round sits between them — the labelling step must SEE both (#1658: what a
     # spot IS is only legible against why the routine exists).
-    db.messages.log_message(
-        direction="incoming",
-        sender="user",
-        content="can you keep an eye on the zephyr lamp listing for me?",
-    )
-    db.messages.log_message(
-        direction="outgoing",
-        sender="penny",
-        content="i don't have a routine for that — walk me through it once?",
-    )
+    ask = "can you keep an eye on the zephyr lamp listing for me?"
+    elicit = "i don't have a routine for that — walk me through it once?"
+    db.messages.log_message(direction="incoming", sender="user", content=ask)
+    db.messages.log_message(direction="outgoing", sender="penny", content=elicit)
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert result.skill.name == "read-the-aurora-deck-2-listing"  # the slug, not the draw's
-    assert result.skill.description == _UTTERANCE
     assert result.origin_message == _UTTERANCE
-    naming_request = model.requests[-1]
-    naming_content = " ".join(m.get("content", "") for m in naming_request["messages"])
+    naming_content = _user_turn(_last_request(model, SKILL_NAMING_SYSTEM_PROMPT))
     assert "Conversation that led to the construction of this routine" in naming_content
-    assert "user: can you keep an eye on the zephyr lamp listing for me?" in naming_content
-    assert "penny: i don't have a routine for that — walk me through it once?" in naming_content
+    assert f"user: {ask}" in naming_content
+    assert f"penny: {elicit}" in naming_content
     assert f"user: {_UTTERANCE}" in naming_content, "the demonstrating turn is the user's"
-    # The user turn is the rendered document ALONE — the ask lives in the system prompt.
-    assert not naming_content.startswith("Instruction:")
+
+    # The framer's whole document: the user's turns, one per line, and nothing else.
+    assert _user_turn(_last_request(model, SKILL_FRAME_SYSTEM_PROMPT)) == f"{ask}\n{_UTTERANCE}"
+
+    # Both user turns are the rendered document ALONE — the ask lives in the system
+    # prompt, so neither draw carries an instruction wrapper.
     assert "Instruction:" not in naming_content
+    for request in model.requests:
+        assert not _user_turn(request).startswith("Instruction:")
 
 
 @pytest.mark.asyncio
@@ -638,7 +676,7 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     A draw that labelled NOTHING is a contract violation like any other — one reroll of
     the unchanged context, then the honest fallback — while a draw that labelled SOME
     spots is best-effort and keeps whatever it landed."""
-    model = _naming_model("I think this is a price-watching routine of some kind.")
+    model = _run_end_model(labels="I think this is a price-watching routine of some kind.")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
@@ -646,43 +684,62 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     assert isinstance(result, SkillExtracted)
     assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
     assert result.skill.description == _UTTERANCE
-    assert len(model.requests) == 2  # the draw + exactly one reroll, then the fallback
+    assert (
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    )  # the draw + exactly one reroll, then the fallback
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
 
 
-# ── #1828: every labelled spot becomes what belongs there ─────────────────────
+# ── #1824/#1828/#1830: the two halves land on one skill ───────────────────────
+
+_LABELLED_ROUND = (
+    "PLACEHOLDER queries: listing_page — the page whose price this routine reads\n"
+    "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
+    "PLACEHOLDER memory: storage_collection — the collection this is set up on\n"
+    "PLACEHOLDER key: note_key — what to call the note it saves\n"
+    "PLACEHOLDER content: note_text — the note it writes about the page"
+)
+_FRAMED_ROUND = (
+    "NAME: price-watcher\n"
+    "DESCRIPTION: keep a listing's current price up to date\n"
+    "PARAMETER listing_url — the listing whose price to read"
+)
 
 
 @pytest.mark.asyncio
-async def test_every_labelled_spot_becomes_a_placeholder_and_nothing_is_frozen(db):
-    """The inversion's whole behaviour in one run (#1824/#1828): the round recorded the
-    price AND a second entry it composed itself about the page, and EVERY spot in it —
-    the page, what to find, the labels, the destination — is named and becomes a
-    placeholder carrying what belongs there.
+async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interface(db):
+    """The inversion's whole behaviour in one run (#1824/#1828/#1830): the round recorded
+    the price AND a second entry it composed itself about the page, and the two run-end
+    draws answer the two halves of what that leaves behind.
 
-    Freezing a demonstrated value is the specific failure this prevents — a collector
-    re-running the skill would write that stale phrase into the collection every cycle,
-    forever — so the render is asserted WHOLE: not one demonstrated value survives in
-    it.  And the skill comes out with NO parameters and a slug name, the declared
-    interim: deciding what a routine is called and what must be re-supplied is the
-    framer's, from the user's ask alone, and that beat lands next (#1824)."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page whose price this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
-        "PLACEHOLDER memory: storage_collection — the collection this is set up on\n"
-        "PLACEHOLDER key: note_key — what to call the note it saves\n"
-        "PLACEHOLDER content: note_text — the note it writes about the page"
-    )
+    The LABELLER names EVERY spot — the page, what to find, the labels, the destination —
+    and each becomes a placeholder carrying what belongs there.  Freezing a demonstrated
+    value is the specific failure that prevents (a collector re-running the skill would
+    write that stale phrase into the collection every cycle, forever), so the recipe is
+    asserted WHOLE: not one demonstrated value survives in it.
+
+    The FRAMER writes the interface from the ask alone — the name the registry keys on,
+    the one line the ambient row states, and the parameter the user re-supplies.
+
+    **The declared interim of this beat**: nothing joins that parameter to a leaf yet, so
+    it lives at SKILL level over an all-placeholder recipe — visible in both renders and
+    enforceable at instantiation, while the program still reads in the labeller's
+    wording.  The runtime join is the next beat."""
+    model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert parameters_from_json(result.skill.parameters) == []
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("listing_url", "the listing whose price to read", True)
+    ]
     assert render_skill_full(result.skill) == (
-        "skill 'read-the-aurora-deck-2-listing'\n"
-        f"what it's for: {_UTTERANCE}\n"
-        "parameters: none\n"
+        "skill 'price-watcher'\n"
+        "what it's for: keep a listing's current price up to date\n"
+        "parameters:\n"
+        "  - listing_url (required): the listing whose price to read\n"
         "steps:\n"
         "  1. browse(queries=[{the page whose price this routine reads}], "
         "extract={what to pull off the page each run})\n"
@@ -694,9 +751,21 @@ async def test_every_labelled_spot_becomes_a_placeholder_and_nothing_is_frozen(d
     )
 
     # The BRIEF render (#1804) — the same skill as the ambient section and the
-    # narration frame see it.  A parameter-less routine needs nothing said to it, so
-    # the needs tail is absent rather than empty.
-    assert render_skill_brief(result.skill) == (f"read-the-aurora-deck-2-listing — {_UTTERANCE}")
+    # narration frame see it.  The framed parameter is what makes the needs tail say
+    # something a user could act on, which is what instantiation reads.
+    assert render_skill_brief(result.skill) == (
+        "price-watcher — keep a listing's current price up to date "
+        "(needs: listing_url — the listing whose price to read)"
+    )
+
+    # And job identity is decidable again (#1775 tier 1): the same skill bound to the
+    # same params is the same job whatever the two collections are called — which needs
+    # a skill to HAVE params, so it went dormant for the parameter-less interim.
+    bound = {params[0].name: "https://faux-market.example/aurora-deck-2"}
+    assert is_same_job(
+        JobSide(name="deck-prices", skill=result.skill.name, params=bound),
+        JobSide(name="listing-price-monitor", skill=result.skill.name, params=bound),
+    )
 
     # The collection the round wrote into is left exactly as the round left it:
     # learning does not instantiate (#1706 removed the run-end auto-attach), so
@@ -704,6 +773,32 @@ async def test_every_labelled_spot_becomes_a_placeholder_and_nothing_is_frozen(d
     row = db.memories.get("aurora-prices")
     assert row is not None
     assert row.skill_name is None and row.extraction_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_framing_falls_back_to_the_slug_with_nothing_to_bind(db):
+    """The framer's failure rung (#1830): the routine takes the deterministic slug of the
+    triggering message, that message as its description, and NO parameters.
+
+    That is exactly the interim #1829 shipped as the DEFAULT, now reached only when the
+    interface draw actually failed.  It costs the labelling nothing — the recipe is still
+    every spot named — so a failed framing degrades the interface alone rather than the
+    whole extraction, and a re-demonstration replaces it through the same path."""
+    model = _run_end_model(labels=_LABELLED_ROUND, framing="a price watcher, I think")
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert _draws(model, SKILL_FRAME_SYSTEM_PROMPT) == 2  # the draw + one reroll
+    assert result.skill.name == "read-the-aurora-deck-2-listing"
+    assert result.skill.description == _UTTERANCE
+    assert parameters_from_json(result.skill.parameters) == []
+    assert render_skill_brief(result.skill) == f"read-the-aurora-deck-2-listing — {_UTTERANCE}"
+    # The labelling half is untouched — the two draws fail alone.
+    assert "{the page whose price this routine reads}" in render_skill(
+        steps_from_json(result.skill.steps)
+    )
 
 
 @pytest.mark.asyncio
@@ -717,13 +812,15 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     the parse rightly refuses the line, and the validator used to accept around it —
     costing that one spot its label silently.  Correctness of accepted results over
     salvage: no partial rescue, every spot keeps its arg-derived name."""
-    model = _naming_model("PLACEHOLDER queries: listing_page — the page this routine reads")
+    model = _run_end_model(labels="PLACEHOLDER queries: listing_page — the page this routine reads")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 2  # the draw + exactly one reroll, then the fallback
+    assert (
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    )  # the draw + exactly one reroll, then the fallback
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("queries", None, True),
@@ -735,8 +832,8 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
 
     # A DECAYED TAG is that same miss, arriving as the shape the run reported: the line
     # is unreadable, so the spot it meant to name is uncovered.
-    decayed = _naming_model(
-        "PLACEHOlDER queries: listing_page — the page this routine reads\n"
+    decayed = _run_end_model(
+        labels="PLACEHOlDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER memory: storage_collection — where the reading is kept"
     )
@@ -745,7 +842,7 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     later = await _extractor(db, model=decayed).extract("run-B")
 
     assert isinstance(later, SkillExtracted)
-    assert len(decayed.requests) == 2
+    assert _draws(decayed, SKILL_NAMING_SYSTEM_PROMPT) == 2
     assert [p.name for p in parameters_from_json(later.skill.parameters)] == ["queries", "extract"]
 
 
@@ -756,8 +853,8 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     a stray trailing line quietly rename a spot.  So it is the same contract violation
     as a missing line — one reroll, then the whole draw fails and every spot keeps its
     arg-derived name."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER extract: detail_to_check — something else entirely\n"
         "PLACEHOLDER memory: storage_collection — where the reading is kept"
@@ -767,7 +864,7 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 2
+    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
 
 
@@ -781,8 +878,8 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     the validator and the contract say one thing.  It also keeps the shared-spot claim
     enforceable: a value filling two argument sites is ONE spot, and a draw that splits
     it keys its second line to a name nobody offered — which is precisely this."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER memory: storage_collection — where the reading is kept\n"
         "PLACEHOLDER nowhere: invented_spot — a spot nobody offered"
@@ -792,7 +889,9 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 2  # the draw + one reroll, then the honest failure
+    assert (
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    )  # the draw + one reroll, then the honest failure
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
     rendered = render_skill(steps_from_json(result.skill.steps))
     assert "invented_spot" not in rendered and "a spot nobody offered" not in rendered
@@ -808,8 +907,8 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     a blank one would put an empty ``{}`` where the recipe should say what belongs
     there — a spot that stopped being bindable and says nothing, strictly worse than
     the arg-derived name it replaced.  So the extractor reads it as no label."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER memory: storage_collection — where the reading is kept"
     )
@@ -818,7 +917,7 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 1  # the line is well-formed: no reroll
+    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1  # the line is well-formed: no reroll
     kept = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in kept] == [("queries", None, True)]
     rendered = render_skill(steps_from_json(result.skill.steps))
@@ -828,11 +927,13 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
 
 
 def test_the_binding_key_hardener_is_the_one_shipped_rule():
-    """The hardening a drawn name must survive to be a binding key (#1668, public
-    since #1828 so the labelling eval scores against THIS rule rather than a copy):
-    lowercase, whitespace → underscores, nothing outside ``[a-z0-9_]``, no stray
-    underscores — and empty when nothing survives, which is a name that could never
-    be bound."""
+    """The hardening a drawn name must survive to be a binding key (#1668): lowercase,
+    whitespace → underscores, nothing outside ``[a-z0-9_]``, no stray underscores — and
+    empty when nothing survives, which is a name that could never be bound.
+
+    ONE rule, at every site that needs it: the framer runs its minted parameter names
+    through it before they leave the draw (#1830), and the labelling eval scores "did
+    the draw produce a usable binding key" through THIS function rather than a copy."""
     assert slug_parameter_name("Page URL") == "page_url"
     assert slug_parameter_name("first news site") == "first_news_site"
     assert slug_parameter_name("queries-2") == "queries2"
@@ -857,8 +958,8 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     quoted payload — none of that is the model getting the contract wrong, so none of it
     costs a reroll under the coverage rule (#1828): a tolerated line is a well-formed
     line, and it covers its spot like any other."""
-    model = _naming_model(
-        "- PLACEHOLDER queries: listing_page – the page this routine reads\n"
+    model = _run_end_model(
+        labels="- PLACEHOLDER queries: listing_page – the page this routine reads\n"
         "* **PLACEHOLDER extract: value_to_find — what to pull off the page**\n"
         'PLACEHOLDER memory: "storage_collection" — where the reading is kept'
     )
@@ -867,7 +968,9 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 1, "tolerated decoration is not a contract violation"
+    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1, (
+        "tolerated decoration is not a contract violation"
+    )
     assert parameters_from_json(result.skill.parameters) == []
     rendered = render_skill(steps_from_json(result.skill.steps))
     # The EN-dash split the name from its description, and the decoration came off.
@@ -887,8 +990,8 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     fails rather than the spot quietly going unnamed — one reroll, then every spot keeps
     its arg-derived name, and the attachment-marked write target falls back to the fixed
     wording (the attachment fills it, and no user ever could)."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
         'PLACEHOLDER extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
         "PLACEHOLDERS memory: storage_collection — not a label line"
     )
@@ -897,7 +1000,9 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert len(model.requests) == 2  # the draw + one reroll, then the honest failure
+    assert (
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    )  # the draw + one reroll, then the honest failure
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("queries", None, True),
@@ -910,106 +1015,141 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     assert target.attachment is True  # and the mark stands, for the render seam
 
 
-# ── #1803: the shape draw's own rules, now that nothing calls it from here ─────
+# ── #1830: the framer's own contract — every violation class, pinned ──────────
 
-# The shape draw is untouched by #1828 and its eval still drives it in isolation, but
-# the run-end pipeline no longer calls it: it decided over the values a per-candidate
-# VERDICT kept, and there are no verdicts.  So its parse and refusal rules are pinned
-# HERE against the micro-context directly — where they always belonged, and where they
-# stay covered rather than retiring with the wiring.
-_SHAPE_VALUES = ["url", "what_to_find"]
+# The framer draws over a document, not an offered set, so the constraint it is accepted
+# against is entirely about the draw itself: it must mint at least one well-formed,
+# distinctly-named parameter and carry no broken line.  Each violation is the same
+# answer — one reroll of the unchanged context, then an honest WHOLE-draw failure — and
+# each is pinned WITH its reroll count, because "no partial salvage" is a claim about
+# how many times the model was asked, not only about what came back.
 
 
-async def _shape(drawn: str, values: list[str]) -> SkillShape | None:
-    """One shape draw over ``values``, answered by a mock model with ``drawn``."""
-    return await MicroContext(cast(Any, _naming_model(drawn))).shape_skill("content", values)
+async def _framed(drawn: str) -> tuple[SkillSignature | None, int]:
+    """One framing draw answered by a mock model with ``drawn`` — the signature (or
+    ``None``), and how many times the draw was made."""
+    model = _run_end_model(framing=drawn)
+    signature = await MicroContext(cast(Any, model)).frame_skill("the user's turns")
+    return signature, len(model.requests)
 
 
 @pytest.mark.asyncio
-async def test_the_value_the_routine_is_named_for_becomes_a_constant():
-    """A skill must not name itself for a value it then asks the user to supply
-    (#1803).  Real extractions did: `record-product-price` declaring a required
-    `what_to_extract` whose own description offered "price" as the example — so the
-    routine could not fire from the natural second ask ("watch the price at <url>"),
-    routing to `request` for a value its own name already gave.
+async def test_the_framer_writes_a_name_a_description_and_the_minted_parameters():
+    """A well-formed draw IS the routine's interface (#1830): the generic name, the one
+    line it is for, and one parameter per piece the user would have to say again — in
+    draw order, because two parameters are told apart by which is which.
 
-    The draw's answer is the value it called CONSTANT, membership-filtered against what
-    it was offered, written in the SAME decision as the name — which is what stops the
-    two contradicting each other."""
-    shape = await _shape(
-        "NAME: Watch a listing price\n"
-        "DESCRIPTION: Keep an eye on what a listing costs.\n"
-        "CONSTANT what_to_find\n"
-        "PARAMETER url",
-        _SHAPE_VALUES,
+    The names come back HARDENED, unlike a leaf label's: this one is the binding key
+    instantiation uses (``params={'listing_url': …}``), so the rule that makes it usable
+    runs inside the draw rather than somewhere downstream.  And the tolerance the
+    declared shape carries applies here like anywhere else — an EN-dash separates a name
+    from its description without costing a reroll."""
+    signature, draws = await _framed(
+        "NAME: listing-price-comparer\n"
+        "DESCRIPTION: compare what two marketplace listings currently cost\n"
+        "PARAMETER Listing URL – the first listing to read\n"
+        "PARAMETER rival_listing — the listing to compare it against"
     )
 
-    assert shape is not None
-    assert shape.name == "Watch a listing price"
-    assert shape.description == "Keep an eye on what a listing costs."
-    assert shape.fixed == frozenset({"what_to_find"})
+    assert draws == 1, "tolerated decoration is not a contract violation"
+    assert signature is not None
+    assert signature.name == "listing-price-comparer"
+    assert signature.description == "compare what two marketplace listings currently cost"
+    assert [(p.name, p.description) for p in signature.parameters] == [
+        ("listing_url", "the first listing to read"),
+        ("rival_listing", "the listing to compare it against"),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_a_routine_is_never_all_constant_so_it_stays_bindable():
-    """The over-correction guard, and the floor the shape prompt states (#1803): a
-    draw that bakes EVERY value is refused, because a routine with nothing left to
-    ask for can only ever repeat the one thing it was demonstrated with.
+async def test_a_draw_that_asks_for_nothing_fails_whole():
+    """The floor the framing prompt states, enforced (#1830): a routine that needs
+    nothing said to it can only ever repeat the one occasion it was shown.
 
     That dead end has been reached from the other side already — two runs produced
-    `watch-a-price` with every leaf placeholdered, so not even the page could be
-    re-bound.  Baking everything arrives at the same place by a new route, so the
-    floor is structural: the draw is a contract violation — one reroll of the unchanged
-    context, then an honest refusal rather than a routine nobody can point anywhere."""
-    shape = await _shape(
-        "NAME: Watch the aurora deck 2 price\n"
-        "DESCRIPTION: Check that one listing and record its price.\n"
-        "CONSTANT what_to_find\n"
-        "CONSTANT url",
-        _SHAPE_VALUES,
+    `watch-a-price` with every leaf placeholdered, so not even the page could be re-bound.
+    A signature with no parameters arrives at the same place by a new route, so the floor
+    is structural: one reroll of the unchanged context, then an honest refusal rather than
+    a routine nobody can point anywhere."""
+    signature, draws = await _framed(
+        "NAME: aurora-price-watcher\nDESCRIPTION: keep the aurora deck 2 price up to date"
     )
 
-    assert shape is None
+    assert signature is None
+    assert draws == 2
 
 
 @pytest.mark.asyncio
-async def test_a_value_named_on_both_lines_stays_a_parameter():
-    """A draw that names the SAME value on a CONSTANT line AND a PARAMETER line has
-    contradicted itself, and the BINDABLE direction wins (#1803) — the same rule the
-    labeller's repeated-line drop encodes, for the same reason: a routine that lost a
-    parameter to a stray line can never be pointed anywhere new, while one that kept a
-    needless parameter merely asks a question it could have answered itself.
+async def test_a_malformed_parameter_line_fails_the_whole_draw():
+    """An accepted draw never contains an invalid line (#1828's ruling, carried here).
 
-    The draw is otherwise VALID — both required lines are there and something is left
-    bindable — so its NAME still stands.  That is what makes this a contradiction rule
-    rather than a refusal: only the contradicted value is dropped."""
-    shape = await _shape(
-        "NAME: Watch a listing price\n"
-        "DESCRIPTION: Keep an eye on what a listing costs.\n"
-        "CONSTANT what_to_find\n"
-        "PARAMETER what_to_find\n"
-        "PARAMETER url",
-        _SHAPE_VALUES,
+    With nothing offered, a broken line leaves no gap to notice — the parse simply drops
+    it and the remaining lines look like a complete answer — so the framer refuses a draw
+    the parse dropped anything from.  Both shapes of broken are the same violation: a
+    "name" that swallowed its own description (a name is a TOKEN, not a sentence) and a
+    line that never reached its description at all.  No partial salvage: the good line on
+    either draw is discarded with the bad one."""
+    swallowed, draws = await _framed(
+        "NAME: listing-price-watcher\n"
+        "DESCRIPTION: keep a marketplace listing's current price up to date\n"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        'PARAMETER what_to_pull | the detail to read off it (e.g., "the price")'
     )
 
-    assert shape is not None
-    assert shape.fixed == frozenset(), "the contradicted value stays bindable"
-    assert shape.name == "Watch a listing price"
+    assert swallowed is None
+    assert draws == 2
+
+    undescribed, draws = await _framed(
+        "NAME: listing-price-watcher\n"
+        "DESCRIPTION: keep a marketplace listing's current price up to date\n"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        "PARAMETER how_often"
+    )
+
+    assert undescribed is None, "a parameter nobody can be told what to supply is not an interface"
+    assert draws == 2
 
 
 @pytest.mark.asyncio
-async def test_an_empty_offered_set_is_not_read_as_everything_being_constant():
-    """The bindable floor is about what the DRAW did, so an empty offered set is not a
-    draw that baked everything (#1803).  Without that short-circuit the emptiness would
-    satisfy "the constants cover every value" and every draw would be refused — a
-    contract violation manufactured from having nothing to decide."""
-    shape = await _shape(
-        "NAME: Watch a listing price\nDESCRIPTION: Keep an eye on what a listing costs.\n", []
+async def test_a_parameter_named_twice_fails_the_whole_draw():
+    """A parameter's name is its binding key, so two lines under one key would mean one
+    of them silently disappearing at instantiation — the caller cannot prefer either, and
+    taking the last would let a stray trailing line quietly redefine the interface.  The
+    same contract violation as a broken line: one reroll, then the whole draw fails.
+
+    Names are compared HARDENED, because that is what they become: `Listing URL` and
+    `listing_url` are one key, not two."""
+    signature, draws = await _framed(
+        "NAME: listing-price-comparer\n"
+        "DESCRIPTION: compare what two marketplace listings currently cost\n"
+        "PARAMETER listing_url — the first listing to read\n"
+        "PARAMETER Listing URL — the listing to compare it against"
     )
 
-    assert shape is not None, "an empty offered set is not a refusal"
-    assert shape.fixed == frozenset()
-    assert shape.name == "Watch a listing price"
+    assert signature is None
+    assert draws == 2
+
+
+@pytest.mark.asyncio
+async def test_a_signature_missing_its_name_or_description_fails_the_draw():
+    """The NAME and DESCRIPTION lines are REQUIRED in the declared shape, so a draw
+    missing either never parses (#1814) — the same reroll-then-fail, because half an
+    interface is not an interface: the name is what the registry keys on and the
+    description is what every judging surface reads."""
+    unnamed, draws = await _framed(
+        "DESCRIPTION: keep a marketplace listing's current price up to date\n"
+        "PARAMETER listing_url — the listing whose price to read"
+    )
+
+    assert unnamed is None
+    assert draws == 2
+
+    undescribed, draws = await _framed(
+        "NAME: listing-price-watcher\nPARAMETER listing_url — the listing whose price to read"
+    )
+
+    assert undescribed is None
+    assert draws == 2
 
 
 # ── #1783/#1828: where a routine writes is decided by what it is applied to ────
@@ -1022,8 +1162,8 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     binds it: the leaf keeps its mark, renders the LABELLER's wording (not a hardcoded
     string) in the stored recipe, and applying the routine to a collection binds it to
     that collection's own name."""
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER memory: storage_collection — wherever this routine keeps its readings"
     )
@@ -1060,8 +1200,8 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
         "You saved an entry to aurora-archive: (collection_write result)\nWrote 1 entry.",
         True,
     )
-    model = _naming_model(
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+    model = _run_end_model(
+        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
         "PLACEHOLDER memory: live_list — where the current reading is kept\n"
         "PLACEHOLDER memory-2: archive — where past readings are kept\n"
@@ -1088,67 +1228,64 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     assert bound.count("collection_write(memory='current-prices'") == 2
 
 
-def test_shape_system_prompt_whole_render():
-    """Whole-render literal of the shape contract (#1803): the framing and its two
-    inputs, the three numbered asks — the CORE USER INTENT first, then the name
-    written from it, then the per-value ABOUT-vs-POINTED-AT decision as two named
-    cases — the coherence rule tying them together, the floor that keeps a routine
-    bindable, and the enumerated output shape with one line required per value.
+def test_framing_system_prompt_whole_render():
+    """Whole-render literal of the framing contract (#1830): the framing and its ONE
+    input, the three numbered asks — what the ask was FOR, then the minimal information
+    a new occasion needs, then what is explicitly NOT asked — the whose-words-decide
+    rule, the always-one-parameter floor, and the enumerated output shape rendered from
+    the declared shape so the tags and separators the model is told to write are
+    literally the ones the parse splits on.
 
-    The worked example is deliberately a FILING routine, not the price watcher these
-    tests demonstrate: an example drawn from the case in hand teaches pattern-matching
+    The non-parameters are stated POSITIVELY and by STATE, never by naming a tool or a
+    sample phrase: what the ask named is carried by the framing, storage is the
+    assistant's to manage, and cadence/notification are settled when the routine is set
+    running.  A rule keyed to the wording in front of it would simply not fire for the
+    next shape nobody enumerated.
+
+    The worked example is deliberately a FILING routine, not the look-up-and-remember
+    shape the cases use: an example drawn from the case in hand teaches pattern-matching
     on that case, and a skill is an arbitrary tool sequence a plugin may have supplied
-    the verbs for.  It is also told as unquoted PROSE: a quoted example value is copied
-    verbatim, and the one thing this prompt asks the model to compose is a name."""
-    assert SKILL_SHAPE_SYSTEM_PROMPT == (
-        "You are deciding what a reusable routine IS. You are given what the user "
-        "asked for once, a one-line summary of what was done for them, and the values "
-        "used to carry it out that time. Do three things:\n"
-        "1. From what the user asked for, extract the CORE USER INTENT — what they "
-        "were trying to get done when they asked. Their own words are the evidence, "
-        "and the one-line summary of what the round did is a second reading of the "
-        "same thing: the values are HOW it was carried out, not what it was FOR.\n"
-        "2. Name and describe the ROUTINE by that intent: a short verb-noun name for "
-        "the KIND of task, generic — never the specific instance — and one line that "
-        "states the intent it serves before any mechanics. A description that falls "
-        "back on a specified piece of information where the intent named something "
-        "particular has dropped the intent — say what the intent actually was.\n"
-        "3. Now picture the user coming back later to set this routine running "
-        "again, on a new occasion. What is the MINIMAL information they would have "
-        "to give you? Decide every value on that one question:\n"
-        "   - PARAMETER. They would have to say it again. The routine works the "
-        "same way whatever it is, so it cannot be known until they say — it is "
-        "asked for every time the routine is set up.\n"
-        "   - CONSTANT. They would NOT have to say it again, because the routine "
-        "already IS that. Saying it would be repeating what the name has already "
-        "promised. It stays fixed, and asking for it would be asking the user to "
-        "tell you what they came to you for.\n"
-        "   That the user supplied a value the first time settles nothing here: "
-        "they supplied all of them while showing you what to do. The question is "
-        "only what they would still have to supply once you already know how.\n"
-        "   THE USER'S OWN WORDS DECIDE THIS, not the name you happened to pick. A "
-        "thing they NAMED as the point of the task is something they would expect "
-        "you to know by now, so it is a CONSTANT — and if the name you wrote in "
-        "step 2 leaves it open, the name is what is wrong, not this answer.\n"
-        "   For example, after being asked to file the receipts from a particular "
-        "sender into a tax folder: they named receipts as the point, so a routine "
-        "that files receipts needs only the sender and the folder next time. Had "
-        "they asked instead to file whatever they point you at, they named nothing, "
-        "and every value would be a PARAMETER. Both are real routines — their ask "
-        "is what tells you which one you were taught.\n"
-        "   At least one value is always a PARAMETER: a routine that needs nothing "
-        "said to it can only ever repeat the one occasion it was shown, which makes "
-        "it a record of what happened rather than a routine. And a routine with NO "
-        "constant is one that has to be told everything it was already told — if "
-        "their ask named what to do, say so.\n"
+    the verbs for.  It is told as unquoted PROSE, since a quoted example value is copied
+    verbatim and the things this prompt asks the model to compose are names."""
+    assert SKILL_FRAME_SYSTEM_PROMPT == (
+        "You are writing the public interface of a routine the assistant has just been "
+        "taught. All you are given is what the USER said while asking for it and walking "
+        "through it — their own words, one turn per line. That is deliberate: what a "
+        "routine is for, and what someone has to say to set it up, is answered by the ask "
+        "and by nothing else.\n"
+        "Do this:\n"
+        "1. Read the ask for what the user was trying to GET DONE. A routine is the KIND "
+        "of task, never the one occasion, so name it and describe it generically — and "
+        "fold what they said to look for INTO that framing rather than leaving it to be "
+        "supplied later: what a routine goes and finds is part of what it IS.\n"
+        "2. Now picture them coming back later to set the same routine running on a new "
+        "occasion. What is the MINIMAL information they would have to give you? Write one "
+        "PARAMETER line for each such piece.\n"
+        "3. Anything the framing already carries is NOT a parameter. They named it as the "
+        "point of the task, so asking for it would be asking them to tell you what they "
+        "came to you for — and if the name and description you wrote leave it open, those "
+        "are what is wrong, not this answer. Where the results are kept is never a "
+        "parameter either: the assistant manages its own storage, and nobody has to say "
+        "where things go. Neither is how often it should run, nor whether they want to be "
+        "told about it — those are settled when the routine is set running, and are no "
+        "part of what it is.\n"
+        "THEIR OWN WORDS DECIDE THIS. Asked to file the receipts from a particular sender "
+        "into a tax folder, they named receipts as the point, so a routine that files "
+        "receipts asks only for the sender. Asked instead to file whatever they point you "
+        "at, they named nothing, and what to file is a parameter. Both are real routines; "
+        "the ask is what tells you which one you were taught.\n"
+        "There is ALWAYS at least one parameter: a routine that needs nothing said to it "
+        "can only ever repeat the one occasion it was shown, and that is not a routine. "
+        "Write a separate line for each distinct thing they would have to say — two of "
+        "them named is two parameters, never one combined.\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the routine is for>\n"
-        "CONSTANT <value name>   (the routine is about it)\n"
-        "PARAMETER <value name>   (the routine is pointed at it)\n"
-        "Write ONE line for EVERY value, repeating its name exactly so it maps "
-        "back — the name ALONE, with nothing after it.\n"
-        "Write nothing else — no preamble, no explanation, no restating the routine."
+        "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
+        "Use a single lowercase word or snake_case for <parameter_name>, and give each "
+        "parameter its own line and its own name.\n"
+        "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
+        "conversation."
     )
 
 
