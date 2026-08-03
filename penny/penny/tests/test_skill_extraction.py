@@ -593,7 +593,8 @@ async def test_the_labelling_draw_reads_the_conversation_and_never_names_the_rou
     deterministic slug of the triggering message until the framer beat lands (#1824)."""
     model = _naming_model(
         "PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page each run"
+        "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
+        "PLACEHOLDER memory: storage_collection — the collection this is set up on"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -706,66 +707,124 @@ async def test_every_labelled_spot_becomes_a_placeholder_and_nothing_is_frozen(d
 
 
 @pytest.mark.asyncio
-async def test_labelling_falls_back_per_spot_not_all_or_nothing(db):
-    """Per-spot fallback (#1770/#1828): a spot the draw names becomes a placeholder
-    carrying what belongs there; one it omits keeps its arg-derived name as a REQUIRED
-    parameter.  Absence is deliberately not a decision — overloading it would let one
-    flaky draw silently reshape a routine.
+async def test_a_draw_that_misses_any_spot_fails_whole(db):
+    """COVERAGE is checked, not tolerated (#1828, the code owner's ruling): an accepted
+    draw may never contain an invalid line, and the caller KNOWS the offered set, so a
+    draw that leaves any spot unnamed is a contract violation — one reroll on the
+    unchanged context, then an honest WHOLE-draw failure.
 
-    A line that stops after the semantic name is the same path from the other side.  The
-    grammar allows it — the name is readable, and the labelling eval scores the missing
-    description as its own miss — but the description is what the leaf RENDERS as, so a
-    blank one at the consumer would put an empty ``{}`` where the recipe should say what
-    belongs there: a spot that stopped being bindable and says nothing, strictly worse
-    than the arg-derived name it replaced.  So the consumer reads it as no label."""
+    The observed failure this closes: the tag itself decays mid-draw (``PLACEHOlDER``),
+    the parse rightly refuses the line, and the validator used to accept around it —
+    costing that one spot its label silently.  Correctness of accepted results over
+    salvage: no partial rescue, every spot keeps its arg-derived name."""
     model = _naming_model("PLACEHOLDER queries: listing_page — the page this routine reads")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
+    assert len(model.requests) == 2  # the draw + exactly one reroll, then the fallback
     params = parameters_from_json(result.skill.parameters)
-    assert [(p.name, p.description, p.required) for p in params] == [("extract", None, True)]
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("queries", None, True),
+        ("extract", None, True),
+    ]
     rendered = render_skill(steps_from_json(result.skill.steps))
-    assert "queries=[{the page this routine reads}]" in rendered
-    assert "extract={extract}" in rendered  # unlabelled → still the spot the user binds
+    assert "queries=[{queries}]" in rendered, "the covered spot is not salvaged either"
+    assert "extract={extract}" in rendered
 
-    # The name-only line: labelled by the grammar, NO label to the consumer.
-    nameless = _naming_model(
-        "PLACEHOLDER queries: listing_page\nPLACEHOLDER extract: value_to_find — what to pull"
+    # A DECAYED TAG is that same miss, arriving as the shape the run reported: the line
+    # is unreadable, so the spot it meant to name is uncovered.
+    decayed = _naming_model(
+        "PLACEHOlDER queries: listing_page — the page this routine reads\n"
+        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
+        "PLACEHOLDER memory: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
 
-    later = await _extractor(db, model=nameless).extract("run-B")
+    later = await _extractor(db, model=decayed).extract("run-B")
 
     assert isinstance(later, SkillExtracted)
-    kept = parameters_from_json(later.skill.parameters)
-    assert [(p.name, p.description, p.required) for p in kept] == [("queries", None, True)]
-    rendered = render_skill(steps_from_json(later.skill.steps))
-    assert "queries=[{queries}]" in rendered, "a blank description never renders an empty slot"
-    assert "{}" not in rendered
-    assert "extract={what to pull}" in rendered
+    assert len(decayed.requests) == 2
+    assert [p.name for p in parameters_from_json(later.skill.parameters)] == ["queries", "extract"]
 
 
 @pytest.mark.asyncio
-async def test_a_spot_named_twice_is_no_label_at_all(db):
-    """A draw that names one spot TWICE contradicts itself (#1770/#1828 — the contract
-    asks for exactly one line each), so that spot gets NO label and keeps its arg-derived
-    required parameter.  Letting the last line win would let a stray trailing line
-    quietly rename a spot, which is exactly what absence-is-never-a-drop prevents."""
+async def test_a_spot_named_twice_fails_the_whole_draw(db):
+    """A draw that names one spot TWICE contradicts itself (#1828 — the contract asks
+    for exactly one line each), and there is no line to prefer: taking either would let
+    a stray trailing line quietly rename a spot.  So it is the same contract violation
+    as a missing line — one reroll, then the whole draw fails and every spot keeps its
+    arg-derived name."""
     model = _naming_model(
         "PLACEHOLDER queries: listing_page — the page this routine reads\n"
         "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER extract: detail_to_check — something else entirely"
+        "PLACEHOLDER extract: detail_to_check — something else entirely\n"
+        "PLACEHOLDER memory: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    params = parameters_from_json(result.skill.parameters)
-    assert [(p.name, p.description, p.required) for p in params] == [("extract", None, True)]
-    assert "extract={extract}" in render_skill(steps_from_json(result.skill.steps))
+    assert len(model.requests) == 2
+    assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
+
+
+@pytest.mark.asyncio
+async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
+    """A line naming something the content never listed is a spot INVENTED rather than
+    named, so it fails the same coverage constraint (#1828) — one reroll, then the whole
+    draw fails.
+
+    The prompt asks for one line per listed placeholder and none for anything else, so
+    the validator and the contract say one thing.  It also keeps the shared-spot claim
+    enforceable: a value filling two argument sites is ONE spot, and a draw that splits
+    it keys its second line to a name nobody offered — which is precisely this."""
+    model = _naming_model(
+        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
+        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
+        "PLACEHOLDER memory: storage_collection — where the reading is kept\n"
+        "PLACEHOLDER nowhere: invented_spot — a spot nobody offered"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert len(model.requests) == 2  # the draw + one reroll, then the honest failure
+    assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
+    rendered = render_skill(steps_from_json(result.skill.steps))
+    assert "invented_spot" not in rendered and "a spot nobody offered" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
+    """A line that stops after the semantic name is WELL-FORMED — the grammar's one
+    optional field — so it covers its spot and the draw stands (the labelling eval
+    scores the missing description as its own miss).
+
+    The CONSUMER is where it is caught: the description is what the leaf RENDERS as, so
+    a blank one would put an empty ``{}`` where the recipe should say what belongs
+    there — a spot that stopped being bindable and says nothing, strictly worse than
+    the arg-derived name it replaced.  So the extractor reads it as no label."""
+    model = _naming_model(
+        "PLACEHOLDER queries: listing_page\n"
+        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
+        "PLACEHOLDER memory: storage_collection — where the reading is kept"
+    )
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db, model=model).extract("run-A")
+
+    assert isinstance(result, SkillExtracted)
+    assert len(model.requests) == 1  # the line is well-formed: no reroll
+    kept = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in kept] == [("queries", None, True)]
+    rendered = render_skill(steps_from_json(result.skill.steps))
+    assert "queries=[{queries}]" in rendered, "a blank description never renders an empty slot"
+    assert "{}" not in rendered
+    assert "extract={what to pull off the page}" in rendered
 
 
 def test_the_binding_key_hardener_is_the_one_shipped_rule():
@@ -794,32 +853,40 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     skill's binding key, with no reroll because the parse had "succeeded".  Any
     whitespace-delimited dash variant now separates the name from its description (a
     hyphen INSIDE a name has no spaces around it, so it is never mistaken for the
-    separator).  A line may also arrive decorated with a list marker or bold — none of
-    that is the model getting the contract wrong."""
+    separator).  A line may also arrive decorated with a list marker or bold, or with a
+    quoted payload — none of that is the model getting the contract wrong, so none of it
+    costs a reroll under the coverage rule (#1828): a tolerated line is a well-formed
+    line, and it covers its spot like any other."""
     model = _naming_model(
         "- PLACEHOLDER queries: listing_page – the page this routine reads\n"
-        "* **PLACEHOLDER extract: value_to_find — what to pull off the page**"
+        "* **PLACEHOLDER extract: value_to_find — what to pull off the page**\n"
+        'PLACEHOLDER memory: "storage_collection" — where the reading is kept'
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
+    assert len(model.requests) == 1, "tolerated decoration is not a contract violation"
     assert parameters_from_json(result.skill.parameters) == []
     rendered = render_skill(steps_from_json(result.skill.steps))
     # The EN-dash split the name from its description, and the decoration came off.
     assert "queries=[{the page this routine reads}]" in rendered
     assert "extract={what to pull off the page}" in rendered
+    assert "memory={where the reading is kept}" in rendered
 
 
 @pytest.mark.asyncio
-async def test_a_name_that_swallowed_its_description_is_no_label_at_all(db):
+async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     """The backstop for whatever tolerance doesn't reach (#1814): a semantic name is a
     TOKEN, not a sentence, so a line whose "name" swallowed its own description is
-    MALFORMED — and a malformed line is no label, never good data.  The spot keeps its
-    arg-derived required parameter, the flaky-draw-safe direction.  A near-miss tag
-    (``PLACEHOLDERS``) is not a line either, so the write target keeps its unlabelled
-    fallback — the attachment fills it, and no user ever could."""
+    MALFORMED — never good data.  A near-miss tag (``PLACEHOLDERS``) is not a line
+    either.
+
+    Under the coverage rule (#1828) each of those leaves its spot uncovered, so the DRAW
+    fails rather than the spot quietly going unnamed — one reroll, then every spot keeps
+    its arg-derived name, and the attachment-marked write target falls back to the fixed
+    wording (the attachment fills it, and no user ever could)."""
     model = _naming_model(
         "PLACEHOLDER queries: listing_page — the page this routine reads\n"
         'PLACEHOLDER extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
@@ -830,12 +897,16 @@ async def test_a_name_that_swallowed_its_description_is_no_label_at_all(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
+    assert len(model.requests) == 2  # the draw + one reroll, then the honest failure
     params = parameters_from_json(result.skill.parameters)
-    assert [(p.name, p.description, p.required) for p in params] == [("extract", None, True)]
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("queries", None, True),
+        ("extract", None, True),
+    ]
     steps = steps_from_json(result.skill.steps)
     target = {tuple(s.path): s for s in steps[1].substitutions}[("memory",)]
     assert target.kind == SkillSubKind.PLACEHOLDER
-    assert target.description == WRITE_TARGET_DESCRIPTION  # PLACEHOLDERS labelled nothing
+    assert target.description == WRITE_TARGET_DESCRIPTION  # nothing labelled it
     assert target.attachment is True  # and the mark stands, for the render seam
 
 

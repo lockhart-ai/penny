@@ -326,10 +326,15 @@ class SkillExtractor:
         arg-derived name, the arg site(s) it fills, and its demonstrated value); the
         micro-context writes one line per spot — a semantic name and what belongs
         there each run — poison-screened + one reroll, its own ledger attribution.
-        ``None`` when nothing usable came back; the caller then keeps every spot's
-        arg-derived name."""
+
+        The spots' current names ride along as the COVERAGE set (#1828): the draw is
+        accepted only when every one of them came back with a well-formed line, so a
+        decayed tag costs the whole draw rather than one spot its label.  ``None`` then,
+        and the caller keeps every spot's arg-derived name."""
         content = build_naming_content(steps, parameters, projection.origin_message, conversation)
-        return await self._micro_context.label_skill(content, run_target=self._agent_name)
+        return await self._micro_context.label_skill(
+            content, [parameter.name for parameter in parameters], run_target=self._agent_name
+        )
 
     def _attachment_names(self) -> frozenset[str]:
         """The names of Penny's own COLLECTIONS — the things a routine can be ATTACHED
@@ -634,13 +639,13 @@ def _apply_leaf_labels(
     interface.  Any attachment mark stands: nothing can clear it any more, because a
     destination is never a parameter (#1827 principle 4).
 
-    A spot the draw didn't cover keeps its arg-derived required parameter (per-spot
-    fallback, not all-or-nothing — absence is never a drop), EXCEPT at an
+    An unlabelled spot keeps its arg-derived required parameter, EXCEPT at an
     attachment-marked leaf: nobody can bind what the attachment decides, so an
     unlabelled marked leaf falls back to a placeholder carrying the fixed
     ``WRITE_TARGET_DESCRIPTION`` (#1777's string, kept as exactly that fallback).
-    ``labels is None`` (the whole draw failed) runs the same pass with nothing
-    labelled, so that marked-leaf fallback still applies.
+    Since #1828 an accepted draw covers every spot, so "unlabelled" means the WHOLE
+    draw failed (``labels is None``) — all-or-nothing at the draw, never a hole inside
+    an accepted one — and this pass runs the same way with nothing labelled.
 
     A label whose DESCRIPTION is blank is treated as no label at all — the same
     fallback, everywhere at once.  The description is what the leaf renders as, so a

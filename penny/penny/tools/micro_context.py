@@ -27,9 +27,12 @@ reroll because the parse had "succeeded".  Tolerance is now declared once and
 A violation of a REQUIRED part of the shape is rerolled on the unchanged context
 and then fails honestly, per customer (``EXTRACTION_FAILED`` / ``INVALID`` /
 the naming fallback).  A violation of an OPTIONAL or PER_ITEM line is simply an
-ABSENT line — the labeller's per-spot labels are best-effort by design, so a bad
-line costs that one spot its label and nothing else, and absence never changes
-what the spot means (#1770).
+ABSENT line at the GRAMMAR level — but whether absence is acceptable is the
+CUSTOMER's to declare, as a runtime constraint (``accepts``): the leaf labeller
+requires a well-formed line for every spot it offered, so a decayed tag is a
+whole-draw failure rather than one spot quietly unnamed (#1828), while a customer
+with no checkable coverage keeps the best-effort read.  An accepted draw never
+contains an invalid line.
 
 The single call is screened by the same degeneracy / leaked-Harmony-envelope
 detectors the agent-loop reroll guard uses (:mod:`penny.text_validity`): poison
@@ -178,9 +181,20 @@ _INVALID_DRAW_BUDGET = 2
 #
 # So the ``PARAM`` line, the ``NAME:``/``DESCRIPTION:`` lines, the verdict union and
 # the grouped-by-verdict response structure (#1807) are all gone from this customer.
-# What survives is the PER_ITEM best-effort rule (#1770/#1814): a spot with no line,
-# or with a malformed one, simply has no label and keeps its arg-derived name —
-# absence is never a drop, and a malformed line is still never read as good data.
+#
+# And COVERAGE IS CHECKED, not tolerated (#1828, the code owner's ruling): an accepted
+# draw may never contain an invalid line.  The PER_ITEM "a malformed line is simply
+# dropped" tolerance is a #1770-era decision, made for the VERDICT labeller where
+# absence had a safe meaning (keep the arg-derived required parameter).  For the leaf
+# labeller it is wrong, because the caller knows the exact offered-leaf set, so the
+# question "did every spot get a well-formed line?" is ANSWERABLE — and the observed
+# failure was the tag itself decaying mid-draw (``PLACEHOlDER``, ``PLACEHOLE``,
+# ``PLACEHALER``), which the parse rightly refused and the validator then accepted
+# around, silently costing that spot its label.  A draw that misses any offered spot is
+# now a contract violation exactly like the classifier drawing an out-of-set state: one
+# reroll on the unchanged context, then an honest WHOLE-draw failure.  Correctness of
+# accepted results over salvage — a draw that decays twice fails whole, and every spot
+# keeps its arg-derived name.
 PLACEHOLDER_TAG = "PLACEHOLDER"
 
 # The one line this customer emits, once per offered spot.  The semantic name declares
@@ -191,7 +205,9 @@ PLACEHOLDER_TAG = "PLACEHOLDER"
 # lets the labelling eval score "did it say what belongs there" as its own miss instead
 # of losing the whole line to the parse.  The CONSUMER is where a blank one is caught:
 # the description is what the leaf renders as, so ``_apply_leaf_labels`` reads a blank
-# one as no label rather than rendering an empty slot.
+# one as no label rather than rendering an empty slot.  (That is the one per-spot path
+# left, and it is the ticket's own grammar: the line IS well-formed, so coverage holds
+# and the draw stands — what is missing is what belongs there, not the line.)
 _PLACEHOLDER_LINE = LineSpec(
     tag=PLACEHOLDER_TAG,
     role=LineRole.PER_ITEM,
@@ -499,10 +515,9 @@ class SkillLabels(BaseModel):
 
     It carries NO routine name, description or parameters: the routine's interface is
     decided from the user's ask alone, by the framer, and this draw never sees that
-    question (#1824).  ``labels`` may be partial — a spot with no line, or with a
-    malformed one, simply has no label and keeps its arg-derived name, because
-    overloading absence to mean anything else would let one flaky draw quietly change
-    a routine (#1770's absence-is-never-a-drop, unchanged)."""
+    question (#1824).  ``labels`` COVERS every offered spot exactly once — a draw that
+    missed one, or named one twice, never reaches here (it is rerolled, then fails
+    whole), so a caller reading this map never has to wonder which spot went unnamed."""
 
     labels: dict[str, LeafLabel] = {}
 
@@ -615,26 +630,26 @@ class MicroContext:
         return _extraction_result(drawn)
 
     async def label_skill(
-        self, content: str, *, run_target: str | None = None
+        self, content: str, offered: Sequence[str], *, run_target: str | None = None
     ) -> SkillLabels | None:
         """Name EVERY spot in a demonstrated routine (#1828) — the second customer of
         this machinery.  Rides the SAME poison-screen + reroll draw loop as ``extract``,
         with the labelling system prompt, its own ledger attribution, its own declared
         shape (:data:`SKILL_NAMING_SHAPE`) and the bare-content user turn (the rendered
-        document IS the whole ask, so there is no instruction to wrap it in).
+        document IS the whole ask, so there is no instruction to wrap it in), plus the
+        runtime constraint a static shape can't carry: the draw must COVER ``offered``,
+        the current names of the spots the content listed.
 
-        Returns the labels, or ``None`` when the draw came back with no usable line at
-        all (poison exhausted, or nothing that parsed as a ``PLACEHOLDER`` line even
-        after the reroll) — the caller then keeps every spot's arg-derived name, so
-        run-end extraction NEVER blocks on the rewrite.  Per-spot labels are
-        best-effort by declaration (``LineRole.PER_ITEM``): one absent or malformed
-        line costs that spot its label and nothing else."""
+        Returns the labels — one per offered spot, guaranteed — or ``None`` when the
+        draw failed (poison exhausted, or coverage still incomplete after the reroll).
+        The caller then keeps every spot's arg-derived name, so run-end extraction
+        NEVER blocks on the rewrite."""
         drawn = await self._valid_draw(
             content,
             "",
             run_target,
             shape=SKILL_NAMING_SHAPE,
-            accepts=_labelled_something,
+            accepts=partial(_labels_every_spot, offered=offered),
             system_prompt=SKILL_NAMING_SYSTEM_PROMPT,
             agent_name=PennyConstants.SKILL_NAMING_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_NAMING_PROMPT_TYPE,
@@ -840,38 +855,43 @@ def _extraction_result(drawn: ParsedDraw) -> MicroContextResult:
     return MicroContextResult(outcome=MicroExtractOutcome.NOT_PRESENT, reason=reason)
 
 
-def _labelled_something(drawn: ParsedDraw) -> bool:
-    """The one runtime constraint the labelling shape can't carry (#1828): a draw has
-    to have labelled SOMETHING.
+def _labels_every_spot(drawn: ParsedDraw, offered: Sequence[str]) -> bool:
+    """COVERAGE — the runtime constraint the labelling shape can't carry (#1828), and
+    the whole of what makes an accepted draw complete: ONE well-formed line per offered
+    spot, and no line for anything else.
 
-    Every line of this contract is PER_ITEM, so a draw of pure prose parses to an empty
-    result rather than to a violation — and "the model wrote no line at all" is a
-    different event from "one spot's line was malformed".  The first is worth the one
-    reroll every other customer gets (the ``shape_skill`` precedent, where "the draw
-    left nothing bindable" rides in the same way); the second stays best-effort and
-    costs that spot its label alone."""
-    return bool(drawn.items)
+    Each way of missing that is the same violation, answered the same way — one reroll
+    on the unchanged context, then an honest whole-draw failure.  MISSING is the
+    observed failure (the tag decays mid-draw, the parse rightly refuses the line, and
+    the spot ends up named by nothing).  TWICE is a contradictory draw, and taking
+    either line would let a stray trailing one rename a spot.  A line for a spot that
+    was never offered is a spot INVENTED rather than named — the shared-spot case's
+    exact failure, where a value filling two argument sites is one spot and splitting it
+    keys a second line to a name nobody listed.
+
+    The caller knows the offered set, so all three are answerable rather than
+    best-effort gaps to absorb; the prompt asks for exactly this ("one line for every
+    placeholder you were given, and none for anything else"), so the validator and the
+    contract say one thing."""
+    named = [item.fields[DrawField.CURRENT] for item in drawn.items]
+    return sorted(named) == sorted(set(offered))
 
 
 def _leaf_labels(drawn: ParsedDraw) -> SkillLabels:
-    """Every drawn line as a ``{current_name: LeafLabel}`` map (#1828).  The grammar
-    already carved and shape-checked each line; what is left here is the SEMANTIC rule
-    the grammar can't express — a spot named on MORE THAN ONE line is a contradictory
-    draw (the contract asks for exactly one line each) and is dropped, because letting
-    the last line win would let a stray trailing line silently rename a spot.  A
-    dropped line is simply an absent label, which the caller reads as "keep the
-    arg-derived name" — the flaky-draw-safe direction."""
-    labels: dict[str, LeafLabel] = {}
-    repeated: set[str] = set()
-    for item in drawn.items:
-        current = item.fields[DrawField.CURRENT]
-        if current in labels:
-            repeated.add(current)
-        labels[current] = LeafLabel(
-            name=item.fields[DrawField.SEMANTIC],
-            description=item.fields.get(DrawField.DESCRIPTION, ""),
-        )
-    return SkillLabels(labels={n: label for n, label in labels.items() if n not in repeated})
+    """Every drawn line as a ``{current_name: LeafLabel}`` map (#1828).
+
+    No filtering and no de-duplication: :func:`_labels_every_spot` accepted this draw
+    only because it carries exactly one well-formed line per offered spot and nothing
+    else, so the map is complete and unambiguous by construction."""
+    return SkillLabels(
+        labels={
+            item.fields[DrawField.CURRENT]: LeafLabel(
+                name=item.fields[DrawField.SEMANTIC],
+                description=item.fields.get(DrawField.DESCRIPTION, ""),
+            )
+            for item in drawn.items
+        }
+    )
 
 
 def _drawn_constants(drawn: ParsedDraw, values: Sequence[str]) -> frozenset[str]:

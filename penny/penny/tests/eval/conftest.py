@@ -2907,7 +2907,12 @@ def _leaf_checks(value: str, labels: SkillLabels | None, by_value: dict[str, str
     spot named ``queries`` again has been described, not named) · its description says
     what belongs there.  With no line, the last three are NOT APPLICABLE rather than
     three extra failures: the miss is one miss, and inflating it would make a silent
-    draw look four times worse than it is."""
+    draw look four times worse than it is.
+
+    Since #1828 the first check is a WHOLE-DRAW property, not a per-spot one: an
+    accepted draw covers every offered spot, so either every spot has its line or the
+    draw failed and none do.  It stays per spot so the report reads the same either
+    way."""
     current = by_value.get(value)
     if current is None:
         return [_drifted(value, f"a line came back: {value!r}")]
@@ -2976,23 +2981,21 @@ def _shared_spot_check(value: str, labels: SkillLabels | None, by_value: dict[st
     """The spot filling TWO argument sites drew exactly ONE label (#1828).
 
     Equal values at two sites are structurally one spot, so the contract is one line
-    covering both uses.  A draw that splits it either repeats the spot's current name
-    (contradictory lines, dropped by the parse — no label at all) or keys its second
-    line to a name that was never offered, which is what this also catches: a line for
-    something nobody asked about is a spot invented, not named."""
+    covering both uses.  A draw that splits it either repeats the spot's current name or
+    keys its second line to a name nobody offered — both are coverage violations the
+    validator refuses (#1828), so a split never reaches an accepted draw and this reads
+    as the spot having no label.  Named as its own check because it is this case's whole
+    claim, and a diff-join key should say what it was watching."""
     label = f"one label for the shared spot: {value!r}"
     current = by_value.get(value)
     if current is None:
         return _drifted(value, label)
     drawn = labels.labels if labels is not None else {}
-    stray = sorted(set(drawn) - set(by_value.values()))
-    if current not in drawn:
-        return Check(label, False, kind="state", rationale="the shared spot drew no single line")
     return Check(
         label,
-        not stray,
+        current in drawn,
         kind="state",
-        rationale=None if not stray else f"also labelled {stray} — spots nobody offered",
+        rationale=None if current in drawn else "the shared spot drew no single line",
     )
 
 
@@ -3217,6 +3220,10 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
         results: list[SampleResult] = []
         perf = _Perf()
         content, by_value = _labelling_input(calls, target, utterance, conversation)
+        # The spots the rendered document offered, in leaf order — the COVERAGE set the
+        # draw is accepted against (#1828).  Read off the distilled leaves rather than
+        # authored, so the case can never offer the draw a set the content didn't list.
+        offered = list(dict.fromkeys(by_value.values()))
         for sample_index in range(samples):
             server = MockSignalServer()
             await server.start()
@@ -3230,7 +3237,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                     micro = MicroContext(penny.model_client)
                     try:
                         labels = await asyncio.wait_for(
-                            micro.label_skill(content, run_target=penny.chat_agent.name),
+                            micro.label_skill(content, offered, run_target=penny.chat_agent.name),
                             timeout=timeout,
                         )
                         scored = _score_labelling(

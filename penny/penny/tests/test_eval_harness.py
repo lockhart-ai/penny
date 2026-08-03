@@ -1198,17 +1198,31 @@ def test_score_labelling_grades_each_spot_and_carries_the_labels_advisory() -> N
         ("drew key: 'entry key' — 'what to call the entry it saves'", True, False),
     ]
 
-    # A spot the draw skipped is ONE miss, not four: the three checks that depend on a
-    # line are NOT APPLICABLE without one, so a silent draw reads as silent rather than
-    # as four separate failures.
-    partial = SkillLabels(labels={"extract": LeafLabel(name="value_to_find", description="")})
-    quiet = _score_labelling(partial, by_value, list(by_value), (), "")
-    assert [(check.label, check.ok, check.ignored) for check in quiet[3:8]] == [
-        ("description says what belongs there: 'the current price'", False, False),
+    # A FAILED draw is one miss per spot, not four: the three checks that depend on a
+    # line are NOT APPLICABLE without one, so a draw that never landed reads as one
+    # miss each rather than as four separate failures.  Since #1828 that is the only
+    # shape a missing line arrives in — an accepted draw covers every offered spot, so
+    # there is no partial map for the scorer to see.
+    failed = _score_labelling(None, by_value, list(by_value), (), "")
+    assert [(check.label, check.ok, check.ignored) for check in failed[:5]] == [
+        ("a line came back: 'the current price'", False, False),
+        ("name is a usable binding key: 'the current price'", True, True),
+        ("name is not the arg name: 'the current price'", True, True),
+        ("description says what belongs there: 'the current price'", True, True),
         ("a line came back: 'aurora deck 2 page source'", False, False),
-        ("name is a usable binding key: 'aurora deck 2 page source'", True, True),
-        ("name is not the arg name: 'aurora deck 2 page source'", True, True),
-        ("description says what belongs there: 'aurora deck 2 page source'", True, True),
+    ]
+
+    # A line that stopped after its name covers its spot (the grammar's one optional
+    # field), so it is accepted — and the missing description is its own miss.
+    nameless = SkillLabels(
+        labels={
+            "extract": LeafLabel(name="value_to_find", description=""),
+            "key": LeafLabel(name="entry_key", description="what to call it"),
+        }
+    )
+    quiet = _score_labelling(nameless, by_value, list(by_value), (), "")
+    assert [(check.label, check.ok) for check in quiet if not check.ok] == [
+        ("description says what belongs there: 'the current price'", False)
     ]
 
     # The name handed back is the arg name it was shown — the spot was described, not
@@ -1240,9 +1254,9 @@ def test_score_labelling_reads_the_two_structural_claims() -> None:
 
     Two spots on one argument must draw DIFFERENT names — one name for both loses which
     site is which.  And a spot filling TWO sites must resolve to exactly one label:
-    splitting it either repeats the spot's current name (contradictory lines the parse
-    drops) or keys a line to a spot nobody offered, which is a spot invented rather
-    than named."""
+    splitting it either repeats the spot's current name or keys a line to a spot nobody
+    offered, and both are coverage violations the validator refuses (#1828), so a split
+    reaches the scorer as the shared spot having no label at all."""
     two_sources = {"citydesk.example/front": "queries", "harborpost.example/front": "queries-2"}
     pair = ("citydesk.example/front", "harborpost.example/front")
     collapsed = SkillLabels(
@@ -1269,15 +1283,19 @@ def test_score_labelling_reads_the_two_structural_claims() -> None:
     assert ok_check.ok
 
     shared = {"VLT": "queries", "the share price": "extract"}
-    split = SkillLabels(
+    covered = SkillLabels(
         labels={
             "queries": LeafLabel(name="ticker_symbol", description="the symbol to look up"),
-            "key": LeafLabel(name="entry_key", description="what to file it under"),
+            "extract": LeafLabel(name="value_to_find", description="what to pull"),
         }
     )
-    [claim] = [c for c in _score_labelling(split, shared, (), (), "VLT") if c.scored]
+    [held] = [c for c in _score_labelling(covered, shared, (), (), "VLT") if c.scored]
+    assert (held.label, held.ok) == ("one label for the shared spot: 'VLT'", True)
+
+    # A split never reaches an accepted draw, so it arrives as a failed one.
+    [claim] = [c for c in _score_labelling(None, shared, (), (), "VLT") if c.scored]
     assert (claim.label, claim.ok, claim.rationale) == (
         "one label for the shared spot: 'VLT'",
         False,
-        "also labelled ['key'] — spots nobody offered",
+        "the shared spot drew no single line",
     )

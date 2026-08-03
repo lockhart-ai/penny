@@ -28,10 +28,17 @@ Three things fall out of declaring it as data:
 
 :class:`LineRole` is what keeps the best-effort rules intact while the strict ones
 tighten: a REQUIRED line missing or malformed invalidates the draw (a reroll), while
-an OPTIONAL or PER_ITEM line missing OR malformed is simply ABSENT — never a
-verdict, never a reroll.  So "absence is never a verdict" (#1770) and "the
-labeller's per-candidate lines are best-effort by design" are declared properties of
-those lines rather than conventions each bespoke parser had to remember.
+an OPTIONAL or PER_ITEM line missing OR malformed is simply ABSENT at this layer —
+never a verdict, never a reroll.  So "absence is never a verdict" (#1770) is a
+declared property of those lines rather than a convention each bespoke parser had to
+remember.
+
+What absence MEANS is the customer's, not the grammar's: a customer that knows the
+exact set of items it offered declares COVERAGE as a runtime constraint (``accepts``)
+and an incomplete draw is then a violation like any other — the leaf labeller does
+exactly that (#1828), so a decayed tag costs the whole draw rather than one item its
+line.  The grammar stays permissive so the customer can be strict where it can check;
+tightening PER_ITEM here would take that choice away from the customers that can't.
 
 Dependency-light leaf: pydantic + ``text_validity`` only, so the tools package and
 anything that declares a shape import it without a cycle.
