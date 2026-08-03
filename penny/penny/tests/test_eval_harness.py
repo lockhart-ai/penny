@@ -52,6 +52,7 @@ from penny.tests.eval.conftest import (
     _score_labelling,
     _scorer_is_graded,
     _stamp_cause,
+    _without_examples,
     _write_sample_report,
     run_exhibited_pathology,
     sample_is_fragile,
@@ -1343,6 +1344,80 @@ def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
         True,
         None,
     )
+
+
+def test_an_example_clause_is_garnish_not_substance() -> None:
+    """An appended example of this occasion's value is STRIPPED before the generic scan
+    (#1830, the code owner's ruling on the fourth run).
+
+    The run failed two lines whose substance was exactly right — the thinking drafted
+    them exampleless and the `(e.g., …)` appeared only at transcription — so scoring the
+    clause marked correct work wrong.  What must still fail is the line's substance: an
+    instance token in the NAME, or the value standing as the whole description.
+
+    The third shape is the one that separates the two rulings: a `location` parameter
+    with its example stripped is generically WORDED, and still misses the page family,
+    because its defect is the type it asks for and not the garnish it wore."""
+    page = ParameterFamily("url", ("url", "page", "site", "weather"), name_only=True)
+
+    # Generic substance wearing an example of the occasion — the clause goes.
+    garnished = SkillSignature(
+        name="temperature-recorder",
+        description="record the daily high temperature from a weather page",
+        parameters=(
+            FramedParameter(
+                name="site_url",
+                description=(
+                    "the URL to query for the high temperature (e.g., weather.example/lisbon)"
+                ),
+            ),
+        ),
+    )
+    graded = _by_label(_score_framing(garnished, (page,), ("lisbon",)))
+    assert graded["the parameters are generic"] == (True, None)
+    assert graded["asks for the url"] == (True, None)
+
+    # The occasion IN the name, and the value standing AS the description: substance.
+    echoed = SkillSignature(
+        name="headline-collector",
+        description="collect the top headline from a news front page",
+        parameters=(FramedParameter(name="citydesk_url", description="citydesk.example/front"),),
+    )
+    assert _by_label(_score_framing(echoed, (page,), ("citydesk", "harborpost")))[
+        "the parameters are generic"
+    ] == (False, "named the occasion: citydesk_url (citydesk)")
+
+    # Stripped and generic, but the WRONG KIND of thing — a piece decomposed out of the
+    # value the user actually gave, which is the type drift, not the garnish.
+    decomposed = SkillSignature(
+        name="temperature-recorder",
+        description="record the daily high temperature from a weather page",
+        parameters=(
+            FramedParameter(
+                name="location",
+                description='the geographic location to look up (e.g., "lisbon")',
+            ),
+        ),
+    )
+    drifted = _by_label(_score_framing(decomposed, (page,), ("lisbon",)))
+    assert drifted["the parameters are generic"] == (True, None), "the garnish is not the miss"
+    assert drifted["asks for the url"] == (False, "no parameter answers it")
+
+
+def test_example_clauses_are_stripped_in_their_observed_forms() -> None:
+    """The clause shapes a draw actually writes, all reduced to the instruction alone —
+    parenthesized or trailing, with or without the comma and the dots."""
+    assert _without_examples("the plot to log (e.g., 17)") == "the plot to log"
+    assert _without_examples("the plot to log (eg 17)") == "the plot to log"
+    assert _without_examples("the plot to log (for example 17)") == "the plot to log"
+    assert _without_examples("the plot to log, e.g. 17") == "the plot to log"
+    assert _without_examples("the plot to log — such as 17") == "the plot to log"
+    # A line with no garnish is untouched, and a word merely containing the letters is
+    # not a lead-in ("eggs" is not "e.g.").
+    assert _without_examples("which plot in the allotment to log") == (
+        "which plot in the allotment to log"
+    )
+    assert _without_examples("the plot whose eggs are counted") == "the plot whose eggs are counted"
 
 
 def _by_label(checks) -> dict[str, tuple[bool, str | None]]:

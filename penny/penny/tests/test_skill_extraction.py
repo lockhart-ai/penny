@@ -1261,6 +1261,17 @@ def test_framing_system_prompt_whole_render():
     (`— <the value>`, `— e.g., <the value>`) is the guard attached to that example, per
     the prompt guide's positive-example-first rule.
 
+    The fourth run added the last two, both from its thinking.  **A parameter is the KIND
+    of thing the user handed over**: the `location` drift was DELIBERATE url-templating —
+    "minimal would be just the location string because the site always same base" — a
+    routine that asks for a piece and assembles the rest, which nothing in this system
+    does.  Stated positively and without naming any kind of value, since a skill is an
+    arbitrary tool sequence and the rule is about the value's relationship to the ask,
+    not about addresses.  **And the description carries no example**: the traces showed
+    `(e.g., <value>)` appended at write-time to lines that were drafted exampleless, so
+    the clause is a habit of writing — the prompt closes it here, and the scorer strips
+    it rather than scoring it (garnish is not substance).
+
     Both worked examples are deliberately far from the look-up-and-remember shape the
     cases use — a FILING routine, and an ALLOTMENT register: an example drawn from the
     case in hand teaches pattern-matching on that case, and a skill is an arbitrary tool
@@ -1303,16 +1314,20 @@ def test_framing_system_prompt_whole_render():
         "the line whole; several values packed into a single line is still several "
         "parameters.\n"
         "Every line declares a DIFFERENT parameter with its own name: a routine pointed at "
-        "two things of the same kind has two lines, named so they tell the two apart. Write "
+        "two things of the same kind has two lines, named so they tell the two apart. A "
+        "parameter is the KIND of thing the user actually handed you, and it takes what "
+        "they said as they said it — never a piece taken out of what they gave you, and "
+        "never a stand-in the routine would have to turn into the real thing, because "
+        "nothing here assembles a value out of parts or fills in anything around it. Write "
         "each name in a single lowercase word or snake_case for what the value MEANS to the "
         "routine — not the value they happened to give you this time, and not where that "
         "value came from.\n"
         "After the dash goes what you would tell them to supply for it on that next "
-        "occasion. For a routine that logs what is growing in an allotment, a filled line "
-        "reads\n"
+        "occasion: the instruction alone, with no sample of what it might be. For a "
+        "routine that logs what is growing in an allotment, a filled line reads\n"
         "PARAMETER plot_number — which plot in the allotment to log\n"
-        "and NEVER the value from this occasion in its place: not the value on its own, and "
-        "not an e.g. that points at it.\n"
+        "and NEVER the value from this occasion in its place, whether standing on its own "
+        "or trailing the instruction as an e.g.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
         "conversation."
     )

@@ -3046,6 +3046,20 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # exactly what the second run did to two of them.
 _DIGIT_SUFFIX_RE = re.compile(r"([a-z]+)(\d+)")
 
+# Write-time GARNISH: an example of THIS occasion's value hung off an otherwise generic
+# line — ``the page to check (e.g., bookbarn.example/atlas-of-clouds)``.  The fourth run's
+# thinking traces settled what it is: the drafted lines carried no example at all, and the
+# clause appeared only at transcription, so it is a habit of writing rather than a claim
+# about the routine.  Scoring it as an occasion-named parameter failed two lines whose
+# substance was exactly right, so it is stripped before the instance-token scan.
+#
+# Only the CLAUSE goes.  An instance token in the name itself, or a value standing as the
+# whole description, is the line's substance and still fails — which is the difference
+# between a line that says what to supply and one that says what was supplied.
+_EXAMPLE_LEAD = r"(?:e\.?\s?g\.?|for\s+example|for\s+instance|such\s+as)"
+_PARENTHESIZED_EXAMPLE_RE = re.compile(rf"\(\s*{_EXAMPLE_LEAD}\b[^)]*\)?", re.IGNORECASE)
+_TRAILING_EXAMPLE_RE = re.compile(rf"[\s,;:—-]*\b{_EXAMPLE_LEAD}\b.*$", re.IGNORECASE)
+
 
 class ParameterFamily(NamedTuple):
     """One parameter the ask genuinely requires, as the SET of things it could
@@ -3082,6 +3096,24 @@ def _tokens(text: str) -> set[str]:
         if split is not None:
             found.update(split.groups())
     return found
+
+
+def _without_examples(text: str) -> str:
+    """``text`` with any example clause removed — ``the plot to log (e.g., 17)`` → ``the
+    plot to log``, and the same for a trailing ``, e.g. 17`` with no parentheses.
+
+    Both forms are stripped before the instance-token scan reads the line, and NOTHING
+    else is: the clause is a way of writing, not a claim, so what remains is what the
+    line actually says."""
+    return _TRAILING_EXAMPLE_RE.sub("", _PARENTHESIZED_EXAMPLE_RE.sub("", text)).strip()
+
+
+def _substance_tokens(parameter: FramedParameter) -> set[str]:
+    """A parameter's tokens once its example garnish is gone — name and description
+    stripped SEPARATELY, so a trailing example on one can never eat the other."""
+    return _tokens(_without_examples(parameter.name)) | _tokens(
+        _without_examples(parameter.description)
+    )
 
 
 def _matching_family(text: str, families: Sequence[ParameterFamily]) -> ParameterFamily | None:
@@ -3142,15 +3174,15 @@ def _generic_parameters_check(signature: SkillSignature, instance_tokens: Sequen
     ``citydesk_url — citydesk.example/front`` pair is a routine that can only be pointed
     back at the page it was taught on; ``first_site — the first front page to read`` is
     the same spot, re-suppliable.  The reference pairs carry no instance token at all,
-    which is what makes this structural rather than a judgment."""
+    which is what makes this structural rather than a judgment.
+
+    It reads each line's SUBSTANCE — an appended ``(e.g., …)`` is stripped first, because
+    the fourth run's traces showed that clause is written after the line is decided and
+    says nothing about the parameter (see :func:`_without_examples`)."""
     offenders = [
         f"{parameter.name} ({', '.join(used)})"
         for parameter in signature.parameters
-        if (
-            used := sorted(
-                _tokens(f"{parameter.name} {parameter.description}") & set(instance_tokens)
-            )
-        )
+        if (used := sorted(_substance_tokens(parameter) & set(instance_tokens)))
     ]
     return Check(
         "the parameters are generic",
