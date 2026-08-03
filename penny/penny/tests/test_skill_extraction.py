@@ -1242,12 +1242,14 @@ def test_framing_system_prompt_whole_render():
     running.  A rule keyed to the wording in front of it would simply not fire for the
     next shape nobody enumerated.
 
-    The **one-value schema** rides in the output-contract block rather than the
-    reasoning, because it is a fact about the LINE, not a judgment the model makes: the
-    first run's two-sources case drew one `sites — list of URLs` parameter in all five
-    samples, which was a rational reading of a contract nobody had stated.  It is
-    positive ("takes ONE value … one line for each of them"), so the several-things case
-    is answered rather than forbidden.
+    The **line's own schema** rides in the output-contract block rather than the
+    reasoning, because it is a fact about the LINE, not a judgment the model makes —
+    and it is stated positively, so each case is answered rather than forbidden.  Both
+    halves were measured absences, one run apart: the first run drew one `sites — list
+    of URLs` parameter in all five two-sources samples, and once the plural form closed,
+    the second run named parameters after the site they were taught on and wrote the
+    demonstrated value where the what-to-supply belongs.  Each was a rational reading of
+    a contract nobody had stated.
 
     The worked example is deliberately a FILING routine, not the look-up-and-remember
     shape the cases use: an example drawn from the case in hand teaches pattern-matching
@@ -1288,9 +1290,14 @@ def test_framing_system_prompt_whole_render():
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
         "Each PARAMETER line takes ONE value — a single thing the user says, which fills "
-        "it whole. A routine pointed at several things has one line for each of them, so "
-        "two things named is two PARAMETER lines. Use a single lowercase word or "
-        "snake_case for <parameter_name>, and give each parameter its own name.\n"
+        "the line whole. A routine pointed at several things has one line for each of "
+        "them, so two things named is two PARAMETER lines; several values packed into a "
+        "single line is still several parameters.\n"
+        "Name it in a single lowercase word or snake_case for what the value MEANS to the "
+        "routine, so the name reads the same on every occasion — not the value they "
+        "happened to give you this time, and not where that value came from. Then say what "
+        "they supply for it each time it runs, so the description reads as an instruction "
+        "for the next occasion rather than as this one's answer.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
         "conversation."
     )

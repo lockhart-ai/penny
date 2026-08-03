@@ -3035,10 +3035,16 @@ def _score_labelling(
 FramerEval = Callable[..., Awaitable[None]]
 
 # A word token of a drawn name or description — what family classification and the
-# generic-framing check both read.  Word-boundary, never substring: a description
-# saying "festival" must not read as the instance token "fest", while the instance
-# itself tokenises to it.
+# generic checks both read.  Word-boundary, never substring: a description saying
+# "festival" must not read as the instance token "fest", while the instance itself
+# tokenises to it.
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# A trailing digit is its own token: ``site1`` is ``site`` + ``1``.  Enumerating with
+# digits is one of the natural ways to write an ordinal pair, so a scorer that reads
+# ``site1`` as a single opaque word marks a CORRECT draw as a family miss — which is
+# exactly what the second run did to two of them.
+_DIGIT_SUFFIX_RE = re.compile(r"([a-z]+)(\d+)")
 
 
 class ParameterFamily(NamedTuple):
@@ -3064,8 +3070,18 @@ class ParameterFamily(NamedTuple):
 
 
 def _tokens(text: str) -> set[str]:
-    """A drawn string's word tokens, lowercased — ``first_site`` → ``{first, site}``."""
-    return set(_TOKEN_RE.findall(text.lower()))
+    """A drawn string's word tokens, lowercased — ``first_site`` → ``{first, site}``,
+    and ``site1`` → ``{site1, site, 1}`` so a digit-suffixed ordinal reads as one.
+
+    The whole token is kept alongside its split, so nothing that matched before stops
+    matching."""
+    found: set[str] = set()
+    for token in _TOKEN_RE.findall(text.lower()):
+        found.add(token)
+        split = _DIGIT_SUFFIX_RE.fullmatch(token)
+        if split is not None:
+            found.update(split.groups())
+    return found
 
 
 def _matching_family(text: str, families: Sequence[ParameterFamily]) -> ParameterFamily | None:
@@ -3116,6 +3132,34 @@ def _generic_framing_check(signature: SkillSignature, instance_tokens: Sequence[
     )
 
 
+def _generic_parameters_check(signature: SkillSignature, instance_tokens: Sequence[str]) -> Check:
+    """Every PARAMETER line is generic too — the enforcement half of the parameter-line
+    contract (#1830, the code owner's ruling on the second run).
+
+    The same instance tokens, one level down: a parameter's name says what the value
+    MEANS to the routine and its description says what to supply next time, so neither
+    can carry this occasion's value or the name of where it came from.  A
+    ``citydesk_url — citydesk.example/front`` pair is a routine that can only be pointed
+    back at the page it was taught on; ``first_site — the first front page to read`` is
+    the same spot, re-suppliable.  The reference pairs carry no instance token at all,
+    which is what makes this structural rather than a judgment."""
+    offenders = [
+        f"{parameter.name} ({', '.join(used)})"
+        for parameter in signature.parameters
+        if (
+            used := sorted(
+                _tokens(f"{parameter.name} {parameter.description}") & set(instance_tokens)
+            )
+        )
+    ]
+    return Check(
+        "the parameters are generic",
+        not offenders,
+        kind="state",
+        rationale=None if not offenders else f"named the occasion: {'; '.join(offenders)}",
+    )
+
+
 def _score_framing(
     signature: SkillSignature | None,
     families: Sequence[ParameterFamily],
@@ -3130,8 +3174,9 @@ def _score_framing(
     lives in the families (a reference name is a target, never a string to match), so a
     well-judged different word passes and a missing or invented parameter does not.
 
-    Plus the structural generic-framing check: the occasion never appears in the name
-    or the description.
+    Plus the two structural generic checks: the occasion never appears in the name or
+    the description, and never in a parameter's name or description either — the
+    enforcement half of the parameter-line contract.
 
     The drawn NAME, DESCRIPTION and every parameter then ride ADVISORY
     (``scored=False``) — whether a name is WELL judged is read at joint review against
@@ -3143,6 +3188,7 @@ def _score_framing(
         *(_family_check(family, grouped[family.label]) for family in families),
         _exact_count_check(signature, families),
         _generic_framing_check(signature, instance_tokens),
+        _generic_parameters_check(signature, instance_tokens),
         *_framing_advisories(signature),
     ]
 
@@ -3159,6 +3205,7 @@ def _refused_framing(families: Sequence[ParameterFamily]) -> list[Check]:
         ),
         Check("asks for nothing else", False, kind="state", rationale=refused),
         Check("the framing is generic", False, kind="state", rationale=refused),
+        Check("the parameters are generic", False, kind="state", rationale=refused),
     ]
 
 

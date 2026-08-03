@@ -1198,6 +1198,7 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
         ("asks for the ticket search", True, True),
         ("asks for nothing else", True, True),
         ("the framing is generic", True, True),
+        ("the parameters are generic", True, True),
         ("named it 'ticket-price-watcher'", True, False),
         ('described it "watch an event\'s cheapest ticket price"', True, False),
         ("asks 'page_to_watch' — 'the listing page to check'", True, False),
@@ -1236,6 +1237,7 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
         ("asks for the ticket search", False),
         ("asks for nothing else", False),
         ("the framing is generic", False),
+        ("the parameters are generic", False),
     ]
     assert {check.rationale for check in refused} == {
         "the draw was refused — no signature came back"
@@ -1273,6 +1275,71 @@ def test_the_page_family_classifies_by_name_only() -> None:
     assert _by_label(_score_framing(by_description, (search,), ()))[
         "asks for the ticket search"
     ] == (
+        True,
+        None,
+    )
+
+
+def test_a_digit_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
+    """A trailing digit is its own token (#1830, the code owner's ruling on the second
+    run): ``site1``/``site2`` is one of the natural ways to write an ordinal pair, and
+    the run scored two CORRECT draws as family misses because the scorer read each name
+    as a single opaque word.  The families are unchanged; what changed is that the
+    tokenizer can see the ordinal that was always there."""
+    families = (
+        ParameterFamily("first source", ("first", "one", "1", "primary")),
+        ParameterFamily("second source", ("second", "two", "2", "secondary")),
+    )
+    signature = SkillSignature(
+        name="headline-collector",
+        description="collect the top headline from each front page it is pointed at",
+        parameters=(
+            FramedParameter(name="site1", description="the first front page to read"),
+            FramedParameter(name="site2", description="the second front page to read"),
+        ),
+    )
+
+    graded = _by_label(_score_framing(signature, families, ("citydesk", "harborpost")))
+    assert graded["asks for the first source"] == (True, None)
+    assert graded["asks for the second source"] == (True, None)
+    assert graded["asks for nothing else"] == (True, None)
+
+
+def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
+    """The generic check reaches the PARAMETER lines too (#1830) — the enforcement half
+    of the parameter-line contract.
+
+    The motivating draw: `citydesk_url — citydesk.example/front`, which names the spot
+    after the site it was taught on and then writes that occasion's value where the
+    what-to-supply belongs.  It is a routine that can only ever be pointed back at the
+    page it learned from.  The same spot written generically — `first_site — the first
+    front page to read` — passes, and so does the framing check either way, which is
+    why this is its own check rather than a widening of that one."""
+    families = (ParameterFamily("first source", ("first", "one", "1", "primary")),)
+    instance = ("citydesk", "harborpost")
+    framing = {
+        "name": "headline-collector",
+        "description": "collect the top headline from a news front page",
+    }
+
+    occasional = SkillSignature(
+        **framing,
+        parameters=(FramedParameter(name="citydesk_url", description="citydesk.example/front"),),
+    )
+    graded = _by_label(_score_framing(occasional, families, instance))
+    assert graded["the parameters are generic"] == (
+        False,
+        "named the occasion: citydesk_url (citydesk)",
+    )
+    assert graded["the framing is generic"] == (True, None), "the framing itself is clean"
+
+    generic = SkillSignature(
+        **framing,
+        parameters=(
+            FramedParameter(name="first_site", description="the first front page to read"),
+        ),
+    )
+    assert _by_label(_score_framing(generic, families, instance))["the parameters are generic"] == (
         True,
         None,
     )
