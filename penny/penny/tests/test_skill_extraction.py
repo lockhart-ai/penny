@@ -1244,18 +1244,28 @@ def test_framing_system_prompt_whole_render():
 
     The **line's own schema** rides in the output-contract block rather than the
     reasoning, because it is a fact about the LINE, not a judgment the model makes —
-    and it is stated positively, so each case is answered rather than forbidden.  Both
-    halves were measured absences, one run apart: the first run drew one `sites — list
-    of URLs` parameter in all five two-sources samples, and once the plural form closed,
-    the second run named parameters after the site they were taught on and wrote the
-    demonstrated value where the what-to-supply belongs.  Each was a rational reading of
-    a contract nobody had stated.
+    and it is stated positively, so each case is answered rather than forbidden.  Every
+    part of it was a measured absence, one run apart, each a rational reading of a
+    contract nobody had stated: the first run drew one `sites — list of URLs` parameter
+    in all five two-sources samples; once the plural form closed, the second run named
+    parameters after the site they were taught on and wrote the demonstrated value where
+    the what-to-supply belongs; and the third read "one line for each of them" as one
+    line per VALUE, drawing `PARAMETER ticker — VLT` / `PARAMETER ticker — MERI` and
+    asking, in its own thinking, whether two lines could share one name.
 
-    The worked example is deliberately a FILING routine, not the look-up-and-remember
-    shape the cases use: an example drawn from the case in hand teaches pattern-matching
-    on that case, and a skill is an arbitrary tool sequence a plugin may have supplied
-    the verbs for.  It is told as unquoted PROSE, since a quoted example value is copied
-    verbatim and the things this prompt asks the model to compose are names."""
+    So the block answers that question outright (every line declares a DIFFERENT
+    parameter) and, above all, SHOWS a filled line.  The traces say why that is the
+    load-bearing part: the model had only ever seen the `<one-line description …>`
+    placeholder, which collapses to "the thing supplied" — it had no example of the
+    finished shape to read the placeholder against.  The specific observed pitfall
+    (`— <the value>`, `— e.g., <the value>`) is the guard attached to that example, per
+    the prompt guide's positive-example-first rule.
+
+    Both worked examples are deliberately far from the look-up-and-remember shape the
+    cases use — a FILING routine, and an ALLOTMENT register: an example drawn from the
+    case in hand teaches pattern-matching on that case, and a skill is an arbitrary tool
+    sequence a plugin may have supplied the verbs for.  Both are told as unquoted PROSE,
+    since a quoted example value is copied verbatim."""
     assert SKILL_FRAME_SYSTEM_PROMPT == (
         "You are writing the public interface of a routine the assistant has just been "
         "taught. All you are given is what the USER said while asking for it and walking "
@@ -1290,14 +1300,19 @@ def test_framing_system_prompt_whole_render():
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
         "Each PARAMETER line takes ONE value — a single thing the user says, which fills "
-        "the line whole. A routine pointed at several things has one line for each of "
-        "them, so two things named is two PARAMETER lines; several values packed into a "
-        "single line is still several parameters.\n"
-        "Name it in a single lowercase word or snake_case for what the value MEANS to the "
-        "routine, so the name reads the same on every occasion — not the value they "
-        "happened to give you this time, and not where that value came from. Then say what "
-        "they supply for it each time it runs, so the description reads as an instruction "
-        "for the next occasion rather than as this one's answer.\n"
+        "the line whole; several values packed into a single line is still several "
+        "parameters.\n"
+        "Every line declares a DIFFERENT parameter with its own name: a routine pointed at "
+        "two things of the same kind has two lines, named so they tell the two apart. Write "
+        "each name in a single lowercase word or snake_case for what the value MEANS to the "
+        "routine — not the value they happened to give you this time, and not where that "
+        "value came from.\n"
+        "After the dash goes what you would tell them to supply for it on that next "
+        "occasion. For a routine that logs what is growing in an allotment, a filled line "
+        "reads\n"
+        "PARAMETER plot_number — which plot in the allotment to log\n"
+        "and NEVER the value from this occasion in its place: not the value on its own, and "
+        "not an e.g. that points at it.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
         "conversation."
     )
