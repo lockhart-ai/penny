@@ -1229,107 +1229,68 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
 
 
 def test_framing_system_prompt_whole_render():
-    """Whole-render literal of the framing contract (#1830): the framing and its ONE
-    input, the three numbered asks — what the ask was FOR, then the minimal information
-    a new occasion needs, then what is explicitly NOT asked — the whose-words-decide
-    rule, the always-one-parameter floor, and the enumerated output shape rendered from
-    the declared shape so the tags and separators the model is told to write are
-    literally the ones the parse splits on.
+    """Whole-render literal of the framing contract (#1830) — AUTHORED AND APPROVED BY
+    THE CODE OWNER in review, and swapped in wholesale.
 
-    The non-parameters are stated POSITIVELY and by STATE, never by naming a tool or a
-    sample phrase: what the ask named is carried by the framing, storage is the
-    assistant's to manage, and cadence/notification are settled when the routine is set
-    running.  A rule keyed to the wording in front of it would simply not fire for the
-    next shape nobody enumerated.
+    Five rounds of measured fixes each landed as another clause on the previous
+    wording, and the result was an obscure private dialect ("the value from this
+    occasion", "a piece taken out of what they gave you") that read as accretion
+    because it was.  The guide's rewrite-not-accrete rule applies to the WHOLE prompt,
+    not sentence by sentence: what every round learned is kept, but restated once, in
+    plain terms, in the order the work is done — read the ask, name the routine, decide
+    the parameters, with the PARAMETER line's own schema inline where that line is
+    described.
 
-    The **line's own schema** rides in the output-contract block rather than the
-    reasoning, because it is a fact about the LINE, not a judgment the model makes —
-    and it is stated positively, so each case is answered rather than forbidden.  Every
-    part of it was a measured absence, one run apart, each a rational reading of a
-    contract nobody had stated: the first run drew one `sites — list of URLs` parameter
-    in all five two-sources samples; once the plural form closed, the second run named
-    parameters after the site they were taught on and wrote the demonstrated value where
-    the what-to-supply belongs; and the third read "one line for each of them" as one
-    line per VALUE, drawing `PARAMETER ticker — VLT` / `PARAMETER ticker — MERI` and
-    asking, in its own thinking, whether two lines could share one name.
+    What each round contributed, all of it still here: the minimal-information question
+    and the not-a-parameter list (what the framing carries · storage · cadence ·
+    notification) · one value per parameter, never a list (run 1) · a generic name and a
+    what-to-supply description, never this occasion's value (run 2) · distinct names for
+    two things of the same kind (run 3) · the value's own KIND, never a piece decomposed
+    out of it (run 4) · no examples in the description (run 5).
 
-    So the block answers that question outright (every line declares a DIFFERENT
-    parameter) and, above all, SHOWS a filled line.  The traces say why that is the
-    load-bearing part: the model had only ever seen the `<one-line description …>`
-    placeholder, which collapses to "the thing supplied" — it had no example of the
-    finished shape to read the placeholder against.  The specific observed pitfall
-    (`— <the value>`, `— e.g., <the value>`) is the guard attached to that example, per
-    the prompt guide's positive-example-first rule.
+    Two deliberate absences the code owner ruled on directly.  There is **no worked
+    example of a filled line** in this version — its return, if the value-echo class
+    comes back, is a measurement rather than an assumption.  And the type nouns 'url'
+    and 'topic' ARE the contract being taught, not fixture leakage: teaching the
+    canonical name for a kind of value is the point of the naming clause.  The
+    'first_plot'/'second_plot' pair keeps the allotment register, far from every case.
 
-    The fourth run added the last two, both from its thinking.  **A parameter is the KIND
-    of thing the user handed over**: the `location` drift was DELIBERATE url-templating —
-    "minimal would be just the location string because the site always same base" — a
-    routine that asks for a piece and assembles the rest, which nothing in this system
-    does.  Stated positively and without naming any kind of value, since a skill is an
-    arbitrary tool sequence and the rule is about the value's relationship to the ask,
-    not about addresses.  **And the description carries no example**: the traces showed
-    `(e.g., <value>)` appended at write-time to lines that were drafted exampleless, so
-    the clause is a habit of writing — the prompt closes it here, and the scorer strips
-    it rather than scoring it (garnish is not substance).
-
-    Both worked examples are deliberately far from the look-up-and-remember shape the
-    cases use — a FILING routine, and an ALLOTMENT register: an example drawn from the
-    case in hand teaches pattern-matching on that case, and a skill is an arbitrary tool
-    sequence a plugin may have supplied the verbs for.  Both are told as unquoted PROSE,
-    since a quoted example value is copied verbatim."""
+    The three tagged lines still RENDER from the declared shape (`render_line`), so the
+    tags and separators the model is told to write remain literally the ones the parse
+    splits on."""
     assert SKILL_FRAME_SYSTEM_PROMPT == (
-        "You are writing the public interface of a routine the assistant has just been "
-        "taught. All you are given is what the USER said while asking for it and walking "
-        "through it — their own words, one turn per line. That is deliberate: what a "
-        "routine is for, and what someone has to say to set it up, is answered by the ask "
-        "and by nothing else.\n"
-        "Do this:\n"
-        "1. Read the ask for what the user was trying to GET DONE. A routine is the KIND "
-        "of task, never the one occasion, so name it and describe it generically — and "
-        "fold what they said to look for INTO that framing rather than leaving it to be "
-        "supplied later: what a routine goes and finds is part of what it IS.\n"
-        "2. Now picture them coming back later to set the same routine running on a new "
-        "occasion. What is the MINIMAL information they would have to give you? Write one "
-        "PARAMETER line for each such piece.\n"
-        "3. Anything the framing already carries is NOT a parameter. They named it as the "
-        "point of the task, so asking for it would be asking them to tell you what they "
-        "came to you for — and if the name and description you wrote leave it open, those "
-        "are what is wrong, not this answer. Where the results are kept is never a "
-        "parameter either: the assistant manages its own storage, and nobody has to say "
-        "where things go. Neither is how often it should run, nor whether they want to be "
-        "told about it — those are settled when the routine is set running, and are no "
-        "part of what it is.\n"
-        "THEIR OWN WORDS DECIDE THIS. Asked to file the receipts from a particular sender "
-        "into a tax folder, they named receipts as the point, so a routine that files "
-        "receipts asks only for the sender. Asked instead to file whatever they point you "
-        "at, they named nothing, and what to file is a parameter. Both are real routines; "
-        "the ask is what tells you which one you were taught.\n"
-        "There is ALWAYS at least one parameter: a routine that needs nothing said to it "
-        "can only ever repeat the one occasion it was shown, and that is not a routine.\n"
+        "You are writing the public interface of a reusable routine. You are given what "
+        "the user asked for, in their own words. Do three things:\n"
+        "\n"
+        "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
+        "to get done when they asked. Their own words are the evidence.\n"
+        "\n"
+        "2. Name and describe the ROUTINE by that intent: a short generic verb-noun name "
+        "for the KIND of task — never the specific instance — and one line stating what "
+        "the routine is for.\n"
+        "\n"
+        "3. Decide the PARAMETERS: the minimal information the user would have to give to "
+        "set this routine up again on a new occasion.\n"
+        "   - Anything the name and description already carry is not a parameter — asking "
+        "for it would be asking the user what they came to you for.\n"
+        "   - Where results are kept, how often it runs, and whether to notify are never "
+        "parameters — those are settled when the routine is set running.\n"
+        "   - There is always at least one parameter.\n"
+        "   Each parameter is one line: PARAMETER <name> — <description>\n"
+        "   - name: what the user provided and how the routine uses it — if they pointed "
+        "you at a website, 'url'; if they named a topic, 'topic'. Generic snake_case, "
+        "never the particular site or thing's own name.\n"
+        "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
+        "a url, never a city pulled out of one, and never a list. Two things of the same "
+        "kind are two parameters with names that tell them apart: 'first_plot', "
+        "'second_plot'.\n"
+        "   - description: one line saying what to supply. Do not include examples.\n"
+        "\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
-        "Each PARAMETER line takes ONE value — a single thing the user says, which fills "
-        "the line whole; several values packed into a single line is still several "
-        "parameters.\n"
-        "Every line declares a DIFFERENT parameter with its own name: a routine pointed at "
-        "two things of the same kind has two lines, named so they tell the two apart. A "
-        "parameter is the KIND of thing the user actually handed you, and it takes what "
-        "they said as they said it — never a piece taken out of what they gave you, and "
-        "never a stand-in the routine would have to turn into the real thing, because "
-        "nothing here assembles a value out of parts or fills in anything around it. Write "
-        "each name in a single lowercase word or snake_case for what the value MEANS to the "
-        "routine — not the value they happened to give you this time, and not where that "
-        "value came from.\n"
-        "After the dash goes what you would tell them to supply for it on that next "
-        "occasion: the instruction alone, with no sample of what it might be. For a "
-        "routine that logs what is growing in an allotment, a filled line reads\n"
-        "PARAMETER plot_number — which plot in the allotment to log\n"
-        "and NEVER the value from this occasion in its place, whether standing on its own "
-        "or trailing the instruction as an e.g.\n"
-        "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
-        "conversation."
+        "Write nothing else — no preamble, no explanation, no restating the ask."
     )
 
 
