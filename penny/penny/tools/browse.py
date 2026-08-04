@@ -205,11 +205,15 @@ class BrowseTool(Tool):
                 "extract": {
                     "type": "string",
                     "description": (
-                        "Optional. One instruction naming exactly what to pull out of the "
-                        'fetched pages (e.g. "the current bid amount"). When set, the full '
-                        "page content is read in a separate scoped context and only the "
-                        "extracted value is returned here — the page body never enters this "
-                        "conversation. Omit to receive the page content itself."
+                        "Optional. One instruction naming what to pull out of the fetched "
+                        'pages (e.g. "the current bid amount"). Use the task\'s own words '
+                        "for it — asking for extra details the task never named (an ID, a "
+                        "date, a second field) makes the read come back empty when the page "
+                        'lacks them, and a broad ask like "what the notice says" is fine. '
+                        "When set, the full page content is read in a separate scoped "
+                        "context and only the extracted value is returned here — the page "
+                        "body never enters this conversation. Omit to receive the page "
+                        "content itself."
                     ),
                 },
             },

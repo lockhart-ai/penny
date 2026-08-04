@@ -543,6 +543,30 @@ def test_micro_context_system_prompt_declares_multiline_contract():
     )
 
 
+def test_extract_parameter_description_whole_render(db: Database):
+    """Whole-render literal of the ``extract`` parameter's description — the ONE line
+    of guidance the calling model reads before it writes an instruction (#1838).
+
+    It teaches where the instruction comes FROM: the task's own words, broad allowed.
+    "Naming exactly what to pull out" read as *be specific* and was measured inflating
+    a plain ask into a stricter one than the page could satisfy — the extractor then
+    honestly returned NOT_PRESENT and the round died on a fact that was there.  The
+    example of a broad ask is deliberately non-fixture phrasing, so no eval pool lends
+    its own words to the surface under test."""
+    tool = _extract_tool(db, _responds(_TAGGED_VALUE))
+    assert tool.parameters["properties"]["extract"]["description"] == (
+        "Optional. One instruction naming what to pull out of the fetched "
+        'pages (e.g. "the current bid amount"). Use the task\'s own words '
+        "for it — asking for extra details the task never named (an ID, a "
+        "date, a second field) makes the read come back empty when the page "
+        'lacks them, and a broad ask like "what the notice says" is fine. '
+        "When set, the full page content is read in a separate scoped "
+        "context and only the extracted value is returned here — the page "
+        "body never enters this conversation. Omit to receive the page "
+        "content itself."
+    )
+
+
 @pytest.mark.asyncio
 async def test_micro_context_untagged_is_rerolled_once_then_fails():
     """Untagged (but clean) output is a contract violation: one reroll of the

@@ -774,6 +774,34 @@ def test_elicit_instruction_whole_render():
     )
 
 
+def test_learn_instruction_whole_render():
+    """The whole instruction, verbatim — pinned so an edit is a visible diff.
+
+    Two of its clauses answer measured thinking (#1838), and each states the RULE
+    rather than the sample that found it: a step is done when its tool call has run —
+    finding a value is not remembering it, the write is (a demonstrated round reported
+    a price it had only browsed); and the job terms an anchored watch ask carries
+    (a cadence, being told about changes) are somebody else's turn, said as permission
+    to leave them alone rather than as one more prohibition."""
+    assert Prompt.LEARN_INSTRUCTION == (
+        "The user has given you the steps for a task. Follow them now, once, "
+        "exactly as given — this turn is that one run.\n\n"
+        "Do what each step says, with your real tools — a step is done when its "
+        "tool call has run. Where a step says to remember something, write it "
+        "with a real call, and record what you ACTUALLY found — never a "
+        "placeholder, an example, or a description of what you would have found. "
+        "Finding a value is not remembering it; the write is.\n\n"
+        "If the task also mentions a schedule or being told about changes, leave "
+        "that part alone for now — it is set up in a later turn, after they ask "
+        "for it. Your job this turn is the steps, nothing else.\n\n"
+        "Then tell them what you did: each step and what it produced, including "
+        "anything that failed or came back empty. Say what you now know how to "
+        "do, and offer to set it up to run on its own.\n\n"
+        "Don't set it up yourself. Offering is where this turn ends — they will "
+        "tell you if they want it running.\n\n"
+    )
+
+
 def test_apply_instruction_whole_render():
     """The whole instruction, verbatim — pinned so an edit is a visible diff.
 
