@@ -3166,10 +3166,13 @@ def _matching_family(
     return next((f for f in families if tokens & set(f.tokens)), None)
 
 
-def _classified(
-    signature: SkillSignature, families: Sequence[ParameterFamily]
-) -> dict[str, list[FramedParameter]]:
-    """Every drawn parameter grouped under the family it answers, NAME FIRST (#1830).
+def classify_by_family(
+    named: Sequence[tuple[str, str]], families: Sequence[ParameterFamily]
+) -> list[ParameterFamily | None]:
+    """The family each ``(name, description)`` pair answers, positionally — NAME FIRST
+    (#1830).  ONE classification discipline, read by every suite that asks what a drawn
+    parameter answers (the framer's own set check, and the transitions suite's
+    interface check).
 
     A parameter's name is its identity, so the name pass runs over ALL of them before
     any description is read, and a family a name already claimed is closed to the
@@ -3180,18 +3183,25 @@ def _classified(
     A ``name_only`` family sits out the description pass entirely — the page/url
     tightening from the first run's review: a parameter is the page when it is NAMED as
     the page, and no description-level mention promotes one that isn't."""
-    by_name = {
-        p.name: _matching_family(_name_tokens(p.name), families) for p in signature.parameters
-    }
-    claimed = {family.label for family in by_name.values() if family is not None}
+    by_name = [_matching_family(_name_tokens(name), families) for name, _ in named]
+    claimed = {family.label for family in by_name if family is not None}
     open_families = [
         family for family in families if family.label not in claimed and not family.name_only
     ]
+    return [
+        matched or _matching_family(_tokens(description), open_families)
+        for matched, (_, description) in zip(by_name, named, strict=True)
+    ]
+
+
+def _classified(
+    signature: SkillSignature, families: Sequence[ParameterFamily]
+) -> dict[str, list[FramedParameter]]:
+    """Every drawn parameter grouped under the family it answers — the framer suite's
+    view of :func:`classify_by_family`, which owns the discipline."""
+    answered = classify_by_family([(p.name, p.description) for p in signature.parameters], families)
     grouped: dict[str, list[FramedParameter]] = {family.label: [] for family in families}
-    for parameter in signature.parameters:
-        family = by_name[parameter.name] or _matching_family(
-            _tokens(parameter.description), open_families
-        )
+    for parameter, family in zip(signature.parameters, answered, strict=True):
         if family is not None:
             grouped[family.label].append(parameter)
     return grouped

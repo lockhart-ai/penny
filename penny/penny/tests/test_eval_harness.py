@@ -26,6 +26,7 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.constants import PennyConstants
 from penny.database import Database
+from penny.database.skills import SkillParameter
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
@@ -62,6 +63,7 @@ from penny.tests.eval.conftest import (
 )
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
+from penny.tests.eval.test_state_transitions import _interface_check
 from penny.tests.schema_template import schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
@@ -1392,6 +1394,64 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     graded = _by_label(_score_framing(single, (page,), ()))
     assert graded["asks for the url"] == (True, None)
     assert graded["asks for nothing else"] == (True, None)
+
+
+def _required(*pairs: tuple[str, str | None]) -> list[SkillParameter]:
+    """The learned skill's required parameters, as the interface check reads them."""
+    return [
+        SkillParameter(name=name, required=True, description=description)
+        for name, description in pairs
+    ]
+
+
+def test_the_learn_interface_accepts_the_page_plus_at_most_the_found_thing() -> None:
+    """The elicit → learn interface check under the code owner's leeway ruling (2026-08-05).
+
+    The audited draw that prompted it asked for a `search_phrase` beside the url, and the
+    thinking read "the late sailing" out of both of the user's own turns — the
+    enumerate-then-filter rule applied CORRECTLY, so scoring it a miss would be the scorer
+    marking a sound draw wrong.  The page stays mandatory (a routine nobody can point
+    anywhere can only repeat its demonstration) and the leeway is exactly one: a second
+    parameter of another kind is the invention the rule exists to stop, and a third is one
+    however it is named.  The rationale names WHICH reading was drawn, on the pass as well
+    as the miss."""
+    alone = _interface_check(_required(("url", "the listing page to check")))
+    assert (alone.ok, alone.rationale) == (True, "url alone")
+
+    leeway = _interface_check(
+        _required(
+            ("url", "the timetable page to read"),
+            ("search_phrase", "the line to look for on it"),
+        )
+    )
+    assert (leeway.ok, leeway.rationale) == (True, "url + search_phrase (user-named)")
+
+    # A second parameter of any OTHER kind is the invention, whatever it is called.
+    invented = _interface_check(
+        _required(("url", "the page to read"), ("frequency", "how often to check it"))
+    )
+    assert (invented.ok, invented.rationale) == (
+        False,
+        "rejected: frequency answers no accepted family",
+    )
+
+    # A third fails even when the first two are the accepted pair.
+    third = _interface_check(
+        _required(
+            ("url", "the page to read"),
+            ("search_phrase", "the line to look for"),
+            ("collection", "where to keep it"),
+        )
+    )
+    assert third.ok is False
+
+    # The page half is MANDATORY: a found-thing on its own is not an interface.
+    orphan = _interface_check(_required(("search_phrase", "the line to look for")))
+    assert (orphan.ok, orphan.rationale) == (False, "0 answer the page: []")
+
+    # An accepted parameter still has to say what to supply.
+    undescribed = _interface_check(_required(("url", None)))
+    assert (undescribed.ok, undescribed.rationale) == (False, "carries no description: url")
 
 
 def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:

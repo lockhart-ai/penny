@@ -80,9 +80,11 @@ from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
     Check,
+    ParameterFamily,
     Seeder,
     asked_for_page_structure,
     chat_run_tool_sequences,
+    classify_by_family,
     collection_entries,
     count_tool_calls,
     new_collections,
@@ -92,6 +94,12 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 from penny.tests.eval.fixtures import CannedPage
+
+# The agreed breadth for "the page the routine is pointed at", READ from where the framer
+# suite declares it rather than restated here: what a page parameter may reasonably be
+# called is one code-owner-agreed vocabulary, and two copies would drift into two
+# contracts (the same rule ``_ENACTING_TOOLS`` is imported under).
+from penny.tests.eval.test_skill_framing import _PLACE_TOKENS
 
 # The enacting-tool set is the elicitation contract itself — the calls that would mean
 # she acted before being taught — so it is READ from where beat 1a already declares it
@@ -763,7 +771,29 @@ _PLACEHOLDERS_ONLY_LABEL = (
     "state: every spot in the routine is a placeholder (the labelling draw landed)"
 )
 _ATTACHMENT_MARK_LABEL = "state: the destination leaf still carries the attachment mark"
-_INTERFACE_LABEL = "state: the interface is one required parameter, and it says what to supply"
+_INTERFACE_LABEL = "state: the interface asks for the page, plus at most the found-thing"
+
+# What the interface may ask for, as the two families a drawn parameter can answer —
+# classified by the SHARED name-first-then-description discipline (``classify_by_family``),
+# so this check and the framer suite's own set check can never read a draw two ways.
+#
+# The PAGE is mandatory and NAME-ONLY, on the framer suite's breadth (imported rather than
+# restated: what a page parameter may reasonably be called is one agreed vocabulary, and a
+# page is the thing NAMED as one — a description mentioning a page promotes nothing).
+_PAGE_LABEL = "page"
+_PAGE_FAMILY = ParameterFamily(_PAGE_LABEL, _PLACE_TOKENS, name_only=True)
+
+# The FOUND-THING is the leeway (code-owner ruling, 2026-08-05, from a thinking-audited
+# draw): every one of these asks names what to look for as well as where — "look for the
+# late sailing line" — so a second parameter carrying THAT is a defensible reading of the
+# enumerate-then-filter rule, not an invention, and the check accepts at most one.  Both
+# passes apply here, unlike the page: the piece has no canonical noun, so a well-judged
+# name the tokens don't anticipate is allowed to land through its description.
+_FOUND_THING_LABEL = "found-thing"
+_FOUND_THING_FAMILY = ParameterFamily(
+    _FOUND_THING_LABEL, ("search", "phrase", "term", "keyword", "target", "line", "query")
+)
+_INTERFACE_FAMILIES = (_PAGE_FAMILY, _FOUND_THING_FAMILY)
 
 
 def _placeholders_only_check(subs: list[SkillSubstitution]) -> Check:
@@ -802,19 +832,58 @@ def _attachment_mark_check(subs: list[SkillSubstitution]) -> Check:
 
 
 def _interface_check(required: list[SkillParameter]) -> Check:
-    """The interface is ONE required parameter, and it says what to supply (#1830).
+    """The interface asks for the PAGE, plus AT MOST the found-thing (#1830, amended by
+    the code owner's leeway ruling of 2026-08-05).
 
-    The framer writes the interface from the ask alone, and each of these asks leaves
-    exactly one thing to re-say: the page.  The description is half the parameter — it
-    is what the ambient ``needs:`` row renders — so one nobody can read is one nobody
-    can bind."""
-    described = len(required) == 1 and _says_what_to_supply(required[0])
+    The page is mandatory — it is the one piece every one of these asks leaves to re-say,
+    and a routine that cannot be pointed at one can only repeat its demonstration.  A
+    SECOND parameter is accepted when it carries what the user's own turns named as the
+    thing to find: the ferry round's draw asked for a `search_phrase`, and the audited
+    thinking read "the late sailing" out of both turns — which is the enumerate-then-filter
+    rule applied correctly, so scoring it a miss would be the scorer marking a sound draw
+    wrong.  Anything else stays a miss: a second parameter of another kind is the invention
+    that rule exists to stop, and a third is one however it is named.  Every accepted
+    parameter carries a description — it is what the ambient ``needs:`` row renders, so one
+    nobody can read is one nobody can bind."""
+    answered = _interface_families(required)
+    pages, found, rejected = (_of_family(required, answered, label) for label in _READINGS)
+    accepted = len(pages) == 1 and len(found) <= 1 and not rejected
+    described = all(_says_what_to_supply(parameter) for parameter in pages + found)
     return Check(
         _INTERFACE_LABEL,
-        described,
-        rationale=None if described else _interface_rationale(required),
+        accepted and described,
+        rationale=_interface_rationale(pages, found, rejected, described),
         kind="state",
     )
+
+
+def _interface_families(required: list[SkillParameter]) -> list[ParameterFamily | None]:
+    """Which family each required parameter answers, through the SHARED classifier — a
+    parameter carries no description in the model when a draw left none, and an absent
+    description classifies as the empty text it is."""
+    return classify_by_family(
+        [(parameter.name, parameter.description or "") for parameter in required],
+        _INTERFACE_FAMILIES,
+    )
+
+
+# The three readings a required parameter can land in, in the order the rationale names
+# them: the mandatory page, the accepted found-thing, and everything else.
+_READINGS = (_PAGE_LABEL, _FOUND_THING_LABEL, None)
+
+
+def _of_family(
+    required: list[SkillParameter],
+    answered: list[ParameterFamily | None],
+    label: str | None,
+) -> list[SkillParameter]:
+    """The required parameters that answered ``label`` — ``None`` for the ones that
+    answered no accepted family at all."""
+    return [
+        parameter
+        for parameter, family in zip(required, answered, strict=True)
+        if (family.label if family is not None else None) == label
+    ]
 
 
 def _says_what_to_supply(parameter: SkillParameter) -> bool:
@@ -824,11 +893,28 @@ def _says_what_to_supply(parameter: SkillParameter) -> bool:
     return parameter.description is not None and not is_blank(parameter.description)
 
 
-def _interface_rationale(required: list[SkillParameter]) -> str:
-    """What the interface IS when it is not the one described parameter."""
-    if len(required) != 1:
-        return f"{len(required)} required: {[parameter.name for parameter in required]}"
-    return f"{required[0].name!r} carries no description"
+def _interface_rationale(
+    pages: list[SkillParameter],
+    found: list[SkillParameter],
+    rejected: list[SkillParameter],
+    described: bool,
+) -> str:
+    """WHICH reading was drawn, named on the pass as well as the miss — the two accepted
+    shapes are different answers to the same ask, and a report that showed only "passed"
+    would hide which one the run committed to."""
+    if rejected:
+        names = ", ".join(parameter.name for parameter in rejected)
+        return f"rejected: {names} answers no accepted family"
+    if len(pages) != 1:
+        return f"{len(pages)} answer the page: {[parameter.name for parameter in pages]}"
+    if len(found) > 1:
+        return f"{len(found)} answer the found-thing: {[parameter.name for parameter in found]}"
+    if not described:
+        undescribed = [p.name for p in pages + found if not _says_what_to_supply(p)]
+        return f"carries no description: {', '.join(undescribed)}"
+    if not found:
+        return f"{pages[0].name} alone"
+    return f"{pages[0].name} + {found[0].name} (user-named)"
 
 
 def _interface_advisories(db: Database) -> list[Check]:
