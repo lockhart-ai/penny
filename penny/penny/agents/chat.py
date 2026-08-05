@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from penny.agents.base import Agent, ProgressCallback
+from penny.agents.base import Agent, InvalidDraw, ProgressCallback
 from penny.agents.models import ControllerResponse
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
@@ -20,15 +20,23 @@ from penny.conversation_machine import ConversationState, conversation_prompt
 from penny.datetime_utils import current_datetime_line
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
-from penny.skill_extraction import NoExtraction, SkillExtracted, SkillExtractor
+from penny.responses import PennyResponse
+from penny.skill_extraction import (
+    NoExtraction,
+    SkillExtracted,
+    SkillExtractionResult,
+    SkillExtractor,
+)
+from penny.text_validity import is_call_as_text_bail, is_call_fragment_reply
 from penny.tools import Tool
 from penny.tools.browse import BrowseTool
 from penny.tools.generate_image import GenerateImageTool
 from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.notifications import NotificationsMuteTool, NotificationsUnmuteTool
 from penny.tools.skill_tools import render_skill_brief
+from penny.validation import ConditionKey
 from penny.validation.outcomes import LoopContext
-from penny.validation.response_validators import CallAsTextValidator, SkillNarrationValidator
+from penny.validation.response_validators import SkillNarrationValidator
 
 if TYPE_CHECKING:
     from penny.llm.image_client import OllamaImageClient
@@ -62,15 +70,21 @@ class ChatAgent(Agent):
     # more entry here — never a branch in the loop.
     #  - SkillNarrationValidator: on a run that just auto-extracted a skill (#1658),
     #    nudge the model to tell the user what it learned FROM the rendered frame the
-    #    text-branch prep stamped on the ctx (SAID==DID).  First, so narration wins.
-    #  - CallAsTextValidator: a text response that is really a serialized tool call
-    #    (gpt-oss's Harmony call-as-text bail) would be sent to the user as a raw
-    #    JSON blob; catch it and nudge the model to re-emit the real call or reply in
-    #    plain words.
-    run_shape_validators = [SkillNarrationValidator(), CallAsTextValidator()]
-    # A bare JSON call fragment as final text would be SENT to the user — reroll it
-    # (#1570 field audit); the full call envelope keeps CallAsTextValidator.
-    _reroll_call_fragments = True
+    #    text-branch prep stamped on the ctx (SAID==DID).
+    run_shape_validators = [SkillNarrationValidator()]
+
+    # Chat's invalid draws are CALL-SHAPED TEXT ONLY (#1839): a plain conversational
+    # reply IS chat's valid terminal state, so nothing about ordinary prose is
+    # rejected.  What is rejected is a draw that was meant to be a tool call and
+    # reached the text channel instead — it would be delivered to the user as raw
+    # machinery.  Two shapes, most specific first: the full serialized call
+    # (``{"name": …, "arguments": …}`` or real args carrying the framework's
+    # ``reasoning`` field), then the mangled remainder — a bare argument fragment or
+    # the empty ``{}`` tail of a forced call attempt (#1570/#1732).
+    invalid_draw_conditions: tuple[InvalidDraw, ...] = (
+        (ConditionKey.CALL_AS_TEXT, is_call_as_text_bail),
+        (ConditionKey.CALL_FRAGMENT_REPLY, is_call_fragment_reply),
+    )
     # Stable id linking the synthetic page-context tool-call to its tool-result
     # so the injection rides the standard OpenAI ``tool_call_id`` envelope, not
     # an ad-hoc ``tool_name`` field.
@@ -124,6 +138,10 @@ class ChatAgent(Agent):
         # once-per-run guard, so the post-narration re-reply never re-extracts or
         # re-narrates (chat turns are sequential, so one field suffices; no leak).
         self._extraction_run_id: str | None = None
+        # What that attempt RETURNED, held for the span of the turn so the run-end
+        # learn check reads a recorded outcome rather than re-deciding it (#1839).
+        # ``None`` means extraction never ran (no text branch was reached).
+        self._extraction_result: SkillExtractionResult | None = None
 
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         tools = super().get_tools(run_id)
@@ -188,8 +206,14 @@ class ChatAgent(Agent):
         BRIEF one (#1804/#1799): what the routine is and what it needs, in prose —
         the facts the model is asked to relay, and nothing shaped like a tool call
         for it to read aloud to the user instead.  ``None`` when the run did not
-        qualify — the gate is logged, never silently swallowed."""
+        qualify — the gate is logged, never silently swallowed.
+
+        The typed outcome is also RECORDED on ``_extraction_result``: a learn turn's
+        one valid terminal state is a skill in the registry, and the run-end check
+        that enforces it (#1839) reads what this attempt returned rather than
+        re-deriving it."""
         result = await self._skill_extractor.extract(run_id)
+        self._extraction_result = result
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
                 # Learning a skill does NOT attach it (#1706): the machine makes
@@ -230,6 +254,7 @@ class ChatAgent(Agent):
         """
         self._current_user = sender
         self._pending_page_context = page_context
+        self._extraction_result = None
         run_id = run_id or uuid.uuid4().hex
         try:
             content, has_images = await self._process_images(content, images)
@@ -263,7 +288,7 @@ class ChatAgent(Agent):
                 sender,
                 instructions=conversation_prompt(state) if state is not None else None,
             )
-            return await self.run(
+            response = await self.run(
                 prompt=content,
                 max_steps=self.get_max_steps(),
                 history=history,
@@ -274,10 +299,41 @@ class ChatAgent(Agent):
                 progress_scope="foreground",
                 prompt_type=ChatPromptType.USER_MESSAGE,
             )
+            return self._enforce_learn_terminal(state, response)
         finally:
             self._current_user = None
             self._pending_page_context = None
             self._current_message = None
+
+    def _enforce_learn_terminal(
+        self, state: ConversationState | None, response: ControllerResponse
+    ) -> ControllerResponse:
+        """A learn turn that produced no skill FAILED — say so instead of replying
+        (#1839).
+
+        The learn state has exactly ONE valid terminal state: a skill in the registry.
+        The machine decided this turn was a learn turn BEFORE it ran, so at run end
+        this is a deterministic read of two recorded facts, not a judgment — and the
+        model's reply is thrown away rather than delivered, because a reply composed
+        under the learn instruction offers to set running a routine that was never
+        learned.  The tool calls travel with the honest failure, so the run record
+        still shows everything the turn did.
+
+        The machine is left exactly where it stands: parked in learn with its anchor,
+        so the user's retry is the existing learn→learn re-demonstration edge and a
+        bail is still the break-out to idle.  Extraction SUCCESS — and any turn where
+        extraction never ran at all (a vision turn, a run that never reached its text
+        branch and already carries its own honest failure) — takes today's path
+        untouched."""
+        if state is not ConversationState.LEARN:
+            return response
+        if not isinstance(self._extraction_result, NoExtraction):
+            return response
+        logger.warning(
+            "Learn turn produced no skill (%s) — replacing the reply with an honest failure",
+            self._extraction_result.gate,
+        )
+        return response.model_copy(update={"answer": PennyResponse.LEARN_NOTHING_LEARNED})
 
     # ── Message building ────────────────────────────────────────────────
 

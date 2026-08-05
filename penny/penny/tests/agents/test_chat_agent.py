@@ -452,6 +452,151 @@ async def test_pure_write_remember_turn_extracts_no_skill_and_does_not_narrate(
         assert calls["n"] == 1  # extraction was attempted once and declined (PURE_WRITE)
 
 
+# ── 1c. Learn-terminal enforcement (#1839) ────────────────────────────────
+#
+# The learn state has exactly ONE valid terminal state: a skill in the registry.  The
+# machine decided the turn was a learn turn before it ran, so at run end this is a
+# deterministic check, not a judgment.
+
+_LEARN_ANCHOR_MESSAGE = "can you watch the aurora deck 2 price for me?"
+
+
+def _park_machine_in_learn(penny, anchor_message_id: int | None = None) -> None:
+    """Move the machine into learn the way the classifier would, so the turn under test
+    runs against a real parked round."""
+    penny.db.machine.record_transition(
+        from_state=ConversationState.IDLE.value,
+        to_state=ConversationState.LEARN.value,
+        cause=TransitionCause.CLASSIFIER,
+        anchor_message_id=anchor_message_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A learn turn whose run-end extraction returns NoExtraction FAILED: the model's
+    reply is thrown away and a deterministic honest failure goes out instead — the
+    observed harm being a reply that offers to set running a routine that was never
+    learned.  The machine is left parked in learn with its anchor, so the user's retry
+    is the existing learn→learn re-demonstration edge."""
+    ask = "watch the aurora deck 2 price like this"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        if any(m.get("role") == "tool" for m in messages):
+            # A pure READ run — the extractor declines it (PURE_READ), so nothing is
+            # learned even though the model happily narrates success.
+            return _text("all set! i've learned that routine — want me to run it daily?")
+        return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+        anchor_id = penny.db.messages.log_message(
+            PennyConstants.MessageDirection.INCOMING, TEST_SENDER, _LEARN_ANCHOR_MESSAGE
+        )
+        _park_machine_in_learn(penny, anchor_id)
+
+        response = await penny.chat_agent.handle(
+            content=ask, sender=TEST_SENDER, state=ConversationState.LEARN
+        )
+
+        # The model-authored reply never survives — the deterministic failure does,
+        # whole-render.
+        assert response.answer == (
+            "Hmm, something went wrong on my end — I didn't actually learn that "
+            "routine, so there's nothing saved. Can you walk me through it again?"
+        )
+        assert "want me to run it daily" not in response.answer
+        assert penny.db.skills.list_all() == []
+        # Everything the turn did still travels with the failure (the run record stays
+        # complete).
+        assert [record.tool for record in response.tool_calls] == ["collection_read_latest"]
+        # The machine stayed exactly where it was — parked in learn, same anchor.
+        parked = penny.db.machine.latest_transition()
+        assert parked is not None
+        assert parked.to_state == ConversationState.LEARN.value
+        assert parked.anchor_message_id == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_learn_turn_that_learns_a_skill_keeps_todays_reply(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """Extraction success keeps today's path unchanged: the model's own reply (composed
+    after the narration frame) is what the user receives."""
+    ask = "watch the aurora deck 2 price like this"
+    reply = "nice — i learned that routine! 🌟"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        if any(
+            isinstance(m.get("content"), str) and _FRAME_MARKER in m["content"] for m in messages
+        ):
+            return _text(reply)
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if not tool_turns:
+            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+        if len(tool_turns) == 1:
+            return _tool_call(
+                "c1",
+                "collection_write",
+                {
+                    "memory": "aurora-prices",
+                    "entries": [{"key": "aurora deck 2 price", "content": "$499"}],
+                },
+            )
+        return _text("the aurora deck 2 is $499 right now")
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+        penny.db.memory("aurora-prices").write(
+            [EntryInput(key="seed", content="a prior reading")], author="user"
+        )
+        _park_machine_in_learn(penny)
+
+        response = await penny.chat_agent.handle(
+            content=ask, sender=TEST_SENDER, state=ConversationState.LEARN
+        )
+
+        assert len(penny.db.skills.list_all()) == 1
+        assert response.answer == reply
+
+
+@pytest.mark.asyncio
+async def test_a_non_learn_turn_that_learns_nothing_is_untouched(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """The enforcement is scoped to the state the machine DECIDED: an ordinary turn that
+    extracts no skill (almost every turn) replies exactly as it always has."""
+    reply = "the aurora deck 2 is $499 right now"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        if any(m.get("role") == "tool" for m in messages):
+            return _text(reply)
+        return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+
+        response = await penny.chat_agent.handle(
+            content="what's the aurora deck 2 at?",
+            sender=TEST_SENDER,
+            state=ConversationState.IDLE,
+        )
+
+        assert penny.db.skills.list_all() == []
+        assert response.answer == reply
+
+
 # ── 2. Special success cases ──────────────────────────────────────────────
 
 

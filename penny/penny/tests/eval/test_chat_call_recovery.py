@@ -1,7 +1,8 @@
 """Chat call-as-text recovery contract — when a chat reply is really a tool call
 emitted as a JSON text object (gpt-oss's Harmony call-as-text fallback), the loop
-must NOT send that JSON blob to the user; ``CallAsTextValidator`` nudges and the
-live model recovers to a real reply.
+must NOT send that JSON blob to the user: it is an INVALID DRAW, discarded and
+re-rolled on the unchanged context (#1839), and the live model recovers to a real
+reply.
 
 Production failure this pins (narration-design probe, July 2026): on the
 loop-stressed give-up path — a fruitless search the model keeps rewording — gpt-oss
@@ -9,21 +10,19 @@ emits a well-formed browse call as *text content* instead of routing it through 
 tool channel. Chat replies inline via a text turn and had no run-shape guard, so
 that raw ``{"queries": [...], "reasoning": "..."}`` blob was delivered to the user
 verbatim (observed ~50% on retry-heavy searches, even on the stock prompt). The
-collector already guards the sibling shape (``DoneJsonBailValidator``); this adds
-the chat equivalent.
+collector already rejects the sibling shape; this adds the chat equivalent.
 
 The slip is stochastic, so we FORCE one call-as-text response right after the
 model's first real tool call (``_InjectTextBail`` with a JSON call as the bail text)
-and let the REAL model drive the recovery through the production nudge. The contract
-is STRUCTURAL, never wording:
+and let the REAL model drive the redraw. The contract is STRUCTURAL, never wording:
 
   PASS = the reply is NOT a serialized tool call (the JSON never reached the user)
          and it's substantive prose — the model either re-issued the real call and
          answered, or gave an honest "couldn't find it".
 
-The deterministic mechanism (detect call-as-text on the text branch, nudge, don't
-finalize) is pinned in ``tests/agents/test_agentic_loop.py``; this owns the live
-model-behaviour contract.
+The deterministic mechanism (detect call-as-text, discard the draw, re-roll) is
+pinned in ``tests/agents/test_agentic_loop.py``; this owns the live model-behaviour
+contract.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ import pytest
 from penny.database import Database
 from penny.tests.eval.conftest import ChatEval, Check, _InjectTextBail
 from penny.tests.eval.fixtures import TOPIC_PAGES
-from penny.validation.response_validators import is_call_as_text_bail
+from penny.text_validity import is_call_as_text_bail
 
 pytestmark = pytest.mark.eval
 

@@ -612,16 +612,19 @@ def test_stamp_cause_partitions_pass_pathology_harness_behavioral(tmp_path) -> N
 
 
 def test_nudge_loop_spiral_classifies_pathology_not_harness(tmp_path) -> None:
-    # #1732: the #1731 spiral — a chat browse-extract run that looped on parse-failure nudges,
-    # re-browsing the same page each cycle, and died at the turn timeout with a bare `{}` reply.
-    # Reconstructed via the REAL production serialization: valid browse tool calls (not poison),
-    # the actual production nudge injected as a user turn (INPUT — never the classification
-    # signal), and the terminal `{}` content response (the model's OUTPUT poison).
+    # #1732: the #1731 spiral — a chat run that looped on recovery nudges, re-browsing the same
+    # page each cycle, and died at the turn timeout with a bare `{}` reply.  Reconstructed via
+    # the REAL production serialization: valid browse tool calls (not poison), a production
+    # nudge injected as a user turn (INPUT — never the classification signal), and the terminal
+    # `{}` content response (the model's OUTPUT poison).  The parse-failure nudge that opened
+    # the original spiral is retired (#1839 rerolls that draw instead), so the surviving
+    # empty-content nudge stands in — the boundary being pinned is about INPUT frames as a
+    # class, not about any one nudge.
     spiral = _make_db(tmp_path, "spiral")
     for _ in range(4):
         _log_prompt(
             spiral,
-            messages=[{"role": "user", "content": Prompt.TOOL_FORMAT_NUDGE}],
+            messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}],
             response=_tool_call_response(
                 "browse", '{"queries": ["https://example.test/lake"], "extract": "the depth"}'
             ),
@@ -640,12 +643,12 @@ def test_single_nudge_injected_recovery_stays_non_pathology(tmp_path) -> None:
     # The immunity boundary (#1732): a DELIBERATELY-injected recovery trigger produces exactly
     # ONE live nudge (the production recovery responding to the forced bail).  Counting nudge
     # frames would false-tag its fail path pathology; the output-only scan does not.  Built the
-    # same way — the real nudge in the INPUT — but the persisted OUTPUTS are all clean (the
-    # injected bail's synthetic response never persists) and there is no bare `{}` reply.
+    # same way — a real production nudge in the INPUT — but the persisted OUTPUTS are all clean
+    # (the injected bail's synthetic response never persists) and there is no bare `{}` reply.
     recovery = _make_db(tmp_path, "recovery")
     _log_prompt(
         recovery,
-        messages=[{"role": "user", "content": Prompt.TOOL_FORMAT_NUDGE}],
+        messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}],
         response=_tool_call_response("browse", '{"queries": ["https://example.test/lake"]}'),
     )
     _log_prompt(recovery, response=_content_response("Lake Baikal is the deepest, at 1,642 m."))

@@ -19,6 +19,18 @@ class PennyResponse:
     AGENT_EMPTY_RESPONSE = "Sorry, the model generated an empty response."
     AGENT_MAX_STEPS = "Sorry, I couldn't complete that request within the allowed steps."
 
+    # ── Conversation state ───────────────────────────────────────────────────
+
+    # A learn turn has exactly one valid terminal state — a skill in the registry
+    # (#1839).  When the run ends without one, the model's reply is thrown away and
+    # this goes out instead: it must not imply anything was saved or scheduled, and
+    # it names the one move that fixes it (demonstrate the routine again), since the
+    # machine stays parked in learn waiting for exactly that.
+    LEARN_NOTHING_LEARNED = (
+        "Hmm, something went wrong on my end — I didn't actually learn that routine, "
+        "so there's nothing saved. Can you walk me through it again?"
+    )
+
     # ── Channel ──────────────────────────────────────────────────────────────
 
     DELIVERY_FAILURE = "Sorry, I had trouble delivering that message. Please try again."

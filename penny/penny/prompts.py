@@ -230,54 +230,13 @@ class Prompt:
 
     VISION_IMAGE_ONLY_CONTEXT = "User sent an image of: {caption}"
 
-    # Injected after a tool-parse 500 — model returned plain text instead of a JSON tool call
-    TOOL_FORMAT_NUDGE = (
-        "Your previous response could not be parsed as a tool call — you sent plain text "
-        "instead of a structured JSON tool call. You MUST respond with a valid tool call only. "
-        "Do not include any reasoning, preamble, or explanation before the JSON."
-    )
-
-    # Injected when a background collector emits plain text instead of a tool call.
-    # Collectors act ONLY through tool calls (done() to finish, otherwise the next
-    # tool), so a text-only response is a bail — nudge it to re-emit as a tool call.
-    COLLECTOR_TOOL_CALL_NUDGE = (
-        "You replied with plain text, but you act only through tool calls — never prose. "
-        "Respond now with a single tool call: call `done()` if the cycle is complete, "
-        "otherwise call the appropriate tool to continue the cycle."
-    )
-
-    # The shape-specific sibling of COLLECTOR_TOOL_CALL_NUDGE, injected when the
-    # stray text is recognisably done()'s ARGUMENTS emitted as a JSON object (the
-    # model composed a valid terminator but failed to route it through the
-    # tool-call channel — gpt-oss's dominant call-shaped text bail).  Reject and
-    # teach: name exactly what it did and the exact next move — the real done()
-    # tool call in canonical notation (never a JSON payload snippet, which would
-    # model the very shape being corrected).
-    COLLECTOR_DONE_JSON_NUDGE = (
-        "You wrote a `done` call as plain text instead of calling the `done` tool — "
-        "text output is not a tool call, so nothing was recorded. Make the real tool "
-        "call now: `done()` (it takes no arguments)."
-    )
-
-    # The chat-surface sibling of COLLECTOR_DONE_JSON_NUDGE, injected when a chat
-    # reply is recognisably a tool call emitted as a JSON text object (the model
-    # composed a valid call but failed to route it through the tool-call channel —
-    # gpt-oss's Harmony fallback).  On chat a text reply is normally the final
-    # answer, so an unguarded bail is sent to the user as a raw JSON blob; it bites
-    # hardest on the give-up case (a fruitless search the model keeps rewording).
-    # A user-turn nudge (via NudgeContinue) that names what happened and FORKS —
-    # make the real call if still needed, else reply to the user in plain words —
-    # so a stuck search resolves into either real work or an honest "couldn't find
-    # it" instead of leaked machinery.  Numbered (gpt-oss follows numbered steps),
-    # no JSON snippet (never model the shape being corrected).
-    CHAT_CALL_AS_TEXT_NUDGE = (
-        "You wrote a tool call as plain text, so it never ran — nothing was searched, "
-        "read, or saved. Do ONE of these now:\n"
-        "1. If you still need a tool, make the actual tool call (not text).\n"
-        "2. If you've already gathered what you can — or a search came back empty — do "
-        "NOT call anything: reply to the user in plain words, telling them what you "
-        "found or that you couldn't find it."
-    )
+    # The call-shaped-text family carries NO nudge (#1839).  A draw that was meant
+    # to be a tool call and is not one — a tool-parse failure, a collector's prose or
+    # done-as-JSON-text, a chat reply that is a serialized call — is an invalid draw:
+    # the loop discards it and re-rolls the unchanged context, so there is nothing to
+    # teach and no user turn to append.  The nudges that used to live here
+    # (TOOL_FORMAT_NUDGE / COLLECTOR_TOOL_CALL_NUDGE / COLLECTOR_DONE_JSON_NUDGE /
+    # CHAT_CALL_AS_TEXT_NUDGE) went with the validators that appended them.
 
     # Injected as a user turn after a chat run that just AUTO-LEARNED a skill from
     # what it did this turn (#1658).  It carries the BRIEF render (#1804) — name,
@@ -302,10 +261,12 @@ class Prompt:
 
     # Returned (in the tool-result field, success=False) when a collector calls
     # done() as its very first move — before reading any input or doing any work.
-    # Unlike COLLECTOR_TOOL_CALL_NUDGE this is NOT a user-turn nudge: the model
-    # made a coherent tool call, so the correction goes back as that call's error
-    # result.  A first-move done() is the ⚠ NO WORK DONE bail (deciding "no new
-    # matches" without even checking), so it must read its inputs first.
+    # This is NOT a user-turn nudge: the model made a coherent tool call, so the
+    # correction goes back as that call's error result — which is also why it
+    # survives the invalid-draw rejection (#1839: a draw with no call at all is
+    # discarded and re-rolled; this one acted, just too early).  A first-move done()
+    # is the ⚠ NO WORK DONE bail (deciding "no new matches" without even checking),
+    # so it must read its inputs first.
     COLLECTOR_PREMATURE_DONE_REJECTION = (
         "Error: you called `done()` before doing anything this cycle.  You cannot "
         "conclude the cycle without first reading your inputs — a `done()` with no "
@@ -403,19 +364,9 @@ class Prompt:
         "Answer the user NOW using ONLY what you already found. "
         "The user asked: {original_question}"
     )
+    # Chat-only: a collector's empty draw is a non-tool-call draw, which the loop
+    # discards and re-rolls before any nudge could be appended (#1839).
     CONTINUE_NUDGE = "Please provide your response."
-
-    # The collector counterpart to CONTINUE_NUDGE, injected when a background
-    # collector returns empty content mid-loop (no text AND no tool call).  The
-    # chat CONTINUE_NUDGE ("Please provide your response.") invites a prose reply,
-    # but a collector acts only through tool calls — a prose "response" fails to
-    # parse and can kill the cycle — so demand a tool call, naming done() the same
-    # way COLLECTOR_TOOL_CALL_NUDGE does.
-    COLLECTOR_CONTINUE_NUDGE = (
-        "You returned nothing, but you act only through tool calls — never prose. "
-        "Make a tool call now: call `done()` if the cycle is complete, otherwise call "
-        "the appropriate tool to continue the cycle."
-    )
 
     # Emission-as-property (#1557): the run-time notify steps.  A 4-step TEMPLATE
     # (no numbers — the assembler numbers them, continuing the stored prompt's

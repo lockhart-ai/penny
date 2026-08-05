@@ -22,9 +22,9 @@ from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import (
     has_leaked_harmony_envelope,
-    is_call_fragment_reply,
     is_degenerate_run,
     is_degenerate_tool_name,
+    is_done_json_bail,
 )
 from penny.tools import Tool, ToolCall, ToolExecutor, ToolRegistry, ToolResult
 from penny.tools.base import RESULT_TAG
@@ -45,13 +45,11 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
-    DoneJsonBailValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
     PrematureDoneValidator,
     RefusalValidator,
-    TextInsteadOfToolValidator,
     XmlTagValidator,
     build_strong_nudge,
     clean_malformed_urls,
@@ -127,6 +125,21 @@ class AgentProgressEvent:
 
 ProgressCallback = Callable[[AgentProgressEvent], Awaitable[None]]
 
+# One entry of an agent's invalid-draw declaration (#1839): the condition to log the
+# discarded draw under, and the predicate over the draw's TEXT that recognises it.
+# Consulted only when the draw carries no tool calls at all.
+InvalidDraw = tuple[ConditionKey, Callable[[str], bool]]
+
+
+def _any_text(_content: str) -> bool:
+    """Every non-tool-call draw matches.
+
+    A collector acts ONLY through tool calls, so what its prose happens to say has no
+    bearing on whether the draw is usable — the terminal entry of that shape's
+    invalid-draw declaration, deliberately keyed to the STATE (there is no call) and
+    not to any wording (#1839)."""
+    return True
+
 
 class Agent:
     """
@@ -162,9 +175,9 @@ class Agent:
     # The composable response-validation chain — one validator per live
     # condition, run in order by ``run_validators`` each model call.  Reads
     # like a table of contents: a future guard is one more entry here, not a
-    # new branch in the loop.  ``ChatAgent`` and ``BackgroundAgent`` compose
-    # their own chains; the base agent (ad-hoc command agents) inherits this
-    # response-shape set.  ``HallucinatedToolCallRepair`` runs first so a
+    # new branch in the loop.  Chat and the base agent share this response-shape
+    # set; a collector never reaches it (every call-less draw of its shape is
+    # discarded upstream, #1839).  ``HallucinatedToolCallRepair`` runs first so a
     # tools-stripped final-step hallucination is cleaned before the
     # content-shape validators see it.
     response_validators: list[ResponseValidator] = [
@@ -176,16 +189,18 @@ class Agent:
     ]
 
     # The run-shape chain — guards that depend on the run's tool-call history
-    # (premature ``done()``, prose-instead-of-tool), applied at the loop's
+    # (premature ``done()``, the run-end skill narration), applied at the loop's
     # tool-call / text branch points.  Empty on the base agent (no shape forbids
     # an early terminator or a text answer); ``BackgroundAgent`` adds the
-    # collector guards.  A future shape guard is one more entry here.
+    # collector guard.  A future shape guard is one more entry here.
     run_shape_validators: list[ResponseValidator] = []
 
-    # A final-text bare JSON call fragment ({"memory": …}) is rerolled only where
-    # it would EGRESS to the user — ChatAgent sets this True; background agents
-    # keep their teaching nudge chains for call-shaped text (#1569/#1570).
-    _reroll_call_fragments: bool = False
+    # What makes a NON-tool-call draw invalid for this agent shape (#1839) — declared
+    # as data, one entry per condition, in the order they are tried.  Empty on the
+    # base agent: with no shape to violate, any text is a legitimate answer.
+    # ``ChatAgent`` and ``BackgroundAgent`` declare their own, and the loop discards +
+    # re-rolls a matching draw rather than letting it enter the conversation.
+    invalid_draw_conditions: tuple[InvalidDraw, ...] = ()
 
     def __init__(
         self,
@@ -603,8 +618,11 @@ class Agent:
         self, response: LlmResponse, messages: list[dict], ctx: LoopContext, run_id: str
     ) -> bool:
         """Run the run-shape chain over a text-only response; apply a
-        ``NudgeContinue`` (collector narrated prose where a tool call was due, or a
-        chat run that just learned a skill and must narrate it).
+        ``NudgeContinue`` (a chat run that just learned a skill and must narrate it).
+
+        Every text draw reaching here is a VALID one for this agent's shape — an
+        invalid one was discarded and re-rolled before the loop ever saw it (#1839) —
+        so a nudge appended here only ever continues a legitimate turn.
 
         Returns True when the loop should ``continue`` (response + nudge appended),
         False to treat the text as the final answer."""
@@ -716,9 +734,12 @@ class Agent:
         no-tools tool-call strip as a ``Repair``).  A ``Retry`` appends the bad
         response + its nudge and re-calls — once per condition (``retried``).  A
         ``Proceed`` returns the (possibly-repaired) response.  Tool-call responses
-        with tools available short-circuit unvalidated.  ``LlmToolParseError``
-        (no response to inspect) routes through the same retried-set bookkeeping
-        as a ``TOOL_PARSE_ERROR`` retry.
+        with tools available short-circuit unvalidated.
+
+        Every draw reaching this chain has already survived ``_invoke_nondegenerate``,
+        which discards and re-rolls an UNUSABLE one (a transport artifact, or a draw
+        that violates this agent's shape) — so the dispositions here only ever apply
+        to a draw that legitimately entered the run.
         """
         max_retries = PennyConstants.RESPONSE_VALIDATION_RETRIES
         effective_tools = tools if tools else None
@@ -726,14 +747,9 @@ class Agent:
         response = None
 
         for attempt in range(max_retries):
-            try:
-                response = await self._invoke_nondegenerate(
-                    messages, effective_tools, run_id, prompt_type
-                )
-            except LlmToolParseError:
-                if self._retry_tool_parse_error(messages, retried, attempt, max_retries):
-                    continue
-                return None
+            response = await self._invoke_nondegenerate(
+                messages, effective_tools, run_id, prompt_type
+            )
             if response is None:
                 return None
 
@@ -780,30 +796,6 @@ class Agent:
         repaired.message.tool_calls = None
         return repaired
 
-    def _retry_tool_parse_error(
-        self,
-        messages: list[dict],
-        retried: set[ConditionKey],
-        attempt: int,
-        max_retries: int,
-    ) -> bool:
-        """Inject a format nudge and signal a retry for a tool-parse 500, once.
-
-        Returns True to retry (nudge appended), False to abort — the error has no
-        response to inspect, so it's keyed into the same retried set the
-        response-validator chain uses (one retry per condition)."""
-        if ConditionKey.TOOL_PARSE_ERROR in retried:
-            logger.error("Tool parse error on repeated attempt — aborting")
-            return False
-        retried.add(ConditionKey.TOOL_PARSE_ERROR)
-        logger.warning(
-            "Tool parse error on attempt %d/%d — retrying with format nudge",
-            attempt + 1,
-            max_retries,
-        )
-        messages.append({"role": MessageRole.USER, "content": Prompt.TOOL_FORMAT_NUDGE})
-        return True
-
     def _apply_retry(
         self,
         messages: list[dict],
@@ -817,11 +809,10 @@ class Agent:
         """Apply a ``Retry`` disposition: record the condition, append the bad
         response, then its nudge (if any).
 
-        ``EMPTY`` carries the empty validator's per-agent mid-loop nudge
-        (``CONTINUE_NUDGE`` for chat, ``COLLECTOR_CONTINUE_NUDGE`` for collectors)
-        and an empty nudge on the final step (tools stripped); the loop substitutes
-        the forceful ``build_strong_nudge`` there, since the strong builder needs
-        the message history a pure validator can't hold.  Other conditions just
+        ``EMPTY`` carries the empty validator's mid-loop ``CONTINUE_NUDGE`` and an
+        empty nudge on the final step (tools stripped); the loop substitutes the
+        forceful ``build_strong_nudge`` there, since the strong builder needs the
+        message history a pure validator can't hold.  Other conditions just
         re-append the response (empty nudge)."""
         retried.add(condition)
         logger.warning(
@@ -878,76 +869,102 @@ class Agent:
         run_id: str | None,
         prompt_type: str | None,
     ) -> LlmResponse | None:
-        """Call the model, discarding UNUSABLE raw output and re-rolling on the
+        """Call the model, discarding an UNUSABLE draw and re-rolling on the
         *unchanged* context.
 
-        Two kinds of unusable output share this one discard-and-reroll machinery,
-        because both are transport artifacts a fresh draw usually clears:
+        Three families of unusable draw share this one discard-and-reroll machinery:
           * a gpt-oss punctuation collapse (``…?.``) — most often inside a tool-call
             argument, which the validation chain never sees (tool-call responses
-            short-circuit it); and
+            short-circuit it);
           * a leaked Harmony tool-call envelope in the text content — a backend that
             failed to parse the envelope, so the whole call arrives as literal prose
-            that would otherwise be delivered to the user verbatim.
+            that would otherwise be delivered to the user verbatim; and
+          * a draw that violates this agent's SHAPE (#1839) — a tool-parse failure, a
+            collector turn that is not a tool call at all, a chat reply that is really
+            a serialized call.  The conversation state machine makes a turn's valid
+            terminal states decidable, so such a draw is rejected rather than recovered
+            by conversation: it never enters the run, so no nudge turn and no stray
+            output can be mistaken later for what the model actually did.
         So the check runs here, on the raw output of every call, before the loop
-        parses or acts on it.  The bad response is DROPPED, never appended:
-        re-appending a collapse feeds it back into the conversation (a poisoned step
-        makes the next ~4× more likely to collapse too), and re-appending a leaked
-        envelope would ship raw tokens.  After ``DEGENERATE_REROLL_ATTEMPTS`` it
-        returns ``None`` so the caller throws out the whole run rather than act on,
-        or store, the poison.  The warning names WHICH condition tripped (the reroll
-        mechanism is shared; the log label must stay honest).  ``LlmToolParseError``
-        propagates unchanged — the format-nudge retry in ``_call_model_validated``
-        still owns that path.
+        parses or acts on it.  The bad draw is DROPPED, never appended: re-appending a
+        collapse feeds it back into the conversation (a poisoned step makes the next
+        ~4× more likely to collapse too), and re-appending a leaked envelope or a
+        call-shaped blob would ship it.  After ``DEGENERATE_REROLL_ATTEMPTS`` it
+        returns ``None`` so the caller throws out the whole run rather than act on it —
+        one shared budget for every family.  The warning names WHICH condition tripped
+        (the reroll mechanism is shared; the log label must stay honest).
         """
         attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
         for attempt in range(attempts):
-            response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+            try:
+                response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
+            except LlmToolParseError as error:
+                # The backend refused to parse the draw as a tool call, so there is no
+                # response to inspect — the draw is unusable by the same rule, and a
+                # fresh one on the unchanged context is the only move.
+                logger.debug("Tool parse error: %s", error)
+                self._log_reroll(ConditionKey.TOOL_PARSE_ERROR, attempt, attempts)
+                continue
             if response is None:
                 return response
             condition = self._unusable_output_condition(response)
             if condition is None:
                 return response
-            logger.warning(
-                "Unusable model output (%s) — discarding and re-rolling %d/%d",
-                condition,
-                attempt + 1,
-                attempts,
-            )
+            self._log_reroll(condition, attempt, attempts)
         logger.error("Model output still unusable after %d re-rolls — aborting run", attempts)
         return None
 
+    @staticmethod
+    def _log_reroll(condition: ConditionKey, attempt: int, attempts: int) -> None:
+        """Name the condition a discarded draw tripped, on the shared reroll path."""
+        logger.warning(
+            "Unusable model output (%s) — discarding and re-rolling %d/%d",
+            condition,
+            attempt + 1,
+            attempts,
+        )
+
     def _unusable_output_condition(self, response: LlmResponse) -> ConditionKey | None:
-        """The condition that makes this raw output unusable, or ``None`` if it's
-        clean.  ``TOOL_CALL_LEAK`` — a leaked Harmony tool-call envelope in the text
-        content (or a serialised argument) — or ``DEGENERATE_OUTPUT`` — a punctuation
-        collapse in the content, any tool-call argument, or an unregistered
-        collapse-shaped NAME field (``Functions?????``, which would otherwise flow to
-        a tool-not-found error that keeps the poison in context).  Serialising the
-        tool-call arguments is what lets the guard catch the common collapse case,
-        where it lands in a ``collection_write`` / ``done`` argument rather than in
-        visible prose."""
+        """The condition that makes this raw draw unusable, or ``None`` if it's clean.
+
+        ``TOOL_CALL_LEAK`` — a leaked Harmony tool-call envelope in the text content
+        (or a serialised argument) — and ``DEGENERATE_OUTPUT`` — a punctuation collapse
+        in the content, any tool-call argument, or an unregistered collapse-shaped NAME
+        field (``Functions?????``, which would otherwise flow to a tool-not-found error
+        that keeps the poison in context) — are transport artifacts, checked on every
+        draw.  Serialising the tool-call arguments is what lets the guard catch the
+        common collapse case, where it lands in a ``collection_write`` / ``done``
+        argument rather than in visible prose.
+
+        A draw carrying real tool calls is otherwise clean by construction — it IS a
+        call.  A draw carrying none is checked against this agent's declared
+        ``invalid_draw_conditions`` (#1839): the shape it was supposed to produce, in
+        the shape's own terms.
+        """
         parts = [response.message.content or ""]
-        for call in response.message.tool_calls or []:
+        calls = response.message.tool_calls or []
+        for call in calls:
             if self._is_degenerate_tool_call_name(call.function.name):
                 return ConditionKey.DEGENERATE_OUTPUT
             parts.append(json.dumps(call.function.arguments, ensure_ascii=False))
         if any(has_leaked_harmony_envelope(part) for part in parts):
             return ConditionKey.TOOL_CALL_LEAK
-        # A would-be final reply that is a bare JSON call fragment ({"memory": …})
-        # is unusable — it would be SENT verbatim (#1570 field audit).  CHAT only
-        # (``_reroll_call_fragments``): a collector's call-shaped text belongs to
-        # its TEACHING nudge chain and never reaches the user.  Only when there
-        # are no tool calls: alongside real calls the content never egresses, and
-        # the full {"name": …} envelope keeps its teaching validators.
-        if (
-            self._reroll_call_fragments
-            and not (response.message.tool_calls or [])
-            and is_call_fragment_reply(response.message.content or "")
-        ):
-            return ConditionKey.CALL_FRAGMENT_REPLY
         if any(is_degenerate_run(part) for part in parts):
             return ConditionKey.DEGENERATE_OUTPUT
+        if calls:
+            return None
+        return self._invalid_draw_condition(response.message.content or "")
+
+    def _invalid_draw_condition(self, content: str) -> ConditionKey | None:
+        """The first declared invalid-draw condition this call-less draw matches.
+
+        Walks ``invalid_draw_conditions`` in order, so the condition the discarded
+        draw is logged under is the most specific one that describes it.  ``None``
+        when nothing matches — for chat that is the ordinary case (a plain
+        conversational reply is a perfectly valid terminal state)."""
+        for condition, is_invalid in self.invalid_draw_conditions:
+            if is_invalid(content):
+                return condition
         return None
 
     def _is_degenerate_tool_call_name(self, name: str) -> bool:
@@ -1605,34 +1622,28 @@ class BackgroundAgent(Agent):
     it instead of producing a reply.
     """
 
-    # The collector response-shape chain — same guards as the base/chat chain, but
-    # the empty-response validator carries ``COLLECTOR_CONTINUE_NUDGE`` instead of
-    # the chat ``CONTINUE_NUDGE``: a collector acts only through tool calls, so
-    # "provide your response" invites an unparseable prose reply — its mid-loop
-    # empty-content nudge must demand a tool call.  Composed explicitly (not
-    # inherited) so the swap reads here as a table of contents, one differing entry.
-    response_validators: list[ResponseValidator] = [
-        HallucinatedToolCallRepair(),
-        XmlTagValidator(),
-        EmptyResponseValidator(continue_nudge=Prompt.COLLECTOR_CONTINUE_NUDGE),
-        RefusalValidator(),
-        HallucinatedUrlValidator(),
-    ]
+    # A collector acts ONLY through tool calls, so a draw carrying none is invalid
+    # whatever it says — prose, an empty body, or the argless ``done()`` composed as a
+    # JSON envelope the model failed to route through the tool channel (#1569).  The
+    # loop discards and re-rolls it (#1839): there is no wrong-shaped output to teach
+    # from, because it never enters the run.  ``DONE_JSON_BAIL`` leads so the shape we
+    # can name is named; ``TEXT_INSTEAD_OF_TOOL`` is the terminal catch-all, keyed to
+    # the STATE (no call was made) rather than to anything the prose says.
+    #
+    # This subsumes what the collector's own response-shape chain used to say — an
+    # empty draw, an XML-wrapped one, a refusal are each simply a draw with no call —
+    # so ``BackgroundAgent`` no longer composes one and the collector-flavoured
+    # empty-content nudge retired with it.
+    invalid_draw_conditions: tuple[InvalidDraw, ...] = (
+        (ConditionKey.DONE_JSON_BAIL, is_done_json_bail),
+        (ConditionKey.TEXT_INSTEAD_OF_TOOL, _any_text),
+    )
 
-    # A collector acts only through tool calls, so three run-shape guards apply
-    # that don't on chat: ``done()``'s arguments emitted as bare JSON text
-    # (``DoneJsonBailValidator`` → shape-specific teaching ``NudgeContinue``,
-    # ordered BEFORE the generic guard so the specific teaching outranks it), a
-    # prose answer where a tool call was due (``TextInsteadOfToolValidator`` →
-    # ``NudgeContinue``), and a first-move ``done()`` before any real work
-    # (``PrematureDoneValidator`` → ``RejectToolCall``).  Applied at the loop's
-    # text / tool-call branch points; all honour ``max_steps`` (no retry room on
-    # the final step).
-    run_shape_validators: list[ResponseValidator] = [
-        PrematureDoneValidator(),
-        DoneJsonBailValidator(),
-        TextInsteadOfToolValidator(),
-    ]
+    # One run-shape guard applies to a collector that doesn't on chat: a first-move
+    # ``done()`` before any real work (``PrematureDoneValidator`` → ``RejectToolCall``).
+    # It is a guard on a COHERENT call, which is why it survives the invalid-draw
+    # rejection: the model acted, it just acted too early.
+    run_shape_validators: list[ResponseValidator] = [PrematureDoneValidator()]
 
     # A collector closes with ``done()``, so its channel-outage recovery binds that
     # terminator instead of the chat "answer the user" move.

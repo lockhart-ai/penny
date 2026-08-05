@@ -4,9 +4,12 @@ model did.
 Every condition we reason about Penny's behaviour through is named here exactly
 once, with where it is enforced made explicit:
 
-- ``live``  — caught while the run is happening (a ``ResponseValidator``
-  disposition in the agentic loop, or the ``send_message`` arg-validation gate),
-  so the model gets a chance to recover.
+- ``live``  — caught while the run is happening, by one of three mechanisms: the
+  agent loop's **discard-and-reroll guard** (an invalid draw is thrown away and
+  re-drawn on the unchanged context, so it never enters the run at all — the
+  transport artifacts plus the whole call-shaped-text family since #1839), a
+  ``ResponseValidator`` disposition in the loop (the draw stands and the model is
+  given a chance to correct it), or the ``send_message`` arg-validation gate.
 - ``run_flag`` — surfaces after the fact as a ``⚠`` line on the run record the
   self-state header + ``collector-runs`` read facade render and the addon badges,
   derived structurally from the persisted ``promptlog`` rows.
@@ -114,6 +117,11 @@ def _condition(
 # capacity/transience ones (INCOMPLETE, TOOL_FAILURES) follow.
 _CATALOG_ENTRIES: tuple[BehaviorCondition, ...] = (
     # ── Response-shape conditions (live only; chat + collector) ──────────────
+    # The unusable-DRAW conditions below — TOOL_PARSE_ERROR, TEXT_INSTEAD_OF_TOOL,
+    # DONE_JSON_BAIL, CALL_AS_TEXT, DEGENERATE_OUTPUT, TOOL_CALL_LEAK,
+    # CALL_FRAGMENT_REPLY — are enforced by DISCARD-AND-REROLL: the draw never enters
+    # the conversation, so none of them can leave a marker on a completed run
+    # (#1839).  The rest are validator dispositions the model reads and recovers from.
     _condition(
         ConditionKey.XML,
         "Response wrapped in XML/markup instead of plain prose",

@@ -143,14 +143,12 @@ def _log_run(
     calls: list[tuple[str, dict, str, bool]],
     *,
     stamp_success: bool = True,
-    nudges: list[str] | None = None,
 ) -> None:
     """Log one chat run REAL-SHAPED: the bare utterance turn (no fused Live-context),
     each tool call carrying the universal top-level ``reasoning`` think-aloud (#1661),
     and each call's framed result plus its structural ``tool_success`` stamp (#1600).
 
-    ``nudges`` injects extra user turns (the text-bail nudge markers) so the health
-    gate can be exercised; ``stamp_success=False`` omits the stamp (a pre-#1600 run)."""
+    ``stamp_success=False`` omits the stamp (a pre-#1600 run)."""
     tool_calls = []
     tool_turns = []
     for index, (name, args, result, success) in enumerate(calls, start=1):
@@ -164,7 +162,6 @@ def _log_run(
             turn[PennyConstants.TOOL_RESULT_SUCCESS_KEY] = success
         tool_turns.append(turn)
     messages: list[dict] = [{"role": "user", "content": utterance}]
-    messages.extend({"role": "user", "content": nudge} for nudge in nudges or [])
     messages.extend(tool_turns)
     db.messages.log_prompt(
         model="m",
@@ -279,21 +276,17 @@ async def test_failed_write_only_run_is_excluded(db):
 
 
 @pytest.mark.asyncio
-async def test_bail_nudged_run_is_excluded(db):
-    """A run poisoned by a text-bail nudge (the model failed to route a call through
-    the tool channel) is unhealthy → BAILED, no skill — even though it read+wrote."""
-    _log_run(
-        db,
-        "run-A",
-        _UTTERANCE,
-        [_BROWSE, _WRITE],
-        nudges=[Prompt.CHAT_CALL_AS_TEXT_NUDGE],
-    )
+async def test_the_health_gate_is_retired(db):
+    """There is no BAILED gate any more (#1839).  The call-shaped-text bails it keyed
+    on are discarded and re-rolled by the agent loop, so their markers can no longer
+    appear in a completed run — a run that recovered is indistinguishable from one that
+    never slipped, and it qualifies on its work like any other."""
+    assert not hasattr(ExtractionGate, "BAILED")
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db).extract("run-A")
 
-    assert result == NoExtraction(gate=ExtractionGate.BAILED)
-    assert db.skills.list_all() == []
+    assert isinstance(result, SkillExtracted)
 
 
 @pytest.mark.asyncio

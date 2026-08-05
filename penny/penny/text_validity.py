@@ -1,8 +1,9 @@
 """Content-validity primitives — pure text predicates, no DB / no model.
 
-The one home for "is this text usable?" rules, kept dependency-light (standard
-library only) so every layer can import it without dragging in the database or
-agent packages.  Two callers that must agree share these:
+The one home for "is this text usable?" rules, kept dependency-light (the
+standard library plus the ``constants`` leaf) so every layer can import it
+without dragging in the database or agent packages.  Two callers that must agree
+share these:
 
   * the memory write path (``Collection.write`` / the ``exists`` probe) rejects
     degenerate corpus content via :func:`degenerate_reason` — a SUBSTRING poison
@@ -16,6 +17,14 @@ agent packages.  Two callers that must agree share these:
     is delivered.  Catching an in-flight collapse in the model's own output stays
     the agent-loop reroll guard's job (``is_degenerate_run`` in ``agents/base.py``).
 
+It is also where the agent loop's **invalid-draw** detectors live — the
+call-shaped-text family (:func:`is_call_as_text_bail`, :func:`is_done_json_bail`,
+:func:`is_call_fragment_reply`) beside the transport artifacts
+(:func:`is_degenerate_run`, :func:`has_leaked_harmony_envelope`,
+:func:`is_degenerate_tool_name`).  Since #1839 all of them feed ONE mechanism —
+``Agent._unusable_output_condition``'s discard-and-reroll — so they belong in one
+leaf rather than split between here and the validator chain.
+
 Living here (rather than inside ``database/memory/_similarity``) is what lets
 ``tools/models.py`` import :func:`half_formed_send_reason` without triggering the
 ``penny.database`` package import (which would close an import cycle back through
@@ -26,8 +35,11 @@ here, so its public import surface is unchanged.
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from collections.abc import Collection
+
+from penny.constants import PennyConstants
 
 _WORD_TOKEN_RE = re.compile(r"\w+")
 
@@ -159,7 +171,7 @@ def is_call_fragment_reply(content: str) -> bool:
     The observed leak (#1570 field audit): the model emits something like
     ``{"memory":"rip? wait we need …"}`` as its final TEXT — a mangled slice of a
     tool call's argument object — and, being neither the full call envelope
-    (``CallAsTextValidator``'s shape) nor a punctuation collapse, it sailed
+    (:func:`is_call_as_text_bail`'s shape) nor a punctuation collapse, it sailed
     through every guard and was SENT to the user verbatim.  The agent-loop
     reroll guard treats it like the other unusable-output conditions: discard
     and re-draw on the unchanged context.
@@ -171,17 +183,13 @@ def is_call_fragment_reply(content: str) -> bool:
 
       * an **empty JSON object** — ``{}`` / ``{ }`` / ``{}\\n`` (#1732): the
         degenerate tail of a forced tool-call attempt that leaked into the text
-        channel.  Pressed for "a valid tool call only", the model emits an empty
-        arguments object as its whole reply — the exact shape the #1731 nudge-loop
-        spiral terminated in, which the old ``{"`` gate missed (an empty object
-        has no string key), leaving the terminal poison untagged as pathology; and
+        channel, the shape the #1731 nudge-loop spiral terminated in, which the old
+        ``{"`` gate missed (an empty object has no string key); and
       * a **fragment with a string key** — the stripped text OPENS with ``{"`` but
         is NOT the full call ENVELOPE (both ``"name"`` and ``"arguments"``
-        present).  The envelope is deliberately excluded: that shape belongs to
-        the TEACHING validators (``CallAsTextValidator`` in chat, the done-JSON
-        nudge in collectors), which re-elicit the real call — a reroll here would
-        preempt them (``{"name": …, "arguments": {}}`` opens with ``{"``, not the
-        empty-object shape, so it still falls through to the envelope exclusion).
+        present).  The envelope is excluded here because
+        :func:`is_call_as_text_bail` owns it — one condition per shape, so the
+        rerolled draw is logged under the condition that actually describes it.
     """
     stripped = content.lstrip()
     if _EMPTY_OBJECT_REPLY_RE.match(stripped):
@@ -189,6 +197,72 @@ def is_call_fragment_reply(content: str) -> bool:
     if not stripped.startswith('{"'):
         return False
     return not ('"name"' in stripped and '"arguments"' in stripped)
+
+
+# The tool-call envelope the model also emits as TEXT: ``{"name": …, "arguments": {…}}``.
+_CALL_ENVELOPE_KEYS = frozenset({"name", "arguments"})
+
+
+def _lone_json_object(content: str) -> dict | None:
+    """The parsed object when ``content`` is nothing but one JSON object, else ``None``.
+
+    Both call-as-text detectors key on the whole reply BEING a serialized object —
+    ordinary prose never is, which is what keeps a genuine answer from tripping them.
+    """
+    text = content.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def is_done_json_bail(content: str) -> bool:
+    """True when a plain-text collector draw is really an argless ``done()`` call the
+    model failed to route through the tool channel (#1569).
+
+    The one convergent shape on Harmony backends is the named envelope —
+    ``{"name": "done", "arguments": {}}`` (or ``{"name": "done"}``): a lone JSON
+    object naming ``done``, with at most an ``arguments`` dict alongside.  ``done`` is
+    argless, so the envelope's ``arguments`` are irrelevant — the model meant to
+    finish and the call never ran.  Any other name or extra key is not this shape (a
+    collector's draw is invalid either way, #1839 — this only decides which condition
+    the discarded draw is logged under).
+    """
+    parsed = _lone_json_object(content)
+    if parsed is None or not set(parsed) <= _CALL_ENVELOPE_KEYS:
+        return False
+    if parsed.get("name") != PennyConstants.DONE_TOOL_NAME:
+        return False
+    return "arguments" not in parsed or isinstance(parsed["arguments"], dict)
+
+
+def is_call_as_text_bail(content: str) -> bool:
+    """True when a plain-text draw is really a tool call the model failed to route
+    through the tool channel — gpt-oss's Harmony call-as-text fallback.
+
+    Unlike :func:`is_done_json_bail` this keys on the *call shape*, not one named
+    tool's envelope, because chat has many tools and no ``done()``.  Two convergent
+    forms:
+
+      - full envelope: ``{"name": "browse", "arguments": {…}}``
+      - bare args:     ``{"queries": [...], "reasoning": "…"}`` — identified by the
+        framework-injected ``reasoning`` field (``Tool.to_ollama_tool`` adds it to
+        every tool's schema, so a real call's serialized args carry it)
+
+    The whole content must be a lone JSON object — a normal prose reply never is, so
+    a genuine answer can't trip this.  That discriminator is what lets chat treat a
+    call-shaped draw as invalid (#1839) while its plain conversational reply stays a
+    perfectly valid terminal state.
+    """
+    parsed = _lone_json_object(content)
+    if parsed is None:
+        return False
+    if set(parsed) == _CALL_ENVELOPE_KEYS:
+        return isinstance(parsed.get("name"), str) and isinstance(parsed.get("arguments"), dict)
+    return "reasoning" in parsed
 
 
 def has_leaked_harmony_envelope(content: str) -> bool:

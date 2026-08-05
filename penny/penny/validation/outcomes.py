@@ -63,8 +63,12 @@ class RejectToolCall(BaseModel):
 
 
 class NudgeContinue(BaseModel):
-    """Append the response plus a user-turn ``message`` and continue the loop —
-    e.g. a collector that narrated prose where a tool call was required."""
+    """Append the response plus a user-turn ``message`` and continue the loop — e.g.
+    a chat run that just auto-extracted a skill and must narrate it in the same turn.
+
+    Only ever applied to a draw that is VALID for the agent's shape: an invalid one is
+    discarded and re-rolled before the loop sees it (#1839), so this disposition never
+    stands in for recovery from malformed output."""
 
     model_config = ConfigDict(frozen=True)
     message: str

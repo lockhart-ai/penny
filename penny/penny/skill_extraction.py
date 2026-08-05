@@ -9,14 +9,17 @@ retired tool produced, now fired by the run finishing instead of a model call.
 (house style: the summary method reads like a table of contents):
 
 * **qualify** — all structural, each a named check: the run is the chat agent's,
-  it made ≥1 tool call, no text-bail nudge poisoned it, and its SUCCEEDED,
-  COLLECTOR-runnable calls form a read+write taxonomy (a routine that senses AND
-  acts).  A purely-read run (answering a question) and a purely-write run ('remember
-  this' — the storage atom) do NOT qualify; failed calls are FILTERED, so a run whose
-  only write failed is a pure read and is excluded.  Lifecycle calls a demo made
-  (e.g. ``collection_set`` to set up the container) are dropped like orientation
-  calls — a skill renders into a collector prompt, so only collector-runnable steps
-  belong in it, and they count for nothing in the taxonomy (#1668).
+  it made ≥1 tool call, and its SUCCEEDED, COLLECTOR-runnable calls form a read+write
+  taxonomy (a routine that senses AND acts).  A purely-read run (answering a question)
+  and a purely-write run ('remember this' — the storage atom) do NOT qualify; failed
+  calls are FILTERED, so a run whose only write failed is a pure read and is excluded.
+  Lifecycle calls a demo made (e.g. ``collection_set`` to set up the container) are
+  dropped like orientation calls — a skill renders into a collector prompt, so only
+  collector-runnable steps belong in it, and they count for nothing in the taxonomy
+  (#1668).  There is no health gate any more (#1839): the call-shaped-text bails it
+  keyed on are discarded and re-rolled by the agent loop, so they never enter a
+  completed run's rows at all — a recovered run is indistinguishable from a clean one
+  BECAUSE recovery no longer writes into the run.
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
   steps: strips the framework ``reasoning`` leaf and classifies bindings vs. candidate
   parameters (#1659/#1660/#1662) — EVERY unexplained leaf, whatever tool it sits on
@@ -57,7 +60,6 @@ imports (the extraction pipeline, not the tool surface).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from enum import StrEnum
@@ -86,7 +88,6 @@ from penny.database.skills import (
     render_skill,
 )
 from penny.llm.similarity import embed_text
-from penny.prompts import Prompt
 from penny.text_validity import is_blank
 from penny.tools.micro_context import MicroContext, SkillLabels, SkillSignature
 
@@ -135,7 +136,6 @@ class ExtractionGate(StrEnum):
 
     NOT_CHAT = "not_chat_run"
     NO_TOOL_CALLS = "no_tool_calls"
-    BAILED = "text_bail_nudge_in_run"
     NO_CERTIFIED_STEPS = "no_certified_steps"
     PURE_READ = "pure_read_no_write"
     PURE_WRITE = "pure_write_no_read"
@@ -301,13 +301,11 @@ class SkillExtractor:
         certified: list[RunProjectionStep],
     ) -> ExtractionGate | None:
         """Run the ordered qualify gates; the FIRST failure's gate is returned
-        (``None`` == qualifies).  Order: chat-run · has-calls · health · taxonomy."""
+        (``None`` == qualifies).  Order: chat-run · has-calls · certified · taxonomy."""
         if not self._is_chat_run(prompts):
             return ExtractionGate.NOT_CHAT
         if not _runnable_steps(projection):
             return ExtractionGate.NO_TOOL_CALLS
-        if _has_text_bail_nudge(prompts):
-            return ExtractionGate.BAILED
         if not certified:
             return ExtractionGate.NO_CERTIFIED_STEPS
         return _taxonomy_gate(certified)
@@ -753,27 +751,3 @@ def _taxonomy_gate(certified: list[RunProjectionStep]) -> ExtractionGate | None:
     if not has_read:
         return ExtractionGate.PURE_WRITE
     return None
-
-
-def _has_text_bail_nudge(prompts: list[PromptLog]) -> bool:
-    """True when the run's prompt rows carry either text-bail nudge marker — the
-    model failed to route a call through the tool channel at some step, so the run
-    is unhealthy and must not be captured as a routine.  Reads the nudge CONSTANTS
-    (``Prompt.TOOL_FORMAT_NUDGE`` / ``Prompt.CHAT_CALL_AS_TEXT_NUDGE``), decoding
-    each prompt's ``messages`` so a multi-line nudge matches its real content, not a
-    JSON-escaped blob."""
-    markers = (Prompt.TOOL_FORMAT_NUDGE, Prompt.CHAT_CALL_AS_TEXT_NUDGE)
-    for prompt in prompts:
-        for message in _decoded_messages(prompt):
-            content = message.get("content") or ""
-            if any(marker in content for marker in markers):
-                return True
-    return False
-
-
-def _decoded_messages(prompt: PromptLog) -> list[dict]:
-    """One prompt row's ``messages`` JSON decoded to dicts (empty when absent)."""
-    if not prompt.messages:
-        return []
-    decoded = json.loads(prompt.messages)
-    return decoded if isinstance(decoded, list) else []

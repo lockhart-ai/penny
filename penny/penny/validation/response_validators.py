@@ -20,13 +20,21 @@ Mapping from the old inline ``_check_response`` branches:
   refusal branch          → ``RefusalValidator``       (Retry, no extra nudge)
   hallucinated-URL branch → ``HallucinatedUrlValidator`` (Retry, no extra nudge)
   strip-tool-calls-no-tools → ``HallucinatedToolCallRepair`` (Repair)
-  ``handle_text_step``    → ``TextInsteadOfToolValidator`` (NudgeContinue)
   ``handle_premature_terminator`` → ``PrematureDoneValidator`` (RejectToolCall)
+
+**The call-shaped-text family is NOT here (#1839).** A draw that was meant to be a
+tool call and is not one — a collector's prose or done-as-JSON-text, a chat reply
+that is a serialized call — is an INVALID DRAW, not a recoverable turn: the agent
+loop discards it and re-rolls the unchanged context (``Agent._unusable_output_condition``
++ ``invalid_draw_conditions``), so it never enters the conversation at all.  The
+validators that used to append those outputs plus a teaching nudge
+(``TextInsteadOfToolValidator`` / ``DoneJsonBailValidator`` / ``CallAsTextValidator``)
+are gone with their nudges; their detectors live in ``penny.text_validity`` beside
+the other invalid-draw predicates.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import urllib.parse
@@ -197,11 +205,10 @@ class EmptyResponseValidator:
     strong nudge from messages" — the strong builder needs the message history a
     pure validator can't hold.
 
-    ``continue_nudge`` is the mid-loop nudge and is composed per-agent: chat/base
-    keep the default ``CONTINUE_NUDGE`` ("Please provide your response."), while
-    the collector chain passes ``COLLECTOR_CONTINUE_NUDGE`` — a collector acts only
-    through tool calls, so "provide your response" would invite an unparseable prose
-    reply; it must be told to make a tool call instead."""
+    ``continue_nudge`` is the mid-loop nudge, kept a constructor argument so an
+    agent shape can compose its own.  Only chat/base reach it now: a collector's
+    empty draw is a non-tool-call draw, so the loop discards and re-rolls it before
+    this chain runs (#1839)."""
 
     def __init__(self, continue_nudge: str = Prompt.CONTINUE_NUDGE) -> None:
         self._continue_nudge = continue_nudge
@@ -266,78 +273,6 @@ class HallucinatedToolCallRepair:
         return Repair(response=repaired)
 
 
-# ── Collector-only run-shape validators ──────────────────────────────────────
-
-# The argless ``done()`` call-as-text shape (#1569): the model emits the whole
-# ``done`` call as a JSON envelope instead of routing it through the tool channel —
-# gpt-oss's native fallback on Harmony backends (the function name rides a header
-# that gets lost).  ``done()`` carries no arguments now, so there is no bare
-# ``{success, summary}`` payload to detect — only the named envelope.
-_ENVELOPE_KEYS = frozenset({"name", "arguments"})
-
-
-def is_done_json_bail(content: str) -> bool:
-    """True when a plain-text collector response is really an argless ``done()``
-    call the model failed to route through the tool channel (#1569).
-
-    The one convergent shape on Harmony backends is the named envelope —
-    ``{"name": "done", "arguments": {}}`` (or ``{"name": "done"}``): a lone JSON
-    object naming ``done``, with at most an ``arguments`` dict alongside.  Any
-    other name, extra key, or non-JSON text is left for the generic text-bail
-    nudge.  ``done`` is argless, so the envelope's ``arguments`` are irrelevant —
-    the model meant to finish, and the fix is to make the real ``done()`` call."""
-    text = content.strip()
-    if not (text.startswith("{") and text.endswith("}")):
-        return False
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(parsed, dict) or not set(parsed) <= _ENVELOPE_KEYS:
-        return False
-    if parsed.get("name") != DoneTool.name:
-        return False
-    return "arguments" not in parsed or isinstance(parsed["arguments"], dict)
-
-
-class DoneJsonBailValidator:
-    """A collector emitted the argless ``done()`` terminator as a plain JSON text
-    envelope instead of a tool call — gpt-oss's native fallback shape on Harmony
-    backends (the dominant call-shaped text bail in production).  Reject and TEACH:
-    append the stray text plus the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` —
-    naming exactly what the model did (wrote a ``done`` call as text) and the exact
-    next move (make the real, argless ``done()`` tool call) — and continue the loop
-    so the model itself re-emits the call.
-
-    Deliberately NOT a ``Repair``: fabricating a tool call the model never made
-    would coerce a malformed emission into a healthy one.  Repair is reserved for
-    well-formed calls that transport/parsing mangled (e.g. the Harmony token
-    strip); anything the *model* got wrong gets a teaching response it can learn
-    from within the run.  The value over the generic text-bail nudge is
-    specificity — the model is told precisely which tool to call and why its
-    output didn't count, rather than "make a tool call".
-
-    Collector-only by composition (``BackgroundAgent.run_shape_validators`` — chat
-    has no ``done`` tool), ordered BEFORE ``TextInsteadOfToolValidator`` so the
-    specific teaching outranks the generic nudge.  Unambiguous by construction:
-    only the ``{"name": "done", "arguments": {…}}`` envelope naming ``done``; any
-    other shape falls through to the generic nudge.  Surfaced via a WARNING naming
-    ``DONE_JSON_BAIL``.  Bounded by ``max_steps`` exactly like the generic text
-    bail: on the final step there's no retry room, so the cycle ends without a
-    ``done()`` and re-runs next tick."""
-
-    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ctx.is_final_step or response.has_tool_calls:
-            return Proceed(response=response)
-        if not is_done_json_bail(response.content):
-            return Proceed(response=response)
-        logger.warning(
-            "done() call emitted as JSON text (%s) — teaching the real tool call",
-            ConditionKey.DONE_JSON_BAIL,
-        )
-        return NudgeContinue(message=Prompt.COLLECTOR_DONE_JSON_NUDGE)
-
-
 # ── Chat-only run-shape validators ───────────────────────────────────────────
 
 
@@ -368,89 +303,7 @@ class SkillNarrationValidator:
         return Proceed(response=response)
 
 
-# ── Chat-only run-shape validator ────────────────────────────────────────────
-
-# The tool-call envelope shape the model also emits as text: {"name": …, "arguments": {…}}.
-_CALL_ENVELOPE_KEYS = frozenset({"name", "arguments"})
-
-
-def is_call_as_text_bail(content: str) -> bool:
-    """True when a plain-text chat response is really a tool call the model failed
-    to route through the tool channel — gpt-oss's Harmony call-as-text fallback.
-
-    Chat has many tools and no ``done()``, so unlike ``is_done_json_bail`` this
-    keys on the *call shape*, not one named tool's envelope.  Two convergent forms:
-
-      - full envelope: ``{"name": "browse", "arguments": {…}}``
-      - bare args:     ``{"queries": [...], "reasoning": "…"}`` — identified by the
-        framework-injected ``reasoning`` field (``Tool.to_ollama_tool`` adds it to
-        every tool's schema, so a real call's serialized args carry it)
-
-    The whole content must be a lone JSON object — a normal prose reply never is, so
-    a genuine answer can't trip this (the discriminator chat's text branch needs,
-    since there a text response is normally the final answer)."""
-    text = content.strip()
-    if not (text.startswith("{") and text.endswith("}")):
-        return False
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    if set(parsed) == _CALL_ENVELOPE_KEYS:
-        return isinstance(parsed.get("name"), str) and isinstance(parsed.get("arguments"), dict)
-    return "reasoning" in parsed
-
-
-class CallAsTextValidator:
-    """A chat agent emitted a tool call as a plain JSON text object instead of a real
-    tool call — gpt-oss's Harmony call-as-text fallback (the sibling of the
-    collector's ``DoneJsonBailValidator``, but chat has many tools and no
-    ``done()``).  Without this guard the JSON blob is taken as the final reply and
-    sent to the user verbatim — the loop-stressed give-up case (a fruitless search
-    the model keeps rewording) hits it hardest.
-
-    On chat a text response is NORMALLY the final answer, so this fires ONLY when the
-    whole content parses as a serialized call (``is_call_as_text_bail``).  It then
-    TEACHES via a ``NudgeContinue`` that forks — re-emit the real call, or if the
-    search is already exhausted reply to the user in plain words — and continues the
-    loop so the model recovers itself (mid-loop, tools are still live).
-
-    Never a ``Repair`` (fabricating the call the model didn't route through the
-    channel is exactly what repair is not for).  Bounded by ``max_steps`` like the
-    collector bail guards: on the final step there's no retry room, so it Proceeds and
-    the loop's final-step / max-steps handling owns the fallback."""
-
-    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ctx.is_final_step or response.has_tool_calls:
-            return Proceed(response=response)
-        if not is_call_as_text_bail(response.content):
-            return Proceed(response=response)
-        logger.warning(
-            "chat emitted a tool call as JSON text (%s) — teaching the real call",
-            ConditionKey.CALL_AS_TEXT,
-        )
-        return NudgeContinue(message=Prompt.CHAT_CALL_AS_TEXT_NUDGE)
-
-
-class TextInsteadOfToolValidator:
-    """A collector narrated prose where a tool call was required.
-
-    A collector acts only through tool calls (``done()`` to finish, otherwise the
-    next work tool); a text-only response is a bail that would otherwise be read
-    as the final answer, leaving the cycle with no ``done`` record (marked failed,
-    cursor uncommitted, re-run next tick).  Since the slip is stochastic, append
-    the stray text plus ``COLLECTOR_TOOL_CALL_NUDGE`` and keep the loop going so
-    the model recovers with a real tool call.  Bounded by ``max_steps``: on the
-    final step there's no room to retry, so the cycle ends without a ``done()``
-    and re-runs next tick — a clean reject, not a salvage of the malformed
-    output (the cursor stays uncommitted until a real ``done()`` lands)."""
-
-    def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
-        if ctx.is_final_step or response.has_tool_calls:
-            return Proceed(response=response)
-        return NudgeContinue(message=Prompt.COLLECTOR_TOOL_CALL_NUDGE)
+# ── Collector-only run-shape validator ───────────────────────────────────────
 
 
 class PrematureDoneValidator:

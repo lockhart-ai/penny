@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlmodel import Session, select
 
-from penny.agents.base import Agent, BackgroundAgent
+from penny.agents.base import Agent, BackgroundAgent, _any_text
 from penny.agents.chat import ChatAgent
 from penny.agents.models import MessageRole, ToolCallRecord
 from penny.config import Config
@@ -31,8 +31,10 @@ from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import (
     half_formed_send_reason,
     has_leaked_harmony_envelope,
+    is_call_as_text_bail,
     is_call_fragment_reply,
     is_degenerate_run,
+    is_done_json_bail,
 )
 from penny.tools.base import Tool
 from penny.tools.browse import BrowseTool, _trim_search_result
@@ -41,7 +43,6 @@ from penny.tools.models import BrowseArgs, ToolArgs, ToolResult
 from penny.validation import (
     ConditionKey,
     LoopContext,
-    NudgeContinue,
     Proceed,
     RejectToolCall,
     Repair,
@@ -49,19 +50,14 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
-    CallAsTextValidator,
-    DoneJsonBailValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
     PrematureDoneValidator,
     RefusalValidator,
     SkillNarrationValidator,
-    TextInsteadOfToolValidator,
     XmlTagValidator,
     build_strong_nudge,
-    is_call_as_text_bail,
-    is_done_json_bail,
 )
 
 
@@ -703,36 +699,42 @@ class TestModelErrorHandling:
         await agent.close()
 
 
-class TestToolParseErrorRetry:
-    """500 'error parsing tool call' recovers via a format nudge, not a fatal abort."""
+class TestToolParseErrorReroll:
+    """A 500 'error parsing tool call' is an INVALID DRAW (#1839): the backend refused
+    to parse it as a call, so there is no usable output — the loop discards it and
+    re-rolls the UNCHANGED context on the shared reroll budget.  No format nudge is
+    injected, so nothing about the failed draw enters the conversation."""
 
     @pytest.mark.asyncio
-    async def test_tool_parse_error_retries_with_format_nudge(self, test_db, mock_llm):
-        """When the server returns a tool-parse 500, agent injects format nudge and retries."""
+    async def test_tool_parse_error_rerolls_the_unchanged_context(self, test_db, mock_llm):
+        """The failed draw leaves NO trace: the redraw carries byte-identical messages,
+        with no nudge user-turn appended."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
             if count == 1:
                 raise LlmToolParseError("error parsing tool call: raw='We need to produce...'")
-            return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            if count == 2:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "test"})
+            return mock_llm._make_text_response(request, "here's what I found")
 
         mock_llm.set_response_handler(handler)
 
         await agent.run("test prompt", max_steps=max_steps)
 
-        # Second call (after nudge) should include the format reminder
-        assert len(mock_llm.requests) >= 2
-        nudge_messages = mock_llm.requests[1]["messages"]
-        last_user = next(m for m in reversed(nudge_messages) if m["role"] == "user")
-        assert "tool call" in last_user["content"].lower()
-        assert "plain text" in last_user["content"].lower()
+        # The redraw is the SAME call again on byte-identical messages — the failed draw
+        # left no assistant turn and no nudge user-turn behind.
+        assert len(mock_llm.requests) == 3
+        assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        assert "could not be parsed" not in str(mock_llm.requests[1]["messages"])
 
         await agent.close()
 
     @pytest.mark.asyncio
     async def test_tool_parse_error_recovers_and_completes(self, test_db, mock_llm):
-        """Cycle completes normally after a tool-parse error and retry."""
+        """A clean redraw proceeds as if the invalid one never happened — the reroll
+        happens INSIDE the step, so the run still gets its full step budget."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -752,8 +754,9 @@ class TestToolParseErrorRetry:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_tool_parse_error_only_retried_once(self, test_db, mock_llm):
-        """Tool-parse error retry only fires once — second parse error aborts the loop."""
+    async def test_persistent_tool_parse_error_fails_the_run(self, test_db, mock_llm):
+        """Budget exhausted → the run fails honestly via the existing aborted-run path,
+        after exactly DEGENERATE_REROLL_ATTEMPTS draws (the ONE shared budget)."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -764,8 +767,7 @@ class TestToolParseErrorRetry:
 
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
-        # First call + one retry = 2 total calls
-        assert len(mock_llm.requests) == 2
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
         await agent.close()
 
@@ -864,12 +866,16 @@ class TestDegenerateOutputGuard:
         is discarded and re-rolled on the unchanged context, exactly like the
         other unusable-output conditions — it must never be SENT verbatim.
 
-        Chat-only polarity: ``ChatAgent`` opts in via ``_reroll_call_fragments``;
-        the base agent leaves the flag off so a collector's call-shaped text
-        keeps its TEACHING nudge chain.  The full ``{"name": …, "arguments": …}``
-        envelope is excluded — that shape belongs to ``CallAsTextValidator``."""
-        assert ChatAgent._reroll_call_fragments is True
-        assert Agent._reroll_call_fragments is False
+        Chat-only polarity: ``ChatAgent`` declares it in ``invalid_draw_conditions``;
+        the base agent declares none, so plain text is a legitimate answer there.
+        The full ``{"name": …, "arguments": …}`` envelope belongs to the sibling
+        ``CALL_AS_TEXT`` condition, so the discarded draw is logged under the shape
+        that actually describes it."""
+        assert ChatAgent.invalid_draw_conditions == (
+            (ConditionKey.CALL_AS_TEXT, is_call_as_text_bail),
+            (ConditionKey.CALL_FRAGMENT_REPLY, is_call_fragment_reply),
+        )
+        assert Agent.invalid_draw_conditions == ()
         # Predicate edges: a bare fragment and a bare `{}` empty-object reply (the #1732
         # nudge-loop tail) match; the full call envelope and mid-prose JSON do not
         # (zero-false-positive discipline).
@@ -881,7 +887,8 @@ class TestDegenerateOutputGuard:
         assert is_call_fragment_reply("An empty JSON object is {}.") is False
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent._reroll_call_fragments = True  # the ChatAgent polarity, on the test agent
+        # The ChatAgent polarity, declared on the test agent.
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
         def handler(request, count):
             if count == 1:
@@ -2531,20 +2538,20 @@ def _make_background_agent(test_db, *, max_steps=4):
     return agent, db, max_steps
 
 
-class TestCollectorTextNudge:
-    """A collector that emits plain text instead of a tool call gets nudged to
-    re-emit as a tool call, rather than the loop treating the text as a final
-    answer and ending the cycle without a ``done`` record."""
+class TestCollectorInvalidDrawReroll:
+    """A collector acts ONLY through tool calls, so a draw carrying none is an INVALID
+    DRAW (#1839): the loop discards it and re-rolls the UNCHANGED context on the shared
+    reroll budget.  Nothing about the invalid draw enters the conversation — no stray
+    assistant turn, no nudge user-turn, no marker on the run's prompt rows — so a
+    recovered run is indistinguishable from one that never slipped."""
 
     @pytest.mark.asyncio
-    async def test_text_bail_is_nudged_and_recovers_with_done(self, test_db, mock_llm):
-        """Work, then prose ("Done. Summary: ...") → nudge → re-emits a real done().
+    async def test_prose_draw_is_discarded_and_the_redraw_proceeds(self, test_db, mock_llm):
+        """Work, then prose ("Done. Summary: ...") → the prose is thrown away and a
+        clean redraw closes the cycle with a real done().
 
-        The realistic production shape (and what the eval's ``_InjectTextBail`` forces):
-        the model does real work, THEN narrates completion as prose instead of
-        calling done().  Work-first matters — a done() after the nudge is only
-        honoured because a real tool call already ran; a bare done() with no work
-        would itself be refused by the premature-done guard."""
+        The realistic production shape: the model does real work, THEN narrates
+        completion as prose instead of calling done()."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -2558,20 +2565,22 @@ class TestCollectorTextNudge:
 
         response = await agent.run("", max_steps=max_steps)
 
-        # The model was called again after the stray text (nudged, not stopped).
+        # Exactly one reroll, on the UNCHANGED context — the prose never appended and
+        # no nudge user-turn injected.
         assert len(mock_llm.requests) == 3
-        # The nudge was injected as the last user turn before the retry.
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert "tool call" in last_user["content"].lower()
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        redraw = str(mock_llm.requests[2]["messages"])
+        assert "Done. Summary: wrote the entry." not in redraw
+        assert "you act only through tool calls" not in redraw
         # The cycle closed with a real done() record (not a lost/failed cycle).
         assert any(record.tool == "done" for record in response.tool_calls)
 
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_text_bail_can_recover_into_more_work(self, test_db, mock_llm):
-        """Mid-work narration → nudge → the model continues with a work tool, not
-        a premature done()."""
+    async def test_redraw_can_be_more_work(self, test_db, mock_llm):
+        """The redraw is a fresh draw on the same context, so it may be any legitimate
+        move — here a work tool rather than a premature done()."""
         agent, db, max_steps = _make_background_agent(test_db)
 
         def handler(request, count):
@@ -2587,7 +2596,6 @@ class TestCollectorTextNudge:
 
         response = await agent.run("", max_steps=max_steps)
 
-        # Nudged into continuing: it ran the work tool, then closed with done().
         tools_called = [record.tool for record in response.tool_calls]
         assert "search" in tools_called
         assert "done" in tools_called
@@ -2595,9 +2603,61 @@ class TestCollectorTextNudge:
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_persistent_text_bail_is_bounded_by_max_steps(self, test_db, mock_llm):
-        """A model that keeps emitting text never loops forever — the nudge is
-        bounded by max_steps and the cycle ends without a done record."""
+    async def test_empty_draw_is_the_same_invalid_draw(self, test_db, mock_llm):
+        """An EMPTY draw (no text, no tool call) is a draw with no call like any other,
+        so it takes the same reroll — the collector-flavoured empty-content nudge that
+        used to answer it retired with the rest of the family."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(request, "")
+            return mock_llm._make_tool_call_response(request, "done", {})
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        assert len(mock_llm.requests) == 3
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert "Please provide your response" not in str(mock_llm.requests[2]["messages"])
+        assert any(record.tool == "done" for record in response.tool_calls)
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_done_as_json_text_is_the_same_invalid_draw(self, test_db, mock_llm):
+        """The argless ``done()`` composed as a JSON envelope but never routed through
+        the tool channel (gpt-oss's Harmony fallback, #1569) is discarded like any other
+        call-less draw — the model's own real done() closes the cycle."""
+        agent, db, max_steps = _make_background_agent(test_db)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
+            if count == 2:
+                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
+            return mock_llm._make_tool_call_response(request, "done", {})
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("", max_steps=max_steps)
+
+        assert len(mock_llm.requests) == 3
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert '{"name": "done"' not in str(mock_llm.requests[2]["messages"])
+        done_records = [r for r in response.tool_calls if r.tool == "done"]
+        assert len(done_records) == 1
+        assert done_records[0].arguments == {}
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_persistent_call_less_draws_fail_the_run(self, test_db, mock_llm):
+        """A model that never makes a call never loops forever: the shared reroll budget
+        bounds it and the run fails honestly, with no done record and no salvaged text."""
         agent, db, max_steps = _make_background_agent(test_db, max_steps=3)
 
         mock_llm.set_response_handler(
@@ -2606,52 +2666,31 @@ class TestCollectorTextNudge:
 
         response = await agent.run("", max_steps=max_steps)
 
-        # Exactly max_steps calls — nudged each non-final step, then stopped.
-        assert len(mock_llm.requests) == 3
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert not any(record.tool == "done" for record in response.tool_calls)
 
         await agent.close()
 
-
-class TestCollectorEmptyNudge:
-    """A collector that returns EMPTY content mid-loop (no text, no tool call) is
-    retried with the collector-flavored nudge — one that demands a tool call and
-    names done() — NOT the chat 'Please provide your response.', which would invite
-    an unparseable prose reply that kills the cycle."""
-
-    @pytest.mark.asyncio
-    async def test_empty_response_is_nudged_for_a_tool_call_and_recovers(self, test_db, mock_llm):
-        """Work, then an empty response → collector nudge → re-emits a real done().
-
-        The empty-content retry happens within a single loop step (the validator
-        chain re-calls the model with the nudge appended), so a genuine tool call
-        must land on the retry for the cycle to close cleanly."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            if count == 2:
-                # Empty mid-loop: no text, no tool call.
-                return mock_llm._make_text_response(request, "")
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # The empty response triggered a retry (nudge appended), not a stop.
-        assert len(mock_llm.requests) == 3
-        # The nudge demands a tool call and names done() — NOT the chat nudge.
-        retry_messages = mock_llm.requests[2]["messages"]
-        last_user = [m for m in retry_messages if m["role"] == "user"][-1]
-        assert last_user["content"] != "Please provide your response."
-        assert "tool call" in last_user["content"].lower()
-        assert "done()" in last_user["content"]
-        # The cycle closed with a real done() record (not a lost/failed cycle).
-        assert any(record.tool == "done" for record in response.tool_calls)
-
-        await agent.close()
+    def test_the_condition_names_the_shape_where_it_can(self, test_db, mock_llm):
+        """The reroll mechanism is shared, so the LOGGED condition must stay honest: a
+        recognisable done envelope is ``DONE_JSON_BAIL``; everything else with no call
+        is ``TEXT_INSTEAD_OF_TOOL``, keyed to the STATE (no call was made) and never to
+        anything the prose happens to say."""
+        agent, _db, _max_steps = _make_background_agent(test_db)
+        assert BackgroundAgent.invalid_draw_conditions == (
+            (ConditionKey.DONE_JSON_BAIL, is_done_json_bail),
+            (ConditionKey.TEXT_INSTEAD_OF_TOOL, _any_text),
+        )
+        envelope = _text_response('{"name": "done", "arguments": {}}')
+        assert agent._unusable_output_condition(envelope) == ConditionKey.DONE_JSON_BAIL
+        for prose in ("Done. I wrote the entry.", "", '{"note": "not a done call"}'):
+            assert (
+                agent._unusable_output_condition(_text_response(prose))
+                == ConditionKey.TEXT_INSTEAD_OF_TOOL
+            ), prose
+        # A draw that IS a call is never an invalid draw.
+        assert agent._unusable_output_condition(_tool_response("search", {"query": "x"})) is None
 
 
 class TestCollectorPrematureDone:
@@ -2771,180 +2810,18 @@ class TestCollectorPrematureDone:
         await agent.close()
 
 
-class TestCollectorDoneJsonBailNudge:
-    """A collector that emits the argless ``done()`` call as a JSON text envelope
-    (gpt-oss's native Harmony-backend fallback, #1569) is REJECTED AND TAUGHT: the
-    loop appends the shape-specific ``COLLECTOR_DONE_JSON_NUDGE`` — naming what the
-    model did and the exact argless ``done()`` tool call to make — and the model
-    itself re-emits the real call.  Never repaired: fabricating a tool call the
-    model didn't make would coerce a malformed emission into a healthy one."""
+class TestChatCallShapedTextReroll:
+    """Chat's invalid case is CALL-SHAPED TEXT ONLY (#1839).  A reply that is really a
+    serialized tool call would be delivered to the user as raw machinery, so the loop
+    discards it and re-rolls the unchanged context; an ordinary prose reply is chat's
+    valid terminal state and is finalized untouched."""
 
     @pytest.mark.asyncio
-    async def test_done_envelope_json_bail_gets_teaching_nudge_and_recovers(
-        self, test_db, mock_llm
-    ):
-        """Work (search), then the argless done envelope ``{"name": "done",
-        "arguments": {}}`` as plain text → the shape-specific teaching nudge (not
-        the generic one) → the MODEL makes the real done() call and the cycle
-        closes."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            if count == 2:
-                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # One teaching round-trip: the model was re-called after the JSON bail.
-        assert len(mock_llm.requests) == 3
-        # The nudge is the SHAPE-SPECIFIC teaching, not the generic text-bail nudge:
-        # it names what happened and shows the exact argless call to make.
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        assert "done` call as plain text" in last_user["content"]
-        assert "done()" in last_user["content"]
-        # The cycle closed via the MODEL's own real argless done() call.
-        done_records = [r for r in response.tool_calls if r.tool == "done"]
-        assert len(done_records) == 1
-        assert done_records[0].arguments == {}
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_full_envelope_json_bail_gets_teaching_nudge(self, test_db, mock_llm):
-        """The ``{"name": "done", "arguments": {…}}`` envelope variant (with a
-        tolerated ``reasoning`` inside) gets the same shape-specific teaching and
-        the model recovers with the real call."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            if count == 2:
-                return mock_llm._make_text_response(
-                    request,
-                    '{"name": "done", "arguments": {"reasoning": "all handled", '
-                    '"success": true, "summary": "closed up"}}',
-                )
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        assert len(mock_llm.requests) == 3
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        assert any(record.tool == "done" for record in response.tool_calls)
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_non_done_json_falls_through_to_generic_nudge(self, test_db, mock_llm):
-        """A JSON object that ISN'T the done schema gets the GENERIC text-bail
-        nudge, never the done-specific teaching (which would mis-teach)."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            if count == 2:
-                return mock_llm._make_text_response(request, '{"note": "not a done call"}')
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        assert len(mock_llm.requests) == 3
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.COLLECTOR_TOOL_CALL_NUDGE
-        assert any(record.tool == "done" for record in response.tool_calls)
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_bare_args_fall_through_to_generic_nudge(self, test_db, mock_llm):
-        """Bare ``{success, summary}`` args (no ``done`` envelope) are NOT a done
-        bail now that done is argless (#1569) — they fall through to the GENERIC
-        text-bail nudge, never the done-specific teaching (which would mis-teach)."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            if count == 2:
-                return mock_llm._make_text_response(
-                    request,
-                    '{"success": true, "summary": "wrote it"}',
-                )
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        await agent.run("", max_steps=max_steps)
-
-        assert len(mock_llm.requests) == 3
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.COLLECTOR_TOOL_CALL_NUDGE
-
-        await agent.close()
-
-    @pytest.mark.asyncio
-    async def test_first_move_json_done_recovery_is_still_premature_guarded(
-        self, test_db, mock_llm
-    ):
-        """A first-move JSON bail is taught like any other; if the model's recovery
-        move is a bare done() with no prior work, the premature-done guard still
-        refuses it — the teaching nudge opens no bypass around the work requirement."""
-        agent, db, max_steps = _make_background_agent(test_db)
-
-        def handler(request, count):
-            if count == 1:
-                return mock_llm._make_text_response(request, '{"name": "done", "arguments": {}}')
-            if count == 2:
-                # The taught recovery — but as a first-move done(), still premature.
-                return mock_llm._make_tool_call_response(request, "done", {})
-            if count == 3:
-                return mock_llm._make_tool_call_response(request, "search", {"query": "inputs"})
-            return mock_llm._make_tool_call_response(request, "done", {})
-
-        mock_llm.set_response_handler(handler)
-
-        response = await agent.run("", max_steps=max_steps)
-
-        # Bail taught (call 2), recovery done() premature-refused (call 3 sees the
-        # error tool result), real work + legitimate close follow.
-        assert len(mock_llm.requests) == 4
-        last_user = [m for m in mock_llm.requests[1]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        tool_results = [
-            m for m in mock_llm.requests[2]["messages"] if m.get("role") == MessageRole.TOOL
-        ]
-        assert tool_results, "the first-move done() should be refused via a tool result"
-        assert any(record.tool == "search" for record in response.tool_calls)
-
-        await agent.close()
-
-
-class TestChatCallAsTextNudge:
-    """The chat sibling of the collector done-JSON bail: a chat reply that is really
-    a tool call emitted as a JSON text object (gpt-oss's Harmony call-as-text
-    fallback) must NOT be finalized as the user's reply.  ``CallAsTextValidator``
-    (on the chat run-shape chain) catches it on the text branch and nudges the model
-    to re-emit a real call or reply in plain words."""
-
-    @pytest.mark.asyncio
-    async def test_call_as_text_gets_nudged_and_recovers(self, test_db, mock_llm):
-        """Real search, then a browse call emitted as JSON *text* → the teaching nudge
-        (not finalized as the reply) → the model replies in prose."""
+    async def test_call_as_text_is_discarded_and_rerolled(self, test_db, mock_llm):
+        """Real search, then a browse call emitted as JSON *text* → discarded, redrawn
+        on the unchanged context, and the model's prose answer stands."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent.run_shape_validators = [CallAsTextValidator()]
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
         def handler(request, count):
             if count == 1:
@@ -2961,20 +2838,38 @@ class TestChatCallAsTextNudge:
 
         response = await agent.run("what's the deepest lake?", max_steps=max_steps)
 
-        # The JSON blob never became the reply — the model was re-called and answered.
+        # The JSON blob never became the reply and never entered the context.
         assert response.answer == "I couldn't find that app anywhere."
         assert len(mock_llm.requests) == 3
-        last_user = [m for m in mock_llm.requests[2]["messages"] if m["role"] == "user"][-1]
-        assert last_user["content"] == Prompt.CHAT_CALL_AS_TEXT_NUDGE
+        assert mock_llm.requests[2]["messages"] == mock_llm.requests[1]["messages"]
+        assert '"reasoning": "read the page"' not in str(mock_llm.requests[2]["messages"])
 
         await agent.close()
 
     @pytest.mark.asyncio
-    async def test_normal_prose_reply_is_not_nudged(self, test_db, mock_llm):
-        """A genuine prose reply (not a serialized call) is finalized as-is — the
-        guard must not fire on real answers."""
+    async def test_persistent_call_as_text_fails_the_turn(self, test_db, mock_llm):
+        """Budget exhausted → the turn fails honestly rather than delivering the blob."""
         agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
-        agent.run_shape_validators = [CallAsTextValidator()]
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+
+        mock_llm.set_response_handler(
+            lambda request, count: mock_llm._make_text_response(
+                request, '{"name": "browse", "arguments": {"queries": ["x"]}}'
+            )
+        )
+
+        response = await agent.run("what's the deepest lake?", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_normal_prose_reply_is_valid(self, test_db, mock_llm):
+        """A genuine prose reply is finalized as-is — chat's plain conversational reply
+        stays a valid terminal state, so the guard must not fire on real answers."""
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
 
         def handler(request, count):
             if count == 1:
@@ -2987,9 +2882,40 @@ class TestChatCallAsTextNudge:
 
         response = await agent.run("what's the deepest lake?", max_steps=max_steps)
         assert response.answer == "Lake Baikal is the deepest lake!"
-        assert len(mock_llm.requests) == 2  # no extra nudge round-trip
+        assert len(mock_llm.requests) == 2  # no reroll
 
         await agent.close()
+
+    def test_the_two_chat_shapes_and_their_edges(self, test_db, mock_llm):
+        """Both Harmony fallback shapes are invalid draws; a genuine reply is not.  The
+        full envelope reads as ``CALL_AS_TEXT`` and the mangled remainder as
+        ``CALL_FRAGMENT_REPLY``, so the discarded draw is logged honestly."""
+        agent, _db, _max_steps = _make_agent(test_db, mock_llm)
+        agent.invalid_draw_conditions = ChatAgent.invalid_draw_conditions
+
+        assert is_call_as_text_bail('{"queries": ["x"], "reasoning": "y"}')
+        assert is_call_as_text_bail('{"name": "browse", "arguments": {"queries": ["x"]}}')
+        # A lone JSON object with no call markers, an envelope with a non-string name
+        # or non-dict arguments, non-JSON prose, and prose that merely mentions JSON
+        # are all NOT call-as-text bails (a genuine reply must pass through).
+        for prose in (
+            '{"note": "just data"}',  # no reasoning / not an envelope
+            '{"name": 5, "arguments": {}}',  # non-string name
+            '{"name": "browse", "arguments": "oops"}',  # non-dict arguments
+            'The config looks like {"queries": [...]} roughly.',  # not a lone object
+            "Lake Baikal is the deepest lake!",  # normal prose
+            "",  # empty
+        ):
+            assert not is_call_as_text_bail(prose), prose
+
+        envelope = _text_response('{"name": "browse", "arguments": {"queries": ["x"]}}')
+        assert agent._unusable_output_condition(envelope) == ConditionKey.CALL_AS_TEXT
+        fragment = _text_response('{"memory": "rip? wait we need"}')
+        assert agent._unusable_output_condition(fragment) == ConditionKey.CALL_FRAGMENT_REPLY
+        # An ordinary reply and an empty one are both VALID for chat — the empty one is
+        # the response chain's business (a retry with a nudge), never a discarded draw.
+        assert agent._unusable_output_condition(_text_response("Lake Baikal!")) is None
+        assert agent._unusable_output_condition(_text_response("")) is None
 
 
 def _text_response(content: str) -> LlmResponse:
@@ -3053,14 +2979,14 @@ class TestResponseValidators:
         assert isinstance(
             EmptyResponseValidator().check(_text_response("a real answer"), _ctx()), Proceed
         )
-        # The mid-loop nudge is composable per-agent: the collector chain swaps in a
-        # tool-call-demanding nudge (chat "provide your response" would invite prose).
-        collector = EmptyResponseValidator(continue_nudge="make a tool call")
-        collector_mid = collector.check(empty, _ctx(tools_available=True))
-        assert isinstance(collector_mid, Retry) and collector_mid.nudge == "make a tool call"
+        # The mid-loop nudge stays composable per-agent, even though only chat/base
+        # reach the chain now (a collector's empty draw is rerolled upstream, #1839).
+        composed = EmptyResponseValidator(continue_nudge="say more")
+        composed_mid = composed.check(empty, _ctx(tools_available=True))
+        assert isinstance(composed_mid, Retry) and composed_mid.nudge == "say more"
         # Final-step behaviour is unchanged by the swap (still the strong-nudge sentinel).
-        collector_final = collector.check(empty, _ctx(tools_available=False))
-        assert isinstance(collector_final, Retry) and collector_final.nudge == ""
+        composed_final = composed.check(empty, _ctx(tools_available=False))
+        assert isinstance(composed_final, Retry) and composed_final.nudge == ""
 
     def test_refusal_validator(self):
         resp = _text_response("I'm sorry, but I can't help with that.")
@@ -3092,61 +3018,6 @@ class TestResponseValidators:
             HallucinatedToolCallRepair().check(resp, _ctx(tools_available=True)), Proceed
         )
 
-    def test_text_instead_of_tool_validator(self):
-        prose = _text_response("Done. Wrote the entry.")
-        outcome = TextInsteadOfToolValidator().check(prose, _ctx(is_final_step=False))
-        assert isinstance(outcome, NudgeContinue)
-        assert "tool call" in outcome.message.lower()
-        # Final step → no nudge (no retry room).
-        assert isinstance(
-            TextInsteadOfToolValidator().check(prose, _ctx(is_final_step=True)), Proceed
-        )
-        # A tool call → not a text bail.
-        assert isinstance(
-            TextInsteadOfToolValidator().check(_tool_response("search", {}), _ctx()), Proceed
-        )
-
-    def test_done_json_bail_validator(self):
-        # The argless done envelope {"name": "done", "arguments": {}} → the
-        # shape-specific teaching nudge (a NudgeContinue, so the model itself must
-        # re-emit the real call — never a fabricated repair).
-        envelope = _text_response('{"name": "done", "arguments": {}}')
-        taught = DoneJsonBailValidator().check(envelope, _ctx())
-        assert isinstance(taught, NudgeContinue)
-        assert taught.message == Prompt.COLLECTOR_DONE_JSON_NUDGE
-        assert "done` call as plain text" in taught.message
-        assert "done()" in taught.message
-        # A hallucinated argument inside the envelope still reads as a done bail
-        # (done is argless; the arguments are ignored).
-        assert isinstance(
-            DoneJsonBailValidator().check(
-                _text_response('{"name": "done", "arguments": {"success": false}}'), _ctx()
-            ),
-            NudgeContinue,
-        )
-        # Bare {success, summary} (no envelope), wrong name, non-dict arguments,
-        # non-done JSON, and prose all fall through (Proceed → the generic text-bail
-        # guard next in the chain owns them; done is argless, so there is no bare
-        # payload to detect).
-        for untouched in (
-            '{"success": true, "summary": "wrote it"}',  # bare args, no name
-            '{"name": "search", "arguments": {}}',  # wrong name
-            '{"name": "done", "arguments": "oops"}',  # arguments not a dict
-            '{"note": "not a done"}',  # not a done envelope
-            "Done. I wrote the entry.",  # plain prose
-        ):
-            assert isinstance(
-                DoneJsonBailValidator().check(_text_response(untouched), _ctx()), Proceed
-            )
-        # A response that already has a tool call is left alone; final step → no
-        # retry room, honoured as-is (like the generic text-bail guard).
-        assert isinstance(
-            DoneJsonBailValidator().check(_tool_response("search", {}), _ctx()), Proceed
-        )
-        assert isinstance(
-            DoneJsonBailValidator().check(envelope, _ctx(is_final_step=True)), Proceed
-        )
-
     def test_is_done_json_bail(self):
         # Detects only the argless done envelope; anything else is not a done bail.
         assert is_done_json_bail('{"name": "done", "arguments": {}}') is True
@@ -3157,44 +3028,6 @@ class TestResponseValidators:
         assert is_done_json_bail('{"success": true, "summary": "s"}') is False
         assert is_done_json_bail('{"name": "search", "arguments": {}}') is False
         assert is_done_json_bail('{"name": "done", "arguments": "oops"}') is False
-
-    def test_call_as_text_validator(self):
-        # A bare-args call (identified by the injected reasoning field) → teaching
-        # nudge (NudgeContinue, so the model re-emits the real call — never a repair).
-        bare = _text_response('{"queries": ["x"], "reasoning": "look it up"}')
-        taught = CallAsTextValidator().check(bare, _ctx())
-        assert isinstance(taught, NudgeContinue)
-        assert taught.message == Prompt.CHAT_CALL_AS_TEXT_NUDGE
-        # Full envelope → same teaching.
-        envelope = _text_response('{"name": "browse", "arguments": {"queries": ["x"]}}')
-        assert isinstance(CallAsTextValidator().check(envelope, _ctx()), NudgeContinue)
-        # A real prose reply, a tool-call response, and the final step all Proceed —
-        # the guard must never fire on a genuine answer or steal the last step.
-        assert isinstance(
-            CallAsTextValidator().check(_text_response("Lake Baikal is the deepest!"), _ctx()),
-            Proceed,
-        )
-        assert isinstance(
-            CallAsTextValidator().check(_tool_response("search", {}), _ctx()), Proceed
-        )
-        assert isinstance(CallAsTextValidator().check(bare, _ctx(is_final_step=True)), Proceed)
-
-    def test_is_call_as_text_bail(self):
-        # Both Harmony fallback shapes are bails.
-        assert is_call_as_text_bail('{"queries": ["x"], "reasoning": "y"}')
-        assert is_call_as_text_bail('{"name": "browse", "arguments": {"queries": ["x"]}}')
-        # A lone JSON object with no call markers, an envelope with a non-string name
-        # or non-dict arguments, non-JSON prose, and prose that merely mentions JSON
-        # are all NOT bails (a genuine reply must pass through).
-        for prose in (
-            '{"note": "just data"}',  # no reasoning / not an envelope
-            '{"name": 5, "arguments": {}}',  # non-string name
-            '{"name": "browse", "arguments": "oops"}',  # non-dict arguments
-            'The config looks like {"queries": [...]} roughly.',  # not a lone object
-            "Lake Baikal is the deepest lake!",  # normal prose
-            "",  # empty
-        ):
-            assert not is_call_as_text_bail(prose), prose
 
     def test_premature_done_validator(self):
         done = _tool_response("done", {})
@@ -3211,9 +3044,9 @@ class TestResponseValidators:
         assert isinstance(PrematureDoneValidator().check(done, _ctx(is_final_step=True)), Proceed)
 
     def test_chain_composition_is_one_list_entry_per_guard(self):
-        """The base chain runs the response-shape guards; the collector chain adds
-        the three collector-only run-shape guards.  A new guard = one more list
-        entry."""
+        """The response-shape chain is chat's and the base's; each agent shape declares
+        its own run-shape guards and its own invalid-draw family.  A new guard = one
+        more list entry, never a new branch in the loop."""
         assert Agent.response_validators[0].__class__ is HallucinatedToolCallRepair
         chat_conditions = {
             XmlTagValidator,
@@ -3223,39 +3056,41 @@ class TestResponseValidators:
             HallucinatedToolCallRepair,
         }
         assert {v.__class__ for v in Agent.response_validators} == chat_conditions
-        # The collector composes the SAME response-shape guards, but its empty
-        # validator carries the collector nudge (a tool-call demand, not the chat
-        # "provide your response.").
-        assert {v.__class__ for v in BackgroundAgent.response_validators} == chat_conditions
-        collector_empty = next(
-            v for v in BackgroundAgent.response_validators if isinstance(v, EmptyResponseValidator)
-        )
-        collector_nudge = collector_empty.check(
-            _text_response("\n\n---"), _ctx(tools_available=True)
-        ).nudge
-        assert collector_nudge != "Please provide your response."
-        assert "tool call" in collector_nudge.lower() and "done()" in collector_nudge
-        # Collector run-shape chain = the three collector-only guards, with the
-        # done-JSON teaching guard ordered BEFORE the generic text-bail guard so
-        # the shape-specific teaching outranks the generic nudge.
-        assert {v.__class__ for v in BackgroundAgent.run_shape_validators} == {
-            PrematureDoneValidator,
-            DoneJsonBailValidator,
-            TextInsteadOfToolValidator,
-        }
-        run_shape_classes = [v.__class__ for v in BackgroundAgent.run_shape_validators]
-        assert run_shape_classes.index(DoneJsonBailValidator) < run_shape_classes.index(
-            TextInsteadOfToolValidator
-        )
-        # Base agent has no run-shape guards (no shape forbids an early terminator).
-        assert Agent.run_shape_validators == []
-        # Chat composes its own run-shape guards: the run-end skill-narration nudge
-        # first (so narration wins), then the call-as-text bail catch (chat replies
-        # inline, so a call-shaped text turn would reach the user raw).
-        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [
-            SkillNarrationValidator,
-            CallAsTextValidator,
+        # The collector composes NO chain of its own (#1839): every call-less draw of
+        # its shape is discarded upstream, so there is nothing left for a response-shape
+        # guard to say and the collector-flavoured empty nudge retired with it.
+        assert "response_validators" not in vars(BackgroundAgent)
+        # Collector run-shape chain = the one guard on a COHERENT call, which survives
+        # the invalid-draw rejection because the model acted — just too early.
+        assert [v.__class__ for v in BackgroundAgent.run_shape_validators] == [
+            PrematureDoneValidator
         ]
+        # Base agent has no run-shape guards (no shape forbids an early terminator) and
+        # declares no invalid draws (any text is a legitimate answer there).
+        assert Agent.run_shape_validators == []
+        assert Agent.invalid_draw_conditions == ()
+        # Chat's run-shape chain is the run-end skill-narration nudge; its invalid draws
+        # are call-shaped text only, so a plain conversational reply stays valid.
+        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [SkillNarrationValidator]
+        assert [condition for condition, _ in ChatAgent.invalid_draw_conditions] == [
+            ConditionKey.CALL_AS_TEXT,
+            ConditionKey.CALL_FRAGMENT_REPLY,
+        ]
+        assert [condition for condition, _ in BackgroundAgent.invalid_draw_conditions] == [
+            ConditionKey.DONE_JSON_BAIL,
+            ConditionKey.TEXT_INSTEAD_OF_TOOL,
+        ]
+        # The family carries NO nudge any more (#1839) — an invalid draw is rejected,
+        # not taught — so the constants that used to be appended are gone with the
+        # validators that appended them.
+        for retired in (
+            "TOOL_FORMAT_NUDGE",
+            "COLLECTOR_TOOL_CALL_NUDGE",
+            "COLLECTOR_DONE_JSON_NUDGE",
+            "CHAT_CALL_AS_TEXT_NUDGE",
+            "COLLECTOR_CONTINUE_NUDGE",
+        ):
+            assert not hasattr(Prompt, retired), retired
 
     def test_run_validators_threads_repair_then_short_circuits(self):
         """A Repair threads its transformed response into the rest of the chain;
