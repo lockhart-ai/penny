@@ -1309,6 +1309,91 @@ def test_a_digit_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
     assert graded["asks for nothing else"] == (True, None)
 
 
+def test_a_letter_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
+    """Lettering is the other natural way to write an ordinal pair, and it cost two
+    correct draws exactly what digits once did.
+
+    The motivating sample drew ``url_a`` / ``url_b`` — two distinct, generic, scalar
+    names satisfying the prompt's tell-them-apart rule — and BOTH ordinal family checks
+    read "no parameter answers it" while the count and generic checks passed.  Correct
+    behaviour, scored wrong.  A trailing single letter is now the position it holds in
+    the alphabet, so the pair lands on the families that already carry ``1``/``2``: no
+    family gained a token, so nothing that missed before can start matching now."""
+    families = (
+        ParameterFamily("first source", ("first", "one", "1", "primary")),
+        ParameterFamily("second source", ("second", "two", "2", "secondary")),
+    )
+    signature = SkillSignature(
+        name="headline-collector",
+        description="collect the top headline from each front page it is pointed at",
+        parameters=(
+            FramedParameter(name="url_a", description="the first front page to read"),
+            FramedParameter(name="url_b", description="the second front page to read"),
+        ),
+    )
+
+    graded = _by_label(_score_framing(signature, families, ("citydesk", "harborpost")))
+    assert graded["asks for the first source"] == (True, None)
+    assert graded["asks for the second source"] == (True, None)
+    assert graded["asks for nothing else"] == (True, None)
+    assert graded["the parameters are generic"] == (True, None)
+
+    # Everything that classified before still does — the digit pair, the spelled ordinal,
+    # and the underscored digit, each landing on the same family as always.
+    for first, second in (("site1", "site2"), ("first_site", "second_site"), ("url_1", "url_2")):
+        unchanged = signature.model_copy(
+            update={
+                "parameters": (
+                    FramedParameter(name=first, description="the first front page to read"),
+                    FramedParameter(name=second, description="the second front page to read"),
+                )
+            }
+        )
+        still = _by_label(_score_framing(unchanged, families, ()))
+        assert still["asks for the first source"] == (True, None), first
+        assert still["asks for the second source"] == (True, None), second
+
+
+def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
+    """The two guard directions of the letter rule (#1830).
+
+    A letter is an ordinal only where somebody carved it off an identifier — so a
+    DESCRIPTION is untouched (it is prose, where ``a`` is an article; reading it as an
+    ordinal would file most descriptions ever written under the first family), and a
+    name that is ONLY a letter is left alone (a suffix needs something to be suffixed
+    to).  And a case expecting ONE family counts a ``site_a`` once, not twice: the
+    ordinal rides alongside the name's own tokens, it does not replace them."""
+    ordinal = ParameterFamily("first source", ("first", "one", "1", "primary"))
+    page = ParameterFamily("url", ("url", "page", "site"), name_only=True)
+    framing = {"name": "headline-collector", "description": "collect a page's top headline"}
+
+    # A description full of articles answers the ordinal family through neither pass.
+    prose = SkillSignature(
+        **framing,
+        parameters=(FramedParameter(name="whats_on", description="a page to read a headline off"),),
+    )
+    assert _by_label(_score_framing(prose, (ordinal,), ()))["asks for the first source"] == (
+        False,
+        "no parameter answers it",
+    )
+
+    # A name that is only a letter is a name nobody enumerated, not the first of anything.
+    bare = SkillSignature(**framing, parameters=(FramedParameter(name="a", description="a page"),))
+    assert _by_label(_score_framing(bare, (ordinal,), ()))["asks for the first source"] == (
+        False,
+        "no parameter answers it",
+    )
+
+    # One expected family, one letter-suffixed name: answered once.
+    single = SkillSignature(
+        **framing,
+        parameters=(FramedParameter(name="site_a", description="the front page to read"),),
+    )
+    graded = _by_label(_score_framing(single, (page,), ()))
+    assert graded["asks for the url"] == (True, None)
+    assert graded["asks for nothing else"] == (True, None)
+
+
 def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
     """The generic check reaches the PARAMETER lines too (#1830) — the enforcement half
     of the parameter-line contract.
