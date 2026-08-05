@@ -1246,11 +1246,22 @@ def test_framing_system_prompt_whole_render():
     scalable... they'd need to set up per site?"*.  The rule that two things are two
     parameters was already there and understood — what was missing was PERMISSION that
     several parameters is a normal shape for a routine, not a design smell to be talked
-    out of.  So the bullet now grants it outright ("it's okay to have multiple
-    individual parameters when the user provided multiple individual pieces of
-    information") before restating the naming half.  A model reasoning its way to a
+    out of.  So the bullet grants it outright ("it's okay to have several when they
+    provided several") before restating the naming half.  A model reasoning its way to a
     worse answer out of unstated architectural anxiety is a presentation defect like any
     other.
+
+    Round 8 (code-owner ruling) changed the step's ROOT.  Every earlier version asked the
+    minimal-information question hypothetically — *picture the user coming back; what
+    would they have to give?* — which is a question about an imagined future occasion, and
+    an imagined occasion admits imagined needs: the measured class was parameters INVENTED
+    whole (a `search_term` / `search_keyword` promoted for a routine whose ask named a page
+    and no search).  Nothing in the wording forbade it, because the question never said
+    where a parameter may come FROM.  So the step is now **enumerate, then filter**: list
+    the pieces the user actually said — in reasoning, before deciding anything — and keep
+    only those they would have to say again.  A parameter can only be one of those pieces,
+    which makes an invention structurally unavailable rather than merely discouraged.  The
+    filter clauses are unchanged; what changed is that they now filter a set that exists.
 
     Two deliberate absences the code owner ruled on directly.  There is **no worked
     example of a filled line** in this version — its return, if the value-echo class
@@ -1273,22 +1284,24 @@ def test_framing_system_prompt_whole_render():
         "for the KIND of task — never the specific instance — and one line stating what "
         "the routine is for.\n"
         "\n"
-        "3. Decide the PARAMETERS: the minimal information the user would have to give to "
-        "set this routine up again on a new occasion.\n"
-        "   - Anything the name and description already carry is not a parameter — asking "
+        "3. Decide the PARAMETERS, starting from what the user actually provided. First, "
+        "in your reasoning, list the pieces of information the user gave you — the things "
+        "they said, not things they might have said. A parameter can only be one of these "
+        "pieces; never something they didn't provide. Then keep only the pieces they would "
+        "have to provide again to run this routine on a new occasion:\n"
+        "   - A piece the name and description already carry is not a parameter — asking "
         "for it would be asking the user what they came to you for.\n"
         "   - Where results are kept, how often it runs, and whether to notify are never "
         "parameters — those are settled when the routine is set running.\n"
         "   - There is always at least one parameter.\n"
         "   Each parameter is one line: PARAMETER <name> — <description>\n"
-        "   - name: what the user provided and how the routine uses it — if they pointed "
-        "you at a website, 'url'; if they named a topic, 'topic'. Generic snake_case, "
-        "never the particular site or thing's own name.\n"
+        "   - name: the piece the user provided and how the routine uses it — if they "
+        "pointed you at a website, 'url'; if they named a topic, 'topic'. Generic "
+        "snake_case, never the particular site or thing's own name.\n"
         "   - A parameter holds ONE value, of the same kind the user gave it — a url stays "
-        "a url, never a city pulled out of one, and never a list. Create one parameter for "
-        "each unique piece of information the user provided — it's okay to have multiple "
-        "individual parameters when the user provided multiple individual pieces of "
-        "information. Two of the same kind get names that tell them apart: 'first_plot', "
+        "a url, never a city pulled out of one, and never a list. One parameter for each "
+        "piece they provided that survives; it's okay to have several when they provided "
+        "several. Two of the same kind get names that tell them apart: 'first_plot', "
         "'second_plot'.\n"
         "   - description: one line saying what to supply. Do not include examples.\n"
         "\n"
