@@ -530,7 +530,7 @@ def _system(request: dict) -> str:
 
 def _draws(model: MockLlmClient, system_prompt: str) -> int:
     """How many times ONE run-end customer drew.  Counted by its system prompt because
-    the two share a client: "the draw plus exactly one reroll" is a claim about one
+    the two share a client: "this draw took N of the budget" is a claim about one
     customer, and a total would move whenever the other one's luck changed."""
     return sum(1 for request in model.requests if _system(request) == system_prompt)
 
@@ -666,7 +666,7 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     (#1828): every spot keeps its arg-derived required parameter and the skill takes the
     deterministic slug of the triggering message.
 
-    A draw that labelled NOTHING is a contract violation like any other — one reroll of
+    A draw that labelled NOTHING is a contract violation like any other — re-drawn on
     the unchanged context, then the honest fallback — while a draw that labelled SOME
     spots is best-effort and keeps whatever it landed."""
     model = _run_end_model(labels="I think this is a price-watching routine of some kind.")
@@ -678,8 +678,8 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
     assert result.skill.description == _UTTERANCE
     assert (
-        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
-    )  # the draw + exactly one reroll, then the fallback
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    )  # the whole reroll budget, then the fallback
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
 
 
@@ -783,7 +783,9 @@ async def test_a_failed_framing_falls_back_to_the_slug_with_nothing_to_bind(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert _draws(model, SKILL_FRAME_SYSTEM_PROMPT) == 2  # the draw + one reroll
+    assert (
+        _draws(model, SKILL_FRAME_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    )  # the whole reroll budget
     assert result.skill.name == "read-the-aurora-deck-2-listing"
     assert result.skill.description == _UTTERANCE
     assert parameters_from_json(result.skill.parameters) == []
@@ -798,7 +800,7 @@ async def test_a_failed_framing_falls_back_to_the_slug_with_nothing_to_bind(db):
 async def test_a_draw_that_misses_any_spot_fails_whole(db):
     """COVERAGE is checked, not tolerated (#1828, the code owner's ruling): an accepted
     draw may never contain an invalid line, and the caller KNOWS the offered set, so a
-    draw that leaves any spot unnamed is a contract violation — one reroll on the
+    draw that leaves any spot unnamed is a contract violation — re-drawn on the
     unchanged context, then an honest WHOLE-draw failure.
 
     The observed failure this closes: the tag itself decays mid-draw (``LABLE``),
@@ -812,8 +814,8 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
 
     assert isinstance(result, SkillExtracted)
     assert (
-        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
-    )  # the draw + exactly one reroll, then the fallback
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    )  # the whole reroll budget, then the fallback
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("queries", None, True),
@@ -835,7 +837,7 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     later = await _extractor(db, model=decayed).extract("run-B")
 
     assert isinstance(later, SkillExtracted)
-    assert _draws(decayed, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    assert _draws(decayed, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert [p.name for p in parameters_from_json(later.skill.parameters)] == ["queries", "extract"]
 
 
@@ -844,7 +846,7 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     """A draw that names one spot TWICE contradicts itself (#1828 — the contract asks
     for exactly one line each), and there is no line to prefer: taking either would let
     a stray trailing line quietly rename a spot.  So it is the same contract violation
-    as a missing line — one reroll, then the whole draw fails and every spot keeps its
+    as a missing line — the whole budget, then the draw fails and every spot keeps its
     arg-derived name."""
     model = _run_end_model(
         labels="LABEL queries: listing_page — the page this routine reads\n"
@@ -857,14 +859,14 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     result = await _extractor(db, model=model).extract("run-A")
 
     assert isinstance(result, SkillExtracted)
-    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
+    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
 
 
 @pytest.mark.asyncio
 async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     """A line naming something the content never listed is a spot INVENTED rather than
-    named, so it fails the same coverage constraint (#1828) — one reroll, then the whole
+    named, so it fails the same coverage constraint (#1828) — the whole budget, then the
     draw fails.
 
     The prompt asks for one line per listed placeholder and none for anything else, so
@@ -883,8 +885,8 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
 
     assert isinstance(result, SkillExtracted)
     assert (
-        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
-    )  # the draw + one reroll, then the honest failure
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    )  # the whole reroll budget, then the honest failure
     assert [p.name for p in parameters_from_json(result.skill.parameters)] == ["queries", "extract"]
     rendered = render_skill(steps_from_json(result.skill.steps))
     assert "invented_spot" not in rendered and "a spot nobody offered" not in rendered
@@ -980,7 +982,7 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     either.
 
     Under the coverage rule (#1828) each of those leaves its spot uncovered, so the DRAW
-    fails rather than the spot quietly going unnamed — one reroll, then every spot keeps
+    fails rather than the spot quietly going unnamed — the whole budget, then every spot keeps
     its arg-derived name, and the attachment-marked write target falls back to the fixed
     wording (the attachment fills it, and no user ever could)."""
     model = _run_end_model(
@@ -994,8 +996,8 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
 
     assert isinstance(result, SkillExtracted)
     assert (
-        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 2
-    )  # the draw + one reroll, then the honest failure
+        _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+    )  # the whole reroll budget, then the honest failure
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("queries", None, True),
@@ -1013,7 +1015,8 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
 # The framer draws over a document, not an offered set, so the constraint it is accepted
 # against is entirely about the draw itself: it must mint at least one well-formed,
 # distinctly-named parameter and carry no broken line.  Each violation is the same
-# answer — one reroll of the unchanged context, then an honest WHOLE-draw failure — and
+# answer — re-drawn on the unchanged context for the whole budget, then an honest
+# WHOLE-draw failure — and
 # each is pinned WITH its reroll count, because "no partial salvage" is a claim about
 # how many times the model was asked, not only about what came back.
 
@@ -1062,14 +1065,14 @@ async def test_a_draw_that_asks_for_nothing_fails_whole():
     That dead end has been reached from the other side already — two runs produced
     `watch-a-price` with every leaf placeholdered, so not even the page could be re-bound.
     A signature with no parameters arrives at the same place by a new route, so the floor
-    is structural: one reroll of the unchanged context, then an honest refusal rather than
-    a routine nobody can point anywhere."""
+    is structural: the draw is discarded and re-drawn for the whole budget, then an honest
+    refusal rather than a routine nobody can point anywhere."""
     signature, draws = await _framed(
         "NAME: aurora-price-watcher\nDESCRIPTION: keep the aurora deck 2 price up to date"
     )
 
     assert signature is None
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1090,7 +1093,7 @@ async def test_a_malformed_parameter_line_fails_the_whole_draw():
     )
 
     assert swallowed is None
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
     undescribed, draws = await _framed(
         "NAME: listing-price-watcher\n"
@@ -1100,7 +1103,7 @@ async def test_a_malformed_parameter_line_fails_the_whole_draw():
     )
 
     assert undescribed is None, "a parameter nobody can be told what to supply is not an interface"
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1108,7 +1111,8 @@ async def test_a_parameter_named_twice_fails_the_whole_draw():
     """A parameter's name is its binding key, so two lines under one key would mean one
     of them silently disappearing at instantiation — the caller cannot prefer either, and
     taking the last would let a stray trailing line quietly redefine the interface.  The
-    same contract violation as a broken line: one reroll, then the whole draw fails.
+    same contract violation as a broken line: re-drawn for the whole budget, then the draw
+    fails.
 
     Names are compared HARDENED, because that is what they become: `Listing URL` and
     `listing_url` are one key, not two."""
@@ -1120,7 +1124,7 @@ async def test_a_parameter_named_twice_fails_the_whole_draw():
     )
 
     assert signature is None
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1135,14 +1139,14 @@ async def test_a_signature_missing_its_name_or_description_fails_the_draw():
     )
 
     assert unnamed is None
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
     undescribed, draws = await _framed(
         "NAME: listing-price-watcher\nPARAMETER listing_url — the listing whose price to read"
     )
 
     assert undescribed is None
-    assert draws == 2
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 # ── #1783/#1828: where a routine writes is decided by what it is applied to ────

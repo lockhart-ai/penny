@@ -8,7 +8,7 @@ out-edges at all from apply) and pure-function contracts (fail → stay in
 classifier itself — micro-context customer #3 — is pinned by whole-render
 literals of everything the model sees (system prompt, the rendered slice, the
 per-edge state meanings) and by the draw mechanics: membership-validated tag
-parse, one reroll on a contract violation, poison discard-and-reroll, honest
+parse, discard-and-reroll on a contract violation, poison discard-and-reroll, honest
 enumerated failures.
 
 The persistence half (``ConversationMachine``) is pinned on what a machine must
@@ -405,26 +405,28 @@ async def test_classify_decides_with_attribution_and_exact_model_input():
 @pytest.mark.asyncio
 async def test_classify_out_of_union_draw_is_rerolled_then_stays():
     """A drawn state OUTSIDE the offered union is a contract violation exactly
-    like an untagged draw: one reroll of the unchanged context, then an honest
-    INVALID the machine holds its state on — apply is WITHHELD from a
-    candidate-less idle snapshot, so a flaky draw can never conjure an apply
-    against an empty registry."""
+    like an untagged draw: discarded and re-drawn on the unchanged context for the
+    WHOLE budget — the same patience poison gets, since membership is DETECTED
+    against the offered union rather than judged — then an honest INVALID the
+    machine holds its state on.  Apply is WITHHELD from a candidate-less idle
+    snapshot, so a flaky draw can never conjure an apply against an empty
+    registry."""
     model = _responds("STATE: apply")
     decision = await _classifier(model).classify(_IDLE_SNAPSHOT, _ASK)
     assert decision.outcome == StateDrawOutcome.INVALID
     assert decision.state is None
-    assert len(model.requests) == 2  # the draw + exactly one reroll
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert next_state(ConversationState.IDLE, decision) == ConversationState.IDLE
 
 
 @pytest.mark.asyncio
 async def test_classify_untagged_draw_is_rerolled_then_stays():
-    """Untagged (but clean) output takes the same path: one reroll, then
+    """Untagged (but clean) output takes the same path: the whole budget, then
     INVALID — prose is never promoted to a transition."""
     model = _responds("sure, sounds good")
     decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
     assert decision.outcome == StateDrawOutcome.INVALID
-    assert len(model.requests) == 2
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert next_state(ConversationState.ELICIT, decision) == ConversationState.ELICIT
 
 
@@ -444,13 +446,21 @@ async def test_classify_tolerates_a_decorated_or_quoted_draw():
 
 @pytest.mark.asyncio
 async def test_classify_reroll_can_recover():
-    """The one contract-violation reroll re-draws on the unchanged context — a
-    valid second draw decides the transition."""
+    """A contract-violation reroll re-draws on the unchanged context — a valid draw
+    decides the transition, and it can arrive anywhere inside the budget: TWO
+    violations still leave a third draw, which is the whole point of spending the
+    poison budget on a detectably-invalid one."""
     model = _responds_per_call(lambda count: "hmm, let me think" if count == 1 else "STATE: learn")
     decision = await _classifier(model).classify(_ELICIT_SNAPSHOT, _STEPS)
     assert decision.outcome == StateDrawOutcome.DECIDED
     assert decision.state == ConversationState.LEARN
     assert len(model.requests) == 2
+
+    late = _responds_per_call(lambda count: "hmm, let me think" if count <= 2 else "STATE: learn")
+    recovered = await _classifier(late).classify(_ELICIT_SNAPSHOT, _STEPS)
+    assert recovered.outcome == StateDrawOutcome.DECIDED
+    assert recovered.state == ConversationState.LEARN
+    assert len(late.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -497,12 +507,12 @@ async def test_classify_apply_draw_binds_a_listed_skill():
 
 async def test_classify_apply_without_skill_line_is_rerolled_then_stays():
     """Drawing the gated state WITHOUT its SKILL: line is a contract violation
-    exactly like an untagged draw: one reroll, then INVALID — fail → stay."""
+    exactly like an untagged draw: the whole budget, then INVALID — fail → stay."""
     model = _responds("STATE: apply")
     decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
     assert decision.outcome == StateDrawOutcome.INVALID
     assert decision.skill is None
-    assert len(model.requests) == 2
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
     assert next_state(ConversationState.IDLE, decision) == ConversationState.IDLE
 
 
@@ -512,7 +522,7 @@ async def test_classify_apply_with_unlisted_skill_is_rerolled_then_stays():
     model = _responds("STATE: apply\nSKILL: fold the laundry")
     decision = await _classifier(model).classify(_WITH_SKILL, _PRICE_ASK)
     assert decision.outcome == StateDrawOutcome.INVALID
-    assert len(model.requests) == 2
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 async def test_classify_ungated_draw_ignores_a_stray_skill_line():

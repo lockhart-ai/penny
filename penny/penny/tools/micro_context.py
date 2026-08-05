@@ -157,12 +157,6 @@ MICRO_CONTEXT_SYSTEM_PROMPT = (
 
 _USER_TEMPLATE = "Instruction: {instruction}\n\nContent:\n{content}"
 
-# How many draws a CONTRACT-VIOLATING (but poison-free) output gets: the first
-# draw plus one reroll of the unchanged context.  A draw that misses a REQUIRED
-# part of the declared shape is a contract violation, not a world-fact — it is
-# never promoted to a value; after the reroll the customer fails honestly.
-_INVALID_DRAW_BUDGET = 2
-
 # ── Second customer: run-end LEAF LABELLING (#1824/#1827/#1828) ────────────────
 # The labelling contract is a DIFFERENT declared shape riding the SAME poison-screen
 # + reroll machinery (``_valid_draw``): given a demonstrated routine and every SPOT in
@@ -294,9 +288,9 @@ SKILL_NAMING_SYSTEM_PROMPT = (
 #
 # And an accepted draw never contains an invalid line (#1828's ruling, carried to a
 # customer with nothing offered): a malformed PARAMETER line or the same parameter
-# twice is a contract violation like any other — one reroll on the unchanged context,
-# then an honest WHOLE-draw failure.  With no offered set, the missing-line gap the
-# labeller notices is invisible here, so the parse's dropped-line count
+# twice is a contract violation like any other — re-drawn on the unchanged context for
+# the whole reroll budget, then an honest WHOLE-draw failure.  With no offered set, the
+# missing-line gap the labeller notices is invisible here, so the parse's dropped-line count
 # (``ParsedDraw.malformed``) is what makes the same rule checkable.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
@@ -649,9 +643,9 @@ class MicroContext:
         ``EXTRACTED:`` → the value (everything after the tag, so a multi-line digest
         or an item-per-line list survives whole), ``NOT_PRESENT:`` → the enumerated
         not-present outcome carrying the reason's first line only.  A clean draw
-        matching neither is a contract violation, never a value: one reroll of the
-        unchanged context, then the extraction fails honestly.  A blank draw takes
-        the same path (a blank payload is not a payload).
+        matching neither is a contract violation, never a value: re-drawn on the
+        unchanged context for the whole budget, then the extraction fails honestly.  A
+        blank draw takes the same path (a blank payload is not a payload).
         """
         drawn = await self._valid_draw(content, instruction, run_target, shape=EXTRACT_SHAPE)
         if isinstance(drawn, DrawFailure):
@@ -736,8 +730,8 @@ class MicroContext:
         prompt, its own ledger attribution and its own declared shape
         (:data:`STATE_CLASSIFIER_SHAPE`), plus the MEMBERSHIP constraint a static
         shape can't carry: a drawn state outside ``allowed`` is a contract violation
-        exactly like an untagged draw — one reroll of the unchanged context, then an
-        honest ``INVALID`` the machine reads as no-transition.
+        exactly like an untagged draw — re-drawn on the unchanged context for the
+        whole budget, then an honest ``INVALID`` the machine reads as no-transition.
 
         ``skill_gated_states`` names the states whose draw must ALSO carry a
         ``SKILL:`` line naming a member of ``skills`` — drawing one with a
@@ -783,9 +777,19 @@ class MicroContext:
         re-rolled on the unchanged context while the contract is violated, then an
         honest typed failure the customer maps onto its own outcome.
 
+        A contract violation gets the SAME patience as poison — one budget
+        (``self._reroll_attempts``, defaulting to ``DEGENERATE_REROLL_ATTEMPTS``),
+        not a second number beside it (code-owner ruling, from two samples where a
+        labelling draw came back with one line for four offered spots, twice each,
+        and fell back after two draws).  We know deterministically what a valid draw
+        looks like — the offered spots, the membership set, the shape — so a
+        violation is DETECTED rather than judged, and a detected-invalid draw is
+        cheap to throw away and redraw.  The fallback stays the honest end after the
+        budget, not a thing to reach one draw sooner.
+
         Only the shape (and the prompt + attribution) differs per customer, so no
         customer owns a reroll loop or partitions a string of its own."""
-        for _ in range(_INVALID_DRAW_BUDGET):
+        for _ in range(self._reroll_attempts):
             draw = await self._draw_clean(
                 content,
                 instruction,
@@ -800,8 +804,14 @@ class MicroContext:
             parsed = parse_draw(draw, shape)
             if parsed is not None and accepts(parsed):
                 return parsed
-            logger.warning("%s output violated its declared shape — one reroll", agent_name)
-        logger.warning("%s output violated its declared shape after reroll", agent_name)
+            logger.warning(
+                "%s output violated its declared shape — discarding and re-rolling", agent_name
+            )
+        logger.warning(
+            "%s output still violated its declared shape after %d draws",
+            agent_name,
+            self._reroll_attempts,
+        )
         return DrawFailure.INVALID
 
     async def _draw_clean(
@@ -893,9 +903,9 @@ def _labels_every_spot(drawn: ParsedDraw, offered: Sequence[str]) -> bool:
     the whole of what makes an accepted draw complete: ONE well-formed line per offered
     spot, and no line for anything else.
 
-    Each way of missing that is the same violation, answered the same way — one reroll
-    on the unchanged context, then an honest whole-draw failure.  MISSING is the
-    observed failure (the tag decays mid-draw, the parse rightly refuses the line, and
+    Each way of missing that is the same violation, answered the same way — re-drawn
+    on the unchanged context for the whole budget, then an honest whole-draw failure.
+    MISSING is the observed failure (the tag decays mid-draw, the parse refuses it, and
     the spot ends up named by nothing).  TWICE is a contradictory draw, and taking
     either line would let a stray trailing one rename a spot.  A line for a spot that
     was never offered is a spot INVENTED rather than named — the shared-spot case's
@@ -931,12 +941,12 @@ def _mints_a_usable_signature(drawn: ParsedDraw) -> bool:
     """The runtime constraint the framing shape can't carry (#1830) — and the whole of
     what makes an accepted signature usable, with nothing offered to check it against.
 
-    Three ways to violate it, each answered the same way (one reroll on the unchanged
-    context, then an honest whole-draw failure).  NO parameter is the floor the prompt
-    states: a routine that needs nothing said to it can only repeat the one occasion it
-    was shown.  A MALFORMED line is a line the parse dropped — the grammar's
-    best-effort default is wrong for a customer with no offered set, because there is
-    no gap for it to show up as, so the drop is counted and refused instead.  A
+    Three ways to violate it, each answered the same way (re-drawn on the unchanged
+    context for the whole budget, then an honest whole-draw failure).  NO parameter is
+    the floor the prompt states: a routine that needs nothing said to it can only repeat
+    the one occasion it was shown.  A MALFORMED line is a line the parse dropped — the
+    grammar's best-effort default is wrong for a customer with no offered set, because
+    there is no gap for it to show up as, so the drop is counted and refused instead.  A
     REPEATED name is a contradictory draw, and a parameter's name is its binding key:
     two lines under one key means one of them silently disappears at instantiation.
 

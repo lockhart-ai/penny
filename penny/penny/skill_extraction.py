@@ -363,7 +363,7 @@ class SkillExtractor:
         every spot as a ``{variable}`` + the placeholder list (each spot's current
         arg-derived name, the arg site(s) it fills, and its demonstrated value); the
         micro-context writes one line per spot — a semantic name and what belongs
-        there each run — poison-screened + one reroll, its own ledger attribution.
+        there each run — poison-screened + re-rolled, its own ledger attribution.
 
         The spots' current names ride along as the COVERAGE set (#1828): the draw is
         accepted only when every one of them came back with a well-formed line, so a

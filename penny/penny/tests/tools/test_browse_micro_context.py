@@ -568,26 +568,29 @@ def test_extract_parameter_description_whole_render(db: Database):
 
 
 @pytest.mark.asyncio
-async def test_micro_context_untagged_is_rerolled_once_then_fails():
-    """Untagged (but clean) output is a contract violation: one reroll of the
-    unchanged context, then honest EXTRACTION_FAILED — the apology prose is never
-    promoted to a value.  A blank draw takes the same path (no tag to parse)."""
+async def test_micro_context_untagged_is_rerolled_then_fails():
+    """Untagged (but clean) output is a contract violation: discarded and re-drawn on
+    the unchanged context for the WHOLE budget — the same patience poison gets, since
+    a violation is DETECTED against the declared shape rather than judged — then
+    honest EXTRACTION_FAILED.  The apology prose is never promoted to a value, and a
+    blank draw takes the same path (no tag to parse)."""
     model = _responds(_UNTAGGED_APOLOGY)
     result = await MicroContext(cast(Any, model)).extract(_PAGE_BODY, _INSTRUCTION)
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
     assert result.value == ""
-    assert len(model.requests) == 2  # the draw + exactly one reroll
+    assert len(model.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
     blank = _responds("   ")
     result = await MicroContext(cast(Any, blank)).extract(_PAGE_BODY, _INSTRUCTION)
     assert result.outcome == MicroExtractOutcome.EXTRACTION_FAILED
-    assert len(blank.requests) == 2
+    assert len(blank.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
 async def test_micro_context_untagged_reroll_can_recover():
-    """The one untagged reroll re-draws on the unchanged context — a tagged
-    second draw recovers the extraction."""
+    """A reroll re-draws on the unchanged context — a tagged draw recovers the
+    extraction, and it can arrive anywhere inside the budget: TWO untagged draws
+    still leave a third, and the run costs exactly the draws it took."""
     model = MockLlmClient()
     model.set_response_handler(
         lambda request, count: LlmResponse(
@@ -601,6 +604,20 @@ async def test_micro_context_untagged_reroll_can_recover():
     assert result.outcome == MicroExtractOutcome.EXTRACTED
     assert result.value == _EXTRACTED_VALUE
     assert len(model.requests) == 2
+
+    late = MockLlmClient()
+    late.set_response_handler(
+        lambda request, count: LlmResponse(
+            message=LlmMessage(
+                role="assistant",
+                content=_UNTAGGED_APOLOGY if count <= 2 else _TAGGED_VALUE,
+            )
+        )
+    )
+    recovered = await MicroContext(cast(Any, late)).extract(_PAGE_BODY, _INSTRUCTION)
+    assert recovered.outcome == MicroExtractOutcome.EXTRACTED
+    assert recovered.value == _EXTRACTED_VALUE
+    assert len(late.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio

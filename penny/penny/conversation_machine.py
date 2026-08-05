@@ -334,7 +334,7 @@ class StateClassifier:
     ) -> StateDecision:
         """One tagged draw over the current state's out-edges: narrow the union
         structurally, render the scoped slice, draw once (poison-screened,
-        membership-validated, one reroll), and type the result for the machine."""
+        membership-validated, re-rolled while violated), and type the result."""
         edges = presented_edges(snapshot)
         if not edges:
             raise ValueError(
