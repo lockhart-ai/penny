@@ -761,6 +761,15 @@ _TAUGHT_ROUND_REPORT = (
 # case sends verbatim — the shape that exposed this edge's hardest failure, where
 # the terms were read as steps of the routine and the message classified learn.
 # A pool of one-term acceptances hid that; these two are the case for it.
+#
+# Phrasings 11-14 are the enactment suite's own acceptance turns, verbatim: the
+# four rounds it measures this edge on end-to-end that the pool did not already
+# hold (its aurora round's turn is phrasing 4).  Three stack cadence + notify,
+# the fourth cadence + expiry + notify, and phrasing 13 is the shape a measured
+# enactment run misrouted to learn — its terms read as steps of the routine, the
+# same failure phrasings 4 and 9 are here for.  Gating this draw in isolation is
+# worth what it says about the turns the enactment suite actually sends, so the
+# pool now carries all five of them and runs fourteen deep.
 _ACCEPT_POOL = [
     "yes please, set that up",
     "yeah do that every morning",
@@ -772,6 +781,11 @@ _ACCEPT_POOL = [
     "that's exactly it, keep doing that",
     "yes — check it every 30 minutes until midnight and message me if it moves",
     "yes, and ping me when the departure changes",
+    "great — do that every morning and let me know when the late sailing gets added",
+    "great — do that every day and tell me what the special is",
+    "perfect — do that every week and let me know if the count drops",
+    "yes — check it every two hours until the end of the month and tell me the "
+    "second something new appears",
 ]
 
 
