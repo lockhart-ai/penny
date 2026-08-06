@@ -656,25 +656,65 @@ def tool_call_sequence(db: Database) -> list[str]:
 
 
 # ── Shared loop-health + reply helpers (uniform across the eval case files) ──
-# The chat loop's text-bail nudges (injected as a user turn when the model emits
-# prose OR a call-shaped JSON blob instead of a real tool call) — their presence
-# means the routing slipped, even if recovery then succeeded.  Loop-health
-# visibility, not a behavior score.  TWO distinct markers cover the bail family
-# (an earlier single marker silently missed one and false-greened a spiral);
-# each is an ASCII, newline-free slice that survives row.messages JSON-escaping.
-_BAIL_NUDGE_MARKERS = (
-    "could not be parsed as a tool call",  # Prompt.TOOL_FORMAT_NUDGE
-    "wrote a tool call as plain text",  # Prompt.CHAT_CALL_AS_TEXT_NUDGE
+# The text-bail nudges a pre-#1839 loop injected as a user turn.  They can no
+# longer occur — PR #1840 deleted the constants and the validators that appended
+# them — so these markers read HISTORICAL rows only, and a sample recorded before
+# that change still reports its bail.  Each is an ASCII, newline-free slice that
+# survives row.messages JSON-escaping.
+_LEGACY_BAIL_NUDGE_MARKERS = (
+    "could not be parsed as a tool call",  # the retired Prompt.TOOL_FORMAT_NUDGE
+    "wrote a tool call as plain text",  # the retired Prompt.CHAT_CALL_AS_TEXT_NUDGE
 )
 _CONTINUE_NUDGE_MARKER = "Please provide your response"  # Prompt.CONTINUE_NUDGE
 
 
-def bail_nudge_fired(db: Database) -> bool:
-    """True when any prompt's message array carries an injected text-bail nudge."""
+def _legacy_bail_nudge_fired(db: Database) -> bool:
+    """True when any prompt's message array carries a retired text-bail nudge — the
+    legacy leg, so a promptlog written before #1840 still reads."""
     for row in db.messages.recent_prompts(limit=200):
-        if row.messages and any(marker in row.messages for marker in _BAIL_NUDGE_MARKERS):
+        if row.messages and any(marker in row.messages for marker in _LEGACY_BAIL_NUDGE_MARKERS):
             return True
     return False
+
+
+def _same_context_drawn_twice(db: Database) -> bool:
+    """Did two persisted draws carry byte-identical ``messages`` — the trace a
+    DISCARDED draw leaves behind?
+
+    ``Agent._invoke_nondegenerate`` re-calls the model on the **unchanged** message
+    list, and ``LlmClient.chat`` persists every draw it completes before returning —
+    so a re-rolled step is two rows with the same context, while an ordinary step's
+    context has grown by the turns the previous step appended and can never repeat.
+    ``MicroContext._draw_clean`` re-draws the same way, so one read covers the main
+    loop and every micro-context.
+
+    Reading the REPEAT is what keeps this honest for a condition nobody has
+    enumerated: the harness never re-derives WHICH conditions the loop rejects (a set
+    that grows with every agent shape), only that a draw was thrown away."""
+    seen: set[str] = set()
+    for row in db.messages.recent_prompts(limit=200):
+        if not row.messages:
+            continue
+        if row.messages in seen:
+            return True
+        seen.add(row.messages)
+    return False
+
+
+def draw_rerolled(db: Database) -> bool:
+    """True when this sample recovered via a re-roll — a draw the loop refused to
+    accept, discarded and re-drawn on the unchanged context.
+
+    The successor to the text-bail nudge probe (#1839/#1840): an invalid draw is now
+    rejected rather than answered with a teaching nudge, so nothing about it enters
+    the conversation and there is no marker to match.  What it still leaves is the
+    second draw itself (``_same_context_drawn_twice``); the retired nudge markers stay
+    as the legacy leg for rows written before the mechanics changed.
+
+    Declared limit: a draw the BACKEND refused to parse (``LlmToolParseError``) raises
+    before the client persists anything, so that one re-roll leaves no row at all and
+    no promptlog read can see it."""
+    return _same_context_drawn_twice(db) or _legacy_bail_nudge_fired(db)
 
 
 def continue_nudge_fired(db: Database) -> bool:
@@ -687,8 +727,9 @@ def continue_nudge_fired(db: Database) -> bool:
 
 def routing_clean(db: Database) -> bool:
     """The uniform loop-health verdict every case reports as an ADVISORY check
-    (``Check(..., scored=False)``): no bail nudge AND no continue nudge fired."""
-    return not bail_nudge_fired(db) and not continue_nudge_fired(db)
+    (``Check(..., scored=False)``): no draw was re-rolled AND no continue nudge
+    fired."""
+    return not draw_rerolled(db) and not continue_nudge_fired(db)
 
 
 # Page-structure vocabulary — asking the user HOW a page is built, which the

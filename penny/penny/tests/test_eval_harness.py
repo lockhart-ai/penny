@@ -55,6 +55,9 @@ from penny.tests.eval.conftest import (
     _stamp_cause,
     _without_examples,
     _write_sample_report,
+    continue_nudge_fired,
+    draw_rerolled,
+    routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
     tool_call_rejected,
@@ -76,7 +79,13 @@ def _make_db(tmp_path, name: str = "harness") -> Database:
 
 
 def _log_prompt(
-    db: Database, *, messages=None, response=None, thinking=None, agent_name=None
+    db: Database,
+    *,
+    messages=None,
+    response=None,
+    thinking=None,
+    agent_name=None,
+    run_id: str = "r1",
 ) -> None:
     db.messages.log_prompt(
         model="test-model",
@@ -84,7 +93,7 @@ def _log_prompt(
         response=response if response is not None else {},
         thinking=thinking,
         agent_name=agent_name,
-        run_id="r1",
+        run_id=run_id,
     )
 
 
@@ -246,6 +255,64 @@ def test_sample_is_fragile_counts_a_user_turn_recovery_nudge(tmp_path) -> None:
     # The empty-response CONTINUE_NUDGE, injected as a user turn — a recovery nudge.
     _log_prompt(db, messages=[{"role": "user", "content": "Please provide your response."}])
     assert sample_is_fragile(db)
+
+
+# ── The loop-health advisory: a re-rolled draw, not a deleted nudge (#1839/#1841) ──
+
+
+def test_draw_rerolled_reads_the_repeated_context_a_discarded_draw_leaves(tmp_path) -> None:
+    # #1840 deleted the text-bail nudges the old probe matched on, so no new run can carry those
+    # markers.  What a discarded draw DOES still leave is the second draw: the loop re-calls on
+    # the unchanged message list and the client persists every completed draw, so a re-rolled
+    # step is two rows with byte-identical `messages` — while an ordinary step's context has
+    # grown by the turns the previous step appended and can never repeat.
+    db = _make_db(tmp_path)
+    step_one = [{"role": "user", "content": "what does the deck cost?"}]
+    step_two = [
+        *step_one,
+        {"role": "assistant", "content": "checking the listing"},
+        {"role": "tool", "content": "$499"},
+    ]
+    _log_prompt(db, messages=step_one)
+    _log_prompt(db, messages=step_two)
+    assert not draw_rerolled(db)
+    assert routing_clean(db)
+
+    # The discarded draw's row: the SAME context, drawn again.
+    _log_prompt(db, messages=step_two)
+    assert draw_rerolled(db)
+    assert not routing_clean(db)
+
+    # A micro-context re-draws the same way, and its shape-violation re-draw (`_draw`, the outer
+    # loop) mints a FRESH run id each time — so the read keys on the repeated context alone and
+    # never on the run it belongs to.
+    micro = _make_db(tmp_path, "micro")
+    document = [{"role": "user", "content": "the rendered routine"}]
+    frame_agent = PennyConstants.SKILL_FRAME_AGENT_NAME
+    _log_prompt(micro, messages=document, run_id="draw-1", agent_name=frame_agent)
+    assert not draw_rerolled(micro)
+    _log_prompt(micro, messages=document, run_id="draw-2", agent_name=frame_agent)
+    assert draw_rerolled(micro)
+
+
+def test_routing_clean_keeps_the_legacy_bail_marker_and_continue_nudge_halves(tmp_path) -> None:
+    # A promptlog written BEFORE #1840 carries the retired bail nudge as a user turn.  Nothing
+    # can write one now, but the marker stays as the legacy leg so a historical row still reads.
+    legacy = _make_db(tmp_path, "legacy")
+    _log_prompt(
+        legacy,
+        messages=[{"role": "user", "content": "That could not be parsed as a tool call."}],
+    )
+    assert draw_rerolled(legacy)
+    assert not routing_clean(legacy)
+
+    # The empty-response retry nudge is still live, and is the verdict's other half — a sample
+    # that only continued because it was nudged is not cleanly routed either.
+    nudged = _make_db(tmp_path, "nudged")
+    _log_prompt(nudged, messages=[{"role": "user", "content": Prompt.CONTINUE_NUDGE}])
+    assert not draw_rerolled(nudged)
+    assert continue_nudge_fired(nudged)
+    assert not routing_clean(nudged)
 
 
 # ── The graded runner paths: dispatch + framework guard-as-Check (#1697) ──

@@ -32,10 +32,11 @@ check label carries one of three prefixes — ``state:`` (end DB/ledger facts),
 sequencing).  Scoring follows the state-is-core doctrine: state/reply checks
 (and call checks that ARE a case's contract, e.g. dispatch fired) are scored;
 sequencing annotations and the uniform loop-health check
-(``routing_clean`` — bail + continue nudges, shared in conftest) are ADVISORY
-(``Check(..., scored=False)`` — rendered in the report, excluded from the
-score).  Since the routing check became advisory, a nudge-recovered beat-0
-sample scores on its state/reply checks alone; real breakage still fails them.
+(``routing_clean`` — re-rolled draws + continue nudges, shared in conftest) are
+ADVISORY (``Check(..., scored=False)`` — rendered in the report, excluded from
+the score).  Since the routing check became advisory, a sample that only got
+there by recovering scores on its state/reply checks alone; real breakage still
+fails them.
 Cases NEVER override prompts, clients, or tool surfaces — the harness runs the
 real code and real prompts only (the artificial-prompt detour is the recorded
 counter-example).
@@ -174,7 +175,7 @@ def _score_beat0(db: Database, before: set[str], reply: str) -> list[Check]:
         # from the conversation window is correct behavior (live sample 5).
         # The COLD variant below owns provenance absolutely.
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -238,7 +239,7 @@ def _score_beat0_empty(db: Database, before: set[str], reply: str) -> list[Check
         Check("state: the fact landed in the created collection", fact_stored, kind="state"),
         Check("reply: read-back states $499", "499" in final_reply, kind="reply"),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -333,7 +334,7 @@ def _score_beat0a(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -399,7 +400,7 @@ def _score_beat0_cold(db: Database, before: set[str], reply: str) -> list[Check]
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -553,7 +554,7 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -639,7 +640,7 @@ def _score_beat1a(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -739,7 +740,7 @@ def _score_beat2(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="state",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -862,7 +863,7 @@ def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="state",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -1096,7 +1097,7 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="reply",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -1184,7 +1185,7 @@ def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="reply",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",

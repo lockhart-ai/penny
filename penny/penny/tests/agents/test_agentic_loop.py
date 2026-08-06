@@ -27,6 +27,11 @@ from penny.llm.models import (
 )
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
+
+# The eval harness's loop-health probe, asserted against a REAL re-roll here: its whole premise
+# is that a discarded draw leaves two promptlog rows on the same context, and a probe pinned
+# only against hand-seeded rows would keep passing if the loop stopped leaving them (#1841).
+from penny.tests.eval.conftest import draw_rerolled
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.text_validity import (
     half_formed_send_reason,
@@ -843,7 +848,7 @@ class TestDegenerateOutputGuard:
     @pytest.mark.asyncio
     async def test_content_poison_discarded_and_rerolled(self, test_db, mock_llm):
         """A degenerate run in plain text content is caught on the same path."""
-        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
+        agent, db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
             if count == 1:
@@ -856,6 +861,11 @@ class TestDegenerateOutputGuard:
         assert response.answer == "here is the real answer"
         assert len(mock_llm.requests) == 2
         assert mock_llm.requests[1]["messages"] == mock_llm.requests[0]["messages"]
+        # The PERSISTED twin of that identity: the discarded draw is logged before it is
+        # inspected, so the re-roll leaves two promptlog rows carrying the same context.  That
+        # repeat is the only trace it leaves — the eval harness's loop-health advisory reads it
+        # (#1841), so the premise is pinned here against a real re-roll, not just seeded rows.
+        assert draw_rerolled(db)
 
         await agent.close()
 

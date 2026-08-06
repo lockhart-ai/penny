@@ -429,7 +429,7 @@ def _score_idle_to_elicit(db: Database, before: set[str], reply: str) -> list[Ch
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -1079,7 +1079,7 @@ def _score_elicit_to_learn(
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -1438,7 +1438,7 @@ def _score_learn_to_apply(db: Database, before: set[str], reply: str) -> list[Ch
             kind="spine",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",

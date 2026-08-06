@@ -81,7 +81,7 @@ def _score_dispatch(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="reply",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
@@ -121,7 +121,7 @@ def _score_no_fire(db: Database, before: set[str], reply: str) -> list[Check]:
             kind="reply",
         ),
         Check(
-            "calls: clean routing (no bail or continue nudge fired)",
+            "calls: clean routing (no re-rolled draw or continue nudge)",
             routing_clean(db),
             scored=False,
             kind="proc",
