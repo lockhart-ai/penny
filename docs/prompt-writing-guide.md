@@ -140,10 +140,23 @@ Two corollaries, both measured on this codebase:
    authoritative: "the tool calls you OBSERVED are ground truth — they are what actually ran."
    Judgement anchored to a stated source beats judgement left to vibes.
 
-7. **Examples beat abstraction for a tricky case.** One concrete good/bad pair teaches a
+7. **Ask about what the input actually contains, never about a hypothetical.** When a step asks
+   the model to reason about what is *needed* — what information is required, what a caller
+   would have to supply — word it as **enumerate, then filter** over the real input, not as an
+   open question about a possible world. A hypothetical hands the model an unbounded space, and
+   it fills the gap with plausible inventions. *Measured:* a parameter step asking "what is the
+   minimal information the user would have to give" produced parameters drawn from nowhere — a
+   `search_term`, a `search_keyword` that appeared in no message. Rewritten to enumerate first
+   and filter second — "list the pieces the user gave you … a parameter can only be one of these
+   pieces; then keep only the ones they'd have to provide again" — the invented-piece class went
+   to **zero across 35 samples**, with every already-clean check holding (#1837). The general
+   form: bound the space to the enumerated actuals *before* asking any question about it. An
+   open imagination is a bigger space to get wrong.
+
+8. **Examples beat abstraction for a tricky case.** One concrete good/bad pair teaches a
    discrimination that a paragraph of rules won't.
 
-8. **Classify-then-act: decompose a fuzzy judgement into a small set of NAMED cases.** When a
+9. **Classify-then-act: decompose a fuzzy judgement into a small set of NAMED cases.** When a
    rule is really "decide which situation this is, then respond," don't leave it to open-ended
    judgement — enumerate the cases (keep N ~2–4) and give each a prescribed response. gpt-oss
    reasons through discrete cases far better than a vague "act appropriately," and it *names its
@@ -194,7 +207,9 @@ highest-leverage rule, and it's counter-intuitive:
   ~14k of ~17k calls — the model pasted the example instead of describing what it did. So
   **quote a literal ONLY when it is a deliberate sentinel you want copied verbatim** — a
   machine-readable constant (`summary="no new matches this cycle"`) that downstream code or
-  a human reads as a fixed token. Quoting a value effectively hardcodes it.
+  a human reads as a fixed token. Quoting a value effectively hardcodes it — and a hardcoded
+  literal is one the model has to spell right on every draw, so choose its wording by
+  *Literals the model must write are short, common, non-compound words* below.
 - **Use `<angle placeholders>` for anything the model must compose** — `<seed topic>`,
   `<collection>`, `<one sentence on what actually happened>`. Angle placeholders leaked into
   a real tool argument **zero times across ~59k payloads**: the model reliably treats them
@@ -241,6 +256,28 @@ the prompt-audit backlog; this is the standard it conforms to.)
 
 **Reviewer enforcement.** This notation is checked at review time — see `pr-review-guide.md` → "Canonical Call Notation (Model-Facing Prompts)" (§7) for the reviewer checklist and the notation smells to pattern-match.
 
+## Literals the model must write are short, common, non-compound words
+
+Rule 2 above says to quote a literal only when you want it copied verbatim. This section says
+which *words* to pick when you do. Any literal the model reproduces on every draw — a tag on an
+output line, a sentinel argument, a status token — is a spelling task, and gpt-oss's spelling
+decays with word length and compounding: it drops letters, transposes them, shifts case, and
+occasionally splices in an invisible character. Under exact-match parsing every one of those is
+a discarded draw, however good the reasoning it carried.
+
+*Measured:* an 11-character compound tag, `PLACEHOLDER`, came back as `PLACEBLODER`, as
+`PLACEHOLER` three times in a single draw, in the wrong case, and once with a zero-width
+character spliced in — while the labelling judgement those same draws carried was **5-for-5
+correct**. Four perfect draws were thrown away over spelling alone. Renaming the tag to `LABEL`
+(#1842, PR #1843) removed the class outright: the isolated case scored **1.00 on five straight
+runs with zero reroll-recovered samples**, and the composed case needed its fallback **zero**
+times.
+
+So spend the naming budget on spellability. The parser doesn't care which token it matches, only
+that the model can hit it every time. And the risk lives in the words, not the token count: the
+quiet-cycle sentinel `summary="no new matches this cycle"` is five short common words and comes
+back intact; `PLACEHOLDER` is one long compound and didn't.
+
 ## The anti-pattern: accretion
 
 Do **not** fix a prompt by iteratively bolting caveats onto the existing text — "and you MUST
@@ -265,6 +302,10 @@ dialect while no single line looks wrong. *Measured* (#1830, PR #1831): five pat
   `[key]`, and the model passed `key="[key]"` verbatim → "not found". The root fix was making
   the display form the passable form (listings now render `key='<key>'`); the teaching
   rejection at the tool boundary stays as the guard for the ingrained habit.
+- **Misspells a long literal it has to write out** — an 11-character compound tag came back with
+  letters dropped, case shifted, and once a zero-width character spliced in, on draws whose
+  judgement was correct. Short common words don't decay; see *Literals the model must write are
+  short, common, non-compound words*.
 - **Protocol spirals** — on ambiguity it can loop about "can I make multiple calls in one
   reply?" and burn the cycle. A tight numbered sequence reduces this.
 - **Punctuation-collapse** on large contexts — a separate degeneracy guard handles this; keep
