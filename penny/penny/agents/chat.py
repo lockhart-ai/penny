@@ -120,9 +120,10 @@ class ChatAgent(Agent):
         # tools fresh per turn (read_emails summarises against the current
         # message + date), so it takes ``(user_query, today)``.
         self._email_tools_builder = email_tools_builder
-        # Automatic skill extraction at run end (#1658): the chat run's own ledger
-        # is distilled into a skill when the run qualifies (read + write, healthy).
-        # There is no ``skill_create`` tool — the framework does this deterministically.
+        # Automatic skill extraction at run end (#1658): the chat run's own ledger is
+        # distilled into a skill when the machine says the turn was a LEARN turn
+        # (#1850).  There is no ``skill_create`` tool — the framework does this
+        # deterministically.
         self._skill_extractor = SkillExtractor(
             self.db,
             self._embedding_model_client,
@@ -142,6 +143,14 @@ class ChatAgent(Agent):
         # learn check reads a recorded outcome rather than re-deciding it (#1839).
         # ``None`` means extraction never ran (no text branch was reached).
         self._extraction_result: SkillExtractionResult | None = None
+        # The state the machine decided for the turn now running — set from ``handle``'s
+        # parameter and cleared when the turn ends.  It is held for exactly as long as
+        # ``_current_message`` and for the same reason: the agent loop's text branch is
+        # several frames below ``handle`` and carries no state of its own, and both the
+        # extraction gate (#1850) and the narration that follows it happen down there.
+        # Nothing READS the machine here — the value is the channel's decision passed
+        # down and passed on.
+        self._turn_state: ConversationState | None = None
 
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         tools = super().get_tools(run_id)
@@ -191,16 +200,19 @@ class ChatAgent(Agent):
         Extraction runs at most once per run (``_extraction_run_id``): the first
         final text extracts + narrates; the model's post-narration re-reply finds the
         run already attempted and falls through to the real final answer.  A
-        non-qualifying run stamps nothing (the ctx passes through unchanged)."""
+        non-qualifying run stamps nothing (the ctx passes through unchanged) — which,
+        since #1850, is every turn the machine did not call a learn turn."""
         if run_id == self._extraction_run_id:
             return ctx
         self._extraction_run_id = run_id
-        frame = await self._extract_and_frame_skill(run_id)
+        frame = await self._extract_and_frame_skill(run_id, self._turn_state)
         if frame is None:
             return ctx
         return ctx.model_copy(update={"learned_skill_frame": frame})
 
-    async def _extract_and_frame_skill(self, run_id: str) -> str | None:
+    async def _extract_and_frame_skill(
+        self, run_id: str, state: ConversationState | None
+    ) -> str | None:
         """Extract a skill from this run and, on success, build the narration frame
         so the model narrates from the render, not from memory.  The render is the
         BRIEF one (#1804/#1799): what the routine is and what it needs, in prose —
@@ -208,11 +220,15 @@ class ChatAgent(Agent):
         for it to read aloud to the user instead.  ``None`` when the run did not
         qualify — the gate is logged, never silently swallowed.
 
+        ``state`` is the turn's landed machine state, handed to the extractor as a
+        parameter (#1850): learning is the one thing that mints a routine, so what a
+        run yields is decided by what the turn WAS, not by the shape of what it did.
+
         The typed outcome is also RECORDED on ``_extraction_result``: a learn turn's
         one valid terminal state is a skill in the registry, and the run-end check
         that enforces it (#1839) reads what this attempt returned rather than
         re-deriving it."""
-        result = await self._skill_extractor.extract(run_id)
+        result = await self._skill_extractor.extract(run_id, state=state)
         self._extraction_result = result
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
@@ -251,10 +267,16 @@ class ChatAgent(Agent):
         spawning message to that run.  Passed as an explicit parameter down the
         call chain, never held as ambient state; when a direct caller omits it,
         one is minted here.
+
+        ``state`` is the conversation machine's decision about this turn, made before
+        it began (``None`` when nothing decided it — idle).  It picks the turn's one
+        instruction, gates run-end skill extraction (#1850), and decides whether the
+        learn terminal is enforced (#1839).
         """
         self._current_user = sender
         self._pending_page_context = page_context
         self._extraction_result = None
+        self._turn_state = state
         run_id = run_id or uuid.uuid4().hex
         try:
             content, has_images = await self._process_images(content, images)
@@ -304,6 +326,7 @@ class ChatAgent(Agent):
             self._current_user = None
             self._pending_page_context = None
             self._current_message = None
+            self._turn_state = None
 
     def _enforce_learn_terminal(
         self, state: ConversationState | None, response: ControllerResponse
@@ -324,7 +347,12 @@ class ChatAgent(Agent):
         bail is still the break-out to idle.  Extraction SUCCESS — and any turn where
         extraction never ran at all (a vision turn, a run that never reached its text
         branch and already carries its own honest failure) — takes today's path
-        untouched."""
+        untouched.
+
+        The state gate (#1850) declines every non-learn turn with its own
+        ``NoExtraction``, and this check reads the SAME state the extractor was handed,
+        so those refusals can never reach here: a turn is only failed for learning
+        nothing when learning was what it was for."""
         if state is not ConversationState.LEARN:
             return response
         if not isinstance(self._extraction_result, NoExtraction):

@@ -1,16 +1,20 @@
-"""Automatic skill extraction at chat-run end (#1658/#1665/#1770/#1828).
+"""Automatic skill extraction at chat-run end (#1658/#1665/#1770/#1828/#1850).
 
 Drives ``SkillExtractor.extract`` over REAL-SHAPED logged runs — every tool call
 carries the framework's top-level ``reasoning`` think-aloud, and the user turn is a
-bare utterance (no fused ``---`` Live-context prefix), the #1661 shape.  The matrix:
-read+write qualifies (correct holes/bindings, reasoning stripped) · pure-read /
-pure-write / failed-write-only / bail-nudged / no-calls excluded (each naming its
-gate) · failed-step filtering · name slugging · dedup by name and by shape+meaning.
-The #1665 additions: orientation verbs (``find`` etc.) are dropped from the recipe
-and don't count as the qualifying read (find+write → pure write) · a wrapped write
-value binds against a prior result's PAYLOAD (the frame stripped) while a topic-name
-key still doesn't · the run-end narration frame renders the name plus the
-demonstrated-on instance.
+bare utterance (no fused ``---`` Live-context prefix), the #1661 shape.  Every run
+here is a LEARN turn unless the case is about the gate, because that is the only turn
+extraction runs on (#1850): the state the machine landed on is a parameter, so a case
+states which turn it is demonstrating rather than inferring it from what the run did.
+The matrix: a taught round extracts (correct holes/bindings, reasoning stripped) ·
+read-only and write-only taught rounds extract too, since a routine's SHAPE is not a
+requisite · an apply-shaped or idle-shaped run of the very same ledger extracts
+NOTHING · no-calls / nothing-certified excluded (each naming its gate) · failed-step
+filtering · name slugging · dedup by name and by shape+meaning.  The #1665 additions:
+orientation verbs (``find`` etc.) are dropped from the recipe · a wrapped write value
+binds against a prior result's PAYLOAD (the frame stripped) while a topic-name key
+still doesn't · the run-end narration frame renders the name plus the demonstrated-on
+instance.
 
 The #1824 inversion, both halves.  The LABELLER names every spot and judges nothing: a
 labelled spot becomes a placeholder carrying what belongs there — never the frozen
@@ -35,6 +39,7 @@ import pytest
 from similarity.dedup import JobSide, is_same_job
 
 from penny.constants import PennyConstants
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.models import Skill
 from penny.database.skill_store import (
@@ -186,7 +191,7 @@ async def test_read_write_run_qualifies_and_distils_correctly(db):
     The description is the run's bare utterance; the framework ``reasoning`` is gone."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted) and not result.replaced
     skill = result.skill
@@ -224,7 +229,7 @@ async def test_learning_a_skill_attaches_nothing(db):
     it: no skill, no rendered prompt, nothing scheduled."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     row = db.memories.get("aurora-prices")
@@ -234,45 +239,91 @@ async def test_learning_a_skill_attaches_nothing(db):
     assert row.collector_interval_seconds is None, "and must not schedule anything"
 
 
-# ── Excluded: pure read, pure write, failed-write-only, bail, no-calls ─────────
+# ── The gate is the STATE: only a learn turn extracts (#1850) ──────────────────
 
 
 @pytest.mark.asyncio
-async def test_pure_read_run_is_excluded(db):
-    """A run that only READ (answering a question) is not a routine → PURE_READ, no
+@pytest.mark.parametrize(
+    "state",
+    [ConversationState.APPLY, ConversationState.IDLE, None],
+    ids=["apply-turn", "idle-turn", "no-machine-history"],
+)
+async def test_only_a_learn_turn_extracts(db, state):
+    """The SAME ledger the learn cases extract from yields NOTHING on any other turn
+    (#1850) — the gate is what the turn WAS, never what it did.
+
+    The measured escape (PR #1849): an apply turn enacted a skill, and the enactment's
+    own browse-and-write made the run look like a routine to a shape test, so the tail
+    minted a brand-new skill framed from a round that taught nothing — registry
+    pollution beside the skill it had just applied.  An idle one-off that browses and
+    writes reached the same place.  Absence of machine history is idle too (no rows =
+    the cold start), so a deployment whose machine has never moved never learns by
+    accident.
+
+    The refusal is NAMED, not silent: the outcome carries ``NOT_LEARN``, so the run
+    record says which gate declined and why."""
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+
+    result = await _extractor(db).extract("run-A", state=state)
+
+    assert result == NoExtraction(gate=ExtractionGate.NOT_LEARN)
+    assert db.skills.list_all() == []
+
+
+# ── No shape requisites: a taught round extracts whatever shape it had ─────────
+
+
+@pytest.mark.asyncio
+async def test_a_learn_run_that_only_read_extracts(db):
+    """A taught routine that only READS is a routine (#1850): the read+write taxonomy
+    is gone, so a round demonstrating "check this page for me each morning" is learned
+    exactly as a round that also files the answer somewhere is.
+
+    It used to be refused as PURE_READ, on the theory that a routine must sense AND act
+    — a judgment about shape that the framework has no standing to make, and that the
+    state gate makes unnecessary: the user was teaching, so what they taught is the
     skill."""
-    _log_run(db, "run-A", "what does the aurora deck 2 cost?", [_BROWSE])
+    assert not hasattr(ExtractionGate, "PURE_READ")
+    _log_run(db, "run-A", "check the aurora deck 2 listing for me like this", [_BROWSE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
-    assert result == NoExtraction(gate=ExtractionGate.PURE_READ)
-    assert db.skills.list_all() == []
-
-
-@pytest.mark.asyncio
-async def test_pure_write_run_is_excluded(db):
-    """A run that only WROTE ('remember this' — the storage atom) is a plain write,
-    not a job → PURE_WRITE, no skill."""
-    _log_run(db, "run-A", "remember the aurora deck 2 is $499", [_WRITE])
-
-    result = await _extractor(db).extract("run-A")
-
-    assert result == NoExtraction(gate=ExtractionGate.PURE_WRITE)
-    assert db.skills.list_all() == []
+    assert isinstance(result, SkillExtracted)
+    assert [step.tool for step in steps_from_json(result.skill.steps)] == ["browse"]
 
 
 @pytest.mark.asyncio
-async def test_failed_write_only_run_is_excluded(db):
-    """A run whose only write FAILED does not qualify: the failed call is filtered,
-    leaving a pure read → PURE_READ, no skill (visible degradation, not a half-baked
-    skill)."""
+async def test_a_learn_run_that_only_wrote_extracts(db):
+    """The other half of the same rule (#1850): a taught round that only WRITES is a
+    routine too.
+
+    It used to be refused as PURE_WRITE — 'the storage atom, not a job'.  A plain
+    'remember this' still mints nothing, because a plain 'remember this' is an IDLE
+    turn and never reaches here; what does reach here is a user demonstrating a filing
+    routine, which is a routine."""
+    assert not hasattr(ExtractionGate, "PURE_WRITE")
+    _log_run(db, "run-A", "here's how to file an aurora reading", [_WRITE])
+
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
+
+    assert isinstance(result, SkillExtracted)
+    assert [step.tool for step in steps_from_json(result.skill.steps)] == ["collection_write"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_is_filtered_and_the_read_still_extracts(db):
+    """A taught round whose write FAILED keeps the half that worked: the failed call is
+    filtered (#1659 filter-not-refuse), and the surviving read is the routine.
+
+    Certified-by-execution is unchanged — nothing that failed enters a skill — but with
+    no taxonomy left there is nothing for the survivor to be too small for."""
     failed_write = ("collection_write", _WRITE_ARGS, "write failed", False)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, failed_write])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
-    assert result == NoExtraction(gate=ExtractionGate.PURE_READ)
-    assert db.skills.list_all() == []
+    assert isinstance(result, SkillExtracted)
+    assert [step.tool for step in steps_from_json(result.skill.steps)] == ["browse"]
 
 
 @pytest.mark.asyncio
@@ -284,30 +335,40 @@ async def test_the_health_gate_is_retired(db):
     assert not hasattr(ExtractionGate, "BAILED")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
 
 
+# ── Nothing captured: the learn turn that FAILED (#1839's terminal check) ──────
+
+
 @pytest.mark.asyncio
 async def test_run_with_no_tool_calls_is_excluded(db):
-    """A pure-conversation turn (no tool calls at all) yields NO_TOOL_CALLS."""
+    """A learn turn that made no tool call at all captured nothing → NO_TOOL_CALLS.
+
+    This is the quantity floor that survives #1850, and it is what the learn terminal
+    reads: a learn turn's one valid end is a skill in the registry, so a round with
+    nothing in it fails the turn honestly rather than storing an empty routine."""
     _log_run(db, "run-A", "hey how's it going", [])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert result == NoExtraction(gate=ExtractionGate.NO_TOOL_CALLS)
+    assert db.skills.list_all() == []
 
 
 @pytest.mark.asyncio
 async def test_run_with_no_certified_steps_is_excluded(db):
-    """When a run had calls but NONE succeeded (or a pre-#1600 run has no stamps),
-    nothing certifies → NO_CERTIFIED_STEPS, no skill (never an empty skill)."""
+    """The same floor one step in: a learn turn whose calls NONE succeeded (or a
+    pre-#1600 run with no stamps) certifies nothing → NO_CERTIFIED_STEPS, no skill
+    (never an empty skill)."""
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE], stamp_success=False)
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert result == NoExtraction(gate=ExtractionGate.NO_CERTIFIED_STEPS)
+    assert db.skills.list_all() == []
 
 
 # ── Failed-step filtering: the surviving routine is extracted ──────────────────
@@ -320,7 +381,7 @@ async def test_failed_step_is_filtered_from_the_routine(db):
     failed_read = ("collection_read_latest", {"memory": "notes"}, "read failed", False)
     _log_run(db, "run-A", _UTTERANCE, [failed_read, _BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -344,7 +405,7 @@ async def test_name_is_a_slug_of_the_utterance_with_urls_stripped(db):
     )
     _log_run(db, "run-A", utterance, [_BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert result.skill.name == "read-the-aurora-deck-2-listing"
@@ -361,12 +422,12 @@ async def test_reteaching_the_same_utterance_replaces_by_name(db):
     extractor = _extractor(db)
 
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
-    first = await extractor.extract("run-A")
+    first = await extractor.extract("run-A", state=ConversationState.LEARN)
     assert isinstance(first, SkillExtracted) and not first.replaced
 
     # A second demonstration of the SAME routine (same utterance → same slug name).
     _log_run(db, "run-B", _UTTERANCE, [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B")
+    second = await extractor.extract("run-B", state=ConversationState.LEARN)
 
     assert isinstance(second, SkillExtracted) and second.replaced
     assert second.skill.name == first.skill.name
@@ -391,13 +452,13 @@ async def test_same_shape_and_meaning_replaces_keeping_existing_name(db):
     extractor = _extractor(db, mock)
 
     _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
-    first = await extractor.extract("run-A")
+    first = await extractor.extract("run-A", state=ConversationState.LEARN)
     assert isinstance(first, SkillExtracted)
     original_name = first.skill.name
 
     # Different wording (a different slug), same tool shape, same aurora meaning.
     _log_run(db, "run-B", "keep an eye on the aurora deck 2 price for me", [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B")
+    second = await extractor.extract("run-B", state=ConversationState.LEARN)
 
     assert isinstance(second, SkillExtracted) and second.replaced
     assert second.skill.name == original_name  # kept the existing skill's name
@@ -418,9 +479,9 @@ async def test_different_meaning_inserts_a_new_skill(db):
     extractor = _extractor(db, mock)
 
     _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
-    await extractor.extract("run-A")
+    await extractor.extract("run-A", state=ConversationState.LEARN)
     _log_run(db, "run-B", "watch the harbor weather report", [_BROWSE, _WRITE])
-    second = await extractor.extract("run-B")
+    second = await extractor.extract("run-B", state=ConversationState.LEARN)
 
     assert isinstance(second, SkillExtracted) and not second.replaced
     assert len(db.skills.list_all()) == 2
@@ -441,7 +502,7 @@ async def test_collector_run_is_not_extracted(db):
         agent_name="thoughts",
     )
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert result == NoExtraction(gate=ExtractionGate.NOT_CHAT)
 
@@ -452,7 +513,7 @@ async def test_fresh_migrated_registry_stays_empty_without_a_qualifying_run(tmp_
     non-qualifying turn leaves it empty (no seeds, no accidental extraction)."""
     db = migrated_db(str(tmp_path / "seeded.db"))
     _log_run(db, "run-A", "hi there", [])
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
     assert isinstance(result, NoExtraction)
     assert db.skills.list_all() == []
 
@@ -545,7 +606,7 @@ def _user_turn(request: dict) -> str:
     return next((m.get("content", "") for m in request["messages"] if m.get("role") == "user"), "")
 
 
-# ── #1665: orientation verbs excluded from steps AND the qualifying read ───────
+# ── #1665: orientation verbs are excluded from the captured steps ──────────────
 
 
 @pytest.mark.asyncio
@@ -556,7 +617,7 @@ async def test_orientation_find_step_is_dropped_from_the_recipe(db):
     find = ("find", {"query": "watch a listing price"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _BROWSE, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -566,17 +627,24 @@ async def test_orientation_find_step_is_dropped_from_the_recipe(db):
 
 
 @pytest.mark.asyncio
-async def test_find_plus_write_only_is_a_pure_write_not_a_skill(db):
-    """A find + write run has NO content read once orientation is excluded — a find
-    does not count as the qualifying read — so it is a pure write (the storage atom),
-    not a skill (#1665)."""
+async def test_find_plus_write_captures_the_write_alone(db):
+    """A taught round that orients then writes captures the WRITE alone — the find is
+    still dropped (#1665: a re-run re-orients itself, and a find result echoing its
+    query would manufacture a false binding), and what is left is the routine.
+
+    Under the retired taxonomy this run was refused outright, because a find did not
+    count as the qualifying read and a write on its own was 'the storage atom'.  The
+    exclusion was always about the RECIPE, never about whether the round was worth
+    learning (#1850)."""
     find = ("find", {"query": "aurora prices"}, _FIND_RESULT, True)
     _log_run(db, "run-A", _UTTERANCE, [find, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
-    assert result == NoExtraction(gate=ExtractionGate.PURE_WRITE)
-    assert db.skills.list_all() == []
+    assert isinstance(result, SkillExtracted)
+    steps = steps_from_json(result.skill.steps)
+    assert [step.tool for step in steps] == ["collection_write"]
+    assert [step.source_ordinal for step in steps] == [2]
 
 
 # ── #1665: binding compares against the result PAYLOAD, not the frame ──────────
@@ -593,7 +661,7 @@ async def test_wrapped_write_value_binds_against_the_result_payload(db):
     write = ("collection_write", _WRAP_WRITE_ARGS, _WRITE_OK, True)
     _log_run(db, "run-A", _UTTERANCE, [browse, write])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)
@@ -640,7 +708,7 @@ async def test_the_two_run_end_draws_are_shown_different_evidence(db):
     db.messages.log_message(direction="incoming", sender="user", content=ask)
     db.messages.log_message(direction="outgoing", sender="penny", content=elicit)
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert result.origin_message == _UTTERANCE
@@ -672,7 +740,7 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
     model = _run_end_model(labels="I think this is a price-watching routine of some kind.")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert result.skill.name == "read-the-aurora-deck-2-listing"  # the fallback slug
@@ -721,7 +789,7 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     params = parameters_from_json(result.skill.parameters)
@@ -780,7 +848,7 @@ async def test_a_failed_framing_falls_back_to_the_slug_with_nothing_to_bind(db):
     model = _run_end_model(labels=_LABELLED_ROUND, framing="a price watcher, I think")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -810,7 +878,7 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     model = _run_end_model(labels="LABEL queries: listing_page — the page this routine reads")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -834,7 +902,7 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     )
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
 
-    later = await _extractor(db, model=decayed).extract("run-B")
+    later = await _extractor(db, model=decayed).extract("run-B", state=ConversationState.LEARN)
 
     assert isinstance(later, SkillExtracted)
     assert _draws(decayed, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -856,7 +924,7 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
@@ -881,7 +949,7 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -909,7 +977,7 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1  # the line is well-formed: no reroll
@@ -960,7 +1028,7 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1, (
@@ -992,7 +1060,7 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert (
@@ -1166,7 +1234,7 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
@@ -1206,7 +1274,7 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE, second_write])
 
-    result = await _extractor(db, model=model).extract("run-A")
+    result = await _extractor(db, model=model).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     assert parameters_from_json(result.skill.parameters) == []
@@ -1394,8 +1462,7 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     """A demo that sets up a container mid-run (collection_set — a lifecycle call
     a collector can never run) has that step DROPPED from the captured skill (#1668):
     a skill renders into a collector prompt, so only collector-runnable steps belong
-    in it.  The create's args (name/description) never become nonsense parameters,
-    and the create doesn't count toward the read/write taxonomy."""
+    in it.  The create's args (name/description) never become nonsense parameters."""
     create = (
         "collection_set",
         {"name": "widget-prices", "description": "watch the widget price"},
@@ -1404,7 +1471,7 @@ async def test_lifecycle_call_is_dropped_from_the_recipe(db):
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, create, _WRITE])
 
-    result = await _extractor(db).extract("run-A")
+    result = await _extractor(db).extract("run-A", state=ConversationState.LEARN)
 
     assert isinstance(result, SkillExtracted)
     steps = steps_from_json(result.skill.steps)

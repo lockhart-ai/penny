@@ -27,6 +27,7 @@ from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFu
 from penny.prompts import Prompt
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tools.micro_context import STATE_CLASSIFIER_SYSTEM_PROMPT
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 from penny.tools.skill_tools import render_skill_brief
@@ -315,15 +316,26 @@ def _text(content: str) -> LlmResponse:
     return LlmResponse(message=LlmMessage(role="assistant", content=content), model="test-model")
 
 
+def _is_state_classifier(messages: list[dict]) -> bool:
+    """Whether this request is the conversation machine's classifier draw (#1706) —
+    identified by its own system prompt, the same way the mock's built-in intercept
+    identifies it.  A handler that claims those calls answers them from here."""
+    system = messages[0].get("content", "") if messages else ""
+    return system == STATE_CLASSIFIER_SYSTEM_PROMPT
+
+
 def _spy_extractor(penny) -> dict:
-    """Wrap the chat agent's extractor to count how many times it runs — the
-    once-per-run guard is what stops the post-narration re-reply re-extracting."""
-    counter = {"n": 0}
+    """Wrap the chat agent's extractor to count how many times it runs — and with which
+    turn state — so a case can pin both the once-per-run guard (what stops the
+    post-narration re-reply re-extracting) and the state the turn threaded down to it
+    (#1850)."""
+    counter: dict = {"n": 0, "states": []}
     original = penny.chat_agent._skill_extractor.extract
 
-    async def counting_extract(run_id: str):
+    async def counting_extract(run_id: str, *, state):
         counter["n"] += 1
-        return await original(run_id)
+        counter["states"].append(state)
+        return await original(run_id, state=state)
 
     penny.chat_agent._skill_extractor.extract = counting_extract
     return counter
@@ -333,15 +345,25 @@ def _spy_extractor(penny) -> dict:
 async def test_run_end_extracts_and_narrates_a_skill(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
-    """A chat turn that READS then WRITES is a routine: at run end the framework
-    distils it into a skill (no skill_create tool), and a run-shape validator narrates
-    it in the SAME turn from the rendered recipe (SAID==DID) — one extra model call,
-    the extraction running exactly once."""
+    """A TEACHING turn is what mints a routine: the classifier lands the turn in learn,
+    the framework distils that run into a skill at run end (no skill_create tool), and a
+    run-shape validator narrates it in the SAME turn from the rendered recipe (SAID==DID)
+    — one extra model call, the extraction running exactly once.
+
+    The whole path is exercised end to end: the classifier's draw moves the machine, the
+    channel hands the landed state to the turn, and the turn hands it to the extractor
+    (#1850) — so the state extraction gates on is the one the turn actually ran under,
+    not something re-read afterwards."""
     ask = "watch the aurora deck 2 price and remember it for me"
     captured: dict[str, str | None] = {"frame": None}
 
     def handler(request, _count):
         messages = request.get("messages") or []
+        # The turn opens with the state classifier (#1706) — this handler claims those
+        # calls (``answers_state_classifier``), so the round is a teach round because
+        # the machine decided so, exactly as production reaches learn.
+        if _is_state_classifier(messages):
+            return _text(f"STATE: {ConversationState.LEARN.value}")
         blob = " ".join(str(m.get("content", "")) for m in messages)
         if ask not in blob:
             return _text("nothing to do")
@@ -370,7 +392,7 @@ async def test_run_end_extracts_and_narrates_a_skill(
             )
         return _text("the aurora deck 2 is $499 right now")  # final text → triggers extraction
 
-    mock_llm.set_response_handler(handler)
+    mock_llm.set_response_handler(handler, answers_state_classifier=True)
 
     async with running_penny(test_config) as penny:
         penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
@@ -405,18 +427,26 @@ async def test_run_end_extracts_and_narrates_a_skill(
             skill=render_skill_brief(skill), demonstrated_on=ask
         )
 
-        # Extraction ran EXACTLY once — the re-reply found the run already handled.
+        # Extraction ran EXACTLY once, on the state the machine landed in — the
+        # re-reply found the run already handled.
         assert calls["n"] == 1
+        assert calls["states"] == [ConversationState.LEARN]
 
 
 @pytest.mark.asyncio
-async def test_pure_write_remember_turn_extracts_no_skill_and_does_not_narrate(
+async def test_an_idle_turn_that_reads_and_writes_learns_nothing(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
-    """A 'remember this' turn is a plain WRITE — the storage atom, not a routine — so
-    the run-end extractor produces NO skill and NO narration nudge fires (the reply is
-    the direct one)."""
-    ask = "remember that the aurora deck 2 is $499"
+    """An ordinary turn that happens to read AND write learns nothing (#1850) — no
+    skill, no narration nudge, just the direct reply.
+
+    This is the escape the state gate closes: doing a thing once, on the user's behalf,
+    used to look identical to being TAUGHT the thing, because the qualifying test was
+    the run's own shape.  So a one-off — and, worse, an apply turn's enactment of a
+    skill Penny already had — minted a brand-new routine from a round that taught
+    nothing.  The machine never left idle here, and extraction is attempted and
+    declined."""
+    ask = "what's the aurora deck 2 at? note it down while you're there"
     saw_frame = {"hit": False}
 
     def handler(request, _count):
@@ -429,13 +459,19 @@ async def test_pure_write_remember_turn_extracts_no_skill_and_does_not_narrate(
         ):
             saw_frame["hit"] = True
             return _text("(this should never be reached)")
-        if any(m.get("role") == "tool" for m in messages):
-            return _text("got it — noted that the aurora deck 2 is $499")
-        return _tool_call(
-            "c0",
-            "collection_write",
-            {"memory": "aurora-prices", "entries": [{"key": "aurora deck 2", "content": "$499"}]},
-        )
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if not tool_turns:  # a read …
+            return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
+        if len(tool_turns) == 1:  # … and a write: the shape that used to qualify
+            return _tool_call(
+                "c1",
+                "collection_write",
+                {
+                    "memory": "aurora-prices",
+                    "entries": [{"key": "aurora deck 2", "content": "$499"}],
+                },
+            )
+        return _text("got it — noted that the aurora deck 2 is $499")
 
     mock_llm.set_response_handler(handler)
 
@@ -448,8 +484,10 @@ async def test_pure_write_remember_turn_extracts_no_skill_and_does_not_narrate(
 
         assert "noted" in reply["message"].lower()  # the DIRECT reply, no narration
         assert saw_frame["hit"] is False  # the narration nudge never fired
-        assert penny.db.skills.list_all() == []  # a plain write is not a skill
-        assert calls["n"] == 1  # extraction was attempted once and declined (PURE_WRITE)
+        assert penny.db.skills.list_all() == []  # nothing was taught, so nothing learned
+        # Attempted once and declined — the machine never left idle.
+        assert calls["n"] == 1
+        assert calls["states"] == [ConversationState.IDLE]
 
 
 # ── 1c. Learn-terminal enforcement (#1839) ────────────────────────────────
@@ -480,21 +518,26 @@ async def test_learn_turn_with_no_skill_replaces_the_reply_and_stays_parked(
     reply is thrown away and a deterministic honest failure goes out instead — the
     observed harm being a reply that offers to set running a routine that was never
     learned.  The machine is left parked in learn with its anchor, so the user's retry
-    is the existing learn→learn re-demonstration edge."""
+    is the existing learn→learn re-demonstration edge.
+
+    The round here captures NOTHING — its one call fails — which is the gate that still
+    stands after #1850 removed the shape requisites: a taught round that only read, or
+    only wrote, is now a routine, but a round with nothing certified is still nothing to
+    learn."""
     ask = "watch the aurora deck 2 price like this"
 
     def handler(request, _count):
         messages = request.get("messages") or []
         if any(m.get("role") == "tool" for m in messages):
-            # A pure READ run — the extractor declines it (PURE_READ), so nothing is
-            # learned even though the model happily narrates success.
+            # Nothing survived certification (the read failed), so the extractor
+            # declines — even though the model happily narrates success.
             return _text("all set! i've learned that routine — want me to run it daily?")
         return _tool_call("c0", "collection_read_latest", {"memory": "aurora-prices"})
 
     mock_llm.set_response_handler(handler)
 
     async with running_penny(test_config) as penny:
-        penny.db.memories.create_collection("aurora-prices", "aurora deck 2 prices")
+        # The collection is deliberately ABSENT, so the round's only call fails.
         anchor_id = penny.db.messages.log_message(
             PennyConstants.MessageDirection.INCOMING, TEST_SENDER, _LEARN_ANCHOR_MESSAGE
         )

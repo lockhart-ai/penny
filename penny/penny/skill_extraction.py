@@ -1,25 +1,33 @@
 """Automatic skill extraction at chat-run end (#1658, epic #1554).
 
 Skills are no longer model-authored.  There is no ``skill_create`` tool: at the
-end of every qualifying CHAT run the framework distils a skill *deterministically*
+end of every LEARN chat run the framework distils a skill *deterministically*
 from that run's own ledger rows — the same certified-by-execution snapshot the
 retired tool produced, now fired by the run finishing instead of a model call.
 
-``SkillExtractor.extract(run_id)`` is the whole pipeline, composed of named steps
-(house style: the summary method reads like a table of contents):
+``SkillExtractor.extract(run_id, state=…)`` is the whole pipeline, composed of named
+steps (house style: the summary method reads like a table of contents):
 
-* **qualify** — all structural, each a named check: the run is the chat agent's,
-  it made ≥1 tool call, and its SUCCEEDED, COLLECTOR-runnable calls form a read+write
-  taxonomy (a routine that senses AND acts).  A purely-read run (answering a question)
-  and a purely-write run ('remember this' — the storage atom) do NOT qualify; failed
-  calls are FILTERED, so a run whose only write failed is a pure read and is excluded.
+* **the state gate** — extraction runs if and only if the turn's landed conversation
+  state is ``learn`` (#1850).  The state is the machine's own decision about THIS
+  turn, made before the turn ran and threaded in as a parameter — this module never
+  reads the machine, so what a run yields cannot depend on ambient state read after
+  the fact.  Absence of machine history is idle, and idle does not learn.  Teaching
+  is the one thing that mints a routine: an apply turn's extra enactment or an idle
+  one-off that happens to browse-and-write used to qualify on shape alone and mint a
+  skill from a round that taught nothing (the measured escape, PR #1849).
+* **qualify** — what remains is MECHANICS, not shape requisites: the run is the chat
+  agent's, it made ≥1 tool call, and ≥1 of its calls SUCCEEDED and is
+  COLLECTOR-runnable.  There is NO read/write taxonomy any more (#1850): a learn run
+  that only read and a learn run that only wrote are both routines the user just
+  taught, and a routine's shape is not the framework's to judge.  Failed calls are
+  FILTERED, so a run whose only write failed extracts the read that worked.
   Lifecycle calls a demo made (e.g. ``collection_set`` to set up the container) are
   dropped like orientation calls — a skill renders into a collector prompt, so only
-  collector-runnable steps belong in it, and they count for nothing in the taxonomy
-  (#1668).  There is no health gate any more (#1839): the call-shaped-text bails it
-  keyed on are discarded and re-rolled by the agent loop, so they never enter a
-  completed run's rows at all — a recovered run is indistinguishable from a clean one
-  BECAUSE recovery no longer writes into the run.
+  collector-runnable steps belong in it (#1668).  There is no health gate any more
+  (#1839): the call-shaped-text bails it keyed on are discarded and re-rolled by the
+  agent loop, so they never enter a completed run's rows at all — a recovered run is
+  indistinguishable from a clean one BECAUSE recovery no longer writes into the run.
 * **distill** — ``distill_steps`` over the surviving (certified, non-``done``)
   steps: strips the framework ``reasoning`` leaf and classifies bindings vs. candidate
   parameters (#1659/#1660/#1662) — EVERY unexplained leaf, whatever tool it sits on
@@ -70,6 +78,7 @@ from similarity.embeddings import cosine_similarity
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import RunProjection, RunProjectionStep, project_run
 from penny.database.memory import _similarity as sim
@@ -96,24 +105,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The tools that WRITE durable state (mirrors ``objects._WRITE_TOOLS``, the
-# run-record write set): a run qualifies as a skill only when its succeeded calls
-# include at least one of these AND at least one read-shaped call.  ``done`` is
-# loop control (excluded everywhere); every other tool is read-shaped.
-WRITE_SHAPED_TOOLS = frozenset(
-    {"collection_write", "update_entry", "collection_delete_entry", "log_append"}
-)
-
 # Registry-navigation verbs: the model uses these to ORIENT — resolve a skill or
 # collection (``find``), read a skill's params (``skill_read``), inspect a
 # collection's config (``memory_metadata``), or list the catalog
 # (``collection_catalog``) — before it acts.  They are not part of the routine a
 # skill captures (a re-run re-orients itself), and a ``find`` result ECHOES its
 # query, which manufactured a FALSE binding when captured as a step (#1665).  So
-# orientation calls are dropped from the distilled steps AND do not count as the
-# qualifying CONTENT read: a find + write run is a pure write (the storage atom),
-# not a skill.  The qualifying read must be a content read (browse, log_read,
-# collection_read_latest, read_similar, collection_get, entry reads).
+# orientation calls are dropped from the distilled steps: what survives is the
+# routine itself (browse, log_read, collection_read_latest, read_similar,
+# collection_get, entry reads, and the writes).
 # Preceding conversation turns fed to the labelling step — the user's instigating
 # ask ('can you watch …') usually sits a turn or two before the demonstration, and
 # what a spot IS is only legible against why the routine exists (#1658/#1828).
@@ -132,13 +132,12 @@ _FALLBACK_NAME = "learned-skill"
 
 class ExtractionGate(StrEnum):
     """The closed set of reasons a run does NOT yield a skill — each a named,
-    loggable qualify-gate failure (never a silent no-op)."""
+    loggable gate failure (never a silent no-op)."""
 
+    NOT_LEARN = "not_a_learn_turn"
     NOT_CHAT = "not_chat_run"
     NO_TOOL_CALLS = "no_tool_calls"
     NO_CERTIFIED_STEPS = "no_certified_steps"
-    PURE_READ = "pure_read_no_write"
-    PURE_WRITE = "pure_write_no_read"
 
 
 class SkillExtracted(BaseModel):
@@ -186,12 +185,16 @@ def _certified_steps(
     #1668 collector-surface-only).  Reads the structural per-call success stamp
     (``RunProjectionStep.success``, #1600): a step survives only when its stamp is
     exactly ``True`` (a recorded failure or a missing stamp is uncertain and left out),
-    it is not a registry-navigation verb (``ORIENTATION_TOOLS`` — dropped from the recipe
-    and not counted as the qualifying read), AND its tool is one a COLLECTOR can run
-    (``collector_surface`` — a skill renders into a collector prompt, so a lifecycle call
-    the demo made mid-run, e.g. ``collection_set`` to set up the container, is dropped
-    from the recipe; it's not a step a collector could run and counts for nothing in the
-    taxonomy).  So certified-by-execution + routine-only + runnable hold by construction."""
+    it is not a registry-navigation verb (``ORIENTATION_TOOLS`` — a re-run re-orients
+    itself, so orientation is not part of the routine), AND its tool is one a COLLECTOR
+    can run (``collector_surface`` — a skill renders into a collector prompt, so a
+    lifecycle call the demo made mid-run, e.g. ``collection_set`` to set up the
+    container, is dropped from the recipe; it's not a step a collector could run).  So
+    certified-by-execution + routine-only + runnable hold by construction.
+
+    The list this returns feeds the last quantity gate: a learn run that captured
+    nothing is ``NO_CERTIFIED_STEPS`` rather than an empty skill, which is what #1839's
+    honest learn-failure reply reads."""
     return [
         step
         for step in _runnable_steps(projection)
@@ -279,12 +282,22 @@ class SkillExtractor:
         # dropped from the recipe rather than baked into an uninstantiable skill.
         self._collector_surface = collector_tool_surface
 
-    async def extract(self, run_id: str) -> SkillExtractionResult:
+    async def extract(
+        self, run_id: str, *, state: ConversationState | None
+    ) -> SkillExtractionResult:
         """Extract a skill from one completed run's ledger rows — the summary method.
 
-        Reads the run's prompts, projects them, runs the structural qualify gates,
-        distils the surviving steps, names + dedups, and persists.  Returns the
-        extracted skill or a typed no-extraction outcome naming the failed gate."""
+        Checks the turn's landed state, then reads the run's prompts, projects them,
+        runs the structural qualify gates, distils the surviving steps, names + dedups,
+        and persists.  Returns the extracted skill or a typed no-extraction outcome
+        naming the failed gate.
+
+        ``state`` is what the conversation machine decided for THIS turn, threaded in
+        by the caller (``None`` = no machine decided it, which is idle).  It is a
+        parameter rather than a read of ``db.machine`` so extraction cannot disagree
+        with the state the turn was actually run under."""
+        if state is not ConversationState.LEARN:
+            return self._not_a_learn_turn(run_id, state)
         prompts = self._db.messages.get_run_prompts(run_id)
         projection = project_run(prompts)
         certified = _certified_steps(projection, self._collector_surface)
@@ -294,6 +307,24 @@ class SkillExtractor:
         draft = await self._draft(run_id, projection, certified)
         return await self._persist(draft, projection.origin_message)
 
+    @staticmethod
+    def _not_a_learn_turn(run_id: str, state: ConversationState | None) -> NoExtraction:
+        """The state gate's refusal (#1850) — a NAMED outcome, logged with the state
+        that produced it, never a silent skip.
+
+        Teaching is the only thing that mints a routine, so every other turn declines
+        here: an apply turn that enacts a skill (and browses and writes doing it), an
+        idle one-off, a request turn negotiating what a skill needs.  The state carries
+        the reason, which is why it is logged beside the gate — 'this run did not
+        qualify' says nothing a reader can act on; 'this was an apply turn' does."""
+        logger.debug(
+            "No skill extracted from run %s (%s: the turn's state was %s)",
+            run_id,
+            ExtractionGate.NOT_LEARN,
+            state,
+        )
+        return NoExtraction(gate=ExtractionGate.NOT_LEARN)
+
     def _disqualify(
         self,
         prompts: list[PromptLog],
@@ -301,14 +332,20 @@ class SkillExtractor:
         certified: list[RunProjectionStep],
     ) -> ExtractionGate | None:
         """Run the ordered qualify gates; the FIRST failure's gate is returned
-        (``None`` == qualifies).  Order: chat-run · has-calls · certified · taxonomy."""
+        (``None`` == qualifies).  Order: chat-run · has-calls · certified.
+
+        Every one is MECHANICS — was this a chat run at all, did it do anything, did
+        anything it did survive certification — never a judgment about the routine's
+        SHAPE.  The read+write taxonomy that used to sit at the end of this list is
+        gone (#1850): what makes a demonstration a routine is that the user was
+        teaching it, which the state gate already settled."""
         if not self._is_chat_run(prompts):
             return ExtractionGate.NOT_CHAT
         if not _runnable_steps(projection):
             return ExtractionGate.NO_TOOL_CALLS
         if not certified:
             return ExtractionGate.NO_CERTIFIED_STEPS
-        return _taxonomy_gate(certified)
+        return None
 
     def _is_chat_run(self, prompts: list[PromptLog]) -> bool:
         """The run belongs to the chat agent (its prompts carry the chat
@@ -736,18 +773,3 @@ def _as_placeholder(sub: SkillSubstitution, description: str) -> SkillSubstituti
 def _tool_sequence(steps: list[SkillStep]) -> list[str]:
     """The ordered list of a skill's step tool names — its shape fingerprint."""
     return [step.tool for step in steps]
-
-
-def _taxonomy_gate(certified: list[RunProjectionStep]) -> ExtractionGate | None:
-    """The read/write taxonomy over the SUCCEEDED calls: a routine SENSES and ACTS,
-    so it needs ≥1 write-shaped call AND ≥1 read-shaped call.  A pure read is
-    answering; a pure write is the storage atom ('remember this'); neither is a
-    skill.  ``None`` == the taxonomy is satisfied."""
-    tools = [step.call.name for step in certified]
-    has_write = any(tool in WRITE_SHAPED_TOOLS for tool in tools)
-    has_read = any(tool not in WRITE_SHAPED_TOOLS for tool in tools)
-    if not has_write:
-        return ExtractionGate.PURE_READ
-    if not has_read:
-        return ExtractionGate.PURE_WRITE
-    return None

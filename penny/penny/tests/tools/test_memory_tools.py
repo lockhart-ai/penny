@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
+from penny.conversation_machine import ConversationState
 from penny.database import Database
 from penny.database.memory import (
     WriteGateOutcome,
@@ -1711,10 +1712,11 @@ class TestTwoStepTeachBootstrap:
         _log_demo_run(db, "run-demo", write_target="deals-watch")
 
         # 3. The routine is learned AUTOMATICALLY at run end — the extractor distils
-        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  With
-        #    a bare model client the generic-naming micro-context (#1665) produces no
-        #    NAME:/DESCRIPTION: tags, so the name falls back to a deterministic slug of
-        #    the demo's triggering message.
+        #    run-demo into a skill (there is no skill_create tool anymore, #1658).  The
+        #    demonstration is a LEARN turn, which is the only turn extraction runs on
+        #    (#1850).  With a bare model client the generic-naming micro-context (#1665)
+        #    produces no NAME:/DESCRIPTION: tags, so the name falls back to a
+        #    deterministic slug of the demo's triggering message.
         client = cast(Any, MockLlmClient())
         extraction = await SkillExtractor(
             db,
@@ -1722,7 +1724,7 @@ class TestTwoStepTeachBootstrap:
             client,
             agent_name="chat",
             collector_tool_surface=collector_tool_surface(db, client),
-        ).extract("run-demo")
+        ).extract("run-demo", state=ConversationState.LEARN)
         assert isinstance(extraction, SkillExtracted)
         taught_name = extraction.skill.name
         assert taught_name == "watch-the-meridian-trail-3-shoe"
