@@ -625,9 +625,9 @@ async def test_the_two_run_end_draws_are_shown_different_evidence(db):
     learns what the user wanted, which is what stops the two contradicting each other.
     Both user turns are the whole ask, and neither turn is repeated."""
     labels = (
-        "PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
-        "PLACEHOLDER memory: storage_collection — the collection this is set up on"
+        "LABEL queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page each run\n"
+        "LABEL memory: storage_collection — the collection this is set up on"
     )
     model = _run_end_model(labels=labels)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
@@ -686,11 +686,11 @@ async def test_an_unlabelled_draw_leaves_every_spot_with_its_arg_derived_name(db
 # ── #1824/#1828/#1830: the two halves land on one skill ───────────────────────
 
 _LABELLED_ROUND = (
-    "PLACEHOLDER queries: listing_page — the page whose price this routine reads\n"
-    "PLACEHOLDER extract: value_to_find — what to pull off the page each run\n"
-    "PLACEHOLDER memory: storage_collection — the collection this is set up on\n"
-    "PLACEHOLDER key: note_key — what to call the note it saves\n"
-    "PLACEHOLDER content: note_text — the note it writes about the page"
+    "LABEL queries: listing_page — the page whose price this routine reads\n"
+    "LABEL extract: value_to_find — what to pull off the page each run\n"
+    "LABEL memory: storage_collection — the collection this is set up on\n"
+    "LABEL key: note_key — what to call the note it saves\n"
+    "LABEL content: note_text — the note it writes about the page"
 )
 _FRAMED_ROUND = (
     "NAME: price-watcher\n"
@@ -801,11 +801,11 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     draw that leaves any spot unnamed is a contract violation — one reroll on the
     unchanged context, then an honest WHOLE-draw failure.
 
-    The observed failure this closes: the tag itself decays mid-draw (``PLACEHOlDER``),
+    The observed failure this closes: the tag itself decays mid-draw (``LABLE``),
     the parse rightly refuses the line, and the validator used to accept around it —
     costing that one spot its label silently.  Correctness of accepted results over
     salvage: no partial rescue, every spot keeps its arg-derived name."""
-    model = _run_end_model(labels="PLACEHOLDER queries: listing_page — the page this routine reads")
+    model = _run_end_model(labels="LABEL queries: listing_page — the page this routine reads")
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
     result = await _extractor(db, model=model).extract("run-A")
@@ -826,9 +826,9 @@ async def test_a_draw_that_misses_any_spot_fails_whole(db):
     # A DECAYED TAG is that same miss, arriving as the shape the run reported: the line
     # is unreadable, so the spot it meant to name is uncovered.
     decayed = _run_end_model(
-        labels="PLACEHOlDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER memory: storage_collection — where the reading is kept"
+        labels="LABLE queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL memory: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-B", "check the aurora price again please", [_BROWSE, _WRITE])
 
@@ -847,10 +847,10 @@ async def test_a_spot_named_twice_fails_the_whole_draw(db):
     as a missing line — one reroll, then the whole draw fails and every spot keeps its
     arg-derived name."""
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER extract: detail_to_check — something else entirely\n"
-        "PLACEHOLDER memory: storage_collection — where the reading is kept"
+        labels="LABEL queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL extract: detail_to_check — something else entirely\n"
+        "LABEL memory: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -872,10 +872,10 @@ async def test_a_line_for_a_spot_nobody_offered_fails_the_draw(db):
     enforceable: a value filling two argument sites is ONE spot, and a draw that splits
     it keys its second line to a name nobody offered — which is precisely this."""
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER memory: storage_collection — where the reading is kept\n"
-        "PLACEHOLDER nowhere: invented_spot — a spot nobody offered"
+        labels="LABEL queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL memory: storage_collection — where the reading is kept\n"
+        "LABEL nowhere: invented_spot — a spot nobody offered"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -901,9 +901,9 @@ async def test_a_line_that_stops_after_the_name_says_nothing_belongs_there(db):
     there — a spot that stopped being bindable and says nothing, strictly worse than
     the arg-derived name it replaced.  So the extractor reads it as no label."""
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER memory: storage_collection — where the reading is kept"
+        labels="LABEL queries: listing_page\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL memory: storage_collection — where the reading is kept"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -952,9 +952,9 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
     costs a reroll under the coverage rule (#1828): a tolerated line is a well-formed
     line, and it covers its spot like any other."""
     model = _run_end_model(
-        labels="- PLACEHOLDER queries: listing_page – the page this routine reads\n"
-        "* **PLACEHOLDER extract: value_to_find — what to pull off the page**\n"
-        'PLACEHOLDER memory: "storage_collection" — where the reading is kept'
+        labels="- LABEL queries: listing_page – the page this routine reads\n"
+        "* **LABEL extract: value_to_find — what to pull off the page**\n"
+        'LABEL memory: "storage_collection" — where the reading is kept'
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -976,7 +976,7 @@ async def test_a_cosmetically_variant_label_line_still_carries_its_label(db):
 async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     """The backstop for whatever tolerance doesn't reach (#1814): a semantic name is a
     TOKEN, not a sentence, so a line whose "name" swallowed its own description is
-    MALFORMED — never good data.  A near-miss tag (``PLACEHOLDERS``) is not a line
+    MALFORMED — never good data.  A near-miss tag (``LABELS``) is not a line
     either.
 
     Under the coverage rule (#1828) each of those leaves its spot uncovered, so the DRAW
@@ -984,9 +984,9 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
     its arg-derived name, and the attachment-marked write target falls back to the fixed
     wording (the attachment fills it, and no user ever could)."""
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        'PLACEHOLDER extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
-        "PLACEHOLDERS memory: storage_collection — not a label line"
+        labels="LABEL queries: listing_page — the page this routine reads\n"
+        'LABEL extract: what_to_find | the content descriptor to look for (e.g., "price")\n'
+        "LABELS memory: storage_collection — not a label line"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1156,9 +1156,9 @@ async def test_the_destination_is_filled_by_the_attachment_under_its_drawn_name(
     string) in the stored recipe, and applying the routine to a collection binds it to
     that collection's own name."""
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER memory: storage_collection — wherever this routine keeps its readings"
+        labels="LABEL queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL memory: storage_collection — wherever this routine keeps its readings"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
 
@@ -1194,11 +1194,11 @@ async def test_two_destinations_both_land_on_the_collection_the_routine_is_appli
         True,
     )
     model = _run_end_model(
-        labels="PLACEHOLDER queries: listing_page — the page this routine reads\n"
-        "PLACEHOLDER extract: value_to_find — what to pull off the page\n"
-        "PLACEHOLDER memory: live_list — where the current reading is kept\n"
-        "PLACEHOLDER memory-2: archive — where past readings are kept\n"
-        "PLACEHOLDER content: previous_reading — the value filed in the archive"
+        labels="LABEL queries: listing_page — the page this routine reads\n"
+        "LABEL extract: value_to_find — what to pull off the page\n"
+        "LABEL memory: live_list — where the current reading is kept\n"
+        "LABEL memory-2: archive — where past readings are kept\n"
+        "LABEL content: previous_reading — the value filed in the archive"
     )
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE, second_write])
 
@@ -1321,7 +1321,16 @@ def test_labelling_system_prompt_whole_render():
 
     The worked examples are deliberately unquoted PROSE: a quoted example is copied
     verbatim ~82% of the time, and the one thing this prompt asks the model to compose
-    is a name."""
+    is a name.
+
+    The wire tag is ``LABEL`` — short, common, non-compound — because the tag before it
+    DECAYED at measurable rates (#1842, the #1826 long-literal decay class).  Eleven
+    characters of ``PLACEHOLDER`` came back as ``PLACEBLODER``, ``PLACEHOLER`` (three
+    times in a single draw), ``PLACEHOlder``, and once carrying a zero-width character;
+    the parse matches tags exactly, so every one of those read as no line and the
+    coverage rule correctly failed the whole draw — discarding judgments that were
+    themselves perfect.  The ruling was to change the WORD, not to loosen the match: a
+    literal the model has to spell is a literal it can misspell."""
     assert SKILL_NAMING_SYSTEM_PROMPT == (
         "You are a naming step. A routine has just been demonstrated once, and every "
         "spot in it that gets filled in again each time it runs has been pulled out for "
@@ -1346,12 +1355,12 @@ def test_labelling_system_prompt_whole_render():
         "wherever the routine reads, e.g. the spot filling browse.extract with the "
         "current price — is PLAIN LANGUAGE: there is no CSS-selector, XPath, or pattern "
         "machinery in this system, so NEVER name or describe one that way.\n"
-        "Respond with one line per placeholder and nothing else:\n"
-        "PLACEHOLDER <current name>: <semantic_name> — "
+        "Respond with one LABEL line per placeholder and nothing else:\n"
+        "LABEL <current name>: <semantic_name> — "
         "<one-line description of what belongs there each run>\n"
-        "Write ONE line for EVERY placeholder you were given, and none for anything "
-        "else, repeating its CURRENT name exactly so it maps back. Two spots are never "
-        "the same spot: give each its own name. Use a single lowercase word or "
+        "Write ONE LABEL line for EVERY placeholder you were given, and none for "
+        "anything else, repeating its CURRENT name exactly so it maps back. Two spots "
+        "are never the same spot: give each its own name. Use a single lowercase word or "
         "snake_case for <semantic_name>.\n"
         "IMPORTANT: write nothing else — no preamble, no explanation, no restating the "
         "routine."

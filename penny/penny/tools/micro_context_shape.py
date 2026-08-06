@@ -325,7 +325,7 @@ def _carve(payload: str, fields: tuple[FieldSpec, ...]) -> dict[str, str] | None
 
     A separator that isn't in the payload ends the line: the field takes what is
     left and every field after it is ABSENT, which is fine only if they are all
-    optional (so ``PARAM x: y`` with no description parses, while ``PLACEHOLDER x``
+    optional (so ``PARAM x: y`` with no description parses, while ``LABEL x``
     with no description does not)."""
     values: dict[str, str] = {}
     remaining: str | None = payload

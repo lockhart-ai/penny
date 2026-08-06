@@ -190,14 +190,24 @@ _INVALID_DRAW_BUDGET = 2
 # absence had a safe meaning (keep the arg-derived required parameter).  For the leaf
 # labeller it is wrong, because the caller knows the exact offered-leaf set, so the
 # question "did every spot get a well-formed line?" is ANSWERABLE — and the observed
-# failure was the tag itself decaying mid-draw (``PLACEHOlDER``, ``PLACEHOLE``,
-# ``PLACEHALER``), which the parse rightly refused and the validator then accepted
-# around, silently costing that spot its label.  A draw that misses any offered spot is
-# now a contract violation exactly like the classifier drawing an out-of-set state: one
-# reroll on the unchanged context, then an honest WHOLE-draw failure.  Correctness of
-# accepted results over salvage — a draw that decays twice fails whole, and every spot
-# keeps its arg-derived name.
-PLACEHOLDER_TAG = "PLACEHOLDER"
+# failure was the tag itself decaying mid-draw, which the parse rightly refused and the
+# validator then accepted around, silently costing that spot its label.  A draw that
+# misses any offered spot is now a contract violation exactly like the classifier
+# drawing an out-of-set state: one reroll on the unchanged context, then an honest
+# WHOLE-draw failure.  Correctness of accepted results over salvage — a draw that decays
+# twice fails whole, and every spot keeps its arg-derived name.
+#
+# THE TAG IS A SHORT, COMMON, NON-COMPOUND WORD (#1842, the #1826 decay class).  It was
+# ``PLACEHOLDER`` — eleven characters, a compound the model could not write reliably: in
+# one measured run it labelled every spot correctly in both draws and still failed the
+# whole labelling, because the tag came out ``PLACEBLODER``, ``PLACEHOLER`` (three times
+# in one draw), ``PLACEHOlder``, and once with a zero-width character inside it.  The
+# parse matches tags EXACTLY (no fuzzy matching, by standing ruling), so each decayed
+# line read as no line, coverage correctly rejected the draw, and four perfect judgments
+# were discarded over spelling.  The fix is the word, not the matching: a literal the
+# model has to spell is a literal it can misspell, so the wire tag is one it writes
+# without effort.
+LABEL_TAG = "LABEL"
 
 # The one line this customer emits, once per offered spot.  The semantic name declares
 # ``FieldShape.NAME`` because it is the spot's identity downstream (the binding key the
@@ -210,8 +220,8 @@ PLACEHOLDER_TAG = "PLACEHOLDER"
 # one as no label rather than rendering an empty slot.  (That is the one per-spot path
 # left, and it is the ticket's own grammar: the line IS well-formed, so coverage holds
 # and the draw stands — what is missing is what belongs there, not the line.)
-_PLACEHOLDER_LINE = LineSpec(
-    tag=PLACEHOLDER_TAG,
+_LABEL_LINE = LineSpec(
+    tag=LABEL_TAG,
     role=LineRole.PER_ITEM,
     fields=(
         FieldSpec(name=DrawField.CURRENT, placeholder="<current name>", separator=Separator.COLON),
@@ -228,7 +238,7 @@ _PLACEHOLDER_LINE = LineSpec(
         ),
     ),
 )
-SKILL_NAMING_SHAPE = MicroContextShape(lines=(_PLACEHOLDER_LINE,))
+SKILL_NAMING_SHAPE = MicroContextShape(lines=(_LABEL_LINE,))
 
 SKILL_NAMING_SYSTEM_PROMPT = (
     "You are a naming step. A routine has just been demonstrated once, and every "
@@ -254,9 +264,9 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "the routine reads, e.g. the spot filling browse.extract with the current price — "
     "is PLAIN LANGUAGE: there is no CSS-selector, XPath, or pattern machinery in this "
     "system, so NEVER name or describe one that way.\n"
-    "Respond with one line per placeholder and nothing else:\n"
-    f"{render_line(_PLACEHOLDER_LINE)}\n"
-    "Write ONE line for EVERY placeholder you were given, and none for anything else, "
+    "Respond with one LABEL line per placeholder and nothing else:\n"
+    f"{render_line(_LABEL_LINE)}\n"
+    "Write ONE LABEL line for EVERY placeholder you were given, and none for anything else, "
     "repeating its CURRENT name exactly so it maps back. Two spots are never the same "
     "spot: give each its own name. Use a single lowercase word or snake_case for "
     "<semantic_name>.\n"
@@ -891,9 +901,9 @@ def _labels_every_spot(drawn: ParsedDraw, offered: Sequence[str]) -> bool:
     keys a second line to a name nobody listed.
 
     The caller knows the offered set, so all three are answerable rather than
-    best-effort gaps to absorb; the prompt asks for exactly this ("one line for every
-    placeholder you were given, and none for anything else"), so the validator and the
-    contract say one thing."""
+    best-effort gaps to absorb; the prompt asks for exactly this ("one LABEL line for
+    every placeholder you were given, and none for anything else"), so the validator and
+    the contract say one thing."""
     named = [item.fields[DrawField.CURRENT] for item in drawn.items]
     return sorted(named) == sorted(set(offered))
 
