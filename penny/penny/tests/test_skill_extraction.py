@@ -1544,16 +1544,23 @@ def test_skill_brief_render_omits_the_needs_tail_when_a_routine_needs_nothing():
 
 
 def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
-    """The learn → apply enactment case (#1706) starts from the world a completed
-    teach round leaves behind, and builds its fixture skill by running THIS
+    """The learn → apply enactment cases (#1706) start from the world a completed
+    teach round leaves behind, and build their fixture skills by running THIS
     module's own draw-application over that round's ledger rather than
     hand-writing the result — the labeller's spots through ``_apply_leaf_labels``,
     the framer's signature through ``_naming`` + ``_interface_parameters``.  Pin
-    that here, where it costs no GPU: a distiller, labeller or framer change that
+    the auction script's own (one of five, the case that keeps the original id)
+    here, where it costs no GPU: a distiller, labeller or framer change that
     reshapes the skill fails a plain test instead of quietly handing the live case
     an easier — or impossible — starting world.  (It has already earned this:
     #1777 made the write target a placeholder, and this pin is what reported the
     reshape rather than the eval discovering it on a GPU run.)
+
+    Both draws are transcribed from the preceding beat's measured run (#1846), so
+    the descriptions below are a labeller's real wording rather than a convenient
+    invention — including the write target's, which a landed draw names like any
+    other spot (``WRITE_TARGET_DESCRIPTION`` is the fallback for a spot no line
+    covered, which is not this fixture's case).
 
     The shape is the framer's declared interim (#1830): the recipe is ALL
     placeholders — the labeller covers every spot or its draw fails whole, so a
@@ -1573,19 +1580,19 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
         if substitution.kind == SkillSubKind.PLACEHOLDER
     ]
     assert [substitution.description for substitution in placeholders] == [
-        "the page whose price this routine reads",
-        "what to pull off the page each run",
-        WRITE_TARGET_DESCRIPTION,
-        "what to call the entry it saves",
+        "the url of the page to browse",
+        "a plain text description of what information to retrieve from the page",
+        "the identifier for the storage area where scraped data will be saved",
+        "the key under which the extracted value is stored within that collection",
     ]
     # The whole recipe, verbatim — every spot says what belongs there and NOTHING the
     # round demonstrated survives into it: not the collection, not the key, not the
     # page, not what it pulled off the page.  Binding the framer's parameter changes
     # nothing here, because nothing joins it to a leaf yet (#1830's declared interim).
     assert render_skill(skill.steps, {"url": "https://example.test"}) == (
-        "1. browse(queries=[{the page whose price this routine reads}], "
-        "extract={what to pull off the page each run})\n"
-        f"2. collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}, "
-        "entries=[{'key': {what to call the entry it saves}, "
-        "'content': the value from step 1}])"
+        "1. browse(queries=[{the url of the page to browse}], "
+        "extract={a plain text description of what information to retrieve from the page})\n"
+        "2. collection_write(memory={the identifier for the storage area where scraped "
+        "data will be saved}, entries=[{'key': {the key under which the extracted value "
+        "is stored within that collection}, 'content': the value from step 1}])"
     )
