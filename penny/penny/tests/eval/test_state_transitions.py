@@ -1403,10 +1403,15 @@ def _score_elicit_to_learn_absent(db: Database, before: set[str], reply: str) ->
             tool_was_called(db, "browse"),
             kind="state",
         ),
+        # Read off the ENTRIES, not their texts: what this case claims is that no entry
+        # was written at all, and #1854's `_written_texts` drops an empty half — so a
+        # write whose value came back blank would read as nothing written, which is the
+        # one reading this check must never give.  The texts are what the rationale
+        # NAMES when it missed, which is that helper's own second customer.
         Check(
             "state: this run wrote no entry anywhere (nothing was invented)",
             not written,
-            rationale=f"wrote {written}" if written else None,
+            rationale=f"wrote {_written_texts(written)}" if written else None,
             kind="state",
         ),
         Check(
