@@ -792,7 +792,16 @@ def test_learn_instruction_whole_render():
     finding a value is not remembering it, the write is (a demonstrated round reported
     a price it had only browsed); and the job terms an anchored watch ask carries
     (a cadence, being told about changes) are somebody else's turn, said as permission
-    to leave them alone rather than as one more prohibition."""
+    to leave them alone rather than as one more prohibition.
+
+    The third paragraph is the stop-and-report caveat (#1855): a step the world cannot
+    support ends the round where it stopped, reported honestly, rather than being routed
+    around or written up as done.  It names the STATE that stops a round — the page
+    doesn't have it, the value never showed up — never a tool or a task shape, so it
+    reaches a round built out of tools nobody has written yet.  Permission first ("it's
+    okay to stop there"), prohibition second, which is the order the #1838 clauses
+    already use.  The over-correction it must NOT cause: a call that failed with an
+    actionable error is still fixed and retried — that is a step that CAN be done."""
     assert Prompt.LEARN_INSTRUCTION == (
         "The user has given you the steps for a task. Follow them now, once, "
         "exactly as given — this turn is that one run.\n\n"
@@ -801,6 +810,11 @@ def test_learn_instruction_whole_render():
         "with a real call, and record what you ACTUALLY found — never a "
         "placeholder, an example, or a description of what you would have found. "
         "Finding a value is not remembering it; the write is.\n\n"
+        "Follow the steps as they gave them. If a step can't be done — the page "
+        "doesn't have what you're looking for, or a value you need never showed "
+        "up — it's okay to stop there. Tell them what you did find and which step "
+        "stopped you, and they'll adjust the instructions. Don't take a different "
+        "route to the goal, and never report a step as done that didn't happen.\n\n"
         "If the task also mentions a schedule or being told about changes, leave "
         "that part alone for now — it is set up in a later turn, after they ask "
         "for it. Your job this turn is the steps, nothing else.\n\n"
