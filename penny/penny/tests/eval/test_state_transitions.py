@@ -74,8 +74,16 @@ from penny.database.skills import (
 # here would be a fixture that drifts from the pipeline it stands in for.  Both
 # halves of the #1824 split are applied by their own production function —
 # ``_apply_leaf_labels`` for the labeller's spots, ``_naming`` +
-# ``_interface_parameters`` for the framer's signature.
-from penny.skill_extraction import _apply_leaf_labels, _interface_parameters, _naming
+# ``_interface_parameters`` for the framer's signature.  ``attachment_names`` is the
+# registry policy for what a routine can be attached to, read for the same reason: the
+# scorer asks whether a learned routine HAS a destination, and that is the question
+# extraction already answers when it decides which leaves to mark.
+from penny.skill_extraction import (
+    _apply_leaf_labels,
+    _interface_parameters,
+    _naming,
+    attachment_names,
+)
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     ChatEval,
@@ -142,20 +150,33 @@ def _landed_state(db: Database) -> str | None:
     return latest.to_state if latest else None
 
 
-def _entries_written_by_this_run(db: Database) -> list[str]:
-    """Every entry content this run wrote, wherever it landed.
+def _entries_written_by_this_run(db: Database) -> list[MemoryEntry]:
+    """Every ENTRY this run wrote, wherever it landed.
 
     Scoring only collections the run CREATED assumed she always makes one — but
     "remember it" may reuse a name that already exists, and then the run's real
     writes are invisible while the reused collection's own seeded prompt and
     trigger read as things she did.  The run-id stamp says exactly what this run
-    wrote (#1560), so ask that instead of inferring from newness."""
-    written = []
+    wrote (#1560), so ask that instead of inferring from newness.
+
+    The whole entry, not its content alone: where in the entry a fact landed is a
+    question about key/value semantics that is deliberately open (#1854), so the
+    callers read both halves through ``_written_texts``."""
+    written: list[MemoryEntry] = []
     for row in db.memories.list_all():
         memory = db.memory(row.name)
         entries = memory.read_all() if memory is not None else []
-        written += [e.content for e in entries if e.created_by_run_id]
+        written += [e for e in entries if e.created_by_run_id]
     return written
+
+
+def _written_texts(entries: list[MemoryEntry]) -> list[str]:
+    """Both halves of every written entry — its KEY and its CONTENT.
+
+    One shape, two customers: what the durable-write check matches the case's fact
+    against, and what a rationale names when it missed.  A log entry has no key, so
+    what it contributes is its content alone."""
+    return [text for entry in entries for text in (entry.key, entry.content) if text]
 
 
 def _pages_fetched(db: Database) -> list[MemoryEntry]:
@@ -249,6 +270,21 @@ _COLONY_COUNT = CannedPage(
 )
 
 _NEW_ARRIVALS_URL = "https://citylibrary.example/new-arrivals"
+# A real catalogue page carries far more than the task needs, and this one now does too
+# (#1854, code-owner ruling): three arrivals, each with its title, author, blurb, and
+# shelf details.  The measured failure it fixes: a draw that over-asked the extract —
+# "the title AND AUTHOR of the newest book" — got an honest NOT_PRESENT off a page
+# carrying one bare line, so the value died upstream and the round had nothing to
+# remember and nothing to write.  An over-ask is a defensible reading of a watch ask, so
+# the page answers it instead of the round failing on a fixture's thinness.
+#
+# Two properties the enrichment must not break.  "The Tidewater Almanac" stays the sole
+# CONTROLLABLE fact — the one the scorer matches on — so it appears nowhere but its own
+# arrival, and the newest arrival is unambiguous (the other two are dated behind it in
+# words, not just by position).  And each arrival's markdown link sits at the CENTRE of
+# its five-line block: a SEARCH-shaped read is trimmed to ±2 lines around every solo
+# link (``_trim_search_result``), so a block laid out any other way would lose the very
+# fields this page was enriched to carry.
 _NEW_ARRIVALS = CannedPage(
     match="library",
     text=(
@@ -256,9 +292,29 @@ _NEW_ARRIVALS = CannedPage(
         f"{_NEW_ARRIVALS_URL}\n"
         "\n"
         "Titles added to a fictional catalogue, refreshed every weekday morning.\n"
-        'Newest arrival: "The Tidewater Almanac" (added Tuesday)\n'
         f"[City library new arrivals]({_NEW_ARRIVALS_URL})\n"
-        "Older arrivals drop off the page after a fortnight.\n"
+        "Listed newest first; older arrivals drop off the page after a fortnight.\n"
+        "\n"
+        "Newest arrival — added Tuesday\n"
+        '"The Tidewater Almanac" by Marisol Enge\n'
+        "[The Tidewater Almanac](https://citylibrary.example/catalogue/tidewater-almanac)\n"
+        "A year of coastal weather notes, tide charts and harbour lore, kept by a "
+        "small-press essayist.\n"
+        "Hardcover · 312 pages · Shelf 551.46 · 3 copies, 2 available\n"
+        "\n"
+        "Added the Friday before that\n"
+        '"The Cartwright Bequest" by Ivo Pellani\n'
+        "[The Cartwright Bequest](https://citylibrary.example/catalogue/cartwright-bequest)\n"
+        "A country-house mystery told backwards, from the reading of the will.\n"
+        "Paperback · 288 pages · Shelf F PEL · 4 copies, 1 available\n"
+        "\n"
+        "Added two weeks ago\n"
+        '"Kettle Lake Field Guide" by Dunja Vance\n'
+        "[Kettle Lake Field Guide](https://citylibrary.example/catalogue/kettle-lake-guide)\n"
+        "Birds, sedges and weather of a fictional lake district, with sketch maps.\n"
+        "Spiral-bound · 176 pages · Shelf 578.7 · 2 copies, both on hold\n"
+        "\n"
+        "Requests and renewals are handled at the desk or through the catalogue.\n"
     ),
 )
 
@@ -373,7 +429,7 @@ def _score_idle_to_elicit(db: Database, before: set[str], reply: str) -> list[Ch
     Whether the reply IS the teach question is read at joint review — one line of
     English carries no structural signal — so the single scored reply check is
     the one failure that IS structural: asking the user how the page is built."""
-    written = _entries_written_by_this_run(db)
+    written = _written_texts(_entries_written_by_this_run(db))
     fetched = _pages_fetched(db)
     enacted = [
         tool for run in chat_run_tool_sequences(db) for tool in run if tool in _ENACTING_TOOLS
@@ -742,15 +798,19 @@ def _mentions(token: str, texts: list[str]) -> bool:
     return any(token.lower() in text.lower() for text in texts)
 
 
-def _skill_substitutions(db: Database) -> list[SkillSubstitution]:
-    """Every dynamic leaf of every learned skill — the SHAPE run-end extraction left
-    behind, read structurally off the stored rows rather than off the demonstration."""
-    return [
-        sub
-        for skill in db.skills.list_all()
-        for step in steps_from_json(skill.steps)
-        for sub in step.substitutions
-    ]
+def _skill_steps(db: Database) -> list[SkillStep]:
+    """Every step of every learned skill — the ROUTINE run-end extraction left behind,
+    read structurally off the stored rows rather than off the demonstration.
+
+    The step, not its substitutions alone, because a leaf's demonstrated value lives in
+    its step's ``arguments`` and that is what says whether the leaf is a destination
+    (#1854)."""
+    return [step for skill in db.skills.list_all() for step in steps_from_json(skill.steps)]
+
+
+def _skill_substitutions(steps: list[SkillStep]) -> list[SkillSubstitution]:
+    """Every dynamic leaf of the learned routine — the SHAPE of what was captured."""
+    return [sub for step in steps for sub in step.substitutions]
 
 
 def _skill_parameters(db: Database) -> list[SkillParameter]:
@@ -815,20 +875,52 @@ def _placeholders_only_check(subs: list[SkillSubstitution]) -> Check:
     )
 
 
-def _attachment_mark_check(subs: list[SkillSubstitution]) -> Check:
+def _attachment_mark_check(db: Database, steps: list[SkillStep]) -> Check:
     """The destination leaf still carries the ATTACHMENT MARK (#1783, #1827 principle
-    4).
+    4) — scored only when the routine HAS a destination (#1854).
 
     Where a routine writes is decided by what it is applied to and is never asked of the
     user, and the mark is exactly what the apply turn binds — so a routine whose
-    destination came back unmarked is one the next edge cannot point anywhere."""
-    marked = any(sub.attachment for sub in subs)
+    destination came back unmarked is one the next edge cannot point anywhere.
+
+    A routine that keeps nothing has no such leaf to mark, and read-only routines are
+    legitimate (code-owner ruling: "there's tons of skills that be like 'check the scores
+    here, check the schedule there, tell me' — that doesn't require a store step").  Since
+    #1850 a learn round is extracted whatever shape it had, so a browse-only skill is now
+    a state this suite reaches, and grading it here would fail a routine for a step nobody
+    asked for.
+
+    Applicability is read from the DEMONSTRATED VALUES, never from the marks — "is
+    anything marked?" is the check itself, so answering applicability with it would pass
+    every routine vacuously and never catch a dropped mark.  A leaf is a destination when
+    its demonstrated value names one of Penny's own collections, which is exactly what
+    ``distill_steps`` marks on, read through the same registry policy extraction uses
+    (``attachment_names``).  Bindings are excluded there and excluded here: a value a
+    prior step produced is already explained, so nothing is left for an attachment to
+    decide.  Keyed to no tool name — a skill is an arbitrary tool sequence, so a plugin
+    verb's destination counts like a ``collection_write``'s."""
+    destinations = _destination_subs(db, steps)
+    if not destinations:
+        return Check.na(_ATTACHMENT_MARK_LABEL, kind="state")
+    marked = any(sub.attachment for sub in destinations)
     return Check(
         _ATTACHMENT_MARK_LABEL,
         marked,
-        rationale=None if marked else "no leaf is marked for the attachment",
+        rationale=None if marked else "the destination leaf came back unmarked",
         kind="state",
     )
+
+
+def _destination_subs(db: Database, steps: list[SkillStep]) -> list[SkillSubstitution]:
+    """Every leaf of the routine that points at one of Penny's own collections — the
+    spots the attachment fills, identified by their demonstrated value alone."""
+    collections = attachment_names(db)
+    return [
+        sub
+        for step in steps
+        for sub in step.substitutions
+        if sub.kind != SkillSubKind.BINDING and _leaf_at(step.arguments, sub.path) in collections
+    ]
 
 
 def _interface_check(required: list[SkillParameter]) -> Check:
@@ -935,25 +1027,27 @@ def _interface_advisories(db: Database) -> list[Check]:
 
 def _extraction_shape_checks(db: Database) -> list[Check]:
     """The shape run-end extraction produced, read off the stored skill: the LABELLER's
-    half (every spot a placeholder, the destination still marked) and the FRAMER's half
-    (one required parameter, described), with the drawn interface riding advisory.
+    half (every spot a placeholder, and — where the routine keeps anything — the
+    destination still marked) and the FRAMER's half (one required parameter, described),
+    with the drawn interface riding advisory.
 
     All three go NOT-APPLICABLE when no skill was learned at all.  That miss is already
     the scored "a skill was learned from the round" check, so grading the shape of a
     skill that does not exist would recount one failure three times — and "every spot is
     a placeholder" over an empty routine is vacuously true, which would render as a pass
-    for a round that produced nothing."""
+    for a round that produced nothing.  The mark check has a second not-applicable case
+    of its own (#1854): a routine with no destination has nothing to mark."""
     if not db.skills.list_all():
         return [
             Check.na(_PLACEHOLDERS_ONLY_LABEL, kind="state"),
             Check.na(_ATTACHMENT_MARK_LABEL, kind="state"),
             Check.na(_INTERFACE_LABEL, kind="state"),
         ]
-    subs = _skill_substitutions(db)
+    steps = _skill_steps(db)
     required = [parameter for parameter in _skill_parameters(db) if parameter.required]
     return [
-        _placeholders_only_check(subs),
-        _attachment_mark_check(subs),
+        _placeholders_only_check(_skill_substitutions(steps)),
+        _attachment_mark_check(db, steps),
         _interface_check(required),
         *_interface_advisories(db),
     ]
@@ -1034,7 +1128,7 @@ def _score_elicit_to_learn(
     wording the auction script gave them even where a ferry timetable is what was
     read."""
     created = new_collections(db, before)
-    written = _entries_written_by_this_run(db)
+    written = _written_texts(_entries_written_by_this_run(db))
     landed = _mentions(case.stored, written)
     return [
         Check(
@@ -1042,6 +1136,14 @@ def _score_elicit_to_learn(
             tool_was_called(db, "browse"),
             kind="state",
         ),
+        # The fact counts wherever in the entry it landed — its KEY or its content
+        # (#1854, code-owner ruling: "loosen the scorer; we can reason about the
+        # semantics of keys/values/remembering later").  Two measured samples wrote the
+        # arrival's title as the KEY and the date as the value, which is a workable
+        # shape for an arrival-shaped watch — a repeat title is KEY_EXISTS_UNCHANGED
+        # and a new one is a new key — and was scored a miss for putting the fact on
+        # the wrong side of the entry.  The label is unchanged: it is a diff-join key,
+        # and what the check tests is still that the browsed fact landed durably.
         Check(
             "state: the browsed price landed durably (remember = a plain write)",
             landed,

@@ -255,6 +255,26 @@ def _interface_parameters(
     ]
 
 
+def attachment_names(db: Database) -> frozenset[str]:
+    """The names of Penny's own COLLECTIONS — the things a routine can be ATTACHED
+    to (#1783).  A demonstrated leaf holding one of these names is decided by the
+    attachment, so distillation marks it and the render seam binds it to whatever
+    collection the skill is applied to.
+
+    Archived rows are included (a demonstration may have used one), logs are not: the
+    attachment is always a collection, and re-pointing a log reference at one would
+    produce a call the memory layer refuses.  Registry-derived — nothing here knows
+    which tools a skill contains.
+
+    PUBLIC because the elicit>learn eval decides whether a learned routine HAS a
+    destination to mark, and that question is this same registry policy: a scorer
+    restating it would be a second copy free to drift from the rule extraction marks
+    on."""
+    return frozenset(
+        row.name for row in db.memories.list_all() if row.type == MemoryType.COLLECTION.value
+    )
+
+
 class SkillExtractor:
     """The run-end skill-extraction pipeline — one instance per chat agent, holding
     its DB + embedding client (threaded, never ambient state)."""
@@ -371,7 +391,7 @@ class SkillExtractor:
         framing leaves the routine slug-named with no parameters.  Extraction never
         blocks on either."""
         steps, parameters = distill_steps(
-            self._distill_inputs(projection, certified), self._attachment_names()
+            self._distill_inputs(projection, certified), attachment_names(self._db)
         )
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         labels = await self._label_skill(steps, parameters, projection, conversation)
@@ -424,20 +444,6 @@ class SkillExtractor:
         falls back to the deterministic slug with nothing to bind."""
         content = build_framing_content(projection.origin_message, conversation)
         return await self._micro_context.frame_skill(content, run_target=self._agent_name)
-
-    def _attachment_names(self) -> frozenset[str]:
-        """The names of Penny's own COLLECTIONS — the things a routine can be ATTACHED
-        to (#1783).  A demonstrated leaf holding one of these names is decided by the
-        attachment, so distillation marks it and the render seam binds it to whatever
-        collection the skill is applied to.  Archived rows are included (a demonstration
-        may have used one), logs are not: the attachment is always a collection, and
-        re-pointing a log reference at one would produce a call the memory layer
-        refuses.  Registry-derived — nothing here knows which tools a skill contains."""
-        return frozenset(
-            row.name
-            for row in self._db.memories.list_all()
-            if row.type == MemoryType.COLLECTION.value
-        )
 
     @staticmethod
     def _distill_inputs(
