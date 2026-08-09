@@ -255,11 +255,13 @@ def test_render_parked_learn_slice_whole():
     back to elicit: elicit exists to GET the instructions, and they have been
     given.
 
-    Once a round has run, learn's condition is the CORRECTION shape, and it asks
-    for the correction to be IN the message — steps restated with changes.
-    Saying only that the round was wrong, or promising new instructions later,
-    carries none, which is what keeps a bail on the idle default rather than
-    reading as a correction because it sounds dissatisfied."""
+    Once a round has run, learn's condition is the CORRECTION shape in two
+    cases: the steps restated with changes, or a plain ask to run it again after
+    a hiccup — which is this sample's message, and which restates no steps at
+    all.  Either way the correction has to be IN the message: saying only that
+    the round was wrong, or promising new instructions later, carries none,
+    which is what keeps a bail on the idle default rather than reading as a
+    correction because it sounds dissatisfied."""
     parked_learn = MachineSnapshot(
         state=ConversationState.LEARN,
         penny_last_turn=(
@@ -290,8 +292,9 @@ def test_render_parked_learn_slice_whole():
         "## Transitions\n"
         "- learn — the user is correcting their previous instructions — this message "
         "itself restates the steps with changes: what to read, what to look for, what "
-        "to remember, where to save it. A message that only says the round was wrong, "
-        "or promises new instructions later, carries no correction.\n"
+        "to remember, where to save it — or asks to simply run it again after a "
+        "hiccup. A message that only says the round was wrong, or promises new "
+        "instructions later, carries no correction.\n"
         "- idle — in all other cases"
     )
 
@@ -304,10 +307,10 @@ def test_render_parked_learn_with_candidates_whole():
     round that just ran supplied them.
 
     The two live edges are a CHOICE MENU, each stating only its own shape: apply
-    is a positive signal carrying new scheduling or notification terms, learn is
-    a correction the message itself carries — steps restated with changes.
-    Neither argues against the other — the sibling is in the same list saying
-    what it is."""
+    is an acceptance of what was just demonstrated, with the job's terms welcome
+    but not required; learn is a correction the message itself carries — steps
+    restated with changes, or an ask to just run it again.  Neither argues
+    against the other — the sibling is in the same list saying what it is."""
     taught = MachineSnapshot(
         state=ConversationState.LEARN,
         penny_last_turn=(
@@ -338,14 +341,16 @@ def test_render_parked_learn_with_candidates_whole():
         "is never learn\n"
         "\n"
         "## Transitions\n"
-        "- apply — the user signals positively — a yes, a great, a go-ahead — and gives "
-        "new instructions about scheduling or notification: the job's timing, how long "
-        "it keeps going, or whether to tell them. Add a second line naming that skill: "
-        "SKILL: <its name, exactly as quoted in Known skills>\n"
+        "- apply — the user signals positively — accepting what was just demonstrated: "
+        "a yes, a great, a go-ahead. They often add how the job should run — its "
+        "timing, how long it keeps going, or whether to tell them — but a plain "
+        "acceptance is enough. Add a second line naming that skill: SKILL: <its name, "
+        "exactly as quoted in Known skills>\n"
         "- learn — the user is correcting their previous instructions — this message "
         "itself restates the steps with changes: what to read, what to look for, what "
-        "to remember, where to save it. A message that only says the round was wrong, "
-        "or promises new instructions later, carries no correction.\n"
+        "to remember, where to save it — or asks to simply run it again after a "
+        "hiccup. A message that only says the round was wrong, or promises new "
+        "instructions later, carries no correction.\n"
         "- idle — in all other cases"
     )
 

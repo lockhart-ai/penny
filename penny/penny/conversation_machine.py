@@ -211,16 +211,18 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "back, or a clarification about the task itself"
     ),
     (ConversationState.LEARN, ConversationState.APPLY): (
-        "the user signals positively — a yes, a great, a go-ahead — and gives new "
-        "instructions about scheduling or notification: the job's timing, how long it "
-        "keeps going, or whether to tell them. Add a second line naming that skill: "
+        "the user signals positively — accepting what was just demonstrated: a yes, a "
+        "great, a go-ahead. They often add how the job should run — its timing, how "
+        "long it keeps going, or whether to tell them — but a plain acceptance is "
+        "enough. Add a second line naming that skill: "
         f"{SKILL_TAG} <its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.LEARN, ConversationState.LEARN): (
         "the user is correcting their previous instructions — this message itself "
         "restates the steps with changes: what to read, what to look for, what to "
-        "remember, where to save it. A message that only says the round was wrong, or "
-        "promises new instructions later, carries no correction."
+        "remember, where to save it — or asks to simply run it again after a hiccup. "
+        "A message that only says the round was wrong, or promises new instructions "
+        "later, carries no correction."
     ),
 }
 
