@@ -35,7 +35,7 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput
-from penny.database.message_store import PromptPerf
+from penny.database.message_store import MessageStore, PromptPerf
 from penny.database.models import MemoryRow, PromptLog
 from penny.database.skills import (
     DistillInput,
@@ -321,6 +321,70 @@ def collection_entries(db: Database, name: str) -> dict[str, str]:
     return {entry.key: entry.content for entry in rows if entry.key is not None}
 
 
+# ── The seeded ledger (#1846) ─────────────────────────────────────────────────
+#
+# A case may lay down the promptlog of turns that happened BEFORE the one under test, so
+# the sample answers its message against the state those turns really left behind rather
+# than against a hand-built shell of it.  Those rows are history, not this sample's work:
+# every reader of "what did the model do" excludes them, or the apply case's "no browse
+# this turn" would read the demonstrated round's browse as the live turn's and the report
+# would render a prior turn's calls as if this one made them.
+#
+# ONE mechanism, keyed on the run id: the seeder mints its run ids under this prefix and
+# the two fetch chokepoints below drop them.  Keying on the run (rather than on a
+# timestamp watermark or a reserved agent name) is what lets the seeded rows be otherwise
+# INDISTINGUISHABLE from production's — same agent names, same prompt types, same
+# response shapes — which is the whole point of seeding them.  A reader inherits the
+# exclusion by using ``live_prompts`` / ``live_prompt_rows``, not by remembering a rule.
+SEEDED_RUN_PREFIX = "seeded-"
+
+
+def seeded_run_id(name: str) -> str:
+    """A run id for a seeded prior turn — deterministic (so a probe can assert against it
+    by name) and structurally distinguishable from a live ``uuid4().hex``."""
+    return f"{SEEDED_RUN_PREFIX}{name}"
+
+
+def is_seeded_run(run_id: str | None) -> bool:
+    """Whether a promptlog row belongs to a seeded prior turn rather than this sample."""
+    return run_id is not None and run_id.startswith(SEEDED_RUN_PREFIX)
+
+
+def live_prompts(db: Database, limit: int = 200) -> list[PromptLog]:
+    """This sample's OWN promptlog rows, newest first — the recent window minus any
+    seeded prior turn.  THE fetch behind every "what did the model do this sample"
+    reader."""
+    return [row for row in db.messages.recent_prompts(limit) if not is_seeded_run(row.run_id)]
+
+
+# A sample's own window — every promptlog row it could have written.  Deliberately wider
+# than the 200-row reader window: a seeded ledger sits in the same table, so the perf read
+# must see past it to the sample's own rows.
+_PERF_WINDOW = 1000
+
+
+def live_prompt_perf(db: Database) -> PromptPerf:
+    """``prompt_perf`` over this sample's own rows — the same aggregate, minus the seeded
+    ledger, so a report's banner never counts a prior turn's calls as this sample's.
+
+    The per-row arithmetic is the store's own (its two response readers, called rather
+    than restated): a second copy of "how a response's usage is read" would be a second
+    contract to drift."""
+    rows = [
+        row for row in db.messages.recent_prompts(_PERF_WINDOW) if not is_seeded_run(row.run_id)
+    ]
+    responses = [json.loads(row.response) if row.response else {} for row in rows]
+    usage = [MessageStore._extract_token_usage(response) for response in responses]
+    return PromptPerf(
+        len(rows),
+        sum(row.duration_ms or 0 for row in rows),
+        sum(prompt_tokens for prompt_tokens, _ in usage),
+        sum(completion_tokens for _, completion_tokens in usage),
+        sum(len(row.thinking or "") for row in rows),
+        sum(len(MessageStore._extract_content(response)) for response in responses),
+    )
+
+
 def tool_was_called(db: Database, tool_name: str) -> bool:
     """Did the model actually invoke ``tool_name`` this run?
 
@@ -329,7 +393,7 @@ def tool_was_called(db: Database, tool_name: str) -> bool:
     """
     return any(
         any(call.get("function", {}).get("name") == tool_name for call in _response_tool_calls(row))
-        for row in db.messages.recent_prompts(limit=200)
+        for row in live_prompts(db)
     )
 
 
@@ -351,7 +415,7 @@ def count_tool_calls(db: Database, tool_name: str) -> int:
     outage banner is meant to end."""
     return sum(
         1
-        for row in db.messages.recent_prompts(limit=200)
+        for row in live_prompts(db)
         for call in _response_tool_calls(row)
         if call.get("function", {}).get("name") == tool_name
     )
@@ -382,7 +446,7 @@ def _row_turns(row: PromptLog) -> list[dict]:
 def _iter_prompt_messages(db: Database):
     """Every message across the run's promptlog (accumulated history + tool results, incl. the
     trailing tail no model call carried — so a terminal rejection is visible, #1778)."""
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         yield from _row_turns(row)
 
 
@@ -531,7 +595,7 @@ def run_exhibited_pathology(db: Database) -> bool:
     ``response`` — so classifying on that output tags the #1731 spiral pathology at the root
     while the output-only immunity holds.  (A spiral whose persisted output stays genuinely
     clean has no poison to tag and reads harness/behavioral — correctly: no pathology fired.)"""
-    return any(_response_is_poison(row) for row in db.messages.recent_prompts(limit=200))
+    return any(_response_is_poison(row) for row in live_prompts(db))
 
 
 def _stamp_cause(db: Database, result: SampleResult, *, timed_out: bool = False) -> None:
@@ -606,7 +670,7 @@ def last_tool_args(db: Database, tool_name: str) -> dict | None:
     (newest-first), so it's the real record of what the model emitted, not a
     harness spy.  (Note: ``done`` is argless since #1569, so ``last_tool_args(db,
     "done")`` is ``{}`` when it closed.)"""
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         for call in _response_tool_calls(row):
             if call.get("function", {}).get("name") == tool_name:
                 try:
@@ -624,7 +688,7 @@ def tool_call_keys(db: Database, tool_name: str) -> list[str]:
     key-not-found ping-pong shows up as a call whose key isn't in the collection.
     Sourced from the persisted promptlog (the real record of what the model did)."""
     keys: list[str] = []
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         for call in _response_tool_calls(row):
             if call.get("function", {}).get("name") != tool_name:
                 continue
@@ -647,7 +711,7 @@ def tool_call_sequence(db: Database) -> list[str]:
     compound NL instruction must fire the RIGHT tools in the RIGHT order, and this
     is the persisted record of what actually fired (not a harness spy)."""
     names: list[str] = []
-    for row in reversed(db.messages.recent_prompts(limit=200)):
+    for row in reversed(live_prompts(db)):
         for call in _response_tool_calls(row):
             name = call.get("function", {}).get("name")
             if isinstance(name, str):
@@ -671,7 +735,7 @@ _CONTINUE_NUDGE_MARKER = "Please provide your response"  # Prompt.CONTINUE_NUDGE
 def _legacy_bail_nudge_fired(db: Database) -> bool:
     """True when any prompt's message array carries a retired text-bail nudge — the
     legacy leg, so a promptlog written before #1840 still reads."""
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         if row.messages and any(marker in row.messages for marker in _LEGACY_BAIL_NUDGE_MARKERS):
             return True
     return False
@@ -692,7 +756,7 @@ def _same_context_drawn_twice(db: Database) -> bool:
     enumerated: the harness never re-derives WHICH conditions the loop rejects (a set
     that grows with every agent shape), only that a draw was thrown away."""
     seen: set[str] = set()
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         if not row.messages:
             continue
         if row.messages in seen:
@@ -719,10 +783,7 @@ def draw_rerolled(db: Database) -> bool:
 
 def continue_nudge_fired(db: Database) -> bool:
     """True when any prompt's message array carries the empty-response retry nudge."""
-    for row in db.messages.recent_prompts(limit=200):
-        if row.messages and _CONTINUE_NUDGE_MARKER in row.messages:
-            return True
-    return False
+    return any(row.messages and _CONTINUE_NUDGE_MARKER in row.messages for row in live_prompts(db))
 
 
 def routing_clean(db: Database) -> bool:
@@ -779,11 +840,7 @@ def chat_run_tool_sequences(db: Database) -> list[list[str]]:
     naming) carry no tool calls and other agents' rows are excluded, so each list
     is exactly one chat turn's calls, in emission order."""
     rows = sorted(
-        (
-            row
-            for row in db.messages.recent_prompts(limit=200)
-            if row.agent_name == PennyConstants.CHAT_AGENT_NAME
-        ),
+        (row for row in live_prompts(db) if row.agent_name == PennyConstants.CHAT_AGENT_NAME),
         key=lambda row: row.timestamp,
     )
     order: list[str] = []
@@ -820,7 +877,7 @@ def tool_call_arg_values(db: Database, tool_name: str, field: str) -> list[str]:
     (the ``memory`` field of each ``collection_read_latest``) without re-parsing
     the promptlog.  Sourced from the persisted promptlog (the real record)."""
     values: list[str] = []
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         for call in _response_tool_calls(row):
             if call.get("function", {}).get("name") != tool_name:
                 continue
@@ -858,7 +915,7 @@ def bracket_wrapped_key_calls(db: Database) -> list[str]:
     tempted the model into pasting display brackets into an argument — the whole
     point of rendering keys in invocation form."""
     offenders: list[str] = []
-    for row in db.messages.recent_prompts(limit=200):
+    for row in live_prompts(db):
         for call in _response_tool_calls(row):
             function = call.get("function", {})
             if function.get("name") not in _KEY_BEARING_TOOLS:
@@ -1501,7 +1558,7 @@ def _scored_counts(result: SampleResult) -> tuple[int, int]:
 
 def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> str:
     """The per-sample banner tail from the sample's promptlog perf + its scored result."""
-    perf = db.messages.prompt_perf()
+    perf = live_prompt_perf(db)
     passed_checks, total = _scored_counts(result)
     return report.render_banner(
         passed=result.passed,
@@ -1518,9 +1575,14 @@ def _sample_banner(db: Database, result: SampleResult, *, evaluated: bool) -> st
 
 def _sample_prompt_rows(db: Database) -> list[PromptLog]:
     """Every promptlog row for the sample (the main agent's + every micro-context's), oldest
-    first — the ledger order the transcript walk interleaves the actors by."""
+    first — the ledger order the transcript walk interleaves the actors by.
+
+    A SEEDED prior turn's rows are excluded (#1846): they are the world this sample was
+    handed, not something it did, and a transcript that walked them would render an
+    earlier turn's calls and system prompts as this sample's own."""
     with Session(db.engine) as session:
-        return list(session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all())
+        rows = session.exec(select(PromptLog).order_by(col(PromptLog.timestamp).asc())).all()
+    return [row for row in rows if not is_seeded_run(row.run_id)]
 
 
 def _main_rows(rows: list[PromptLog]) -> list[PromptLog]:
@@ -1809,7 +1871,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                                 retryable=attempt + 1 < _MODEL_CALL_ATTEMPTS,
                             )
                         )
-                        perf.add(penny.db.messages.prompt_perf())
+                        perf.add(live_prompt_perf(penny.db))
                 except _ModelCallError:
                     print(
                         f"  ↻ {case_id} sample {sample_index}: the model call failed — "
@@ -1900,7 +1962,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
                     _stamp_cause(penny.db, result)
                     _write_sample_report(penny.db, case_id, sample_index, result=result)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -2100,7 +2162,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
                     _stamp_cause(penny.db, result)
                     _write_sample_report(penny.db, case_id, sample_index, result=result)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -2433,7 +2495,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
                     _stamp_cause(penny.db, result)
                     _write_sample_report(penny.db, case_id, sample_index, result=result)
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -2507,7 +2569,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
                         result = SampleResult.binary([s for s in scored if isinstance(s, str)])
                     results.append(result)
                     _stamp_cause(penny.db, result)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -2825,7 +2887,7 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                         penny.db, case_id, sample_index, result=result, phrasing=phrasing
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -3453,7 +3515,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Framer
                         agent_names=(PennyConstants.SKILL_FRAME_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(
@@ -3544,7 +3606,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
-                    perf.add(penny.db.messages.prompt_perf())
+                    perf.add(live_prompt_perf(penny.db))
             finally:
                 await server.stop()
         eval_artifacts.record_case(

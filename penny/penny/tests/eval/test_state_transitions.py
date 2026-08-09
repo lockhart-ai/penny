@@ -51,6 +51,7 @@ scheduled on the terms given — and carry the reuse question as an advisory.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from functools import partial
 from itertools import islice
@@ -59,10 +60,14 @@ from typing import NamedTuple
 import pytest
 from dateutil.rrule import rrulestr
 
-from penny.constants import PennyConstants, TransitionCause
-from penny.conversation_machine import ConversationState
+from penny.constants import ChatPromptType, PennyConstants, TransitionCause
+from penny.conversation_machine import (
+    ConversationState,
+    MachineSnapshot,
+    render_classifier_content,
+)
 from penny.database import Database
-from penny.database.memory import EntryInput
+from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryEntry, MemoryRow, StateTransition
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
@@ -103,9 +108,11 @@ from penny.tests.eval.conftest import (
     classify_by_family,
     collection_entries,
     count_tool_calls,
+    is_seeded_run,
     new_collections,
     outgoing_replies,
     routing_clean,
+    seeded_run_id,
     tool_not_called,
     tool_was_called,
 )
@@ -138,7 +145,14 @@ from penny.tools.collection_instantiation import (
     has_schedule,
     render_schedule_clause,
 )
-from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
+from penny.tools.memory_tools import _AUTO_CREATED_DESCRIPTION
+from penny.tools.micro_context import (
+    STATE_CLASSIFIER_SYSTEM_PROMPT,
+    FramedParameter,
+    LeafLabel,
+    SkillLabels,
+    SkillSignature,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -154,6 +168,8 @@ def _park(
     *,
     anchor_message_id: int | None = None,
     from_state: ConversationState = ConversationState.IDLE,
+    run_id: str | None = None,
+    message_id: int | None = None,
 ) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
@@ -168,12 +184,18 @@ def _park(
     where a round opens.  A case seeding a round several moves deep records each
     move it replays, so the ledger reads as the machine really walked it — the
     learn → apply cases park twice, once entering the round and once staying in
-    it."""
+    it.
+
+    ``run_id`` and ``message_id`` are the move's links back into the ledger and the
+    conversation (#1846): production stamps both, and they are what make a seeded
+    transition row indistinguishable from one the machine really recorded."""
     db.machine.record_transition(
         from_state=from_state.value,
         to_state=state.value,
         cause=TransitionCause.CLASSIFIER,
         anchor_message_id=anchor_message_id,
+        run_id=run_id,
+        message_id=message_id,
     )
 
 
@@ -193,12 +215,19 @@ def _entries_written_by_this_run(db: Database) -> list[MemoryEntry]:
 
     The whole entry, not its content alone: where in the entry a fact landed is a
     question about key/value semantics that is deliberately open (#1854), so the
-    callers read both halves through ``_written_texts``."""
+    callers read both halves through ``_written_texts``.
+
+    "This run" is now a stamp that is present AND not a seeded one (#1846): a seeded
+    round's own entry carries the run that wrote it, exactly as production does, so
+    "stamped at all" no longer distinguishes what this sample did from what it was
+    handed."""
     written: list[MemoryEntry] = []
     for row in db.memories.list_all():
         memory = db.memory(row.name)
         entries = memory.read_all() if memory is not None else []
-        written += [e for e in entries if e.created_by_run_id]
+        written += [
+            e for e in entries if e.created_by_run_id and not is_seeded_run(e.created_by_run_id)
+        ]
     return written
 
 
@@ -229,6 +258,111 @@ def _leaf_at(arguments: dict, path: list):
     for part in path:
         node = node[part]
     return node
+
+
+# ── The seeded ledger: the preceding turns, written the way production wrote them ─
+#
+# A case's entry state is everything the turns before it left behind — and most of what
+# those turns left is the LEDGER, not the durable rows.  Seeding only the rows produced a
+# world nothing can have produced: a collection whose creating run does not exist, a
+# mutation line naming no run, an empty browse-results log after a round that read a page,
+# and a hand-written description where the auto-create path writes one naming what it
+# holds.  Measured against a real post-learn database, that is the whole difference — and
+# a live model reasoning over the impoverished version correctly concluded it did not know
+# how the page was built and should go and look.
+#
+# So the seeds write the promptlog too, through the same store the production path writes
+# it through, in the same shapes: a classifier draw per turn (its own run id, as
+# ``MicroContext`` mints one), the chat run's steps carrying the round's tool calls with
+# their arguments and framed results, and the browse-extract call the browse spawned.
+# Everything the round produced then cites those runs — the entry's write stamps, the
+# collection's ``created_by_run_id`` (which is what puts the run id on the mutation line),
+# the skill's ``source_run_id``, and both transition rows.
+#
+# The run ids are FIXED and carry the harness's seeded prefix, which is what every
+# "what did the model do this sample" reader excludes them by (``live_prompts`` /
+# ``_sample_prompt_rows``).  Without that exclusion the apply case's "no browse this turn"
+# check would read the demonstrated round's browse as this turn's.
+
+_SEEDED_ELICIT_DRAW_RUN_ID = seeded_run_id("elicit-draw")
+_SEEDED_ELICIT_RUN_ID = seeded_run_id("elicit-turn")
+_SEEDED_LEARN_DRAW_RUN_ID = seeded_run_id("learn-draw")
+_SEEDED_LEARN_RUN_ID = seeded_run_id("learn-turn")
+_SEEDED_BROWSE_EXTRACT_RUN_ID = seeded_run_id("learn-browse-extract")
+
+# The model the seeded rows name — the same one the samples themselves run against, read
+# the way the harness's own config reads it, so a seeded row and a live row cite one model.
+_SEEDED_MODEL = os.environ.get("LLM_MODEL", "gpt-oss:20b")
+
+# The call ids the seeded round's two steps are keyed by.  Production ids come from the
+# backend; what matters structurally is that each call's result turn carries ITS id, which
+# is how a run's calls pair with their outcomes.
+_BROWSE_CALL_ID = "call-seeded-browse"
+_WRITE_CALL_ID = "call-seeded-write"
+
+
+def _seeded_response(content: str = "", tool_calls: list[dict] | None = None) -> dict:
+    """One model response in the shape ``raw.model_dump()`` persists — the envelope every
+    ledger reader walks (``choices[].message``), with ``tool_calls`` present only when the
+    draw made calls, exactly as a text reply's dump has it."""
+    message: dict = {"role": "assistant", "content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
+    return {"model": _SEEDED_MODEL, "choices": [{"index": 0, "message": message}]}
+
+
+def _wire_tool_call(call_id: str, step: DistillInput) -> dict:
+    """One tool call as the wire stores it.  ``arguments`` is a JSON STRING — the shape
+    ``LoggedToolCall.from_function`` decodes, and the one a dict would silently lose (it
+    returns an empty mapping for a non-string, so the call would render argument-less)."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": step.tool, "arguments": json.dumps(step.arguments)},
+    }
+
+
+def _tool_result_turn(call_id: str, step: DistillInput) -> dict:
+    """The tool turn the loop appended for one call — the framed result keyed by the call's
+    own id, carrying the framework's structural success stamp, which is how a run's calls
+    pair with their outcomes rather than by position."""
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": step.result,
+        PennyConstants.TOOL_RESULT_SUCCESS_KEY: True,
+    }
+
+
+def _log_classifier_draw(db: Database, *, run_id: str, snapshot, message: str, drawn: str) -> None:
+    """The classifier's own row for a seeded turn — its real system prompt over its real
+    rendered slice, under its OWN run id (production mints one per draw; the turn's run id
+    reaches the classifier only through the transition row)."""
+    db.messages.log_prompt(
+        model=_SEEDED_MODEL,
+        messages=[
+            {"role": "system", "content": STATE_CLASSIFIER_SYSTEM_PROMPT},
+            {"role": "user", "content": render_classifier_content(snapshot, message)},
+        ],
+        response=_seeded_response(drawn),
+        agent_name=PennyConstants.STATE_CLASSIFIER_AGENT_NAME,
+        prompt_type=PennyConstants.STATE_CLASSIFIER_PROMPT_TYPE,
+        run_id=run_id,
+        run_target=PennyConstants.CHAT_AGENT_NAME,
+    )
+
+
+def _log_chat_step(db: Database, *, run_id: str, messages: list[dict], response: dict) -> None:
+    """One step of a seeded chat run — the accumulated conversation as it stood when the
+    call was made, and what the model returned."""
+    db.messages.log_prompt(
+        model=_SEEDED_MODEL,
+        messages=messages,
+        response=response,
+        agent_name=PennyConstants.CHAT_AGENT_NAME,
+        prompt_type=ChatPromptType.USER_MESSAGE,
+        run_id=run_id,
+    )
 
 
 # ── idle → elicit: the ask lands cold, and nothing is enacted ─────────────────
@@ -781,6 +915,9 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
     * Penny's teach question, logged OUTGOING — her last turn, the one the user's
       demonstration answers
     * the machine parked in ``elicit``, carrying that ask as its anchor
+    * that turn's LEDGER — the draw that chose elicit, and the chat call that answered
+      with the teach question.  It made no tool calls, which is the whole of what that
+      beat's five scored state checks assert, so it left no browse-results entry either
     * nothing else at all: an empty registry, no collection of her making, no page read
 
     The case's page is installed by the runner, so the demonstration reads a real one."""
@@ -796,10 +933,37 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
             sender=PennyConstants.MessageAuthor.PENNY,
             content=case.teach_question,
         )
-        _park(db, ConversationState.ELICIT, anchor_message_id=ask_id)
+        _seed_elicit_turn_ledger(db, case)
+        _park(
+            db,
+            ConversationState.ELICIT,
+            anchor_message_id=ask_id,
+            run_id=_SEEDED_ELICIT_RUN_ID,
+            message_id=ask_id,
+        )
         _assert_seeded_world(db, case, ask_id)
 
     return seed
+
+
+def _seed_elicit_turn_ledger(db: Database, case: _ElicitRound) -> None:
+    """The idle → elicit turn's promptlog: the classifier draw that chose elicit over a
+    COLD machine (no history, no skills — the state that beat starts from), then the one
+    chat call that answered.  No tool calls: that turn's contract is that it enacted
+    nothing, so a seeded call would be seeding the failure it is measured against."""
+    _log_classifier_draw(
+        db,
+        run_id=_SEEDED_ELICIT_DRAW_RUN_ID,
+        snapshot=MachineSnapshot(state=ConversationState.IDLE),
+        message=case.ask,
+        drawn=f"STATE: {ConversationState.ELICIT.value}",
+    )
+    _log_chat_step(
+        db,
+        run_id=_SEEDED_ELICIT_RUN_ID,
+        messages=[{"role": "user", "content": case.ask}],
+        response=_seeded_response(case.teach_question),
+    )
 
 
 def _assert_seeded_world(db: Database, case: _ElicitRound, ask_id: int | None) -> None:
@@ -1545,7 +1709,6 @@ class _DemonstratedRound(NamedTuple):
     url: str
     extract: str
     collection: str
-    collection_description: str
     entry_key: str
     entry_value: str
 
@@ -1678,7 +1841,7 @@ def _fixture_skill(
         description=description,
         steps=steps,
         parameters=framed,
-        source_run_id="demonstrated-round",
+        source_run_id=_SEEDED_LEARN_RUN_ID,
     )
 
 
@@ -1695,7 +1858,6 @@ _AURORA_DEMONSTRATED = _DemonstratedRound(
     url=LISTING_URL,
     extract="the current price",
     collection="aurora-deck-2-price",
-    collection_description="the aurora deck 2 listing price",
     entry_key="listing price",
     entry_value="$499",
 )
@@ -1730,7 +1892,6 @@ _FERRY_DEMONSTRATED = _DemonstratedRound(
     url=_FERRY_TIMETABLE_URL,
     extract="the late sailing line",
     collection="harborferries-late",
-    collection_description="the harbor ferry timetable's late sailing line",
     entry_key="late-sailing",
     entry_value="Late sailing: not scheduled this season.",
 )
@@ -1770,7 +1931,6 @@ _BAKERY_DEMONSTRATED = _DemonstratedRound(
     url=_BAKERY_SPECIALS_URL,
     extract="today's special",
     collection="corner-bakery-daily-specials",
-    collection_description="the corner bakery's daily specials",
     # The measured draws all keyed a day's special by its date, and the label
     # transcribed below says so — so the demonstrated key is one, which is exactly the
     # kind of value a placeholder exists to stop a collector re-writing every cycle.
@@ -1811,7 +1971,6 @@ _COLONY_DEMONSTRATED = _DemonstratedRound(
     url=_COLONY_COUNT_URL,
     extract="the current count",
     collection="harbor-seals",
-    collection_description="the harbor seal colony count",
     entry_key="current",
     entry_value="214",
 )
@@ -1844,7 +2003,6 @@ _ARRIVALS_DEMONSTRATED = _DemonstratedRound(
     url=_NEW_ARRIVALS_URL,
     extract="the newest arrival",
     collection="library-new-arrivals",
-    collection_description="the city library's newest arrivals",
     entry_key="newest arrival",
     entry_value="The Tidewater Almanac",
 )
@@ -1888,7 +2046,6 @@ _DECOY_DEMONSTRATED = _DemonstratedRound(
     url="https://citymuseum.example/hours",
     extract="the opening times",
     collection="museum-hours",
-    collection_description="the city museum's opening times",
     entry_key="opening times",
     entry_value="10am to 5pm, closed Mondays",
 )
@@ -2062,8 +2219,15 @@ _ARRIVALS_APPLY = _ApplyCase(
 # lays down, and the acceptance the channel logs AFTER the run (#1566's deferred link).
 _APPLY_ROUND_INCOMING_TURNS = 3
 
+# Every apply case, in one place — so the deterministic pin in ``test_eval_harness.py`` can
+# drive each one's seeder without a GPU.  The seeder and its two ledger probes are the only
+# part of this beat that has to be exercised before a run costs an hour: everything else in
+# a case is data, but a seeder is code, and a seeder that raises fails five cases at once
+# after the queue has already been taken.
+APPLY_CASES = (_AURORA_APPLY, _FERRY_APPLY, _BAKERY_APPLY, _COLONY_APPLY, _ARRIVALS_APPLY)
 
-def _seed_learned_round(case: _ApplyCase) -> Seeder:
+
+def seed_learned_round(case: _ApplyCase) -> Seeder:
     """Lay down the whole round the acceptance answers, turn for turn — the two beats
     before this one, as they really happened:
 
@@ -2078,25 +2242,105 @@ def _seed_learned_round(case: _ApplyCase) -> Seeder:
     the world is only whole once they are — which is why the probe is a prepare hook."""
 
     def seed(db: Database) -> None:
-        ask_id = _seed_round_turns(db, case)
-        _park(db, ConversationState.ELICIT, anchor_message_id=ask_id)
+        ask_id, demo_id = _seed_round_turns(db, case)
+        _seed_elicit_turn_ledger(db, case.prior)
+        _park(
+            db,
+            ConversationState.ELICIT,
+            anchor_message_id=ask_id,
+            run_id=_SEEDED_ELICIT_RUN_ID,
+            message_id=ask_id,
+        )
+        _seed_learn_turn_ledger(db, case)
         _park(
             db,
             ConversationState.LEARN,
             anchor_message_id=ask_id,
             from_state=ConversationState.ELICIT,
+            run_id=_SEEDED_LEARN_RUN_ID,
+            message_id=demo_id,
         )
-        _seed_naive_collection(db, case.demonstrated)
+        _seed_naive_collection(db, case, demo_id)
 
     return seed
 
 
-def _seed_round_turns(db: Database, case: _ApplyCase) -> int:
-    """The round's four logged messages, in the order they were said, returning the id
-    of the ask — the row the whole round is anchored to.
+def _seed_learn_turn_ledger(db: Database, case: _ApplyCase) -> None:
+    """The elicit → learn turn's promptlog — the round itself, as the loop wrote it: the
+    draw that chose learn, then the chat run's three steps (browse · write · the closing
+    report), each carrying the accumulated conversation as it stood when the call was made
+    so every call's framed result is stored beside the call it answers.  The browse spawns
+    its own micro-context call, attributed the way production attributes it.
 
-    That id is asserted HERE rather than read back later: logging is best-effort, and an
-    ask with no id would anchor both transition rows to nothing, which the probe would
+    This is what makes the round REACHABLE: the collection, its entry, the skill and the
+    transition row all cite this run, so the mutation line's ``run <id>`` resolves to the
+    browse and the write that actually happened."""
+    _log_classifier_draw(
+        db,
+        run_id=_SEEDED_LEARN_DRAW_RUN_ID,
+        snapshot=MachineSnapshot(
+            state=ConversationState.ELICIT,
+            penny_last_turn=case.prior.teach_question,
+            task_anchor=case.prior.ask,
+        ),
+        message=case.prior.demo,
+        drawn=f"STATE: {ConversationState.LEARN.value}",
+    )
+    browse, write = _demonstrated_ledger(case.demonstrated)
+    conversation: list[dict] = [{"role": "user", "content": case.prior.demo}]
+    conversation = _seed_call_step(db, conversation, _BROWSE_CALL_ID, browse)
+    _log_browse_extract(db, case.demonstrated)
+    conversation = _seed_call_step(db, conversation, _WRITE_CALL_ID, write)
+    _log_chat_step(
+        db,
+        run_id=_SEEDED_LEARN_RUN_ID,
+        messages=conversation,
+        response=_seeded_response(case.prior.closing_report),
+    )
+
+
+def _seed_call_step(
+    db: Database, conversation: list[dict], call_id: str, step: DistillInput
+) -> list[dict]:
+    """One tool-calling step of the seeded run: log the call against the conversation as it
+    stands, then return the conversation the NEXT call sees — the assistant's call turn plus
+    its framed result, which is the only place a tool result is ever durably written."""
+    call = _wire_tool_call(call_id, step)
+    _log_chat_step(
+        db,
+        run_id=_SEEDED_LEARN_RUN_ID,
+        messages=conversation,
+        response=_seeded_response(tool_calls=[call]),
+    )
+    return [
+        *conversation,
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        _tool_result_turn(call_id, step),
+    ]
+
+
+def _log_browse_extract(db: Database, demonstrated: _DemonstratedRound) -> None:
+    """The browse's own micro-context call — its own agent identity and its own run id,
+    exactly as ``MicroContext`` writes it, so the seeded round's ledger carries the same
+    actors a real one does."""
+    db.messages.log_prompt(
+        model=_SEEDED_MODEL,
+        messages=[{"role": "user", "content": demonstrated.extract}],
+        response=_seeded_response(f"EXTRACTED: {demonstrated.entry_value}"),
+        agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
+        prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
+        run_id=_SEEDED_BROWSE_EXTRACT_RUN_ID,
+        run_target=PennyConstants.CHAT_AGENT_NAME,
+    )
+
+
+def _seed_round_turns(db: Database, case: _ApplyCase) -> tuple[int, int]:
+    """The round's four logged messages, in the order they were said, returning the ids of
+    the ask (the row the whole round is anchored to) and the demonstration (the message the
+    learn move was provoked by, and the one the collection is sourced from).
+
+    Both ids are asserted HERE rather than read back later: logging is best-effort, and a
+    turn with no id would link its move and its mechanism to nothing, which the probe would
     then report as a broken anchor lifecycle instead of a seed that never wrote."""
     ask_id = db.messages.log_message(
         direction=PennyConstants.MessageDirection.INCOMING,
@@ -2108,7 +2352,7 @@ def _seed_round_turns(db: Database, case: _ApplyCase) -> int:
         sender=PennyConstants.MessageAuthor.PENNY,
         content=case.prior.teach_question,
     )
-    db.messages.log_message(
+    demo_id = db.messages.log_message(
         direction=PennyConstants.MessageDirection.INCOMING,
         sender=TEST_SENDER,
         content=case.prior.demo,
@@ -2119,15 +2363,44 @@ def _seed_round_turns(db: Database, case: _ApplyCase) -> int:
         content=case.prior.closing_report,
     )
     assert ask_id is not None, f"{case.case_id}: the seeded ask must carry a message id"
-    return ask_id
+    assert demo_id is not None, f"{case.case_id}: the seeded demonstration must carry a message id"
+    return ask_id, demo_id
 
 
-def _seed_naive_collection(db: Database, demonstrated: _DemonstratedRound) -> None:
-    """The collection the demonstrated write created, exactly as ``elicit → learn``
-    scores it: the fact stored, and nothing folded onto it."""
-    db.memories.create_collection(demonstrated.collection, demonstrated.collection_description)
+def _seed_naive_collection(db: Database, case: _ApplyCase, demo_id: int) -> None:
+    """The collection the demonstrated write created, exactly as the AUTO-CREATE path
+    creates it: a description naming what it was made to hold (the production format,
+    imported rather than copied), stamped with the run that created it and linked to the
+    message that provoked it — which is what puts a resolvable ``run <id>`` on the mutation
+    line, since the create chokepoint records that event from this very argument.
+
+    The entry carries the same run on both its write stamps, as a real write does."""
+    demonstrated = case.demonstrated
+    db.memories.create_collection(
+        demonstrated.collection,
+        _AUTO_CREATED_DESCRIPTION.format(key=demonstrated.entry_key),
+        created_by_run_id=_SEEDED_LEARN_RUN_ID,
+    )
+    db.memories.link_source_message(_SEEDED_LEARN_RUN_ID, demo_id)
     require_memory(db, demonstrated.collection).write(
         [EntryInput(key=demonstrated.entry_key, content=demonstrated.entry_value)],
+        author=PennyConstants.CHAT_AGENT_NAME,
+        run_id=_SEEDED_LEARN_RUN_ID,
+    )
+    _seed_browse_results_entry(db, case)
+
+
+def _seed_browse_results_entry(db: Database, case: _ApplyCase) -> None:
+    """The page the round fetched, in the browse-results log — one entry per read page, its
+    content the rendered section (the header line and the page body), exactly what the
+    browse tool appends, and the page the case's own fixture serves.
+
+    Deliberately UNSTAMPED: the browse tool calls ``append(entries, author=…)`` with no
+    run id, so a stamped row here would be one production cannot write."""
+    header = PennyConstants.BROWSE_PAGE_HEADER
+    section = f"{header}{case.demonstrated.url}\n{case.prior.page.text}"
+    require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).append(
+        [LogEntryInput(content=section)],
         author=PennyConstants.CHAT_AGENT_NAME,
     )
 
@@ -2145,8 +2418,66 @@ def _probe_seeded_world(case: _ApplyCase) -> Preparer:
     def probe(penny: Penny) -> None:
         _assert_parked_on_the_ask(penny.db, case)
         _assert_seeded_registry(penny.db, case)
+        assert_seeded_ledger(penny.db, case)
+        assert_round_cites_its_run(penny.db, case)
 
     return probe
+
+
+def assert_seeded_ledger(db: Database, case: _ApplyCase) -> None:
+    """The preceding turns are IN the ledger, with the calls they made: the learn run
+    carries the round's two calls in order, and the page it read is in browse-results.
+
+    This is the half a durable-row-only seed had nothing of, and the half a live model
+    reads when it asks what has already been done — so a drift here is the case quietly
+    reverting to the impoverished world it was built to replace."""
+    calls = [
+        call.get("function", {}).get("name")
+        for row in db.messages.get_run_prompts(_SEEDED_LEARN_RUN_ID)
+        for call in _row_tool_calls(row)
+    ]
+    expected = [step.tool for step in _demonstrated_ledger(case.demonstrated)]
+    assert calls == expected, f"{case.case_id}: the seeded round must carry {expected}, got {calls}"
+    fetched = _pages_fetched(db)
+    assert len(fetched) == 1, (
+        f"{case.case_id}: the round read one page, browse-results has {fetched}"
+    )
+
+
+def _row_tool_calls(row) -> list[dict]:
+    """The tool calls of one persisted promptlog row — the same walk every ledger reader
+    makes over the stored response envelope."""
+    response = json.loads(row.response) if row.response else {}
+    return [
+        call
+        for choice in response.get("choices", [])
+        for call in (choice.get("message") or {}).get("tool_calls") or []
+    ]
+
+
+def assert_round_cites_its_run(db: Database, case: _ApplyCase) -> None:
+    """Everything the round produced names the run that produced it — the collection, its
+    entry, the skill, and the transition row.  That citation is what makes the mutation
+    line's ``run <id>`` resolve to the browse and the write that actually happened, which
+    is the whole reason the ledger is seeded at all."""
+    row = db.memories.get(case.demonstrated.collection)
+    created_by = row.created_by_run_id if row else None
+    assert created_by == _SEEDED_LEARN_RUN_ID, (
+        f"{case.case_id}: the collection must cite the round's run, not {created_by}"
+    )
+    assert row is not None
+    assert row.source_message_id is not None, (
+        f"{case.case_id}: the collection must be linked to the message that provoked it"
+    )
+    entries = require_memory(db, case.demonstrated.collection).read_all()
+    stamps = {entry.created_by_run_id for entry in entries}
+    assert stamps == {_SEEDED_LEARN_RUN_ID}, (
+        f"{case.case_id}: the demonstrated entry must cite the round's run, got {stamps}"
+    )
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.run_id == _SEEDED_LEARN_RUN_ID, (
+        f"{case.case_id}: the learn move must cite the round's run, not {latest and latest.run_id}"
+    )
 
 
 def _assert_parked_on_the_ask(db: Database, case: _ApplyCase) -> None:
@@ -2165,8 +2496,9 @@ def _assert_parked_on_the_ask(db: Database, case: _ApplyCase) -> None:
 
 def _assert_seeded_registry(db: Database, case: _ApplyCase) -> None:
     """The other half of that probe: two skills and only two — the scenario's own and
-    the decoy — the demonstrated fact in the collection it was written to, nothing
-    instantiated anywhere, and no page read yet."""
+    the decoy — the demonstrated fact in the collection it was written to, and nothing
+    instantiated anywhere.  (What the round DID read is asserted next, not here: this
+    beat starts from a page already fetched.)"""
     taught = sorted(skill.name for skill in db.skills.list_all())
     assert taught == sorted([case.skill.name, _DECOY_SKILL.name]), (
         f"{case.case_id}: the registry must hold the scenario's skill and the decoy, got {taught}"
@@ -2177,7 +2509,6 @@ def _assert_seeded_registry(db: Database, case: _ApplyCase) -> None:
     )
     instantiated = [row.name for row in db.memories.list_all() if row.skill_name is not None]
     assert not instantiated, f"{case.case_id}: nothing is instantiated yet, found {instantiated}"
-    assert not _pages_fetched(db), f"{case.case_id}: no page has been fetched yet"
 
 
 def _instantiated(db: Database, case: _ApplyCase) -> MemoryRow | None:
@@ -2551,7 +2882,7 @@ async def _run_apply_case(chat_eval: ChatEval, case: _ApplyCase) -> None:
         case_id=case.case_id,
         message=case.acceptance,
         browse=[case.prior.page],
-        seed=_seed_learned_round(case),
+        seed=seed_learned_round(case),
         seed_skills=[case.skill, _DECOY_SKILL],
         prepare=_probe_seeded_world(case),
         score=partial(_score_learn_to_apply, case=case),
