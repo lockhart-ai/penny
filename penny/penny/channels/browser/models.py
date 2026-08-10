@@ -226,7 +226,11 @@ class MemoryRecord(BaseModel):
     published: bool
     archived: bool
     extraction_prompt: str | None
-    collector_interval_seconds: int | None
+    # The collection's schedule as one RRULE (#1857).  The wire field the interval it
+    # replaced used (``collector_interval_seconds``) is simply no longer sent; an addon
+    # still reading that key sees it absent, and updating the client surface is its own
+    # change (the #1583/#1631 precedent).
+    schedule: str | None
     last_collected_at: str | None
     entry_count: int
 
@@ -330,7 +334,9 @@ class BrowserMemoryCreate(BaseModel):
     # ``memory.notify`` column server-side (#1557 retired the pub/sub side-channel).
     published: bool = False
     extraction_prompt: str | None = None
-    collector_interval_seconds: int | None = None
+    # One RRULE (#1857) — the interval field it replaced is no longer read; an addon
+    # still sending ``collector_interval_seconds`` has it ignored as an extra key.
+    schedule: str | None = None
 
 
 class BrowserMemoryUpdate(BaseModel):
@@ -349,7 +355,8 @@ class BrowserMemoryUpdate(BaseModel):
     # maps to the ``memory.notify`` column server-side (#1557).
     published: bool | None = None
     extraction_prompt: str | None = None
-    collector_interval_seconds: int | None = None
+    # One RRULE (#1857); None = leave the schedule unchanged.
+    schedule: str | None = None
 
 
 class BrowserCursorSet(BaseModel):

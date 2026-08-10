@@ -610,7 +610,7 @@ class IosChannel(MessageChannel):
             published=memory.notify,  # wire field `published` ← the `notify` column (#1557)
             archived=memory.archived,
             extraction_prompt=memory.extraction_prompt,
-            collector_interval_seconds=memory.collector_interval_seconds,
+            schedule=memory.schedule,
             last_collected_at=(
                 memory.last_collected_at.isoformat() if memory.last_collected_at else None
             ),
@@ -642,7 +642,7 @@ class IosChannel(MessageChannel):
                 req.name,
                 req.description,
                 extraction_prompt=req.extraction_prompt,
-                collector_interval_seconds=req.collector_interval_seconds,
+                schedule=req.schedule,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )
@@ -666,7 +666,7 @@ class IosChannel(MessageChannel):
                 req.name,
                 description=req.description,
                 extraction_prompt=req.extraction_prompt,
-                collector_interval_seconds=req.collector_interval_seconds,
+                schedule=req.schedule,
                 description_embedding=description_embedding,
                 notify=req.published,  # wire field `published` → the `notify` column (#1557)
             )

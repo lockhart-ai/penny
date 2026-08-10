@@ -73,8 +73,8 @@ def _memory(db: Database, name: str):
 
 
 def _backdate_collected(db: Database, name: str, *, minutes: int) -> None:
-    """Push a collection's last_collected_at into the past so its interval floor
-    is clear and only the cursor gate decides readiness."""
+    """Push a collection's last_collected_at into the past so its schedule has come
+    round again and only the cursor gate decides readiness."""
     with db.engine.connect() as conn:
         conn.execute(
             text("UPDATE memory SET last_collected_at = :ts WHERE name = :name"),
@@ -145,18 +145,18 @@ _VALID_EXTRACTION_PROMPT = "Extract relevant items from user-messages log."
 def test_inert_collection_never_dispatches_then_adopt_makes_it_run(test_config, tmp_path):
     """An INERT collection (#1629: no extraction_prompt) is never picked by the
     dispatcher even though it's a live, non-archived row — inertness, not archival, is
-    what excludes it. Giving it a routine + cadence (an adopt) makes the very next tick
+    what excludes it. Giving it a routine + schedule (an adopt) makes the very next tick
     pick it up."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("deals-watch", "inert storage the user set up")
     row = db.memories.get("deals-watch")
     assert row is not None and not row.archived  # a live container, just no job
     assert collector._next_ready_collection() is None  # inert never dispatches
-    # Adopt a skill onto it (a routine + cadence) — now the dispatcher picks it up.
+    # Adopt a skill onto it (a routine + schedule) — now the dispatcher picks it up.
     db.memories.update_collection_metadata(
         "deals-watch",
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
     )
     picked = collector._next_ready_collection()
     assert picked is not None and picked.name == "deals-watch"
@@ -168,7 +168,7 @@ def test_dispatcher_picks_collection_with_extraction_prompt(test_config, tmp_pat
         "wired",
         "has a collector",
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
     )
     target = collector._next_ready_collection()
     assert target is not None
@@ -202,15 +202,15 @@ def test_dispatcher_skips_collection_with_too_short_extraction_prompt(test_confi
     assert collector._next_ready_collection() is None
 
 
-def test_dispatcher_skips_collections_within_interval(test_config, tmp_path):
-    """A collection just collected stays out of the running until its
-    interval has elapsed."""
+def test_dispatcher_skips_collections_before_their_next_occurrence(test_config, tmp_path):
+    """A collection just collected stays out of the running until its schedule comes
+    round again."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "wired",
         "has a collector",
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
-        collector_interval_seconds=300,
+        schedule="FREQ=MINUTELY;INTERVAL=5",
     )
     db.memories.mark_collected("wired")  # last_collected_at = now
     assert collector._next_ready_collection() is None
@@ -223,13 +223,13 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
         "fresh",
         "x",
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
-        collector_interval_seconds=60,
+        schedule="FREQ=MINUTELY",
     )
     db.memories.create_collection(
         "stale",
         "x",
         extraction_prompt=_VALID_EXTRACTION_PROMPT,
-        collector_interval_seconds=60,
+        schedule="FREQ=MINUTELY",
     )
     # Both collected, but `stale` was much earlier
     db.memories.mark_collected("fresh")
@@ -246,17 +246,16 @@ def test_dispatcher_picks_most_overdue(test_config, tmp_path):
     assert target.name == "stale"
 
 
-def test_dispatcher_skips_collection_without_interval(test_config, tmp_path):
-    """The interval is required: a collector collection with NULL
-    collector_interval_seconds is skipped entirely — never run at a default
-    cadence — until a cadence is set."""
+def test_dispatcher_skips_collection_without_schedule(test_config, tmp_path):
+    """The schedule is required: a collector collection with a NULL ``schedule`` is
+    skipped entirely — never run at some default cadence — until one is set."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection("wired", "x", extraction_prompt=_VALID_EXTRACTION_PROMPT)
-    # Never collected would be "always ready" with an interval, but a NULL
-    # interval makes the dispatcher skip it.
+    # Never collected would be "always ready" with a schedule, but a NULL one
+    # makes the dispatcher skip it.
     assert collector._next_ready_collection() is None
 
-    # Even backdated 30 days, a NULL-interval collection never becomes ready.
+    # Even backdated 30 days, a schedule-less collection never becomes ready.
     db.memories.mark_collected("wired")
     backdate = datetime.now(UTC) - timedelta(days=30)
     with db.engine.connect() as conn:
@@ -268,7 +267,7 @@ def test_dispatcher_skips_collection_without_interval(test_config, tmp_path):
     assert collector._next_ready_collection() is None
 
     # Setting a cadence makes it eligible.
-    db.memories.update_collection_metadata("wired", collector_interval_seconds=3600)
+    db.memories.update_collection_metadata("wired", schedule="FREQ=HOURLY")
     assert collector._next_ready_collection() is not None
 
 
@@ -340,79 +339,136 @@ def test_build_memory_tools_lifecycle_toggle(test_config, tmp_path):
     assert {"collection_write", "collection_read_latest"} <= collector_names <= chat_names
 
 
-# ── Once-shaped trigger: run_at delays the fire, max_runs retires it (#1556) ──
+# ── Schedule gating: the RRULE decides when a collection is due (#1857) ──────
 
 _ONE_SHOT_PROMPT = "Browse the web for a daily fact and write one entry each cycle."
 
+# BYSECOND pins the occurrence to the top of the minute, so a fixed-clock assertion
+# lands on the stated time rather than inheriting created_at's seconds.
+_TWICE_DAILY = "FREQ=DAILY;BYHOUR=8,20;BYMINUTE=0;BYSECOND=0"
 
-def test_dispatcher_skips_collection_before_run_at(test_config, tmp_path):
-    """A collection with a future ``run_at`` doesn't fire until that time — a
-    delayed / one-shot start, gated before the interval floor."""
+# How RFC 5545 writes a DTSTART value.
+_RRULE_STAMP = "%Y%m%dT%H%M%SZ"
+
+
+def test_dispatcher_skips_collection_before_its_dtstart(test_config, tmp_path):
+    """A schedule whose DTSTART is in the future doesn't fire until that time — the
+    delayed / one-shot start, now a line of the rule rather than its own column."""
     collector, db = _make_collector(test_config, tmp_path)
+    starts = datetime.now(UTC) + timedelta(hours=1)
     db.memories.create_collection(
         "delayed",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
-        run_at=datetime.now(UTC) + timedelta(hours=1),
+        schedule=f"DTSTART:{starts.strftime(_RRULE_STAMP)}\nFREQ=DAILY;COUNT=1",
     )
     assert collector._next_ready_collection() is None
 
 
-def test_dispatcher_runs_collection_at_run_at(test_config, tmp_path):
-    """Once ``run_at`` has passed the collection becomes eligible like any other."""
+def test_dispatcher_runs_collection_once_its_dtstart_has_passed(test_config, tmp_path):
+    """Once the rule's first occurrence has passed the collection is eligible."""
     collector, db = _make_collector(test_config, tmp_path)
+    started = datetime.now(UTC) - timedelta(minutes=1)
     db.memories.create_collection(
         "due",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
-        run_at=datetime.now(UTC) - timedelta(minutes=1),
+        schedule=f"DTSTART:{started.strftime(_RRULE_STAMP)}\nFREQ=DAILY;COUNT=1",
     )
     target = collector._next_ready_collection()
     assert target is not None and target.name == "due"
 
 
-def test_cron_collection_ready_only_at_next_fire(test_config, tmp_path):
-    """A cron-scheduled collection is ready iff ``now`` has reached the next cron fire
-    after its last run — the cron expression, not the interval floor, is the gate
-    (#1684).  Deterministic around a fixed clock: '0 8,20 * * *' fires at 08:00 and
-    20:00 UTC, so a run at 08:00 makes 20:00 the next fire."""
+def test_schedule_ready_only_at_next_occurrence(test_config, tmp_path):
+    """A collection is ready iff ``now`` has reached the rule's next occurrence after
+    its last run (#1857).  Deterministic around a fixed clock: BYHOUR=8,20 fires at
+    08:00 and 20:00 UTC, so a run at 08:00 makes 20:00 the next fire."""
     collector, _ = _make_collector(test_config, tmp_path)
     memory = MemoryRow(
         name="twice-daily",
         type="collection",
         description="d",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=30,
-        cron_expression="0 8,20 * * *",
+        schedule=_TWICE_DAILY,
+        created_at=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
         last_collected_at=datetime(2026, 7, 20, 8, 0, tzinfo=UTC),
     )
-    # Between fires (noon) → not due; the interval floor is bypassed, cron decides.
+    # Between occurrences (noon) → not due.
     assert collector._is_ready(memory, datetime(2026, 7, 20, 12, 0, tzinfo=UTC)) is False
-    # Exactly at the next fire (20:00) → due.
+    # Exactly at the next occurrence (20:00) → due.
     assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 0, tzinfo=UTC)) is True
-    # Past the next fire → still due.
+    # Past it → still due.
     assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 30, tzinfo=UTC)) is True
 
 
-def test_cron_collection_never_run_bases_next_fire_on_created_at(test_config, tmp_path):
-    """A cron collection that has never run bases its next fire on ``created_at`` — not
-    ready until the first cron occurrence after creation passes (#1684)."""
+def test_schedule_never_run_bases_next_occurrence_on_created_at(test_config, tmp_path):
+    """A collection that has never run counts from ``created_at`` — which is also the
+    rule's default start, so one created between occurrences waits for the next."""
     collector, _ = _make_collector(test_config, tmp_path)
     memory = MemoryRow(
-        name="fresh-cron",
+        name="fresh",
         type="collection",
         description="d",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=30,
-        cron_expression="0 8,20 * * *",
+        schedule=_TWICE_DAILY,
         last_collected_at=None,
-        created_at=datetime(2026, 7, 20, 9, 0, tzinfo=UTC),  # after the 08:00 fire
+        created_at=datetime(2026, 7, 20, 9, 0, tzinfo=UTC),  # after the 08:00 occurrence
     )
-    # Next fire after 09:00 is 20:00 — not due at noon, due at 20:00.
     assert collector._is_ready(memory, datetime(2026, 7, 20, 12, 0, tzinfo=UTC)) is False
     assert collector._is_ready(memory, datetime(2026, 7, 20, 20, 0, tzinfo=UTC)) is True
+
+
+def test_schedule_without_dtstart_is_due_immediately_then_paces(test_config, tmp_path):
+    """A rule with no DTSTART anchors at ``created_at``, so a freshly created
+    collection is due on the very next tick — and once it has run, the rule paces it."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    created = datetime(2026, 7, 20, 9, 0, tzinfo=UTC)
+    memory = MemoryRow(
+        name="hourly",
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        schedule="FREQ=HOURLY",
+        created_at=created,
+        last_collected_at=None,
+    )
+    assert collector._is_ready(memory, created) is True
+    memory.last_collected_at = created
+    assert collector._is_ready(memory, created + timedelta(minutes=30)) is False
+    assert collector._is_ready(memory, created + timedelta(hours=1)) is True
+
+
+def test_exhausted_schedule_is_never_ready_again(test_config, tmp_path):
+    """A rule whose occurrences are spent (a used-up ``COUNT=``) yields no next
+    occurrence, so the collection never becomes ready again — the run-quota archive
+    then retires it."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    created = datetime(2026, 7, 20, 9, 0, tzinfo=UTC)
+    memory = MemoryRow(
+        name="one-shot",
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        schedule="FREQ=DAILY;COUNT=1",
+        created_at=created,
+        last_collected_at=created,
+    )
+    assert collector._is_ready(memory, created + timedelta(days=30)) is False
+
+
+def test_unreadable_stored_schedule_skips_rather_than_crashing(test_config, tmp_path):
+    """A stored rule the parse gate would have refused (only reachable by a hand-edited
+    row) skips that ONE collection — the dispatcher keeps serving every other."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    memory = MemoryRow(
+        name="hand-edited",
+        type="collection",
+        description="d",
+        extraction_prompt=_ONE_SHOT_PROMPT,
+        schedule="every 3600",
+        created_at=datetime(2026, 7, 20, 9, 0, tzinfo=UTC),
+    )
+    assert collector._is_ready(memory, datetime(2026, 7, 21, 9, 0, tzinfo=UTC)) is False
 
 
 def test_max_runs_archives_after_quota(test_config, tmp_path):
@@ -424,8 +480,7 @@ def test_max_runs_archives_after_quota(test_config, tmp_path):
         "one-shot",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
-        run_at=datetime.now(UTC) - timedelta(minutes=1),
+        schedule="FREQ=HOURLY;COUNT=2",
         max_runs=2,
     )
 
@@ -476,7 +531,7 @@ def test_unlimited_collection_never_auto_archives(test_config, tmp_path):
         "recurring",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
     )
     for run_id in ("a", "b", "c"):
         db.messages.log_prompt(
@@ -507,7 +562,7 @@ async def test_dispatcher_skips_and_retires_expired_collection(test_config, tmp_
         "fortnight-watch",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
@@ -547,7 +602,7 @@ async def test_expiry_passing_mid_cycle_archives_post_cycle(mock_llm, test_confi
         "expiring-watch",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
         expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
@@ -584,14 +639,14 @@ async def test_unexpired_collection_is_not_retired(test_config, tmp_path):
         "future-watch",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
     db.memories.create_collection(
         "eternal-watch",
         "x",
         extraction_prompt=_ONE_SHOT_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
     )
 
     now = datetime.now(UTC)
@@ -795,7 +850,7 @@ def _seed_notify_collection(db: Database) -> None:
         "indie-metroidvanias",
         "Indie metroidvania releases",
         extraction_prompt=_NOTIFY_RENDERED_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
         notify=True,
     )
     require_memory(db, "indie-metroidvanias").write(
@@ -1508,7 +1563,7 @@ async def test_cycle_runs_under_lock(test_config, tmp_path):
     assert collector._cycle_lock.locked() is False
 
 
-# ── Auto-throttle ─────────────────────────────────────────────────────────────
+# ── Cycle outcome: what counts as work ───────────────────────────────────────
 
 
 def _idle_response() -> ControllerResponse:
@@ -1544,7 +1599,7 @@ def test_produced_work_distinguishes_state_changes():
     assert Collector._produced_work(failed) is False
     # The bug this fix targets: a duplicate-rejected write doesn't error
     # (``failed=False``) but changed nothing (``mutated=False``), so it must read
-    # as no-work — otherwise the throttle re-arms every cycle and never backs off.
+    # as no-work — a successful no-op changed nothing.
     duplicate = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=False)],
@@ -1568,91 +1623,6 @@ def test_consumed_input_advances_cursor_on_work_even_without_done():
     assert Collector._consumed_input(False, read_only) is False
 
 
-def test_create_stamps_base_interval(test_config, tmp_path):
-    """The create cadence becomes the snap-back base."""
-    _, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "quiet",
-        "d",
-        extraction_prompt="x" * 30,
-        collector_interval_seconds=3600,
-    )
-    assert _get(db, "quiet").base_interval_seconds == 3600
-
-
-def test_throttle_backs_off_after_n_idle_runs_then_snaps_back(test_config, tmp_path):
-    """N consecutive idle cycles double the interval; a productive cycle snaps it
-    back to the user's cadence.  Uses the default COLLECTOR_THROTTLE_AFTER (3)."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "quiet",
-        "d",
-        extraction_prompt="x" * 30,
-        collector_interval_seconds=3600,
-    )
-
-    # Idle cycles accumulate; the 3rd doubles the interval and resets the counter.
-    for interval, idle in [(3600, 1), (3600, 2), (7200, 0)]:
-        collector._apply_throttle(_get(db, "quiet"), RunOutcome.NO_WORK)
-        m = _get(db, "quiet")
-        assert (m.collector_interval_seconds, m.consecutive_idle_runs) == (interval, idle)
-
-    # Three more idle cycles double again: 2h → 4h.
-    for _ in range(3):
-        collector._apply_throttle(_get(db, "quiet"), RunOutcome.NO_WORK)
-    assert _get(db, "quiet").collector_interval_seconds == 14400
-
-    # A productive cycle snaps back to the base cadence and clears the counter.
-    collector._apply_throttle(_get(db, "quiet"), RunOutcome.WORKED)
-    m = _get(db, "quiet")
-    assert (m.collector_interval_seconds, m.consecutive_idle_runs) == (3600, 0)
-
-    # An ``incomplete`` cycle is productive too (real work landed) — it snaps the
-    # interval back rather than counting toward backoff.
-    for _ in range(3):
-        collector._apply_throttle(_get(db, "quiet"), RunOutcome.NO_WORK)
-    assert _get(db, "quiet").collector_interval_seconds == 7200
-    collector._apply_throttle(_get(db, "quiet"), RunOutcome.INCOMPLETE)
-    m = _get(db, "quiet")
-    assert (m.collector_interval_seconds, m.consecutive_idle_runs) == (3600, 0)
-
-
-def test_throttle_caps_at_max_interval(test_config, tmp_path):
-    """Backoff never doubles past COLLECTOR_MAX_INTERVAL (default 604800 = weekly)."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "quiet",
-        "d",
-        extraction_prompt="x" * 30,
-        collector_interval_seconds=3600,
-    )
-    # Far more idle cycles than needed to blow past the ceiling unclamped.
-    for _ in range(40):
-        collector._apply_throttle(_get(db, "quiet"), RunOutcome.NO_WORK)
-    assert _get(db, "quiet").collector_interval_seconds == 604800
-
-
-def test_editing_interval_resets_base_and_idle(test_config, tmp_path):
-    """Editing the interval re-declares the intended cadence and clears throttle."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "quiet",
-        "d",
-        extraction_prompt="x" * 30,
-        collector_interval_seconds=3600,
-    )
-    # Throttle it up first.
-    for _ in range(3):
-        collector._apply_throttle(_get(db, "quiet"), RunOutcome.NO_WORK)
-    assert _get(db, "quiet").collector_interval_seconds == 7200
-
-    db.memories.update_collection_metadata("quiet", collector_interval_seconds=1800)
-    m = _get(db, "quiet")
-    assert m.collector_interval_seconds == 1800
-    assert m.base_interval_seconds == 1800
-    assert m.consecutive_idle_runs == 0
-
-
 # ── Cursor gate (skip-when-no-new-input) ──────────────────────────────────────
 
 
@@ -1669,14 +1639,14 @@ def _make_log_driven_collection(db: Database, *, log: str, prompt_names_log: boo
         "watcher",
         "d",
         extraction_prompt=prompt,
-        collector_interval_seconds=60,
+        schedule="FREQ=MINUTELY",
     )
 
 
 async def test_log_driven_collection_skipped_until_its_log_advances(test_config, tmp_path):
     """A collection caught up on its only input log is skipped without entering
-    the model; a new log entry makes it ready again.  This is the gate that
-    replaces idle-throttling for log-driven collections."""
+    the model; a new log entry makes it ready again — the second gate, after the
+    schedule says it is due."""
     collector, db = _make_collector(test_config, tmp_path)
     _make_log_driven_collection(db, log="chatter", prompt_names_log=True)
 
@@ -1687,7 +1657,7 @@ async def test_log_driven_collection_skipped_until_its_log_advances(test_config,
     head = _memory(db, "chatter").read_batch(None, 10)[-1].created_at
     db.cursors.advance_committed("watcher", "chatter", head)
     db.memories.mark_collected("watcher")
-    _backdate_collected(db, "watcher", minutes=10)  # clear the interval floor
+    _backdate_collected(db, "watcher", minutes=10)  # its schedule has come round
 
     # Caught up on its only input → the gate skips it.
     assert collector._next_ready_collection() is None
@@ -1704,7 +1674,7 @@ async def test_stale_cursor_is_pruned_and_never_gates(test_config, tmp_path):
     """A cursor for a log the prompt no longer names is pruned, not honoured —
     so a since-dropped read can't falsely keep a collection running (its log
     still advancing) nor falsely starve it.  With no live cursor the collection
-    is interval-driven and runs."""
+    runs on its schedule alone."""
     collector, db = _make_collector(test_config, tmp_path)
     _make_log_driven_collection(db, log="chatter", prompt_names_log=False)
 
@@ -1714,65 +1684,22 @@ async def test_stale_cursor_is_pruned_and_never_gates(test_config, tmp_path):
     db.memories.mark_collected("watcher")
     _backdate_collected(db, "watcher", minutes=10)
 
-    # Not gated on the stale cursor → runs (interval-driven), and it's pruned.
+    # Not gated on the stale cursor → runs on its schedule alone, and it's pruned.
     ready = collector._next_ready_collection()
     assert ready is not None and ready.name == "watcher"
     assert db.cursors.get("watcher", "chatter") is None
 
 
-def test_log_driven_collection_is_exempt_from_throttle(test_config, tmp_path):
-    """A collection with a live log cursor never throttles — the gate skips its
-    idle ticks, so widening its interval would only stall catch-up.  It stays
-    pinned at base no matter how many no-work cycles are applied."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_log("chatter", "log")
-    db.memories.create_collection(
-        "watcher",
-        "d",
-        extraction_prompt='Extract via log_read("chatter").',
-        collector_interval_seconds=300,
-    )
-    db.cursors.advance_committed("watcher", "chatter", datetime.now(UTC))
-
-    for _ in range(10):
-        collector._apply_throttle(_get(db, "watcher"), RunOutcome.NO_WORK)
-
-    m = _get(db, "watcher")
-    assert m.collector_interval_seconds == 300
-    assert m.consecutive_idle_runs == 0
-
-
-def test_cron_collection_is_exempt_from_throttle(test_config, tmp_path):
-    """A cron collection never throttles — the user stated an exact schedule, so idle
-    cycles must never widen it (#1684).  It stays pinned no matter how many no-work
-    cycles are applied; the cron next-fire, not collector_interval_seconds, gates it."""
-    collector, db = _make_collector(test_config, tmp_path)
-    db.memories.create_collection(
-        "twice-daily",
-        "d",
-        extraction_prompt="x" * 30,
-        collector_interval_seconds=30,
-        cron_expression="0 8,20 * * *",
-    )
-
-    for _ in range(10):
-        collector._apply_throttle(_get(db, "twice-daily"), RunOutcome.NO_WORK)
-
-    m = _get(db, "twice-daily")
-    assert m.collector_interval_seconds == 30
-    assert m.consecutive_idle_runs == 0
-
-
 def test_input_pending_tristate(test_config, tmp_path):
-    """The gate signal: None (no live cursor → interval-driven), False (live
-    cursor, caught up → skip), True (live cursor behind its log → run)."""
+    """The gate signal: None (no live cursor → the schedule alone decides), False
+    (live cursor, caught up → skip), True (live cursor behind its log → run)."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_log("chatter", "log")
     db.memories.create_collection(
         "watcher",
         "d",
         extraction_prompt='Extract via log_read("chatter").',
-        collector_interval_seconds=300,
+        schedule="FREQ=MINUTELY;INTERVAL=5",
     )
     # No cursor → not gate-eligible.
     assert collector._input_pending(_get(db, "watcher")) is None
@@ -1786,65 +1713,3 @@ def test_input_pending_tristate(test_config, tmp_path):
         [LogEntryInput(content="new", content_embedding=None)], author="user"
     )
     assert collector._input_pending(_get(db, "watcher")) is True
-
-
-def _make_on_advance_collection(db: Database, *, source: str) -> None:
-    """A collection whose trigger is a declared on_advance ``source_log`` — its
-    prompt does NOT name the source, so only the declaration keeps it a live input
-    (proving the trigger, not an inferred cursor)."""
-    db.memories.create_log(source, "an event stream")
-    db.memories.create_collection(
-        "chained",
-        "digest the upstream events",
-        extraction_prompt="1. digest the new events into entries.",
-        collector_interval_seconds=60,
-        source_log=source,
-    )
-
-
-async def test_on_advance_collection_fires_on_source_advance(test_config, tmp_path):
-    """The on_advance trigger (#1604): a declared source LOG gates the collection —
-    it runs first to establish the cursor, then skips while caught up and wakes the
-    moment the source advances, all via the frontier read, no model judgment."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _make_on_advance_collection(db, source="events-log")
-
-    # Cold-start: no cursor for the declared source yet → pending → runs (the first
-    # cycle establishes the cursor the frontier check then reads).
-    assert collector._input_pending(_get(db, "chained")) is True
-    assert collector._next_ready_collection() is not None
-
-    # Seed the source, simulate a completed read: cursor sits at the head.
-    _memory(db, "events-log").append(
-        [LogEntryInput(content="first", content_embedding=None)], author="user"
-    )
-    head = _memory(db, "events-log").read_batch(None, 10)[-1].created_at
-    db.cursors.advance_committed("chained", "events-log", head)
-    db.memories.mark_collected("chained")
-    _backdate_collected(db, "chained", minutes=10)  # clear the interval floor
-
-    # Caught up on its declared source → the gate skips it.
-    assert collector._input_pending(_get(db, "chained")) is False
-    assert collector._next_ready_collection() is None
-
-    # The source advances → the gate wakes the collection.
-    _memory(db, "events-log").append(
-        [LogEntryInput(content="second", content_embedding=None)], author="user"
-    )
-    assert collector._input_pending(_get(db, "chained")) is True
-    ready = collector._next_ready_collection()
-    assert ready is not None and ready.name == "chained"
-
-
-def test_on_advance_source_cursor_is_never_pruned(test_config, tmp_path):
-    """The declared on_advance ``source_log`` is a live input even though the prompt
-    doesn't name it — unlike a stale inferred cursor, it is NOT pruned, so the
-    trigger can't be silently swept away (#1604)."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _make_on_advance_collection(db, source="events-log")
-    db.cursors.advance_committed("chained", "events-log", datetime.now(UTC))
-
-    live = collector._live_cursors(_get(db, "chained"))
-    assert [name for name, _ in live] == ["events-log"]
-    # The cursor survives the pruning pass because it is the declared source.
-    assert db.cursors.get("chained", "events-log") is not None

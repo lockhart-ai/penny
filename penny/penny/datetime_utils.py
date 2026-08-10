@@ -106,7 +106,7 @@ def user_timezone(db: Database) -> tzinfo:
     is unknown.  Entry/log timestamps stay UTC via ``format_log_timestamp`` —
     those are absolute historical markers, not the current-now anchor.
     """
-    iana = _user_timezone_name(db)
+    iana = user_timezone_name(db)
     if iana is None:
         return UTC
     try:
@@ -116,8 +116,13 @@ def user_timezone(db: Database) -> tzinfo:
         return UTC
 
 
-def _user_timezone_name(db: Database) -> str | None:
-    """The primary user's stored IANA timezone, or None with no profile."""
+def user_timezone_name(db: Database) -> str | None:
+    """The primary user's stored IANA timezone, or None with no profile.
+
+    Public because the words a user says about time are read in their own zone as
+    well as shown in it (``parse_expires_at``, #1857): the zone is passed to the
+    parser as a parameter, so nothing reaches into the database from the pure
+    parsing layer."""
     sender = db.users.get_primary_sender()
     if sender is None:
         return None

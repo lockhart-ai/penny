@@ -77,7 +77,7 @@ class Prompt:
         "When something is worth remembering, `collection_write` it — into a "
         "collection that fits, or under a new name; the write creates the "
         "collection if it doesn't exist. That is a plain write, not a job: no "
-        "trigger, no schedule, no notify.\n\n"
+        "schedule, no notify.\n\n"
     )
 
     ELICIT_INSTRUCTION = (

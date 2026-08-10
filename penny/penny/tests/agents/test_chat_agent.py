@@ -228,7 +228,7 @@ async def test_collection_set_stamps_chat_provenance(
                                 "name": "indie-platformers",
                                 "description": "a running list of new indie platformers",
                                 "skill": "gather-platformers",
-                                "trigger": "every 3600",
+                                "schedule": "FREQ=HOURLY",
                             },
                         ),
                     )
@@ -1218,7 +1218,7 @@ _BASIC_FLOW_EXPECTED = (
     "\n"
     "When something is worth remembering, `collection_write` it — into a collection that "
     "fits, or under a new name; the write creates the collection if it doesn't exist. "
-    "That is a plain write, not a job: no trigger, no schedule, no notify.\n"
+    "That is a plain write, not a job: no schedule, no notify.\n"
     "\n"
     "When a 'Current Browser Page' section appears above, the user is browsing that page "
     "right now. If they say 'this page', 'this thread', 'this article', or anything "
@@ -1275,7 +1275,7 @@ _BASIC_FLOW_EXPECTED = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- dislikes — active · every 300 · no runs yet\n"
+    "- dislikes — active · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "change · YYYY-MM-DD HH:MM UTC · old-facts archived by user-run\n"

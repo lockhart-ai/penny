@@ -179,40 +179,14 @@ ConfigParam(
     key="COLLECTOR_TICK_INTERVAL",
     description=(
         "Seconds between Collector dispatcher ticks (idle-gated).  Each tick "
-        "the dispatcher checks which collection is most overdue based on its "
-        "per-row collector_interval_seconds and runs that one.  Should be "
-        "smaller than the smallest per-collection interval — otherwise that "
-        "collection waits up to TICK_INTERVAL past its readiness."
+        "the dispatcher checks which collection's schedule is most overdue and "
+        "runs that one.  Should be shorter than the shortest gap any collection's "
+        "schedule asks for — otherwise that collection waits up to TICK_INTERVAL "
+        "past the moment its rule came round."
     ),
     type=float,
     default=30.0,
     validator=_validate_positive_float,
-    group=GROUP_BACKGROUND,
-)
-
-ConfigParam(
-    key="COLLECTOR_THROTTLE_AFTER",
-    description=(
-        "Consecutive idle cycles (no entries written / messages sent) before a "
-        "collector backs off — its interval doubles, then the counter resets.  "
-        "A productive cycle snaps the interval back to the user's set cadence.  "
-        "0 disables auto-throttle."
-    ),
-    type=int,
-    default=3,
-    validator=_validate_non_negative_int,
-    group=GROUP_BACKGROUND,
-)
-
-ConfigParam(
-    key="COLLECTOR_MAX_INTERVAL",
-    description=(
-        "Ceiling (seconds) for auto-throttle backoff — a collector's interval "
-        "never doubles past this.  Default 604800 (one week)."
-    ),
-    type=int,
-    default=604800,
-    validator=_validate_positive_int,
     group=GROUP_BACKGROUND,
 )
 

@@ -55,7 +55,7 @@ def _seed_recipe_box(db: Database) -> None:
         db,
         RECIPE_BOX,
         extraction_prompt=RECIPE_BOX_ENRICH_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
     )
 
 

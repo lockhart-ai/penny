@@ -334,7 +334,7 @@ class Penny:
 
         The Collector is a single idle-gated schedule that ticks fast
         (COLLECTOR_TICK_INTERVAL).  Each tick it picks the most-overdue
-        collection from ``memory`` (per-row ``collector_interval_seconds``)
+        collection from ``memory`` (per-row ``schedule``, an RRULE)
         and runs that collection's extraction prompt.  Idle gating keeps
         collector work out of the way during active conversation; the
         store fills up "between conversations".

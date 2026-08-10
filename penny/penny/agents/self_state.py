@@ -61,7 +61,7 @@ from penny.constants import PennyConstants
 from penny.database.memory.types import render_key_value
 from penny.database.mutation_store import mutation_change_summary
 from penny.datetime_utils import format_log_timestamp
-from penny.tools.collection_instantiation import render_trigger_clause
+from penny.tools.collection_instantiation import render_schedule_clause
 from penny.tools.skill_tools import render_skill_brief
 
 if TYPE_CHECKING:
@@ -187,18 +187,11 @@ class SelfStateHeader:
 
     @staticmethod
     def _cadence(row: MemoryRow) -> str:
-        """The mechanism's trigger clause rendered AS the copyable ``trigger`` input
-        (#1631, display form == invocation form): ``cron <5-field expression>`` · ``on
-        advance of <log>`` · ``once at <ISO> [xN]`` · ``every <seconds>``.  Empty when the
-        collection has no trigger yet (an adopted skill awaiting a cadence), so the
-        mechanism line drops the clause."""
-        has_trigger = (
-            row.source_log is not None
-            or row.run_at is not None
-            or row.collector_interval_seconds is not None
-            or row.cron_expression is not None
-        )
-        return render_trigger_clause(row) if has_trigger else ""
+        """The mechanism's schedule rendered VERBATIM (#1857, display form ==
+        invocation form): the stored RRULE, which is exactly what the ``schedule``
+        argument accepts back.  Empty when the collection has no schedule yet (an
+        adopted skill awaiting one), so the mechanism line drops the clause."""
+        return render_schedule_clause(row)
 
     @staticmethod
     def _end_condition(row: MemoryRow) -> str:

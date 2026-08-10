@@ -2,23 +2,23 @@
 
 One ``Collector`` instance runs in the background.  Each cycle it picks
 the most-overdue ready collection from ``memory`` (where
-``extraction_prompt IS NOT NULL`` and
-``now - last_collected_at >= collector_interval_seconds``), binds itself
-to that target, runs the agent loop with the target's extraction prompt
-as instructions and a tool surface scoped to writes against that
-collection only, then stamps ``last_collected_at = now``.
+``extraction_prompt IS NOT NULL`` and the collection's RRULE ``schedule``
+has an occurrence at or before now that its last run didn't already
+cover), binds itself to that target, runs the agent loop with the target's
+extraction prompt as instructions and a tool surface scoped to writes
+against that collection only, then stamps ``last_collected_at = now``.
 
-Readiness has a second gate beyond the interval: a *log-driven* collection
+The schedule runs as stated (#1857): there is no interval to widen and no
+auto-throttle to widen it — rate protection lives in the send cooldown,
+where it belongs.
+
+Readiness has a second gate beyond the schedule: a *log-driven* collection
 (one that reads a log via ``log_read``, leaving a read cursor) is skipped
 without entering the model whenever every one of its live input logs is
 caught up — ``head <= last_read_at``.  The cursors a collection already
 holds are its declared inputs, so no spec is needed; a cursor whose log the
-prompt no longer names is pruned so it can't keep gating.  This replaces the
-auto-throttle for these collections: instead of widening the interval after
-idle cycles (which stalls catch-up when the log starts moving again), the
-gate runs the collection exactly when — and only when — its inputs advance.
-Generative / collection-driven collections (no log cursor) keep the
-interval + auto-throttle fallback.
+prompt no longer names is pruned so it can't keep gating.  Generative /
+collection-driven collections (no log cursor) run on the schedule alone.
 
 Dispatcher pattern (vs. one stateful agent per collection):
   - No agent registry to keep in sync with the DB; reading the DB each
@@ -43,7 +43,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from croniter import croniter
+from dateutil.rrule import rrulestr
 
 from penny.agents.base import BackgroundAgent
 from penny.agents.models import ControllerResponse, ToolCallRecord
@@ -70,9 +70,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Tools whose successful use means a cycle produced work — it changed a
-# collection or reached out to the user.  Reads and ``done()`` don't count; a
-# run of only those is "idle" and feeds the auto-throttle counter.
 class Collector(BackgroundAgent):
     """Single dispatcher agent — picks the most-overdue ready collection per cycle."""
 
@@ -210,13 +207,12 @@ class Collector(BackgroundAgent):
                     self._tag_promptlog_run_cancelled(run_id)
                 else:
                     # One determination of this cycle's outcome, used for the
-                    # audit log, the promptlog tag, and the throttle alike.
+                    # audit log and the promptlog tag alike.
                     outcome, reason = self._cycle_result(response)
                     self._tag_promptlog_run(run_id, outcome, reason, self._tool_failures(response))
-                    self._apply_throttle(collection, outcome)
-                    # Post-cycle retirement — at most one archive.  The
-                    # once-shaped trigger retires a collection after its allotted
-                    # runs (a one-shot reminder archives itself, #1556); failing
+                    # Post-cycle retirement — at most one archive.  A bounded
+                    # schedule retires a collection after its allotted runs (a
+                    # ``COUNT=1`` one-shot archives itself, #1857); failing
                     # that, the ``expires_at`` end condition retires one whose
                     # expiry passed mid-life (#1562).  Both run after the outcome
                     # is tagged so this cycle is counted; a cancelled cycle never
@@ -265,8 +261,7 @@ class Collector(BackgroundAgent):
         moved/deleted, a message actually sent).  A *successful no-op* (a
         duplicate-rejected write, an update/delete/move on a missing key, a
         muted/cooled-down send) carries ``mutated=False``, so it correctly reads
-        as idle — unlike the old "a write tool didn't error" heuristic, which
-        counted duplicate-rejected writes as work and starved the throttle.
+        as idle.  This is what splits the run's ``worked`` / ``no_work`` outcome.
         """
         if response is None:
             return False
@@ -288,7 +283,7 @@ class Collector(BackgroundAgent):
     @classmethod
     def _cycle_result(cls, response: ControllerResponse | None) -> tuple[RunOutcome, str]:
         """The cycle's outcome + a STRUCTURAL reason — the single determination read
-        by the audit log, the promptlog tag, and the throttle (#1569).
+        by the audit log and the promptlog tag (#1569).
 
         Derived from the run's tool calls alone, never a model-authored judgment:
         ``done()`` is an argless sentinel, so there is no ``success``/``summary`` to
@@ -326,68 +321,13 @@ class Collector(BackgroundAgent):
                 return record.stop_reason
         return None
 
-    def _apply_throttle(self, collection: MemoryRow, outcome: RunOutcome) -> None:
-        """Auto-tune the collection's interval from this cycle's outcome.
-
-        Throttle is now the fallback for collections the cursor gate can't reach
-        — generative / collection-driven ones with no live log cursor.  A
-        log-driven collection is exempt: the gate skips its idle ticks before
-        they run, so it never idles its way into a wider interval (which would
-        just re-create the catch-up lag the gate exists to remove).
-
-        A **cron** collection is exempt too (#1684): the user stated an exact
-        schedule, and idleness must never widen it — the cron next-fire time, not
-        a timer, gates it in ``_is_ready``, so ``collector_interval_seconds`` isn't
-        its cadence.
-
-        A productive cycle (``worked`` or ``incomplete`` — both changed durable
-        state) snaps the interval back to the user's set cadence
-        (``base_interval_seconds``) and clears the idle counter.  After
-        ``COLLECTOR_THROTTLE_AFTER`` consecutive non-productive cycles the
-        interval doubles (capped at ``COLLECTOR_MAX_INTERVAL``) and the counter
-        resets.  ``COLLECTOR_THROTTLE_AFTER = 0`` disables it.
-
-        Both intervals are guaranteed non-NULL here — only a ready collection
-        runs a cycle, and ``_is_ready`` skips any collector collection without a
-        ``collector_interval_seconds``.  The ``None`` guard is defensive.
-        """
-        threshold = int(self.config.runtime.COLLECTOR_THROTTLE_AFTER)
-        base = collection.base_interval_seconds
-        current = collection.collector_interval_seconds
-        if threshold <= 0 or base is None or current is None:
-            return
-        if collection.cron_expression is not None:
-            # A cron collection runs on its stated schedule; idle cycles must never
-            # widen it (#1684), and there's no interval to snap back — the cron
-            # expression is the schedule, not ``collector_interval_seconds``.  Fully
-            # exempt, like a live-cursor log-driven collection.
-            return
-        if outcome in (RunOutcome.WORKED, RunOutcome.INCOMPLETE):
-            interval, idle = base, 0
-        elif self._live_cursors(collection):
-            # Log-driven collection: the cursor gate already skips its idle
-            # ticks, so it never accrues idle runs to throttle on — and widening
-            # its interval would re-introduce the very catch-up lag the gate
-            # removes (new log entries waiting out a stretched floor).  Pinned at
-            # base; the watermark, not a timer, decides when it runs.
-            return
-        else:
-            idle = collection.consecutive_idle_runs + 1
-            if idle >= threshold:
-                ceiling = int(self.config.runtime.COLLECTOR_MAX_INTERVAL)
-                interval, idle = min(current * 2, ceiling), 0
-            else:
-                interval = current
-        if interval != current or idle != collection.consecutive_idle_runs:
-            self.db.memories.set_cadence(collection.name, interval, idle)
-
     def _archive_if_run_limit_reached(self, collection: MemoryRow, run_id: str) -> bool:
         """Archive a ``max_runs``-bounded collection once it has run its quota.
 
-        The once-shaped trigger (#1556): after ``max_runs`` completed (non-
-        cancelled) cycles the collection has done its job — a one-shot reminder
-        (``run_at`` + ``max_runs=1``) retires itself, and any bounded collection
-        stops re-firing.  Archival (not deletion) via the ordinary archive path
+        ``max_runs`` is the schedule's own ``COUNT=`` lifted onto the row (#1857):
+        after that many completed (non-cancelled) cycles the collection has done
+        its job — a ``COUNT=1`` one-shot retires itself, and any bounded
+        collection stops re-firing.  Archival (not deletion) via the ordinary path
         keeps the row as a visible tombstone in the archived-inclusive catalog
         (#1566); the actor is the scheduler, not the user.  ``None`` = unlimited,
         the ordinary recurring case.  The run count is read from the ledger
@@ -638,56 +578,69 @@ class Collector(BackgroundAgent):
                 len(memory.extraction_prompt),
             )
             return False
-        if memory.collector_interval_seconds is None:
+        schedule = memory.schedule
+        if schedule is None:
             logger.warning(
-                "Skipping collection '%s': no collector_interval_seconds set — "
-                "set a cadence via collection_set to enable collection",
+                "Skipping collection '%s': no schedule set — set one via collection_set "
+                "to enable collection",
                 memory.name,
             )
             return False
-        # Once-shaped trigger (#1556): a collection with a ``run_at`` doesn't fire
-        # until that UTC time — a delayed / one-shot start.  NULL for the ordinary
-        # recurring cadence.  ``max_runs`` retires it after firing (handled in the
-        # cycle-completion path), so the interval never re-triggers a one-shot.
-        if memory.run_at is not None and now < _aware(memory.run_at):
-            return False
         # End condition (#1562): once ``expires_at`` has passed, the watch is
         # over — it never starts another cycle.  A PURE skip here keeps
-        # readiness side-effect-free (like the ``run_at`` gate above); the
-        # dispatcher's ``_retire_expired`` sweep turns the skip into a visible
-        # system archive (the codebase separates readiness from archival).
+        # readiness side-effect-free; the dispatcher's ``_retire_expired`` sweep
+        # turns the skip into a visible system archive (the codebase separates
+        # readiness from archival).
         if memory.expires_at is not None and now >= _aware(memory.expires_at):
             return False
-        # Cron trigger (#1684): the 5-field cron expression IS the schedule — ready iff
-        # ``now`` has reached the next fire time after the last run.  Croniter, not the
-        # interval floor / cursor gate, decides; a cron collection is generative, so
-        # those don't apply — so this returns early.  Paced by the dispatcher tick like
-        # the other non-interval forms (eligible each tick, the cron time the real gate).
-        cron_expression = memory.cron_expression
-        if cron_expression is not None:
-            return self._cron_due(memory, cron_expression, now)
-        if memory.last_collected_at is not None:
-            elapsed = (now - _aware(memory.last_collected_at)).total_seconds()
-            if elapsed < memory.collector_interval_seconds:
-                return False  # within its cadence floor
-        # Interval floor cleared (or never run).  Now the cursor gate: a
-        # log-driven collection caught up on every live input is skipped without
-        # entering the model — the watermark, not the clock, says there's work.
+        if not self._schedule_due(memory, schedule, now):
+            return False
+        # The schedule says it's time.  Now the cursor gate: a log-driven
+        # collection caught up on every live input is skipped without entering the
+        # model — the watermark, not the clock, says there's work.
         return self._input_pending(memory) is not False
 
-    def _cron_due(self, memory: MemoryRow, cron_expression: str, now: datetime) -> bool:
-        """Whether a cron-scheduled collection has reached its next fire time (#1684).
+    def _schedule_due(self, memory: MemoryRow, schedule: str, now: datetime) -> bool:
+        """Whether the collection's RRULE has come round again (#1857).
 
-        Ready iff ``now`` has passed the next cron occurrence after the last run
-        (``last_collected_at``), or after creation when it has never run — ``croniter``
-        computes the next fire from that base.  Both the base and ``now`` are UTC-aware,
-        so the returned occurrence is UTC-aware and directly comparable.  ``cron_expression``
-        is passed narrowed (non-None) from ``_is_ready``.  The cron expression is the
-        collection's whole gate; the interval floor and cursor gate don't apply
-        (``_is_ready`` returns here directly)."""
-        base = _aware(memory.last_collected_at or memory.created_at)
-        next_fire = croniter(cron_expression, base).get_next(datetime)
-        return now >= next_fire
+        Ready iff ``now`` has reached the occurrence the collection is WAITING ON.  On
+        the first run that is the rule's very FIRST occurrence — a rule with no
+        ``DTSTART`` starts at ``created_at``, so a fresh collection is due right away
+        exactly as a fresh collector always has been, and a rule whose own ``DTSTART``
+        is already past is due right away too (it is a schedule that came round while
+        nothing was watching, not one to skip).  After that it is the next occurrence
+        strictly after the last run.  A rule with no occurrence left (a spent ``COUNT=``,
+        a passed ``UNTIL=``) is never ready again; the post-cycle quota archive retires
+        it.
+
+        The first occurrence is read by ITERATING rather than by asking what comes after
+        ``created_at``: ``rrulestr`` truncates its start to whole seconds while
+        ``created_at`` carries microseconds, so "after creation" excludes the collection's
+        own first occurrence and a daily rule would wait a day to run its first cycle.
+
+        An unreadable rule is a stored value the parse gate already refused, so it can
+        only mean a hand-edited row: it is logged and skipped rather than crashing the
+        dispatcher for every other collection (visible degradation over a silent stall).
+        """
+        created = _aware(memory.created_at)
+        try:
+            # The rule's own DTSTART line wins when it has one; otherwise the
+            # recurrence is anchored at creation, so its phase is fixed for life.
+            rule = rrulestr(schedule, dtstart=created)
+            if memory.last_collected_at is None:
+                next_fire = next(iter(rule), None)
+            else:
+                next_fire = rule.after(_aware(memory.last_collected_at))
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "Skipping collection '%s': schedule %r isn't a readable rule (%s) — "
+                "set a valid one via collection_set",
+                memory.name,
+                schedule,
+                exc,
+            )
+            return False
+        return next_fire is not None and now >= next_fire
 
     # ── Cursor gate (skip-when-no-new-input) ──────────────────────────────
 
@@ -698,33 +651,18 @@ class Collector(BackgroundAgent):
         ``False`` — every live cursor is caught up: skip, don't enter the model.
         ``None`` — no live cursor at all: a generative or collection-driven
         collection (browses, picks from another collection) with no log to gate
-        on; not gate-eligible, so it runs on its plain interval.
+        on; not gate-eligible, so its schedule alone decides.
 
         The cursors a collection already holds *are* its declared inputs — no
         separate spec.  ``commit_pending`` advances a cursor to the newest entry
         actually consumed, so ``head > last_read_at`` means unread input exists.
-
-        The on_advance trigger (#1604) is the *declared*-input variant of this
-        inferred gate: a ``source_log`` names its input explicitly, so it is a live
-        cursor here (protected from prompt-name pruning, see ``_live_cursors``) and
-        the SAME frontier check gates it — no parallel machinery.  Before the first
-        read there is no cursor to compare against, so the collection is pending
-        (run to establish it), after which the cursor decides.
+        This INFERRED gate is untouched by the schedule collapse (#1857): the
+        declared-input ``on advance of`` form is gone, this one stays.
         """
-        source = memory.source_log
-        if source is not None and not self._source_read_yet(memory.name, source):
-            return True
         live = self._live_cursors(memory)
         if not live:
             return None
         return any(self._log_has_new(log_name, position) for log_name, position in live)
-
-    def _source_read_yet(self, collection_name: str, source_log: str) -> bool:
-        """Has this collection ever consumed its declared on_advance ``source_log``?
-        (#1604) — a cursor exists once the first read committed.  Before that the
-        gate treats the source as pending, so the first cycle establishes the cursor
-        the frontier check then reads."""
-        return self.db.cursors.get(collection_name, source_log) is not None
 
     def _live_cursors(self, memory: MemoryRow) -> list[tuple[str, datetime]]:
         """The collection's cursors for logs it *still* reads, with positions.
@@ -733,16 +671,10 @@ class Collector(BackgroundAgent):
         was left behind by a since-dropped read (e.g. a migration that removed a
         ``log_read``); it would lie about what the collection consumes, so it's
         pruned here — an exact identifier match, deterministic, self-healing.
-
-        The declared on_advance ``source_log`` (#1604) is always a live input — its
-        cursor is kept regardless of whether the prompt names the log, so the trigger
-        can't be silently pruned away, and it feeds the same frontier check as an
-        inferred cursor.
         """
         live: list[tuple[str, datetime]] = []
         for log_name, position in self.db.cursors.list_for(memory.name):
-            named = memory.extraction_prompt is not None and log_name in memory.extraction_prompt
-            if named or log_name == memory.source_log:
+            if memory.extraction_prompt is not None and log_name in memory.extraction_prompt:
                 live.append((log_name, position))
             else:
                 self.db.cursors.clear(memory.name, log_name)

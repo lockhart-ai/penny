@@ -69,7 +69,7 @@ def _seed_watchlist(prompt: str):
             WATCHLIST.name,
             WATCHLIST.description,
             extraction_prompt=prompt,
-            collector_interval_seconds=300,
+            schedule="FREQ=MINUTELY;INTERVAL=5",
         )
         for message in WATCHLIST_MESSAGES:
             db.messages.log_message(_INCOMING, "user", message)
@@ -88,7 +88,7 @@ def _seed_digest_empty(db: Database) -> None:
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
-        collector_interval_seconds=1200,
+        schedule="FREQ=MINUTELY;INTERVAL=20",
     )
 
 

@@ -91,7 +91,7 @@ def _seed_research_watcher(db: Database) -> None:
         RESEARCH_WATCHER.name,
         RESEARCH_WATCHER.description,
         extraction_prompt=RESEARCH_WATCHER_EXTRACTION_PROMPT,
-        collector_interval_seconds=3600,
+        schedule="FREQ=HOURLY",
         notify=False,
     )
 
@@ -322,7 +322,7 @@ def _seed_watchlist(db: Database) -> None:
         db,
         WATCHLIST,
         extraction_prompt=WATCHLIST_NUMBERED_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
     )
     for message in WATCHLIST_MESSAGES:
         db.messages.log_message(_INCOMING, "user", message)

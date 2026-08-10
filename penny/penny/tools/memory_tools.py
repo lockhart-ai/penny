@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Any
 
 from similarity.embeddings import token_containment_ratio
 
-from penny.config_params import RuntimeParams
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
@@ -60,25 +59,26 @@ from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.mutation_store import render_mutation
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import render_skill, retarget_writes, unbound_required_parameters
-from penny.datetime_utils import format_log_timestamp
+from penny.datetime_utils import format_log_timestamp, user_timezone_name
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
 from penny.tools.base import Tool
 from penny.tools.collection_instantiation import (
+    SCHEDULE_EXAMPLES,
+    Schedule,
+    ScheduleError,
     SkillResolution,
     SkillResolutionKind,
-    Trigger,
-    TriggerError,
-    has_trigger,
-    parse_datetime,
-    parse_trigger,
+    has_schedule,
+    parse_expires_at,
+    parse_schedule,
     render_ambiguous,
     render_creation_echo,
     render_inert_echo,
     render_no_skill_found,
     render_reinstantiation_echo,
+    render_schedule_field,
     render_tombstone_duplicate,
-    render_trigger_field,
     render_unbound_parameters,
 )
 from penny.tools.memory_args import (
@@ -321,14 +321,13 @@ def _format_collection_echo(memory: Any, verb: str) -> str:
     making up fields.  Includes the full extraction_prompt verbatim
     so the model's reply can summarize accurately (the model previously
     confabulated this because the create/update returns were one-liners).
-    The trigger renders via ``render_trigger_field`` — the copyable clause when the
-    collection has a cadence, else ``trigger: none`` for an inert/no-cadence one, so a
-    plain update on a trigger-less collection never echoes ``trigger: every None``
-    (#1666).
+    The schedule renders via ``render_schedule_field`` — the stored rule verbatim when
+    the collection has one, else ``schedule: none`` for an inert/unscheduled one, so a
+    plain update on an unscheduled collection never echoes a blank clause (#1666).
     """
     return (
         f"{verb} collection '{memory.name}':\n"
-        f"  trigger: {render_trigger_field(memory)}\n"
+        f"  schedule: {render_schedule_field(memory)}\n"
         f"  notify: {memory.notify}\n"
         f"  description: {memory.description}\n"
         f"  extraction_prompt: |\n    "
@@ -549,60 +548,46 @@ def render_skill_prompt(
     return prompt, rejection
 
 
-def _once_form_interval() -> int:
-    """The cadence a once-shaped (``run_at``) or on_advance trigger is paced at — the
-    dispatcher tick from runtime config (eligible each tick, its real gate deciding when
-    it runs), reused rather than a new invented default.  Shared by ``collection_set``
-    and ``collection_set``'s trigger parse."""
-    return int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
+# A schedule whose UNTIL= and an ``expires_at`` argument both say when to stop: two
+# answers to one question, so neither is taken and the model is asked to say it once.
+_CONFLICTING_END_CONDITION = (
+    "This says when to stop twice — the schedule ends at UNTIL and expires_at says "
+    "'{expires}'. Say it once: keep UNTIL in the schedule and drop expires_at, or drop "
+    "UNTIL and pass expires_at on its own."
+)
 
 
-def validate_source_log(db: Database, source_log: str | None) -> ToolResult | None:
-    """For an on_advance trigger, ``source_log`` must name an existing LOG (#1604) — a
-    collection can't be a frontier source, and a missing name would never advance.
-    Returns an actionable ``ToolResult`` naming the problem + the fix, or ``None`` when
-    the source is valid (or there's no on_advance).  Shared by create + update."""
-    if source_log is None:
-        return None
-    source = db.memories.get(source_log)
-    if source is None:
-        return ToolResult(
-            message=(
-                f"on_advance source '{source_log}' isn't a memory I have — copy an exact log "
-                "name from your store map (collection_catalog / find resolves one), then "
-                "call the tool again."
-            ),
-            success=False,
-        )
-    if source.type != MemoryType.LOG.value:
-        return ToolResult(
-            message=(
-                f"on_advance source '{source_log}' is a {source.type}, not a log — the "
-                "trigger fires on a LOG advancing (an event stream). Name a log, or use "
-                "interval for a recurring cadence."
-            ),
-            success=False,
-        )
-    return None
+def resolve_expiry(db: Database, schedule: Schedule, expires_at: str | None) -> datetime | None:
+    """The collection's ONE end condition, from the two places it can be stated (#1857).
+
+    A schedule's ``UNTIL=`` is lifted onto the same column ``expires_at`` sets, so
+    stating both is stating the answer twice — refused rather than silently resolved in
+    one direction.  Words are read in the user's own timezone, which is why this takes
+    the database: the zone is fetched here and passed to the pure parser.
+    """
+    if expires_at is None:
+        return schedule.expires_at
+    if schedule.expires_at is not None:
+        raise ScheduleError(_CONFLICTING_END_CONDITION.format(expires=expires_at))
+    return parse_expires_at(expires_at, user_timezone_name(db))
 
 
-# A trigger / notify / expiry on a skill-less create: an inert collection has no job
+# A schedule / notify / expiry on a skill-less create: an inert collection has no job
 # to describe, so the job-shaped arg is refused with the two-step fix (#1629).
 _INERT_JOB_ARGS_REFUSAL = (
-    "Can't set a trigger, notify, or expiry on '{name}' without a skill — those describe a "
-    "JOB, and a skill-less collection is inert storage with no job to run. Create it as "
-    "storage now (name + description only), then once you've taught the skill attach it with "
-    "collection_set(name='{name}', skill=<title>, trigger=\"every <seconds>\", "
+    "Can't set a schedule, notify, or expiry on '{name}' without a skill — those describe "
+    "a JOB, and a skill-less collection is inert storage with no job to run. Create it as "
+    "storage now (name + description only), then once you've taught the skill attach it "
+    "with collection_set(name='{name}', skill=<title>, schedule=<recurrence rule>, "
     "notify=<true/false>)."
 )
 
-# A skill create with no trigger: the collection wouldn't know when to run, so it's
-# refused naming the four forms (a skill collection must be scheduled, #1631/#1684).
-_MISSING_TRIGGER = (
-    "A skill collection needs a trigger so it knows when to run. Set trigger to one of: "
-    '"every <seconds>" (recurring), "once at <ISO> [xN]" (scheduled / one-shot), '
-    '"on advance of <log>" (wake when a source log advances), or '
-    '"cron <5-field expression>" (a time-of-day recurrence, e.g. cron 0 8,20 * * *).'
+# A skill create with no schedule: the collection wouldn't know when to run, so it's
+# refused showing the grammar (a skill collection must be scheduled, #1857).
+_MISSING_SCHEDULE = (
+    "A skill collection needs a schedule so it knows when to run. Set schedule to one "
+    "RRULE line:\n"
+    f"{SCHEDULE_EXAMPLES}"
 )
 
 
@@ -630,15 +615,15 @@ class CollectionCreateTool(MemoryTool):
         "\n"
         "TWO ways to call it:\n"
         "- WITH a `skill`: instantiate that skill — its recipe becomes the collection's "
-        "routine, run on the `trigger` you set. You don't write steps here; the skill "
+        "routine, run on the `schedule` you set. You don't write steps here; the skill "
         "supplies them.\n"
         "- WITHOUT a `skill`: an INERT storage collection — it holds entries but nothing "
         "runs against it yet. Use this to set up the container first when you're about "
         "to TEACH a skill: create it (name + description only), demonstrate the routine "
         "once here in chat — you learn it automatically as a skill — then attach that "
-        "skill with collection_set to make it do the job. Don't pass a trigger / "
+        "skill with collection_set to make it do the job. Don't pass a schedule / "
         "notify / expiry with a skill-less create — an inert collection has no job to "
-        "schedule.\n"
+        "run.\n"
         "\n"
         "Fields:\n"
         "- `name` — unique slug for the collection (lowercase, hyphens).\n"
@@ -652,24 +637,26 @@ class CollectionCreateTool(MemoryTool):
         "- `params` — a map binding the skill's parameters to values "
         '(e.g. {"url": "https://…", "field": "price"}). Every REQUIRED parameter '
         "must be bound or the call is refused naming what's missing.\n"
-        '- `trigger` — ONE string, in one of four forms: "every <seconds>" (a recurring '
-        'cadence, e.g. "every 3600" for hourly), "once at <ISO datetime> [xN]" (run at a '
-        'time, N times — "once at 2026-07-20T09:00:00Z" is a one-time reminder that '
-        'archives itself, "... x3" runs three times), "on advance of <log>" (the '
-        "collection wakes as soon as that source LOG gets a new entry — chain one "
-        'collector off another\'s output), or "cron <5-field expression>" (a time-of-day '
-        'recurrence, e.g. "cron 0 8,20 * * *" for 8am and 8pm — use this for "morning and '
-        'evening" / "weekdays at 9" schedules; the 5 fields are read in UTC, so convert '
-        "the user's wall-clock times to UTC). An unreadable trigger is refused naming the "
-        "four forms.\n"
-        "- `expires_at` — OPTIONAL. An ISO datetime end condition; the collection "
+        "- `schedule` — when it runs, as ONE recurrence rule (RRULE). Say how often "
+        'with FREQ and INTERVAL, and the time of day with BYHOUR: "FREQ=HOURLY" is '
+        'every hour, "FREQ=MINUTELY;INTERVAL=90" is every 90 minutes, '
+        '"FREQ=DAILY;BYHOUR=8" is 8am daily, '
+        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" is weekdays at 9. Hours are UTC, '
+        "so convert the user's wall-clock time. To run a set number of times add "
+        'COUNT — "DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1" runs once at that '
+        "moment and then retires. Put a DTSTART line first whenever the user said when "
+        "to start. A rule I can't read comes back with the grammar and, when I can work "
+        "out what you meant, the exact string to send instead.\n"
+        "- `expires_at` — OPTIONAL. When the watch ends: a date and time "
+        '("2026-09-01T09:00:00Z") or when it ends in the user\'s own words '
+        '("in two weeks", "tomorrow at 9am"), read in their timezone. The collection '
         "archives itself once it passes, so a bounded watch needs no teardown.\n"
         "- `notify` — Set `true` when the user wants to be told about / kept posted "
         "on / alerted to new or changed entries as they're found. Leave `false` (the "
         "default) for a silent collection they'll ask about later.\n"
         "\n"
         "Returns a structured echo of what landed (description, skill, bound params, "
-        "trigger, notify, expiry, and the rendered routine). Confirm it back — don't "
+        "schedule, notify, expiry, and the rendered routine). Confirm it back — don't "
         "invent fields it didn't return."
     )
     parameters = {
@@ -703,22 +690,22 @@ class CollectionCreateTool(MemoryTool):
                     "{parameter: value}. Every required parameter must be bound."
                 ),
             },
-            "trigger": {
+            "schedule": {
                 "type": "string",
                 "description": (
-                    "One of four forms: 'every <seconds>' (recurring cadence, e.g. "
-                    "'every 3600' hourly), 'once at <ISO datetime> [xN]' (run at a time, N "
-                    "times — 'once at 2026-07-20T09:00:00Z' is a one-shot, '... x3' three "
-                    "times), 'on advance of <log>' (wake when a source log advances), or "
-                    "'cron <5-field expression>' (a time-of-day recurrence, e.g. "
-                    "'cron 0 8,20 * * *' for 8am and 8pm; fields are read in UTC)."
+                    "When it runs, as one recurrence rule: 'FREQ=HOURLY' (every hour), "
+                    "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
+                    "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
+                    "9). Hours are UTC. Add COUNT= to run a set number of times, and a "
+                    "leading 'DTSTART:<time>' line to say when it starts."
                 ),
             },
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "OPTIONAL ISO-8601 datetime end condition — the collection archives itself "
-                    "when it passes."
+                    "OPTIONAL end condition — a date and time ('2026-09-01T09:00:00Z') or "
+                    "when it ends in the user's own words ('in two weeks'), read in their "
+                    "timezone. The collection archives itself when it passes."
                 ),
             },
             "notify": {
@@ -766,16 +753,14 @@ class CollectionCreateTool(MemoryTool):
         return await self._create_from_skill(args, args.skill)
 
     async def _create_from_skill(self, args: CollectionCreateArgs, skill_query: str) -> ToolResult:
-        """Instantiate a collection from a skill: parse the trigger, resolve the
+        """Instantiate a collection from a skill: parse the schedule, resolve the
         skill, bind + render its steps (writes retargeted to this collection, #1629),
         refuse a near-duplicate, then create and echo.  ``skill_query`` is ``args.skill``
         narrowed to non-``None`` by the caller."""
-        parsed = self._parse_trigger(args)
+        parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
-        trigger, expires_at = parsed
-        if source_error := validate_source_log(self._db, trigger.source_log):
-            return source_error
+        schedule, expires_at = parsed
         resolution = await resolve_skill(self._db, self._llm_client, skill_query)
         skill = resolution.skill
         if skill is None:
@@ -786,7 +771,7 @@ class CollectionCreateTool(MemoryTool):
         )
         if render_error is not None:
             return render_error
-        return await self._instantiate(args, skill, prompt, trigger, expires_at)
+        return await self._instantiate(args, skill, prompt, schedule, expires_at)
 
     async def _create_inert(self, args: CollectionCreateArgs) -> ToolResult:
         """A skill-less create: an INERT collection (#1629) — storage only, no
@@ -808,37 +793,37 @@ class CollectionCreateTool(MemoryTool):
 
     @staticmethod
     def _reject_job_args(args: CollectionCreateArgs) -> ToolResult | None:
-        """A skill-less (inert) create describes storage, not a job — a trigger /
+        """A skill-less (inert) create describes storage, not a job — a schedule /
         notify / expiry passed alongside has nothing to attach to, so it's refused
         naming the fix (attach a skill via collection_set once one's taught) rather
         than silently dropped (visible degradation over silent success)."""
-        has_job = any((args.trigger is not None, args.expires_at is not None, args.notify))
+        has_job = any((args.schedule is not None, args.expires_at is not None, args.notify))
         if not has_job:
             return None
         return ToolResult(message=_INERT_JOB_ARGS_REFUSAL.format(name=args.name), success=False)
 
-    def _parse_trigger(
+    def _parse_schedule(
         self, args: CollectionCreateArgs
-    ) -> ToolResult | tuple[Trigger, datetime | None]:
-        """Parse the single ``trigger`` arg + optional end condition before any skill
-        work, so a bad schedule fails fast.  A skill collection needs a trigger (it must
-        know when to run), so a missing one is refused naming the four forms; an
-        unparseable one surfaces ``parse_trigger``'s teaching rejection verbatim."""
-        if args.trigger is None:
-            return ToolResult(message=_MISSING_TRIGGER, success=False)
+    ) -> ToolResult | tuple[Schedule, datetime | None]:
+        """Parse the single ``schedule`` arg + optional end condition before any skill
+        work, so a bad schedule fails fast.  A skill collection needs a schedule (it must
+        know when to run), so a missing one is refused showing the grammar; an
+        unreadable one surfaces ``parse_schedule``'s teaching rejection verbatim."""
+        if args.schedule is None:
+            return ToolResult(message=_MISSING_SCHEDULE, success=False)
         try:
-            trigger = parse_trigger(args.trigger, _once_form_interval())
-            expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
-        except TriggerError as exc:
+            schedule = parse_schedule(args.schedule)
+            expires_at = resolve_expiry(self._db, schedule, args.expires_at)
+        except ScheduleError as exc:
             return ToolResult(message=str(exc), success=False)
-        return trigger, expires_at
+        return schedule, expires_at
 
     async def _instantiate(
         self,
         args: CollectionCreateArgs,
         skill: Skill,
         extraction_prompt: str,
-        trigger: Trigger,
+        schedule: Schedule,
         expires_at: datetime | None,
     ) -> ToolResult:
         """Create the collection and echo it.
@@ -851,20 +836,17 @@ class CollectionCreateTool(MemoryTool):
             args.name,
             args.description,
             extraction_prompt=extraction_prompt,
-            collector_interval_seconds=trigger.collector_interval_seconds,
+            schedule=schedule.rule,
             description_embedding=description_embedding,
             notify=args.notify,
             created_by_run_id=self._created_by_run_id,
             expires_at=expires_at,
-            run_at=trigger.run_at,
-            max_runs=trigger.max_runs,
+            max_runs=schedule.max_runs,
             # Record which skill rendered this collection and with what bindings, so
             # the catalog / metadata render can name it (#1603) — the substrate a
             # future rebind/re-render reads its current bindings from.
             skill_name=skill.name,
             skill_params=args.params,
-            source_log=trigger.source_log,
-            cron_expression=trigger.cron_expression,
         )
         suffix = _description_degraded_suffix(args.description, description_embedding)
         echo = render_creation_echo(memory, skill.name, args.params)
@@ -1698,12 +1680,13 @@ _SKILL_GONE = (
     "re-render this collection from a different skill."
 )
 
-# An adopt that attached a skill but no trigger: the collection has a routine yet no
-# cadence, so it won't dispatch until one is set (#1629 — visible over silent).
-_NO_TRIGGER_NOTE = (
-    "\n\nHeads up: this collection now has a routine but no trigger, so it won't run yet. "
-    "Set one with collection_set(name='{name}', trigger=\"every <seconds>\") (or "
-    '"once at <ISO> [xN]", "on advance of <log>", or "cron <5-field expression>").'
+# An adopt that attached a skill but no schedule: the collection has a routine yet
+# nothing to run it on, so it won't dispatch until one is set (#1629 — visible over
+# silent).
+_NO_SCHEDULE_NOTE = (
+    "\n\nHeads up: this collection now has a routine but no schedule, so it won't run "
+    "yet. Set one with collection_set(name='{name}', schedule=<recurrence rule>) — the "
+    "rule for the cadence the user asked for, e.g. FREQ=HOURLY or FREQ=DAILY;BYHOUR=8."
 )
 
 
@@ -1720,7 +1703,7 @@ class CollectionSetTool(MemoryTool):
     reasons about whether the collection already exists.
 
     Three cases, in order.  The name EXISTS → the update path (adopt/rebind/swap/
-    refresh re-render, atomic trigger replace).  The name is new but names a job we
+    refresh re-render, atomic schedule replace).  The name is new but names a job we
     ALREADY HAVE (#1567/#1775, ``find_duplicate_collection``) → the same update
     path, aimed at the collection we have, because ``collection_set`` dispatching on
     the name alone is exactly what lets an invented name become a second copy of one
@@ -1734,8 +1717,9 @@ class CollectionSetTool(MemoryTool):
         "the fields you set change — you never need to know which. "
         "`description` = what it's for, in the user's words (required the first "
         "time). `skill` (+ `params`) attaches a learned skill — its steps become "
-        'the collection\'s routine. `trigger` schedules it: "every <seconds>" | '
-        '"once at <ISO> [xN]" | "on advance of <log>". `notify`=true tells the '
+        "the collection's routine. `schedule` says when it runs, as one recurrence "
+        'rule: "FREQ=HOURLY", "FREQ=DAILY;BYHOUR=8", '
+        '"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9". `notify`=true tells the '
         "user about new/changed entries. Plain storage needs no call at all — "
         "collection_write creates storage automatically; use collection_set for "
         "jobs and config."
@@ -1747,7 +1731,7 @@ class CollectionSetTool(MemoryTool):
             "description": {"type": "string"},
             "skill": {"type": "string"},
             "params": {"type": "object"},
-            "trigger": {"type": "string"},
+            "schedule": {"type": "string"},
             "expires_at": {"type": "string"},
             "notify": {"type": "boolean"},
         },
@@ -1792,7 +1776,7 @@ class CollectionSetTool(MemoryTool):
             description=args.description,
             skill=args.skill,
             params=args.params or {},
-            trigger=args.trigger,
+            schedule=args.schedule,
             expires_at=args.expires_at,
             notify=bool(args.notify),
         )
@@ -1806,7 +1790,7 @@ class CollectionSetTool(MemoryTool):
             notify=args.notify,
             skill=args.skill,
             params=args.params,
-            trigger=args.trigger,
+            schedule=args.schedule,
             expires_at=args.expires_at,
         )
 
@@ -1896,15 +1880,17 @@ class CollectionUpdateTool(MemoryTool):
         "- `params` — rebind the skill's fill-in-the-blank parameters to new values and "
         "re-render, keeping the same skill. Omit to keep the current bindings. Every "
         "required parameter must be bound or the call is refused naming what's missing.\n"
-        "- `trigger` — the job's schedule as ONE string (set it to change the schedule, "
-        'else omit to leave it): "every <seconds>" (recurring, e.g. "every 3600"), '
-        '"once at <ISO datetime> [xN]" (run at a time, N times), "on advance of <log>" '
-        '(wake when a source log advances), or "cron <5-field expression>" (a time-of-day '
-        'recurrence, e.g. "cron 0 8,20 * * *"; fields are read in UTC). Setting it '
-        "REPLACES the whole schedule. This is how you give an INERT collection its cadence "
-        "when you adopt a skill onto it.\n"
-        "- `expires_at` — OPTIONAL ISO datetime end condition; the collection archives "
-        "itself once it passes.\n"
+        "- `schedule` — when the job runs, as ONE recurrence rule (set it to change the "
+        'schedule, else omit to leave it): "FREQ=HOURLY" (every hour), '
+        '"FREQ=MINUTELY;INTERVAL=90" (every 90 minutes), "FREQ=DAILY;BYHOUR=8" (8am '
+        'daily), "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9" (weekdays at 9). Hours are '
+        "UTC. Add COUNT= to run a set number of times, and a leading DTSTART line to say "
+        "when it starts. Setting it REPLACES the whole schedule. This is how you give an "
+        "INERT collection its schedule when you adopt a skill onto it.\n"
+        "- `expires_at` — OPTIONAL end condition: a date and time "
+        '("2026-09-01T09:00:00Z") or when it ends in the user\'s own words '
+        '("in two weeks"), read in their timezone. The collection archives itself once '
+        "it passes.\n"
         "\n"
         "Returns a structured echo of the updated state. The echo is "
         "authoritative — if a field you tried to set isn't in it, the "
@@ -1950,22 +1936,22 @@ class CollectionUpdateTool(MemoryTool):
                     "Omit to keep current bindings. Every required parameter must be bound."
                 ),
             },
-            "trigger": {
+            "schedule": {
                 "type": "string",
                 "description": (
-                    "The job's schedule, ONE string in one of four forms — setting it "
-                    "REPLACES the whole schedule: 'every <seconds>' (recurring), 'once at "
-                    "<ISO datetime> [xN]' (run at a time, N times), 'on advance of <log>' "
-                    "(wake when a source log advances), or 'cron <5-field expression>' (a "
-                    "time-of-day recurrence, e.g. 'cron 0 8,20 * * *'; fields are read in "
-                    "UTC). Omit to leave the schedule unchanged."
+                    "When the job runs, as one recurrence rule — setting it REPLACES the "
+                    "whole schedule: 'FREQ=HOURLY' (every hour), "
+                    "'FREQ=MINUTELY;INTERVAL=90' (every 90 minutes), 'FREQ=DAILY;BYHOUR=8' "
+                    "(8am daily), 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9' (weekdays at "
+                    "9). Hours are UTC. Omit to leave the schedule unchanged."
                 ),
             },
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "OPTIONAL ISO-8601 datetime end condition — the collection archives "
-                    "itself when it passes."
+                    "OPTIONAL end condition — a date and time ('2026-09-01T09:00:00Z') or "
+                    "when it ends in the user's own words ('in two weeks'), read in their "
+                    "timezone. The collection archives itself when it passes."
                 ),
             },
         },
@@ -1993,55 +1979,58 @@ class CollectionUpdateTool(MemoryTool):
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """Parse the apply-time trigger union (#1629), then re-render from a skill when
+        """Parse the apply-time schedule (#1857), then re-render from a skill when
         ``skill``/``params`` is given (the #1620 refresh / rebind / swap / adopt cases),
         else a plain metadata edit.  Reads as a table of contents."""
         args = CollectionUpdateArgs(**kwargs)
-        parsed = self._parse_trigger(args)
+        parsed = self._parse_schedule(args)
         if isinstance(parsed, ToolResult):
             return parsed
-        trigger, expires_at = parsed
-        if trigger is not None and (
-            source_error := validate_source_log(self._db, trigger.source_log)
-        ):
-            return source_error
+        schedule, expires_at = parsed
         if args.skill is not None or args.params is not None:
-            return await self._reinstantiate(args, trigger, expires_at)
-        return await self._edit_metadata(args, trigger, expires_at)
+            return await self._reinstantiate(args, schedule, expires_at)
+        return await self._edit_metadata(args, schedule, expires_at)
 
-    def _parse_trigger(
+    def _parse_schedule(
         self, args: CollectionUpdateArgs
-    ) -> ToolResult | tuple[Trigger | None, datetime | None]:
-        """Parse the optional ``trigger`` arg + end condition at apply time (#1631/#1684,
-        the same one-arg four-form trigger collection_set uses).  Returns
-        ``(None, expires)`` when no trigger is set (cadence untouched) or the parsed
-        ``(Trigger, expires)``; an unparseable trigger surfaces ``parse_trigger``'s
+    ) -> ToolResult | tuple[Schedule | None, datetime | None]:
+        """Parse the optional ``schedule`` arg + end condition at apply time (#1857, the
+        same one-arg RRULE ``collection_set`` uses).  Returns ``(None, expires)`` when no
+        schedule is set (the stored one is untouched) or the parsed
+        ``(Schedule, expires)``; an unreadable schedule surfaces ``parse_schedule``'s
         teaching rejection verbatim."""
         try:
-            expires_at = parse_datetime(args.expires_at, "expires_at") if args.expires_at else None
-            trigger = (
-                parse_trigger(args.trigger, _once_form_interval())
-                if args.trigger is not None
-                else None
-            )
-        except TriggerError as exc:
+            schedule = parse_schedule(args.schedule) if args.schedule is not None else None
+            expires_at = self._expiry(schedule, args.expires_at)
+        except ScheduleError as exc:
             return ToolResult(message=str(exc), success=False)
-        return trigger, expires_at
+        return schedule, expires_at
+
+    def _expiry(self, schedule: Schedule | None, expires_at: str | None) -> datetime | None:
+        """The end condition for this edit — the schedule's own ``UNTIL=`` when a new
+        schedule was passed, else the ``expires_at`` argument on its own.  With no new
+        schedule there is no ``UNTIL=`` to conflict with, so a bare ``expires_at`` edit
+        reads as it always did."""
+        if schedule is not None:
+            return resolve_expiry(self._db, schedule, expires_at)
+        if expires_at is None:
+            return None
+        return parse_expires_at(expires_at, user_timezone_name(self._db))
 
     async def _edit_metadata(
-        self, args: CollectionUpdateArgs, trigger: Trigger | None, expires_at: datetime | None
+        self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None
     ) -> ToolResult:
-        """The plain metadata edit — description / notify / trigger.  The collection's
+        """The plain metadata edit — description / notify / schedule.  The collection's
         routine is untouchable here: a prompt is only ever a RENDER of a skill (the
         re-render path); there is no raw-edit argument on the model surface."""
         embedding = await self._description_embedding(args)
-        memory = self._apply_update(args, None, None, None, embedding, trigger, expires_at)
+        memory = self._apply_update(args, None, None, None, embedding, schedule, expires_at)
         suffix = _description_degraded_suffix(args.description, embedding)
         message = f"{_format_collection_echo(memory, 'Updated')}{suffix}"
         return ToolResult(message=message, mutated=True)
 
     async def _reinstantiate(
-        self, args: CollectionUpdateArgs, trigger: Trigger | None, expires_at: datetime | None
+        self, args: CollectionUpdateArgs, schedule: Schedule | None, expires_at: datetime | None
     ) -> ToolResult:
         """Re-render the collection's prompt from a skill's CURRENT steps and re-stamp
         its provenance (#1620): refresh (same skill re-taught), rebind (new params),
@@ -2061,12 +2050,12 @@ class CollectionUpdateTool(MemoryTool):
             return render_error
         embedding = await self._description_embedding(args)
         memory = self._apply_update(
-            args, prompt, skill.name, params, embedding, trigger, expires_at
+            args, prompt, skill.name, params, embedding, schedule, expires_at
         )
         suffix = _description_degraded_suffix(args.description, embedding)
         echo = render_reinstantiation_echo(memory, skill.name, params)
         return ToolResult(
-            message=f"{echo}{suffix}{self._no_trigger_note(memory)}",
+            message=f"{echo}{suffix}{self._no_schedule_note(memory)}",
             mutated=True,
         )
 
@@ -2106,14 +2095,14 @@ class CollectionUpdateTool(MemoryTool):
         skill_name: str | None,
         skill_params: dict[str, str] | None,
         description_embedding: list[float] | None,
-        trigger: Trigger | None,
+        schedule: Schedule | None,
         expires_at: datetime | None,
     ) -> MemoryRow:
         """Thread the update through the store — the metadata fields, the computed
-        prompt / skill provenance / anchor, and the apply-time trigger (#1629).  A
-        ``trigger`` REPLACES the whole trigger (``replace_trigger``); ``expires_at`` sets
-        the end condition.  Records the mutation event with the run id + changed fields
-        (trigger / expires_at)."""
+        prompt / skill provenance / anchor, and the apply-time schedule (#1857).  A
+        ``schedule`` REPLACES the stored one along with its run quota
+        (``replace_schedule``); ``expires_at`` sets the end condition.  Records the
+        mutation event with the run id + changed fields (schedule / expires_at)."""
         return self._db.memories.update_collection_metadata(
             args.name,
             description=args.description,
@@ -2122,26 +2111,23 @@ class CollectionUpdateTool(MemoryTool):
             notify=args.notify,
             skill_name=skill_name,
             skill_params=skill_params,
-            collector_interval_seconds=trigger.collector_interval_seconds if trigger else None,
-            run_at=trigger.run_at if trigger else None,
-            max_runs=trigger.max_runs if trigger else None,
-            source_log=trigger.source_log if trigger else None,
-            cron_expression=trigger.cron_expression if trigger else None,
+            schedule=schedule.rule if schedule else None,
+            max_runs=schedule.max_runs if schedule else None,
             expires_at=expires_at,
-            replace_trigger=trigger is not None,
+            replace_schedule=schedule is not None,
             run_id=self._run_id,
         )
 
     @staticmethod
-    def _no_trigger_note(memory: MemoryRow) -> str:
+    def _no_schedule_note(memory: MemoryRow) -> str:
         """A visible-degradation note (#1629) when an adopt gave a collection a routine
-        but no trigger — it has an ``extraction_prompt`` yet no cadence / run_at /
-        source_log, so it won't dispatch until one is set.  Named, not silent."""
+        but no schedule — it has an ``extraction_prompt`` yet nothing to run it on, so it
+        won't dispatch until one is set.  Named, not silent."""
         if memory.extraction_prompt is None:
             return ""
-        if has_trigger(memory):
+        if has_schedule(memory):
             return ""
-        return _NO_TRIGGER_NOTE.format(name=memory.name)
+        return _NO_SCHEDULE_NOTE.format(name=memory.name)
 
 
 class MemoryMetadataTool(MemoryTool):
@@ -2153,7 +2139,7 @@ class MemoryMetadataTool(MemoryTool):
 
     name = "memory_metadata"
     description = (
-        "Return metadata for a memory: description, notify flag, trigger, last "
+        "Return metadata for a memory: description, notify flag, schedule, last "
         "collected timestamp, archived state, and extraction prompt.  Works for both "
         "collections and logs."
     )
@@ -2216,7 +2202,7 @@ class MemoryMetadataTool(MemoryTool):
             "",
             "Operational settings (cadence — secondary):",
             f"notify: {memory.notify}",
-            self._trigger_line(memory),
+            self._schedule_line(memory),
             *lifecycle,
             f"updated: {updated}",
             f"last collected: {last_collected}",
@@ -2228,13 +2214,12 @@ class MemoryMetadataTool(MemoryTool):
         return "\n".join(lines)
 
     @staticmethod
-    def _trigger_line(memory: Any) -> str:
-        """The copyable ``trigger`` clause (#1631/#1684, display form == invocation form):
-        ``trigger: every <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>`` |
-        ``cron <5-field expression>`` for a collection with a trigger, or ``trigger: none``
+    def _schedule_line(memory: Any) -> str:
+        """The copyable ``schedule`` clause (#1857, display form == invocation form): the
+        stored RRULE verbatim for a collection with a schedule, or ``schedule: none``
         for a log / an inert collection with no cadence yet — so the render never emits a
-        half-formed clause (#1666, via the shared ``render_trigger_field``)."""
-        return f"trigger: {render_trigger_field(memory)}"
+        half-formed clause (#1666, via the shared ``render_schedule_field``)."""
+        return f"schedule: {render_schedule_field(memory)}"
 
 
 class CollectionCatalogTool(MemoryTool):

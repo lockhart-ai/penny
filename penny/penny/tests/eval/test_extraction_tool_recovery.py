@@ -77,7 +77,7 @@ def _seed(db: Database) -> None:
         db,
         _SYNTH,
         extraction_prompt=_SEED_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
     )
 
 

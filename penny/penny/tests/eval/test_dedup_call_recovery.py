@@ -60,7 +60,7 @@ def _seed_digest_with_messages(db: Database) -> None:
         WEEKLY_DIGEST.name,
         WEEKLY_DIGEST.description,
         extraction_prompt=WEEKLY_DIGEST_EXTRACTION_PROMPT,
-        collector_interval_seconds=1200,
+        schedule="FREQ=MINUTELY;INTERVAL=20",
     )
     for message in WEEKLY_DIGEST_MESSAGES:
         db.messages.log_message(_INCOMING, "user", message)

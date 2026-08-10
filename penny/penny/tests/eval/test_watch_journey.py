@@ -494,11 +494,7 @@ def _score_beat1(db: Database, before: set[str], reply: str) -> list[Check]:
     runs = chat_run_tool_sequences(db)
     first_run = runs[0] if runs else []
     demo_run = runs[1] if len(runs) > 1 else []
-    trigger_set = watch is not None and (
-        watch.collector_interval_seconds is not None
-        or watch.cron_expression is not None
-        or watch.run_at is not None
-    )
+    trigger_set = watch is not None and watch.schedule is not None
     return [
         Check("state: exactly one collection created", len(created) == 1, kind="state"),
         Check(
@@ -830,11 +826,7 @@ def _score_beat3(db: Database, before: set[str], reply: str) -> list[Check]:
     skills = db.skills.list_all()
     watches = _live_watches(db, before)
     watch = watches[0] if watches else None
-    has_trigger = watch is not None and (
-        watch.collector_interval_seconds is not None
-        or watch.run_at is not None
-        or watch.source_log is not None
-    )
+    has_trigger = watch is not None and watch.schedule is not None
     retargeted = watch is not None and f"memory='{watch.name}'" in (watch.extraction_prompt or "")
     return [
         Check(
@@ -1040,11 +1032,7 @@ def _score_beat2b(db: Database, before: set[str], reply: str) -> list[Check]:
     one_message, modelled = _decompose_ask(replies)
     watches = _live_watches(db, before)
     watch = watches[0] if watches else None
-    has_trigger = watch is not None and (
-        watch.collector_interval_seconds is not None
-        or watch.run_at is not None
-        or watch.source_log is not None
-    )
+    has_trigger = watch is not None and watch.schedule is not None
     # The chain completing WITHOUT an ask is spontaneous one-shot success — the
     # end goal, not a failure.  The ask is scored as the fallback: required only
     # when she could not run the routine herself; the modelled-example facet
@@ -1148,11 +1136,7 @@ def _score_beat2c(db: Database, before: set[str], reply: str) -> list[Check]:
     replies = outgoing_replies(db)
     watches = _live_watches(db, before)
     watch = watches[0] if watches else None
-    has_trigger = watch is not None and (
-        watch.collector_interval_seconds is not None
-        or watch.run_at is not None
-        or watch.source_log is not None
-    )
+    has_trigger = watch is not None and watch.schedule is not None
     return [
         Check(
             "state: the routine ran (browsed the given sites)",

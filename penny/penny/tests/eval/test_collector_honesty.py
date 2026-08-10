@@ -91,7 +91,7 @@ def _seed_roundup(db: Database) -> None:
         db,
         ROUNDUP,
         extraction_prompt=ROUNDUP_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
     )
 
 

@@ -58,12 +58,9 @@ def _add_collection(
     *,
     description: str,
     extraction_prompt: str | None = None,
-    interval: int | None = None,
+    schedule: str | None = None,
     expires_at: datetime | None = None,
-    run_at: datetime | None = None,
     max_runs: int | None = None,
-    source_log: str | None = None,
-    cron_expression: str | None = None,
     archived: bool = False,
     created_at: datetime,
     updated_at: datetime,
@@ -75,12 +72,9 @@ def _add_collection(
             type="collection",
             description=description,
             extraction_prompt=extraction_prompt,
-            collector_interval_seconds=interval,
+            schedule=schedule,
             expires_at=expires_at,
-            run_at=run_at,
             max_runs=max_runs,
-            source_log=source_log,
-            cron_expression=cron_expression,
             archived=archived,
             created_at=created_at,
             updated_at=updated_at,
@@ -343,7 +337,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             "price-watch",
             description="watch a product price",
             extraction_prompt="1. browse the page",
-            interval=21600,
+            schedule="FREQ=HOURLY;INTERVAL=6",
             expires_at=_t(0, 0, day=20),
             created_at=_t(6),
             updated_at=_t(9, 20),
@@ -354,7 +348,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             "news-digest",
             description="gather headlines",
             extraction_prompt="1. read the feed",
-            interval=3600,
+            schedule="FREQ=HOURLY",
             created_at=_t(6),
             updated_at=_t(6),
             last_collected_at=_t(8),
@@ -364,7 +358,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             "reminder",
             description="one-off reminder",
             extraction_prompt="1. remind",
-            run_at=_t(12),
+            schedule="DTSTART:20260711T120000Z\nFREQ=DAILY;COUNT=1",
             max_runs=1,
             created_at=_t(6),
             updated_at=_t(6),
@@ -374,7 +368,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             "old-watch",
             description="a retired watch",
             extraction_prompt="1. old",
-            interval=3600,
+            schedule="FREQ=HOURLY",
             archived=True,
             created_at=_t(5, 0, day=1),
             updated_at=_t(8, 30),
@@ -443,7 +437,7 @@ def _seed_kitchen_sink(db: Database) -> None:
             actor=MutationActor.USER_RUN,
             created_at=_t(9, 20),
             run_id="66aa0099",
-            detail=MutationDetail(changed_fields=["collector_interval_seconds"]),
+            detail=MutationDetail(changed_fields=["schedule"]),
         )
         _add_mutation(
             session,
@@ -475,51 +469,37 @@ def test_self_state_kitchen_sink_render(db):
     assert actual == _KITCHEN_SINK
 
 
-# ── 1b. on_advance trigger — the mechanisms line reads the source clause ───
+# ── 1b. The mechanisms line renders the stored rule verbatim ──────────────
 
 
-def test_self_state_on_advance_mechanism_render(db):
-    """A source-driven (on_advance) collection renders ``on advance of <log>`` in
-    place of a cadence clause on the mechanisms line (#1604), so the trigger reads
-    at a glance without a memory_metadata hop."""
-    with Session(db.engine) as session:
-        _add_log(session, "events-log", "an event stream", when=_t(6))
-        _add_collection(
-            session,
-            "chained-watch",
-            description="digest upstream events",
-            extraction_prompt="1. digest the events.",
-            interval=30,  # only the min floor — the trigger clause wins the render
-            source_log="events-log",
-            created_at=_t(6),
-            updated_at=_t(6),
-        )
-        session.commit()
-    _add_user(db)
-    assert SelfStateHeader(db, USER).render() == _ON_ADVANCE
-
-
-# ── 1c. cron trigger — the mechanisms line reads the cron clause ───────────
-
-
-def test_self_state_cron_mechanism_render(db):
-    """A cron-scheduled collection renders ``cron <5-field expression>`` as its cadence
-    clause on the mechanisms line (#1684, display form == invocation form), so the
-    stated schedule reads at a glance and copies straight back as the ``trigger`` arg."""
+def test_self_state_schedule_mechanism_render(db):
+    """A collection's schedule renders VERBATIM as its cadence clause on the
+    mechanisms line (#1857, display form == invocation form), so a stated schedule
+    reads at a glance and copies straight back as the ``schedule`` arg — including a
+    two-line rule, whose newline renders as ``\\n`` so the line stays a line."""
     with Session(db.engine) as session:
         _add_collection(
             session,
             "twice-daily",
             description="check the peak morning and evening",
             extraction_prompt="1. check the peak.",
-            interval=30,  # only the dispatcher tick — the cron clause wins the render
-            cron_expression="0 8,20 * * *",
+            schedule="FREQ=DAILY;BYHOUR=8,20",
+            created_at=_t(6),
+            updated_at=_t(6),
+        )
+        _add_collection(
+            session,
+            "one-off",
+            description="check it once, at nine",
+            extraction_prompt="1. check it.",
+            schedule="DTSTART:20260711T090000Z\nFREQ=DAILY;COUNT=1",
+            max_runs=1,
             created_at=_t(6),
             updated_at=_t(6),
         )
         session.commit()
     _add_user(db)
-    assert SelfStateHeader(db, USER).render() == _CRON_MECH
+    assert SelfStateHeader(db, USER).render() == _SCHEDULE_MECH
 
 
 # ── 2. Empty state — a fresh deployment ───────────────────────────────────
@@ -540,7 +520,7 @@ def test_self_state_activity_overflow_render(db):
             "watcher",
             description="a watcher",
             extraction_prompt="1. go",
-            interval=3600,
+            schedule="FREQ=HOURLY",
             created_at=_t(6),
             updated_at=_t(6),
         )
@@ -569,7 +549,7 @@ def test_self_state_archived_heavy_render(db):
             "live-watch",
             description="still running",
             extraction_prompt="1. go",
-            interval=3600,
+            schedule="FREQ=HOURLY",
             created_at=_t(6),
             updated_at=_t(6),
         )
@@ -579,7 +559,7 @@ def test_self_state_archived_heavy_render(db):
                 f"retired-{i}",
                 description=f"retired watch {i}",
                 extraction_prompt="1. old",
-                interval=3600,
+                schedule="FREQ=HOURLY",
                 archived=True,
                 created_at=_t(5, 0, day=1),
                 updated_at=_t(8, i),
@@ -988,15 +968,15 @@ _KITCHEN_SINK = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- news-digest — active · every 3600 · last run FAILED 2026-07-11 08:00 UTC\n"
+    "- news-digest — active · FREQ=HOURLY · last run FAILED 2026-07-11 08:00 UTC\n"
     "- old-watch — archived 2026-07-11 08:30 UTC · no runs yet\n"
-    "- price-watch — active · every 21600 · expires 2026-07-20 00:00 UTC · last run WORKED "
-    "2026-07-11 09:14 UTC\n"
-    "- reminder — active · once at 2026-07-11T12:00:00+00:00 · one-shot · no runs yet\n"
+    "- price-watch — active · FREQ=HOURLY;INTERVAL=6 · expires 2026-07-20 00:00 UTC · "
+    "last run WORKED 2026-07-11 09:14 UTC\n"
+    "- reminder — active · DTSTART:20260711T120000Z\\nFREQ=DAILY;COUNT=1 · one-shot · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "change · 2026-07-11 09:20 UTC · price-watch updated by user-run (run 66aa0099) — "
-    "changed collector_interval_seconds\n"
+    "changed schedule\n"
     "run 7f3a1b2c · 2026-07-11 09:14 UTC · price-watch → WORKED (3 calls) · "
     "wrote 'aurora deck 2 price' → `price-watch`\n"
     'sent · 2026-07-11 09:05 UTC · price-watch — "Heads up: the price dropped to $42!"\n'
@@ -1032,46 +1012,19 @@ _KITCHEN_SINK = (
     "every collection."
 )
 
-_ON_ADVANCE = (
+_SCHEDULE_MECH = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- chained-watch — active · on advance of events-log · no runs yet\n"
+    "- one-off — active · DTSTART:20260711T090000Z\\nFREQ=DAILY;COUNT=1 · one-shot · "
+    "no runs yet\n"
+    "- twice-daily — active · FREQ=DAILY;BYHOUR=8,20 · no runs yet\n"
     "\n"
     "### Recent activity\n"
     "(no recent activity)\n"
     "\n"
     "### Your memory\n"
-    "- chained-watch (collection, 0 entries) — digest upstream events\n"
-    "- events-log (log, 0 entries) — an event stream\n"
-    "\n"
-    "### Skills and rules\n"
-    "(no skills yet — when a task needs one, ask the user to walk you through it "
-    "once and you'll learn it automatically)\n"
-    "\n"
-    "### About the user\n"
-    "- name: Alex\n"
-    "- timezone: America/Toronto\n"
-    "- location: Toronto, Canada\n"
-    "\n"
-    "To look deeper: memory_metadata(<name>) for a collection's full config and change "
-    "history, get_event(run <id>) for one run's tool calls, "
-    "collection_read_latest(<name>) or read_similar(memory=<name>, anchor=<text>) for "
-    "stored entries, find(query=<text>) to find anything of yours by meaning "
-    "(a collection, a skill, or a stored entry), and collection_catalog() for "
-    "every collection."
-)
-
-_CRON_MECH = (
-    "## Penny's current state\n"
-    "\n"
-    "### Active mechanisms\n"
-    "- twice-daily — active · cron 0 8,20 * * * · no runs yet\n"
-    "\n"
-    "### Recent activity\n"
-    "(no recent activity)\n"
-    "\n"
-    "### Your memory\n"
+    "- one-off (collection, 0 entries) — check it once, at nine\n"
     "- twice-daily (collection, 0 entries) — check the peak morning and evening\n"
     "\n"
     "### Skills and rules\n"
@@ -1122,7 +1075,7 @@ _OVERFLOW = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- watcher — active · every 3600 · last run WORKED 2026-07-11 09:08 UTC\n"
+    "- watcher — active · FREQ=HOURLY · last run WORKED 2026-07-11 09:08 UTC\n"
     "\n"
     "### Recent activity\n"
     "run run08 · 2026-07-11 09:08 UTC · watcher → WORKED (1 call)\n"
@@ -1157,7 +1110,7 @@ _ARCHIVED_HEAVY = (
     "## Penny's current state\n"
     "\n"
     "### Active mechanisms\n"
-    "- live-watch — active · every 3600 · no runs yet\n"
+    "- live-watch — active · FREQ=HOURLY · no runs yet\n"
     "- retired-0 — archived 2026-07-11 08:00 UTC · no runs yet\n"
     "- retired-1 — archived 2026-07-11 08:01 UTC · no runs yet\n"
     "- retired-2 — archived 2026-07-11 08:02 UTC · no runs yet\n"

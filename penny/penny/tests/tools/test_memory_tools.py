@@ -17,7 +17,6 @@ import pytest
 from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
-from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
 from penny.conversation_machine import ConversationState
 from penny.database import Database
@@ -47,9 +46,12 @@ from penny.skill_extraction import SkillExtracted, SkillExtractor
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
-    parse_trigger,
+    SCHEDULE_EXAMPLES,
+    ScheduleError,
+    parse_expires_at,
+    parse_schedule,
     render_reinstantiation_echo,
-    render_trigger_clause,
+    render_schedule_clause,
     render_unbound_parameters,
 )
 from penny.tools.memory_args import (
@@ -61,7 +63,7 @@ from penny.tools.memory_args import (
 )
 from penny.tools.memory_tools import (
     _INERT_JOB_ARGS_REFUSAL,
-    _NO_TRIGGER_NOTE,
+    _NO_SCHEDULE_NOTE,
     _REBIND_NO_SKILL,
     _SAME_JOB_UPDATED,
     _SKILL_GONE,
@@ -195,7 +197,7 @@ def _seed_collection(
     name: str,
     description: str = "x",
     extraction_prompt: str = "test fixture extraction prompt",
-    collector_interval_seconds: int = 3600,
+    schedule: str = "FREQ=HOURLY",
     notify: bool = False,
     archived: bool = False,
 ) -> MemoryRow:
@@ -206,7 +208,7 @@ def _seed_collection(
         description,
         archived=archived,
         extraction_prompt=extraction_prompt,
-        collector_interval_seconds=collector_interval_seconds,
+        schedule=schedule,
         description_embedding=_single_hash_vec(description),
         notify=notify,
     )
@@ -293,54 +295,35 @@ _MONEY_LITERAL = (
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
-# The on_advance creation echo — the trigger line reads back the source-driven
-# form (#1604), the write retargeted to this collection (#1629), everything else
-# identical to the recurring echo shape.
-_ON_ADVANCE_ECHO_LITERAL = (
-    "Whenever 'events-log' gets a new entry I'll run 'Watch elevation' against "
-    "'chained-watch' and quietly store what it finds.\n"
-    "Created collection 'chained-watch' from skill 'Watch elevation':\n"
-    "  description: digest events as they land\n"
+# The one-shot creation echo — the schedule line reads the stored rule back VERBATIM
+# (#1857, display form == invocation form), its newline written as \n so the line
+# stays a line; everything else is the recurring echo shape.
+_ONE_SHOT_ECHO_LITERAL = (
+    "On the schedule DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1 I'll run "
+    "'Watch elevation' against 'one-shot' and quietly store what it finds.\n"
+    "Created collection 'one-shot' from skill 'Watch elevation':\n"
+    "  description: check the peak once, on christmas morning\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  trigger: on advance of events-log\n"
+    "  schedule: DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1\n"
     "  notify: False\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
     "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='chained-watch', "
+    "    2. collection_write(memory='one-shot', "
     "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
 )
 
-# The cron creation echo — the trigger line reads back the cron form (#1684, display
-# form == invocation form), the lead line names the cron schedule in plain words,
-# everything else identical to the recurring echo shape.
-_CRON_ECHO_LITERAL = (
-    "On the cron schedule '0 8,20 * * *' I'll run 'Watch elevation' against "
-    "'twice-daily' and quietly store what it finds.\n"
-    "Created collection 'twice-daily' from skill 'Watch elevation':\n"
-    "  description: check the peak morning and evening\n"
-    "  skill: Watch elevation\n"
-    "  params: peak=Cinder Peak\n"
-    "  trigger: cron 0 8,20 * * *\n"
-    "  notify: False\n"
-    "  expires: never\n"
-    "  extraction_prompt: |\n"
-    "    1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
-    "    2. collection_write(memory='twice-daily', "
-    "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
-)
-
-# The whole creation echo — skill · bound params · trigger · notify · expiry · the
+# The whole creation echo — skill · bound params · schedule · notify · expiry · the
 # rendered routine (the money literal, indented) — confirmed back to the user.
 _CREATE_ECHO_LITERAL = (
-    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
     "message you when something changes.\n"
     "Created collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  trigger: every 3600\n"
+    "  schedule: FREQ=HOURLY\n"
     "  notify: True\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
@@ -360,14 +343,14 @@ class TestCollectionCreateFrontDoor:
     async def test_instantiates_skill_and_stores_the_rendered_prompt(self, db):
         """A clean name match binds the params, renders the skill's steps into the
         collection's extraction_prompt (the money literal), and echoes skill /
-        params / trigger / notify / expiry."""
+        params / schedule / notify / expiry."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="cinder-elevation",
             description="watch Cinder Peak's elevation",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             notify=True,
         )
         assert result.success and result.mutated
@@ -394,7 +377,7 @@ class TestCollectionCreateFrontDoor:
             description="watch Cinder Peak's elevation",
             skill=_SKILL_NAME,
             params={"peak": ["Cinder Peak"]},  # a one-element list, not the bare string
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             notify=True,
         )
         assert result.success and result.mutated
@@ -417,7 +400,7 @@ class TestCollectionCreateFrontDoor:
             description="watch a peak",
             skill=_SKILL_NAME,
             params={"peak": ["Ashfall Ridge", "Cinder Peak"]},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert result.message == (
@@ -438,7 +421,7 @@ class TestCollectionCreateFrontDoor:
             description="watch a peak",
             skill=_SKILL_NAME,
             params={},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert result.message == (
@@ -460,7 +443,7 @@ class TestCollectionCreateFrontDoor:
             name="mystery",
             description="do the mystery thing",
             skill="xyzzy flibbertigibbet quux",
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert result.message == (
@@ -480,7 +463,7 @@ class TestCollectionCreateFrontDoor:
             "Either way the routine is learned automatically as a skill from that round "
             "— a learned notice will tell you the moment it exists; then attach it and "
             "set any schedule or notify they asked for in ONE call: "
-            "collection_set(name=<the collection>, skill=<its name>, trigger=..., "
+            "collection_set(name=<the collection>, skill=<its name>, schedule=..., "
             "notify=...)."
         )
         assert db.memories.get("mystery") is None
@@ -494,7 +477,7 @@ class TestCollectionCreateFrontDoor:
             name="some-watch",
             description="watch a thing",
             skill="watch elevation save",  # shares words → fuzzy match, not exact name
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert result.message == (
@@ -523,7 +506,7 @@ class TestCollectionCreateFrontDoor:
             description="watch the blue jacket price",
             skill=_SKILL_NAME,
             params={"peak": "jacket"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success and result.mutated
         assert db.memories.get("jacket-monitor") is None  # no second copy of the job
@@ -534,7 +517,7 @@ class TestCollectionCreateFrontDoor:
         )
         # The config the call carried landed on the collection we already had.
         assert updated.skill_name == _SKILL_NAME
-        assert updated.collector_interval_seconds == 3600
+        assert updated.schedule == "FREQ=HOURLY"
 
     @pytest.mark.asyncio
     async def test_distinct_specifics_are_not_merged(self, db):
@@ -548,7 +531,7 @@ class TestCollectionCreateFrontDoor:
             description="watch a listing price",
             skill=_SKILL_NAME,
             params={"peak": "aurora deck 3"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success and result.mutated
         # Two distinct jobs, both live — and the identical descriptions did not merge
@@ -574,7 +557,7 @@ class TestCollectionCreateFrontDoor:
             description="watch the blue jacket price",
             skill=_SKILL_NAME,
             params={"peak": "jacket"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert (
@@ -585,59 +568,100 @@ class TestCollectionCreateFrontDoor:
         assert db.memories.get("jacket-monitor") is None
 
     @pytest.mark.asyncio
-    async def test_one_shot_once_at_trigger_persists(self, db):
-        """The ``once at <ISO>`` form persists the schedule with max_runs defaulting to
-        1; the echo reads it back AS the copyable input form (display == invocation)."""
+    async def test_one_shot_schedule_lifts_count_into_max_runs(self, db):
+        """``COUNT=`` is LIFTED at parse into ``max_runs`` while staying in the stored
+        rule (#1857), so a one-shot is a schedule rather than a second mechanism — and
+        the echo reads the rule back verbatim, its newline written as ``\\n``."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="one-shot",
-            description="check the peak once tomorrow",
+            description="check the peak once, on christmas morning",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="once at 2026-12-25T09:00:00Z",
+            schedule="DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
         )
-        assert result.success
-        # The rendered clause is the copyable input (Z normalised to +00:00), no xN for one-shot.
-        assert "trigger: once at 2026-12-25T09:00:00+00:00" in result.message
+        assert result.success and result.mutated
+        assert result.message == _ONE_SHOT_ECHO_LITERAL
         row = db.memories.get("one-shot")
         assert row.max_runs == 1
-        assert row.run_at is not None
+        # The lift never edits the rule — re-passing what a surface renders lifts the same.
+        assert row.schedule == "DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1"
 
     @pytest.mark.asyncio
-    async def test_once_at_with_repeat_count_persists(self, db):
-        """``once at <ISO> xN`` runs N times; the echo renders the ``xN`` suffix back."""
+    async def test_repeating_count_lifts_the_whole_quota(self, db):
+        """``COUNT=3`` is three runs, not a one-shot — the quota is whatever the rule
+        says."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="thrice",
             description="check the peak three times",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="once at 2026-12-25T09:00:00Z x3",
+            schedule="FREQ=DAILY;COUNT=3",
         )
         assert result.success
-        assert "trigger: once at 2026-12-25T09:00:00+00:00 x3" in result.message
+        assert "  schedule: FREQ=DAILY;COUNT=3\n" in result.message
         assert db.memories.get("thrice").max_runs == 3
 
     @pytest.mark.asyncio
-    async def test_missing_trigger_is_refused(self, db):
-        """A skill collection with no trigger would never run (silent degradation) — it's
-        refused up front naming the four forms, nothing created."""
+    async def test_until_lifts_into_expires_at(self, db):
+        """``UNTIL=`` is LIFTED into ``expires_at`` (#1857) — a rule that stops and a
+        collection that retires are one thing, so the archive lifecycle needs no second
+        statement."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="no-trigger",
+            name="bounded",
+            description="check the peak until september",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=DAILY;UNTIL=20260901T000000Z",
+        )
+        assert result.success
+        row = db.memories.get("bounded")
+        # SQLite hands datetimes back naive; they are stored UTC (the `_aware` convention).
+        assert row.expires_at.replace(tzinfo=UTC) == datetime(2026, 9, 1, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_stating_the_end_twice_is_refused(self, db):
+        """A rule's ``UNTIL=`` and an ``expires_at`` argument are two answers to one
+        question — neither is silently taken; the refusal asks for one (#1857)."""
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="two-ends",
+            description="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=DAILY;UNTIL=20260901T000000Z",
+            expires_at="2026-10-01T00:00:00Z",
+        )
+        assert result.success is False
+        assert result.message == (
+            "This says when to stop twice — the schedule ends at UNTIL and expires_at says "
+            "'2026-10-01T00:00:00Z'. Say it once: keep UNTIL in the schedule and drop "
+            "expires_at, or drop UNTIL and pass expires_at on its own."
+        )
+        assert db.memories.get("two-ends") is None
+
+    @pytest.mark.asyncio
+    async def test_missing_schedule_is_refused(self, db):
+        """A skill collection with no schedule would never run (silent degradation) —
+        it's refused up front showing the grammar, nothing created."""
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="no-schedule",
             description="watch a peak",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
         )
         assert result.success is False
-        assert "needs a trigger" in result.message
-        assert db.memories.get("no-trigger") is None
+        assert "needs a schedule" in result.message
+        assert db.memories.get("no-schedule") is None
 
     @pytest.mark.asyncio
-    async def test_unparseable_trigger_teaches_four_forms(self, db):
-        """An unreadable trigger shape is reject-and-teach: the failure names all four
-        enumerated forms so the model rewrites to one instead of inventing a fifth
-        (#1631/#1684), plus the #1646 omission line (leave the trigger out for a
+    async def test_unreadable_schedule_teaches_the_grammar(self, db):
+        """A schedule ``rrulestr`` won't read is reject-and-teach: the failure shows the
+        grammar so the model rewrites into RRULE instead of inventing a second schedule
+        language (#1857), plus the omission line (leave the schedule out for a
         storage-only collection) — nothing created."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -645,91 +669,75 @@ class TestCollectionCreateFrontDoor:
             description="watch a peak",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="whenever I feel like it",
+            schedule="whenever I feel like it",
         )
         assert result.success is False
         assert result.message == (
-            "I couldn't read the trigger 'whenever I feel like it'. Set it to one of these "
-            "four forms (copy the shape exactly):\n"
-            "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
-            "- once at <ISO datetime> [xN] — run at a time, optionally N times "
-            "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
-            "- on advance of <log> — wake when a source log gets a new entry "
-            "(e.g. on advance of browse-results)\n"
-            "- cron <5-field expression> — a time-of-day recurrence in cron form "
-            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)\n"
-            "Or leave the trigger out entirely for a storage-only collection."
+            "I couldn't read the schedule 'whenever I feel like it'. A schedule is one "
+            "RRULE line — the calendar recurrence format — optionally preceded by a "
+            "DTSTART line saying when it starts. Copy one of these shapes:\n"
+            f"{SCHEDULE_EXAMPLES}\n"
+            "Use COUNT= to stop after that many runs, and UNTIL=20260901T000000Z to "
+            "stop at a time. Or leave the schedule out entirely for a storage-only "
+            "collection."
         )
         assert db.memories.get("garbled") is None
 
     @pytest.mark.asyncio
-    async def test_cron_trigger_persists_and_echoes(self, db):
-        """The ``cron <5-field expression>`` trigger (#1684) persists the expression on the
-        row, paces the collection at the dispatcher tick (the cron next-fire is the real
-        gate), and the whole creation echo reads the trigger back AS ``cron <expr>``
-        (display form == invocation form)."""
+    async def test_mechanically_repairable_schedule_echoes_the_corrected_string(self, db):
+        """When a purely syntactic repair of the text DOES parse, the rejection LEADS
+        with the corrected string verbatim (#1857) — so the retry is a COPY rather than
+        a re-derivation, the class that turned a rejected 7200 into 14400."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="twice-daily",
-            description="check the peak morning and evening",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            trigger="cron 0 8,20 * * *",
-        )
-        assert result.success and result.mutated
-        assert result.message == _CRON_ECHO_LITERAL
-        row = db.memories.get("twice-daily")
-        assert row.cron_expression == "0 8,20 * * *"
-        # A cron trigger is exclusive — the other overlays stay clear.
-        assert row.run_at is None and row.max_runs is None and row.source_log is None
-        # Paced at the dispatcher tick — the cron next-fire time is the real gate (#1684).
-        assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
-
-    @pytest.mark.asyncio
-    async def test_invalid_cron_expression_teaches_four_forms(self, db):
-        """A ``cron`` form croniter rejects is reject-and-teach: it leads with the cron
-        diagnosis and names all four forms (#1684, croniter's validation surfaced
-        actionably) — nothing created."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="bad-cron",
+            name="quoted",
             description="watch a peak",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="cron 0 99 * * *",
+            schedule="'FREQ=HOURLY'",
         )
         assert result.success is False
         assert result.message == (
-            "'cron 0 99 * * *' isn't a valid cron expression. A cron trigger is five "
-            "space-separated fields — minute hour day-of-month month day-of-week — e.g. "
-            "cron 0 8,20 * * * for 8am and 8pm daily. Set the trigger to one of these four "
-            "forms (copy the shape exactly):\n"
-            "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
-            "- once at <ISO datetime> [xN] — run at a time, optionally N times "
-            "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
-            "- on advance of <log> — wake when a source log gets a new entry "
-            "(e.g. on advance of browse-results)\n"
-            "- cron <5-field expression> — a time-of-day recurrence in cron form "
-            "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
+            "I couldn't read the schedule ''FREQ=HOURLY'' — did you mean 'FREQ=HOURLY'? "
+            "Pass that exact string. A schedule is one RRULE line, optionally preceded by "
+            "a DTSTART line:\n"
+            f"{SCHEDULE_EXAMPLES}"
         )
-        assert db.memories.get("bad-cron") is None
+        assert db.memories.get("quoted") is None
+
+    @pytest.mark.asyncio
+    async def test_two_rule_lines_are_refused(self, db):
+        """The grammar is ONE rule (plus an optional DTSTART): two rules would give two
+        answers to the COUNT/UNTIL lift, so the second is refused rather than picked."""
+        _seed_watch_skill(db)
+        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="two-rules",
+            description="watch a peak",
+            skill=_SKILL_NAME,
+            params={"peak": "Cinder Peak"},
+            schedule="FREQ=DAILY\\nFREQ=WEEKLY",
+        )
+        assert result.success is False
+        assert "has more than one rule line" in result.message
+        assert db.memories.get("two-rules") is None
 
     @pytest.mark.asyncio
     async def test_bad_expires_at_is_actionable(self, db):
-        """A malformed end-condition datetime is refused with the accepted shape, not
-        a raw parse error — nothing created."""
+        """An end condition neither reading answers is refused naming both accepted
+        shapes with a worked example of each, not a raw parse error — nothing created."""
         _seed_watch_skill(db)
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="bad-expiry",
             description="watch a peak",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             expires_at="not-a-real-date",
         )
         assert result.success is False
-        assert "Couldn't read expires_at" in result.message
-        assert "ISO-8601" in result.message
+        assert "I couldn't read expires_at='not-a-real-date' as a time" in result.message
+        assert "2026-09-01T09:00:00Z" in result.message
+        assert "'tomorrow at 9am'" in result.message
         assert db.memories.get("bad-expiry") is None
 
     @pytest.mark.asyncio
@@ -742,72 +750,17 @@ class TestCollectionCreateFrontDoor:
             name="fuzzy",
             description="watch a peak",
             skill="something not an exact skill name",
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert "Couldn't resolve the skill" in result.message
         assert "Retry" in result.message
         assert db.memories.get("fuzzy") is None
 
-    @pytest.mark.asyncio
-    async def test_on_advance_trigger_persists_source_log(self, db):
-        """The ``on advance of <log>`` trigger (#1604) names a source LOG; it persists on
-        the row, the collection is paced at the tick (strict source-only pacing, #1631),
-        and the echo reads the trigger back as ``on advance of <log>``."""
-        _seed_watch_skill(db)
-        db.memories.create_log("events-log", "an event stream")
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="chained-watch",
-            description="digest events as they land",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            trigger="on advance of events-log",
-        )
-        assert result.success and result.mutated
-        assert result.message == _ON_ADVANCE_ECHO_LITERAL
-        row = db.memories.get("chained-watch")
-        assert row.source_log == "events-log"
-        assert row.run_at is None and row.max_runs is None
-        # Paced at the dispatcher tick — the source frontier is the real gate (#1631).
-        assert row.collector_interval_seconds == int(RuntimeParams().COLLECTOR_TICK_INTERVAL)
-
-    @pytest.mark.asyncio
-    async def test_on_advance_source_must_exist(self, db):
-        """A source name that isn't a memory is refused with the fix (copy an exact log
-        name), nothing created — a missing source would never advance."""
-        _seed_watch_skill(db)
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="dangling",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            trigger="on advance of no-such-log",
-        )
-        assert result.success is False
-        assert "on_advance source 'no-such-log' isn't a memory" in result.message
-        assert db.memories.get("dangling") is None
-
-    @pytest.mark.asyncio
-    async def test_on_advance_source_must_be_a_log_not_a_collection(self, db):
-        """The frontier trigger fires on a LOG advancing; naming a collection is refused
-        naming the shape mismatch — nothing created."""
-        _seed_watch_skill(db)
-        _seed_collection(db, name="elevations")  # a collection, not a log
-        result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
-            name="wrong-shape",
-            description="watch a peak",
-            skill=_SKILL_NAME,
-            params={"peak": "Cinder Peak"},
-            trigger="on advance of elevations",
-        )
-        assert result.success is False
-        assert "is a collection, not a log" in result.message
-        assert db.memories.get("wrong-shape") is None
-
 
 class TestMinimalSurfaceCensus:
     """The minimal collection surface (#1631, tightened by #1570): the model reasons
-    about six concepts — name · description · skill(+params) · trigger · notify ·
+    about six concepts — name · description · skill(+params) · schedule · notify ·
     expires_at.  ``create_anyway`` and the raw-edit ``extraction_prompt`` are GONE
     (dedup always runs; a routine is only ever a skill render).  Pinned so a future
     field can't silently creep back onto the surface."""
@@ -818,7 +771,7 @@ class TestMinimalSurfaceCensus:
             "description",
             "skill",
             "params",
-            "trigger",
+            "schedule",
             "notify",
             "expires_at",
         }
@@ -831,63 +784,242 @@ class TestMinimalSurfaceCensus:
             "description",
             "skill",
             "params",
-            "trigger",
+            "schedule",
             "notify",
             "expires_at",
         }
 
     def test_dropped_shrapnel_is_gone_from_both_surfaces(self):
-        # ``intent`` and the six flat trigger fields collapsed away (#1631).
-        shrapnel = {"intent", "interval", "run_at", "max_runs", "on_advance", "min_interval"}
+        # ``intent`` and every member of the retired trigger union (#1631/#1857).
+        shrapnel = {
+            "intent",
+            "interval",
+            "run_at",
+            "max_runs",
+            "on_advance",
+            "min_interval",
+            "trigger",
+            "cron_expression",
+            "source_log",
+        }
         assert shrapnel.isdisjoint(CollectionCreateArgs.model_fields)
         assert shrapnel.isdisjoint(CollectionUpdateArgs.model_fields)
 
 
-class TestTriggerRoundTrip:
-    """Each rendered trigger clause IS the copyable input (display form == invocation
-    form, #1631): the clause a surface shows, passed verbatim back as the ``trigger``
-    arg, parses to the same stored config.  Byte-pinned per form: the stored config
-    renders AS the clause, and the clause re-parses + re-renders to the identical clause."""
+class TestScheduleGrammar:
+    """The ``schedule`` grammar as a table (#1857): what ``parse_schedule`` accepts, what
+    it lifts, and what it refuses.  Pure functions with many edge cases — the one place
+    the project's testing convention allows a unit table rather than a flow test."""
 
     @pytest.mark.parametrize(
-        "trigger, clause",
+        "schedule, rule, max_runs, expires_at",
         [
-            ("every 3600", "every 3600"),
-            ("once at 2026-12-25T09:00:00Z", "once at 2026-12-25T09:00:00+00:00"),
-            ("once at 2026-12-25T09:00:00Z x3", "once at 2026-12-25T09:00:00+00:00 x3"),
-            ("on advance of events-log", "on advance of events-log"),
-            ("cron 0 8,20 * * *", "cron 0 8,20 * * *"),
+            # The four shapes the tool description teaches, each stored verbatim.
+            ("FREQ=HOURLY", "FREQ=HOURLY", None, None),
+            ("FREQ=MINUTELY;INTERVAL=90", "FREQ=MINUTELY;INTERVAL=90", None, None),
+            ("FREQ=DAILY;BYHOUR=8", "FREQ=DAILY;BYHOUR=8", None, None),
+            (
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
+                None,
+                None,
+            ),
+            # An RRULE: prefix and lower case are the same rule — dateutil reads both,
+            # so neither is a rejection the model has to recover from.
+            ("RRULE:FREQ=HOURLY", "RRULE:FREQ=HOURLY", None, None),
+            ("freq=hourly", "freq=hourly", None, None),
+            # Surrounding whitespace is trimmed, never treated as part of the rule.
+            ("  FREQ=HOURLY  ", "FREQ=HOURLY", None, None),
+            # COUNT lifts into max_runs and STAYS in the rule, so a rendered schedule
+            # re-passed lifts the same quota.
+            ("FREQ=DAILY;COUNT=1", "FREQ=DAILY;COUNT=1", 1, None),
+            ("FREQ=DAILY;COUNT=3", "FREQ=DAILY;COUNT=3", 3, None),
+            # UNTIL lifts into expires_at, in both RFC 5545 spellings.
+            (
+                "FREQ=DAILY;UNTIL=20260901T000000Z",
+                "FREQ=DAILY;UNTIL=20260901T000000Z",
+                None,
+                datetime(2026, 9, 1, tzinfo=UTC),
+            ),
+            # A DTSTART line, written across two lines OR on one with the \n escape:
+            # the same schedule, stored the same way, so the render round-trips.
+            (
+                "DTSTART:20260720T090000Z\nFREQ=DAILY;COUNT=1",
+                "DTSTART:20260720T090000Z\nFREQ=DAILY;COUNT=1",
+                1,
+                None,
+            ),
+            (
+                "DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1",
+                "DTSTART:20260720T090000Z\nFREQ=DAILY;COUNT=1",
+                1,
+                None,
+            ),
+        ],
+    )
+    def test_accepted_schedules_store_verbatim_and_lift_their_end_conditions(
+        self, schedule, rule, max_runs, expires_at
+    ):
+        parsed = parse_schedule(schedule)
+        assert (parsed.rule, parsed.max_runs, parsed.expires_at) == (rule, max_runs, expires_at)
+
+    @pytest.mark.parametrize(
+        "schedule, expected_lead",
+        [
+            # The retired trigger forms are not a second schedule language.
+            ("every 3600", "I couldn't read the schedule 'every 3600'."),
+            ("cron 0 8,20 * * *", "I couldn't read the schedule 'cron 0 8,20 * * *'."),
+            ("once at 2026-12-25T09:00:00Z", "I couldn't read the schedule 'once at"),
+            ("on advance of events-log", "I couldn't read the schedule 'on advance of"),
+            # Plain prose, and a rule part dateutil rejects.
+            ("whenever I feel like it", "I couldn't read the schedule 'whenever I feel"),
+            ("FREQ=BANANA", "I couldn't read the schedule 'FREQ=BANANA'."),
+            # A bare-date UNTIL: dateutil refuses it against a timezone-aware
+            # start, which every stored rule has, so the whole rule is refused.
+            (
+                "FREQ=DAILY;UNTIL=20260901",
+                "I couldn't read the schedule 'FREQ=DAILY;UNTIL=20260901'.",
+            ),
+            # A repairable shape leads with the corrected string, so the retry is a copy.
+            ("'FREQ=HOURLY'", "I couldn't read the schedule ''FREQ=HOURLY'' — did you mean"),
+            ("FREQ=HOURLY;", "I couldn't read the schedule 'FREQ=HOURLY;' — did you mean"),
+            (
+                "DTSTART:20260720T090000Z;FREQ=DAILY",
+                "I couldn't read the schedule 'DTSTART:20260720T090000Z;FREQ=DAILY' — did "
+                "you mean 'DTSTART:20260720T090000Z\\nFREQ=DAILY'?",
+            ),
+            # Two rules would give two answers to the lift.
+            ("FREQ=DAILY\\nFREQ=WEEKLY", "The schedule 'FREQ=DAILY\\nFREQ=WEEKLY' has more"),
+            # A quota that isn't a quota.
+            ("FREQ=DAILY;COUNT=0", "The schedule 'FREQ=DAILY;COUNT=0' has COUNT=0"),
+        ],
+    )
+    def test_refused_schedules_teach_actionably(self, schedule, expected_lead):
+        with pytest.raises(ScheduleError) as raised:
+            parse_schedule(schedule)
+        assert str(raised.value).startswith(expected_lead)
+
+    def test_did_you_mean_carries_a_string_that_actually_parses(self):
+        """The corrected string is a COPY, not a suggestion to re-derive: whatever the
+        did-you-mean echoes must itself be accepted, or the retry loops."""
+        with pytest.raises(ScheduleError) as raised:
+            parse_schedule("'FREQ=HOURLY;'")
+        corrected = str(raised.value).split("did you mean '")[1].split("'?")[0]
+        assert parse_schedule(corrected).rule == "FREQ=HOURLY"
+
+
+class TestExpiresAtGrammar:
+    """``expires_at`` takes an exact time OR the user's own words, read in the USER's
+    timezone (#1857).  The table is the measured register: what lands, what it lands on,
+    and what is honestly refused."""
+
+    # A fixed 'now' so relative words resolve deterministically: 20:00 UTC = 16:00 in
+    # the user's zone, the wall clock their words are counted from.
+    _NOW = datetime(2026, 8, 9, 20, 0, tzinfo=UTC)
+    _ZONE = "America/Toronto"
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            # ISO first — an exact time is an exact time, whatever zone the user is in.
+            ("2026-09-01T09:00:00Z", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
+            ("2026-09-01T09:00:00+00:00", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
+            # A naive ISO value is read as UTC, which is what the column holds.
+            ("2026-09-01 09:00", datetime(2026, 9, 1, 9, 0, tzinfo=UTC)),
+            ("2026-09-01", datetime(2026, 9, 1, 0, 0, tzinfo=UTC)),
+            # Words, read in the user's zone: 10pm where they are is 02:00 UTC next day.
+            ("10pm today", datetime(2026, 8, 10, 2, 0, tzinfo=UTC)),
+            ("tomorrow at 9am", datetime(2026, 8, 10, 13, 0, tzinfo=UTC)),
+            # A relative span counts from the user's own wall clock, not from UTC's.
+            ("in two weeks", datetime(2026, 8, 23, 20, 0, tzinfo=UTC)),
+        ],
+    )
+    def test_accepted_end_conditions(self, value, expected):
+        assert parse_expires_at(value, self._ZONE, self._NOW) == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # Measured: dateparser finds no time in these, so they are refused rather
+            # than guessed at — words that point at a time without saying one.
+            "10pm tonight",
+            "the end of the month",
+            "next friday",
+            # And plain nonsense.
+            "not-a-real-date",
+            "banana",
+        ],
+    )
+    def test_refused_end_conditions_teach_both_shapes(self, value):
+        with pytest.raises(ScheduleError) as raised:
+            parse_expires_at(value, self._ZONE, self._NOW)
+        message = str(raised.value)
+        assert message.startswith(f"I couldn't read expires_at='{value}' as a time.")
+        assert "2026-09-01T09:00:00Z" in message
+        assert "'tomorrow at 9am'" in message
+
+    def test_no_profile_timezone_reads_the_words_in_utc(self):
+        """A fresh install has no profile, so there is no zone to read words in — UTC,
+        the same fallback the current-time anchor takes, rather than a refusal."""
+        assert parse_expires_at("10pm today", None, self._NOW) == datetime(
+            2026, 8, 9, 22, 0, tzinfo=UTC
+        )
+
+
+class TestScheduleRoundTrip:
+    """The rendered schedule IS the copyable input (display form == invocation form,
+    #1857): the rule a surface shows, passed verbatim back as the ``schedule`` arg,
+    parses to the same stored config.  With one grammar the render is the stored string
+    itself, so what this pins is that a two-line rule survives the round trip through a
+    one-line surface — the only place the two forms can diverge."""
+
+    @pytest.mark.parametrize(
+        "schedule, clause",
+        [
+            ("FREQ=HOURLY", "FREQ=HOURLY"),
+            ("FREQ=MINUTELY;INTERVAL=90", "FREQ=MINUTELY;INTERVAL=90"),
+            ("FREQ=DAILY;BYHOUR=8", "FREQ=DAILY;BYHOUR=8"),
+            (
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
+                "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9",
+            ),
+            (
+                "DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
+                "DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1",
+            ),
         ],
     )
     @pytest.mark.asyncio
-    async def test_trigger_clause_round_trips(self, db, trigger, clause):
+    async def test_schedule_clause_round_trips(self, db, schedule, clause):
         _seed_watch_skill(db)
-        db.memories.create_log("events-log", "an event stream")
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="round-trip",
             description="round trip",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger=trigger,
+            schedule=schedule,
         )
         assert result.success
-        # The stored config renders back AS the copyable clause (stored → display).
+        # The stored rule renders back AS the copyable clause (stored → display).
         stored = db.memories.get("round-trip")
         assert stored is not None
-        assert render_trigger_clause(stored) == clause
-        # That clause, re-parsed, renders to the IDENTICAL clause (display → parse → display).
-        reparsed = parse_trigger(clause, int(RuntimeParams().COLLECTOR_TICK_INTERVAL))
+        assert render_schedule_clause(stored) == clause
+        # That clause, re-parsed, renders to the IDENTICAL clause (display → parse →
+        # display) and lifts the same end conditions.
+        reparsed = parse_schedule(clause)
         rerendered = MemoryRow(
             name="x",
             type="collection",
             description="d",
-            collector_interval_seconds=reparsed.collector_interval_seconds,
-            run_at=reparsed.run_at,
+            schedule=reparsed.rule,
             max_runs=reparsed.max_runs,
-            source_log=reparsed.source_log,
-            cron_expression=reparsed.cron_expression,
+            expires_at=reparsed.expires_at,
         )
-        assert render_trigger_clause(rerendered) == clause
+        assert render_schedule_clause(rerendered) == clause
+        assert (rerendered.max_runs, rerendered.expires_at) == (
+            stored.max_runs,
+            stored.expires_at,
+        )
 
 
 class TestCreateAndList:
@@ -923,7 +1055,7 @@ class TestCreateAndList:
             name="notes",
             description="real description",
             extraction_prompt=original_prompt,
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
@@ -956,7 +1088,7 @@ class TestCreateAndList:
             name="notes",
             description="real description",
             extraction_prompt="test fixture extraction prompt that is long enough",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).run(
             name="notes",
@@ -980,7 +1112,7 @@ class TestCreateAndList:
             description="a running list of notes",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert "Created" in result.message
         assert result.mutated is True
@@ -1011,7 +1143,7 @@ class TestCreateAndList:
             name="notes",
             description="old subject",
             extraction_prompt="test fixture extraction prompt that is long enough",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         assert db.memories.get("notes").description_embedding is not None  # a good anchor first
 
@@ -1094,7 +1226,7 @@ async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> Non
         description="watch Cinder Peak's elevation",
         skill=_SKILL_NAME,
         params={"peak": "Cinder Peak"},
-        trigger="every 3600",
+        schedule="FREQ=HOURLY",
     )
     assert result.success
 
@@ -1102,13 +1234,13 @@ async def _create_watch_collection(db, *, name: str = "cinder-elevation") -> Non
 # The refresh echo — the SAME skill re-taught, re-rendered from its CURRENT steps with
 # the CURRENT bindings; render-at-update mirrors the creation echo.
 _REFRESH_ECHO_LITERAL = (
-    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
     "quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  trigger: every 3600\n"
+    "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
@@ -1119,13 +1251,13 @@ _REFRESH_ECHO_LITERAL = (
 
 # The rebind echo — SAME skill (original steps), NEW params bound and re-rendered.
 _REBIND_ECHO_LITERAL = (
-    "Every 3600 seconds I'll run 'Watch elevation' against 'cinder-elevation' and "
+    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-elevation' and "
     "quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Watch elevation':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Watch elevation\n"
     "  params: peak=Ashfall Ridge\n"
-    "  trigger: every 3600\n"
+    "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
@@ -1137,13 +1269,13 @@ _REBIND_ECHO_LITERAL = (
 # The swap echo — a DIFFERENT skill rendered into the same collection, its write
 # retargeted to that collection (#1629 — the river skill demoed against 'flows').
 _SWAP_ECHO_LITERAL = (
-    "Every 3600 seconds I'll run 'Track river flow' against 'cinder-elevation' and "
-    "quietly store what it finds.\n"
+    "On the schedule FREQ=HOURLY I'll run 'Track river flow' against 'cinder-elevation' "
+    "and quietly store what it finds.\n"
     "Re-rendered collection 'cinder-elevation' from skill 'Track river flow':\n"
     "  description: watch Cinder Peak's elevation\n"
     "  skill: Track river flow\n"
     "  params: river=Silt River\n"
-    "  trigger: every 3600\n"
+    "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
@@ -1155,13 +1287,13 @@ _SWAP_ECHO_LITERAL = (
 # The adopt echo — a legacy skill=NULL collection given a skill for the first time; its
 # hand-authored text is replaced by the render, writes retargeted to it (#1629).
 _ADOPT_ECHO_LITERAL = (
-    "Every 3600 seconds I'll run 'Watch elevation' against 'legacy-notes' and "
-    "quietly store what it finds.\n"
+    "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'legacy-notes' "
+    "and quietly store what it finds.\n"
     "Re-rendered collection 'legacy-notes' from skill 'Watch elevation':\n"
     "  description: a running list the user asked me to keep\n"
     "  skill: Watch elevation\n"
     "  params: peak=Cinder Peak\n"
-    "  trigger: every 3600\n"
+    "  schedule: FREQ=HOURLY\n"
     "  notify: False\n"
     "  expires: never\n"
     "  extraction_prompt: |\n"
@@ -1304,7 +1436,7 @@ class TestCollectionUpdateReinstantiation:
             name="legacy-notes",
             description="a running list the user asked me to keep",
             extraction_prompt=hand_authored,
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         assert db.memories.get("legacy-notes").skill_name is None  # legacy: no skill
         result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1457,7 +1589,7 @@ class TestInertCollections:
         row = db.memories.get("deals-watch")
         assert row is not None
         assert row.extraction_prompt is None  # no job
-        assert row.collector_interval_seconds is None  # no cadence
+        assert row.schedule is None  # no cadence
         assert row.notify is False  # silent
         assert row.skill_name is None  # no skill attached
         assert row.archived is False  # a live, usable container
@@ -1484,12 +1616,12 @@ class TestInertCollections:
 
     @pytest.mark.asyncio
     async def test_job_arg_on_skill_less_create_is_refused(self, db):
-        """A trigger / notify / expiry on a skill-less create has no job to attach to —
+        """A schedule / notify / expiry on a skill-less create has no job to attach to —
         refused naming the two-step fix (whole render), nothing created."""
         result = await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch",
             description="track the trail-runner shoe deals",
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success is False
         assert result.message == _INERT_JOB_ARGS_REFUSAL.format(name="deals-watch")
@@ -1545,14 +1677,14 @@ class TestBlankOptionalArgsAreRefused:
             description="track the trail-runner shoe deals",
             skill=_SKILL_NAME,
             params={"peak": "trail-runner shoes"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             expires_at="",
         )
         assert result.success is False
         assert result.message == (
             "expires_at (string): an empty string sets nothing — omit expires_at entirely "
-            "to leave it unset, or pass an ISO-8601 datetime, e.g. 2026-03-01T09:00:00Z. "
-            "Call collection_set(<valid arguments>) again."
+            "to leave it unset, or pass when it ends, e.g. 2026-03-01T09:00:00Z or "
+            '"in two weeks". Call collection_set(<valid arguments>) again.'
         )
         assert db.memories.get("deals-watch") is None
 
@@ -1600,17 +1732,17 @@ class TestBlankOptionalArgsAreRefused:
         blank can never quietly leave an existing job's field alone either."""
         _seed_collection(db, name="deals-watch", description="track the shoe deals")
         result = await CollectionSetTool(db, cast(Any, MockLlmClient())).run(
-            name="deals-watch", trigger=""
+            name="deals-watch", schedule=""
         )
         assert result.success is False
         assert result.message == (
-            "trigger (string): an empty string sets nothing — omit trigger entirely to "
-            "leave it unset, or pass a schedule in one of the four trigger forms, e.g. "
-            '"every 3600" for hourly. Call collection_set(<valid arguments>) again.'
+            "schedule (string): an empty string sets nothing — omit schedule entirely "
+            'to leave it unset, or pass one RRULE line, e.g. "FREQ=HOURLY" for hourly. '
+            "Call collection_set(<valid arguments>) again."
         )
         # The existing row is untouched — the refusal happens before execute.
         row = db.memories.get("deals-watch")
-        assert row.collector_interval_seconds == 3600
+        assert row.schedule == "FREQ=HOURLY"
         assert row.extraction_prompt == "test fixture extraction prompt"
 
     @pytest.mark.asyncio
@@ -1641,7 +1773,7 @@ class TestBlankOptionalArgsAreRefused:
         row = update_db.memories.get("deals-watch")
         assert row is not None
         assert row.description == "track the trail-runner shoe deals"
-        assert row.collector_interval_seconds == 3600  # cadence untouched
+        assert row.schedule == "FREQ=HOURLY"  # cadence untouched
         assert row.extraction_prompt == "test fixture extraction prompt"  # routine untouched
         assert row.expires_at is None
 
@@ -1662,7 +1794,7 @@ class TestWriteRetargetAtApply:
             description="watch a different peak",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert result.success
         stored = db.memories.get("target-b")
@@ -1697,7 +1829,7 @@ class TestWriteRetargetAtApply:
 class TestTwoStepTeachBootstrap:
     """The whole #1629 bootstrap end-to-end through real tool calls (mocked LLM):
     create inert → demonstrate a write into it → skill_create over that run → adopt
-    the skill with a trigger + notify → the collection runs the rendered routine."""
+    the skill with a schedule + notify → the collection runs the rendered routine."""
 
     @pytest.mark.asyncio
     async def test_create_inert_teach_adopt_makes_it_run(self, db):
@@ -1737,7 +1869,7 @@ class TestTwoStepTeachBootstrap:
         assert "deals-watch" not in recipe
         assert f"collection_write(memory={{{WRITE_TARGET_DESCRIPTION}}}" in recipe
 
-        # 4. Adopt the skill onto the inert collection with a trigger + notify (real update).
+        # 4. Adopt the skill onto the inert collection with a schedule + notify.
         adopted = await CollectionUpdateTool(
             db, cast(Any, MockLlmClient()), run_id="run-adopt"
         ).execute(
@@ -1746,7 +1878,7 @@ class TestTwoStepTeachBootstrap:
             # Every distilled hole is required (#1659): the browse query AND the
             # extract instruction must both be bound — no silent default.
             params={"queries": "Meridian Trail 3", "extract": "the current price"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             notify=True,
         )
         assert adopted.success and adopted.mutated
@@ -1762,18 +1894,18 @@ class TestTwoStepTeachBootstrap:
         # Byte-identity: the stored prompt IS the retargeted render (write → deals-watch).
         assert stored.extraction_prompt == expected
         assert stored.skill_name == taught_name
-        assert stored.collector_interval_seconds == 3600
+        assert stored.schedule == "FREQ=HOURLY"
         assert stored.notify is True
 
 
-class TestCollectionUpdateTriggerAtApply:
-    """Trigger + notify are apply-time properties on collection_set (#1629, the full
-    union: interval | run_at+max_runs | on_advance + expires_at + notify) — recorded in
-    the mutation event's changed fields."""
+class TestCollectionUpdateScheduleAtApply:
+    """Schedule + notify are apply-time properties on collection_set (#1629/#1857: one
+    RRULE ``schedule``, plus ``expires_at`` and ``notify``) — recorded in the mutation
+    event's changed fields."""
 
     @pytest.mark.asyncio
     async def test_adopt_applies_interval_notify_recorded_in_mutation(self, db):
-        """Adopting a skill with interval + notify sets both and records them in the
+        """Adopting a skill with a schedule + notify sets both and records them in the
         mutation event's changed fields alongside the re-render."""
         _seed_watch_skill(db)
         _seed_collection(
@@ -1788,63 +1920,58 @@ class TestCollectionUpdateTriggerAtApply:
             name="legacy",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 7200",
+            schedule="FREQ=HOURLY;INTERVAL=2",
             notify=True,
         )
         assert result.success
         stored = db.memories.get("legacy")
-        assert stored.collector_interval_seconds == 7200
+        assert stored.schedule == "FREQ=HOURLY;INTERVAL=2"
         assert stored.notify is True
         event = next(e for e in db.mutations.history("legacy", 5) if e.run_id == "run-adopt")
         summary = mutation_change_summary(event)
-        assert "trigger" in summary and "notify" in summary and "skill" in summary
+        assert "schedule" in summary and "notify" in summary and "skill" in summary
 
     @pytest.mark.asyncio
-    async def test_trigger_replaces_whole_schedule(self, db):
-        """Setting a run_at+max_runs trigger on a recurring collection replaces the whole
-        schedule (interval → dispatcher tick, run_at/max_runs set); a later interval
-        trigger clears the once-shaped overlay (#1629)."""
-        _seed_collection(db, name="watch", collector_interval_seconds=3600)
-        # Switch to a one-shot schedule.
+    async def test_schedule_replaces_the_whole_schedule(self, db):
+        """Setting a schedule replaces the stored one ALONG WITH the run quota lifted out
+        of it (#1857), so a new rule never inherits the previous rule's ``COUNT=``."""
+        _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
+        # Switch to a bounded one-shot: the quota comes with the rule.
         once = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", trigger="once at 2026-12-25T09:00:00Z"
+            name="watch", schedule="DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1"
         )
         assert once.success
         row = db.memories.get("watch")
-        assert row.run_at is not None and row.max_runs == 1
-        # Switch back to a recurring interval — the once overlay must clear.
+        assert row.schedule == "DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1"
+        assert row.max_runs == 1
+        # Switch back to an unbounded recurring rule — the quota must clear with it.
         back = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", trigger="every 1800"
+            name="watch", schedule="FREQ=MINUTELY;INTERVAL=30"
         )
         assert back.success
         row = db.memories.get("watch")
-        assert row.collector_interval_seconds == 1800
-        assert row.run_at is None and row.max_runs is None
+        assert row.schedule == "FREQ=MINUTELY;INTERVAL=30"
+        assert row.max_runs is None
 
     @pytest.mark.asyncio
-    async def test_on_advance_trigger_at_apply_validates_source(self, db):
-        """An on_advance trigger at apply time sets the source_log; a non-existent
-        source is refused (the shared validator), nothing changed."""
-        db.memories.create_log("events-log", "an event stream")
-        _seed_collection(db, name="watch", collector_interval_seconds=3600)
-        ok = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", trigger="on advance of events-log"
+    async def test_expires_at_at_apply_reads_the_users_words(self, db):
+        """``expires_at`` takes plain words as well as a datetime, read in the user's
+        own timezone (#1857) — a bare edit carries no rule, so there is no UNTIL to
+        conflict with."""
+        _seed_collection(db, name="watch", schedule="FREQ=HOURLY")
+        result = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
+            name="watch", expires_at="2026-09-01T09:00:00Z"
         )
-        assert ok.success
-        assert db.memories.get("watch").source_log == "events-log"
-        # A missing source log is refused actionably.
-        bad = await CollectionUpdateTool(db, cast(Any, MockLlmClient())).execute(
-            name="watch", trigger="on advance of no-such-log"
-        )
-        assert bad.success is False
-        assert "isn't a memory I have" in bad.message
+        assert result.success
+        stored = db.memories.get("watch").expires_at
+        assert stored.replace(tzinfo=UTC) == datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 
     @pytest.mark.asyncio
-    async def test_adopt_without_trigger_warns_it_wont_run(self, db):
-        """Adopting a skill onto an inert collection with NO trigger leaves it without a
-        cadence — the echo renders ``trigger: none`` (never the half-formed ``every
-        None``, #1666) and carries a visible no-trigger note (#1629), not a silent
-        won't-run.  Whole render, so the honest trigger line and the tail note are both
+    async def test_adopt_without_schedule_warns_it_wont_run(self, db):
+        """Adopting a skill onto an inert collection with NO schedule leaves it with
+        nothing to run on — the echo renders ``schedule: none`` (never a half-formed
+        clause, #1666) and carries a visible no-schedule note (#1629), not a silent
+        won't-run.  Whole render, so the honest schedule line and the tail note are both
         pinned."""
         _seed_watch_skill(db)
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
@@ -1861,7 +1988,7 @@ class TestCollectionUpdateTriggerAtApply:
             "  description: track the trail-runner shoe deals\n"
             "  skill: Watch elevation\n"
             "  params: peak=Cinder Peak\n"
-            "  trigger: none\n"
+            "  schedule: none\n"
             "  notify: False\n"
             "  expires: never\n"
             "  extraction_prompt: |\n"
@@ -1869,16 +1996,14 @@ class TestCollectionUpdateTriggerAtApply:
             "    2. collection_write(memory='deals-watch', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
         )
-        assert result.message == expected_echo + _NO_TRIGGER_NOTE.format(name="deals-watch")
-        assert "every None" not in result.message
-        assert db.memories.get("deals-watch").collector_interval_seconds is None
+        assert result.message == expected_echo + _NO_SCHEDULE_NOTE.format(name="deals-watch")
+        assert db.memories.get("deals-watch").schedule is None
 
     @pytest.mark.asyncio
-    async def test_plain_update_on_trigger_less_collection_echoes_none(self, db):
+    async def test_plain_update_on_schedule_less_collection_echoes_none(self, db):
         """The live-observed #1666 bug: a plain metadata update (no skill/params) on a
-        collection with no cadence echoes ``trigger: none`` — never the half-formed
-        ``trigger: every None``.  Whole render off an inert collection (the natural
-        trigger-less case)."""
+        collection with no schedule echoes ``schedule: none`` — never a half-formed
+        clause.  Whole render off an inert collection (the natural schedule-less case)."""
         await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
             name="deals-watch", description="track the trail-runner shoe deals"
         )
@@ -1888,12 +2013,11 @@ class TestCollectionUpdateTriggerAtApply:
         assert result.success
         assert result.message == (
             "Updated collection 'deals-watch':\n"
-            "  trigger: none\n"
+            "  schedule: none\n"
             "  notify: False\n"
             "  description: track the road-runner shoe deals\n"
             "  extraction_prompt: |\n    "
         )
-        assert "every None" not in result.message
 
 
 class TestCollectionWritesAndReads:
@@ -1904,7 +2028,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         result = await write.execute(
@@ -2053,7 +2177,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(
@@ -2089,7 +2213,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         # A collector binds its writes to one collection via ``scope``.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
@@ -2156,7 +2280,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         # No scope → chat surface.
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
@@ -2184,7 +2308,7 @@ class TestCollectionWritesAndReads:
             name="watch",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="watch")
         await write.execute(memory="watch", entries=[{"key": "price", "content": "$42"}])
@@ -2218,7 +2342,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="likes", entries=[{"key": "k", "content": "hello"}]
@@ -2266,7 +2390,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "first", "content": "1"}])
@@ -2283,7 +2407,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         listing = await CollectionKeysTool(db).execute(memory="likes")
         assert listing.message == "No keys in `likes` — the collection is empty (not an error)."
@@ -2295,7 +2419,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="likes", entries=[{"key": "a", "content": "1"}])
@@ -2309,7 +2433,7 @@ class TestCollectionWritesAndReads:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         client = _make_llm_client(mock_llm)
         await CollectionWriteTool(db, client, author="test").execute(
@@ -2332,7 +2456,7 @@ class TestCollectionWritesAndReads:
             name="playbooks",
             description="reusable how-to recipes",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         client = _make_llm_client(mock_llm)
         # Distinct keys + shared "recipe workflow step" stem: the entries cluster
@@ -2370,7 +2494,7 @@ class TestEmbedFailureRefusesWrite:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
 
     @pytest.mark.asyncio
@@ -2436,7 +2560,7 @@ class TestCollectionMutations:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="likes", entries=[{"key": "k", "content": "old"}]
@@ -2478,7 +2602,7 @@ class TestCollectionMutations:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         result = await UpdateEntryTool(db, author="test").execute(
             memory="likes", key="k", content="new"
@@ -2499,7 +2623,7 @@ class TestCollectionMutations:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         assert (
             "Archived 'likes'" in (await CollectionArchiveTool(db).execute(memory="likes")).message
@@ -2646,7 +2770,7 @@ class TestLogTools:
             name="notes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(db, _make_llm_client(mock_llm), author="test").execute(
             memory="notes", entries=[{"key": "a", "content": "first"}]
@@ -2734,7 +2858,7 @@ class TestLogTools:
             name="espresso-gear",
             description="x",
             extraction_prompt="1. browse for new espresso gear. 2. write it. 3. done().",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         # One completed collector run for espresso-gear.
         coll_resp = {
@@ -2879,7 +3003,7 @@ class TestLogTools:
             name=name,
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
 
     @pytest.mark.asyncio
@@ -3192,7 +3316,7 @@ class TestExistsAndDone:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         client = _make_llm_client(mock_llm)
         await CollectionWriteTool(db, client, author="test").execute(
@@ -3210,7 +3334,7 @@ class TestExistsAndDone:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
             memories=["likes"], key="not there", content="nothing"
@@ -3227,7 +3351,7 @@ class TestExistsAndDone:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         result = await ExistsTool(db, _make_llm_client(mock_llm)).execute(
             memories=["lieks"], content="dark roast"
@@ -3259,7 +3383,7 @@ class TestExistsAndDone:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         client = _make_llm_client(mock_llm)
 
@@ -3283,7 +3407,7 @@ class TestExistsAndDone:
             name="board-games",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         # Non-breaking hyphen U+2011 in the memory name — model output
@@ -3307,7 +3431,7 @@ class TestExistsAndDone:
             name="board-games",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         client = _make_llm_client(mock_llm)
         # Existing entry: short key, long descriptive content.
@@ -3359,7 +3483,7 @@ class TestAuthorAttribution:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         await CollectionWriteTool(
             db, _make_llm_client(mock_llm), author="preference-extractor"
@@ -3377,14 +3501,14 @@ class TestCollectionMerge:
             name="src",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         _seed_collection(
             db,
             name="dst",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="src", entries=[{"key": "a", "content": "alpha"}])
@@ -3405,14 +3529,14 @@ class TestCollectionMerge:
             name="src",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         _seed_collection(
             db,
             name="dst",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test")
         await write.execute(memory="src", entries=[{"key": "shared", "content": "from src"}])
@@ -3438,14 +3562,14 @@ class TestCollectionMerge:
             name="src",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         _seed_collection(
             db,
             name="dst",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
 
         result = await CollectionMergeTool(db, "test").execute(from_memory="src", to_memory="dst")
@@ -3519,14 +3643,14 @@ class TestScopedFactory:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
         _seed_collection(
             db,
             name="dislikes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
 
         write = CollectionWriteTool(
@@ -3547,7 +3671,7 @@ class TestScopedFactory:
             name="likes",
             description="x",
             extraction_prompt="test fixture extraction prompt",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
         )
 
         write = CollectionWriteTool(
@@ -3604,7 +3728,7 @@ class TestRegistryProvenanceAndLifecycle:
             name=name,
             description=f"the user's goal for {name}",
             skill="gather-items",
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
             notify=notify,
         )
 
@@ -3692,7 +3816,7 @@ class TestRegistryProvenanceAndLifecycle:
             "holiday-watch",
             "seasonal watch subject matter",
             extraction_prompt=("1. gather holiday deals.\n2. done()."),
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
             expires_at=expiry,
         )
         result = await MemoryMetadataTool(db).execute(memory="holiday-watch")
@@ -3700,29 +3824,27 @@ class TestRegistryProvenanceAndLifecycle:
         assert "expires: 2026-12-25 09:00 UTC" in result.message
 
     @pytest.mark.asyncio
-    async def test_on_advance_trigger_renders_in_metadata(self, db):
-        """Every collection's metadata carries its trigger AS the copyable clause (#1631):
-        an on_advance collection reads ``on advance of <log>``, a recurring one ``every
-        <seconds>`` — display form == invocation form."""
-        db.memories.create_log("events-log", "an event stream")
-        db.memories.create_collection(
-            "chained-watch",
-            "digest events subject matter",
-            extraction_prompt=('1. log_read("events-log").\n2. digest.'),
-            collector_interval_seconds=30,
-            source_log="events-log",
+    async def test_schedule_renders_verbatim_in_metadata(self, db):
+        """Every collection's metadata carries its schedule AS the copyable rule (#1857,
+        display form == invocation form) — the stored string verbatim, with a two-line
+        rule's newline written ``\\n`` so the metadata line stays a line."""
+        _seed_collection(
+            db,
+            name="one-off",
+            extraction_prompt="1. check it.",
+            schedule="DTSTART:20261225T090000Z\nFREQ=DAILY;COUNT=1",
         )
-        db.memories.create_collection(
-            "plain-watch",
-            "recurring watch subject matter",
-            extraction_prompt=("1. gather deals.\n2. save."),
-            collector_interval_seconds=3600,
+        _seed_collection(
+            db,
+            name="plain",
+            extraction_prompt="1. check it.",
+            schedule="FREQ=HOURLY",
         )
-        on_advance = await MemoryMetadataTool(db).execute(memory="chained-watch")
-        assert "trigger: on advance of events-log" in on_advance.message
-        # The plain recurring collection renders its cadence AS the copyable trigger clause.
-        plain = await MemoryMetadataTool(db).execute(memory="plain-watch")
-        assert "trigger: every 3600" in plain.message
+        tool = MemoryMetadataTool(db)
+        one_off = await tool.execute(memory="one-off")
+        plain = await tool.execute(memory="plain")
+        assert "schedule: DTSTART:20261225T090000Z\\nFREQ=DAILY;COUNT=1" in one_off.message
+        assert "schedule: FREQ=HOURLY" in plain.message
 
 
 class TestCollectionSkillProvenanceRender:
@@ -3747,7 +3869,7 @@ class TestCollectionSkillProvenanceRender:
             description="watch Cinder Peak's elevation",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         assert create.success
         row = db.memories.get("cinder-elevation")
@@ -3775,7 +3897,7 @@ class TestCollectionSkillProvenanceRender:
             description="watch Cinder Peak's elevation",
             skill=_SKILL_NAME,
             params={"peak": "Cinder Peak"},
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         result = await MemoryMetadataTool(db).execute(memory="cinder-elevation")
         assert "from skill: Watch elevation (peak=Cinder Peak)" in result.message
@@ -3835,7 +3957,7 @@ class TestCollectionSkillProvenanceRender:
             name="morning-digest",
             description="the day's fresh items",
             skill="daily-digest",
-            trigger="every 3600",
+            schedule="FREQ=HOURLY",
         )
         result = await CollectionCatalogTool(db).execute()
         assert "from skill: daily-digest\n" in result.message
@@ -3918,7 +4040,7 @@ async def _create_collection(db, client: LlmClient, name: str, description: str)
         name=name,
         description=description,
         skill="find-skill",
-        trigger="every 3600",
+        schedule="FREQ=HOURLY",
     )
 
 

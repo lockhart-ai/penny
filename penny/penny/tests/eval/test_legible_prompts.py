@@ -65,7 +65,7 @@ def _seed(db: Database) -> None:
         db,
         BOARD_GAMES,
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
         notify=True,  # notify is ON — "don't notify me" flips this to False
     )
 

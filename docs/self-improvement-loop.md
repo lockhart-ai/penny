@@ -27,7 +27,7 @@ The organizing concept is **intent-as-spec**:
 
 - A collection's `intent` is the **goal** — the user's stated objective,
   captured verbatim at create time ("find me X and tell me when Y").
-- Everything else on the collection — `extraction_prompt`, `collector_interval_seconds`,
+- Everything else on the collection — `extraction_prompt`, `schedule`,
   `inclusion`/`recall`, the notify condition — is the **implementation** of
   that goal, and all of it is mutable.
 - `intent` is **immutable to the agent** (create-only on the tool schema) but

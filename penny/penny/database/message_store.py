@@ -878,8 +878,8 @@ class MessageStore:
         completion rows ARE the run count — one row per run.  Cancelled runs
         (preempted by a foreground message, not a real cycle) are excluded, so a
         preemption never burns a ``max_runs`` allotment.  Read from the ledger,
-        never re-decided by the model — the once-shaped trigger's retire gate
-        (#1556).
+        never re-decided by the model — the run-quota retire gate (#1556, now the
+        schedule's own ``COUNT=``, #1857).
         """
         with self._session() as session:
             return session.exec(

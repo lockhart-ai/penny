@@ -200,7 +200,7 @@ def _leaf_paths(value: Any, prefix: list[str | int]) -> list[tuple[list[str | in
     """Every ``(path, string_value)`` string leaf under ``value``, recursively.
 
     Only string leaves are provenance-inferred — a number/bool argument
-    (``collector_interval_seconds``, ``notify``) can't be a user-utterance
+    (a count, ``notify``) can't be a user-utterance
     phrase or a prior text result, so it is always a constant."""
     leaves: list[tuple[list[str | int], str]] = []
     if isinstance(value, dict):

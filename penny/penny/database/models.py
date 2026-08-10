@@ -251,14 +251,14 @@ class MemoryRow(SQLModel, table=True):
     # ``server_default`` so raw-SQL inserts predating the column satisfy NOT NULL.
     notify: bool = Field(default=False, sa_column_kwargs={"server_default": "0"})
     extraction_prompt: str | None = Field(default=None)
-    collector_interval_seconds: int | None = Field(default=None)
-    # The user's intended cadence — the value the collector snaps back to when a
-    # cycle produces work.  ``collector_interval_seconds`` is the *current*
-    # cadence (possibly auto-throttled upward); this is the floor to restore.
-    base_interval_seconds: int | None = Field(default=None)
-    # Consecutive cycles that produced no work; at COLLECTOR_THROTTLE_AFTER the
-    # collector doubles its interval and resets this to 0.  See agents/collector.
-    consecutive_idle_runs: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    # The collection's schedule: ONE RRULE string (#1857, migration 0104) — the whole
+    # schedule grammar, replacing the interval / run_at / on_advance / cron union.  An
+    # optional leading ``DTSTART:`` line says when the recurrence starts; without one it
+    # starts at ``created_at``.  ``Collector._is_ready`` gates on the rule's next
+    # occurrence after ``last_collected_at or created_at``, so the rule IS the cadence —
+    # there is no interval column to widen and no auto-throttle to widen it.  NULL for a
+    # log or an inert collection (one with no job yet), which never dispatches.
+    schedule: str | None = Field(default=None)
     # Skill provenance (#1603): the skill this collection was instantiated from
     # (#1591's front door) and the params bound into its render — so "which skill
     # made this, and with what?" is a read off the collection's own row, and a
@@ -281,32 +281,15 @@ class MemoryRow(SQLModel, table=True):
     # end condition (consumed by #1562's lifecycle axis).
     source_message_id: int | None = Field(default=None, foreign_key="messagelog.id")
     created_by_run_id: str | None = Field(default=None)
+    # The end conditions the archive lifecycle retires a collection on.  Both are
+    # settable directly AND lifted out of the schedule's own ``UNTIL=`` / ``COUNT=``
+    # parts at parse time (#1857), so a bounded rule and a bounded collection are one
+    # thing.  ``expires_at``: the collection archives itself once this passes.
+    # ``max_runs``: after this many completed (non-cancelled) cycles the scheduler
+    # archives it via a system-actor mutation, so a one-shot (``COUNT=1``) retires
+    # itself.  NULL = no end condition / unlimited.
     expires_at: datetime | None = Field(default=None)
-    # Once-shaped trigger (#1556, store-level only — no model-facing create args
-    # yet; #1562 exposes them).  ``run_at``: the collector runs only at/after this
-    # UTC time (a delayed / one-shot start), NULL for an ordinary recurring
-    # cadence.  ``max_runs``: after this many completed (non-cancelled) cycles the
-    # scheduler archives the collection via a system-actor mutation, so a one-shot
-    # reminder (``run_at`` + ``max_runs=1``) retires itself.  NULL = unlimited.
-    run_at: datetime | None = Field(default=None)
     max_runs: int | None = Field(default=None)
-    # On_advance trigger (#1604, model-facing via #1591's ``collection_set``):
-    # the declared source LOG whose advance wakes this collection.  When set, the
-    # collector gates readiness on the source's high-water mark passing this
-    # collection's read cursor (source head > cursor) — the declared-input variant
-    # of the inferred cursor gate, reusing the same ``AgentCursor``.  NULL for a
-    # recurring (``interval``) or once-shaped (``run_at``) collection — the trigger
-    # union is exclusive.  The collection is paced at ``collector_interval_seconds``
-    # (the optional ``min_interval`` floor, or the dispatcher tick).
-    source_log: str | None = Field(default=None)
-    # Cron trigger (#1684, migration 0098): a 5-field cron expression the model maps
-    # a stated time-of-day recurrence onto ("morning and evening" → ``0 8,20 * * *``).
-    # When set, the collector gates readiness on ``croniter``'s next fire time after
-    # the last run (``now >= croniter(cron_expression, last_collected_at or created).
-    # get_next()``) — the fourth, mutually-exclusive trigger-union member alongside
-    # ``interval`` / ``run_at``+``max_runs`` / ``source_log``.  NULL for every other
-    # form; paced at the dispatcher tick like the once-shaped / on_advance forms.
-    cron_expression: str | None = Field(default=None)
     last_collected_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(

@@ -236,7 +236,7 @@ async def test_learning_a_skill_attaches_nothing(db):
     assert row is not None
     assert row.skill_name is None, "learning must not bind the skill to a collection"
     assert row.extraction_prompt is None, "and must not render a program into it"
-    assert row.collector_interval_seconds is None, "and must not schedule anything"
+    assert row.schedule is None, "and must not schedule anything"
 
 
 # ── The gate is the STATE: only a learn turn extracts (#1850) ──────────────────

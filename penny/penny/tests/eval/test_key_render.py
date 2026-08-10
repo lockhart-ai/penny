@@ -57,7 +57,7 @@ def _seed_board_games(db: Database) -> None:
         db,
         BOARD_GAMES,
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
         notify=True,
     )
 

@@ -14,11 +14,11 @@ are whole-render tested in isolation:
   confirm-shape, naming the retired row and the unarchive that revives it.  (Its
   active-duplicate sibling is gone: an active duplicate is no longer refused, it
   is UPDATED in place — see ``CollectionSetTool._same_job``, #1775);
-* the **trigger** parse (one ``trigger`` arg, four enumerated forms: ``every
-  <seconds>`` | ``once at <ISO> [xN]`` | ``on advance of <log>`` | ``cron <5-field
-  expression>``, #1631/#1684) and the ``expires_at`` end condition, with
-  ``render_trigger_clause`` rendering the stored trigger back AS its copyable input form;
-* the **creation echo** (skill · params · trigger · notify · expiry · the rendered
+* the **schedule** parse (one ``schedule`` arg, one grammar: an RRULE string,
+  #1857) and the ``expires_at`` end condition (ISO or natural language), with
+  ``render_schedule_clause`` rendering the stored rule back verbatim — it IS the
+  input form;
+* the **creation echo** (skill · params · schedule · notify · expiry · the rendered
   prompt), so the chat agent confirms back exactly what landed.
 
 The orchestration (embed, resolve, validate parameters, dedup, create) lives on
@@ -29,11 +29,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from croniter import croniter
+import dateparser
+from dateutil.rrule import rrulestr
 from pydantic import BaseModel
 
-from penny.database.memory.types import slug
 from penny.database.models import MemoryRow, Skill
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
@@ -87,7 +88,7 @@ _NO_SKILL_FOUND = (
     "Either way the routine is learned automatically as a skill from that round — a "
     "learned notice will tell you the moment it exists; then attach it and set any "
     "schedule or notify they asked for in ONE call: collection_set(name=<the "
-    "collection>, skill=<its name>, trigger=..., notify=...)."
+    "collection>, skill=<its name>, schedule=..., notify=...)."
 )
 
 
@@ -150,230 +151,354 @@ def render_tombstone_duplicate(row: MemoryRow) -> str:
     )
 
 
-# ── Trigger: one arg, four enumerated forms (#1631/#1684) ────────────────────
+# ── Schedule: one arg, one grammar — RRULE (#1857) ───────────────────────────
 
 
-class TriggerError(Exception):
-    """An actionable trigger/end-condition parse or validation failure — the tool
+class ScheduleError(Exception):
+    """An actionable schedule/end-condition parse or validation failure — the tool
     surfaces ``str(self)`` as the failed result."""
 
 
-class Trigger(BaseModel):
-    """The parsed, store-ready trigger: the cadence the collector paces on plus the
-    optional once-shaped overlay (``run_at`` + ``max_runs``), on_advance overlay
-    (``source_log``), or cron overlay (``cron_expression``) — mutually exclusive
-    overlays, one per form."""
+class Schedule(BaseModel):
+    """The parsed, store-ready schedule.
 
-    collector_interval_seconds: int
-    run_at: datetime | None = None
+    ``rule`` is the RRULE text as given, trimmed and with its lines held as real
+    newlines — it is what gets stored and what every surface renders back, so display
+    form == invocation form with the rule itself as the copyable anchor.  ``max_runs``
+    and ``expires_at`` are the ``COUNT=`` / ``UNTIL=`` parts lifted out of that same
+    text into the columns that already own those end conditions; the parts stay in the
+    stored rule too, so re-passing a rendered rule lifts the same values and
+    round-trips.
+    """
+
+    rule: str
     max_runs: int | None = None
-    source_log: str | None = None
-    cron_expression: str | None = None
+    expires_at: datetime | None = None
 
 
-def parse_datetime(value: str, field: str) -> datetime:
-    """Parse an ISO-8601 datetime arg (a trigger time / ``expires_at``) into a
-    UTC-aware datetime; a naive value is assumed UTC.  Raises an actionable
-    ``TriggerError`` naming the field and the accepted shape."""
+# One worked example per shape the grammar covers, as copyable lines.  Shared by every
+# reject-and-teach text so a rejection always shows the whole grammar rather than only
+# the part the failed input got wrong.
+SCHEDULE_EXAMPLES = (
+    "- FREQ=HOURLY — every hour\n"
+    "- FREQ=MINUTELY;INTERVAL=90 — every 90 minutes\n"
+    "- FREQ=DAILY;BYHOUR=8 — once a day at 08:00 UTC\n"
+    "- FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9 — weekdays at 09:00 UTC\n"
+    "- DTSTART:20260720T090000Z\\nFREQ=DAILY;COUNT=1 — once, at that moment, then it retires"
+)
+
+# The reject-and-teach failure for a schedule ``rrulestr`` won't read.  Names the
+# grammar and shows it, so the model rewrites into RRULE rather than inventing a second
+# schedule language.  A BLANK schedule never reaches here — it is refused at the arg gate
+# with its own teaching rejection (#1776) — so this only ever answers garbled input.
+_SCHEDULE_TEACHING = (
+    "I couldn't read the schedule '{schedule}'. A schedule is one RRULE line — the "
+    "calendar recurrence format — optionally preceded by a DTSTART line saying when it "
+    "starts. Copy one of these shapes:\n"
+    f"{SCHEDULE_EXAMPLES}\n"
+    "Use COUNT= to stop after that many runs, and UNTIL=20260901T000000Z to stop at "
+    "a time. "
+    "Or leave the schedule out entirely for a storage-only collection."
+)
+
+# The same rejection when a mechanical repair of the given text DOES parse: lead with
+# the corrected string so the retry is a COPY, never a re-derivation (a model asked to
+# rewrite a rejected value re-derives a different one — the measured 7200 → 14400 class).
+_SCHEDULE_DID_YOU_MEAN = (
+    "I couldn't read the schedule '{schedule}' — did you mean '{corrected}'? Pass that "
+    "exact string. A schedule is one RRULE line, optionally preceded by a DTSTART line:\n"
+    f"{SCHEDULE_EXAMPLES}"
+)
+
+# A schedule carrying more than one rule line: the grammar is ONE rule (plus an optional
+# DTSTART), because COUNT/UNTIL are lifted from that one rule into the collection's end
+# conditions and two rules would give two answers.
+_SCHEDULE_MULTIPLE_RULES = (
+    "The schedule '{schedule}' has more than one rule line. A schedule is exactly one "
+    "RRULE line, optionally preceded by one DTSTART line — combine what you want into a "
+    "single rule:\n"
+    f"{SCHEDULE_EXAMPLES}"
+)
+
+_DTSTART_TAG = "DTSTART"
+_RRULE_TAG = "RRULE:"
+_COUNT_PART = "COUNT"
+_UNTIL_PART = "UNTIL"
+# A schedule's two lines are separated by a newline, and every surface that shows a
+# schedule is a one-line surface, so the separator is written as the two characters
+# ``\n`` there.  The parser accepts both, so a rendered schedule copies straight back.
+_LINE_ESCAPE = "\\n"
+# Any dtstart validates the grammar, so validation uses a fixed one rather than a clock
+# read — parsing the same text twice must give the same answer.
+_VALIDATION_DTSTART = datetime(2000, 1, 1, tzinfo=UTC)
+# How an UNTIL value is written.  A bare date is deliberately absent: the rule's
+# start is always timezone-aware here, and dateutil refuses a naive UNTIL against
+# one, so such a rule never reaches the lift at all.
+_UNTIL_FORMAT = "%Y%m%dT%H%M%SZ"
+# Wrappers a model puts around a value it is quoting rather than passing.
+_WRAPPING_CHARACTERS = "'\"`"
+
+
+def parse_schedule(schedule: str) -> Schedule:
+    """Parse the single ``schedule`` arg into a store-ready :class:`Schedule` (#1857).
+
+    One grammar: an RRULE line, optionally preceded by a ``DTSTART:`` line saying when
+    the recurrence starts (default: the collection's ``created_at``, applied by the
+    collector).  ``python-dateutil``'s ``rrulestr`` is the authority on whether the text
+    is a schedule — a well-known formalism, no bespoke parsing — and ``COUNT=`` /
+    ``UNTIL=`` are lifted out into ``max_runs`` / ``expires_at`` while staying in the
+    stored rule, so a rendered schedule copies straight back and round-trips.
+
+    Text ``rrulestr`` refuses raises the teaching :class:`ScheduleError`, carrying the
+    mechanically-repaired string verbatim when one exists so the retry is a copy.
+    """
+    text = _canonical_lines(schedule)
+    rule_line = _rule_line(text)
+    if rule_line is None or not _reads_as_schedule(text):
+        raise ScheduleError(_teaching_for(_one_line(schedule.strip())))
+    parts = _rule_parts(rule_line)
+    return Schedule(
+        rule=text,
+        max_runs=_lifted_count(parts, text),
+        expires_at=_lifted_until(parts, text),
+    )
+
+
+def _one_line(text: str) -> str:
+    """Schedule text as it is QUOTED back to the model — one line, its newline written
+    as ``\\n``, matching how every render shows a schedule and what the parser accepts.
+    A rejection that quotes the value across two lines is a value that can't be copied
+    out of the message it appears in."""
+    return text.replace("\n", _LINE_ESCAPE)
+
+
+def _canonical_lines(schedule: str) -> str:
+    """The schedule with its lines held as real newlines — a two-line rule written on
+    one line with the ``\\n`` escape (how every surface renders it) is the same
+    schedule as one written across two, and only one of them can be stored."""
+    return schedule.strip().replace(_LINE_ESCAPE, "\n")
+
+
+def _rule_line(text: str) -> str | None:
+    """The schedule's one rule line — the ``DTSTART`` line, when present, says when the
+    recurrence starts and carries no parts to lift.  ``None`` when there is no rule line
+    at all; a SECOND rule line is its own refusal (the lift has to read one rule, not
+    choose between two)."""
+    lines = [
+        line
+        for line in (candidate.strip() for candidate in text.splitlines())
+        if line and not line.upper().startswith(_DTSTART_TAG)
+    ]
+    if len(lines) > 1:
+        raise ScheduleError(_SCHEDULE_MULTIPLE_RULES.format(schedule=_one_line(text)))
+    return lines[0] if lines else None
+
+
+def _rule_parts(rule_line: str) -> dict[str, str]:
+    """The rule's ``NAME=VALUE`` parts, keyed by upper-cased name.  A malformed part is
+    skipped here — ``rrulestr`` is what decides the text is unreadable, so this never
+    raises on its own and the one rejection stays in one place."""
+    body = rule_line[len(_RRULE_TAG) :] if rule_line.upper().startswith(_RRULE_TAG) else rule_line
+    parts: dict[str, str] = {}
+    for part in body.split(";"):
+        name, separator, value = part.partition("=")
+        if separator:
+            parts[name.strip().upper()] = value.strip()
+    return parts
+
+
+def _reads_as_schedule(text: str) -> bool:
+    """Does ``rrulestr`` accept this text as a recurrence rule?  The single authority on
+    the grammar — anything it refuses is a reject-and-teach, whatever the reason."""
     try:
-        parsed = datetime.fromisoformat(value)
+        rrulestr(text, dtstart=_VALIDATION_DTSTART)
+    except ValueError, TypeError:
+        return False
+    return True
+
+
+def _teaching_for(text: str) -> str:
+    """The rejection for unreadable schedule text: the did-you-mean form when a
+    mechanical repair of the text parses (so the retry is a copy of a rendered string),
+    else the plain teaching form."""
+    repaired = _mechanical_repair(text)
+    if repaired != text and _reads_as_schedule(_canonical_lines(repaired)):
+        return _SCHEDULE_DID_YOU_MEAN.format(schedule=text, corrected=repaired)
+    return _SCHEDULE_TEACHING.format(schedule=text)
+
+
+def _mechanical_repair(text: str) -> str:
+    """The purely syntactic tidy-ups of a schedule string — no guess about what the
+    text MEANS, so the corrected string it produces is safe to hand back as the exact
+    retry.  Strips wrapping quotes/backticks, drops trailing part separators, and puts a
+    ``DTSTART`` joined to the rule with a semicolon onto its own line."""
+    repaired = text.strip().strip(_WRAPPING_CHARACTERS).strip().rstrip(";, ")
+    if repaired.upper().startswith(_DTSTART_TAG) and _LINE_ESCAPE not in repaired:
+        head, separator, tail = repaired.partition(";")
+        if separator:
+            repaired = f"{head}{_LINE_ESCAPE}{tail}"
+    return repaired
+
+
+def _lifted_count(parts: dict[str, str], text: str) -> int | None:
+    """``COUNT=`` lifted into ``max_runs`` — the run quota the archive lifecycle already
+    owns, so a bounded rule retires its collection the same way a quota always did."""
+    raw = parts.get(_COUNT_PART)
+    if raw is None:
+        return None
+    if not raw.isdigit() or int(raw) < 1:
+        raise ScheduleError(
+            f"The schedule '{_one_line(text)}' has COUNT={raw} — COUNT is how many times it "
+            "runs, "
+            "so it must be a whole number of at least 1 (COUNT=1 for a one-shot)."
+        )
+    return int(raw)
+
+
+def _lifted_until(parts: dict[str, str], text: str) -> datetime | None:
+    """``UNTIL=`` lifted into ``expires_at`` — the end condition the archive lifecycle
+    already owns.  RFC 5545 writes it as ``YYYYMMDDTHHMMSSZ`` (or a bare date)."""
+    raw = parts.get(_UNTIL_PART)
+    if raw is None:
+        return None
+    try:
+        return datetime.strptime(raw, _UNTIL_FORMAT).replace(tzinfo=UTC)
     except ValueError:
-        raise TriggerError(
-            f"Couldn't read {field}={value!r} — write it as an ISO-8601 datetime like "
-            "'2026-07-20T14:00:00Z' (or 'YYYY-MM-DD HH:MM')."
-        ) from None
+        pass
+    raise ScheduleError(
+        f"The schedule '{_one_line(text)}' has UNTIL={raw}, which isn't a time I can read "
+        "— write "
+        "it as a UTC stamp like UNTIL=20260901T000000Z."
+    )
+
+
+def render_schedule_clause(row: MemoryRow) -> str:
+    """The mechanism's schedule rendered back VERBATIM — display form == invocation
+    form (#1857): what a surface shows (the self-state mechanisms line,
+    ``memory_metadata``, the creation echo) is the stored rule itself, so it copies
+    straight back as the ``schedule`` arg and round-trips to the same stored config.
+    With one grammar there is nothing to re-derive at the render, which is the whole
+    point of collapsing the union.  A two-line rule renders on ONE line with its
+    newline written as ``\\n`` — the form ``parse_schedule`` accepts back, since every
+    surface showing a schedule shows it inside a line.  Empty for a collection with no
+    schedule — the labelled surfaces go through ``render_schedule_field``, which says
+    ``none``."""
+    if row.schedule is None:
+        return ""
+    return _one_line(row.schedule)
+
+
+# The honest labelled-schedule fallback for a row with no schedule (#1666) — matching
+# ``memory_metadata``'s ``schedule: none`` convention, so no surface emits a blank.
+_NO_SCHEDULE_CLAUSE = "none"
+
+
+def has_schedule(row: MemoryRow) -> bool:
+    """True when ``row`` carries a schedule.  False for a log or an inert collection
+    with no schedule yet — the single predicate every labelled-schedule render guards
+    on."""
+    return row.schedule is not None
+
+
+def render_schedule_field(row: MemoryRow) -> str:
+    """The schedule rendered for a labelled echo/metadata field: the stored rule
+    verbatim when ``row`` has one, else the honest ``none`` — so an inert/no-schedule
+    collection never renders a blank clause (#1666)."""
+    return render_schedule_clause(row) if has_schedule(row) else _NO_SCHEDULE_CLAUSE
+
+
+# ── The end condition: ISO first, then the user's own words (#1857) ──────────
+
+# What dateparser is told about the words it is reading: they are the USER's, so they
+# are in the USER's timezone and they point forward (an end condition is in the future).
+# Returned in UTC, which is what the column holds.
+_DATEPARSER_SETTINGS: dict[str, object] = {
+    "PREFER_DATES_FROM": "future",
+    "RETURN_AS_TIMEZONE_AWARE": True,
+    "TO_TIMEZONE": "UTC",
+}
+
+# The reject-and-teach failure for an end condition neither reading answered.  Names
+# both accepted shapes with a worked example of each, so the retry has somewhere to go.
+_EXPIRES_TEACHING = (
+    "I couldn't read expires_at='{value}' as a time. Give it either a date and time — "
+    "2026-09-01T09:00:00Z — or when it ends in plain words, said the way a time is "
+    "said: 'tomorrow at 9am', 'in two weeks', '10pm today'. Words that only point at a "
+    "time without saying one ('tonight', 'the end of the month') don't land anywhere I "
+    "can store, so say the hour."
+)
+
+
+def parse_expires_at(
+    value: str, timezone_name: str | None, now: datetime | None = None
+) -> datetime:
+    """Parse the ``expires_at`` end condition into a UTC-aware datetime (#1857).
+
+    ISO first — an exact time is an exact time — then ``dateparser`` over the user's
+    own words, read IN THE USER'S TIMEZONE.  The timezone is what makes the words mean
+    what the user meant: '10pm today' is 10pm where they are, and reading it as UTC put
+    a watch's end hours away from the evening it was asked for.  ``timezone_name`` is
+    the user's IANA zone (``None`` on a fresh install → UTC) and ``now`` the moment
+    relative words count from, both passed in rather than read from ambient state.
+    Text neither reading answers raises the teaching :class:`ScheduleError`.
+    """
+    iso = _parse_iso_datetime(value)
+    if iso is not None:
+        return iso
+    if now is None:
+        now = datetime.now(UTC)
+    spoken = _parse_spoken_datetime(value, timezone_name, now)
+    if spoken is not None:
+        return spoken
+    raise ScheduleError(_EXPIRES_TEACHING.format(value=value))
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    """The ISO-8601 reading, or ``None`` when the text isn't one.  A naive value is
+    read as UTC, which is what the column holds."""
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-_EVERY_PREFIX = "every "
-_ONCE_PREFIX = "once at "
-_ON_ADVANCE_PREFIX = "on advance of "
-_CRON_PREFIX = "cron "
-
-# The four enumerated trigger forms as copyable bullets (display form == invocation
-# form), shared by the reject-and-teach texts so every rejection names the WHOLE
-# vocabulary.  The cron form (#1684) encodes a time-of-day recurrence a stated schedule
-# states in words ("morning and evening") that the other three can't express.
-_FOUR_FORMS = (
-    "- every <seconds> — a recurring cadence (e.g. every 3600 for hourly)\n"
-    "- once at <ISO datetime> [xN] — run at a time, optionally N times "
-    "(e.g. once at 2026-07-20T09:00:00Z, or once at 2026-07-20T09:00:00Z x3)\n"
-    "- on advance of <log> — wake when a source log gets a new entry "
-    "(e.g. on advance of browse-results)\n"
-    "- cron <5-field expression> — a time-of-day recurrence in cron form "
-    "(e.g. cron 0 8,20 * * * for 8am and 8pm daily)"
-)
-
-# The reject-and-teach failure for an unrecognised trigger shape (#1631/#1684): name the
-# four enumerated forms so the model rewrites to one of them instead of inventing a
-# fifth.  Each example is a copyable input (display form == invocation form).  The
-# closing omission line names the other valid move — leave the trigger out entirely for
-# a storage-only collection.  A BLANK trigger never reaches here: it is refused at the
-# arg gate with its own teaching rejection (#1776), so this text only ever answers
-# genuinely garbled (non-blank) input.
-_TRIGGER_TEACHING = (
-    "I couldn't read the trigger '{trigger}'. Set it to one of these four forms "
-    "(copy the shape exactly):\n"
-    f"{_FOUR_FORMS}\n"
-    "Or leave the trigger out entirely for a storage-only collection."
-)
-
-# The reject-and-teach failure for a ``cron`` form whose expression ``croniter`` rejects
-# (#1684): lead with the cron-specific diagnosis (the actionable surface — a bare
-# croniter error is a stack-dump-shaped fragment), then name all four forms so the model
-# can fix the expression OR pivot to a different form.
-_CRON_INVALID = (
-    "'cron {expr}' isn't a valid cron expression. A cron trigger is five space-separated "
-    "fields — minute hour day-of-month month day-of-week — e.g. cron 0 8,20 * * * for 8am "
-    "and 8pm daily. Set the trigger to one of these four forms (copy the shape exactly):\n"
-    f"{_FOUR_FORMS}"
-)
+def _parse_spoken_datetime(value: str, timezone_name: str | None, now: datetime) -> datetime | None:
+    """The natural-language reading in the user's timezone, or ``None`` when
+    ``dateparser`` finds no time in the words."""
+    zone = _user_zone(timezone_name)
+    settings = dict(_DATEPARSER_SETTINGS)
+    settings["TIMEZONE"] = str(zone)
+    # dateparser counts relative words ("in two weeks") from a NAIVE base it reads in
+    # TIMEZONE, so hand it the user's own wall clock — a UTC base puts an evening on
+    # the wrong day for anyone west of Greenwich.
+    settings["RELATIVE_BASE"] = now.astimezone(zone).replace(tzinfo=None)
+    parsed = dateparser.parse(value, settings=settings)  # ty: ignore[invalid-argument-type]
+    if parsed is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
-def parse_trigger(trigger: str, once_form_interval_seconds: int) -> Trigger:
-    """Parse the single ``trigger`` arg into a store-ready ``Trigger`` — classify by
-    prefix, then validate the form (the enumerated-cases doctrine).  Four forms:
-    ``every <seconds>`` (a recurring cadence), ``once at <ISO> [xN]`` (a delayed /
-    one-shot schedule, N defaulting to 1), ``on advance of <log>`` (wake when the named
-    source LOG advances), ``cron <5-field expression>`` (a time-of-day recurrence,
-    #1684).  The rendered clause IS this input (``render_trigger_clause``), so a
-    displayed trigger copies straight back as the arg and round-trips.  An unrecognised
-    shape raises the teaching ``TriggerError`` naming all four."""
-    text = trigger.strip()
-    lowered = text.lower()
-    if lowered.startswith(_EVERY_PREFIX):
-        return _parse_every(text[len(_EVERY_PREFIX) :].strip())
-    if lowered.startswith(_ONCE_PREFIX):
-        return _parse_once(text[len(_ONCE_PREFIX) :].strip(), once_form_interval_seconds)
-    if lowered.startswith(_ON_ADVANCE_PREFIX):
-        return _parse_on_advance(
-            text[len(_ON_ADVANCE_PREFIX) :].strip(), once_form_interval_seconds
-        )
-    if lowered.startswith(_CRON_PREFIX):
-        return _parse_cron(text[len(_CRON_PREFIX) :].strip(), once_form_interval_seconds)
-    raise TriggerError(_TRIGGER_TEACHING.format(trigger=trigger))
-
-
-def _parse_every(rest: str) -> Trigger:
-    """``every <seconds>`` — a recurring cadence.  A non-integer or non-positive value
-    is an actionable refusal naming the shape."""
-    if not rest.isdigit():
-        raise TriggerError(
-            f"'every {rest}' needs a whole number of seconds — e.g. every 3600 for hourly."
-        )
-    seconds = int(rest)
-    if seconds < 1:
-        raise TriggerError("A recurring cadence must be at least 1 second (every <seconds>).")
-    return Trigger(collector_interval_seconds=seconds)
-
-
-def _parse_once(rest: str, once_form_interval_seconds: int) -> Trigger:
-    """``once at <ISO> [xN]`` — a delayed / one-shot schedule that starts at the ISO
-    time and retires after N runs (N defaults to 1).  Paced at the dispatcher tick so
-    it is eligible each tick; its real gate is ``run_at``, not the clock."""
-    iso, max_runs = _split_run_count(rest)
-    return Trigger(
-        collector_interval_seconds=once_form_interval_seconds,
-        run_at=parse_datetime(iso, "the time in 'once at <time>'"),
-        max_runs=max_runs,
-    )
-
-
-def _split_run_count(rest: str) -> tuple[str, int]:
-    """Split an optional ``xN`` repeat suffix off a ``once at`` body (``N`` defaults to
-    1 — a one-shot).  A non-positive N is refused."""
-    head, sep, tail = rest.rpartition(" x")
-    if sep and tail.isdigit():
-        count = int(tail)
-        if count < 1:
-            raise TriggerError("The run count in 'once at <time> xN' must be at least 1.")
-        return head.strip(), count
-    return rest, 1
-
-
-def _parse_on_advance(rest: str, once_form_interval_seconds: int) -> Trigger:
-    """``on advance of <log>`` — wake when the named source LOG advances past this
-    collection's cursor (#1604).  Paced at the dispatcher tick (the source frontier is
-    the real gate); the name is slugged to the canonical store/cursor key so the
-    gate's frontier check can't mismatch on raw casing.  The tool validates the name
-    is an existing log (``validate_source_log``)."""
-    if not rest:
-        raise TriggerError(
-            "'on advance of <log>' needs a source log name — e.g. on advance of browse-results."
-        )
-    return Trigger(collector_interval_seconds=once_form_interval_seconds, source_log=slug(rest))
-
-
-def _parse_cron(rest: str, once_form_interval_seconds: int) -> Trigger:
-    """``cron <5-field expression>`` — a time-of-day recurrence the model maps a stated
-    schedule onto ("morning and evening" → ``0 8,20 * * *``), #1684.  ``croniter``'s own
-    validation is the authority (a well-known formalism, no NL parsing in Python); an
-    expression it rejects raises the teaching ``TriggerError`` naming all four forms.
-    Paced at the dispatcher tick like the once-shaped / on_advance forms — the real gate
-    is the cron next-fire time, computed in ``Collector._is_ready``."""
-    if not croniter.is_valid(rest):
-        raise TriggerError(_CRON_INVALID.format(expr=rest))
-    return Trigger(collector_interval_seconds=once_form_interval_seconds, cron_expression=rest)
-
-
-def render_trigger_clause(row: MemoryRow) -> str:
-    """The mechanism's trigger rendered AS the copyable ``trigger`` input — display
-    form == invocation form (#1631), the render-teaches-the-call property: the clause a
-    surface shows (the self-state mechanisms line, ``memory_metadata``, the creation
-    echo) is exactly what ``parse_trigger`` accepts, so it copies straight back and
-    round-trips to the same stored config.  ``cron <5-field expression>`` · ``on advance
-    of <log>`` · ``once at <ISO> [xN]`` (the ``xN`` suffix only when it repeats more than
-    once) · ``every <seconds>``.  Built off the SAME prefix constants ``parse_trigger``
-    classifies on, so display and invocation can't structurally diverge."""
-    if row.cron_expression is not None:
-        return f"{_CRON_PREFIX}{row.cron_expression}"
-    if row.source_log is not None:
-        return f"{_ON_ADVANCE_PREFIX}{row.source_log}"
-    if row.run_at is not None:
-        when = row.run_at if row.run_at.tzinfo is not None else row.run_at.replace(tzinfo=UTC)
-        suffix = f" x{row.max_runs}" if row.max_runs not in (None, 1) else ""
-        return f"{_ONCE_PREFIX}{when.isoformat()}{suffix}"
-    return f"{_EVERY_PREFIX}{row.collector_interval_seconds}"
-
-
-# The honest labelled-trigger fallback for a row with no cadence (#1666) — matching
-# ``memory_metadata``'s ``trigger: none`` convention, so no surface emits ``every None``.
-_NO_TRIGGER_CLAUSE = "none"
-
-
-def has_trigger(row: MemoryRow) -> bool:
-    """True when ``row`` carries any trigger member — a recurring
-    ``collector_interval_seconds``, a once-shaped ``run_at``, an ``on_advance``
-    ``source_log``, or a ``cron_expression`` (#1684).  False for a log or an inert
-    collection with no cadence yet, whose ``render_trigger_clause`` would otherwise emit
-    the half-formed ``every None`` (#1666).  The single predicate every labelled-trigger
-    render guards on, so no surface re-derives the four-member OR (also inlined on the
-    self-state cadence)."""
-    return (
-        row.collector_interval_seconds is not None
-        or row.run_at is not None
-        or row.source_log is not None
-        or row.cron_expression is not None
-    )
-
-
-def render_trigger_field(row: MemoryRow) -> str:
-    """The trigger rendered for a labelled echo/metadata field: the copyable clause when
-    ``row`` has a trigger (display form == invocation form, #1631), else the honest
-    ``none`` — so an inert/no-cadence collection never renders the half-formed ``every
-    None`` (#1666).  Consistent with ``memory_metadata``'s ``trigger: none`` across every
-    surface that shows a labelled trigger."""
-    return render_trigger_clause(row) if has_trigger(row) else _NO_TRIGGER_CLAUSE
+def _user_zone(timezone_name: str | None) -> ZoneInfo:
+    """The user's zone, or UTC when there is no profile / the stored zone is unknown —
+    the same fallback the current-time anchor takes, so the clock the model reads and
+    the clock its words are read against can't disagree."""
+    if timezone_name is None:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
 
 
 # ── Creation echo ─────────────────────────────────────────────────────────────
 
 
-def _trigger_line(row: MemoryRow) -> str:
-    """The echo's one-line trigger summary — the copyable ``trigger`` clause when the
-    collection has a trigger, or ``trigger: none`` for an inert/no-cadence one (#1666,
-    never the half-formed ``every None``; #1631, display form == invocation form)."""
-    return f"  trigger: {render_trigger_field(row)}"
+def _schedule_line(row: MemoryRow) -> str:
+    """The echo's one-line schedule summary — the stored rule verbatim when the
+    collection has one, or ``schedule: none`` for an inert/unscheduled one (#1666;
+    #1857, display form == invocation form)."""
+    return f"  schedule: {render_schedule_field(row)}"
 
 
 def _params_line(params: dict[str, str]) -> str:
@@ -394,25 +519,18 @@ def _expires_line(row: MemoryRow) -> str:
 # The instantiation echoes LEAD with one deterministic English sentence composed
 # from the STRUCTURED fields — skill · cadence · target · notify — so the model (and
 # the user it mirrors it to) reads what the collector will actually do without
-# confabulating it.  Template-method over the trigger forms × the notify flag; the
+# confabulating it.  Template-method over the schedule × the notify flag; the
 # detailed field-by-field echo stays below it.
 
 
 def _lead_cadence_phrase(row: MemoryRow) -> str:
-    """The 'when it runs' clause, built off the SAME trigger fields
-    ``render_trigger_clause`` reads: on-advance · once-at · every-seconds, or a bare
-    'I'll run' when the collection carries no cadence at all (defensive — a
-    skill-backed collection always has one)."""
-    if row.cron_expression is not None:
-        return f"On the cron schedule '{row.cron_expression}' I'll run"
-    if row.source_log is not None:
-        return f"Whenever '{row.source_log}' gets a new entry I'll run"
-    if row.run_at is not None:
-        times = f" ({row.max_runs} times)" if row.max_runs not in (None, 1) else ""
-        return f"At {format_log_timestamp(row.run_at)}{times} I'll run"
-    if row.collector_interval_seconds:
-        return f"Every {row.collector_interval_seconds} seconds I'll run"
-    return "I'll run"
+    """The 'when it runs' clause, built off the SAME stored rule
+    ``render_schedule_clause`` reads — a bare 'I'll run' when the collection carries no
+    schedule at all (defensive — a skill-backed collection always has one)."""
+    if not has_schedule(row):
+        return "I'll run"
+    times = f" ({row.max_runs} times)" if row.max_runs not in (None, 1) else ""
+    return f"On the schedule {render_schedule_clause(row)}{times} I'll run"
 
 
 def _lead_notify_tail(row: MemoryRow) -> str:
@@ -436,7 +554,7 @@ def _instantiation_echo(
     row: MemoryRow, skill_name: str, params: dict[str, str], headline: str
 ) -> str:
     """The shared instantiation confirm-shape — a plain-language LEAD line (what the
-    collector will do) over a ``headline`` and skill · bound params · trigger ·
+    collector will do) over a ``headline`` and skill · bound params · schedule ·
     notify · expiry · the full rendered ``extraction_prompt``.  Both the creation
     echo (#1591) and the re-render echo (#1620) compose it, so a freshly created
     collection and a re-rendered one confirm back the same fields."""
@@ -447,7 +565,7 @@ def _instantiation_echo(
         f"  description: {row.description}",
         f"  skill: {skill_name}",
         _params_line(params),
-        _trigger_line(row),
+        _schedule_line(row),
         f"  notify: {row.notify}",
         _expires_line(row),
         "  extraction_prompt: |",
@@ -457,7 +575,7 @@ def _instantiation_echo(
 
 
 def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:
-    """The structured creation echo — skill, bound params, trigger, notify, expiry,
+    """The structured creation echo — skill, bound params, schedule, notify, expiry,
     and the full rendered ``extraction_prompt`` — so the chat agent confirms back
     exactly what landed without confabulating a field."""
     return _instantiation_echo(

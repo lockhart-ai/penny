@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -84,7 +85,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 103
+        assert count == 104
 
         conn = sqlite3.connect(db_path)
         tables = {
@@ -126,7 +127,7 @@ class TestMigrate:
 
         count1 = migrate(db_path)
         count2 = migrate(db_path)
-        assert count1 == 103
+        assert count1 == 104
         assert count2 == 0
 
     def test_tracks_in_migrations_table(self, tmp_path):
@@ -164,8 +165,8 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        # 0001 is skipped; the rest run = 102 migrations
-        assert count == 102
+        # 0001 is skipped; the rest run = 103 migrations
+        assert count == 103
 
     def test_bootstrap_with_tables_already_present(self, tmp_path):
         """If tables already exist (from SQLModel.create_tables), migration should succeed."""
@@ -191,7 +192,7 @@ class TestMigrate:
         conn.close()
 
         count = migrate(db_path)
-        assert count == 103  # all migrations applied
+        assert count == 104  # all migrations applied
 
         conn = sqlite3.connect(db_path)
         cursor = conn.execute("SELECT name FROM _migrations")
@@ -1296,4 +1297,80 @@ class TestMigrate:
         assert "aurora-prices" not in rendered
         assert "collection_write(memory='harbor-log'" in rendered
         assert "update_entry(memory='harbor-log'" in rendered
+        conn.close()
+
+    def test_0104_adds_the_schedule_column_and_drops_the_trigger_union(self, tmp_path, caplog):
+        """Migration 0104 (#1857): the trigger union collapses onto ONE ``schedule``
+        RRULE column.  Six columns go, one arrives, existing trigger data is NOT
+        converted (code-owner ruling) — but the drop is not silent: every collection
+        that held one is logged by name with what it carried, plus a summary naming the
+        fix, so a collector that stops dispatching is diagnosable."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE memory ("
+            "  name TEXT PRIMARY KEY, type TEXT NOT NULL, description TEXT NOT NULL,"
+            "  extraction_prompt TEXT, collector_interval_seconds INTEGER,"
+            "  base_interval_seconds INTEGER, consecutive_idle_runs INTEGER NOT NULL DEFAULT 0,"
+            "  run_at TIMESTAMP, source_log TEXT, cron_expression TEXT,"
+            "  max_runs INTEGER, expires_at TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO memory (name, type, description, extraction_prompt,"
+            " collector_interval_seconds, base_interval_seconds, max_runs)"
+            " VALUES ('price-watch', 'collection', 'watch a price', '1. browse', 3600, 3600, 5)"
+        )
+        conn.execute(
+            "INSERT INTO memory (name, type, description, cron_expression)"
+            " VALUES ('twice-daily', 'collection', 'morning and evening', '0 8,20 * * *')"
+        )
+        conn.execute(
+            "INSERT INTO memory (name, type, description) VALUES ('notes', 'collection', 'x')"
+        )
+        conn.commit()
+
+        migration_path = (
+            Path(__file__).parents[3]
+            / "penny"
+            / "database"
+            / "migrations"
+            / "0104_rrule_schedule.py"
+        )
+        spec = importlib.util.spec_from_file_location("m0104", migration_path)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        with caplog.at_level(logging.WARNING):
+            mod.up(conn)
+        mod.up(conn)  # idempotent — a second application changes nothing
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)").fetchall()}
+        assert "schedule" in columns
+        assert columns.isdisjoint(
+            {
+                "collector_interval_seconds",
+                "base_interval_seconds",
+                "consecutive_idle_runs",
+                "run_at",
+                "source_log",
+                "cron_expression",
+            }
+        )
+        # The end conditions the rule's COUNT= / UNTIL= lift into are untouched.
+        assert {"max_runs", "expires_at"} <= columns
+        # No conversion: a collection that had a trigger now has no schedule.
+        assert conn.execute("SELECT schedule FROM memory WHERE name='price-watch'").fetchone() == (
+            None,
+        )
+        assert conn.execute("SELECT max_runs FROM memory WHERE name='price-watch'").fetchone() == (
+            5,
+        )
+        # Loud, per collection, and naming the fix — never a silent disappearance.
+        logged = caplog.text
+        assert "price-watch" in logged and "collector_interval_seconds=3600" in logged
+        assert "twice-daily" in logged and "cron_expression=0 8,20 * * *" in logged
+        assert "notes" not in logged  # it had no trigger to lose
+        assert "2 collection(s) lost their trigger" in logged
+        assert "collection_set(name=<collection>, schedule='FREQ=HOURLY')" in logged
         conn.close()

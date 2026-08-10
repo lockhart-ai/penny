@@ -102,12 +102,12 @@ ReadCount = Annotated[int | None, AfterValidator(_reject_nonpositive_count)]
 OPTIONAL_ARG_FORMS: dict[str, str] = {
     "description": "what the collection is for, in the user's own words",
     "skill": "the name of a learned skill (or a paraphrase of what it does)",
-    # NOT a sixth copy of the four enumerated forms — ``_TRIGGER_TEACHING`` (in
-    # collection_instantiation) is where that enumeration is authored, and a garbled
-    # trigger gets it verbatim.  A BLANK one needs the one shape that makes the fix
-    # obvious, so this stays an example and a pointer to the count.
-    "trigger": 'a schedule in one of the four trigger forms, e.g. "every 3600" for hourly',
-    "expires_at": "an ISO-8601 datetime, e.g. 2026-03-01T09:00:00Z",
+    # NOT a second copy of the grammar — ``_SCHEDULE_TEACHING`` (in
+    # collection_instantiation) is where that is authored, and a garbled schedule gets
+    # it verbatim.  A BLANK one needs the one shape that makes the fix obvious, so this
+    # stays a worked example.
+    "schedule": 'one RRULE line, e.g. "FREQ=HOURLY" for hourly',
+    "expires_at": 'when it ends, e.g. 2026-03-01T09:00:00Z or "in two weeks"',
 }
 
 # No trailing period: the arg-validation envelope appends ". Call <tool>(<valid
@@ -232,10 +232,10 @@ class CollectionCreateArgs(ToolArgs):
     A collection is storage plus an OPTIONAL job.  With a ``skill`` it INSTANTIATES
     that skill (resolved by name or meaning) — its steps render into the collection's
     ``extraction_prompt``, ``params`` binds the skill's parameters, and a
-    ``trigger`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
-    — no ``extraction_prompt``, no cadence, no ``notify`` — so nothing runs against it
+    ``schedule`` schedules it.  WITHOUT a ``skill`` the collection is INERT: storage only
+    — no ``extraction_prompt``, no schedule, no ``notify`` — so nothing runs against it
     until a skill is attached later via ``collection_set`` (the two-step teach
-    bootstrap).  A job-shaped arg (a ``trigger`` / ``notify`` / ``expires_at``) alongside
+    bootstrap).  A job-shaped arg (a ``schedule`` / ``notify`` / ``expires_at``) alongside
     a skill-less create is refused, since an inert container has no job to describe.
 
     ``description`` (required, non-blank) is what the collection is for, in the user's
@@ -243,23 +243,23 @@ class CollectionCreateArgs(ToolArgs):
     ``name`` is the unique slug.
 
     **A blank string on an optional arg is REFUSED, not read as "not set"** (#1776,
-    superseding #1646's coercion).  ``skill`` / ``trigger`` / ``expires_at`` reject
+    superseding #1646's coercion).  ``skill`` / ``schedule`` / ``expires_at`` reject
     ``""`` at the arg gate (``OptionalSkill`` / ``OptionalText``) with a teaching error
     naming the field and its accepted form, BEFORE any routing or parsing — so a model
     that fills an optional field with ``""`` (a chronic gpt-oss habit) is corrected
     rather than silently given the omitted behaviour, which turned a half-understood
     request into a half-built mechanism nothing marked as such.
 
-    The **trigger** (skill path only) is ONE argument with four enumerated forms,
-    parsed by prefix in the tool (``parse_trigger``): ``"every <seconds>"`` (a recurring
-    cadence), ``"once at <ISO time> [xN]"`` (a delayed / one-shot schedule, N runs
-    defaulting to 1), ``"on advance of <log>"`` (the collection wakes when that source
-    LOG advances past its cursor), or ``"cron <5-field expression>"`` (a time-of-day
-    recurrence, #1684).  An unparseable trigger is refused with a teaching error naming
-    the four forms.  ``expires_at`` (optional) is the end condition — the
-    watch archives itself when it passes.  ``notify`` (default false) makes the collection
-    tell the user about new/changed entries; an omission stays silent, so it can never
-    accidentally notify.
+    The **schedule** (skill path only) is ONE argument with ONE grammar (#1857,
+    ``parse_schedule``): an RRULE line such as ``"FREQ=HOURLY"`` or
+    ``"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9"``, optionally preceded by a
+    ``DTSTART:`` line saying when it starts.  Its ``COUNT=`` / ``UNTIL=`` parts are
+    lifted into ``max_runs`` / ``expires_at`` at parse.  A schedule ``dateutil``
+    can't read is refused with a teaching error showing the grammar.  ``expires_at``
+    (optional) is the end condition — an ISO datetime or when it ends in the user's
+    own words — and the watch archives itself when it passes.  ``notify`` (default
+    false) makes the collection tell the user about new/changed entries; an omission
+    stays silent, so it can never accidentally notify.
     """
 
     name: MemoryName
@@ -272,16 +272,15 @@ class CollectionCreateArgs(ToolArgs):
     # passed as a single-element list is unwrapped to its element (#1666,
     # SkillParamValue) — the model mirrors the browse tool's list-shaped queries arg.
     params: dict[str, SkillParamValue] = {}
-    # Trigger — one arg, four enumerated forms, parsed by prefix in the tool
-    # (parse_trigger, #1631/#1684): "every <seconds>" | "once at <ISO> [xN]" |
-    # "on advance of <log>" | "cron <5-field expression>".  Its render
-    # (render_trigger_clause) IS this input form.  OptionalText: a blank ``""`` is
-    # refused at the gate (#1776) rather than reaching the parser as a garbled trigger.
-    trigger: OptionalText = None
-    # End condition (optional) — an ISO-8601 datetime; the collection archives
-    # itself when it passes.  Parsed in the tool (actionable error on a bad value).
-    # OptionalText: a blank ``""`` is refused at the gate (#1776) — the observed silent
-    # drop, where a bounded watch asked for went live unbounded.
+    # Schedule — one arg, one grammar (parse_schedule, #1857): an RRULE line, with an
+    # optional leading DTSTART line.  Its render (render_schedule_clause) IS this input
+    # form, verbatim.  OptionalText: a blank ``""`` is refused at the gate (#1776)
+    # rather than reaching the parser as a garbled schedule.
+    schedule: OptionalText = None
+    # End condition (optional) — an ISO datetime or when it ends in plain words; the
+    # collection archives itself when it passes.  Parsed in the tool (actionable error
+    # on a bad value).  OptionalText: a blank ``""`` is refused at the gate (#1776) —
+    # the observed silent drop, where a bounded watch asked for went live unbounded.
     expires_at: OptionalText = None
     # Notify-on-new (emission-as-property, #1557): true when the user asked to be
     # told / kept posted / alerted about new entries.  Defaults false (silent).
@@ -320,7 +319,7 @@ class CollectionSetArgs(ToolArgs):
     create path, all its validation intact: birth idempotency-dedup unless
     skill resolution, the inert/job-arg refusal).  ``name``
     exists → only the fields explicitly set change (the update path: adopt /
-    rebind / swap / refresh re-render, atomic trigger replace, raw
+    rebind / swap / refresh re-render, atomic schedule replace, raw
     ``extraction_prompt`` edit).  The model never reasons about which case it is.
 
     ``description`` is required the FIRST time (it's the meaning anchor);
@@ -338,7 +337,7 @@ class CollectionSetArgs(ToolArgs):
     description: OptionalText = None
     skill: OptionalSkill = None
     params: dict[str, SkillParamValue] | None = None
-    trigger: OptionalText = None
+    schedule: OptionalText = None
     expires_at: OptionalText = None
     notify: bool | None = None
 
@@ -362,11 +361,10 @@ class CollectionUpdateArgs(ToolArgs):
     editing the prompt directly rather than re-rendering from a skill (mutually
     exclusive with ``skill`` / ``params``).
 
-    The **trigger** is the apply-time job axis — the SAME one-arg, four-form trigger
-    ``collection_set`` accepts (``parse_trigger``, #1631/#1684): ``"every <seconds>"`` |
-    ``"once at <ISO> [xN]"`` | ``"on advance of <log>"`` | ``"cron <5-field expression>"``.
-    Present → the whole trigger is replaced atomically (the members the new form doesn't
-    use clear); absent → the cadence is left untouched.  So a collection's schedule is
+    The **schedule** is the apply-time job axis — the SAME one-arg RRULE
+    ``collection_set`` accepts (``parse_schedule``, #1857).  Present → the schedule is
+    replaced atomically, run quota and all, so a new rule never inherits the old rule's
+    ``COUNT=``; absent → the schedule is left untouched.  So a collection's schedule is
     updatable post-create and an inert collection's job is set when a skill is adopted.
     ``expires_at`` is the end condition.
     """
@@ -379,11 +377,10 @@ class CollectionUpdateArgs(ToolArgs):
     # Rebind the skill's parameters; None = reuse current.  A single-element list value is
     # unwrapped to its element (#1666, SkillParamValue), mirroring create.
     params: dict[str, SkillParamValue] | None = None
-    # Trigger — one arg, four enumerated forms (parse_trigger, #1631/#1684), mirroring
-    # collection_set.  Present → replaces the whole trigger atomically; OMITTED →
-    # cadence untouched (a blank is refused, #1776).  "every <seconds>" | "once at <ISO>
-    # [xN]" | "on advance of <log>" | "cron <5-field expression>".
-    trigger: OptionalText = None
+    # Schedule — one arg, one grammar (parse_schedule, #1857), mirroring collection_set.
+    # Present → replaces the whole schedule atomically; OMITTED → schedule untouched (a
+    # blank is refused, #1776).
+    schedule: OptionalText = None
     # OptionalText: omitted leaves the end condition alone; a blank ``""`` is refused
     # (#1776), mirroring create.
     expires_at: OptionalText = None

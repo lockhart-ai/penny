@@ -1348,7 +1348,7 @@ class TestBrowserMemoryHandlers:
             "board-games",
             "board games",
             extraction_prompt="extract games",
-            collector_interval_seconds=300,
+            schedule="FREQ=MINUTELY;INTERVAL=5",
         )
         db.memory("board-games").write(
             [EntryInput(key="catan", content="Gateway strategy game")],
@@ -1375,7 +1375,7 @@ class TestBrowserMemoryHandlers:
         assert by_name["board-games"]["type"] == "collection"
         assert by_name["board-games"]["entry_count"] == 1
         assert by_name["board-games"]["extraction_prompt"] == "extract games"
-        assert by_name["board-games"]["collector_interval_seconds"] == 300
+        assert by_name["board-games"]["schedule"] == "FREQ=MINUTELY;INTERVAL=5"
         assert by_name["collector-runs"]["type"] == "log"
         assert by_name["collector-runs"]["entry_count"] == 1
         assert by_name["collector-runs"]["extraction_prompt"] is None
@@ -1671,7 +1671,7 @@ class TestBrowserMemoryHandlers:
                     "description": "board games",
                     "published": True,
                     "extraction_prompt": "extract games",
-                    "collector_interval_seconds": 600,
+                    "schedule": "FREQ=MINUTELY;INTERVAL=10",
                 }
             )
         )
@@ -1680,7 +1680,7 @@ class TestBrowserMemoryHandlers:
         assert memory.type == "collection"
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "extract games"
-        assert memory.collector_interval_seconds == 600
+        assert memory.schedule == "FREQ=MINUTELY;INTERVAL=10"
 
     def test_memory_create_silently_drops_duplicate_name(self, tmp_path):
         """A duplicate name is logged and dropped — no crash."""
@@ -1708,7 +1708,7 @@ class TestBrowserMemoryHandlers:
             "board-games",
             "old description",
             extraction_prompt="old prompt",
-            collector_interval_seconds=300,
+            schedule="FREQ=MINUTELY;INTERVAL=5",
         )
         asyncio.run(
             channel._handle_memory_update(
@@ -1721,7 +1721,7 @@ class TestBrowserMemoryHandlers:
                     "intent": "track only co-op games now",
                     "published": True,  # flip notify-on-new; other unsupplied fields stay put
                     "extraction_prompt": None,
-                    "collector_interval_seconds": None,
+                    "schedule": None,
                 }
             )
         )
@@ -1730,7 +1730,7 @@ class TestBrowserMemoryHandlers:
         assert memory.description == "new description"
         assert memory.notify is True  # wire `published` mapped to the `notify` column (#1557)
         assert memory.extraction_prompt == "old prompt"
-        assert memory.collector_interval_seconds == 300
+        assert memory.schedule == "FREQ=MINUTELY;INTERVAL=5"
 
     def test_memory_archive_marks_archived(self, tmp_path):
 

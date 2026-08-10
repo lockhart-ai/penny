@@ -286,7 +286,7 @@ def seed_collection(
     synth: SynthCollection,
     *,
     extraction_prompt: str | None = None,
-    interval: int | None = None,
+    schedule: str | None = None,
     notify: bool = False,
 ) -> None:
     """Create a synthetic collection + its entries (key = text before ' — ')."""
@@ -294,7 +294,7 @@ def seed_collection(
         synth.name,
         synth.description,
         extraction_prompt=extraction_prompt,
-        collector_interval_seconds=interval,
+        schedule=schedule,
         notify=notify,
     )
     require_memory(db, synth.name).write(

@@ -1104,7 +1104,7 @@ def _attaches_nothing_checks(db: Database, created: list[MemoryRow]) -> list[Che
         ),
         Check(
             "state: nothing it created was scheduled (no trigger, no notify)",
-            all(row.collector_interval_seconds is None and not row.notify for row in created),
+            all(row.schedule is None and not row.notify for row in created),
             kind="state",
         )
         if created
@@ -1693,8 +1693,8 @@ def _score_learn_to_apply(db: Database, before: set[str], reply: str) -> list[Ch
         ),
         Check(
             "state: it runs hourly (the cadence they asked for)",
-            row is not None and row.collector_interval_seconds == 3600,
-            rationale=f"interval {row and row.collector_interval_seconds}",
+            row is not None and row.schedule == "FREQ=HOURLY",
+            rationale=f"schedule {row and row.schedule}",
             kind="state",
         ),
         Check(

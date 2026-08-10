@@ -13,7 +13,7 @@ the DB rather than captured tool-call JSON.
 
 Each case scores as a graded ``Check`` list (partial credit per named expectation,
 with an observed-vs-expected ``rationale`` on a miss and ``Check.na`` for a check that
-doesn't apply — e.g. the interval assertion on a create without a stated cadence) and
+doesn't apply — e.g. the schedule assertion on a create without a stated cadence) and
 carries an explicit ``family`` tag (lifecycle-create / -update / -archive / -abstain).
 """
 
@@ -37,7 +37,7 @@ def _seed_board_games(db: Database) -> None:
         db,
         BOARD_GAMES,
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
         notify=True,
     )
 
@@ -48,7 +48,7 @@ def _seed_board_games_silent(db: Database) -> None:
         db,
         BOARD_GAMES,
         extraction_prompt=BOARD_GAMES_EXTRACTION_PROMPT,
-        interval=3600,
+        schedule="FREQ=HOURLY",
         notify=False,
     )
 
@@ -62,7 +62,7 @@ def _created_collection(db: Database, before: set[str]):
 
 
 def _score_create(
-    db: Database, before: set[str], *, notify: bool, interval: int | None
+    db: Database, before: set[str], *, notify: bool, schedule: str | None
 ) -> list[Check]:
     memory = _created_collection(db, before)
     if memory is None:
@@ -75,8 +75,8 @@ def _score_create(
     # Emission is the ``notify`` flag, NOT a send_message step in the stored
     # extraction_prompt.  The model must map "ping/tell me" onto the flag — the
     # run-time notify suffix (#1557) does the sending, so the stored prompt itself
-    # should never call send_message.  The interval check is NOT-APPLICABLE unless
-    # the case stated a cadence (``interval is None`` → ``Check.na``, out of the
+    # should never call send_message.  The schedule check is NOT-APPLICABLE unless
+    # the case stated a cadence (``schedule is None`` → ``Check.na``, out of the
     # graded denominator — a create-notify/silent case never asked for one).
     return [
         Check(
@@ -95,14 +95,14 @@ def _score_create(
             "send_message" not in body,
             kind="state",
         ),
-        Check.na("interval matches the requested cadence", kind="state")
-        if interval is None
+        Check.na("schedule matches the requested cadence", kind="state")
+        if schedule is None
         else Check(
-            f"interval set to {interval}s",
-            memory.collector_interval_seconds == interval,
+            f"schedule set to {schedule}",
+            memory.schedule == schedule,
             rationale=None
-            if memory.collector_interval_seconds == interval
-            else f"expected {interval}, got {memory.collector_interval_seconds}",
+            if memory.schedule == schedule
+            else f"expected {schedule}, got {memory.schedule}",
             kind="state",
         ),
     ]
@@ -252,7 +252,7 @@ async def test_create_notify(chat_eval: ChatEval) -> None:
         case_id="create-notify",
         message="research heavier euro-style strategy board games for me, "
         "ping me when you find good ones",
-        score=lambda db, before, reply: _score_create(db, before, notify=True, interval=None),
+        score=lambda db, before, reply: _score_create(db, before, notify=True, schedule=None),
         family="lifecycle-create",
     )
 
@@ -261,7 +261,7 @@ async def test_create_silent(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="create-silent",
         message="research fountain pens and inks for me — silent, i'll check the list myself",
-        score=lambda db, before, reply: _score_create(db, before, notify=False, interval=None),
+        score=lambda db, before, reply: _score_create(db, before, notify=False, schedule=None),
         family="lifecycle-create",
     )
 
@@ -270,7 +270,9 @@ async def test_create_cadence(chat_eval: ChatEval) -> None:
     await chat_eval(
         case_id="create-cadence",
         message="research new sci-fi novels for me, check daily, ping me when good ones land",
-        score=lambda db, before, reply: _score_create(db, before, notify=True, interval=86400),
+        score=lambda db, before, reply: _score_create(
+            db, before, notify=True, schedule="FREQ=DAILY"
+        ),
         family="lifecycle-create",
     )
 

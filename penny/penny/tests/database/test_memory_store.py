@@ -126,7 +126,7 @@ class TestMemoryMetadata:
             "hedgehog-sightings",
             "neighbourhood hedgehog sightings",
             extraction_prompt="1. browse for hedgehog news. 2. done().",
-            collector_interval_seconds=3600,
+            schedule="FREQ=HOURLY",
             created_by_run_id="run-t1",
         )
         db.memories.archive("hedgehog-sightings", run_id="run-t9")
@@ -150,7 +150,7 @@ extraction prompt: 1. browse for hedgehog news. 2. done().
 
 Operational settings (cadence — secondary):
 notify: False
-trigger: every 3600
+schedule: FREQ=HOURLY
 status: archived 2026-03-05 08:10 UTC
 expires: never
 created: 2026-03-05 08:00 UTC by run run-t1
@@ -232,7 +232,7 @@ Recent changes (newest first):
         db.memories.create_collection(
             "board-games",
             "strategy board games",
-            collector_interval_seconds=300,
+            schedule="FREQ=MINUTELY;INTERVAL=5",
             extraction_prompt="Browse for new board games and write entries.",
             notify=True,
         )
@@ -243,8 +243,8 @@ Recent changes (newest first):
         assert "strategy board games" in result.message
         # notify surfaces in metadata so the chat agent + quality can read notify-on-new.
         assert "notify: True" in result.message
-        # The cadence renders as the copyable trigger clause (#1631), not a raw interval.
-        assert "trigger: every 300" in result.message
+        # The schedule renders back VERBATIM (#1857) — the rule IS the copyable form.
+        assert "schedule: FREQ=MINUTELY;INTERVAL=5" in result.message
         assert "last collected: never" in result.message
         assert "Browse for new board games and write entries." in result.message
         # Timestamps render through the shared log-timestamp format (compact UTC),
