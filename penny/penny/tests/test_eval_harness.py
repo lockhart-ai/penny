@@ -75,10 +75,13 @@ from penny.tests.eval.test_state_transitions import (
     _interface_check,
     assert_round_cites_its_run,
     assert_seeded_ledger,
+    cadence_seconds,
+    rule_parts,
     seed_learned_round,
 )
 from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
+from penny.tools.collection_instantiation import _LINE_ESCAPE
 from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
 from penny.tools.models import ToolResult
 
@@ -186,6 +189,34 @@ def test_tool_not_called_reads_the_promptlog(tmp_path) -> None:
     assert tool_was_called(db, "collection_write")
     assert not tool_not_called(db, "collection_write")
     assert tool_not_called(db, "send_message")
+
+
+def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
+    """The learn → apply cases score the CADENCE the acceptance asked for, never the rule
+    spelling that says so (#1857) — so every rule that fires at the asked-for interval
+    passes, whatever FREQ/INTERVAL pair the model chose to write it with.
+
+    Pinned without a GPU because it is pure: the reader walks the rule's own occurrences,
+    so a daily cadence written three different ways reads as one answer, and the
+    time-of-day anchor is read as a stated PART (dateutil defaults an unstated hour to the
+    start's, so the parsed rule cannot tell a chosen hour from an inherited one)."""
+    hourly = ("FREQ=HOURLY", "FREQ=HOURLY;INTERVAL=1", "FREQ=MINUTELY;INTERVAL=60")
+    daily = ("FREQ=DAILY", "FREQ=DAILY;BYHOUR=8", "FREQ=HOURLY;INTERVAL=24")
+    for rule in hourly:
+        assert cadence_seconds(rule) == 3600, rule
+    for rule in daily:
+        assert cadence_seconds(rule) == 86400, rule
+    assert cadence_seconds("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8") == 86400
+    assert cadence_seconds("FREQ=WEEKLY") == 604800
+    assert cadence_seconds("FREQ=HOURLY;INTERVAL=2") == 7200
+    assert cadence_seconds("FREQ=MINUTELY;INTERVAL=120") == 7200
+    assert cadence_seconds("FREQ=DAILY;COUNT=1") is None, "a rule that fires once has no cadence"
+
+    assert "BYHOUR" in rule_parts("FREQ=DAILY;BYHOUR=8"), "a stated hour reads as stated"
+    assert "BYHOUR" not in rule_parts("FREQ=DAILY"), "an unstated hour is not invented"
+    two_line = f"DTSTART:20260101T080000Z{_LINE_ESCAPE}RRULE:FREQ=DAILY;BYHOUR=8"
+    assert rule_parts(two_line) == {"FREQ", "BYHOUR"}, "the rule line is read past its DTSTART"
+    assert cadence_seconds(two_line) == 86400, "a one-line render round-trips into the reader"
 
 
 def test_every_apply_case_seeds_a_round_that_cites_its_own_run(tmp_path) -> None:

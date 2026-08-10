@@ -2609,19 +2609,17 @@ def _rule_body(schedule: str) -> str:
     tag stripped.  A schedule renders on one line with its newline written ``\\n`` (the form
     the parser accepts back), so both spellings are unfolded first."""
     lines = [line for line in schedule.replace(_LINE_ESCAPE, "\n").splitlines() if line.strip()]
-    body = next(
-        (line for line in reversed(lines) if not line.upper().startswith(_DTSTART_TAG)), ""
-    )
+    body = next((line for line in reversed(lines) if not line.upper().startswith(_DTSTART_TAG)), "")
     return body[len(_RRULE_TAG) :] if body.upper().startswith(_RRULE_TAG) else body
 
 
-def _rule_parts(schedule: str) -> set[str]:
+def rule_parts(schedule: str) -> set[str]:
     """Which PARTS the stored rule states, by name — the declared shape, read structurally
     off the rule rather than by comparing its spelling to one we had in mind."""
     return {part.partition("=")[0].strip().upper() for part in _rule_body(schedule).split(";")}
 
 
-def _cadence_seconds(schedule: str) -> int | None:
+def cadence_seconds(schedule: str) -> int | None:
     """How often the stored rule FIRES, in seconds — the gap between its first two
     occurrences, measured by walking the rule itself.
 
@@ -2649,13 +2647,15 @@ def _schedule_check(row: MemoryRow | None, case: _ApplyCase) -> Check:
     label = "state: the schedule runs on the cadence they asked for"
     if row is None or row.schedule is None:
         return Check(label, False, rationale="no schedule was set", kind="state")
-    cadence = _cadence_seconds(row.schedule)
-    states_an_hour = _HOUR_PART in _rule_parts(row.schedule)
-    matches = cadence == case.cadence_seconds and (states_an_hour or not case.anchored)
+    fires_every = cadence_seconds(row.schedule)
+    states_an_hour = _HOUR_PART in rule_parts(row.schedule)
+    matches = fires_every == case.cadence_seconds and (states_an_hour or not case.anchored)
     return Check(
         label,
         matches,
-        rationale=None if matches else f"fires every {cadence}s, states {_rule_parts(row.schedule)}",
+        rationale=None
+        if matches
+        else f"fires every {fires_every}s, states {rule_parts(row.schedule)}",
         kind="state",
     )
 
