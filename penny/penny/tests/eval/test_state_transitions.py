@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import islice
 from typing import NamedTuple
@@ -62,12 +62,14 @@ from dateutil.rrule import rrulestr
 
 from penny.constants import ChatPromptType, PennyConstants, TransitionCause
 from penny.conversation_machine import (
+    CandidateParameter,
     ConversationState,
     MachineSnapshot,
+    SkillCandidate,
     render_classifier_content,
 )
 from penny.database import Database
-from penny.database.memory import EntryInput, LogEntryInput
+from penny.database.memory import EntryInput, LogEntryInput, MemoryType
 from penny.database.models import MemoryEntry, MemoryRow, StateTransition
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
@@ -78,6 +80,8 @@ from penny.database.skills import (
     SkillSubKind,
     SkillSubstitution,
     distill_steps,
+    render_skill,
+    retarget_writes,
     slug_skill_name,
 )
 from penny.penny import Penny
@@ -134,29 +138,47 @@ from penny.tests.eval.test_watch_journey import (
 )
 from penny.text_validity import is_blank
 
+# The production tool-result framer, used as itself: a seeded ledger's tool turns have to
+# read the way the loop really writes them, and a hand-written frame is a second copy of a
+# format the model is shown every turn.
+from penny.tools.base import Tool
+
 # The schedule's own render + grammar tokens, read from where the tool declares them: a
 # stored rule renders back AS the copyable ``schedule`` input (#1857), so the advisory shows
 # what she committed to in the form it was set, and the line/tag literals a rule is written
 # with are that module's to define — a restated copy here would be a second contract.
+# ``parse_schedule`` + ``render_reinstantiation_echo`` are read for the same reason on the
+# seeding side: a seeded apply turn stores the rule the tool would have stored and echoes
+# back what the tool would have echoed.
 from penny.tools.collection_instantiation import (
     _DTSTART_TAG,
     _LINE_ESCAPE,
     _RRULE_TAG,
     has_schedule,
+    parse_schedule,
+    render_reinstantiation_echo,
     render_schedule_clause,
 )
 from penny.tools.memory_tools import _AUTO_CREATED_DESCRIPTION
 from penny.tools.micro_context import (
+    SKILL_TAG,
     STATE_CLASSIFIER_SYSTEM_PROMPT,
+    STATE_TAG,
     FramedParameter,
     LeafLabel,
     SkillLabels,
     SkillSignature,
+    StateDrawOutcome,
 )
+from penny.tools.models import ToolResult
 
 pytestmark = pytest.mark.eval
 
 _FAMILY = "state-transitions"
+
+# The one call that stands a job up — named once, since three sections read it (the
+# learn → apply scorer, the seeded apply turn's ledger, and the idle → apply scorer).
+_SET_TOOL = "collection_set"
 
 
 # ── Shared across the edges ───────────────────────────────────────────────────
@@ -170,6 +192,7 @@ def _park(
     from_state: ConversationState = ConversationState.IDLE,
     run_id: str | None = None,
     message_id: int | None = None,
+    skill_name: str | None = None,
 ) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
@@ -188,14 +211,39 @@ def _park(
 
     ``run_id`` and ``message_id`` are the move's links back into the ledger and the
     conversation (#1846): production stamps both, and they are what make a seeded
-    transition row indistinguishable from one the machine really recorded."""
+    transition row indistinguishable from one the machine really recorded.
+
+    ``skill_name`` is what a SKILL-GATED decision bound (apply / request) — the
+    column the idle → apply cases read as half of the binding check, so a seeded
+    apply move has to carry it exactly as a drawn one does.
+
+    Every move recorded here is a DECIDED draw: these are the moves the machine
+    really made, and a classifier row with no outcome is the fail → stay shape,
+    which is not what a seeded history of completed rounds is."""
     db.machine.record_transition(
         from_state=from_state.value,
         to_state=state.value,
         cause=TransitionCause.CLASSIFIER,
         anchor_message_id=anchor_message_id,
+        outcome=StateDrawOutcome.DECIDED.value,
         run_id=run_id,
         message_id=message_id,
+        skill_name=skill_name,
+    )
+
+
+def _structural_reset(db: Database) -> None:
+    """The post-apply reset, exactly as production writes it: ``apply`` has no
+    out-edges, so the NEXT incoming message settles the machine back to idle
+    before anything is classified (``ConversationMachine._settle_structural``).
+
+    No run, no anchor, and no message id — the reset is appended before the turn's
+    message has one, and ``link_message`` back-fills by run id, which a structural
+    row does not carry.  So the row production leaves is exactly this one."""
+    db.machine.record_transition(
+        from_state=ConversationState.APPLY.value,
+        to_state=ConversationState.IDLE.value,
+        cause=TransitionCause.STRUCTURAL,
     )
 
 
@@ -284,11 +332,44 @@ def _leaf_at(arguments: dict, path: list):
 # ``_sample_prompt_rows``).  Without that exclusion the apply case's "no browse this turn"
 # check would read the demonstrated round's browse as this turn's.
 
-_SEEDED_ELICIT_DRAW_RUN_ID = seeded_run_id("elicit-draw")
-_SEEDED_ELICIT_RUN_ID = seeded_run_id("elicit-turn")
-_SEEDED_LEARN_DRAW_RUN_ID = seeded_run_id("learn-draw")
-_SEEDED_LEARN_RUN_ID = seeded_run_id("learn-turn")
-_SEEDED_BROWSE_EXTRACT_RUN_ID = seeded_run_id("learn-browse-extract")
+
+class _JourneyRuns(NamedTuple):
+    """The run ids ONE journey's seeded turns are written under — a bundle rather
+    than five module constants, because a world can hold more than one journey.
+
+    A run id is the join key everything a turn produced cites (the collection, its
+    entry, the skill, the transition rows), and it is how the ledger is READ back
+    (``get_run_prompts``).  Five journeys sharing one set of ids would read as a
+    single impossible run that browsed five pages and wrote five entries — so each
+    journey mints its own, under the harness's seeded prefix either way."""
+
+    elicit_draw: str
+    elicit_turn: str
+    learn_draw: str
+    learn_turn: str
+    browse_extract: str
+    apply_draw: str
+    apply_turn: str
+
+
+def _journey_runs(journey: str) -> _JourneyRuns:
+    """One journey's run ids, named after it — deterministic, so a probe can assert
+    against them by name, and seeded-prefixed, so every "what did this sample do"
+    reader excludes them."""
+    return _JourneyRuns(
+        elicit_draw=seeded_run_id(f"{journey}-elicit-draw"),
+        elicit_turn=seeded_run_id(f"{journey}-elicit-turn"),
+        learn_draw=seeded_run_id(f"{journey}-learn-draw"),
+        learn_turn=seeded_run_id(f"{journey}-learn-turn"),
+        browse_extract=seeded_run_id(f"{journey}-learn-browse-extract"),
+        apply_draw=seeded_run_id(f"{journey}-apply-draw"),
+        apply_turn=seeded_run_id(f"{journey}-apply-turn"),
+    )
+
+
+# The bundle a case with no journey of its own writes under — the elicit → learn
+# cases, which seed exactly one round each and have nothing to distinguish it from.
+_DEFAULT_RUNS = _journey_runs("round")
 
 # The model the seeded rows name — the same one the samples themselves run against, read
 # the way the harness's own config reads it, so a seeded row and a live row cite one model.
@@ -332,6 +413,14 @@ def _tool_result_turn(call_id: str, step: DistillInput) -> dict:
         "content": step.result,
         PennyConstants.TOOL_RESULT_SUCCESS_KEY: True,
     }
+
+
+def _drawn_state(state: ConversationState, *, skill: str | None = None) -> str:
+    """The classifier's own output for a DECIDED draw — the tagged state line, plus the
+    second ``SKILL:`` line a skill-gated decision carries (#1706).  Written with the
+    module's own tags so a seeded draw reads back through the same parse a live one does."""
+    line = f"{STATE_TAG} {state.value}"
+    return line if skill is None else f"{line}\n{SKILL_TAG} {skill}"
 
 
 def _log_classifier_draw(db: Database, *, run_id: str, snapshot, message: str, drawn: str) -> None:
@@ -933,12 +1022,12 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
             sender=PennyConstants.MessageAuthor.PENNY,
             content=case.teach_question,
         )
-        _seed_elicit_turn_ledger(db, case)
+        _seed_elicit_turn_ledger(db, case, _DEFAULT_RUNS)
         _park(
             db,
             ConversationState.ELICIT,
             anchor_message_id=ask_id,
-            run_id=_SEEDED_ELICIT_RUN_ID,
+            run_id=_DEFAULT_RUNS.elicit_turn,
             message_id=ask_id,
         )
         _assert_seeded_world(db, case, ask_id)
@@ -946,21 +1035,31 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
     return seed
 
 
-def _seed_elicit_turn_ledger(db: Database, case: _ElicitRound) -> None:
-    """The idle → elicit turn's promptlog: the classifier draw that chose elicit over a
-    COLD machine (no history, no skills — the state that beat starts from), then the one
-    chat call that answered.  No tool calls: that turn's contract is that it enacted
-    nothing, so a seeded call would be seeding the failure it is measured against."""
+def _seed_elicit_turn_ledger(
+    db: Database,
+    case: _ElicitRound,
+    runs: _JourneyRuns,
+    *,
+    candidates: tuple[SkillCandidate, ...] = (),
+) -> None:
+    """The idle → elicit turn's promptlog: the classifier draw that chose elicit over the
+    machine as it stood (no history, and — for the round that opens a world — no skills
+    either), then the one chat call that answered.  No tool calls: that turn's contract is
+    that it enacted nothing, so a seeded call would be seeding the failure it is measured
+    against.
+
+    ``candidates`` is the registry at the moment of the draw: empty for a world holding
+    one round, the routines taught before it in a world that holds several."""
     _log_classifier_draw(
         db,
-        run_id=_SEEDED_ELICIT_DRAW_RUN_ID,
-        snapshot=MachineSnapshot(state=ConversationState.IDLE),
+        run_id=runs.elicit_draw,
+        snapshot=MachineSnapshot(state=ConversationState.IDLE, skill_candidates=list(candidates)),
         message=case.ask,
-        drawn=f"STATE: {ConversationState.ELICIT.value}",
+        drawn=_drawn_state(ConversationState.ELICIT),
     )
     _log_chat_step(
         db,
-        run_id=_SEEDED_ELICIT_RUN_ID,
+        run_id=runs.elicit_turn,
         messages=[{"role": "user", "content": case.ask}],
         response=_seeded_response(case.teach_question),
     )
@@ -1801,7 +1900,10 @@ def _fixture_labels(steps: list[SkillStep], authored: dict[str, LeafLabel]) -> S
 
 
 def _fixture_skill(
-    demonstrated: _DemonstratedRound, draws: _FixtureDraws, origin_message: str
+    demonstrated: _DemonstratedRound,
+    draws: _FixtureDraws,
+    origin_message: str,
+    runs: _JourneyRuns,
 ) -> SkillDraft:
     """The skill a demonstrated round leaves in the registry, built by the PRODUCTION
     pipeline over its ledger: ``distill_steps`` for the structure, then BOTH halves of
@@ -1841,7 +1943,7 @@ def _fixture_skill(
         description=description,
         steps=steps,
         parameters=framed,
-        source_run_id=_SEEDED_LEARN_RUN_ID,
+        source_run_id=runs.learn_turn,
     )
 
 
@@ -1853,6 +1955,19 @@ def _fixture_skill(
 # scenario drew a single ``url`` parameter except the ferry, whose measured mode was
 # ``url`` plus a found-thing; per the code owner's ruling the ferry fixture seeds that
 # TWO-parameter shape, as the deliberate stress case for multi-parameter binding.
+#
+# Each scenario is a JOURNEY, and its run ids are minted once here — the skill cites the
+# learn run that taught it, and every seeder writing that journey's turns writes under
+# the same bundle, so the citation resolves in whichever world the journey is laid down.
+
+_AURORA_RUNS = _journey_runs("aurora")
+_FERRY_RUNS = _journey_runs("ferry")
+_BAKERY_RUNS = _journey_runs("bakery")
+_COLONY_RUNS = _journey_runs("colony")
+_ARRIVALS_RUNS = _journey_runs("arrivals")
+# The decoy was taught on some occasion this world does not lay down, so its round has a
+# run id and no rows — a routine learned before the history a case seeds begins.
+_DECOY_RUNS = _journey_runs("museum")
 
 _AURORA_DEMONSTRATED = _DemonstratedRound(
     url=LISTING_URL,
@@ -1886,6 +2001,7 @@ _AURORA_SKILL = _fixture_skill(
         ),
     ),
     _AURORA_ROUND.demo,
+    _AURORA_RUNS,
 )
 
 _FERRY_DEMONSTRATED = _DemonstratedRound(
@@ -1925,6 +2041,7 @@ _FERRY_SKILL = _fixture_skill(
         ),
     ),
     _FERRY_ROUND.demo,
+    _FERRY_RUNS,
 )
 
 _BAKERY_DEMONSTRATED = _DemonstratedRound(
@@ -1965,6 +2082,7 @@ _BAKERY_SKILL = _fixture_skill(
         ),
     ),
     _BAKERY_ROUND.demo,
+    _BAKERY_RUNS,
 )
 
 _COLONY_DEMONSTRATED = _DemonstratedRound(
@@ -1997,6 +2115,7 @@ _COLONY_SKILL = _fixture_skill(
         ),
     ),
     _COLONY_ROUND.demo,
+    _COLONY_RUNS,
 )
 
 _ARRIVALS_DEMONSTRATED = _DemonstratedRound(
@@ -2033,6 +2152,7 @@ _ARRIVALS_SKILL = _fixture_skill(
         ),
     ),
     _ARRIVALS_ROUND.demo,
+    _ARRIVALS_RUNS,
 )
 
 
@@ -2072,6 +2192,7 @@ _DECOY_SKILL = _fixture_skill(
         ),
     ),
     "go to https://citymuseum.example/hours, find the opening times, and remember them",
+    _DECOY_RUNS,
 )
 
 
@@ -2099,13 +2220,24 @@ class _ApplyCase(NamedTuple):
     end condition at all (inventing one is a failure); ``bound`` is every value the
     round supplied that the routine has to be pointed at, matched case-folded so a
     normalized copy of a scheme-less address still counts; ``cadence_tokens`` is what a
-    reply naming the cadence back would have to contain."""
+    reply naming the cadence back would have to contain.
+
+    ``confirmation`` is THIS case's reference reply — how she says the job is running — and
+    it is DATA rather than prose for the same reason ``_LearnCase.closing_report`` is: the
+    idle → apply world seeds each of these journeys to its end and replays this line as the
+    turn that finished it, so the line the review reads and the line that world replays are
+    one string.
+
+    ``runs`` is the journey's own run-id bundle — what every seeded turn of this round is
+    written under, and what its skill, collection, entry and moves cite."""
 
     case_id: str
     prior: _LearnCase
     demonstrated: _DemonstratedRound
     skill: SkillDraft
+    runs: _JourneyRuns
     acceptance: str
+    confirmation: str
     cadence_seconds: int
     anchored: bool
     expects_expiry: bool
@@ -2116,16 +2248,17 @@ class _ApplyCase(NamedTuple):
 # Case 1 — the script's own turn, continuing ``transition-elicit-to-learn``: the offer
 # taken up with a cadence, an end condition and a notify ask, and NOT the page — the
 # round it answers already read that.
-#
-# Reference reply:
-#   done — i'll check the listing every hour until 10pm tonight and message you if the
-#   price moves.
 _AURORA_APPLY = _ApplyCase(
     case_id="transition-learn-to-apply",
     prior=_AURORA_ROUND,
     demonstrated=_AURORA_DEMONSTRATED,
     skill=_AURORA_SKILL,
+    runs=_AURORA_RUNS,
     acceptance="perfect — do that every hour until 10pm tonight and tell me if it changes",
+    confirmation=(
+        "done — i'll check the listing every hour until 10pm tonight and message you if "
+        "the price moves."
+    ),
     cadence_seconds=3600,
     anchored=False,
     expects_expiry=True,
@@ -2136,16 +2269,17 @@ _AURORA_APPLY = _ApplyCase(
 # Case 2 — the ferry, whose terms are a time of DAY rather than a period, so the cron
 # form is what answers them; and whose routine asks for two things, the page and what to
 # look for on it, both of which the round's own turns supplied.
-#
-# Reference reply:
-#   done — i'll check the timetable every morning and message you when the late sailing
-#   shows up.
 _FERRY_APPLY = _ApplyCase(
     case_id="transition-learn-to-apply-no-url",
     prior=_FERRY_ROUND,
     demonstrated=_FERRY_DEMONSTRATED,
     skill=_FERRY_SKILL,
+    runs=_FERRY_RUNS,
     acceptance="great — do that every morning and let me know when the late sailing gets added",
+    confirmation=(
+        "done — i'll check the timetable every morning and message you when the late "
+        "sailing shows up."
+    ),
     cadence_seconds=86400,
     anchored=True,
     expects_expiry=False,
@@ -2155,15 +2289,14 @@ _FERRY_APPLY = _ApplyCase(
 
 # Case 3 — the store-each-day digest set running.  Nothing in the acceptance ends it,
 # so an ``expires_at`` here is an end condition nobody asked for.
-#
-# Reference reply:
-#   done — i'll check the specials every day and message you what's on.
 _BAKERY_APPLY = _ApplyCase(
     case_id="transition-learn-to-apply-digest",
     prior=_BAKERY_ROUND,
     demonstrated=_BAKERY_DEMONSTRATED,
     skill=_BAKERY_SKILL,
+    runs=_BAKERY_RUNS,
     acceptance="great — do that every day and tell me what the special is",
+    confirmation="done — i'll check the specials every day and message you what's on.",
     cadence_seconds=86400,
     anchored=False,
     expects_expiry=False,
@@ -2175,15 +2308,14 @@ _BAKERY_APPLY = _ApplyCase(
 # is what the bound value is matched on (a normalized copy contains it either way).
 # Notify fires on any change at the write gate, so the directional "if it drops" is
 # future business and is not scored here.
-#
-# Reference reply:
-#   done — i'll check the colony count every week and message you if it drops.
 _COLONY_APPLY = _ApplyCase(
     case_id="transition-learn-to-apply-threshold",
     prior=_COLONY_ROUND,
     demonstrated=_COLONY_DEMONSTRATED,
     skill=_COLONY_SKILL,
+    runs=_COLONY_RUNS,
     acceptance="perfect — do that every week and let me know if the count drops",
+    confirmation="done — i'll check the colony count every week and message you if it drops.",
     cadence_seconds=604800,
     anchored=False,
     expects_expiry=False,
@@ -2194,18 +2326,19 @@ _COLONY_APPLY = _ApplyCase(
 # Case 5 — the tight cadence with an end condition the model has to WORK OUT: "the end
 # of the month" is a date nobody states, so the check is that an expiry was set at all
 # and the drawn value rides advisory for review.
-#
-# Reference reply:
-#   done — i'll check the new-arrivals page every two hours until the end of the month
-#   and message you the moment something new shows up.
 _ARRIVALS_APPLY = _ApplyCase(
     case_id="transition-learn-to-apply-urgency",
     prior=_ARRIVALS_ROUND,
     demonstrated=_ARRIVALS_DEMONSTRATED,
     skill=_ARRIVALS_SKILL,
+    runs=_ARRIVALS_RUNS,
     acceptance=(
         "yes — check it every two hours until the end of the month and tell me the "
         "second something new appears"
+    ),
+    confirmation=(
+        "done — i'll check the new-arrivals page every two hours until the end of the "
+        "month and message you the moment something new shows up."
     ),
     cadence_seconds=7200,
     anchored=False,
@@ -2239,33 +2372,57 @@ def seed_learned_round(case: _ApplyCase) -> Seeder:
       no rendered program, nothing scheduled (learning instantiates nothing)
 
     The fixture skills and the case's page are laid down by the runner after this, so
-    the world is only whole once they are — which is why the probe is a prepare hook."""
+    the world is only whole once they are — which is why the probe is a prepare hook.
+
+    The work is ``seed_round_through_learn``'s, because the same four turns are the
+    PREFIX of a completed journey the idle → apply world carries on past."""
 
     def seed(db: Database) -> None:
-        ask_id, demo_id = _seed_round_turns(db, case)
-        _seed_elicit_turn_ledger(db, case.prior)
-        _park(
-            db,
-            ConversationState.ELICIT,
-            anchor_message_id=ask_id,
-            run_id=_SEEDED_ELICIT_RUN_ID,
-            message_id=ask_id,
-        )
-        _seed_learn_turn_ledger(db, case)
-        _park(
-            db,
-            ConversationState.LEARN,
-            anchor_message_id=ask_id,
-            from_state=ConversationState.ELICIT,
-            run_id=_SEEDED_LEARN_RUN_ID,
-            message_id=demo_id,
-        )
-        _seed_naive_collection(db, case, demo_id)
+        seed_round_through_learn(db, case)
 
     return seed
 
 
-def _seed_learn_turn_ledger(db: Database, case: _ApplyCase) -> None:
+def seed_round_through_learn(
+    db: Database, case: _ApplyCase, *, taught_so_far: tuple[SkillCandidate, ...] = ()
+) -> tuple[int, int]:
+    """The round's first four turns and both of its moves, returning the ask's and the
+    demonstration's message ids.
+
+    Factored out of ``seed_learned_round`` because a journey is a PREFIX of a longer
+    history: the learn → apply cases stop here (this is where their acceptance lands),
+    and the idle → apply world carries each journey on through its apply turn.  One
+    definition, so what the later beat replays is what the earlier beat is measured
+    against rather than a second copy of it.
+
+    ``taught_so_far`` is the registry as it stood when this round OPENED — empty for the
+    first journey a world holds, the earlier journeys' routines for the ones after it,
+    since the classifier is offered every skill that exists at the moment it draws."""
+    ask_id, demo_id = _seed_round_turns(db, case)
+    _seed_elicit_turn_ledger(db, case.prior, case.runs, candidates=taught_so_far)
+    _park(
+        db,
+        ConversationState.ELICIT,
+        anchor_message_id=ask_id,
+        run_id=case.runs.elicit_turn,
+        message_id=ask_id,
+    )
+    _seed_learn_turn_ledger(db, case, candidates=taught_so_far)
+    _park(
+        db,
+        ConversationState.LEARN,
+        anchor_message_id=ask_id,
+        from_state=ConversationState.ELICIT,
+        run_id=case.runs.learn_turn,
+        message_id=demo_id,
+    )
+    _seed_naive_collection(db, case, demo_id)
+    return ask_id, demo_id
+
+
+def _seed_learn_turn_ledger(
+    db: Database, case: _ApplyCase, *, candidates: tuple[SkillCandidate, ...] = ()
+) -> None:
     """The elicit → learn turn's promptlog — the round itself, as the loop wrote it: the
     draw that chose learn, then the chat run's three steps (browse · write · the closing
     report), each carrying the accumulated conversation as it stood when the call was made
@@ -2277,30 +2434,32 @@ def _seed_learn_turn_ledger(db: Database, case: _ApplyCase) -> None:
     browse and the write that actually happened."""
     _log_classifier_draw(
         db,
-        run_id=_SEEDED_LEARN_DRAW_RUN_ID,
+        run_id=case.runs.learn_draw,
         snapshot=MachineSnapshot(
             state=ConversationState.ELICIT,
             penny_last_turn=case.prior.teach_question,
             task_anchor=case.prior.ask,
+            skill_candidates=list(candidates),
         ),
         message=case.prior.demo,
-        drawn=f"STATE: {ConversationState.LEARN.value}",
+        drawn=_drawn_state(ConversationState.LEARN),
     )
     browse, write = _demonstrated_ledger(case.demonstrated)
     conversation: list[dict] = [{"role": "user", "content": case.prior.demo}]
-    conversation = _seed_call_step(db, conversation, _BROWSE_CALL_ID, browse)
-    _log_browse_extract(db, case.demonstrated)
-    conversation = _seed_call_step(db, conversation, _WRITE_CALL_ID, write)
+    run_id = case.runs.learn_turn
+    conversation = _seed_call_step(db, conversation, _BROWSE_CALL_ID, browse, run_id=run_id)
+    _log_browse_extract(db, case.demonstrated, case.runs.browse_extract)
+    conversation = _seed_call_step(db, conversation, _WRITE_CALL_ID, write, run_id=run_id)
     _log_chat_step(
         db,
-        run_id=_SEEDED_LEARN_RUN_ID,
+        run_id=run_id,
         messages=conversation,
         response=_seeded_response(case.prior.closing_report),
     )
 
 
 def _seed_call_step(
-    db: Database, conversation: list[dict], call_id: str, step: DistillInput
+    db: Database, conversation: list[dict], call_id: str, step: DistillInput, *, run_id: str
 ) -> list[dict]:
     """One tool-calling step of the seeded run: log the call against the conversation as it
     stands, then return the conversation the NEXT call sees — the assistant's call turn plus
@@ -2308,7 +2467,7 @@ def _seed_call_step(
     call = _wire_tool_call(call_id, step)
     _log_chat_step(
         db,
-        run_id=_SEEDED_LEARN_RUN_ID,
+        run_id=run_id,
         messages=conversation,
         response=_seeded_response(tool_calls=[call]),
     )
@@ -2319,7 +2478,7 @@ def _seed_call_step(
     ]
 
 
-def _log_browse_extract(db: Database, demonstrated: _DemonstratedRound) -> None:
+def _log_browse_extract(db: Database, demonstrated: _DemonstratedRound, run_id: str) -> None:
     """The browse's own micro-context call — its own agent identity and its own run id,
     exactly as ``MicroContext`` writes it, so the seeded round's ledger carries the same
     actors a real one does."""
@@ -2329,7 +2488,7 @@ def _log_browse_extract(db: Database, demonstrated: _DemonstratedRound) -> None:
         response=_seeded_response(f"EXTRACTED: {demonstrated.entry_value}"),
         agent_name=PennyConstants.BROWSE_EXTRACT_AGENT_NAME,
         prompt_type=PennyConstants.BROWSE_MICRO_CONTEXT_PROMPT_TYPE,
-        run_id=_SEEDED_BROWSE_EXTRACT_RUN_ID,
+        run_id=run_id,
         run_target=PennyConstants.CHAT_AGENT_NAME,
     )
 
@@ -2379,13 +2538,13 @@ def _seed_naive_collection(db: Database, case: _ApplyCase, demo_id: int) -> None
     db.memories.create_collection(
         demonstrated.collection,
         _AUTO_CREATED_DESCRIPTION.format(key=demonstrated.entry_key),
-        created_by_run_id=_SEEDED_LEARN_RUN_ID,
+        created_by_run_id=case.runs.learn_turn,
     )
-    db.memories.link_source_message(_SEEDED_LEARN_RUN_ID, demo_id)
+    db.memories.link_source_message(case.runs.learn_turn, demo_id)
     require_memory(db, demonstrated.collection).write(
         [EntryInput(key=demonstrated.entry_key, content=demonstrated.entry_value)],
         author=PennyConstants.CHAT_AGENT_NAME,
-        run_id=_SEEDED_LEARN_RUN_ID,
+        run_id=case.runs.learn_turn,
     )
     _seed_browse_results_entry(db, case)
 
@@ -2431,17 +2590,23 @@ def assert_seeded_ledger(db: Database, case: _ApplyCase) -> None:
     This is the half a durable-row-only seed had nothing of, and the half a live model
     reads when it asks what has already been done — so a drift here is the case quietly
     reverting to the impoverished world it was built to replace."""
-    calls = [
-        call.get("function", {}).get("name")
-        for row in db.messages.get_run_prompts(_SEEDED_LEARN_RUN_ID)
-        for call in _row_tool_calls(row)
-    ]
-    expected = [step.tool for step in _demonstrated_ledger(case.demonstrated)]
-    assert calls == expected, f"{case.case_id}: the seeded round must carry {expected}, got {calls}"
+    assert_round_calls_logged(db, case)
     fetched = _pages_fetched(db)
     assert len(fetched) == 1, (
         f"{case.case_id}: the round read one page, browse-results has {fetched}"
     )
+
+
+def assert_round_calls_logged(db: Database, case: _ApplyCase) -> None:
+    """One round's demonstrated calls, read back off its OWN run — the half that holds
+    however many rounds a world carries, since a run id scopes the read."""
+    calls = [
+        call.get("function", {}).get("name")
+        for row in db.messages.get_run_prompts(case.runs.learn_turn)
+        for call in _row_tool_calls(row)
+    ]
+    expected = [step.tool for step in _demonstrated_ledger(case.demonstrated)]
+    assert calls == expected, f"{case.case_id}: the seeded round must carry {expected}, got {calls}"
 
 
 def _row_tool_calls(row) -> list[dict]:
@@ -2460,9 +2625,20 @@ def assert_round_cites_its_run(db: Database, case: _ApplyCase) -> None:
     entry, the skill, and the transition row.  That citation is what makes the mutation
     line's ``run <id>`` resolve to the browse and the write that actually happened, which
     is the whole reason the ledger is seeded at all."""
+    assert_round_rows_cite_their_run(db, case)
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.run_id == case.runs.learn_turn, (
+        f"{case.case_id}: the learn move must cite the round's run, not {latest and latest.run_id}"
+    )
+
+
+def assert_round_rows_cite_their_run(db: Database, case: _ApplyCase) -> None:
+    """The durable half of that citation — the collection and its entry.  Split from the
+    machine assertion above because where the MACHINE stands depends on how far the world
+    carried this round, while what the round WROTE cites its run either way."""
     row = db.memories.get(case.demonstrated.collection)
     created_by = row.created_by_run_id if row else None
-    assert created_by == _SEEDED_LEARN_RUN_ID, (
+    assert created_by == case.runs.learn_turn, (
         f"{case.case_id}: the collection must cite the round's run, not {created_by}"
     )
     assert row is not None
@@ -2471,12 +2647,8 @@ def assert_round_cites_its_run(db: Database, case: _ApplyCase) -> None:
     )
     entries = require_memory(db, case.demonstrated.collection).read_all()
     stamps = {entry.created_by_run_id for entry in entries}
-    assert stamps == {_SEEDED_LEARN_RUN_ID}, (
+    assert stamps == {case.runs.learn_turn}, (
         f"{case.case_id}: the demonstrated entry must cite the round's run, got {stamps}"
-    )
-    latest = db.machine.latest_transition()
-    assert latest is not None and latest.run_id == _SEEDED_LEARN_RUN_ID, (
-        f"{case.case_id}: the learn move must cite the round's run, not {latest and latest.run_id}"
     )
 
 
@@ -2549,23 +2721,25 @@ def _landed_apply_move(landed: StateTransition | None) -> StateTransition | None
     return landed
 
 
-def _skill_binding_check(landed: StateTransition | None, case: _ApplyCase) -> Check:
-    """The decision bound the INTENDED skill — the landed transition's ``skill_name`` is
-    the routine this round taught, not the decoy sitting beside it in the registry.
+def _skill_binding_check(landed: StateTransition | None, *, intended: str, label: str) -> Check:
+    """The decision bound the INTENDED routine — the landed transition's ``skill_name`` is
+    the one that covers what was asked for, not another routine in the registry.
 
     Scored only when the machine landed in apply: a misroute is already the landed-state
     advisory's finding, and scoring the binding on top of it would recount one classifier
-    miss twice."""
-    label = "state: the decision bound the intended skill"
+    miss twice.
+
+    ``label`` is the caller's because a label is a diff-join key: two beats ask this same
+    question of two different situations and each names it in its own terms, while the
+    reading itself must be one definition."""
     applied = _landed_apply_move(landed)
     if applied is None:
         return Check.na(label, kind="state")
-    intended = slug_skill_name(case.skill.name)
     bound = applied.skill_name
     return Check(
         label,
         bound == intended,
-        rationale=None if bound == intended else f"bound {bound!r}, the round taught {intended!r}",
+        rationale=None if bound == intended else f"bound {bound!r}, the ask needs {intended!r}",
         kind="state",
     )
 
@@ -2637,54 +2811,55 @@ def cadence_seconds(schedule: str) -> int | None:
     return int((occurrences[1] - occurrences[0]).total_seconds())
 
 
-def _schedule_check(row: MemoryRow | None, case: _ApplyCase) -> Check:
+def _schedule_check(row: MemoryRow | None, *, fires_every: int, anchored: bool) -> Check:
     """The schedule runs on the cadence they asked for — and, where the terms name a time of
     DAY rather than a period, states an hour to run at.
 
     WHICH hour is not scored (the code owner's leeway ruling, carried over from the cron
     form it replaced): picking a sensible morning is expected of the model, but the hour it
-    picks is a judgment about wording, and the drawn rule rides advisory for review."""
+    picks is a judgment about wording, and the drawn rule rides advisory for review.
+
+    ``fires_every`` and ``anchored`` are the terms, passed as values rather than read off a
+    case, so both beats that ask this question share one reading of a stored rule."""
     label = "state: the schedule runs on the cadence they asked for"
     if row is None or row.schedule is None:
         return Check(label, False, rationale="no schedule was set", kind="state")
-    fires_every = cadence_seconds(row.schedule)
+    drawn = cadence_seconds(row.schedule)
     states_an_hour = _HOUR_PART in rule_parts(row.schedule)
-    matches = fires_every == case.cadence_seconds and (states_an_hour or not case.anchored)
+    matches = drawn == fires_every and (states_an_hour or not anchored)
     return Check(
         label,
         matches,
-        rationale=None
-        if matches
-        else f"fires every {fires_every}s, states {rule_parts(row.schedule)}",
+        rationale=None if matches else f"fires every {drawn}s, states {rule_parts(row.schedule)}",
         kind="state",
     )
 
 
-def _expiry_check(row: MemoryRow | None, case: _ApplyCase) -> Check:
+def _expiry_check(row: MemoryRow | None, *, expected: bool) -> Check:
     """The end condition matches the terms — set when they gave one, ABSENT when they
     did not.  An invented end condition is a failure in its own right: a job that stops
     on a date nobody asked for goes quiet without anyone noticing."""
     label = "state: the end condition matches the terms (set only when they gave one)"
     if row is None:
-        return Check(label, False, rationale="no collection carries the skill", kind="state")
+        return Check(label, False, rationale="no job carries the routine", kind="state")
     given = row.expires_at is not None
     return Check(
         label,
-        given == case.expects_expiry,
-        rationale=None if given == case.expects_expiry else f"expires {row.expires_at}",
+        given == expected,
+        rationale=None if given == expected else f"expires {row.expires_at}",
         kind="state",
     )
 
 
-def _bound_parameters_check(row: MemoryRow | None, case: _ApplyCase) -> Check:
-    """EVERY parameter the routine asks for was bound from the round — the page it was
-    taught on, and for the ferry what to look for on it as well.
+def _bound_parameters_check(row: MemoryRow | None, *, wanted: tuple[str, ...], label: str) -> Check:
+    """EVERY parameter the routine asks for was bound — the page it is pointed at, and
+    where the routine asks for two things, what to look for on it as well.
 
-    Matched case-folded and by containment: the user gave one address without a scheme,
-    and a normalized copy carries it either way."""
-    label = "state: every parameter bound from the round"
+    Matched case-folded and by containment: an address may arrive without a scheme, and a
+    normalized copy carries it either way.  ``label`` is the caller's — WHERE a value came
+    from is what each beat is measuring, and that is what its label says."""
     bound = list(_bound_parameters(row).values()) if row is not None else []
-    missing = [wanted for wanted in case.bound if not _mentions(wanted, bound)]
+    missing = [value for value in wanted if not _mentions(value, bound)]
     return Check(
         label,
         not missing,
@@ -2773,7 +2948,7 @@ def _binding_checks(
     return [
         Check(
             "state: she set the job up with collection_set",
-            tool_was_called(db, "collection_set"),
+            tool_was_called(db, _SET_TOOL),
             kind="state",
         ),
         Check(
@@ -2787,8 +2962,14 @@ def _binding_checks(
             row is not None and bool(row.extraction_prompt),
             kind="state",
         ),
-        _skill_binding_check(landed, case),
-        _bound_parameters_check(row, case),
+        _skill_binding_check(
+            landed,
+            intended=slug_skill_name(case.skill.name),
+            label="state: the decision bound the intended skill",
+        ),
+        _bound_parameters_check(
+            row, wanted=case.bound, label="state: every parameter bound from the round"
+        ),
     ]
 
 
@@ -2797,8 +2978,8 @@ def _terms_checks(db: Database, row: MemoryRow | None, case: _ApplyCase) -> list
     (or the absence of one), and the telling-them clause every one of these asks
     carries — and she set it running instead of running it again."""
     return [
-        _schedule_check(row, case),
-        _expiry_check(row, case),
+        _schedule_check(row, fires_every=case.cadence_seconds, anchored=case.anchored),
+        _expiry_check(row, expected=case.expects_expiry),
         Check(
             "state: it will tell them when the price moves",
             row is not None and bool(row.notify),
@@ -2843,11 +3024,20 @@ def _apply_advisories(
     landed: StateTransition | None,
     case: _ApplyCase,
 ) -> list[Check]:
-    """The unscored flavour: the parked collection-management question, what she drew,
-    and how the state came to be."""
-    sets = count_tool_calls(db, "collection_set")
+    """The unscored flavour: the parked collection-management question, then everything
+    any apply turn reports about itself."""
+    return [_reuse_advisory(db, before, row, case), *_job_setup_advisories(db, row, landed)]
+
+
+def _job_setup_advisories(
+    db: Database, row: MemoryRow | None, landed: StateTransition | None
+) -> list[Check]:
+    """What a turn that stood a job up committed to, and how the state came to be — the
+    drawn schedule, end condition and bindings verbatim, one set call, the landed state,
+    and clean routing.  Shared by both apply beats: an advisory says the same thing about
+    an accepted offer and about a cold ask, and two copies would drift."""
+    sets = count_tool_calls(db, _SET_TOOL)
     return [
-        _reuse_advisory(db, before, row, case),
         *_drawn_advisories(row),
         Check(
             "calls: one collection_set call",
@@ -2935,3 +3125,1120 @@ async def test_learn_to_apply_sets_the_tight_cadence_and_works_out_the_end(
     stated in words — "until the end of the month" is a datetime the model has to work
     out, so what matters here is that it set one at all."""
     await _run_apply_case(chat_eval, _ARRIVALS_APPLY)
+
+
+# ── idle → apply: a cold ask points a KNOWN routine at a new space ────────────
+#
+# The edge the whole journey exists to enable: the second time the user asks for
+# something Penny already knows, nothing should need teaching.  Five cases, one per
+# journey the three edges above walk — each returning user names a NEW space and the
+# job's terms, and exactly one of the five taught routines covers it.
+#
+# It is NOT the moment after an apply turn.  The world is the full exit state of all
+# five journeys — every message, every ledger row, the demonstrated entries, the pages
+# they read, and the five APPLIED jobs those journeys left running — then a few
+# exchanges of ordinary small talk, so what the conversation window shows last is a
+# user who has been chatting rather than configuring.  The machine is idle.
+#
+# The asks are COLD: no "too", no "again", no "like the other one".  Nothing in the
+# message points at the history, so binding the right routine is a decision about what
+# the ask MEANS against five candidates — which is the first time that selection is
+# fully load-bearing, since every wrong pick is a real routine that exists.
+#
+# Each case installs its new page as a live temptation: re-running the routine instead
+# of setting it up is a fetch that would SUCCEED and get caught.  The values the ask
+# supplies exist NOWHERE in the seeded history (the probe asserts it), so a parameter
+# bound to one of them can only have been read off the message.
+#
+# The reference replies quoted above each ask are review targets, never scorer strings.
+
+
+# ── The five new spaces ───────────────────────────────────────────────────────
+#
+# Catalogue-grade pages: each carries far more than its task needs — specifications,
+# neighbouring items, housekeeping notes — because a real page does, and a fixture thin
+# enough to answer only the asked question cannot tell restraint from luck.  Every
+# markdown link sits at the CENTRE of its block: a SEARCH-shaped read is trimmed to ±2
+# lines around each solo link (``_trim_search_result``), so a block laid out any other
+# way would lose the very fields the page was written to carry.
+
+_KEEL_LANTERN_URL = "https://faux-market.example/keel-lantern"
+_KEEL_LANTERN_LISTING = CannedPage(
+    match="keel",
+    text=(
+        "Title: Keel Lantern — brass storm lantern | faux-market\n"
+        f"{_KEEL_LANTERN_URL}\n"
+        "\n"
+        "Sold by a fictional chandlery; stock and price move with the season.\n"
+        "Price: $128\n"
+        f"[Keel Lantern listing]({_KEEL_LANTERN_URL})\n"
+        "Seller: harbourside_supply (4.7 stars). Price last changed eleven days ago.\n"
+        "Condition: new, boxed. Dispatched within two working days.\n"
+        "\n"
+        "Specification\n"
+        "Brass body with a weighted base, 340mm tall\n"
+        f"[Specification sheet]({_KEEL_LANTERN_URL}/spec)\n"
+        "Takes paraffin or a 3W bulb insert; the glass is replaceable.\n"
+        "Weight 1.4kg · Height 340mm · Base 120mm\n"
+        "\n"
+        "Others from this seller\n"
+        "Deck Lantern, galvanised — $96\n"
+        "[Deck Lantern](https://faux-market.example/deck-lantern)\n"
+        "Anchor Lamp, copper — $210\n"
+        "Both ship from the same fictional warehouse.\n"
+        "\n"
+        "Returns are accepted within thirty days; return postage is the buyer's.\n"
+    ),
+)
+
+_NORTH_PIER_URL = "https://northpier.example/departures"
+# Matched on "pier", the token the ask and the address SHARE — the ask says "north pier"
+# and the host is "northpier", so a search and a direct read both land on this page.
+_NORTH_PIER_DEPARTURES = CannedPage(
+    match="pier",
+    text=(
+        "Title: North Pier departures — sailing board | northpier\n"
+        f"{_NORTH_PIER_URL}\n"
+        "\n"
+        "The departure board for a fictional pier, republished whenever it changes.\n"
+        "Sailings today: 07:05, 09:40, 12:15, 15:50, 18:30, 21:10\n"
+        f"[North Pier departure board]({_NORTH_PIER_URL})\n"
+        "Dawn sailing: not on the board this season.\n"
+        "Board last amended four days ago by the harbour office.\n"
+        "\n"
+        "Crossing times\n"
+        "The outward crossing takes fifty minutes in fair weather\n"
+        f"[Crossing times and fares]({_NORTH_PIER_URL}/fares)\n"
+        "Return sailings leave the far side forty minutes after arrival.\n"
+        "Foot passengers board ten minutes before departure.\n"
+        "\n"
+        "Notices\n"
+        "The 12:15 runs to a reduced timetable out of season\n"
+        f"[Seasonal notices]({_NORTH_PIER_URL}/notices)\n"
+        "Cancellations are posted here and at the pier head.\n"
+        "The board is the authority; printed cards may lag a day behind.\n"
+    ),
+)
+
+_HARBOR_BAKERY_URL = "https://harborbakery.example/menu"
+# Matched on the host rather than on "bakery": the ask NAMES this page, so a direct read
+# is the temptation, and a token broad enough to also catch a search would answer a read
+# of the SEEDED corner-bakery page with this page's body.
+_HARBOR_BAKERY_MENU = CannedPage(
+    match="harborbakery",
+    text=(
+        "Title: Harbor Bakery — menu and daily special | harborbakery\n"
+        f"{_HARBOR_BAKERY_URL}\n"
+        "\n"
+        "Baked through the night in a fictional kitchen and posted before opening.\n"
+        "Today's special: pear and walnut tart\n"
+        f"[Harbor Bakery menu]({_HARBOR_BAKERY_URL})\n"
+        "The special changes daily and yesterday's comes down at closing.\n"
+        "Opening hours: 06:30 until sold out, closed Mondays.\n"
+        "\n"
+        "Always on the counter\n"
+        "Sourdough, seeded rye, olive loaf, plain and salted butter rolls\n"
+        f"[Standing menu]({_HARBOR_BAKERY_URL}/standing)\n"
+        "Loaves are half price in the last hour of trading.\n"
+        "Whole cakes need two days' notice.\n"
+        "\n"
+        "Orders and allergens\n"
+        "Everything is baked in a kitchen that handles nuts and sesame\n"
+        f"[Allergen list]({_HARBOR_BAKERY_URL}/allergens)\n"
+        "Orders are taken at the counter or by telephone.\n"
+        "Deliveries go out to the harbour side only.\n"
+    ),
+)
+
+_RIVER_OTTERS_URL = "https://riverotters.example/census"
+_RIVER_OTTERS_CENSUS = CannedPage(
+    match="otter",
+    text=(
+        "Title: River otter census — weekly count | riverotters\n"
+        f"{_RIVER_OTTERS_URL}\n"
+        "\n"
+        "A volunteer survey of a fictional river reach, walked every Thursday.\n"
+        "Count: 46 otters\n"
+        f"[River otter census]({_RIVER_OTTERS_URL})\n"
+        "Counted at three holts and two feeding stations along the reach.\n"
+        "The figure is revised if a recount is called within the week.\n"
+        "\n"
+        "Method\n"
+        "Two observers walk the reach from the weir to the road bridge\n"
+        f"[Survey method]({_RIVER_OTTERS_URL}/method)\n"
+        "Spraint sites are logged separately and do not enter the count.\n"
+        "A cub is counted once it leaves the holt unaccompanied.\n"
+        "\n"
+        "Previous weeks\n"
+        "Last week 48, the week before 47, and 44 a month ago\n"
+        f"[Count history]({_RIVER_OTTERS_URL}/history)\n"
+        "Winter counts run lower and are not compared with summer ones.\n"
+        "The survey has run for nine seasons.\n"
+    ),
+)
+
+_EAST_BRANCH_URL = "https://eastbranch.example/new-titles"
+_EAST_BRANCH_NEW_TITLES = CannedPage(
+    match="branch",
+    text=(
+        "Title: New titles — east branch library | eastbranch\n"
+        f"{_EAST_BRANCH_URL}\n"
+        "\n"
+        "Titles added to a fictional branch catalogue, refreshed each weekday.\n"
+        f"[East branch new titles]({_EAST_BRANCH_URL})\n"
+        "Listed newest first; older titles drop off after a fortnight.\n"
+        "\n"
+        "Newest title — added Wednesday\n"
+        '"The Longshore Register" by Perrin Aldaz\n'
+        f"[The Longshore Register]({_EAST_BRANCH_URL}/longshore-register)\n"
+        "A century of shipping notices, read as a portrait of one small port.\n"
+        "Hardcover · 402 pages · Shelf 387.1 · 2 copies, 1 available\n"
+        "\n"
+        "Added the Monday before that\n"
+        '"Winter Sowing" by Halla Bierce\n'
+        f"[Winter Sowing]({_EAST_BRANCH_URL}/winter-sowing)\n"
+        "A kitchen-garden year told month by month, with seed lists.\n"
+        "Paperback · 214 pages · Shelf 635 · 5 copies, 3 available\n"
+        "\n"
+        "Added a fortnight ago\n"
+        '"The Quarry Road" by Nessim Toft\n'
+        f"[The Quarry Road]({_EAST_BRANCH_URL}/quarry-road)\n"
+        "A walking guide to nine disused workings and the paths between them.\n"
+        "Spiral-bound · 168 pages · Shelf 796.51 · 3 copies, all out\n"
+        "\n"
+        "Holds and renewals are handled at the desk or through the catalogue.\n"
+    ),
+)
+
+
+# ── The five cold asks ────────────────────────────────────────────────────────
+#
+# Each names its new space and the job's terms and stands entirely alone: nothing in the
+# wording refers to the routine already existing, so nothing but the ask's MEANING can
+# select among the five.
+
+# Case 1 — a second listing for the price watcher.
+#
+# Reference reply:
+#   done — i'll check the keel lantern listing every hour until sunday night and
+#   message you if the price moves.
+_COLD_ASK = (
+    "can you watch this listing for me and let me know when the price changes? "
+    f"{_KEEL_LANTERN_URL} — every hour until sunday night is fine"
+)
+
+# Case 2 — a different harbour for the timetable watcher, and the cold TWO-parameter
+# bind: the page and what to look for on it both come out of this one message.
+#
+# Reference reply:
+#   done — i'll check the north pier timetable every morning and message you when the
+#   dawn sailing shows up.
+_COLD_ASK_TWO_PARAMS = (
+    f"every morning can you check the north pier timetable at {_NORTH_PIER_URL} "
+    "and let me know when they add the dawn sailing?"
+)
+
+# Case 3 — a second bakery for the daily digest.
+#
+# Reference reply:
+#   done — i'll check the harbor bakery's menu every day and message you the special.
+_COLD_ASK_DIGEST = (
+    f"can you get the daily special from {_HARBOR_BAKERY_URL} each day and tell me what it is?"
+)
+
+# Case 4 — a different survey for the count watcher.
+#
+# Reference reply:
+#   done — i'll check the otter census every week and message you if the count drops.
+_COLD_ASK_THRESHOLD = (
+    f"keep track of the otter count at {_RIVER_OTTERS_URL} every week and let me know if it drops"
+)
+
+# Case 5 — another branch for the new-arrival watcher, under act-now pressure.
+#
+# Reference reply:
+#   done — i'll check the east branch's new titles every two hours until friday and
+#   message you the moment something appears.
+_COLD_ASK_URGENCY = (
+    f"watch {_EAST_BRANCH_URL} every two hours until friday and tell me the second "
+    "something new shows up"
+)
+
+
+# ── The world: five finished journeys, then small talk ────────────────────────
+
+
+class _AppliedJob(NamedTuple):
+    """What one journey's APPLY turn stood up — the live mechanism it left behind.
+
+    ``schedule`` is the rule that turn set (the acceptance's cadence, in the one
+    grammar), ``expires_in`` how far ahead its end condition sits when the world is laid
+    down, and ``params`` what the routine was pointed at.  What she SAID when she was done
+    is not here: that is the round's own reference reply (``_ApplyCase.confirmation``), and
+    replaying it is the whole reason it is data."""
+
+    schedule: str
+    expires_in: timedelta | None
+    params: dict[str, str]
+
+
+class _Journey(NamedTuple):
+    """One completed journey — the learn → apply ``round`` whose four turns and two moves
+    are its first two beats, plus the job its apply turn left running."""
+
+    round: _ApplyCase
+    applied: _AppliedJob
+
+
+# The five journeys' exit states, each one's terms taken from the acceptance its learn →
+# apply case ends on, so this world is that beat's own scored outcome carried forward.
+_JOURNEYS = (
+    _Journey(
+        _AURORA_APPLY,
+        _AppliedJob(
+            schedule="FREQ=HOURLY",
+            expires_in=timedelta(hours=6),
+            params={"url": LISTING_URL},
+        ),
+    ),
+    _Journey(
+        _FERRY_APPLY,
+        _AppliedJob(
+            schedule="FREQ=DAILY;BYHOUR=14",
+            expires_in=None,
+            params={"url": _FERRY_TIMETABLE_URL, "search_phrase": "late sailing"},
+        ),
+    ),
+    _Journey(
+        _BAKERY_APPLY,
+        _AppliedJob(
+            schedule="FREQ=DAILY",
+            expires_in=None,
+            params={"url": _BAKERY_SPECIALS_URL},
+        ),
+    ),
+    _Journey(
+        _COLONY_APPLY,
+        _AppliedJob(
+            schedule="FREQ=WEEKLY",
+            expires_in=None,
+            params={"url": _COLONY_COUNT_URL},
+        ),
+    ),
+    _Journey(
+        _ARRIVALS_APPLY,
+        _AppliedJob(
+            schedule="FREQ=HOURLY;INTERVAL=2",
+            expires_in=timedelta(days=12),
+            params={"url": _NEW_ARRIVALS_URL},
+        ),
+    ),
+)
+
+
+class _BanterTurn(NamedTuple):
+    """One exchange of ordinary small talk — what the user said and what Penny said
+    back."""
+
+    said: str
+    answered: str
+
+
+# The recent turns.  Deliberately NOT skill-adjacent: nothing here watches, schedules,
+# reads a page or asks to be told about anything, so the conversation window carries no
+# hint of the routines at all and the cold ask stands on its own meaning alone.
+_IDLE_BANTER = (
+    _BanterTurn(
+        said="finally got an omelette right — first one that didn't fall apart",
+        answered="nice, the not-falling-apart part is most of the battle. what went in it?",
+    ),
+    _BanterTurn(
+        said="just cheese and a bit of chive",
+        answered="classic. hard to beat when the pan's behaving.",
+    ),
+    _BanterTurn(
+        said="the pan was behaving for once, i'll take it",
+        answered="long may it last.",
+    ),
+)
+
+# The call id the seeded apply turn's one call is keyed by — the same role
+# ``_BROWSE_CALL_ID`` and ``_WRITE_CALL_ID`` play for the demonstrated round.
+_SET_CALL_ID = "call-seeded-set"
+
+# How many mutation events a probe or scorer reads back for one collection.  Generous: a
+# seeded job carries two (created by its round, re-rendered by its apply turn), and
+# reading well past them is what makes "nothing else has touched it" a real claim.
+_MUTATION_WINDOW = 20
+
+# The windows a reader of this world reads THROUGH, derived from the world's own shape
+# rather than picked: three incoming turns per journey plus one per exchange of small talk
+# plus the ask under test, and four moves per journey (its three draws and its reset) plus
+# one per exchange plus the turn under test — doubled, so the reader is never what decides
+# what counts as history.  Both stores drop the OLDEST rows when a cap binds, so a window
+# that CUT would let the novelty probe pass on a value the world does hold.
+_COMPOSED_MESSAGE_WINDOW = 2 * (3 * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
+_COMPOSED_MOVE_WINDOW = 2 * (4 * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
+
+
+def _candidate(skill: SkillDraft) -> SkillCandidate:
+    """One taught routine as the classifier is offered it — name, description and
+    declared parameters: the production projection (``build_snapshot``) applied to a
+    draft the registry has not been handed yet."""
+    return SkillCandidate(
+        name=slug_skill_name(skill.name),
+        description=skill.description,
+        parameters=[
+            CandidateParameter(name=parameter.name, description=parameter.description)
+            for parameter in skill.parameters
+        ],
+    )
+
+
+def seed_composed_world() -> Seeder:
+    """The world all five cold asks are answered against: five journeys walked to their
+    end, then a few exchanges of small talk, in the order they were said.
+
+    Compositional by construction — a journey is ``seed_round_through_learn`` (the two
+    beats the earlier cases are measured against) plus the apply turn that finished it,
+    so nothing here restates a world an earlier beat already defines.  The registry grows
+    as it really did: each journey's classifier draws are offered the routines taught
+    BEFORE it, and its own only once its round has run.
+
+    The same world for every case — five live jobs, five routines, one machine sitting
+    idle — because what distinguishes the cases is the ask, not the history.
+
+    Ordering is production-shaped; SPACING is best effort.  Every row is written through
+    the real store methods, which stamp it at the moment they run, so the whole history
+    lands within a second of the sample starting and only its ORDER carries the passage
+    of time.  A world dated into the past would mean writing timestamps outside the APIs,
+    which is the one thing a seed must not do."""
+
+    def seed(db: Database) -> None:
+        taught: list[SkillCandidate] = []
+        for journey in _JOURNEYS:
+            _seed_journey(db, journey, taught_so_far=tuple(taught))
+            taught.append(_candidate(journey.round.skill))
+        _seed_idle_banter(db, tuple(taught))
+
+    return seed
+
+
+def _seed_journey(
+    db: Database, journey: _Journey, *, taught_so_far: tuple[SkillCandidate, ...]
+) -> None:
+    """One journey end to end: the ask, the teach question, the demonstration and its
+    report, then the acceptance and the job it stood up."""
+    _settle_before_the_next_message(db)
+    ask_id, _ = seed_round_through_learn(db, journey.round, taught_so_far=taught_so_far)
+    _seed_apply_turn(db, journey, ask_id, taught_so_far=taught_so_far)
+
+
+def _settle_before_the_next_message(db: Database) -> None:
+    """What production does the moment ANY next message arrives while the machine sits in
+    apply: apply has no out-edges, so the machine resets to idle before a word is
+    classified.  The reset therefore belongs to the message that FOLLOWS a finished
+    journey — the next journey's ask, or the first thing said in the small talk after the
+    last one."""
+    latest = db.machine.latest_transition()
+    if latest is not None and latest.to_state == ConversationState.APPLY.value:
+        _structural_reset(db)
+
+
+def _seed_apply_turn(
+    db: Database,
+    journey: _Journey,
+    ask_id: int,
+    *,
+    taught_so_far: tuple[SkillCandidate, ...],
+) -> None:
+    """The turn that finished a journey, with everything it left behind: the acceptance
+    INCOMING, the skill-gated draw that decided apply and named the routine it bound, the
+    collection ADOPTING that routine (its program rendered, its schedule and notify set,
+    a mutation event citing this run), the chat run carrying the ``collection_set`` call
+    and its echoed result, Penny's confirmation OUTGOING, and the apply move itself.
+
+    This footprint is what the earlier beats had no need of: their world stops where
+    their own turn begins, while a returning user's world is one where turns like this
+    one have already happened five times."""
+    case = journey.round
+    bound = slug_skill_name(case.skill.name)
+    acceptance_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content=case.acceptance,
+    )
+    assert acceptance_id is not None, f"{case.case_id}: the acceptance must carry a message id"
+    _log_apply_draw(db, case, taught_so_far)
+    row = _adopt_the_taught_routine(db, journey)
+    _seed_apply_run(db, journey, row)
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender=PennyConstants.MessageAuthor.PENNY,
+        content=case.confirmation,
+    )
+    _park(
+        db,
+        ConversationState.APPLY,
+        anchor_message_id=ask_id,
+        from_state=ConversationState.LEARN,
+        run_id=case.runs.apply_turn,
+        message_id=acceptance_id,
+        skill_name=bound,
+    )
+
+
+def _log_apply_draw(
+    db: Database, case: _ApplyCase, taught_so_far: tuple[SkillCandidate, ...]
+) -> None:
+    """The SKILL-GATED draw that decided the apply move — parked in learn on the ask, over
+    the registry as it stood (the routines taught before this round, plus the one this
+    round just taught), and naming the routine it bound on its second line."""
+    _log_classifier_draw(
+        db,
+        run_id=case.runs.apply_draw,
+        snapshot=MachineSnapshot(
+            state=ConversationState.LEARN,
+            penny_last_turn=case.prior.closing_report,
+            task_anchor=case.prior.ask,
+            skill_candidates=[*taught_so_far, _candidate(case.skill)],
+        ),
+        message=case.acceptance,
+        drawn=_drawn_state(ConversationState.APPLY, skill=slug_skill_name(case.skill.name)),
+    )
+
+
+def _adopt_the_taught_routine(db: Database, journey: _Journey) -> MemoryRow:
+    """The apply turn's durable half, written the way ``collection_set`` writes it: the
+    collection the round already wrote into ADOPTS the routine — the skill's steps
+    rendered into its ``extraction_prompt`` with the attachment bound to the collection's
+    own name, the acceptance's rule as its schedule, notify on, and the skill plus its
+    bound params stamped as provenance.
+
+    Through the real store method the tool calls, so the update records its own mutation
+    event citing this run — which is what makes "nothing has touched these five jobs
+    since" a read rather than an assumption."""
+    case, applied = journey.round, journey.applied
+    target = case.demonstrated.collection
+    schedule = parse_schedule(applied.schedule)
+    return db.memories.update_collection_metadata(
+        target,
+        extraction_prompt=render_skill(retarget_writes(case.skill.steps, target), applied.params),
+        schedule=schedule.rule,
+        replace_schedule=True,
+        max_runs=schedule.max_runs,
+        expires_at=_end_condition(applied),
+        notify=True,
+        skill_name=slug_skill_name(case.skill.name),
+        skill_params=applied.params,
+        run_id=case.runs.apply_turn,
+    )
+
+
+def _end_condition(applied: _AppliedJob) -> datetime | None:
+    """A bounded job's end, as a DISTANCE from when the world is laid down.
+
+    The seeders write through the real store APIs, which stamp every row at the moment
+    they run — so a world cannot be dated into the past, and an end condition written as
+    a fixed date would be one these jobs had already passed (a passed expiry archives the
+    collection at the next sweep).  Stating it as a distance is what keeps all five of
+    them LIVE, which is what the world claims they are."""
+    if applied.expires_in is None:
+        return None
+    return datetime.now(UTC) + applied.expires_in
+
+
+def _seed_apply_run(db: Database, journey: _Journey, row: MemoryRow) -> None:
+    """The apply turn's chat run: the one ``collection_set`` call it made, the result
+    that came back, and the confirmation it closed on."""
+    case = journey.round
+    conversation: list[dict] = [{"role": "user", "content": case.acceptance}]
+    conversation = _seed_call_step(
+        db, conversation, _SET_CALL_ID, _set_step(journey, row), run_id=case.runs.apply_turn
+    )
+    _log_chat_step(
+        db,
+        run_id=case.runs.apply_turn,
+        messages=conversation,
+        response=_seeded_response(case.confirmation),
+    )
+
+
+def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
+    """The ``collection_set`` call that stood the job up — the arguments it was made with
+    and the result it came back with, framed by the PRODUCTION framer over the production
+    echo, so the seeded ledger carries the text a real turn would have read rather than
+    an approximation of it."""
+    applied = journey.applied
+    skill_name = slug_skill_name(journey.round.skill.name)
+    arguments: dict = {
+        "name": row.name,
+        "skill": skill_name,
+        "params": applied.params,
+        "schedule": applied.schedule,
+        "notify": True,
+    }
+    if row.expires_at is not None:
+        arguments["expires_at"] = row.expires_at.isoformat()
+    echo = render_reinstantiation_echo(row, skill_name, applied.params)
+    return DistillInput(
+        source_ordinal=1,
+        tool=_SET_TOOL,
+        arguments=arguments,
+        result=Tool.format_result(_SET_TOOL, arguments, ToolResult(message=echo, mutated=True)),
+    )
+
+
+def _seed_idle_banter(db: Database, candidates: tuple[SkillCandidate, ...]) -> None:
+    """The recent turns: a few exchanges of small talk, each with the idle → idle draw
+    that classified it and the text-only chat run that answered it.
+
+    The first of them carries the structural reset that finished the last journey, which
+    is exactly where production writes it.  The draws are offered every taught routine,
+    as production offers them, and decide idle anyway — which is what makes this stretch
+    a real absence of configuring rather than an absence of evidence."""
+    penny_last_turn = _JOURNEYS[-1].round.confirmation
+    for index, turn in enumerate(_IDLE_BANTER):
+        _settle_before_the_next_message(db)
+        _seed_banter_turn(db, index, turn, candidates, penny_last_turn)
+        penny_last_turn = turn.answered
+
+
+def _seed_banter_turn(
+    db: Database,
+    index: int,
+    turn: _BanterTurn,
+    candidates: tuple[SkillCandidate, ...],
+    penny_last_turn: str,
+) -> None:
+    """One exchange, with the full footprint an ordinary turn leaves: the message in, the
+    draw that decided idle, the text-only run that answered, the answer out, and the move
+    that kept the machine where it was."""
+    said_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content=turn.said,
+    )
+    _log_banter_draw(db, index, turn, candidates, penny_last_turn)
+    run_id = seeded_run_id(f"banter-{index}-turn")
+    _log_chat_step(
+        db,
+        run_id=run_id,
+        messages=[{"role": "user", "content": turn.said}],
+        response=_seeded_response(turn.answered),
+    )
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender=PennyConstants.MessageAuthor.PENNY,
+        content=turn.answered,
+    )
+    _park(db, ConversationState.IDLE, run_id=run_id, message_id=said_id)
+
+
+def _log_banter_draw(
+    db: Database,
+    index: int,
+    turn: _BanterTurn,
+    candidates: tuple[SkillCandidate, ...],
+    penny_last_turn: str,
+) -> None:
+    """The draw that classified one piece of small talk — offered every taught routine, as
+    production offers them, over an idle machine with nothing parked, and deciding idle."""
+    _log_classifier_draw(
+        db,
+        run_id=seeded_run_id(f"banter-{index}-draw"),
+        snapshot=MachineSnapshot(
+            state=ConversationState.IDLE,
+            penny_last_turn=penny_last_turn,
+            skill_candidates=list(candidates),
+        ),
+        message=turn.said,
+        drawn=_drawn_state(ConversationState.IDLE),
+    )
+
+
+# ── The loud probe: the world is the one five finished journeys would have left ─
+
+
+def assert_composed_world(db: Database) -> None:
+    """Everything the composed seeder is responsible for, asserted out loud.
+
+    Five cases share one world and one seeder, so a drift here is five cases answered
+    against a world nothing produces — and it costs an hour of GPU before anyone reads a
+    number.  The registry half is deliberately absent: the runner lays the fixture skills
+    down AFTER this seed, so it belongs to the prepare hook (and is asserted there), while
+    everything below is true the moment the seeder returns."""
+    _assert_the_machine_is_idle(db)
+    _assert_five_live_jobs(db)
+    _assert_every_round_is_in_the_ledger(db)
+    _assert_the_small_talk_was_answered(db)
+
+
+def _assert_the_machine_is_idle(db: Database) -> None:
+    """The machine sits in idle, unanchored — the last thing it did was classify a piece
+    of small talk as nothing in particular, which is what "some time later, mid-idle"
+    means structurally.  Each finished journey is followed by its own structural reset,
+    so the log shows five of them, one per message that arrived on a finished round."""
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.to_state == ConversationState.IDLE.value, (
+        f"the composed world must leave the machine idle, not {latest}"
+    )
+    assert latest.anchor_message_id is None, (
+        f"an idle machine is parked on nothing, not on {latest.anchor_message_id}"
+    )
+    moves = db.machine.recent_transitions(limit=_COMPOSED_MOVE_WINDOW)
+    resets = [row for row in moves if row.cause == TransitionCause.STRUCTURAL.value]
+    assert len(resets) == len(_JOURNEYS), (
+        f"each finished journey is reset by the message after it, got {len(resets)} resets"
+    )
+
+
+def _assert_five_live_jobs(db: Database) -> None:
+    """The five collections are LIVE mechanisms — each carries the routine its journey
+    taught, a rendered program, a schedule and the notify its user asked for, none of them
+    has retired itself, and each is pointed where its round pointed it."""
+    for journey in _JOURNEYS:
+        row = db.memories.get(journey.round.demonstrated.collection)
+        assert row is not None, f"{journey.round.case_id}: the journey's collection must exist"
+        _assert_live_job(journey, row)
+
+
+def _assert_live_job(journey: _Journey, row: MemoryRow) -> None:
+    """One journey's job, item for item — the routine it runs, the three things that make
+    it live, and the terms its acceptance gave."""
+    case = journey.round
+    assert row.skill_name == slug_skill_name(case.skill.name), (
+        f"{case.case_id}: the job must run the routine its round taught, not {row.skill_name}"
+    )
+    assert row.extraction_prompt and has_schedule(row) and row.notify, (
+        f"{case.case_id}: a live job has a rendered program, a schedule and notify on"
+    )
+    assert not row.archived, f"{case.case_id}: the job must still be running"
+    expected_expiry = journey.applied.expires_in is not None
+    assert (row.expires_at is not None) == expected_expiry, (
+        f"{case.case_id}: the end condition must match what its acceptance gave"
+    )
+    assert _bound_parameters(row) == journey.applied.params, (
+        f"{case.case_id}: the job must be pointed where its round pointed it"
+    )
+
+
+def _assert_every_round_is_in_the_ledger(db: Database) -> None:
+    """Each journey is READABLE as the turns it really was: its demonstrated calls under
+    its own learn run, its apply turn's one ``collection_set`` call under its own apply
+    run, and everything it produced citing the run that produced it — plus the five pages
+    those rounds read, in browse-results."""
+    for journey in _JOURNEYS:
+        case = journey.round
+        assert_round_calls_logged(db, case)
+        assert_round_rows_cite_their_run(db, case)
+        calls = [
+            call.get("function", {}).get("name")
+            for row in db.messages.get_run_prompts(case.runs.apply_turn)
+            for call in _row_tool_calls(row)
+        ]
+        assert calls == [_SET_TOOL], (
+            f"{case.case_id}: the apply turn made one set call, got {calls}"
+        )
+    fetched = _pages_fetched(db)
+    assert len(fetched) == len(_JOURNEYS), (
+        f"each round read one page, browse-results has {len(fetched)}"
+    )
+
+
+def _assert_the_small_talk_was_answered(db: Database) -> None:
+    """The recent turns really are there, both halves of each exchange — this is what the
+    conversation window shows last, so a world missing it is one whose user's last subject
+    was configuring a routine."""
+    said = [
+        row.content
+        for row in db.messages.get_user_messages(TEST_SENDER, limit=_COMPOSED_MESSAGE_WINDOW)
+    ]
+    answered = outgoing_replies(db)
+    for turn in _IDLE_BANTER:
+        assert turn.said in said, f"the small talk must be logged, missing {turn.said!r}"
+        assert turn.answered in answered, f"the answer must be logged, missing {turn.answered!r}"
+
+
+def _probe_composed_world(case: _IdleApplyCase) -> Preparer:
+    """The prepare hook: the seeder's own claims, the registry one that is only true once
+    the runner has laid the fixture skills down, and the case's own novelty claim."""
+
+    def probe(penny: Penny) -> None:
+        assert_composed_world(penny.db)
+        _assert_the_registry_holds_the_five(penny.db)
+        assert_new_space_is_unknown(penny.db, case)
+
+    return probe
+
+
+def _assert_the_registry_holds_the_five(db: Database) -> None:
+    """Exactly the five routines the journeys taught — no decoy, and none wanted.  Five
+    real routines of the same kind ARE the distractor set here, so a sixth would only
+    dilute a selection that is already the hard part."""
+    taught = sorted(skill.name for skill in db.skills.list_all())
+    expected = sorted(slug_skill_name(journey.round.skill.name) for journey in _JOURNEYS)
+    assert taught == expected, f"the registry must hold the five taught routines, got {taught}"
+
+
+def assert_new_space_is_unknown(db: Database, case: _IdleApplyCase) -> None:
+    """Every value this ask supplies is NEW — it appears in no message, no stored entry,
+    no bound parameter and no page already read.
+
+    This is what makes "bound from the message" a real claim: a value the history also
+    carries could have been copied out of the world instead of read out of the ask, and
+    the check would pass either way."""
+    stored = [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION.value]
+    known = [
+        *(
+            row.content
+            for row in db.messages.get_user_messages(TEST_SENDER, limit=_COMPOSED_MESSAGE_WINDOW)
+        ),
+        *outgoing_replies(db),
+        *(text for row in stored for text in _collection_texts(db, row.name)),
+        *(value for row in stored for value in _bound_parameters(row).values()),
+        *(entry.content for entry in _pages_fetched(db)),
+    ]
+    for wanted in case.bound:
+        assert not _mentions(wanted, known), (
+            f"{case.case_id}: {wanted!r} must be new to this world — the history already has it"
+        )
+
+
+def _collection_texts(db: Database, name: str) -> list[str]:
+    """Both halves of every entry a collection holds — what a value would have been copied
+    FROM if it were already known.  Collections only: the logs are read separately (the
+    pages by their own reader, the conversation by both directions), and a log-shaped
+    facade renders rows rather than storing them."""
+    entries = collection_entries(db, name).items()
+    return [text for key, content in entries for text in (key, content)]
+
+
+# ── The cases ─────────────────────────────────────────────────────────────────
+
+
+class _IdleApplyCase(NamedTuple):
+    """One agreed cold ask, and what the job it should stand up has to look like.
+
+    ``skill`` is the routine the ask is covered by — the one of five the decision has to
+    pick.  ``page`` is the new space, installed as a live temptation.  The rest is what
+    the ask's own terms give: ``cadence_seconds`` is how far apart the job should fire
+    whatever rule spelling says so, ``anchored`` whether the terms name a time of DAY
+    rather than a period (so the rule has to state an hour to run at), ``expects_expiry``
+    whether they gave an end condition at all (inventing one is a failure), and ``bound``
+    every value the MESSAGE supplies that the routine has to be pointed at."""
+
+    case_id: str
+    ask: str
+    page: CannedPage
+    skill: SkillDraft
+    cadence_seconds: int
+    anchored: bool
+    expects_expiry: bool
+    bound: tuple[str, ...]
+
+
+_COLD_PRICE = _IdleApplyCase(
+    case_id="transition-idle-to-apply",
+    ask=_COLD_ASK,
+    page=_KEEL_LANTERN_LISTING,
+    skill=_AURORA_SKILL,
+    cadence_seconds=3600,
+    anchored=False,
+    expects_expiry=True,
+    bound=(_KEEL_LANTERN_URL,),
+)
+
+_COLD_TWO_PARAMS = _IdleApplyCase(
+    case_id="transition-idle-to-apply-two-params",
+    ask=_COLD_ASK_TWO_PARAMS,
+    page=_NORTH_PIER_DEPARTURES,
+    skill=_FERRY_SKILL,
+    cadence_seconds=86400,
+    anchored=True,
+    expects_expiry=False,
+    bound=(_NORTH_PIER_URL, "dawn sailing"),
+)
+
+_COLD_DIGEST = _IdleApplyCase(
+    case_id="transition-idle-to-apply-digest",
+    ask=_COLD_ASK_DIGEST,
+    page=_HARBOR_BAKERY_MENU,
+    skill=_BAKERY_SKILL,
+    cadence_seconds=86400,
+    anchored=False,
+    expects_expiry=False,
+    bound=(_HARBOR_BAKERY_URL,),
+)
+
+_COLD_THRESHOLD = _IdleApplyCase(
+    case_id="transition-idle-to-apply-threshold",
+    ask=_COLD_ASK_THRESHOLD,
+    page=_RIVER_OTTERS_CENSUS,
+    skill=_COLONY_SKILL,
+    cadence_seconds=604800,
+    anchored=False,
+    expects_expiry=False,
+    bound=(_RIVER_OTTERS_URL,),
+)
+
+_COLD_URGENCY = _IdleApplyCase(
+    case_id="transition-idle-to-apply-urgency",
+    ask=_COLD_ASK_URGENCY,
+    page=_EAST_BRANCH_NEW_TITLES,
+    skill=_ARRIVALS_SKILL,
+    cadence_seconds=7200,
+    anchored=False,
+    expects_expiry=True,
+    bound=(_EAST_BRANCH_URL,),
+)
+
+# Every cold ask, in one place — so the deterministic pin in ``test_eval_harness.py`` can
+# check each one's claim about the world without a GPU.
+IDLE_APPLY_CASES = (
+    _COLD_PRICE,
+    _COLD_TWO_PARAMS,
+    _COLD_DIGEST,
+    _COLD_THRESHOLD,
+    _COLD_URGENCY,
+)
+
+
+# ── Scoring ───────────────────────────────────────────────────────────────────
+
+
+def _minted_job(db: Database, before: set[str]) -> MemoryRow | None:
+    """The collection this turn MINTED for the new space — whichever routine it carries.
+
+    Read as "new AND routine-bearing" rather than "carries the intended routine", so a
+    turn that stood a job up on the WRONG one is a bound-the-wrong-routine finding rather
+    than a set-nothing-up one.  The five seeded jobs are excluded by construction: they
+    existed before the turn."""
+    return next((row for row in new_collections(db, before) if row.skill_name is not None), None)
+
+
+def _enactment_binding_check(row: MemoryRow | None, case: _IdleApplyCase) -> Check:
+    """The other half of the selection claim (the decision half is
+    ``_skill_binding_check``): the JOB runs the routine that covers the ask.
+
+    Scored unconditionally, because with five real routines in the registry the enactment
+    is where a wrong pick becomes a mechanism that watches the wrong kind of thing from
+    now on — and it is a different failure from deciding wrongly, so it reads as its own
+    row."""
+    label = "state: the job runs the routine that covers the ask"
+    intended = slug_skill_name(case.skill.name)
+    bound = row.skill_name if row is not None else None
+    return Check(
+        label,
+        bound == intended,
+        rationale=None
+        if bound == intended
+        else f"the job runs {bound!r}, the ask needs {intended!r}",
+        kind="state",
+    )
+
+
+def _seeded_jobs_untouched_check(db: Database) -> Check:
+    """None of the five running jobs was reconfigured, re-rendered or archived by this
+    turn — the different-params side of the one-job-one-collection boundary, read directly
+    off the mutation ledger.
+
+    A live turn's mutation cites a live run and every event the seeded world wrote cites a
+    seeded one, so "this turn changed nothing here" is a read rather than a diff."""
+    touched = [
+        f"{journey.round.demonstrated.collection}: {event.action} by {event.run_id}"
+        for journey in _JOURNEYS
+        for event in db.mutations.history(journey.round.demonstrated.collection, _MUTATION_WINDOW)
+        if not is_seeded_run(event.run_id)
+    ]
+    return Check(
+        "state: the five running jobs were left untouched",
+        not touched,
+        rationale=f"touched {touched}" if touched else None,
+        kind="state",
+    )
+
+
+def _no_teach_question_check(landed: StateTransition | None) -> Check:
+    """She did not ask to be taught: the turn opened no round.
+
+    Structural rather than a reading of the reply — the elicit shape IS the machine
+    parking itself on the ask to be shown how, and that is a row, not a sentence.  Read off
+    the move the scorer already fetched, like every other check that conditions on it."""
+    asked_to_be_taught = landed is not None and landed.to_state == ConversationState.ELICIT.value
+    return Check(
+        "state: she did not ask to be taught (no round was opened)",
+        not asked_to_be_taught,
+        rationale="the turn parked in elicit" if asked_to_be_taught else None,
+        kind="state",
+    )
+
+
+def _cold_anchor_check(db: Database, landed: StateTransition | None, case: _IdleApplyCase) -> Check:
+    """The move came FROM idle and stamped the cold ask as its anchor — the anchor
+    lifecycle's opening move (#1827), which is what says this turn started a round of its
+    own rather than continuing one the history left open.  Same conditional-n/a as the
+    decision check."""
+    label = "state: the move came from idle with the ask as its anchor"
+    applied = _landed_apply_move(landed)
+    if applied is None:
+        return Check.na(label, kind="state")
+    asked = _seeded_ask_id(db, case.ask, limit=_COMPOSED_MESSAGE_WINDOW)
+    opened = applied.from_state == ConversationState.IDLE.value
+    anchored = applied.anchor_message_id
+    ok = opened and asked is not None and anchored == asked
+    return Check(
+        label,
+        ok,
+        rationale=None
+        if ok
+        else f"came from {applied.from_state}, anchored to {anchored} (the ask is {asked})",
+        kind="state",
+    )
+
+
+def _score_idle_to_apply(
+    db: Database, before: set[str], reply: str, *, case: _IdleApplyCase
+) -> list[Check]:
+    """A routine she already knows was pointed at a space she has never seen, on the terms
+    this one message gave — without teaching, without browsing, and without disturbing any
+    of the five jobs already running.
+
+    ONE scorer for all five cases, bound to the case's own terms.  The labels are
+    diff-join keys and are deliberately case-NEUTRAL: one wording reads the same whether
+    the job watches a price, a timetable or a shelf."""
+    row = _minted_job(db, before)
+    landed = db.machine.latest_transition()
+    return [
+        *_cold_binding_checks(db, row, landed, case),
+        *_cold_terms_checks(db, row, case),
+        _seeded_jobs_untouched_check(db),
+        _no_teach_question_check(landed),
+        Check(
+            "reply: asked for no page structure",
+            asked_for_page_structure(reply) is None,
+            rationale=(
+                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
+            ),
+            kind="reply",
+        ),
+        _cold_anchor_check(db, landed, case),
+        *_job_setup_advisories(db, row, landed),
+    ]
+
+
+def _cold_binding_checks(
+    db: Database, row: MemoryRow | None, landed: StateTransition | None, case: _IdleApplyCase
+) -> list[Check]:
+    """She set a job up, on the routine the ask is covered by, pointed at what the ask
+    supplied."""
+    return [
+        Check(
+            "state: she set the job up with collection_set",
+            tool_was_called(db, _SET_TOOL),
+            kind="state",
+        ),
+        Check(
+            "state: a new collection carries the job",
+            row is not None,
+            rationale=None if row else "no new collection carries a routine",
+            kind="state",
+        ),
+        Check(
+            "state: the routine's program was rendered into it",
+            row is not None and bool(row.extraction_prompt),
+            kind="state",
+        ),
+        _skill_binding_check(
+            landed,
+            intended=slug_skill_name(case.skill.name),
+            label="state: the decision bound the routine that covers the ask",
+        ),
+        _enactment_binding_check(row, case),
+        _bound_parameters_check(
+            row, wanted=case.bound, label="state: every parameter bound from the message"
+        ),
+    ]
+
+
+def _cold_terms_checks(db: Database, row: MemoryRow | None, case: _IdleApplyCase) -> list[Check]:
+    """The job runs on the terms the ask gave — its cadence, its end condition (or the
+    absence of one), and the telling-them clause every one of these asks carries — and she
+    set it running instead of running it once."""
+    return [
+        _schedule_check(row, fires_every=case.cadence_seconds, anchored=case.anchored),
+        _expiry_check(row, expected=case.expects_expiry),
+        Check(
+            "state: it will tell them when something changes",
+            row is not None and bool(row.notify),
+            kind="state",
+        ),
+        Check(
+            "state: she set it running instead of running it now (no browse this turn)",
+            tool_not_called(db, "browse"),
+            kind="state",
+        ),
+    ]
+
+
+async def _run_idle_apply_case(chat_eval: ChatEval, case: _IdleApplyCase) -> None:
+    """Drive one idle → apply case: the composed world behind it, the five taught routines
+    in the registry, its new page installed as a live temptation, and the shared scorer
+    bound to the terms its ask gives.  Report-only — the thresholds are the code owner's
+    to set once the numbers are read."""
+    await chat_eval(
+        case_id=case.case_id,
+        message=case.ask,
+        browse=[case.page],
+        seed=seed_composed_world(),
+        seed_skills=[journey.round.skill for journey in _JOURNEYS],
+        prepare=_probe_composed_world(case),
+        score=partial(_score_idle_to_apply, case=case),
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_points_a_known_routine_at_a_new_listing(chat_eval: ChatEval) -> None:
+    """idle → apply, cold: a second listing, long after the price watcher was taught on
+    the first one.  Nothing in the ask refers back, so she has to recognise the job from
+    what it asks for, bind the page it names, and set it running on the hours and the end
+    it gives — without opening the listing to check."""
+    await _run_idle_apply_case(chat_eval, _COLD_PRICE)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_binds_both_parameters_from_one_message(chat_eval: ChatEval) -> None:
+    """idle → apply on the routine that asks for two things: the harbour page and the
+    sailing to look for on it both come out of this ONE cold message, with no round behind
+    it to supply either — the bind that was undecidable before the framer decided
+    parameters from the ask alone."""
+    await _run_idle_apply_case(chat_eval, _COLD_TWO_PARAMS)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_schedules_a_second_digest(chat_eval: ChatEval) -> None:
+    """idle → apply on the daily digest, pointed at a second bakery: a plain daily cadence
+    with a telling clause and NO end condition — so an expiry set here is one nobody asked
+    for."""
+    await _run_idle_apply_case(chat_eval, _COLD_DIGEST)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_tracks_a_different_survey(chat_eval: ChatEval) -> None:
+    """idle → apply on the count watcher, pointed at a different survey: the longest
+    cadence of the set, and the closest thing the registry has to a look-alike, since two
+    of the five routines watch a page for a number."""
+    await _run_idle_apply_case(chat_eval, _COLD_THRESHOLD)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_apply_sets_the_tight_cadence_from_a_cold_start(
+    chat_eval: ChatEval,
+) -> None:
+    """idle → apply under act-now pressure: another branch of the same catalogue, every
+    two hours until a named day.  The urgency is a reason to set it up now, not a reason
+    to go and look — and the end condition is a date the model has to work out."""
+    await _run_idle_apply_case(chat_eval, _COLD_URGENCY)

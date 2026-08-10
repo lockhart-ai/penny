@@ -72,11 +72,15 @@ from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
+    IDLE_APPLY_CASES,
     _interface_check,
+    assert_composed_world,
+    assert_new_space_is_unknown,
     assert_round_cites_its_run,
     assert_seeded_ledger,
     cadence_seconds,
     rule_parts,
+    seed_composed_world,
     seed_learned_round,
 )
 from penny.tests.schema_template import migrated_db, schema_only_db
@@ -234,6 +238,25 @@ def test_every_apply_case_seeds_a_round_that_cites_its_own_run(tmp_path) -> None
         seed_learned_round(case)(db)
         assert_seeded_ledger(db, case)
         assert_round_cites_its_run(db, case)
+
+
+def test_the_idle_world_seeds_five_finished_journeys_and_lands_idle(tmp_path) -> None:
+    """The idle → apply cases share ONE composed world — five journeys walked to their
+    end, the five jobs they left running, and a stretch of small talk after them.  A
+    seeder that raises fails five cases at once, and a seeder that quietly drifts makes
+    all five of them turns answered against a world nothing produces.
+
+    Driven here against a real migrated database, with the seeder's own loud probe: the
+    machine idle and unanchored, five live jobs, every round readable under its own run,
+    and the small talk logged both ways.  Each case's novelty claim rides along — the
+    values its ask supplies appear NOWHERE in that history, which is the whole basis of
+    the "bound from the message" check.  The registry probe stays out, exactly as it does
+    for the learn → apply pin: the harness seeds fixture skills after the case's seed."""
+    db = migrated_db(str(tmp_path / "composed-idle.db"))
+    seed_composed_world()(db)
+    assert_composed_world(db)
+    for case in IDLE_APPLY_CASES:
+        assert_new_space_is_unknown(db, case)
 
 
 def test_a_seeded_prior_turn_is_not_read_as_this_samples_work(tmp_path) -> None:
