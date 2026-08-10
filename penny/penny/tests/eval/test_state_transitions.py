@@ -70,7 +70,7 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, StateTransition
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, StateTransition
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
@@ -252,6 +252,51 @@ def _landed_state(db: Database) -> str | None:
     return latest.to_state if latest else None
 
 
+def _log_ask(db: Database, content: str, case_id: str) -> int:
+    """One incoming turn, with its id asserted where it is written.
+
+    Every reply threads to the message it answers, so a turn with no id would leave the
+    reply after it unreachable from the conversation window — a failure worth naming at
+    the write rather than three probes later."""
+    message_id = db.messages.log_message(
+        direction=PennyConstants.MessageDirection.INCOMING,
+        sender=TEST_SENDER,
+        content=content,
+    )
+    assert message_id is not None, f"{case_id}: a seeded incoming turn must carry a message id"
+    return message_id
+
+
+def _log_reply(db: Database, content: str, *, answering: int) -> None:
+    """One turn of Penny's, logged the way the REPLY PATH logs it: THREADED to the
+    message it answers, and addressed to the user.
+
+    The thread link is what puts a reply in the conversation window at all.
+    ``get_messages_since`` — what ``_build_conversation`` reads — collects the incoming
+    messages, then Penny's replies to THOSE messages by ``parent_id``, plus autonomous
+    sends (``parent_id IS NULL`` AND addressed to the user).  An unthreaded, unaddressed
+    row satisfies NEITHER leg, so it is in the record and out of the conversation: the
+    window comes back all-user, and ``_build_conversation``'s same-role merge folds every
+    seeded turn into ONE enormous user message.  Measured, that is what the first idle →
+    apply run answered — nineteen turns stacked into a single message reading as a pile of
+    unanswered requests, which is exactly what the model then tried to satisfy.
+
+    Both stamps are production's (``_log_and_send``): the thread link, and the recipient
+    the reply was addressed to.  They are NOT interchangeable — the recipient alone brings
+    an unthreaded reply back through the AUTONOMOUS door, which reads the conversation
+    right while claiming every one of Penny's turns was a mechanism speaking unprompted
+    (verified: dropping the parent link leaves the window's contents identical, which is
+    why the probe asserts the link and not only the contents).  With both, a reply matches
+    the threaded leg and cannot match the autonomous one, so nothing is counted twice."""
+    db.messages.log_message(
+        direction=PennyConstants.MessageDirection.OUTGOING,
+        sender=PennyConstants.MessageAuthor.PENNY,
+        content=content,
+        parent_id=answering,
+        recipient=TEST_SENDER,
+    )
+
+
 def _entries_written_by_this_run(db: Database) -> list[MemoryEntry]:
     """Every ENTRY this run wrote, wherever it landed.
 
@@ -350,6 +395,8 @@ class _JourneyRuns(NamedTuple):
     browse_extract: str
     apply_draw: str
     apply_turn: str
+    ack_draw: str
+    ack_turn: str
 
 
 def _journey_runs(journey: str) -> _JourneyRuns:
@@ -364,6 +411,8 @@ def _journey_runs(journey: str) -> _JourneyRuns:
         browse_extract=seeded_run_id(f"{journey}-learn-browse-extract"),
         apply_draw=seeded_run_id(f"{journey}-apply-draw"),
         apply_turn=seeded_run_id(f"{journey}-apply-turn"),
+        ack_draw=seeded_run_id(f"{journey}-ack-draw"),
+        ack_turn=seeded_run_id(f"{journey}-ack-turn"),
     )
 
 
@@ -1012,16 +1061,8 @@ def _seed_elicit_round(case: _ElicitRound) -> Seeder:
     The case's page is installed by the runner, so the demonstration reads a real one."""
 
     def seed(db: Database) -> None:
-        ask_id = db.messages.log_message(
-            direction=PennyConstants.MessageDirection.INCOMING,
-            sender=TEST_SENDER,
-            content=case.ask,
-        )
-        db.messages.log_message(
-            direction=PennyConstants.MessageDirection.OUTGOING,
-            sender=PennyConstants.MessageAuthor.PENNY,
-            content=case.teach_question,
-        )
+        ask_id = _log_ask(db, case.ask, case.case_id)
+        _log_reply(db, case.teach_question, answering=ask_id)
         _seed_elicit_turn_ledger(db, case, _DEFAULT_RUNS)
         _park(
             db,
@@ -1078,6 +1119,7 @@ def _assert_seeded_world(db: Database, case: _ElicitRound, ask_id: int | None) -
     assert _seeded_ask_id(db, case.ask) == ask_id, (
         f"{case.case_id}: the seeded ask must be findable by its own content"
     )
+    _assert_the_round_reads_as_a_conversation(db, case)
     _assert_nothing_enacted(db, case)
     latest = db.machine.latest_transition()
     assert latest is not None and latest.to_state == ConversationState.ELICIT.value, (
@@ -1086,6 +1128,20 @@ def _assert_seeded_world(db: Database, case: _ElicitRound, ask_id: int | None) -
     assert latest.anchor_message_id == ask_id, (
         f"{case.case_id}: the park must be anchored to the ask, not {latest.anchor_message_id}"
     )
+
+
+def _assert_the_round_reads_as_a_conversation(db: Database, case: _ElicitRound) -> None:
+    """The ask and the teach question come back as a two-turn CONVERSATION, not as one
+    user turn — the cheap version of the composed world's own window probe, on the beat
+    whose whole precondition is that Penny asked something and the demonstration answers
+    it.  Penny's turn reaches the window only because it is threaded to the ask."""
+    expected = [
+        (PennyConstants.MessageDirection.INCOMING, case.ask),
+        (PennyConstants.MessageDirection.OUTGOING, case.teach_question),
+    ]
+    window = db.messages.get_messages_since(TEST_SENDER, since=datetime.min, limit=len(expected))
+    seen = [(row.direction, row.content) for row in window]
+    assert seen == expected, f"{case.case_id}: the round must read as a conversation, got {seen}"
 
 
 def _assert_nothing_enacted(db: Database, case: _ElicitRound) -> None:
@@ -2498,31 +2554,14 @@ def _seed_round_turns(db: Database, case: _ApplyCase) -> tuple[int, int]:
     the ask (the row the whole round is anchored to) and the demonstration (the message the
     learn move was provoked by, and the one the collection is sourced from).
 
-    Both ids are asserted HERE rather than read back later: logging is best-effort, and a
-    turn with no id would link its move and its mechanism to nothing, which the probe would
-    then report as a broken anchor lifecycle instead of a seed that never wrote."""
-    ask_id = db.messages.log_message(
-        direction=PennyConstants.MessageDirection.INCOMING,
-        sender=TEST_SENDER,
-        content=case.prior.ask,
-    )
-    db.messages.log_message(
-        direction=PennyConstants.MessageDirection.OUTGOING,
-        sender=PennyConstants.MessageAuthor.PENNY,
-        content=case.prior.teach_question,
-    )
-    demo_id = db.messages.log_message(
-        direction=PennyConstants.MessageDirection.INCOMING,
-        sender=TEST_SENDER,
-        content=case.prior.demo,
-    )
-    db.messages.log_message(
-        direction=PennyConstants.MessageDirection.OUTGOING,
-        sender=PennyConstants.MessageAuthor.PENNY,
-        content=case.prior.closing_report,
-    )
-    assert ask_id is not None, f"{case.case_id}: the seeded ask must carry a message id"
-    assert demo_id is not None, f"{case.case_id}: the seeded demonstration must carry a message id"
+    Each id is asserted the moment it is written rather than read back later: logging is
+    best-effort, and a turn with no id would link its move, its mechanism and Penny's reply
+    to nothing — which the probe would then report as a broken anchor lifecycle instead of
+    a seed that never wrote."""
+    ask_id = _log_ask(db, case.prior.ask, case.case_id)
+    _log_reply(db, case.prior.teach_question, answering=ask_id)
+    demo_id = _log_ask(db, case.prior.demo, case.case_id)
+    _log_reply(db, case.prior.closing_report, answering=demo_id)
     return ask_id, demo_id
 
 
@@ -3368,6 +3407,19 @@ _COLD_ASK_URGENCY = (
 # ── The world: five finished journeys, then small talk ────────────────────────
 
 
+class _Exchange(NamedTuple):
+    """One plain exchange — what the user said and what Penny said back, answered in a
+    single text-only turn with no tool calls.
+
+    Two customers, one shape: the pair that CLOSES each journey (the user acknowledging
+    the job is running, Penny saying you're welcome) and each piece of small talk after
+    the last one.  They are the same thing structurally — an idle → idle turn — so they
+    are seeded by one function rather than by two that would drift."""
+
+    said: str
+    answered: str
+
+
 class _AppliedJob(NamedTuple):
     """What one journey's APPLY turn stood up — the live mechanism it left behind.
 
@@ -3384,10 +3436,17 @@ class _AppliedJob(NamedTuple):
 
 class _Journey(NamedTuple):
     """One completed journey — the learn → apply ``round`` whose four turns and two moves
-    are its first two beats, plus the job its apply turn left running."""
+    are its first two beats, the job its apply turn left running, and the exchange that
+    CLOSED it.
+
+    A journey ends conversationally, not on Penny's confirmation: the user says thanks and
+    she answers.  That pair is what makes the finished round read as finished — and it is
+    where the structural apply → idle reset lands, since the ack is the next message to
+    arrive on a machine sitting in apply."""
 
     round: _ApplyCase
     applied: _AppliedJob
+    closing: _Exchange
 
 
 # The five journeys' exit states, each one's terms taken from the acceptance its learn →
@@ -3400,6 +3459,10 @@ _JOURNEYS = (
             expires_in=timedelta(hours=6),
             params={"url": LISTING_URL},
         ),
+        _Exchange(
+            said="great, thanks",
+            answered="you're welcome — shout if you want anything else kept an eye on.",
+        ),
     ),
     _Journey(
         _FERRY_APPLY,
@@ -3407,6 +3470,10 @@ _JOURNEYS = (
             schedule="FREQ=DAILY;BYHOUR=14",
             expires_in=None,
             params={"url": _FERRY_TIMETABLE_URL, "search_phrase": "late sailing"},
+        ),
+        _Exchange(
+            said="perfect, appreciate it",
+            answered="anytime — just say the word if there's anything else you want watched.",
         ),
     ),
     _Journey(
@@ -3416,6 +3483,10 @@ _JOURNEYS = (
             expires_in=None,
             params={"url": _BAKERY_SPECIALS_URL},
         ),
+        _Exchange(
+            said="lovely, thank you",
+            answered="my pleasure — tell me if there's anything else you'd like tracked.",
+        ),
     ),
     _Journey(
         _COLONY_APPLY,
@@ -3423,6 +3494,10 @@ _JOURNEYS = (
             schedule="FREQ=WEEKLY",
             expires_in=None,
             params={"url": _COLONY_COUNT_URL},
+        ),
+        _Exchange(
+            said="brilliant, cheers",
+            answered="no trouble at all — happy to take on anything else you want followed.",
         ),
     ),
     _Journey(
@@ -3432,31 +3507,28 @@ _JOURNEYS = (
             expires_in=timedelta(days=12),
             params={"url": _NEW_ARRIVALS_URL},
         ),
+        _Exchange(
+            said="amazing, thanks so much",
+            answered="you're welcome — just say if there's anything else worth watching.",
+        ),
     ),
 )
 
 
-class _BanterTurn(NamedTuple):
-    """One exchange of ordinary small talk — what the user said and what Penny said
-    back."""
-
-    said: str
-    answered: str
-
-
 # The recent turns.  Deliberately NOT skill-adjacent: nothing here watches, schedules,
-# reads a page or asks to be told about anything, so the conversation window carries no
-# hint of the routines at all and the cold ask stands on its own meaning alone.
+# reads a page or asks to be told about anything, so the last stretch of the conversation
+# window carries no hint of the routines at all and the cold ask stands on its own meaning
+# alone.
 _IDLE_BANTER = (
-    _BanterTurn(
+    _Exchange(
         said="finally got an omelette right — first one that didn't fall apart",
         answered="nice, the not-falling-apart part is most of the battle. what went in it?",
     ),
-    _BanterTurn(
+    _Exchange(
         said="just cheese and a bit of chive",
         answered="classic. hard to beat when the pan's behaving.",
     ),
-    _BanterTurn(
+    _Exchange(
         said="the pan was behaving for once, i'll take it",
         answered="long may it last.",
     ),
@@ -3471,14 +3543,20 @@ _SET_CALL_ID = "call-seeded-set"
 # reading well past them is what makes "nothing else has touched it" a real claim.
 _MUTATION_WINDOW = 20
 
+# What one journey contributes to the world, counted once here so the windows below and
+# the expected conversation are derived from the same arithmetic: FOUR incoming turns (the
+# ask, the demonstration, the acceptance and the closing ack) and FIVE moves (the elicit,
+# learn and apply draws, the reset the ack carries, and the ack's own idle draw).
+_TURNS_PER_JOURNEY = 4
+_MOVES_PER_JOURNEY = 5
+
 # The windows a reader of this world reads THROUGH, derived from the world's own shape
-# rather than picked: three incoming turns per journey plus one per exchange of small talk
-# plus the ask under test, and four moves per journey (its three draws and its reset) plus
-# one per exchange plus the turn under test — doubled, so the reader is never what decides
-# what counts as history.  Both stores drop the OLDEST rows when a cap binds, so a window
-# that CUT would let the novelty probe pass on a value the world does hold.
-_COMPOSED_MESSAGE_WINDOW = 2 * (3 * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
-_COMPOSED_MOVE_WINDOW = 2 * (4 * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
+# rather than picked: every journey's turns and moves, one of each per exchange of small
+# talk, and the turn under test — doubled, so the reader is never what decides what counts
+# as history.  Both stores drop the OLDEST rows when a cap binds, so a window that CUT
+# would let the novelty probe pass on a value the world does hold.
+_COMPOSED_MESSAGE_WINDOW = 2 * (_TURNS_PER_JOURNEY * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
+_COMPOSED_MOVE_WINDOW = 2 * (_MOVES_PER_JOURNEY * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
 
 
 def _candidate(skill: SkillDraft) -> SkillCandidate:
@@ -3528,18 +3606,30 @@ def _seed_journey(
     db: Database, journey: _Journey, *, taught_so_far: tuple[SkillCandidate, ...]
 ) -> None:
     """One journey end to end: the ask, the teach question, the demonstration and its
-    report, then the acceptance and the job it stood up."""
-    _settle_before_the_next_message(db)
+    report, the acceptance and the job it stood up, then the exchange that closed it —
+    the user saying thanks and Penny answering, which is where a real round stops.
+
+    The closing exchange is where the structural reset lands: it is the next message to
+    arrive on a machine sitting in apply, so it carries the reset exactly as production
+    writes it."""
     ask_id, _ = seed_round_through_learn(db, journey.round, taught_so_far=taught_so_far)
     _seed_apply_turn(db, journey, ask_id, taught_so_far=taught_so_far)
+    _seed_exchange(
+        db,
+        journey.closing,
+        draw_run=journey.round.runs.ack_draw,
+        turn_run=journey.round.runs.ack_turn,
+        penny_last_turn=journey.round.confirmation,
+        candidates=(*taught_so_far, _candidate(journey.round.skill)),
+    )
 
 
 def _settle_before_the_next_message(db: Database) -> None:
     """What production does the moment ANY next message arrives while the machine sits in
     apply: apply has no out-edges, so the machine resets to idle before a word is
     classified.  The reset therefore belongs to the message that FOLLOWS a finished
-    journey — the next journey's ask, or the first thing said in the small talk after the
-    last one."""
+    journey — which, since every journey closes with an exchange, is that journey's own
+    acknowledgement."""
     latest = db.machine.latest_transition()
     if latest is not None and latest.to_state == ConversationState.APPLY.value:
         _structural_reset(db)
@@ -3563,20 +3653,11 @@ def _seed_apply_turn(
     one have already happened five times."""
     case = journey.round
     bound = slug_skill_name(case.skill.name)
-    acceptance_id = db.messages.log_message(
-        direction=PennyConstants.MessageDirection.INCOMING,
-        sender=TEST_SENDER,
-        content=case.acceptance,
-    )
-    assert acceptance_id is not None, f"{case.case_id}: the acceptance must carry a message id"
+    acceptance_id = _log_ask(db, case.acceptance, case.case_id)
     _log_apply_draw(db, case, taught_so_far)
     row = _adopt_the_taught_routine(db, journey)
     _seed_apply_run(db, journey, row)
-    db.messages.log_message(
-        direction=PennyConstants.MessageDirection.OUTGOING,
-        sender=PennyConstants.MessageAuthor.PENNY,
-        content=case.confirmation,
-    )
+    _log_reply(db, case.confirmation, answering=acceptance_id)
     _park(
         db,
         ConversationState.APPLY,
@@ -3690,63 +3771,66 @@ def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
 
 
 def _seed_idle_banter(db: Database, candidates: tuple[SkillCandidate, ...]) -> None:
-    """The recent turns: a few exchanges of small talk, each with the idle → idle draw
-    that classified it and the text-only chat run that answered it.
+    """The recent turns: a few exchanges of small talk after the last journey closed.
 
-    The first of them carries the structural reset that finished the last journey, which
-    is exactly where production writes it.  The draws are offered every taught routine,
-    as production offers them, and decide idle anyway — which is what makes this stretch
-    a real absence of configuring rather than an absence of evidence."""
-    penny_last_turn = _JOURNEYS[-1].round.confirmation
+    The draws are offered every taught routine, as production offers them, and decide idle
+    anyway — which is what makes this stretch a real absence of configuring rather than an
+    absence of evidence.  The machine is already idle when they start (the last journey's
+    own acknowledgement carried the reset), so nothing structural happens here."""
+    penny_last_turn = _JOURNEYS[-1].closing.answered
     for index, turn in enumerate(_IDLE_BANTER):
-        _settle_before_the_next_message(db)
-        _seed_banter_turn(db, index, turn, candidates, penny_last_turn)
+        _seed_exchange(
+            db,
+            turn,
+            draw_run=seeded_run_id(f"banter-{index}-draw"),
+            turn_run=seeded_run_id(f"banter-{index}-turn"),
+            penny_last_turn=penny_last_turn,
+            candidates=candidates,
+        )
         penny_last_turn = turn.answered
 
 
-def _seed_banter_turn(
+def _seed_exchange(
     db: Database,
-    index: int,
-    turn: _BanterTurn,
-    candidates: tuple[SkillCandidate, ...],
+    turn: _Exchange,
+    *,
+    draw_run: str,
+    turn_run: str,
     penny_last_turn: str,
+    candidates: tuple[SkillCandidate, ...],
 ) -> None:
-    """One exchange, with the full footprint an ordinary turn leaves: the message in, the
-    draw that decided idle, the text-only run that answered, the answer out, and the move
-    that kept the machine where it was."""
-    said_id = db.messages.log_message(
-        direction=PennyConstants.MessageDirection.INCOMING,
-        sender=TEST_SENDER,
-        content=turn.said,
-    )
-    _log_banter_draw(db, index, turn, candidates, penny_last_turn)
-    run_id = seeded_run_id(f"banter-{index}-turn")
+    """One plain exchange, with the full footprint an ordinary turn leaves: any structural
+    move its arrival settles, the message in, the draw that decided idle, the text-only run
+    that answered, the answer out threaded to it, and the move that kept the machine where
+    it was.
+
+    Shared by a journey's closing acknowledgement and every piece of small talk — the ack
+    is the same kind of turn, and it is the one that carries the post-apply reset."""
+    _settle_before_the_next_message(db)
+    said_id = _log_ask(db, turn.said, draw_run)
+    _log_idle_draw(db, turn, draw_run, candidates, penny_last_turn)
     _log_chat_step(
         db,
-        run_id=run_id,
+        run_id=turn_run,
         messages=[{"role": "user", "content": turn.said}],
         response=_seeded_response(turn.answered),
     )
-    db.messages.log_message(
-        direction=PennyConstants.MessageDirection.OUTGOING,
-        sender=PennyConstants.MessageAuthor.PENNY,
-        content=turn.answered,
-    )
-    _park(db, ConversationState.IDLE, run_id=run_id, message_id=said_id)
+    _log_reply(db, turn.answered, answering=said_id)
+    _park(db, ConversationState.IDLE, run_id=turn_run, message_id=said_id)
 
 
-def _log_banter_draw(
+def _log_idle_draw(
     db: Database,
-    index: int,
-    turn: _BanterTurn,
+    turn: _Exchange,
+    draw_run: str,
     candidates: tuple[SkillCandidate, ...],
     penny_last_turn: str,
 ) -> None:
-    """The draw that classified one piece of small talk — offered every taught routine, as
+    """The draw that classified one plain exchange — offered every taught routine, as
     production offers them, over an idle machine with nothing parked, and deciding idle."""
     _log_classifier_draw(
         db,
-        run_id=seeded_run_id(f"banter-{index}-draw"),
+        run_id=draw_run,
         snapshot=MachineSnapshot(
             state=ConversationState.IDLE,
             penny_last_turn=penny_last_turn,
@@ -3771,7 +3855,7 @@ def assert_composed_world(db: Database) -> None:
     _assert_the_machine_is_idle(db)
     _assert_five_live_jobs(db)
     _assert_every_round_is_in_the_ledger(db)
-    _assert_the_small_talk_was_answered(db)
+    assert_conversation_window(db)
 
 
 def _assert_the_machine_is_idle(db: Database) -> None:
@@ -3846,18 +3930,93 @@ def _assert_every_round_is_in_the_ledger(db: Database) -> None:
     )
 
 
-def _assert_the_small_talk_was_answered(db: Database) -> None:
-    """The recent turns really are there, both halves of each exchange — this is what the
-    conversation window shows last, so a world missing it is one whose user's last subject
-    was configuring a routine."""
-    said = [
-        row.content
-        for row in db.messages.get_user_messages(TEST_SENDER, limit=_COMPOSED_MESSAGE_WINDOW)
-    ]
-    answered = outgoing_replies(db)
+def expected_conversation() -> list[tuple[str, str]]:
+    """The world as a CONVERSATION — every turn, in the order it was said, each tagged with
+    the direction it went.
+
+    Composed from the same fixtures the seeder writes from, so it states what the world is
+    meant to be rather than reading back what it happens to be.  Per journey: the ask, the
+    teach question, the demonstration, the report, the acceptance, the confirmation, the
+    acknowledgement and the you're-welcome — then the small talk."""
+    incoming = PennyConstants.MessageDirection.INCOMING
+    outgoing = PennyConstants.MessageDirection.OUTGOING
+    turns: list[tuple[str, str]] = []
+    for journey in _JOURNEYS:
+        case = journey.round
+        turns += [
+            (incoming, case.prior.ask),
+            (outgoing, case.prior.teach_question),
+            (incoming, case.prior.demo),
+            (outgoing, case.prior.closing_report),
+            (incoming, case.acceptance),
+            (outgoing, case.confirmation),
+            (incoming, journey.closing.said),
+            (outgoing, journey.closing.answered),
+        ]
     for turn in _IDLE_BANTER:
-        assert turn.said in said, f"the small talk must be logged, missing {turn.said!r}"
-        assert turn.answered in answered, f"the answer must be logged, missing {turn.answered!r}"
+        turns += [(incoming, turn.said), (outgoing, turn.answered)]
+    return turns
+
+
+# The two claims the deterministic pin in ``test_eval_harness.py`` reads: what Penny said
+# when each journey's job went live, in journey order, and the turns the window ENDS on.
+# Derived from the same fixtures, so a fixture edit moves the pin with it.
+JOURNEY_CONFIRMATIONS = tuple(journey.round.confirmation for journey in _JOURNEYS)
+LAST_SPOKEN_TURNS = tuple(expected_conversation()[-2 * len(_IDLE_BANTER) :])
+
+
+def assert_conversation_window(db: Database) -> None:
+    """The world READS as a conversation — every turn present, in order, alternating.
+
+    Asserted through ``get_messages_since``, the reader ``_build_conversation`` uses, rather
+    than off the message table: an outgoing row is IN the record and OUT of the conversation
+    unless it is threaded to the message it answers, and the two questions have different
+    answers.  Measured, the unthreaded version came back all-user, and the same-role merge
+    folded the entire history into ONE user turn reading as a pile of unanswered requests —
+    which is what the first run of these cases answered.
+
+    The alternation is the claim: a window that alternates is a window whose every reply
+    landed, and one that does not names the first turn where it stopped.  Beside it, every
+    reply is asserted to be a THREADED one — because contents alone cannot tell the two
+    ways into that window apart, and only one of them is what a direct reply is."""
+    window = db.messages.get_messages_since(
+        TEST_SENDER, since=datetime.min, limit=_COMPOSED_MESSAGE_WINDOW
+    )
+    seen = [(row.direction, row.content) for row in window]
+    expected = expected_conversation()
+    assert seen == expected, (
+        "the seeded world must read back as the conversation it claims to be — "
+        f"diverges at turn {_first_divergence(seen, expected)}"
+    )
+    _assert_every_reply_is_threaded(window)
+
+
+def _assert_every_reply_is_threaded(window: list[MessageLog]) -> None:
+    """Each of Penny's turns answers the message BEFORE it, by ``parent_id``.
+
+    The window has two doors for an outgoing row — a threaded reply, or an autonomous send
+    (no parent, addressed to the user) — and a direct reply is the first.  An unthreaded
+    reply that happens to be addressed to the user comes back through the SECOND door, so
+    the conversation reads right while every one of Penny's turns claims to be a mechanism
+    speaking unprompted.  That is a different world from the one these cases describe, and
+    the contents cannot tell them apart: only the parent link can."""
+    for index, row in enumerate(window):
+        if row.direction != PennyConstants.MessageDirection.OUTGOING:
+            continue
+        answered = window[index - 1] if index else None
+        assert answered is not None and row.parent_id == answered.id, (
+            f"turn {index} ({row.content!r}) must be threaded to the message it answers, "
+            f"got parent {row.parent_id}"
+        )
+
+
+def _first_divergence(seen: list[tuple[str, str]], expected: list[tuple[str, str]]) -> str:
+    """Where two turn sequences part company, as a readable line — a 46-turn inequality
+    says nothing on its own, and the FIRST difference is the whole diagnosis."""
+    for index, (actual, wanted) in enumerate(zip(seen, expected, strict=False)):
+        if actual != wanted:
+            return f"{index}: saw {actual}, expected {wanted}"
+    return f"{min(len(seen), len(expected))}: saw {len(seen)} turns, expected {len(expected)}"
 
 
 def _probe_composed_world(case: _IdleApplyCase) -> Preparer:
