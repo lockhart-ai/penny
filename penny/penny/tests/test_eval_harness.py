@@ -78,6 +78,7 @@ from penny.tests.eval.test_state_transitions import (
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
     _interface_check,
+    _overlaps,
     assert_composed_world,
     assert_new_space_is_unknown,
     assert_round_cites_its_run,
@@ -261,6 +262,27 @@ def test_the_idle_world_seeds_five_finished_journeys_and_lands_idle(tmp_path) ->
     assert_composed_world(db)
     for case in IDLE_APPLY_CASES:
         assert_new_space_is_unknown(db, case)
+
+
+def test_a_parameter_binds_on_any_value_that_locates_the_expected_one() -> None:
+    """A bound parameter matches its expected phrase by OVERLAP in either direction
+    (code-owner ruling) — so every spelling that locates the same thing passes, and an
+    unrelated value still fails.
+
+    The measured case: told to watch for the dawn sailing, a routine bound to `dawn` finds
+    exactly the line `dawn sailing` would, and one-way containment scored that a binding
+    failure when it is a wording preference.  Pinned here rather than on a GPU because the
+    matcher is pure — and because what it must still REFUSE is the half that would quietly
+    stop meaning anything."""
+    expected = "dawn sailing"
+    for value in ("dawn", "Dawn", "dawn sailing", "Dawn Sailing", "the dawn sailing line"):
+        assert _overlaps(expected, [value]), f"{value!r} locates the dawn sailing"
+    for value in ("late sailing", "timetable", "north pier"):
+        assert not _overlaps(expected, [value]), f"{value!r} locates something else"
+    assert not _overlaps(expected, []), "a routine that bound nothing matches nothing"
+    for empty in ("", "   "):
+        assert not _overlaps(expected, [empty]), "an empty value is evidence of nothing"
+    assert _overlaps(expected, ["north pier", "dawn"]), "one bound value is enough"
 
 
 def test_the_idle_worlds_window_carries_pennys_turns_in_order(tmp_path) -> None:

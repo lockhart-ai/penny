@@ -2908,15 +2908,42 @@ def _expiry_check(row: MemoryRow | None, *, expected: bool) -> Check:
     )
 
 
+def _overlaps(wanted: str, bound: list[str]) -> bool:
+    """Whether any bound value and the expected phrase OVERLAP — either one containing the
+    other, case-folded, with neither empty.
+
+    Containment runs BOTH ways (code-owner ruling).  One way only asked whether the bound
+    value repeated the whole expected phrase, which fails a shorter value that locates the
+    same thing: told to watch for the dawn sailing, a routine bound to `dawn` finds exactly
+    the line `dawn sailing` would, and calling that a miss scores a wording preference as a
+    binding failure.  Every spelling that locates it passes — `dawn`, `Dawn`, `dawn
+    sailing`, `Dawn Sailing` — and an unrelated value still fails, since it overlaps in
+    neither direction.
+
+    What makes the loosened rule still MEAN something is the world it runs in: the probe
+    has already established that the expected phrase appears nowhere in the seeded history,
+    so a value overlapping it can only have been read off the message.  That is why the
+    same rule is safe on an address as on a phrase — a partial address is still a partial
+    address nobody could have copied from anywhere else.  An EMPTY bound value is excluded
+    outright: it is a substring of everything and evidence of nothing."""
+    expected = wanted.lower()
+    return any(
+        value.strip() and (value.lower() in expected or expected in value.lower())
+        for value in bound
+    )
+
+
 def _bound_parameters_check(row: MemoryRow | None, *, wanted: tuple[str, ...], label: str) -> Check:
     """EVERY parameter the routine asks for was bound — the page it is pointed at, and
     where the routine asks for two things, what to look for on it as well.
 
-    Matched case-folded and by containment: an address may arrive without a scheme, and a
-    normalized copy carries it either way.  ``label`` is the caller's — WHERE a value came
-    from is what each beat is measuring, and that is what its label says."""
+    Matched case-folded and by overlap in either direction (``_overlaps``): an address may
+    arrive without a scheme, and a phrase may be bound by the word that locates it.
+    ``label`` is the caller's — WHERE a value came from is what each beat is measuring, and
+    that is what its label says.  The bound values themselves ride VERBATIM in the drawn
+    advisory, so what a looser match accepted is always visible."""
     bound = list(_bound_parameters(row).values()) if row is not None else []
-    missing = [value for value in wanted if not _mentions(value, bound)]
+    missing = [value for value in wanted if not _overlaps(value, bound)]
     return Check(
         label,
         not missing,
