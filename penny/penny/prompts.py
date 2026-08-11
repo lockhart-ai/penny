@@ -117,9 +117,10 @@ class Prompt:
     )
 
     APPLY_INSTRUCTION = (
-        "A skill you already know does what the user is asking, and they have "
-        "given you everything it needs. Set it up now, in one `collection_set` "
-        "call, binding what they told you.\n\n"
+        "A skill you already know does what the user is asking, and their message "
+        "contains all the information for its parameters. Set it up now, in one "
+        "`collection_set` call, binding what they told you. Do not set an end date "
+        "unless they gave one.\n\n"
         "Configuring it is the whole turn — you are not carrying the routine out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"

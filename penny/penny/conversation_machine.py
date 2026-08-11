@@ -174,10 +174,11 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # is, and it is there because a nearby shape was measured landing here wrongly.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
-        "one of the known skills does what they are asking for AND their "
-        "message supplies everything that skill needs — mere resemblance to a "
-        "skill is not coverage — add a second line naming that skill: "
-        f"{SKILL_TAG} <its name, exactly as quoted in Known skills>"
+        "one of the known skills does what they are asking for, and their message "
+        "contains all the information for the skill's parameters. A skill does the "
+        "task once. The schedule and notifications are added when it is set up, so a "
+        "skill that does the task once covers an ask to do it repeatedly. Add a second "
+        f"line naming that skill: {SKILL_TAG} <its name, exactly as quoted in Known skills>"
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
         "a known skill looks like it covers what they are asking for, but "

@@ -359,7 +359,21 @@ def test_render_idle_with_candidates_whole():
     """The idle render with a ranked skill candidate, whole: full skill
     metadata in Known skills, and the apply transition joining the list with
     its coverage condition + the SKILL: directive.  A parameterless candidate
-    renders without the needs tail, byte-identical."""
+    renders without the needs tail, byte-identical.
+
+    The apply condition states the SKILL-DOES-ONCE fact (code-owner authored): a skill
+    carries out its task a single time, and a schedule and notifications are added when
+    it is set up — so a routine described as doing the job once covers an ask to do it
+    repeatedly.  The measured class it answers is a cold ask for a recurring watch drawn
+    as elicit or request because the covering routine's own description reads as a
+    one-shot; stating where cadence LIVES is what makes the two comparable.
+
+    A WATCHED DELETION rides with it: the old "mere resemblance to a skill is not
+    coverage" clause is gone.  It argued against a sibling condition from inside this
+    one, which the choice-menu discipline above ``TRANSITIONS`` forbids — request is
+    right there in the same list saying what it is.  What it guarded (a skill that
+    merely looks related being applied) is the classifier suite's idle-apply-hold cases'
+    to gate, and they are its gate now."""
     assert SkillCandidate(name="x", description="y").render() == '"x" — y'
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
@@ -378,10 +392,12 @@ def test_render_idle_with_candidates_whole():
         "put off for later; no task is being given or taught right now\n"
         "\n"
         "## Transitions\n"
-        "- apply — one of the known skills does what they are asking for AND their "
-        "message supplies everything that skill needs — mere resemblance to a skill is "
-        "not coverage — add a second line naming that skill: SKILL: <its name, exactly "
-        "as quoted in Known skills>\n"
+        "- apply — one of the known skills does what they are asking for, and their "
+        "message contains all the information for the skill's parameters. A skill does "
+        "the task once. The schedule and notifications are added when it is set up, so "
+        "a skill that does the task once covers an ask to do it repeatedly. Add a "
+        "second line naming that skill: SKILL: <its name, exactly as quoted in Known "
+        "skills>\n"
         "- request — a known skill looks like it covers what they are asking "
         "for, but something that skill needs is missing from their message — add a "
         "second line naming that skill: SKILL: <its name, exactly as quoted in Known "
@@ -849,11 +865,19 @@ def test_apply_instruction_whole_render():
     scope of the turn (configuring is all of it, the routine runs itself afterwards),
     then what to report and the one condition on claiming it is running.  It was
     patched by accretion once — a third paragraph restating the reporting boundary from
-    another angle — which is the drift this literal makes visible."""
+    another angle — which is the drift this literal makes visible.
+
+    The opening paragraph mirrors the transition condition that selects this state (code-
+    owner authored): what the message must contain is the information for the skill's
+    PARAMETERS, said the same way in both places, so the turn is entered on the same
+    terms it was decided on.  Its last sentence is the end-date rule — measured, a
+    bounded watch was invented for asks that gave no end at all, and a job that stops on
+    a date nobody asked for goes quiet without anyone noticing."""
     assert Prompt.APPLY_INSTRUCTION == (
-        "A skill you already know does what the user is asking, and they have "
-        "given you everything it needs. Set it up now, in one `collection_set` "
-        "call, binding what they told you.\n\n"
+        "A skill you already know does what the user is asking, and their message "
+        "contains all the information for its parameters. Set it up now, in one "
+        "`collection_set` call, binding what they told you. Do not set an end date "
+        "unless they gave one.\n\n"
         "Configuring it is the whole turn — you are not carrying the routine out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
