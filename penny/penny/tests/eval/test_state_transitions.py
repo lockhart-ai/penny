@@ -1312,11 +1312,13 @@ def _interface_check(required: list[SkillParameter]) -> Check:
     The page is mandatory — it is the one piece every one of these asks leaves to re-say,
     and a routine that cannot be pointed at one can only repeat its demonstration.  A
     SECOND parameter is accepted when it carries what the user's own turns named as the
-    thing to find: the ferry round's draw asked for a `search_phrase`, and the audited
-    thinking read "the late sailing" out of both turns — which is the enumerate-then-filter
-    rule applied correctly, so scoring it a miss would be the scorer marking a sound draw
-    wrong.  Anything else stays a miss: a second parameter of another kind is the invention
-    that rule exists to stop, and a third is one however it is named.  Every accepted
+    thing to find: the ferry round's draws ask for one under several names (`search_phrase`,
+    `search_term`, `keyword`, `line_text` — the family is what is agreed, never one
+    spelling), and the audited thinking read "the late sailing" out of both turns — which is
+    the enumerate-then-filter rule applied correctly, so scoring it a miss would be the
+    scorer marking a sound draw wrong.  Anything else stays a miss: a second parameter of
+    another kind is the invention that rule exists to stop, and a third is one however it
+    is named.  Every accepted
     parameter carries a description — it is what the ambient ``needs:`` row renders, so one
     nobody can read is one nobody can bind."""
     answered = _interface_families(required)
@@ -2003,14 +2005,30 @@ def _fixture_skill(
     )
 
 
-# ── The five fixture skills, sampled from the preceding beat's measured run ────
+# ── The five fixture skills, sampled from the framer's own measured draws ─────
 #
-# Each scenario's draws are transcribed from that beat's final composed run (its
-# per-sample databases, read as data rather than off a transcript) and lightly cleaned —
-# no "e.g." garnish, which the traces show is appended after a line is decided.  Every
-# scenario drew a single ``url`` parameter except the ferry, whose measured mode was
-# ``url`` plus a found-thing; per the code owner's ruling the ferry fixture seeds that
+# Each scenario's LABELLER draws are transcribed from the learn beat's final composed run
+# (its per-sample databases, read as data rather than off a transcript) and lightly
+# cleaned — no "e.g." garnish, which the traces show is appended after a line is decided.
+#
+# Each scenario's SIGNATURE is RE-SAMPLED from the framer suite's run under the round-9
+# prompt (#1863: no timing, scheduling or notification in the name or description, and no
+# parameter's value).  One clean draw is taken WHOLE per scenario — never composed across
+# samples — so a fixture is a shape the pipeline really produces.  Two of the five names
+# moved with the draws (``monitor_colony_count`` → ``monitor_webpage_number``,
+# ``monitor_new_arrival`` → ``retrieve_newest_item``): the framer now generalises past the
+# subject, which is what "name the KIND of task, never the instance" asks for, so the
+# fixture follows rather than re-injecting a subject nothing drew.  Every scenario drew a
+# single ``url`` parameter except the ferry, whose mode is ``url`` plus a found-thing (now
+# named ``keyword``); per the code owner's ruling the ferry fixture seeds that
 # TWO-parameter shape, as the deliberate stress case for multi-parameter binding.
+#
+# What the re-sample REMOVED, verbatim from the old fixtures, is the class the round was
+# for: "checks a webpage **daily** and **notifies** when a newer item appears" (a cadence
+# and a notify setting written into what the routine IS — three samples read it as not
+# covering a two-hourly ask), "monitor a ferry timetable for updates to **the late sailing
+# entry**" (the found-thing's own VALUE, which made an ask about another sailing read as a
+# different job), and "alerts when it decreases" on the count watcher.
 #
 # Each scenario is a JOURNEY, and its run ids are minted once here — the skill cites the
 # learn run that taught it, and every seeder writing that journey's turns writes under
@@ -2050,9 +2068,9 @@ _AURORA_SKILL = _fixture_skill(
         ),
         signature=SkillSignature(
             name="monitor_price",
-            description="monitors a web listing for changes in its listed price",
+            description="Monitors a web listing and reports when its price changes.",
             parameters=(
-                FramedParameter(name="url", description="the URL of the listing page to monitor"),
+                FramedParameter(name="url", description="The URL of the listing to watch"),
             ),
         ),
     ),
@@ -2087,11 +2105,13 @@ _FERRY_SKILL = _fixture_skill(
         ),
         signature=SkillSignature(
             name="check_ferry_timetable",
-            description="monitor a ferry timetable for updates to the late sailing entry",
+            description=(
+                "Check a ferry timetable page for updates and report the status of a specified line"
+            ),
             parameters=(
-                FramedParameter(name="url", description="the URL of the ferry timetable page"),
+                FramedParameter(name="url", description="the URL of the timetable page to fetch"),
                 FramedParameter(
-                    name="search_phrase", description="text identifying the late sailing line"
+                    name="keyword", description="text indicating which timetable entry to look for"
                 ),
             ),
         ),
@@ -2131,9 +2151,11 @@ _BAKERY_SKILL = _fixture_skill(
         ),
         signature=SkillSignature(
             name="fetch_daily_special",
-            description="retrieve and store the daily special from a bakery's specials page",
+            description="retrieve the daily special from a bakery webpage",
             parameters=(
-                FramedParameter(name="url", description="the URL of the bakery specials page"),
+                FramedParameter(
+                    name="url", description="the URL where the daily specials are listed"
+                ),
             ),
         ),
     ),
@@ -2163,11 +2185,9 @@ _COLONY_SKILL = _fixture_skill(
             name="entry_key", description="the key used for the entry in the collection"
         ),
         signature=SkillSignature(
-            name="monitor_colony_count",
-            description="monitors a web page for a numerical count and alerts when it decreases",
-            parameters=(
-                FramedParameter(name="url", description="the webpage URL to fetch the count from"),
-            ),
+            name="monitor_webpage_number",
+            description="track a numeric value on a webpage over time to detect changes",
+            parameters=(FramedParameter(name="url", description="the webpage to monitor"),),
         ),
     ),
     _COLONY_ROUND.demo,
@@ -2200,11 +2220,9 @@ _ARRIVALS_SKILL = _fixture_skill(
             description="unique identifier for the arrival, typically its title",
         ),
         signature=SkillSignature(
-            name="monitor_new_arrival",
-            description="checks a webpage daily and notifies when a newer item appears",
-            parameters=(
-                FramedParameter(name="url", description="the page URL to watch for new arrivals"),
-            ),
+            name="retrieve_newest_item",
+            description="Checks a web page and returns its newest arrival",
+            parameters=(FramedParameter(name="url", description="the URL of the list to check"),),
         ),
     ),
     _ARRIVALS_ROUND.demo,
@@ -3469,7 +3487,7 @@ _JOURNEYS = (
         _AppliedJob(
             schedule="FREQ=DAILY;BYHOUR=14",
             expires_in=None,
-            params={"url": _FERRY_TIMETABLE_URL, "search_phrase": "late sailing"},
+            params={"url": _FERRY_TIMETABLE_URL, "keyword": "late sailing"},
         ),
         _Exchange(
             said="perfect, appreciate it",
