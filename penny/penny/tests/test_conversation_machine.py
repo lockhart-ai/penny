@@ -909,6 +909,33 @@ def test_an_unframed_round_composes_the_prompt_it_always_did():
         assert conversation_prompt(state, None) == conversation_prompt(state)
 
 
+def test_only_learn_renders_the_round_s_framing():
+    """The framing is CARRIED past learn — it is the round link a later turn reads — but
+    only learn's instruction RENDERS it, because the sentence is about being taught a
+    routine.
+
+    Rendered onto apply's instruction it would say two things at once: apply sets the
+    routine up, and a line telling that same turn its container "is already there, so
+    there is nothing to set up" contradicts it.  What apply says about the round is its
+    own beat's to write."""
+    framing = RoundFraming(
+        signature=SkillSignature(
+            name="watch-rental-price",
+            description="keep a rental page's current day rate up to date",
+            parameters=(
+                FramedParameter(
+                    name="url", description="the rental page to read", value="harborkayak.example"
+                ),
+            ),
+        ),
+        container="watch-rental-price-harborkayak-example",
+    )
+    for state in ConversationState:
+        if state is ConversationState.LEARN:
+            continue
+        assert conversation_prompt(state, framing) == conversation_prompt(state), state
+
+
 def test_apply_instruction_whole_render():
     """The whole instruction, verbatim — pinned so an edit is a visible diff.
 

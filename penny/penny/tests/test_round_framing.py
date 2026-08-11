@@ -305,6 +305,30 @@ async def test_the_framing_is_carried_while_parked_and_cleared_on_break_out(db):
     assert bailing.framing() is None
 
 
+async def test_a_held_draw_frames_nothing_and_touches_no_container(db):
+    """Fail → stay holds the REGISTRY too (#1868): a classifier draw that violated its
+    contract leaves the machine in learn, but it is not a move INTO learn, so nothing is
+    framed and no container is built, archived or revived.
+
+    The machine's own rule is that a contract failure moves nothing; building a container
+    off a draw it refused to act on would be that rule holding for the state and not for
+    the store."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    before = {row.name for row in db.memories.list_all()}
+
+    held = _machine(db, _model(state="i think we should keep learning here", framing=_FRAMED_TOURS))
+    await held.advance(_CORRECTION, message_id=_log(db, _CORRECTION), run_id="run-held")
+
+    assert held.state() is ConversationState.LEARN
+    assert {row.name for row in db.memories.list_all()} == before
+    kept = db.memories.get(_CONTAINER)
+    assert kept is not None and kept.archived is False
+    framing = held.framing()
+    assert framing is not None and framing.container == _CONTAINER
+
+
 async def test_a_failed_re_draw_keeps_the_round_s_existing_framing(db):
     """A correction whose framing could not be drawn keeps the container the round already
     has, instead of losing it to a flaky draw — the carry rule read the other way."""

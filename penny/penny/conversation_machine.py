@@ -546,19 +546,25 @@ def conversation_prompt(state: ConversationState, framing: RoundFraming | None =
     directly: a missing state is a programming error and should raise, never
     quietly compose some other state's prompt.
 
-    ``framing`` is the round's own state (#1868), rendered after the instruction when the
-    machine settled one at learn entry: the routine this round is teaching and the
-    container its results are kept in, both named VERBATIM, so the write the round
-    demonstrates copies an anchor rather than inventing a destination.  Absent — a round
-    that could not be framed, or any state that has no framing — composes the byte-
-    identical prompt this function has always composed."""
-    instruction = STATE_INSTRUCTIONS[state] + _framing_line(framing)
+    ``framing`` is the round's own state (#1868), rendered after LEARN's instruction when
+    the machine settled one at entry: the routine this round is teaching and the container
+    its results are kept in, both named VERBATIM, so the write the round demonstrates
+    copies an anchor rather than inventing a destination.  Absent — a round that could not
+    be framed — composes the byte-identical prompt this function has always composed."""
+    instruction = STATE_INSTRUCTIONS[state] + _framing_line(state, framing)
     return Prompt.CONVERSATION_HEAD + instruction + Prompt.CONVERSATION_TAIL
 
 
-def _framing_line(framing: RoundFraming | None) -> str:
-    """The round's framing as the instruction's closing paragraph, or nothing at all."""
-    if framing is None:
+def _framing_line(state: ConversationState, framing: RoundFraming | None) -> str:
+    """The round's framing as LEARN's closing paragraph, or nothing at all.
+
+    Keyed to the state because the sentence is about being TAUGHT a routine, and the
+    framing is CARRIED past learn — the round link a later turn reads.  Rendered onto
+    another state's instruction it would say two things at once: apply's instruction sets
+    the routine up, and a line telling the same turn its container "is already there, so
+    there is nothing to set up" contradicts it.  What apply renders about the round is its
+    own beat's to write."""
+    if framing is None or state is not ConversationState.LEARN:
         return ""
     return Prompt.ROUND_FRAMING_LINE.format(
         skill=framing.signature.name, container=framing.container
@@ -611,7 +617,7 @@ class ConversationMachine:
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
-        framing = await self._frame_round(state, decision, message, run_id=run_id)
+        framing = await self._frame_round(decision, message, run_id=run_id)
         self._record_decision(
             state, decision, message_id=message_id, run_id=run_id, framing=framing
         )
@@ -700,12 +706,7 @@ class ConversationMachine:
         return latest.anchor_message_id if latest else None
 
     async def _frame_round(
-        self,
-        current: ConversationState,
-        decision: StateDecision,
-        message: str,
-        *,
-        run_id: str | None,
+        self, decision: StateDecision, message: str, *, run_id: str | None
     ) -> RoundFraming | None:
         """The learn-ENTRY hook (#1868): every move that LANDS in learn frames the round
         and builds the container its results are kept in.
@@ -720,9 +721,16 @@ class ConversationMachine:
         contract, and both of them exist here, which is why the draw moved to this seam at
         all.
 
+        Only a DECIDED move into learn frames, never a fail → stay that LEAVES the machine
+        in learn: the machine's own rule is that a contract failure moves nothing, and
+        building a container (or archiving the one it replaces) off a draw the machine
+        refused to act on would be that rule holding for the state and not for the
+        registry.  ``decision.state`` says exactly that — it is ``None`` on every
+        non-decision.
+
         ``None`` when the draw failed or nothing frames: the move is recorded unframed and
         the round runs the way it did before this hook existed."""
-        if self._framer is None or next_state(current, decision) is not ConversationState.LEARN:
+        if self._framer is None or decision.state is not ConversationState.LEARN:
             return None
         return await self._framer.frame_entry(
             ask=self._anchor_text(),

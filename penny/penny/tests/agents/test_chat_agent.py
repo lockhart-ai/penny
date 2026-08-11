@@ -25,9 +25,13 @@ from penny.database.skills import SkillDraft, SkillStep
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
+from penny.responses import PennyResponse
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
-from penny.tools.micro_context import STATE_CLASSIFIER_SYSTEM_PROMPT
+from penny.tools.micro_context import (
+    SKILL_FRAME_SYSTEM_PROMPT,
+    STATE_CLASSIFIER_SYSTEM_PROMPT,
+)
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
 from penny.tools.skill_tools import render_skill_brief
@@ -432,6 +436,140 @@ async def test_run_end_extracts_and_narrates_a_skill(
         # re-reply found the run already handled.
         assert calls["n"] == 1
         assert calls["states"] == [ConversationState.LEARN]
+
+
+# The framing the entry draw returns for the teach round below, and the container the
+# shipped derivation makes of it — written out so a change to either the framer's shape or
+# the naming scheme fails HERE, naming what moved.
+_ENTRY_FRAMING = (
+    "NAME: watch-listing-price\n"
+    "DESCRIPTION: keep a listing's current price up to date\n"
+    "PARAMETER listing — the listing to watch\n"
+    "VALUE listing: the aurora deck 2 price"
+)
+_ENTRY_CONTAINER = "watch-listing-price-the-aurora-deck-2-price"
+
+
+def _framer_draws(messages: list[dict]) -> bool:
+    """Whether this request is the round-framing draw (#1830/#1868), by its system
+    prompt — the same way every other micro-context is told apart."""
+    return bool(messages) and messages[0].get("content", "") == SKILL_FRAME_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_a_teach_round_is_framed_on_entry_and_filed_under_that_name(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """The whole #1868 thread, end to end: the machine lands the turn in learn, the framer
+    draws BEFORE the chat agent, Python builds the container, the turn's instruction names
+    both anchors verbatim, the demonstrated write lands in that container, and run-end
+    extraction files the skill under the ENTRY name without drawing again.
+
+    The last two are the point of doing it at entry at all: the destination the round
+    writes into is a copy of a rendered anchor rather than a name chosen mid-turn, and the
+    routine the container is named for is the routine the registry ends up holding — which
+    a second run-end draw, free to answer differently, would break."""
+    ask = "watch the aurora deck 2 price and remember it for me"
+    prompts: dict[str, str] = {}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        if _is_state_classifier(messages):
+            return _text(f"STATE: {ConversationState.LEARN.value}")
+        if _framer_draws(messages):
+            return _text(_ENTRY_FRAMING)
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        if any(
+            isinstance(m.get("content"), str) and _FRAME_MARKER in m["content"] for m in messages
+        ):
+            return _text("learned it! 🌟")
+        prompts.setdefault("system", str(messages[0].get("content", "")))
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if not tool_turns:
+            return _tool_call(
+                "c0",
+                "collection_write",
+                {"memory": _ENTRY_CONTAINER, "entries": [{"key": "price", "content": "$499"}]},
+            )
+        return _text("saved $499 for you")
+
+    mock_llm.set_response_handler(handler, answers_state_classifier=True)
+
+    async with running_penny(test_config) as penny:
+        calls = _spy_extractor(penny)
+
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        await wait_until(lambda: len(penny.db.skills.list_all()) == 1)
+
+        # The container was built by the framework, before the turn, as INERT storage.
+        container = penny.db.memories.get(_ENTRY_CONTAINER)
+        assert container is not None
+        assert container.description == "keep a listing's current price up to date"
+        assert container.extraction_prompt is None and container.schedule is None
+
+        # The turn's own instruction named both anchors verbatim, which is what makes the
+        # write's destination a copy rather than a choice.
+        assert (
+            Prompt.ROUND_FRAMING_LINE.format(
+                skill="watch-listing-price", container=_ENTRY_CONTAINER
+            )
+            in prompts["system"]
+        )
+
+        # The demonstrated write landed there.
+        entries = penny.db.memory(_ENTRY_CONTAINER).read_all()
+        assert [(e.key, e.content) for e in entries] == [("price", "$499")]
+
+        # The skill is filed under the ENTRY framing, and the framer drew exactly ONCE for
+        # the whole turn — the run-end pass read that decision rather than re-taking it.
+        skill = penny.db.skills.list_all()[0]
+        assert skill.name == "watch-listing-price"
+        assert skill.description == "keep a listing's current price up to date"
+        assert sum(_framer_draws(request["messages"]) for request in mock_llm.requests) == 1
+
+        # And it reached the extractor as a parameter, threaded down from the channel.
+        assert calls["n"] == 1
+        framing = calls["framings"][0]
+        assert framing is not None and framing.container == _ENTRY_CONTAINER
+
+
+@pytest.mark.asyncio
+async def test_a_learn_turn_that_taught_nothing_takes_its_container_with_it(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A learn turn's one valid terminal state is a skill in the registry (#1839).  When it
+    produces none, the reply is replaced by the honest failure — and since #1868 the
+    container built for that round goes with it: it describes a routine that does not
+    exist, and it is minutes old and empty, so leaving it would put a job nobody is doing
+    in the store map.
+
+    Archived, not deleted, so the container that came and went is still answerable."""
+    ask = "watch the aurora deck 2 price and remember it for me"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        if _is_state_classifier(messages):
+            return _text(f"STATE: {ConversationState.LEARN.value}")
+        if _framer_draws(messages):
+            return _text(_ENTRY_FRAMING)
+        return _text("sure, i'll keep an eye on it")  # no tool calls — nothing is taught
+
+    mock_llm.set_response_handler(handler, answers_state_classifier=True)
+
+    async with running_penny(test_config) as penny:
+        await signal_server.push_message(sender=TEST_SENDER, content=ask)
+        await wait_until(
+            lambda: any(
+                PennyResponse.LEARN_NOTHING_LEARNED in str(message.get("message", ""))
+                for message in signal_server.outgoing_messages
+            )
+        )
+
+        assert not penny.db.skills.list_all()
+        container = penny.db.memories.get(_ENTRY_CONTAINER)
+        assert container is not None and container.archived is True
 
 
 @pytest.mark.asyncio

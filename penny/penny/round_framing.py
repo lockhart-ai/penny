@@ -50,10 +50,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# What the mutation ledger records when a round's container is retired — the cause a
-# ``memory`` row cannot state for itself, in the two shapes it happens in.
-ARCHIVED_ROUND_FAILED = "the round that created this container taught nothing"
-ARCHIVED_IDENTITY_SHIFTED = "the corrected round is a different job, with its own container"
+# What the mutation ledger records about a round's container — the cause a ``memory`` row
+# cannot state for itself, in the three shapes it happens in.  Private: every caller of
+# these is in this file, and what a retirement MEANS is this module's own vocabulary.
+_ARCHIVED_ROUND_FAILED = "the round that created this container taught nothing"
+_ARCHIVED_IDENTITY_SHIFTED = "the corrected round is a different job, with its own container"
+_REVIVED_SAME_JOB = "the same job is being taught again, into the container it already had"
 
 
 class RoundFramer:
@@ -128,10 +130,16 @@ class RoundFramer:
         same container — nothing is created, nothing is retired, and the round continues
         into what it was already writing.  A correction that SHIFTS it leaves the old
         container behind with nothing in it, so that one is archived (guarded on
-        emptiness) before the new one is built."""
+        emptiness) before the new one is built.
+
+        Find-or-create is also what makes a container STRANDED by a failure harmless: if
+        the turn dies between this step and the machine recording the move, what is left
+        behind is an inert, empty collection carrying this job's own name — which the next
+        attempt at the same job finds and continues into, rather than an orphan nothing can
+        reach."""
         if previous is not None and previous.container != framing.container:
             archive_round_container(
-                self._db, previous.container, run_id=run_id, note=ARCHIVED_IDENTITY_SHIFTED
+                self._db, previous.container, run_id=run_id, note=_ARCHIVED_IDENTITY_SHIFTED
             )
         existing = self._db.memories.get(framing.container)
         if existing is None:
@@ -139,9 +147,13 @@ class RoundFramer:
         elif existing.archived:
             # The same job, taught again after an earlier round was discarded: its
             # container is the one that already carries this job's name, so it comes back
-            # rather than being shadowed by a second row nobody can reach.
+            # rather than being shadowed by a second row nobody can reach — with its cause
+            # on the ledger, like every other move this module makes.
             self._db.memories.unarchive(
-                framing.container, actor=MutationActor.SYSTEM, run_id=run_id
+                framing.container,
+                actor=MutationActor.SYSTEM,
+                run_id=run_id,
+                note=_REVIVED_SAME_JOB,
             )
 
     async def _create(self, framing: RoundFraming, *, run_id: str | None) -> None:
@@ -191,7 +203,7 @@ def discard_round_container(
     here: a round that failed after writing something leaves that something reachable."""
     if framing is None:
         return
-    archive_round_container(db, framing.container, run_id=run_id, note=ARCHIVED_ROUND_FAILED)
+    archive_round_container(db, framing.container, run_id=run_id, note=_ARCHIVED_ROUND_FAILED)
 
 
 def archive_round_container(db: Database, container: str, *, run_id: str | None, note: str) -> None:
@@ -208,7 +220,8 @@ def archive_round_container(db: Database, container: str, *, run_id: str | None,
     row = db.memories.get(container)
     if row is None or row.archived:
         return
-    if db.memories.entry_counts().get(row.name, 0):
+    memory = db.memory(row.name)
+    if memory is not None and memory.read_all():
         logger.info("Kept the round's container %r — it holds entries", row.name)
         return
     db.memories.archive(row.name, actor=MutationActor.SYSTEM, run_id=run_id, note=note)
