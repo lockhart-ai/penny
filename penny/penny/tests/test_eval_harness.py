@@ -1413,6 +1413,17 @@ def test_each_framing_case_renders_exactly_the_document_it_claims(fixture) -> No
     assert content == fixture.rendered_input
 
 
+def _drawn(name: str, description: str, value: str = "") -> FramedParameter:
+    """One drawn parameter for a scorer fixture.
+
+    ``value`` is what the round demonstrated the parameter with (#1868) and defaults to
+    empty here, because these cases score the parameter SET and the two generic checks and
+    none of them reads a value.  A production draw can never carry an empty one — an
+    accepted value is a literal span of the user's own words — so the default is a fixture
+    convenience, never a shape the model can produce."""
+    return FramedParameter(name=name, description=description, value=value)
+
+
 def test_score_framing_grades_the_parameter_set_exactly() -> None:
     """The framing case's scoring over a fixture draw (#1830): each expected family
     answered by exactly one drawn parameter, nothing else asked for, and the framing
@@ -1431,8 +1442,16 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
         name="ticket-price-watcher",
         description="watch an event's cheapest ticket price",
         parameters=(
-            FramedParameter(name="page_to_watch", description="the listing page to check"),
-            FramedParameter(name="event_search", description="the search that finds the page"),
+            _drawn(
+                name="page_to_watch",
+                description="the listing page to check",
+                value="tickets.example/spring-gala",
+            ),
+            _drawn(
+                name="event_search",
+                description="the search that finds the page",
+                value="cheapest seat",
+            ),
         ),
     )
 
@@ -1445,8 +1464,25 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
         ("the parameters are generic", True, True),
         ("named it 'ticket-price-watcher'", True, False),
         ('described it "watch an event\'s cheapest ticket price"', True, False),
-        ("asks 'page_to_watch' — 'the listing page to check'", True, False),
-        ("asks 'event_search' — 'the search that finds the page'", True, False),
+        (
+            "asks 'page_to_watch' — 'the listing page to check' "
+            "(drawn value 'tickets.example/spring-gala')",
+            True,
+            False,
+        ),
+        (
+            "asks 'event_search' — 'the search that finds the page' (drawn value 'cheapest seat')",
+            True,
+            False,
+        ),
+        # The container the framing would build (#1868) — the shipped derivation over the
+        # drawn values, so the report shows the name production would use.
+        (
+            "derives the container "
+            "'ticket-price-watcher-tickets-example-spring-gala-cheapest-seat'",
+            True,
+            False,
+        ),
     ]
 
     # An EXTRA parameter is caught by the count, and a family nothing answers by its own
@@ -1455,7 +1491,7 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
         update={
             "parameters": (
                 *signature.parameters,
-                FramedParameter(name="where_to_save", description="the collection to write to"),
+                _drawn(name="where_to_save", description="the collection to write to"),
             )
         }
     )
@@ -1597,7 +1633,7 @@ def test_the_page_family_classifies_by_name_only() -> None:
     tokens don't anticipate still land via its description."""
     page = ParameterFamily("url", ("url", "page", "site"), name_only=True)
     search = ParameterFamily("ticket search", ("search", "query"), name_only=False)
-    city = FramedParameter(name="city", description="name of the location on the site to read")
+    city = _drawn(name="city", description="name of the location on the site to read")
 
     named_city = SkillSignature(
         name="temperature-recorder", description="record a daily high", parameters=(city,)
@@ -1610,7 +1646,7 @@ def test_the_page_family_classifies_by_name_only() -> None:
     by_description = SkillSignature(
         name="ticket-price-watcher",
         description="watch an event's cheapest ticket price",
-        parameters=(FramedParameter(name="whats_on", description="the search to run"),),
+        parameters=(_drawn(name="whats_on", description="the search to run"),),
     )
     assert _by_label(_score_framing(by_description, (search,), ()))[
         "asks for the ticket search"
@@ -1634,8 +1670,8 @@ def test_a_digit_suffixed_ordinal_pair_classifies_as_the_two_families() -> None:
         name="headline-collector",
         description="collect the top headline from each front page it is pointed at",
         parameters=(
-            FramedParameter(name="site1", description="the first front page to read"),
-            FramedParameter(name="site2", description="the second front page to read"),
+            _drawn(name="site1", description="the first front page to read"),
+            _drawn(name="site2", description="the second front page to read"),
         ),
     )
 
@@ -1663,8 +1699,8 @@ def test_a_letter_suffixed_ordinal_pair_classifies_as_the_two_families() -> None
         name="headline-collector",
         description="collect the top headline from each front page it is pointed at",
         parameters=(
-            FramedParameter(name="url_a", description="the first front page to read"),
-            FramedParameter(name="url_b", description="the second front page to read"),
+            _drawn(name="url_a", description="the first front page to read"),
+            _drawn(name="url_b", description="the second front page to read"),
         ),
     )
 
@@ -1680,8 +1716,8 @@ def test_a_letter_suffixed_ordinal_pair_classifies_as_the_two_families() -> None
         unchanged = signature.model_copy(
             update={
                 "parameters": (
-                    FramedParameter(name=first, description="the first front page to read"),
-                    FramedParameter(name=second, description="the second front page to read"),
+                    _drawn(name=first, description="the first front page to read"),
+                    _drawn(name=second, description="the second front page to read"),
                 )
             }
         )
@@ -1706,7 +1742,7 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     # A description full of articles answers the ordinal family through neither pass.
     prose = SkillSignature(
         **framing,
-        parameters=(FramedParameter(name="whats_on", description="a page to read a headline off"),),
+        parameters=(_drawn(name="whats_on", description="a page to read a headline off"),),
     )
     assert _by_label(_score_framing(prose, (ordinal,), ()))["asks for the first source"] == (
         False,
@@ -1714,7 +1750,7 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     )
 
     # A name that is only a letter is a name nobody enumerated, not the first of anything.
-    bare = SkillSignature(**framing, parameters=(FramedParameter(name="a", description="a page"),))
+    bare = SkillSignature(**framing, parameters=(_drawn(name="a", description="a page"),))
     assert _by_label(_score_framing(bare, (ordinal,), ()))["asks for the first source"] == (
         False,
         "no parameter answers it",
@@ -1723,7 +1759,7 @@ def test_a_letter_reads_as_an_ordinal_only_as_a_suffix_on_a_name() -> None:
     # One expected family, one letter-suffixed name: answered once.
     single = SkillSignature(
         **framing,
-        parameters=(FramedParameter(name="site_a", description="the front page to read"),),
+        parameters=(_drawn(name="site_a", description="the front page to read"),),
     )
     graded = _by_label(_score_framing(single, (page,), ()))
     assert graded["asks for the url"] == (True, None)
@@ -1807,7 +1843,7 @@ def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
 
     occasional = SkillSignature(
         **framing,
-        parameters=(FramedParameter(name="citydesk_url", description="citydesk.example/front"),),
+        parameters=(_drawn(name="citydesk_url", description="citydesk.example/front"),),
     )
     graded = _by_label(_score_framing(occasional, families, instance))
     assert graded["the parameters are generic"] == (
@@ -1818,9 +1854,7 @@ def test_a_parameter_named_after_the_occasion_is_not_generic() -> None:
 
     generic = SkillSignature(
         **framing,
-        parameters=(
-            FramedParameter(name="first_site", description="the first front page to read"),
-        ),
+        parameters=(_drawn(name="first_site", description="the first front page to read"),),
     )
     assert _by_label(_score_framing(generic, families, instance))["the parameters are generic"] == (
         True,
@@ -1847,7 +1881,7 @@ def test_an_example_clause_is_garnish_not_substance() -> None:
         name="temperature-recorder",
         description="record the daily high temperature from a weather page",
         parameters=(
-            FramedParameter(
+            _drawn(
                 name="site_url",
                 description=(
                     "the URL to query for the high temperature (e.g., weather.example/lisbon)"
@@ -1863,7 +1897,7 @@ def test_an_example_clause_is_garnish_not_substance() -> None:
     echoed = SkillSignature(
         name="headline-collector",
         description="collect the top headline from a news front page",
-        parameters=(FramedParameter(name="citydesk_url", description="citydesk.example/front"),),
+        parameters=(_drawn(name="citydesk_url", description="citydesk.example/front"),),
     )
     assert _by_label(_score_framing(echoed, (page,), ("citydesk", "harborpost")))[
         "the parameters are generic"
@@ -1875,7 +1909,7 @@ def test_an_example_clause_is_garnish_not_substance() -> None:
         name="temperature-recorder",
         description="record the daily high temperature from a weather page",
         parameters=(
-            FramedParameter(
+            _drawn(
                 name="location",
                 description='the geographic location to look up (e.g., "lisbon")',
             ),

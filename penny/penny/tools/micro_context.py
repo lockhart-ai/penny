@@ -69,6 +69,7 @@ from penny.tools.micro_context_shape import (
     LineSpec,
     MicroContextShape,
     ParsedDraw,
+    ParsedLine,
     PayloadSpan,
     Separator,
     parse_draw,
@@ -268,7 +269,40 @@ SKILL_NAMING_SYSTEM_PROMPT = (
     "routine."
 )
 
-# ── Fourth customer: the routine's INTERFACE — the framer (#1830) ──────────────
+# ── The VALUE line: ONE grammar, two customers (#1867/#1868) ──────────────────
+# A parameter's value is written the same way wherever it is written, so the line is
+# declared ONCE here, above both customers that deal in values: the FRAMER, which mints a
+# parameter and says what the user demonstrated it with, and the BINDER, which fills a
+# parameter somebody else already declared.  Two declarations would be two grammars the
+# prompt and the parser could drift between — the exact failure the shape-as-data
+# discipline exists to prevent — and both customers accept a value on the same terms (a
+# literal span of the user's own turns, :func:`_is_a_spoken_span`), so the shared line is a
+# shared contract rather than a coincidence of spelling.
+#
+# The tag is a short, common, non-compound word (#1842, the long-literal decay class).
+VALUE_TAG = "VALUE"
+
+# One line per parameter, in the two-field carve the labeller's line has: the parameter's
+# name keyed by ``FieldShape.NAME`` (it is the binding key the caller maps home by, so a
+# "name" carrying its own value is a malformed line rather than a key), then the value,
+# which takes whatever is left of the line.  The COLON separator splits at the FIRST colon
+# only, so a url's own ``https:`` travels in the value untouched.
+_VALUE_LINE = LineSpec(
+    tag=VALUE_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(
+        FieldSpec(
+            name=DrawField.NAME,
+            placeholder="<parameter_name>",
+            shape=FieldShape.NAME,
+            separator=Separator.COLON,
+        ),
+        FieldSpec(name=DrawField.VALUE, placeholder="<the value, in the user's own words>"),
+    ),
+)
+
+
+# ── Fourth customer: the routine's INTERFACE — the framer (#1830/#1868) ────────
 # The labeller above names every spot in the routine's IMPLEMENTATION.  What the
 # routine IS — what to call it, what it is for, and what its user has to say to set
 # it running again — is a different question from different evidence, so it is a
@@ -292,6 +326,15 @@ SKILL_NAMING_SYSTEM_PROMPT = (
 # the whole reroll budget, then an honest WHOLE-draw failure.  With no offered set, the
 # missing-line gap the labeller notices is invisible here, so the parse's dropped-line count
 # (``ParsedDraw.malformed``) is what makes the same rule checkable.
+#
+# Since #1868 the draw also says what each minted parameter was DEMONSTRATED WITH — one
+# shared ``VALUE`` line per parameter — because the framer now runs at the START of the
+# round that teaches the routine, and the container that round's results are kept in is
+# named from the skill plus those values (``derive_collection_name``).  The parameter set
+# is minted in the same draw, so coverage is checkable exactly as the binder's is: one
+# value line per minted parameter, no more and no fewer, and every value a literal span of
+# what the user actually typed.  A value nobody said is the confabulation the whole scheme
+# exists to make unavailable — it would name a container for a job nobody asked for.
 NAME_TAG = "NAME:"
 DESCRIPTION_TAG = "DESCRIPTION:"
 PARAMETER_TAG = "PARAMETER"
@@ -329,12 +372,12 @@ _PARAMETER_LINE = LineSpec(
     ),
 )
 SKILL_FRAME_SHAPE = MicroContextShape(
-    lines=(_FRAME_NAME_LINE, _FRAME_DESCRIPTION_LINE, _PARAMETER_LINE)
+    lines=(_FRAME_NAME_LINE, _FRAME_DESCRIPTION_LINE, _PARAMETER_LINE, _VALUE_LINE)
 )
 
 SKILL_FRAME_SYSTEM_PROMPT = (
     "You are writing the public interface of a reusable routine. You are given what "
-    "the user asked for, in their own words. Do three things:\n"
+    "the user asked for, in their own words. Do four things:\n"
     "\n"
     "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
     "to get done when they asked. Their own words are the evidence.\n"
@@ -365,11 +408,18 @@ SKILL_FRAME_SYSTEM_PROMPT = (
     "'second_plot'.\n"
     "   - description: one line saying what to supply. Do not include examples.\n"
     "\n"
+    "4. Give each parameter its VALUE this time — the part of the user's words that "
+    "supplies it. Copy that part EXACTLY as they wrote it: same characters, same "
+    "spelling. Do not tidy it up, shorten it, expand it, or complete a piece they left "
+    "half-said. Every parameter you named gets one value line, and nothing else does.\n"
+    "\n"
     "Respond with these tagged lines and nothing else:\n"
     f"{render_line(_FRAME_NAME_LINE)}\n"
     f"{render_line(_FRAME_DESCRIPTION_LINE)}\n"
     f"{render_line(_PARAMETER_LINE)}\n"
-    "Write nothing else — no preamble, no explanation, no restating the ask."
+    f"{render_line(_VALUE_LINE)}\n"
+    "Write the parameter lines first, then the value lines. Write nothing else — no "
+    "preamble, no explanation, no restating the ask."
 )
 
 # The rule a model-written name must survive to be a BINDING KEY (#1668) — lowercase,
@@ -485,28 +535,12 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
 # ruling applied to a customer that knows its offered set exactly: every declared
 # parameter gets exactly one line, of one kind or the other, and nothing else does.
 #
-# Both tags are short, common, non-compound words (#1842, the long-literal decay class).
-VALUE_TAG = "VALUE"
+# Its VALUE line is the SHARED one declared above (#1868) — the framer writes the same
+# line for a parameter it just minted — so the two customers cannot describe a value's
+# shape differently.  Its own tag, the shortfall's, is a short, common, non-compound word
+# for the same reason (#1842, the long-literal decay class).
 MISSING_TAG = "MISSING"
 
-# One line per declared parameter, in the two-field carve the labeller's line has: the
-# parameter's name keyed by ``FieldShape.NAME`` (it is the binding key the caller maps
-# home by, so a "name" carrying its own value is a malformed line rather than a key),
-# then the value, which takes whatever is left of the line.  The COLON separator splits
-# at the FIRST colon only, so a url's own ``https:`` travels in the value untouched.
-_VALUE_LINE = LineSpec(
-    tag=VALUE_TAG,
-    role=LineRole.PER_ITEM,
-    fields=(
-        FieldSpec(
-            name=DrawField.NAME,
-            placeholder="<parameter_name>",
-            shape=FieldShape.NAME,
-            separator=Separator.COLON,
-        ),
-        FieldSpec(name=DrawField.VALUE, placeholder="<the value, in the user's own words>"),
-    ),
-)
 # The shortfall line carries the parameter's name and NOTHING else — what is missing is
 # named by the parameter, and what the user would have to say is already written on the
 # signature the draw was given, so a model-written reason beside it would be a second
@@ -617,26 +651,35 @@ class SkillLabels(BaseModel):
 
 class FramedParameter(BaseModel):
     """One parameter the framer MINTED (#1830): the ``name`` a user's binding will be
-    keyed by (``params={<name>: …}``) and the one line of what they supply for it.
+    keyed by (``params={<name>: …}``), the one line of what they supply for it, and the
+    ``value`` this round demonstrated it with (#1868).
 
     Unlike a :class:`LeafLabel`'s name, this one is HARDENED here rather than
     downstream — it is not a label on something that already has an identity, it IS
-    the identity, so the draw's own result carries the key instantiation will use."""
+    the identity, so the draw's own result carries the key instantiation will use.
+
+    The ``value`` is carried VERBATIM, because it is a literal span of the user's own
+    words and the whole point is that it is theirs — it is what the round's container is
+    named from (``derive_collection_name``), so tidying it here would rename a job."""
 
     name: str
     description: str
+    value: str
 
 
 class SkillSignature(BaseModel):
     """The framer's typed result (#1830): a routine's whole public interface, written
     from the user's ask alone — a GENERIC verb-noun ``name``, a one-line
-    ``description``, and the ordered ``parameters`` the user would have to say again.
+    ``description``, and the ordered ``parameters`` the user would have to say again,
+    each carrying the value this round demonstrated it with (#1868).
 
     All three come out of ONE decision, which is what stops them contradicting: a
     routine cannot name itself for something it then asks for, because the same draw
     wrote both.  ``parameters`` is never empty and never repeats a name — a draw that
     asked for nothing, or asked for one thing twice, is refused before it reaches
-    here."""
+    here — and every one of them carries a value that is a literal span of the user's
+    turns, so ``[parameter.value for parameter in parameters]`` is a total, in-declared-
+    order read that the container's derived name is built from."""
 
     name: str
     description: str
@@ -807,22 +850,28 @@ class MicroContext:
         other three against its own declared shape (:data:`SKILL_FRAME_SHAPE`) and the
         bare-content user turn (the rendered ask IS the whole document), plus the
         runtime constraint a static shape cannot carry: the draw must mint at least one
-        well-formed parameter, carry no broken PARAMETER line, and never name the same
-        parameter twice.
+        well-formed parameter, carry no broken PARAMETER line, never name the same
+        parameter twice, and — since #1868 — give each minted parameter exactly one
+        VALUE that is a literal span of what the user said.
 
         It takes NO offered set — that is the point.  ``content`` is the user's own
         turns and nothing else, so the parameters are minted from the ask rather than
-        sorted out of a list somebody else produced (#1824).
+        sorted out of a list somebody else produced (#1824).  That is also why the span
+        check reads ``content`` itself rather than a second argument: for this customer
+        the document IS the user's words, so there is nothing else in it a value could be
+        copied out of (the binder needs its ``spoken`` separately because its document
+        renders a signature too).
 
-        ``None`` on any failure; the caller falls back to the deterministic slug with
-        no parameters, which is honest degradation rather than a half-written
-        interface."""
+        ``None`` on any failure — at learn entry that means no container is built and the
+        round runs unframed, and at run end the caller falls back to the deterministic
+        slug with no parameters.  Honest degradation either way, rather than a
+        half-written interface."""
         drawn = await self._valid_draw(
             content,
             "",
             run_target,
             shape=SKILL_FRAME_SHAPE,
-            accepts=_mints_a_usable_signature,
+            accepts=partial(_mints_a_usable_signature, spoken=content),
             system_prompt=SKILL_FRAME_SYSTEM_PROMPT,
             agent_name=PennyConstants.SKILL_FRAME_AGENT_NAME,
             prompt_type=PennyConstants.SKILL_FRAME_PROMPT_TYPE,
@@ -1095,50 +1144,94 @@ def _leaf_labels(drawn: ParsedDraw) -> SkillLabels:
     )
 
 
-def _mints_a_usable_signature(drawn: ParsedDraw) -> bool:
-    """The runtime constraint the framing shape can't carry (#1830) — and the whole of
-    what makes an accepted signature usable, with nothing offered to check it against.
+def _mints_a_usable_signature(drawn: ParsedDraw, *, spoken: str) -> bool:
+    """The runtime constraint the framing shape can't carry (#1830/#1868) — and the whole
+    of what makes an accepted signature usable, with nothing offered to check it against.
 
-    Three ways to violate it, each answered the same way (re-drawn on the unchanged
-    context for the whole budget, then an honest whole-draw failure).  NO parameter is
-    the floor the prompt states: a routine that needs nothing said to it can only repeat
-    the one occasion it was shown.  A MALFORMED line is a line the parse dropped — the
-    grammar's best-effort default is wrong for a customer with no offered set, because
-    there is no gap for it to show up as, so the drop is counted and refused instead.  A
-    REPEATED name is a contradictory draw, and a parameter's name is its binding key:
-    two lines under one key means one of them silently disappears at instantiation.
+    The PARAMETER half has three ways to be violated, each answered the same way (re-drawn
+    on the unchanged context for the whole budget, then an honest whole-draw failure).  NO
+    parameter is the floor the prompt states: a routine that needs nothing said to it can
+    only repeat the one occasion it was shown.  A MALFORMED line is a line the parse
+    dropped — the grammar's best-effort default is wrong for a customer with no offered
+    set, because there is no gap for it to show up as, so the drop is counted and refused
+    instead.  A REPEATED name is a contradictory draw, and a parameter's name is its
+    binding key: two lines under one key means one of them silently disappears at
+    instantiation.
 
     Names are compared HARDENED, because that is what they become — ``Page URL`` and
     ``page_url`` are one key, not two."""
     if drawn.malformed:
         return False
-    keys = [slug_parameter_name(item.fields[DrawField.NAME]) for item in drawn.items]
-    return bool(keys) and all(keys) and len(set(keys)) == len(keys)
+    minted = _drawn_names(drawn, PARAMETER_TAG)
+    if not (minted and all(minted) and len(set(minted)) == len(minted)):
+        return False
+    return _values_were_demonstrated(drawn, minted, spoken)
+
+
+def _values_were_demonstrated(drawn: ParsedDraw, minted: Sequence[str], spoken: str) -> bool:
+    """The VALUE half of the framer's contract (#1868): every parameter this same draw
+    minted was demonstrated with something the user actually said.
+
+    COVERAGE and MEMBERSHIP are ONE comparison against the minted set, exactly as the
+    binder compares against the DECLARED set (#1828's rule for a customer that knows its
+    offered set — here it knows it because it just wrote it): a parameter with no value, a
+    value given twice, and a value for a parameter no line minted are the same violation.
+
+    And every value must be a literal span of what the user said.  The framer's whole
+    document IS the user's turns, so ``spoken`` is that document — unlike the binder,
+    whose document also renders a signature a value could be copied out of.  The check is
+    load-bearing rather than decorative: the container the round writes into is named from
+    these values, so a value nobody typed would mint a container for a job nobody asked
+    for, and no later step could tell."""
+    values = [item for item in drawn.items if item.tag == VALUE_TAG]
+    if sorted(_drawn_names(drawn, VALUE_TAG)) != sorted(minted):
+        return False
+    return all(_is_a_spoken_span(item.fields[DrawField.VALUE], spoken) for item in values)
+
+
+def _drawn_names(drawn: ParsedDraw, tag: str) -> list[str]:
+    """The HARDENED parameter names the draw's ``tag`` lines carry, in draw order — the
+    keys everything downstream maps by, read the same way for both of the framer's
+    per-item lines so a name written one way on each still matches itself."""
+    return [
+        slug_parameter_name(item.fields[DrawField.NAME]) for item in drawn.items if item.tag == tag
+    ]
 
 
 def _skill_signature(drawn: ParsedDraw) -> SkillSignature | None:
     """The framing draw read by FIELD NAME — what the routine is called, what it is
-    for, and what its user has to supply.  ``None`` only if a REQUIRED line somehow went
-    missing, which the declared shape already refuses; kept as the belt-and-braces guard
-    so a blank interface can never be persisted.
+    for, what its user has to supply, and what this round supplied (#1868).  ``None`` only
+    if a REQUIRED line somehow went missing, which the declared shape already refuses;
+    kept as the belt-and-braces guard so a blank interface can never be persisted.
 
     Parameter names are hardened through :func:`slug_parameter_name` HERE, unlike a
     leaf label's: this name is not a description of something that already has an
-    identity, it is the binding key itself."""
+    identity, it is the binding key itself — which is also how a VALUE line finds the
+    PARAMETER line it belongs to, whichever spelling each of them used.  Every lookup
+    resolves: the draw was accepted only because the two sets match exactly."""
     name = drawn.field(NAME_TAG, DrawField.NAME)
     description = drawn.field(DESCRIPTION_TAG, DrawField.DESCRIPTION)
     if name is None or description is None:
         return None
+    values = {
+        slug_parameter_name(item.fields[DrawField.NAME]): item.fields[DrawField.VALUE]
+        for item in drawn.items
+        if item.tag == VALUE_TAG
+    }
     return SkillSignature(
         name=name,
         description=description,
         parameters=tuple(
-            FramedParameter(
-                name=slug_parameter_name(item.fields[DrawField.NAME]),
-                description=item.fields[DrawField.DESCRIPTION],
-            )
-            for item in drawn.items
+            _framed_parameter(item, values) for item in drawn.items if item.tag == PARAMETER_TAG
         ),
+    )
+
+
+def _framed_parameter(item: ParsedLine, values: dict[str, str]) -> FramedParameter:
+    """One minted parameter joined to the value line that answered it, by hardened name."""
+    key = slug_parameter_name(item.fields[DrawField.NAME])
+    return FramedParameter(
+        name=key, description=item.fields[DrawField.DESCRIPTION], value=values[key]
     )
 
 

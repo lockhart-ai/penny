@@ -65,6 +65,7 @@ from penny.conversation_machine import (
     CandidateParameter,
     ConversationState,
     MachineSnapshot,
+    RoundFraming,
     SkillCandidate,
     render_classifier_content,
 )
@@ -887,6 +888,12 @@ async def test_idle_to_elicit_asks_despite_the_urgency(chat_eval: ChatEval) -> N
 # piece the framer then has to mint as a parameter.  Each page carries exactly one
 # controllable fact, so what she stored is provable from the entry alone.
 #
+# Since #1868 the demonstration's DESTINATION is settled before the turn runs: entering
+# learn frames the round and builds the container derived from the routine plus the values
+# the user said, and the LEARN instruction renders both names verbatim.  So "remember it"
+# writes into a container that already exists, and the case scores that the write landed
+# THERE — a copy of a rendered anchor — instead of grading a name the model chose.
+#
 # Each case's reference reply is DATA (``closing_report``) rather than prose — the same
 # promotion ``teach_question`` got, and for the same reason: the learn → apply cases
 # below seed it as Penny's closing turn, so the line the review reads and the line the
@@ -1438,10 +1445,15 @@ def _extraction_shape_checks(db: Database) -> list[Check]:
 
 
 def _attaches_nothing_checks(db: Database, created: list[MemoryRow]) -> list[Check]:
-    """Learning must not INSTANTIATE (#1706).  Scored against what this run TOUCHED: a
-    collection it created, or — when it reused an existing one — nothing, since a seeded
-    collection's own prompt and cadence predate the round and failing on those would
-    report the framework's fixtures as her doing."""
+    """Learning must not INSTANTIATE (#1706).  Scored against what this turn PRODUCED: the
+    collections that did not exist before it — since #1868 that is normally the container
+    the entry hook built plus anything the round made itself — or, when the round reused an
+    existing one, nothing, since a seeded collection's own prompt and cadence predate the
+    round and failing on those would report the framework's fixtures as her doing.
+
+    The claims hold either way, and that is the point: a framework-built container is inert
+    by construction, so "no program, nothing scheduled" is true of it for a structural
+    reason rather than because the model refrained."""
     instantiated = [row for row in db.memories.list_all() if row.skill_name is not None]
     return [
         Check(
@@ -1469,6 +1481,93 @@ def _attaches_nothing_checks(db: Database, created: list[MemoryRow]) -> list[Che
             "state: nothing it created was scheduled (no trigger, no notify)", kind="state"
         ),
     ]
+
+
+# The two claims the entry framing makes, named once: each is read BOTH as a scored check
+# and as the not-applicable row a sample whose entry draw failed renders, and a label is a
+# diff-join key.
+_FRAMED_LABEL = "state: the round was framed on entry and its container built"
+_WROTE_INTO_CONTAINER_LABEL = "state: the demonstrated write landed in the round's container"
+
+
+def _round_framing(db: Database) -> RoundFraming | None:
+    """The round's framing, read off the move that settled it (#1868) — the same anchor
+    the turn's own instruction rendered and run-end extraction reused.
+
+    Read from the machine rather than guessed from the collections that appeared, because
+    the question these checks ask is whether the write landed where the turn was TOLD to
+    put it, and only the framing says where that was."""
+    latest = db.machine.latest_transition()
+    if latest is None or latest.skill_frame is None:
+        return None
+    return RoundFraming.model_validate_json(latest.skill_frame)
+
+
+def _framed_checks(db: Database, framing: RoundFraming | None) -> list[Check]:
+    """What the ENTRY framing settled, before the turn ran (#1868): the round has a
+    routine and a container built for it.
+
+    Scored, because the draw that decides it is a live one: a round nothing framed runs
+    unframed — the honest degrade path — and every claim about writing into the container
+    then has nothing to be about.  The drawn name and container ride ADVISORY beside it, so
+    a reader sees what the framework committed the round to."""
+    if framing is None:
+        return [
+            Check(
+                _FRAMED_LABEL, False, rationale="the entry draw produced no framing", kind="state"
+            )
+        ]
+    row = db.memories.get(framing.container)
+    built = row is not None and not row.archived
+    return [
+        Check(
+            _FRAMED_LABEL,
+            built,
+            rationale=None if built else f"no container named {framing.container!r} exists",
+            kind="state",
+        ),
+        Check(
+            f"framed the round as {framing.signature.name!r} into {framing.container!r}",
+            True,
+            scored=False,
+            kind="state",
+        ),
+        *(
+            Check(
+                f"framed parameter {parameter.name!r} = {parameter.value!r}",
+                True,
+                scored=False,
+                kind="state",
+            )
+            for parameter in framing.signature.parameters
+        ),
+    ]
+
+
+def _wrote_into_the_container_check(db: Database, framing: RoundFraming | None) -> Check:
+    """The demonstrated write landed in the container the turn was told to write into
+    (#1868) — the check that replaces every judgment about what a collection should be
+    called.
+
+    The instruction renders that container's name verbatim, so the write's destination is a
+    COPY of a rendered anchor: a write that landed anywhere else is a destination invented
+    over one that was given.  Not applicable when nothing framed the round (there was no
+    container to write into) and when the round wrote nothing at all — that absence is
+    already the durable-write check's own miss, and grading it twice would report one
+    failure as two."""
+    if framing is None:
+        return Check.na(_WROTE_INTO_CONTAINER_LABEL, kind="state")
+    written = _entries_written_by_this_run(db)
+    if not written:
+        return Check.na(_WROTE_INTO_CONTAINER_LABEL, kind="state")
+    landed = [entry for entry in written if entry.memory_name == framing.container]
+    elsewhere = sorted({entry.memory_name for entry in written if entry not in landed})
+    return Check(
+        _WROTE_INTO_CONTAINER_LABEL,
+        bool(landed),
+        rationale=None if landed else f"wrote into {elsewhere} instead of {framing.container!r}",
+        kind="state",
+    )
 
 
 def _anchor_carried_check(db: Database, ask: str) -> Check:
@@ -1500,18 +1599,22 @@ def _score_elicit_to_learn(
 ) -> list[Check]:
     """The demonstrated round ran, and NOTHING was instantiated.
 
-    "Remember it" is a naive ``collection_write``: it auto-creates a collection
-    and puts the value in it.  What must NOT happen is the fold — no skill bound
-    to that collection, no rendered program, no schedule.  The skill is learned
-    (it exists in the registry) and stays unattached until the user asks for it.
-    What that learning PRODUCED is read off the stored skill: an all-placeholder
-    routine, its destination still marked, over the one parameter the ask leaves.
+    Since #1868 the round's DESTINATION is settled before the turn begins: entering learn
+    frames the routine and builds its container, and the instruction renders both names
+    verbatim — so "remember it" is a ``collection_write`` into a container that already
+    exists, and where the write lands is a copy rather than a naming judgment.  What must
+    NOT happen is the fold — no skill bound to that container, no rendered program, no
+    schedule.  The skill is learned (it exists in the registry) and stays unattached until
+    the user asks for it.  What that learning PRODUCED is read off the stored skill: an
+    all-placeholder routine, its destination still marked, over the one parameter the ask
+    leaves.
 
     ONE scorer for all five cases, bound to the case's own page fact and ask.  The
     labels are diff-join keys, so they read identically on every case and keep the
     wording the auction script gave them even where a ferry timetable is what was
     read."""
     created = new_collections(db, before)
+    framing = _round_framing(db)
     written = _written_texts(_entries_written_by_this_run(db))
     landed = _mentions(case.stored, written)
     return [
@@ -1536,6 +1639,8 @@ def _score_elicit_to_learn(
             else (f"wrote {written}" if written else "nothing was written"),
             kind="state",
         ),
+        *_framed_checks(db, framing),
+        _wrote_into_the_container_check(db, framing),
         Check(
             "state: a skill was learned from the round",
             bool(db.skills.list_all()),
@@ -1649,6 +1754,13 @@ async def test_elicit_to_learn_learns_despite_the_urgency(chat_eval: ChatEval) -
 # reported as done that never happened — which is why "nothing was written" is the core
 # scored claim here rather than an absence noted in passing.
 #
+# Since #1868 the round's container is built when the machine ENTERS learn, before anybody
+# knows whether the page holds the fact — so the terminal state is no longer "no collection
+# was created" but "the container exists and is EMPTY".  Its existence stopped being
+# evidence of anything; what it holds is the whole claim.  It is not litter either: the
+# round is still parked in learn waiting for instructions it can carry out, and retiring a
+# container belongs to the round FAILING (#1839), which is a different terminal.
+#
 # Distinct from the ferry round above, where "not scheduled this season" IS the fact:
 # present on the page, readable, storable.  Here the page does not speak to the question
 # at all — the honest-absence case.
@@ -1738,19 +1850,48 @@ def _registry_advisories(db: Database) -> list[Check]:
     ]
 
 
+def _empty_container_check(db: Database, framing: RoundFraming | None) -> Check:
+    """The round's terminal state when the page could not answer it (#1868): the container
+    the entry hook built EXISTS and is EMPTY.
+
+    Before the framer moved to entry, the honest terminal was "no collection was created",
+    because the collection came into being as a side effect of the write that never
+    happened.  The container is now built when the round is framed — before anybody knows
+    whether the page holds the fact — so its existence is no longer evidence of anything,
+    and what the case still claims is the real one: nothing was put in it.
+
+    The empty container is not litter here: the round is still parked in learn waiting for
+    instructions it can carry out, so the container is what the next attempt writes into.
+    Retirement belongs to the round FAILING, which is the #1839 path and a different
+    terminal."""
+    label = "state: the round's container exists and is empty (nothing was invented)"
+    if framing is None:
+        return Check.na(label, kind="state")
+    row = db.memories.get(framing.container)
+    entries = collection_entries(db, framing.container) if row is not None else {}
+    empty = row is not None and not row.archived and not entries
+    return Check(
+        label,
+        empty,
+        rationale=None if empty else f"container {framing.container!r} holds {sorted(entries)}",
+        kind="state",
+    )
+
+
 def _score_elicit_to_learn_absent(db: Database, before: set[str], reply: str) -> list[Check]:
     """She read the page, and the round stopped there with nothing invented to finish it.
 
-    The middle two claims are the point: NOTHING was written anywhere by this run (no
-    value was manufactured to stand in for the one the page does not carry) and nothing
-    was set up on the strength of it.  Around them, the step she WAS given did happen —
-    the fetch — and the machine is still parked in learn on the ask, so the round hands
-    back for instructions it can carry out instead of breaking out to idle as though it
-    were finished.
+    The middle claims are the point: NOTHING was written anywhere by this run (no value was
+    manufactured to stand in for the one the page does not carry), and the container the
+    entry hook built for the round is still empty.  Around them, the step she WAS given did
+    happen — the fetch — and the machine is still parked in learn on the ask, so the round
+    hands back for instructions it can carry out instead of breaking out to idle as though
+    it were finished.
 
     Whether the reply is HONEST about which step stopped her is read at joint review
     against the reference above: one line of English carries no structural signal."""
     written = _entries_written_by_this_run(db)
+    framing = _round_framing(db)
     landed = _landed_state(db)
     parked = landed == ConversationState.LEARN.value
     browses = count_tool_calls(db, "browse")
@@ -1771,11 +1912,8 @@ def _score_elicit_to_learn_absent(db: Database, before: set[str], reply: str) ->
             rationale=f"wrote {_written_texts(written)}" if written else None,
             kind="state",
         ),
-        Check(
-            "state: no collection was created (nothing was set up)",
-            not new_collections(db, before),
-            kind="state",
-        ),
+        *_framed_checks(db, framing),
+        _empty_container_check(db, framing),
         Check(
             "state: the machine stayed parked in learn (the round hands back)",
             parked,
@@ -1805,8 +1943,8 @@ async def test_elicit_to_learn_stops_when_the_page_lacks_the_fact(
 ) -> None:
     """elicit → learn where the page does not carry the asked-for fact: the noticeboard
     is read, the plot waitlist opening is not on it, and the round stops at that step —
-    no entry written, no collection set up, and the machine still parked in learn on the
-    ask, waiting for instructions it can carry out."""
+    no entry written, the container the round was framed into still empty, and the machine
+    still parked in learn on the ask, waiting for instructions it can carry out."""
     await chat_eval(
         case_id=_GARDEN_ROUND.case_id,
         message=_GARDEN_ROUND.demo,
@@ -2070,7 +2208,11 @@ _AURORA_SKILL = _fixture_skill(
             name="monitor_price",
             description="Monitors a web listing and reports when its price changes.",
             parameters=(
-                FramedParameter(name="url", description="The URL of the listing to watch"),
+                FramedParameter(
+                    name="url",
+                    description="The URL of the listing to watch",
+                    value=LISTING_URL,
+                ),
             ),
         ),
     ),
@@ -2109,9 +2251,15 @@ _FERRY_SKILL = _fixture_skill(
                 "Check a ferry timetable page for updates and report the status of a specified line"
             ),
             parameters=(
-                FramedParameter(name="url", description="the URL of the timetable page to fetch"),
                 FramedParameter(
-                    name="keyword", description="text indicating which timetable entry to look for"
+                    name="url",
+                    description="the URL of the timetable page to fetch",
+                    value=_FERRY_TIMETABLE_URL,
+                ),
+                FramedParameter(
+                    name="keyword",
+                    description="text indicating which timetable entry to look for",
+                    value="the late sailing line",
                 ),
             ),
         ),
@@ -2154,7 +2302,9 @@ _BAKERY_SKILL = _fixture_skill(
             description="retrieve the daily special from a bakery webpage",
             parameters=(
                 FramedParameter(
-                    name="url", description="the URL where the daily specials are listed"
+                    name="url",
+                    description="the URL where the daily specials are listed",
+                    value=_BAKERY_SPECIALS_URL,
                 ),
             ),
         ),
@@ -2187,7 +2337,13 @@ _COLONY_SKILL = _fixture_skill(
         signature=SkillSignature(
             name="monitor_webpage_number",
             description="track a numeric value on a webpage over time to detect changes",
-            parameters=(FramedParameter(name="url", description="the webpage to monitor"),),
+            parameters=(
+                FramedParameter(
+                    name="url",
+                    description="the webpage to monitor",
+                    value="harborseals.example/colony-count",
+                ),
+            ),
         ),
     ),
     _COLONY_ROUND.demo,
@@ -2222,7 +2378,13 @@ _ARRIVALS_SKILL = _fixture_skill(
         signature=SkillSignature(
             name="retrieve_newest_item",
             description="Checks a web page and returns its newest arrival",
-            parameters=(FramedParameter(name="url", description="the URL of the list to check"),),
+            parameters=(
+                FramedParameter(
+                    name="url",
+                    description="the URL of the list to check",
+                    value=_NEW_ARRIVALS_URL,
+                ),
+            ),
         ),
     ),
     _ARRIVALS_ROUND.demo,
@@ -2261,7 +2423,11 @@ _DECOY_SKILL = _fixture_skill(
             name="check_museum_hours",
             description="read a museum's hours page and record the opening times",
             parameters=(
-                FramedParameter(name="url", description="the URL of the museum hours page"),
+                FramedParameter(
+                    name="url",
+                    description="the URL of the museum hours page",
+                    value="https://citymuseum.example/hours",
+                ),
             ),
         ),
     ),

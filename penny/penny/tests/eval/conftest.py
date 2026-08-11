@@ -43,6 +43,7 @@ from penny.database.skills import (
     SkillParameter,
     SkillStep,
     build_binding_content,
+    derive_collection_name,
     distill_steps,
     render_spoken_turns,
 )
@@ -1307,7 +1308,13 @@ MICRO_CONTEXT_PLACEMENTS: dict[str, MicroPlacement] = {
     PennyConstants.BROWSE_EXTRACT_AGENT_NAME: MicroPlacement.DURING_CALL,
     PennyConstants.STATE_CLASSIFIER_AGENT_NAME: MicroPlacement.TURN_HEAD,
     PennyConstants.SKILL_NAMING_AGENT_NAME: MicroPlacement.RUN_CLOSE,
-    PennyConstants.SKILL_FRAME_AGENT_NAME: MicroPlacement.RUN_CLOSE,
+    # The framer moved to learn ENTRY (#1868): it draws before the chat agent, on the
+    # message that opens the round, so its events belong at the head of the turn it frames
+    # — the same causal relationship the state classifier has, and now the same placement.
+    # A round nothing framed at entry is framed at run end instead, and that draw renders
+    # at the head too; the placement declares where the draw normally sits, and a batch is
+    # never dropped for sitting elsewhere.
+    PennyConstants.SKILL_FRAME_AGENT_NAME: MicroPlacement.TURN_HEAD,
 }
 
 _NUDGE_FRAMES = (
@@ -3437,20 +3444,41 @@ def _exact_count_check(signature: SkillSignature, families: Sequence[ParameterFa
 def _framing_advisories(signature: SkillSignature) -> list[Check]:
     """What the draw committed to, verbatim and UNSCORED — whether a name is WELL judged
     is read at joint review against the reference outputs on the ticket, and no scorer
-    should fake that."""
+    should fake that.
+
+    Each parameter's line carries the VALUE it was demonstrated with (#1868) and the run
+    closes with the container name those values derive — which is what the draw actually
+    decides now, since a round's identity is the skill plus its values.  THAT a value is
+    the user's own words is the production validator's (an accepted draw cannot carry a
+    value nobody said); WHICH span was the right one is the same kind of judgment as a
+    name, so it is rendered for review rather than scored by a fixture."""
     return [
         Check(f"named it {signature.name!r}", True, kind="state", scored=False),
         Check(f"described it {signature.description!r}", True, kind="state", scored=False),
         *(
             Check(
-                f"asks {p.name!r} — {p.description!r}",
+                f"asks {p.name!r} — {p.description!r} (drawn value {p.value!r})",
                 True,
                 kind="state",
                 scored=False,
             )
             for p in signature.parameters
         ),
+        Check(
+            f"derives the container {_derived_container(signature)!r}",
+            True,
+            kind="state",
+            scored=False,
+        ),
     ]
+
+
+def _derived_container(signature: SkillSignature) -> str:
+    """The container this framing would build, through the SHIPPED derivation — never a
+    copy of the scheme, so what the report shows is the name production would use."""
+    return derive_collection_name(
+        signature.name, [parameter.value for parameter in signature.parameters]
+    )
 
 
 @pytest.fixture

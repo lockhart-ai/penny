@@ -39,7 +39,7 @@ import pytest
 from similarity.dedup import JobSide, is_same_job
 
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState
+from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.models import Skill
 from penny.database.skill_store import (
@@ -72,6 +72,7 @@ from penny.tools.memory_tools import collector_tool_surface
 from penny.tools.micro_context import (
     SKILL_FRAME_SYSTEM_PROMPT,
     SKILL_NAMING_SYSTEM_PROMPT,
+    FramedParameter,
     MicroContext,
     SkillSignature,
     slug_parameter_name,
@@ -760,10 +761,13 @@ _LABELLED_ROUND = (
     "LABEL key: note_key — what to call the note it saves\n"
     "LABEL content: note_text — the note it writes about the page"
 )
+# The value line is a literal span of ``_UTTERANCE`` — the framer's whole document is the
+# user's turns, and a value that is not in them is refused (#1868).
 _FRAMED_ROUND = (
     "NAME: price-watcher\n"
     "DESCRIPTION: keep a listing's current price up to date\n"
-    "PARAMETER listing_url — the listing whose price to read"
+    "PARAMETER listing_url — the listing whose price to read\n"
+    "VALUE listing_url: the aurora deck 2 listing"
 )
 
 
@@ -834,6 +838,50 @@ async def test_the_labeller_writes_the_program_and_the_framer_writes_the_interfa
     row = db.memories.get("aurora-prices")
     assert row is not None
     assert row.skill_name is None and row.extraction_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_the_round_s_entry_framing_is_reused_at_run_end_and_never_re_drawn(db):
+    """The interface is decided ONCE per round (#1868): when the machine framed the round
+    on entering learn, run-end extraction READS that framing and makes no framing draw at
+    all.
+
+    A re-draw is not a re-read — the same turns can be framed differently on a second
+    look, and the turn was instructed under the entry name and wrote into the container
+    derived from it, so filing the skill under whatever a second draw preferred would
+    leave that container pointing at a routine no longer called that.  The labelling half
+    is untouched: it answers a different question from different evidence and still runs
+    (#1824)."""
+    model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
+    framing = RoundFraming(
+        signature=SkillSignature(
+            name="watch-lantern-price",
+            description="keep a lantern listing's price up to date",
+            parameters=(
+                FramedParameter(
+                    name="listing_url",
+                    description="the listing whose price to read",
+                    value="the aurora deck 2 listing",
+                ),
+            ),
+        ),
+        container="watch-lantern-price-the-aurora-deck-2-listing",
+    )
+
+    result = await _extractor(db, model=model).extract(
+        "run-A", state=ConversationState.LEARN, framing=framing
+    )
+
+    assert isinstance(result, SkillExtracted)
+    assert _draws(model, SKILL_FRAME_SYSTEM_PROMPT) == 0, "the round was framed once, at entry"
+    assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1, "the labelling half still runs"
+    assert result.skill.name == "watch-lantern-price"
+    assert result.skill.description == "keep a lantern listing's price up to date"
+    params = parameters_from_json(result.skill.parameters)
+    assert [(p.name, p.description, p.required) for p in params] == [
+        ("listing_url", "the listing whose price to read", True)
+    ]
 
 
 @pytest.mark.asyncio
@@ -1089,40 +1137,124 @@ async def test_a_name_that_swallowed_its_description_costs_the_whole_draw(db):
 # how many times the model was asked, not only about what came back.
 
 
-async def _framed(drawn: str) -> tuple[SkillSignature | None, int]:
+# The round these draws are framing — the framer's whole document, so it is also the text
+# every drawn VALUE must be a literal span of (#1868).  Two listings, because the cases
+# that matter here are the multi-parameter ones.
+_FRAMER_TURNS = (
+    "can you compare what the two lantern listings cost\n"
+    "read https://faux-market.example/keel-lantern and "
+    "https://faux-market.example/brass-lantern, take the price from each, and remember them"
+)
+
+
+async def _framed(drawn: str, spoken: str = _FRAMER_TURNS) -> tuple[SkillSignature | None, int]:
     """One framing draw answered by a mock model with ``drawn`` — the signature (or
-    ``None``), and how many times the draw was made."""
+    ``None``), and how many times the draw was made.
+
+    ``spoken`` is the document the draw is made over, which for this customer IS the user's
+    turns: a drawn value has to be a literal span of it, so a case that means to exercise
+    the span check hands it a document the value is not in."""
     model = _run_end_model(framing=drawn)
-    signature = await MicroContext(cast(Any, model)).frame_skill("the user's turns")
+    signature = await MicroContext(cast(Any, model)).frame_skill(spoken)
     return signature, len(model.requests)
 
 
 @pytest.mark.asyncio
 async def test_the_framer_writes_a_name_a_description_and_the_minted_parameters():
-    """A well-formed draw IS the routine's interface (#1830): the generic name, the one
-    line it is for, and one parameter per piece the user would have to say again — in
-    draw order, because two parameters are told apart by which is which.
+    """A well-formed draw IS the routine's interface (#1830) plus what this round
+    demonstrated it with (#1868): the generic name, the one line it is for, one parameter
+    per piece the user would have to say again — in draw order, because two parameters are
+    told apart by which is which — and each parameter's value.
 
     The names come back HARDENED, unlike a leaf label's: this one is the binding key
     instantiation uses (``params={'listing_url': …}``), so the rule that makes it usable
-    runs inside the draw rather than somewhere downstream.  And the tolerance the
-    declared shape carries applies here like anywhere else — an EN-dash separates a name
-    from its description without costing a reroll."""
+    runs inside the draw rather than somewhere downstream.  It is also how a VALUE line
+    finds the PARAMETER line it answers, which is why one written `Listing URL` and the
+    other written `listing_url` still meet.  And the tolerance the declared shape carries
+    applies here like anywhere else — an EN-dash separates a name from its description
+    without costing a reroll.
+
+    The VALUES are carried VERBATIM: they are the user's own words, and the container this
+    round runs into is named from them, so tidying one here would rename a job."""
     signature, draws = await _framed(
         "NAME: listing-price-comparer\n"
         "DESCRIPTION: compare what two marketplace listings currently cost\n"
         "PARAMETER Listing URL – the first listing to read\n"
-        "PARAMETER rival_listing — the listing to compare it against"
+        "PARAMETER rival_listing — the listing to compare it against\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern\n"
+        "VALUE Rival Listing: https://faux-market.example/brass-lantern"
     )
 
     assert draws == 1, "tolerated decoration is not a contract violation"
     assert signature is not None
     assert signature.name == "listing-price-comparer"
     assert signature.description == "compare what two marketplace listings currently cost"
-    assert [(p.name, p.description) for p in signature.parameters] == [
-        ("listing_url", "the first listing to read"),
-        ("rival_listing", "the listing to compare it against"),
+    assert [(p.name, p.description, p.value) for p in signature.parameters] == [
+        ("listing_url", "the first listing to read", "https://faux-market.example/keel-lantern"),
+        (
+            "rival_listing",
+            "the listing to compare it against",
+            "https://faux-market.example/brass-lantern",
+        ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_parameter_with_no_value_fails_the_whole_draw():
+    """COVERAGE over the draw's OWN minted set (#1868): every parameter it named gets
+    exactly one value, and nothing else does.
+
+    It is #1828's coverage rule for a customer that knows its offered set exactly — here
+    it knows it because it just wrote it in the same draw — so a parameter answered by
+    nothing, a value given twice, and a value for a parameter no line minted are all one
+    violation with one answer: re-drawn on the unchanged context for the whole budget,
+    then an honest whole-draw failure.  The alternative would be a container named from a
+    partial identity, which is a different job wearing this one's name."""
+    unanswered, draws = await _framed(
+        "NAME: listing-price-comparer\n"
+        "DESCRIPTION: compare what two marketplace listings currently cost\n"
+        "PARAMETER listing_url — the first listing to read\n"
+        "PARAMETER rival_listing — the listing to compare it against\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
+    )
+
+    assert unanswered is None
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+
+    unminted, draws = await _framed(
+        "NAME: listing-price-watcher\n"
+        "DESCRIPTION: keep a marketplace listing's current price up to date\n"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern\n"
+        "VALUE how_often: the two lantern listings"
+    )
+
+    assert unminted is None, "a value for a parameter the draw never minted answers nothing"
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_a_value_the_user_never_said_fails_the_whole_draw():
+    """The check the value half exists for (#1868/#1866): a value must be a literal span
+    of the user's own turns.
+
+    The measured defect was a bound url carrying an underscore that appears nowhere in the
+    message — and at learn entry the harm compounds, because the container the round runs
+    into is NAMED from these values: an invented one mints a container for a job nobody
+    asked for, and nothing downstream could tell that had happened.  So it is a contract
+    violation like any other rather than a value.
+
+    The tolerance is the shared, deliberately small one: a line break the render
+    introduced and a capital the user did not type survive; spelling does not."""
+    invented, draws = await _framed(
+        "NAME: listing-price-watcher\n"
+        "DESCRIPTION: keep a marketplace listing's current price up to date\n"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        "VALUE listing_url: https://faux-market.example/keel_lantern"
+    )
+
+    assert invented is None
+    assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1157,7 +1289,8 @@ async def test_a_malformed_parameter_line_fails_the_whole_draw():
         "NAME: listing-price-watcher\n"
         "DESCRIPTION: keep a marketplace listing's current price up to date\n"
         "PARAMETER listing_url — the listing whose price to read\n"
-        'PARAMETER what_to_pull | the detail to read off it (e.g., "the price")'
+        'PARAMETER what_to_pull | the detail to read off it (e.g., "the price")\n'
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
     )
 
     assert swallowed is None
@@ -1167,7 +1300,8 @@ async def test_a_malformed_parameter_line_fails_the_whole_draw():
         "NAME: listing-price-watcher\n"
         "DESCRIPTION: keep a marketplace listing's current price up to date\n"
         "PARAMETER listing_url — the listing whose price to read\n"
-        "PARAMETER how_often"
+        "PARAMETER how_often\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
     )
 
     assert undescribed is None, "a parameter nobody can be told what to supply is not an interface"
@@ -1188,7 +1322,8 @@ async def test_a_parameter_named_twice_fails_the_whole_draw():
         "NAME: listing-price-comparer\n"
         "DESCRIPTION: compare what two marketplace listings currently cost\n"
         "PARAMETER listing_url — the first listing to read\n"
-        "PARAMETER Listing URL — the listing to compare it against"
+        "PARAMETER Listing URL — the listing to compare it against\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
     )
 
     assert signature is None
@@ -1203,14 +1338,17 @@ async def test_a_signature_missing_its_name_or_description_fails_the_draw():
     description is what every judging surface reads."""
     unnamed, draws = await _framed(
         "DESCRIPTION: keep a marketplace listing's current price up to date\n"
-        "PARAMETER listing_url — the listing whose price to read"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
     )
 
     assert unnamed is None
     assert draws == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
 
     undescribed, draws = await _framed(
-        "NAME: listing-price-watcher\nPARAMETER listing_url — the listing whose price to read"
+        "NAME: listing-price-watcher\n"
+        "PARAMETER listing_url — the listing whose price to read\n"
+        "VALUE listing_url: https://faux-market.example/keel-lantern"
     )
 
     assert undescribed is None
@@ -1355,12 +1493,22 @@ def test_framing_system_prompt_whole_render():
     canonical name for a kind of value is the point of the naming clause.  The
     'first_plot'/'second_plot' pair keeps the allotment register, far from every case.
 
-    The three tagged lines still RENDER from the declared shape (`render_line`), so the
+    Round 10 (#1868) added the fourth step: each parameter's VALUE this time.  The draw
+    moved to the START of the round it frames, and the container that round's results are
+    kept in is named from the skill plus these values — so the same job asked for twice
+    derives one name and finds one container, which is a judgment the framework stops
+    asking a model to make.  The step is worded like the binder's own copy instruction
+    (copy it EXACTLY, do not tidy/shorten/expand/complete) because it IS the same
+    instruction about the same thing, and the VALUE line it renders is literally the
+    binder's line — one grammar, declared once, so a prompt and a parser cannot drift
+    apart across two customers.
+
+    The four tagged lines still RENDER from the declared shape (`render_line`), so the
     tags and separators the model is told to write remain literally the ones the parse
     splits on."""
     assert SKILL_FRAME_SYSTEM_PROMPT == (
         "You are writing the public interface of a reusable routine. You are given what "
-        "the user asked for, in their own words. Do three things:\n"
+        "the user asked for, in their own words. Do four things:\n"
         "\n"
         "1. From what they asked for, extract the CORE USER INTENT — what they were trying "
         "to get done when they asked. Their own words are the evidence.\n"
@@ -1391,11 +1539,18 @@ def test_framing_system_prompt_whole_render():
         "'second_plot'.\n"
         "   - description: one line saying what to supply. Do not include examples.\n"
         "\n"
+        "4. Give each parameter its VALUE this time — the part of the user's words that "
+        "supplies it. Copy that part EXACTLY as they wrote it: same characters, same "
+        "spelling. Do not tidy it up, shorten it, expand it, or complete a piece they left "
+        "half-said. Every parameter you named gets one value line, and nothing else does.\n"
+        "\n"
         "Respond with these tagged lines and nothing else:\n"
         "NAME: <a short generic verb-noun name>\n"
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
-        "Write nothing else — no preamble, no explanation, no restating the ask."
+        "VALUE <parameter_name>: <the value, in the user's own words>\n"
+        "Write the parameter lines first, then the value lines. Write nothing else — no "
+        "preamble, no explanation, no restating the ask."
     )
 
 
