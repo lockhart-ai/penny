@@ -1335,6 +1335,19 @@ def test_framing_system_prompt_whole_render():
     which makes an invention structurally unavailable rather than merely discouraged.  The
     filter clauses are unchanged; what changed is that they now filter a set that exists.
 
+    Round 9 (code-owner authored) put two prohibitions on the NAME-AND-DESCRIBE step,
+    where the not-a-parameter list had only ever spoken to step 3.  The description was
+    baking the job's terms and the demonstration's specifics into what the routine IS,
+    and a description is read by everything that later asks whether a routine COVERS an
+    ask — so a routine described by the occasion it was first taught on stops matching
+    the next one.  Both classes were measured on the idle → apply cases: "checks a
+    webpage daily and notifies when a newer item appears" made three samples doubt a
+    two-hourly ask was the same job and park in elicit, and "monitor a ferry timetable
+    for updates to the late sailing entry" — where the late sailing IS what
+    `search_phrase` binds — made an ask about a different sailing draw request.  So the
+    step now says it twice, plainly: no timing, scheduling or notification, and no
+    parameter's value.
+
     Two deliberate absences the code owner ruled on directly.  There is **no worked
     example of a filled line** in this version — its return, if the value-echo class
     comes back, is a measurement rather than an assumption.  And the type nouns 'url'
@@ -1354,7 +1367,8 @@ def test_framing_system_prompt_whole_render():
         "\n"
         "2. Name and describe the ROUTINE by that intent: a short generic verb-noun name "
         "for the KIND of task — never the specific instance — and one line stating what "
-        "the routine is for.\n"
+        "the routine is for. Do not include any information about timing, scheduling, or "
+        "notifications. Do not include any parameter's value in the name or description.\n"
         "\n"
         "3. Decide the PARAMETERS, starting from what the user actually provided. First, "
         "in your reasoning, list the pieces of information the user gave you — the things "
