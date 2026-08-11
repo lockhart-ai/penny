@@ -437,6 +437,14 @@ class PennyConstants:
     # questions they are — implementation and interface, sharing no evidence (#1824).
     SKILL_FRAME_AGENT_NAME = "skill-framer"
     SKILL_FRAME_PROMPT_TYPE = "skill_frame"
+    # The ledger identity of a skill-BINDING micro-context (#1867) — the FIFTH
+    # customer of the micro-context machinery.  Given a routine that ALREADY exists
+    # and the user's own words asking for it on a new occasion, one single-shot
+    # model call fills each declared parameter from those words (the tagged
+    # VALUE/MISSING contract).  Its own agent/prompt type, so the routing draw and
+    # the filling draw stay the two separate questions they are (#1803).
+    SKILL_BIND_AGENT_NAME = "skill-binder"
+    SKILL_BIND_PROMPT_TYPE = "skill_bind"
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

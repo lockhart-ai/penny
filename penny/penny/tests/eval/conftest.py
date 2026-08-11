@@ -42,7 +42,9 @@ from penny.database.skills import (
     SkillDraft,
     SkillParameter,
     SkillStep,
+    build_binding_content,
     distill_steps,
+    render_spoken_turns,
 )
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
@@ -69,10 +71,13 @@ from penny.tools.browse import BrowseChannelUnavailableError
 from penny.tools.micro_context import (
     FramedParameter,
     MicroContext,
+    MissingParameters,
+    SkillBinding,
     SkillLabels,
     SkillSignature,
     StateDrawOutcome,
     slug_parameter_name,
+    spoken_form,
 )
 
 # Samples per case.  Override with EVAL_SAMPLES=2 for a quick smoke run.
@@ -3604,6 +3609,246 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                         result=result,
                         phrasing=utterance,
                         agent_names=(PennyConstants.SKILL_NAMING_AGENT_NAME,),
+                    )
+                    _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
+                    perf.add(live_prompt_perf(penny.db))
+            finally:
+                await server.stop()
+        eval_artifacts.record_case(
+            case_id=case_id,
+            family=family,
+            module=request.module.__name__,
+            results=results,
+            perf=perf,
+            min_pass_rate=min_pass_rate,
+        )
+        perf.report(case_id, samples)
+        _assert_threshold(case_id, results, min_pass_rate)
+
+    return _run
+
+
+# ── Skill BINDING: filling an existing signature from the ask (#1867) ─────────
+
+BinderEval = Callable[..., Awaitable[None]]
+
+
+class BoundExpectation(NamedTuple):
+    """One declared parameter and what a correct bind for it looks like (#1867).
+
+    ``anchor`` is the part of the user's own words the value has to carry, compared
+    through the SHIPPED ``spoken_form`` — so a bound url passes whether or not the draw
+    kept the scheme, and a phrase passes whether or not it kept the article in front of
+    it.  Deliberately not an equality: which span of the ask supplies a value has a
+    little play in it, and a scorer demanding one exact string would be answering for the
+    draw.
+
+    An EMPTY anchor is the SHORTFALL direction: the ask supplies nothing for this
+    parameter, so the only correct answer is the missing outcome naming it, and any value
+    at all is a guess."""
+
+    parameter: str
+    anchor: str = ""
+
+
+def _binder_rerolled(db: Database) -> bool:
+    """Did the binder draw more than once — the fragile signal, a sample that only got
+    there by recovering.  One customer here, so one row is the clean case."""
+    return len(_micro_context_rows(db, PennyConstants.SKILL_BIND_AGENT_NAME)) > 1
+
+
+def _bound_check(expectation: BoundExpectation, value: str | None, reported: bool) -> Check:
+    """A parameter the ask DOES supply: a value came back, and it carries what the ask
+    supplies for it."""
+    if value is None:
+        return Check(
+            f"binds the {expectation.parameter}",
+            False,
+            kind="state",
+            rationale="reported it missing" if reported else "no value came back for it",
+        )
+    carried = spoken_form(expectation.anchor) in spoken_form(value)
+    return Check(
+        f"binds the {expectation.parameter}",
+        carried,
+        kind="state",
+        rationale=None if carried else f"bound {value!r}, not the value the ask supplies",
+    )
+
+
+def _shortfall_check(parameter: str, guessed: str | None, named: bool) -> Check:
+    """A parameter the ask does NOT supply: the only honest answer names it missing.
+
+    A value here is the failure the span check guards one level up — the words are short
+    of something and the draw filled it anyway — so the rationale quotes what it made
+    up."""
+    if named:
+        return Check(f"reports the {parameter} missing", True, kind="state")
+    rationale = f"bound it to {guessed!r}" if guessed is not None else "neither bound nor reported"
+    return Check(f"reports the {parameter} missing", False, kind="state", rationale=rationale)
+
+
+def _no_terms_check(values: dict[str, str], forbidden: Sequence[str]) -> Check:
+    """No job TERM landed in a value (#1867).
+
+    How often a routine runs and when it stops are settled where the job is set running,
+    never by the binder — so an ask's cadence and expiry words turning up INSIDE a bound
+    value mean the draw read the terms as part of the thing to point the routine at.
+    Structural: each case names the term words its own ask carries, and none of them may
+    appear in any value.  An ask stating no terms has nothing to check."""
+    if not forbidden:
+        return Check.na("no job term landed in a value", kind="state")
+    offenders = [
+        f"{name} ({term})"
+        for name, value in values.items()
+        for term in forbidden
+        if spoken_form(term) in spoken_form(value)
+    ]
+    return Check(
+        "no job term landed in a value",
+        not offenders,
+        kind="state",
+        rationale=None if not offenders else f"carried the terms: {'; '.join(offenders)}",
+    )
+
+
+def _binding_advisories(binding: SkillBinding) -> list[Check]:
+    """What the draw committed to, verbatim and UNSCORED — every value it bound and every
+    parameter it declined, so a report shows the answer whichever way it went."""
+    checks = [
+        Check(f"bound {name!r} = {value!r}", True, kind="state", scored=False)
+        for name, value in binding.values.items()
+    ]
+    if isinstance(binding, MissingParameters):
+        declined = ", ".join(binding.names)
+        checks.append(Check(f"reported missing: {declined}", True, kind="state", scored=False))
+    return checks
+
+
+def _refused_binding(expectations: Sequence[BoundExpectation]) -> list[Check]:
+    """A refused draw fails every scored check with its reason named, never silently.
+    Returning nothing is honest when the words cannot be read into the signature, but it
+    is not the decision the case is asking for."""
+    refused = "the draw was refused — no binding came back"
+    return [
+        *(
+            Check(
+                f"binds the {expectation.parameter}"
+                if expectation.anchor
+                else f"reports the {expectation.parameter} missing",
+                False,
+                kind="state",
+                rationale=refused,
+            )
+            for expectation in expectations
+        ),
+        Check("no job term landed in a value", False, kind="state", rationale=refused),
+    ]
+
+
+def _score_binding(
+    binding: SkillBinding | None,
+    expectations: Sequence[BoundExpectation],
+    forbidden: Sequence[str],
+) -> list[Check]:
+    """The binding case's graded checks (#1867), read off the draw's own typed answer.
+
+    One check per declared parameter — bound to a span of the ask carrying the value the
+    ask supplies, or named missing when it supplies none — plus the structural check that
+    no job term rode into a value.  Membership, coverage and "is this even in the user's
+    words" belong to the production validator, so an accepted draw never reaches here
+    carrying an invented value; what is left to measure is whether it picked the RIGHT
+    span, and whether it knew when to decline.
+
+    The drawn values then ride ADVISORY, as the framing case's do — what a well-chosen
+    span looks like is read at joint review against the reference values on the ticket."""
+    if binding is None:
+        return _refused_binding(expectations)
+    missing = binding.names if isinstance(binding, MissingParameters) else ()
+    verdicts = [
+        _shortfall_check(one.parameter, binding.values.get(one.parameter), one.parameter in missing)
+        if not one.anchor
+        else _bound_check(one, binding.values.get(one.parameter), one.parameter in missing)
+        for one in expectations
+    ]
+    return [
+        *verdicts,
+        _no_terms_check(binding.values, forbidden),
+        *_binding_advisories(binding),
+    ]
+
+
+@pytest.fixture
+def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> BinderEval:
+    """Drive the skill BINDER (#1867) N times, and NOTHING else.
+
+    The binder's whole input is an EXISTING signature and the round's user turns, so the
+    case is those two things — there is no upstream draw to isolate it from and nothing
+    else to fixture.  The routing draw that picks WHICH skill is not run: that decision
+    is the classifier's and the transitions suite measures it; this one measures the
+    filling, which is a separate draw by ruling (#1803).
+
+    Everything the draw consumes is built by PRODUCTION code — ``render_spoken_turns``
+    and ``build_binding_content`` render the document and ``MicroContext.bind_skill``
+    makes the call — so the case exercises the shipped prompt, the shipped parse and the
+    shipped validation.  Synthetic here means the TURNS and the SIGNATURE are authored,
+    never the prompt.
+    """
+
+    async def _run(
+        *,
+        case_id: str,
+        turns: Sequence[str],
+        skill: str,
+        intent: str,
+        parameters: Sequence[SkillParameter],
+        expectations: Sequence[BoundExpectation],
+        forbidden: Sequence[str] = (),
+        samples: int = SAMPLES,
+        min_pass_rate: float | None = 0.75,
+        timeout: float = 60.0,
+        family: str | None = None,
+    ) -> None:
+        eval_artifacts.begin_case(case_id)
+        results: list[SampleResult] = []
+        perf = _Perf()
+        spoken = render_spoken_turns(turns)
+        content = build_binding_content(spoken, skill, intent, parameters)
+        declared = [parameter.name for parameter in parameters]
+        for sample_index in range(samples):
+            server = MockSignalServer()
+            await server.start()
+            try:
+                config = _real_model_config(
+                    make_config,
+                    signal_api_url=f"http://localhost:{server.port}",
+                    db_path=_sample_db_path(tmp_path, case_id, sample_index),
+                )
+                async with run_penny_with_server(config, server) as penny:
+                    micro = MicroContext(penny.model_client)
+                    try:
+                        binding = await asyncio.wait_for(
+                            micro.bind_skill(
+                                content, declared, spoken, run_target=penny.chat_agent.name
+                            ),
+                            timeout=timeout,
+                        )
+                        scored = _score_binding(binding, expectations, forbidden)
+                        result = _guarded_graded(list(scored), [])
+                        result.fragile = result.passed and _binder_rerolled(penny.db)
+                        results.append(result)
+                        _stamp_cause(penny.db, result)
+                    except TimeoutError:
+                        result = SampleResult.binary(["no binding draw within timeout"])
+                        _stamp_cause(penny.db, result, timed_out=True)
+                        results.append(result)
+                    _write_classifier_report(
+                        penny.db,
+                        case_id,
+                        sample_index,
+                        result=result,
+                        phrasing=turns[-1] if turns else "",
+                        agent_names=(PennyConstants.SKILL_BIND_AGENT_NAME,),
                     )
                     _dump_thinking(penny.db, case_id, sample_index, failed=not result.passed)
                     perf.add(live_prompt_perf(penny.db))

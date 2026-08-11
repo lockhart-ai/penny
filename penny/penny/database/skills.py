@@ -49,10 +49,16 @@ tool-derived — distillation is handed the collection names and compares VALUES
 nothing clears it: a destination is never a parameter, so where a routine writes is
 always what it is applied to.
 
+Everything above is the round that TAUGHT a routine.  The last section is every round
+that asks for it AGAIN (#1867): :func:`build_binding_content`, the document the binding
+micro-context reads (the signature as it stands, then the user's own words), and
+:func:`derive_collection_name`, the pure (skill, values) → container name that makes a
+job's identity deterministic instead of a naming judgment.
+
 This module is pure (no engine, no tool imports): the step/parameter models, the
-provenance inference (:func:`distill_steps`), and the load-bearing render
+provenance inference (:func:`distill_steps`), the load-bearing render
 (:func:`render_skill`) that turns steps + bound params into the numbered TEXT
-``extraction_prompt`` a collection runs.  The DB store lives in
+``extraction_prompt`` a collection runs, and the apply-time pair above.  The DB store lives in
 :mod:`penny.database.skill_store`; the run-end extractor in
 :mod:`penny.skill_extraction`; the ``skill_read`` tool in
 :mod:`penny.tools.skill_tools`.
@@ -62,8 +68,10 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -616,3 +624,169 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
             step.model_copy(update={"arguments": arguments, "substitutions": substitutions})
         )
     return retargeted
+
+
+# ── Applying a routine again: the binder's document + the derived name (#1867) ─
+#
+# Everything above is about the round that TAUGHT a routine.  These two are about every
+# round that asks for it afterwards: the document the binding micro-context reads, and
+# the name the container that job runs into is called.
+#
+# Both are deterministic.  Identity is the skill plus the values the user said, so two
+# asks for the same job derive the same name and find-or-create IS tier-1 dedup, while a
+# different place mints a distinct name — a judgment the framework no longer asks a model
+# to make.
+
+
+def render_spoken_turns(turns: Sequence[str]) -> str:
+    """The round's user turns, one per line — the text a bound value must be a literal
+    span of.
+
+    One function because the same string has two uses that must not drift: it is the
+    last block of the binder's document AND the haystack ``MicroContext.bind_skill``
+    checks every drawn value against.  Rendered in two places, the document could say
+    one thing while the check tested another."""
+    return "\n".join(turns)
+
+
+_ROUTINE_BLOCK_HEAD = "The routine that has been asked for:"
+_NEEDS_BLOCK_HEAD = "What it needs, one line each:"
+_SPOKEN_BLOCK_HEAD = "What the user said, in their own words:"
+_NEEDS_NOTHING = "(nothing)"
+
+
+def build_binding_content(
+    spoken: str, name: str, description: str, parameters: Sequence[SkillParameter]
+) -> str:
+    """The binder's content (#1867): the routine as it already stands — what it is
+    called, what it is for, and one line per declared parameter — and then the user's
+    own turns.
+
+    The signature comes FIRST and the words LAST, because the words are what is being
+    read: the draw is told what to look for, then handed the text to look in.  EVERY
+    declared parameter renders, described or not, since the draw has to answer for each
+    one and a parameter rendered nowhere could only be answered by guessing.
+
+    ``spoken`` arrives already rendered (:func:`render_spoken_turns`) rather than joined
+    here, so the block this document ends with is the SAME string the span check tests
+    against.
+
+    PUBLIC because the binding eval builds it: that case drives ``bind_skill`` alone, so
+    its input must come from THIS function and never from a copy that can drift."""
+    needs = "\n".join(_needs_line(parameter) for parameter in parameters) or _NEEDS_NOTHING
+    return "\n\n".join(
+        [
+            f"{_ROUTINE_BLOCK_HEAD}\nname: {name}\nwhat it is for: {description}",
+            f"{_NEEDS_BLOCK_HEAD}\n{needs}",
+            f"{_SPOKEN_BLOCK_HEAD}\n{spoken}",
+        ]
+    )
+
+
+def _needs_line(parameter: SkillParameter) -> str:
+    """One declared parameter for the binder's document — its name (the key the draw
+    writes back, so the answer maps home with no guess) and what to supply for it, the
+    description omitted cleanly when the signature carries none."""
+    if not parameter.description:
+        return f"- {parameter.name}"
+    return f"- {parameter.name}: {parameter.description}"
+
+
+# The longest a DERIVED collection name may be.  A derived name is READ, not looked up:
+# it renders on the store map, on the mechanisms line and in the catalog, each time as
+# one clause among others on a line — so the cap is a reading budget, not a storage
+# limit, and it is spent on WHOLE tokens.  There is deliberately no hash and no ellipsis
+# anywhere in this scheme: a name nobody can read has given up the only thing it is for.
+DERIVED_NAME_MAX_LENGTH = 64
+
+_SLUG_SEPARATORS = re.compile(r"[^a-z0-9]+")
+
+
+def derive_collection_name(skill_name: str, values: Sequence[str]) -> str:
+    """The name of the container a routine bound to ``values`` runs into (#1867).
+
+    The scheme, in one sentence: the skill's name slugged, then each value slugged in
+    DECLARED parameter order, joined with hyphens, lowercase throughout — with a url
+    normalised to its host and path first, so the same page written four ways
+    (scheme or not, ``www.`` or not, a tracking query, a trailing slash) is one job.
+
+    Its whole point is that the name is obvious.  ``monitor_price`` pointed at
+    ``https://faux-market.example/keel-lantern`` derives
+    ``monitor-price-faux-market-example-keel-lantern`` — which says what it is without
+    anybody resolving anything.
+
+    **Collision posture**: the same skill and the same values derive the same name, and
+    that IS the point — re-asking for a job you already have finds the container you
+    already have (tier-1 dedup by construction), while a different place mints a distinct
+    one.  Two DIFFERENT jobs collide only if they agree token for token to the reading
+    budget; that is accepted rather than defended against, because the alternative is a
+    disambiguating suffix nobody can read, and by the budget's own arithmetic two names
+    that agree that far read as the same job to anyone looking at them."""
+    head = _slug_tokens(skill_name)
+    kept = _within_reading_budget(head, [_value_tokens(value) for value in values])
+    return "-".join([*head, *(token for tokens in kept for token in tokens)])
+
+
+def _slug_tokens(text: str) -> list[str]:
+    """``text`` as lowercase alphanumeric tokens — every other run of characters is a
+    boundary.  ASCII by construction, like every other key this codebase mints
+    (:func:`penny.tools.micro_context.slug_parameter_name`), so a derived name is
+    typeable wherever it is rendered."""
+    return [token for token in _SLUG_SEPARATORS.split(text.casefold()) if token]
+
+
+def _value_tokens(value: str) -> list[str]:
+    """One bound value's tokens — a url normalised to host + path first, anything else
+    slugged as the phrase it is."""
+    return _slug_tokens(_host_and_path(value) or value)
+
+
+def _host_and_path(value: str) -> str | None:
+    """``value`` as ``host/path`` when it is a bare url, else ``None``.
+
+    What survives is what identifies the page: the host (minus any credentials, port and
+    leading ``www.``) and the path (minus a trailing slash), with the query and fragment
+    dropped — those are session dirt far more often than identity.
+
+    Recognised STRICTLY: a single whitespace-free token whose authority carries a dot.  A
+    phrase is therefore never a url, so a sentence containing a full stop can never be
+    truncated at that stop by a looser reading."""
+    if not value or any(character.isspace() for character in value):
+        return None
+    parts = urlsplit(value if "//" in value else f"//{value}")
+    host = parts.netloc.rsplit("@", 1)[-1].split(":", 1)[0]
+    if "." not in host:
+        return None
+    return f"{host.removeprefix('www.')}{parts.path.rstrip('/')}"
+
+
+def _within_reading_budget(head: list[str], per_value: list[list[str]]) -> list[list[str]]:
+    """How many of each value's tokens fit inside :data:`DERIVED_NAME_MAX_LENGTH`, taken
+    ROUND-ROBIN across the values.
+
+    Round-robin rather than in order, because taking them in order loses a whole
+    parameter: truncating the joined tail drops the LAST value's tokens first, so two
+    jobs differing only in their last parameter would derive the same name and
+    find-or-create would hand the second one the first one's container.  A token from
+    each value in turn keeps every parameter represented for as long as there is room for
+    any of them.
+
+    A value stops the moment its next token does not fit, so it keeps a prefix of whole
+    tokens and never a hole in the middle — a readable shortening of what was asked for
+    rather than a rearrangement of it.  The skill's own name is never shortened: it is
+    the kind of job, and a name that has lost that says nothing at all."""
+    kept: list[list[str]] = [[] for _ in per_value]
+    characters = sum(len(token) for token in head)
+    count = len(head)
+    unfinished = set(range(len(per_value)))
+    while unfinished:
+        for index in sorted(unfinished):
+            tokens = per_value[index]
+            token = tokens[len(kept[index])] if len(kept[index]) < len(tokens) else None
+            if token is None or characters + len(token) + count > DERIVED_NAME_MAX_LENGTH:
+                unfinished.discard(index)
+                continue
+            kept[index].append(token)
+            characters += len(token)
+            count += 1
+    return kept

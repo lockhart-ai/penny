@@ -27,7 +27,7 @@ import pytest
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.constants import PennyConstants
 from penny.database import Database
-from penny.database.skills import SkillParameter
+from penny.database.skills import SkillParameter, build_binding_content, render_spoken_turns
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
@@ -42,6 +42,7 @@ from penny.tests.eval.artifacts import (
 )
 from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
+    BoundExpectation,
     Check,
     ParameterFamily,
     SampleResult,
@@ -51,6 +52,7 @@ from penny.tests.eval.conftest import (
     _frame_attributes_to,
     _guarded_graded,
     _labelling_input,
+    _score_binding,
     _score_framing,
     _score_labelling,
     _scorer_is_graded,
@@ -70,6 +72,7 @@ from penny.tests.eval.conftest import (
     tool_not_called,
     tool_was_called,
 )
+from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
@@ -91,7 +94,14 @@ from penny.tests.eval.test_state_transitions import (
 from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
 from penny.tools.collection_instantiation import _LINE_ESCAPE
-from penny.tools.micro_context import FramedParameter, LeafLabel, SkillLabels, SkillSignature
+from penny.tools.micro_context import (
+    BoundValues,
+    FramedParameter,
+    LeafLabel,
+    MissingParameters,
+    SkillLabels,
+    SkillSignature,
+)
 from penny.tools.models import ToolResult
 
 
@@ -1476,6 +1486,102 @@ def test_score_framing_grades_the_parameter_set_exactly() -> None:
     assert {check.rationale for check in refused} == {
         "the draw was refused — no signature came back"
     }
+
+
+@pytest.mark.parametrize("fixture", BINDING_FIXTURES, ids=lambda f: f.case_id)
+def test_each_binding_case_renders_exactly_the_document_it_claims(fixture) -> None:
+    """Per-case drift probe (#1867): each agreed case's signature + user turns, through
+    the SHIPPED renderers, produce EXACTLY the input document the case pins.
+
+    The pairs on the ticket are input/output pairs, so a fixture that has drifted from its
+    input is a case measuring something nobody agreed to.  It has to fail here, in ``make
+    check``, rather than after an hour of GPU time."""
+    spoken = render_spoken_turns(fixture.turns)
+    content = build_binding_content(spoken, fixture.skill, fixture.intent, fixture.parameters)
+
+    assert content == fixture.rendered_input
+    # And the case scores the parameters the signature actually declares — an expectation
+    # naming something the routine does not need could never be answered.
+    assert [one.parameter for one in fixture.expectations] == [
+        parameter.name for parameter in fixture.parameters
+    ]
+
+
+def test_score_binding_grades_each_declared_parameter_and_the_terms() -> None:
+    """The binding case's scoring over a fixture answer (#1867): one check per declared
+    parameter — bound to a span carrying the value the ask supplies, or named missing when
+    it supplies none — plus the structural check that no job TERM rode into a value, with
+    every drawn value riding ADVISORY.
+
+    The anchor is compared through the production ``spoken_form``, so a value that kept
+    the scheme and a value that dropped it both answer the same expectation: which span of
+    the ask supplies a value has a little play in it, and a scorer demanding one exact
+    string would be answering for the draw."""
+    expectations = (
+        BoundExpectation("url", "northpier.example/departures"),
+        BoundExpectation("keyword", "dawn sailing"),
+    )
+    bound = BoundValues(
+        values={"url": "https://northpier.example/departures", "keyword": "the dawn sailing"}
+    )
+
+    scored = _score_binding(bound, expectations, ("every morning",))
+    assert [(check.label, check.ok, check.scored) for check in scored] == [
+        ("binds the url", True, True),
+        ("binds the keyword", True, True),
+        ("no job term landed in a value", True, True),
+        ("bound 'url' = 'https://northpier.example/departures'", True, False),
+        ("bound 'keyword' = 'the dawn sailing'", True, False),
+    ]
+
+    # A value carrying the wrong span is its own miss, quoting what came back.
+    wrong = BoundValues(values={"url": "the north pier timetable", "keyword": "dawn sailing"})
+    assert _by_label(_score_binding(wrong, expectations, ()))["binds the url"] == (
+        False,
+        "bound 'the north pier timetable', not the value the ask supplies",
+    )
+
+    # A term swept into a value is the structural miss, naming the value and the term.
+    swept = BoundValues(
+        values={
+            "url": "https://northpier.example/departures",
+            "keyword": "dawn sailing every morning",
+        }
+    )
+    graded = _by_label(_score_binding(swept, expectations, ("every morning",)))
+    assert graded["no job term landed in a value"] == (
+        False,
+        "carried the terms: keyword (every morning)",
+    )
+
+    # The SHORTFALL direction: an expectation with no anchor wants the missing outcome,
+    # and a value there is a guess the rationale quotes.
+    shortfall = (expectations[0], BoundExpectation("keyword"))
+    reported = MissingParameters(
+        names=("keyword",), values={"url": "https://northpier.example/departures"}
+    )
+    # An ask stating no terms has nothing to check, so that one is NOT-APPLICABLE rather
+    # than a free pass — rendered, out of the denominator.
+    assert [
+        (check.label, check.ok, check.ignored) for check in _score_binding(reported, shortfall, ())
+    ] == [
+        ("binds the url", True, False),
+        ("reports the keyword missing", True, False),
+        ("no job term landed in a value", True, True),
+        ("bound 'url' = 'https://northpier.example/departures'", True, False),
+        ("reported missing: keyword", True, False),
+    ]
+    guessed = _by_label(_score_binding(bound, shortfall, ()))
+    assert guessed["reports the keyword missing"] == (False, "bound it to 'the dawn sailing'")
+
+    # A refused draw fails every scored check with its reason named, never silently.
+    refused = _score_binding(None, expectations, ("every morning",))
+    assert [(check.label, check.ok) for check in refused] == [
+        ("binds the url", False),
+        ("binds the keyword", False),
+        ("no job term landed in a value", False),
+    ]
+    assert {check.rationale for check in refused} == {"the draw was refused — no binding came back"}
 
 
 def test_the_page_family_classifies_by_name_only() -> None:

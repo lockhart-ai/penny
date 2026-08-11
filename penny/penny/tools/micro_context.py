@@ -464,6 +464,86 @@ STATE_CLASSIFIER_SYSTEM_PROMPT = (
     "the messages."
 )
 
+# ── Fifth customer: filling an EXISTING signature — the binder (#1867) ─────────
+# The framer above writes a routine's interface once, from the round that taught it.
+# This one runs every time that routine is asked for again: given the signature as it
+# already stands and the user's own words of THIS round, it says what each declared
+# parameter's value is.
+#
+# It MINTS nothing and JUDGES nothing.  The parameter set is fixed before the draw
+# begins, so "which parameters does this routine have?" is not a question here — it is
+# an input — and the only thing being decided is which part of the user's words fills
+# each one.  That is what makes the whole answer checkable in Python: membership against
+# the declared set, and every value a literal span of what the user actually said.  A
+# binder that returns a value nobody typed has confabulated, and the validator can see
+# it without a model in the loop.
+#
+# The SHORTFALL is part of the contract from the first line, not a failure mode bolted
+# on later: a parameter the user's words supply nothing for gets its own ``MISSING``
+# line, so the answer "they didn't say" is a POSITIVE statement the draw made rather
+# than something inferred from a line that never arrived.  That is #1828's coverage
+# ruling applied to a customer that knows its offered set exactly: every declared
+# parameter gets exactly one line, of one kind or the other, and nothing else does.
+#
+# Both tags are short, common, non-compound words (#1842, the long-literal decay class).
+VALUE_TAG = "VALUE"
+MISSING_TAG = "MISSING"
+
+# One line per declared parameter, in the two-field carve the labeller's line has: the
+# parameter's name keyed by ``FieldShape.NAME`` (it is the binding key the caller maps
+# home by, so a "name" carrying its own value is a malformed line rather than a key),
+# then the value, which takes whatever is left of the line.  The COLON separator splits
+# at the FIRST colon only, so a url's own ``https:`` travels in the value untouched.
+_VALUE_LINE = LineSpec(
+    tag=VALUE_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(
+        FieldSpec(
+            name=DrawField.NAME,
+            placeholder="<parameter_name>",
+            shape=FieldShape.NAME,
+            separator=Separator.COLON,
+        ),
+        FieldSpec(name=DrawField.VALUE, placeholder="<the value, in the user's own words>"),
+    ),
+)
+# The shortfall line carries the parameter's name and NOTHING else — what is missing is
+# named by the parameter, and what the user would have to say is already written on the
+# signature the draw was given, so a model-written reason beside it would be a second
+# copy of a sentence the consumer already holds.
+_MISSING_LINE = LineSpec(
+    tag=MISSING_TAG,
+    role=LineRole.PER_ITEM,
+    fields=(FieldSpec(name=DrawField.NAME, placeholder="<parameter_name>", shape=FieldShape.NAME),),
+)
+SKILL_BIND_SHAPE = MicroContextShape(lines=(_VALUE_LINE, _MISSING_LINE))
+
+BIND_SKILL_SYSTEM_PROMPT = (
+    "You are a filling-in step. A routine already exists, and someone has just asked "
+    "for it to be run on a new occasion. You are given the routine — what it is called, "
+    "what it is for, and each thing it needs — and the user's own words, exactly as "
+    "they wrote them.\n"
+    "\n"
+    "Fill in each thing the routine needs, from those words:\n"
+    "1. Take the list of things it needs as it stands. Never add anything to that list, "
+    "and never leave anything out.\n"
+    "2. For each one, find the part of the user's words that supplies it, and copy that "
+    "part EXACTLY as they wrote it — same characters, same spelling. Do not tidy it up, "
+    "shorten it, expand it, or complete a piece they left half-said.\n"
+    "3. When their words supply nothing for one of them, say it is missing. That is a "
+    "real answer, and it is the right one whenever the alternative is a guess.\n"
+    "\n"
+    "How often the routine runs, when it should stop, and whether to tell the user are "
+    "settled when it is set running. They are never things the routine needs, so they "
+    "are never a value here.\n"
+    "\n"
+    "Write one line for each thing the routine needs, and nothing else:\n"
+    f"{render_line(_VALUE_LINE)}\n"
+    f"{render_line(_MISSING_LINE)}\n"
+    "Write the name exactly as the routine lists it. Write nothing else — no preamble, "
+    "no explanation, no restating the ask."
+)
+
 # A user turn that is the rendered document ALONE — no ``Instruction:``/``Content:``
 # wrapper.  That frame is the extraction customer's (natural for "here's a page, pull X
 # out"); a customer whose ask lives entirely in its system prompt would only repeat the
@@ -561,6 +641,42 @@ class SkillSignature(BaseModel):
     name: str
     description: str
     parameters: tuple[FramedParameter, ...] = ()
+
+
+class BoundValues(BaseModel):
+    """The binder's COMPLETE answer (#1867): every declared parameter, keyed by the
+    name the SIGNATURE declares it under — never the spelling the draw happened to use
+    — and filled with a literal span of the user's own words.
+
+    Keyed by the declared name because that is the binding key everything downstream
+    uses (``params={<name>: …}``), and ordered by the declared order because that is
+    the order the derived collection name is built in.  A ``BoundValues`` is total by
+    construction: a parameter the words supplied nothing for makes the answer a
+    :class:`MissingParameters` instead, so a caller reading this one never has to check
+    for a hole."""
+
+    values: dict[str, str]
+
+
+class MissingParameters(BaseModel):
+    """The binder's SHORTFALL answer (#1867): the declared parameters the round's turns
+    supply no value for, ``names`` in declared order — the structural ``request``
+    signal, wired later.
+
+    It is an ENUMERATED OUTCOME, not a failure: the draw read the words correctly and
+    the words are short of something, which is a different fact from a draw that never
+    produced a usable line (that one escapes as ``None``).  ``values`` carries whatever
+    the words DID supply, because throwing away a correct binding on the way to
+    reporting a missing one would make the consumer ask for both again."""
+
+    names: tuple[str, ...]
+    values: dict[str, str] = {}
+
+
+# What the binder answers with — the two enumerated directions, as two types rather than
+# one type carrying an emptiable field, so a consumer that matched ``BoundValues`` can
+# never be holding an incomplete one.
+SkillBinding = BoundValues | MissingParameters
 
 
 class StateDrawOutcome(StrEnum):
@@ -715,6 +831,47 @@ class MicroContext:
         if isinstance(drawn, DrawFailure):
             return None
         return _skill_signature(drawn)
+
+    async def bind_skill(
+        self,
+        content: str,
+        declared: Sequence[str],
+        spoken: str,
+        *,
+        run_target: str | None = None,
+    ) -> SkillBinding | None:
+        """Fill an EXISTING routine's declared parameters from the user's own words
+        (#1867) — the FIFTH customer of this machinery.  Rides the SAME ``_valid_draw``
+        step as the other four against its own declared shape
+        (:data:`SKILL_BIND_SHAPE`) and the bare-content user turn (the rendered document
+        IS the whole ask), plus the runtime constraints a static shape cannot carry.
+
+        ``content`` is the rendered document — the signature AND the user's turns.
+        ``spoken`` is those turns ALONE, and it is a separate argument on purpose: a
+        value is only evidence when the USER said it, so a phrase copied out of a
+        parameter's own description — which the same document renders — is exactly the
+        confabulation the span check exists to catch.  ``declared`` names the parameters
+        the signature declares, in declared order; string-typed like ``classify_state``'s
+        candidates, so this module knows parameter names and never the skill model.
+
+        Returns :class:`BoundValues` when every declared parameter was filled,
+        :class:`MissingParameters` when the words supply nothing for one or more of them
+        (an enumerated outcome, not a failure), or ``None`` when no usable draw came back
+        — the honest escape the other run-end customers keep."""
+        drawn = await self._valid_draw(
+            content,
+            "",
+            run_target,
+            shape=SKILL_BIND_SHAPE,
+            accepts=partial(_fills_the_declared_signature, declared=declared, spoken=spoken),
+            system_prompt=BIND_SKILL_SYSTEM_PROMPT,
+            agent_name=PennyConstants.SKILL_BIND_AGENT_NAME,
+            prompt_type=PennyConstants.SKILL_BIND_PROMPT_TYPE,
+            user_template=_BARE_CONTENT_TEMPLATE,
+        )
+        if isinstance(drawn, DrawFailure):
+            return None
+        return _skill_binding(drawn, declared)
 
     async def classify_state(
         self,
@@ -983,6 +1140,91 @@ def _skill_signature(drawn: ParsedDraw) -> SkillSignature | None:
             for item in drawn.items
         ),
     )
+
+
+# Whitespace tolerance for the literal-span check, declared ONCE beside the check that
+# applies it (the grammar's own "tolerance is declared once, deliberately" discipline).
+_SPOKEN_WHITESPACE = re.compile(r"\s+")
+
+
+def spoken_form(text: str) -> str:
+    """``text`` in the form the span check compares — whitespace runs collapsed to a
+    single space, trimmed, case-folded.
+
+    That is the WHOLE tolerance, and it is deliberately small: a value survives a line
+    break the render introduced and a capital the user did not type, and nothing else.
+    Punctuation, spelling and word order compare exactly, because that is where the
+    failure class lives — the measured defect (#1866) was a bound url carrying an
+    underscore that appears nowhere in the user's message, and every looser comparison
+    accepts it.
+
+    Public: the binding eval reads a drawn value through THIS function, never through a
+    copy of it, so what a case calls a match and what production calls a span are one
+    definition."""
+    return _SPOKEN_WHITESPACE.sub(" ", text).strip().casefold()
+
+
+def _is_a_spoken_span(value: str, spoken: str) -> bool:
+    """Whether ``value`` is a literal span of what the user said — plain containment
+    over :func:`spoken_form`, with no fuzzy matching and no threshold.
+
+    Plain containment rather than the whole-token test structural provenance uses
+    (#1809): that one guards a value against turning up by accident inside an entire
+    fetched PAGE, while this haystack is the handful of sentences the user just typed,
+    where an accidental containment is not a thing that happens — and demanding whole
+    tokens would refuse a phrase written hard against a comma."""
+    return spoken_form(value) in spoken_form(spoken)
+
+
+def _fills_the_declared_signature(
+    drawn: ParsedDraw, *, declared: Sequence[str], spoken: str
+) -> bool:
+    """The runtime constraints the binding shape cannot carry (#1867) — and the whole of
+    what makes an accepted binding trustworthy.
+
+    COVERAGE and MEMBERSHIP are ONE comparison: the drawn names, hardened, must equal
+    the declared names as a multiset.  That is #1828's rule for a customer that knows
+    its offered set exactly — a parameter left unanswered, one answered twice, and one
+    nobody declared are the same violation, answered the same way (re-drawn on the
+    unchanged context for the whole budget, then an honest whole-draw failure).  A
+    MALFORMED line is refused for the framer's reason (#1830): the grammar drops it
+    best-effort, so the counted drop is the only way this customer sees it at all.
+
+    And every VALUE must be a literal span of what the USER said — the check the whole
+    customer exists for.  A routine pointed at a url nobody typed is worse than a routine
+    nobody could point anywhere, so an invented value is a contract violation and never a
+    binding."""
+    if drawn.malformed:
+        return False
+    drawn_names = sorted(slug_parameter_name(item.fields[DrawField.NAME]) for item in drawn.items)
+    if drawn_names != sorted(slug_parameter_name(name) for name in declared):
+        return False
+    return all(
+        _is_a_spoken_span(item.fields[DrawField.VALUE], spoken)
+        for item in drawn.items
+        if item.tag == VALUE_TAG
+    )
+
+
+def _skill_binding(drawn: ParsedDraw, declared: Sequence[str]) -> SkillBinding:
+    """An accepted draw as the enumerated answer it is (#1867), read in DECLARED order
+    and keyed by the DECLARED name — the binding key everything downstream uses, so a
+    draw that wrote ``Page URL`` where the signature says ``page_url`` still maps home.
+
+    Total by construction: the draw was accepted only because it carries exactly one
+    line per declared parameter, so every lookup here resolves."""
+    lines = {slug_parameter_name(item.fields[DrawField.NAME]): item for item in drawn.items}
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for name in declared:
+        line = lines[slug_parameter_name(name)]
+        if line.tag == VALUE_TAG:
+            values[name] = line.fields[DrawField.VALUE]
+        else:
+            missing.append(name)
+    if missing:
+        return MissingParameters(names=tuple(missing), values=values)
+    return BoundValues(values=values)
 
 
 def _state_is_bound(

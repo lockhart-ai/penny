@@ -11,6 +11,7 @@ import pytest
 
 from penny.database import Database
 from penny.database.skills import (
+    DERIVED_NAME_MAX_LENGTH,
     WRITE_TARGET_DESCRIPTION,
     DistillInput,
     SkillDraft,
@@ -18,8 +19,11 @@ from penny.database.skills import (
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
+    build_binding_content,
+    derive_collection_name,
     distill_steps,
     render_skill,
+    render_spoken_turns,
     retarget_writes,
     unbound_required_parameters,
 )
@@ -642,3 +646,142 @@ def test_retarget_writes_leaves_unmarked_steps_untouched():
     steps = _elevation_steps()
     retargeted = retarget_writes(steps, "target-b")
     assert retargeted[0].arguments == steps[0].arguments  # the browse step is identical
+
+
+# ── Asking for a routine again: the binder's document + the derived name (#1867)
+
+
+def test_build_binding_content_renders_the_signature_then_the_users_words():
+    """The binder's document, WHOLE — the surface the binding draw actually reads.
+
+    The routine comes first (what it is called, what it is for, one line per declared
+    parameter) and the user's own words come last, because the words are what is being
+    read: the draw is told what to look for, then handed the text to look in.  EVERY
+    declared parameter renders, so none of them can only be answered by guessing."""
+    spoken = render_spoken_turns(
+        (
+            "can you keep an eye on the sailing board at https://saltmarsh.example/board?",
+            "tell me when the dawn crossing turns up",
+        )
+    )
+
+    content = build_binding_content(
+        spoken,
+        "check_sailing_board",
+        "read a sailing board and report the status of one entry",
+        [
+            SkillParameter(name="url", description="the URL of the board to read each run"),
+            SkillParameter(name="keyword", description="which entry to look for on it"),
+        ],
+    )
+
+    assert content == (
+        "The routine that has been asked for:\n"
+        "name: check_sailing_board\n"
+        "what it is for: read a sailing board and report the status of one entry\n"
+        "\n"
+        "What it needs, one line each:\n"
+        "- url: the URL of the board to read each run\n"
+        "- keyword: which entry to look for on it\n"
+        "\n"
+        "What the user said, in their own words:\n"
+        "can you keep an eye on the sailing board at https://saltmarsh.example/board?\n"
+        "tell me when the dawn crossing turns up"
+    )
+    # The document ENDS with the user's turns, byte for byte — the same string the span
+    # check tests each drawn value against, so the two can never describe different text.
+    assert content.endswith(spoken)
+
+
+def test_build_binding_content_renders_a_parameter_that_carries_no_description():
+    """A signature can carry a parameter nobody described (a framing that fell back).  Its
+    line still renders — the draw has to answer for it either way — with the description
+    omitted cleanly rather than as an empty tail, and a signature with no parameters at all
+    says so instead of leaving a heading over nothing."""
+    described = build_binding_content(
+        "do the thing", "run_it", "runs it", [SkillParameter(name="url")]
+    )
+    assert "What it needs, one line each:\n- url\n" in described
+
+    assert "What it needs, one line each:\n(nothing)\n" in build_binding_content(
+        "do the thing", "run_it", "runs it", []
+    )
+
+
+def test_derive_collection_name_slugs_the_skill_and_normalises_a_url():
+    """The scheme at its simplest: the skill's name slugged, then the value's host and
+    path.  The whole point is that the name is obvious without resolving anything."""
+    assert (
+        derive_collection_name("monitor_price", ["https://faux-market.example/keel-lantern"])
+        == "monitor-price-faux-market-example-keel-lantern"
+    )
+
+
+def test_derive_collection_name_reads_one_page_written_four_ways_as_one_job():
+    """Identity is the page, not how it was typed: the scheme, a ``www.``, a tracking
+    query, a fragment and a trailing slash are all dropped, so four spellings of one page
+    derive one name and find-or-create hands back the job the user already has."""
+    spellings = [
+        "https://harborbakery.example/menu",
+        "http://www.harborbakery.example/menu/",
+        "harborbakery.example/menu?utm_source=mail",
+        "https://harborbakery.example/menu#specials",
+    ]
+    derived = {derive_collection_name("fetch_daily_special", [one]) for one in spellings}
+    assert derived == {"fetch-daily-special-harborbakery-example-menu"}
+
+
+def test_derive_collection_name_slugs_a_phrase_that_is_not_a_url():
+    """A value that is not an address is slugged as the phrase it is — and a phrase is
+    never read as a url, so a sentence with a full stop in it keeps everything after the
+    stop."""
+    assert (
+        derive_collection_name("track_symbol", ["a first look. then the rest"])
+        == "track-symbol-a-first-look-then-the-rest"
+    )
+    assert derive_collection_name("track_symbol", ["VLT"]) == "track-symbol-vlt"
+
+
+def test_derive_collection_name_joins_several_values_in_declared_order():
+    """Every declared parameter contributes, in the order the signature declares them —
+    which is what makes two jobs differing only in their second value two names."""
+    assert (
+        derive_collection_name(
+            "check_ferry_timetable", ["https://northpier.example/departures", "dawn sailing"]
+        )
+        == "check-ferry-timetable-northpier-example-departures-dawn-sailing"
+    )
+
+    assert derive_collection_name(
+        "check_ferry_timetable", ["https://northpier.example/departures", "late sailing"]
+    ) != derive_collection_name(
+        "check_ferry_timetable", ["https://northpier.example/departures", "dawn sailing"]
+    )
+
+
+def test_derive_collection_name_shortens_on_whole_tokens_and_keeps_every_value():
+    """The length policy: the name stays inside the reading budget by dropping WHOLE
+    trailing tokens — no hash, no ellipsis, nothing mid-word — and the budget is spent
+    round-robin, so a second parameter is still represented when the first one is long
+    enough to have eaten it under a plain tail truncation."""
+    long_path = "https://faux-market.example/very-long-product-slug-that-keeps-on-going"
+
+    single = derive_collection_name("monitor_price", [long_path])
+    assert len(single) <= DERIVED_NAME_MAX_LENGTH
+    assert single == "monitor-price-faux-market-example-very-long-product-slug-that"
+
+    pair = derive_collection_name("monitor_price", [long_path, "brass lantern"])
+    assert len(pair) <= DERIVED_NAME_MAX_LENGTH
+    assert pair == "monitor-price-faux-market-example-very-long-brass-lantern"
+    # The first value is shortened further than it was on its own, and BOTH values are
+    # still in the name — which is the whole reason the budget is spent in turn rather
+    # than front to back.
+    assert "brass" in pair and "lantern" in pair
+
+
+def test_derive_collection_name_handles_a_value_with_nothing_sluggable_in_it():
+    """A value carrying no alphanumerics contributes no tokens rather than an empty
+    separator run, and a routine pointed at nothing derives its own name — degraded, but
+    still a readable name rather than a hyphen."""
+    assert derive_collection_name("monitor_price", ["!!!"]) == "monitor-price"
+    assert derive_collection_name("monitor_price", []) == "monitor-price"
