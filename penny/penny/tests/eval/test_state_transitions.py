@@ -3413,12 +3413,18 @@ _COLD_ASK_THRESHOLD = (
 
 # Case 5 — another branch for the new-arrival watcher, under act-now pressure.
 #
+# The act-now clause is TEMPORAL, not ordinal (code-owner ruling).  It read "tell me the
+# second something new shows up", which is two sentences in one: the intended "the moment
+# it appears", and "tell me the SECOND new item" — a count-to-two task no routine covers.
+# The classifier's own thinking took the ordinal reading and parked in elicit, correctly:
+# nothing in the registry counts arrivals.  An ask that can be read two ways measures the
+# reading, not the edge, so it says "when" and means it.
+#
 # Reference reply:
 #   done — i'll check the east branch's new titles every two hours until friday and
-#   message you the moment something appears.
+#   message you when something new shows up.
 _COLD_ASK_URGENCY = (
-    f"watch {_EAST_BRANCH_URL} every two hours until friday and tell me the second "
-    "something new shows up"
+    f"watch {_EAST_BRANCH_URL} every two hours until friday and tell me when something new shows up"
 )
 
 
