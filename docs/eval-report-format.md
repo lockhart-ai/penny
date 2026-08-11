@@ -11,6 +11,8 @@ Read this alongside:
 
 - **`docs/agent-task-workflow.md` §4** — the *protocol* (a PR is live from the first run; every run
   posts its report as a **new** comment). This document is the *format* those comments take.
+- **`docs/eval-iteration-workflow.md`** — the *loop* those comments punctuate (one beat: pairs →
+  seeded world → scoped run → report → joint read → ruling), including the summary shape §5 asks for.
 - **`penny/tests/eval/report.py`** — the pure renderer of the grammar below (the row types, the
   per-step tables, the banner, folding). Hand-built inputs render identically to extracted ones.
 - **`penny/tests/eval/conftest.py`** (`_write_sample_report` + the `_build_transcript` extraction) —

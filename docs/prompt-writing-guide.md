@@ -379,6 +379,8 @@ others to catch a regression you introduced.
   logs".)
 - **Ship a durable eval contract** with every model-facing change — the case that encodes the
   behaviour, so the next change can't silently regress it.
+- **The surrounding loop is `docs/eval-iteration-workflow.md`** — this guide says how to write the
+  prompt; that doc says how one objective's rounds are scoped, run, reported, diagnosed and landed.
 
 ## Structure of a good prompt
 

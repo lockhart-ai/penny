@@ -98,6 +98,7 @@ docs/                           — Design documents and review guides
   pr-review-guide.md            — Canonical PR review checklist (used by /quality skill)
   agent-task-workflow.md        — Task-agent SOP: one ticket → worktree → gate → PR → shepherd → cleanup
   agent-supervisor-runbook.md   — Supervisor runbook: meta ticket, dispatch, waves, heartbeat, fleet-end
+  eval-iteration-workflow.md    — Eval iteration loop: one beat → pairs → seeded world → run → report → merge
   browser-extension-architecture.md — Browser extension architecture & design
   channel-manager-plan.md       — Multi-channel implementation plan
   browser-tools-plan.md         — Browser tools implementation plan
