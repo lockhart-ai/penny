@@ -664,7 +664,12 @@ class CollectionCreateTool(MemoryTool):
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Unique collection name (slug-style: lowercase, hyphens)",
+                "description": (
+                    "Unique collection name (slug-style: lowercase, hyphens). Build it "
+                    "from the user's own words for this task — the specific place, page, "
+                    "or thing they named — so two similar jobs get names that tell them "
+                    "apart."
+                ),
             },
             "description": {
                 "type": "string",
@@ -703,9 +708,10 @@ class CollectionCreateTool(MemoryTool):
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "OPTIONAL end condition — a date and time ('2026-09-01T09:00:00Z') or "
-                    "when it ends in the user's own words ('in two weeks'), read in their "
-                    "timezone. The collection archives itself when it passes."
+                    "Omit it unless the user gave an end condition. A date and time "
+                    "('2026-09-01T09:00:00Z') or when it ends in the user's own words "
+                    "('in two weeks'), read in their timezone. The collection archives "
+                    "itself when it passes."
                 ),
             },
             "notify": {
@@ -1949,9 +1955,10 @@ class CollectionUpdateTool(MemoryTool):
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "OPTIONAL end condition — a date and time ('2026-09-01T09:00:00Z') or "
-                    "when it ends in the user's own words ('in two weeks'), read in their "
-                    "timezone. The collection archives itself when it passes."
+                    "Omit it unless the user gave an end condition. A date and time "
+                    "('2026-09-01T09:00:00Z') or when it ends in the user's own words "
+                    "('in two weeks'), read in their timezone. The collection archives "
+                    "itself when it passes."
                 ),
             },
         },
