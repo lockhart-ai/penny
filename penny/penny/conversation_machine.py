@@ -46,6 +46,13 @@ prose:
 - **Apply is offered only when skills exist** (:func:`presented_edges`): with
   no ranked skill candidates in the snapshot, the ``apply`` edge is withheld
   structurally — an empty registry never invites a false apply.
+- **Entering learn FRAMES the round** (:class:`RoundFraming`, #1868): a move that
+  lands in learn draws the routine's interface from the user's own turns and
+  builds the container its results are kept in, before the turn runs — so the
+  demonstrated write copies a rendered anchor instead of inventing a name.  The
+  framing is round state with the anchor's own lifecycle (set on entry, carried
+  while parked, cleared at idle), and it is the framer collaborator's whole
+  visible surface here: with none injected, every move is unframed.
 
 Scope: the classifier machinery plus its DURABLE half.  :class:`ConversationMachine`
 holds the state across turns (``db.machine`` — the ``conversation_machine`` row)
@@ -69,11 +76,18 @@ from pydantic import BaseModel
 
 from penny.constants import TransitionCause
 from penny.prompts import Prompt
-from penny.tools.micro_context import SKILL_TAG, MicroContext, StateDraw, StateDrawOutcome
+from penny.tools.micro_context import (
+    SKILL_TAG,
+    MicroContext,
+    SkillSignature,
+    StateDraw,
+    StateDrawOutcome,
+)
 
 if TYPE_CHECKING:
     from penny.database import Database
     from penny.llm import LlmClient
+    from penny.round_framing import RoundFramer
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +335,30 @@ class MachineSnapshot(BaseModel):
     skill_candidates: list[SkillCandidate] = []
 
 
+class RoundFraming(BaseModel):
+    """What a round is FOR, settled when the machine entered learn (#1868) — the framer's
+    signature and the name of the container Python built from it.
+
+    It is a fact about the ROUND, so it lives where the round's other facts live: on the
+    transition row, beside the anchor and the bound skill.  A draw varies; a re-draw is
+    not a re-read — so the entry decision is recorded once and every later reader (the
+    turn's own instruction, run-end extraction, a correction re-entering learn) reads THAT
+    rather than asking the model again and getting a different answer.
+
+    The skill row itself still enters the registry only at run end, from the ledger
+    (certified-by-execution): this is the round's framing, never a stub skill.
+
+    ``container`` is a by-name reference to ``memory.name``, the plain-column form the
+    registry already uses for a re-creatable thing (``memory.skill_name``,
+    ``messagelog.mechanism``).  It is derivable from the signature
+    (``derive_collection_name``), and it is recorded anyway because it is what was
+    actually built: the container a later turn archives or writes into is the one that
+    exists, never one re-derived from a scheme that may have moved."""
+
+    signature: SkillSignature
+    container: str
+
+
 class StateDecision(BaseModel):
     """One classification, typed for the machine: the draw outcome plus the
     decided state (``None`` on any non-decision — the fail → stay input) and,
@@ -498,7 +536,7 @@ STATE_INSTRUCTIONS: dict[ConversationState, str] = {
 }
 
 
-def conversation_prompt(state: ConversationState) -> str:
+def conversation_prompt(state: ConversationState, framing: RoundFraming | None = None) -> str:
     """The chat system prompt for a state: the invariant physics core with THIS
     state's instruction between head and tail.
 
@@ -506,8 +544,25 @@ def conversation_prompt(state: ConversationState) -> str:
     instruction — by the time chat reads this the state is already decided, so
     what it needs is what to do, not where it is.  Indexes ``STATE_INSTRUCTIONS``
     directly: a missing state is a programming error and should raise, never
-    quietly compose some other state's prompt."""
-    return Prompt.CONVERSATION_HEAD + STATE_INSTRUCTIONS[state] + Prompt.CONVERSATION_TAIL
+    quietly compose some other state's prompt.
+
+    ``framing`` is the round's own state (#1868), rendered after the instruction when the
+    machine settled one at learn entry: the routine this round is teaching and the
+    container its results are kept in, both named VERBATIM, so the write the round
+    demonstrates copies an anchor rather than inventing a destination.  Absent — a round
+    that could not be framed, or any state that has no framing — composes the byte-
+    identical prompt this function has always composed."""
+    instruction = STATE_INSTRUCTIONS[state] + _framing_line(framing)
+    return Prompt.CONVERSATION_HEAD + instruction + Prompt.CONVERSATION_TAIL
+
+
+def _framing_line(framing: RoundFraming | None) -> str:
+    """The round's framing as the instruction's closing paragraph, or nothing at all."""
+    if framing is None:
+        return ""
+    return Prompt.ROUND_FRAMING_LINE.format(
+        skill=framing.signature.name, container=framing.container
+    )
 
 
 class ConversationMachine:
@@ -529,9 +584,16 @@ class ConversationMachine:
     Not wired to chat yet — the caller supplies the message and its id.
     """
 
-    def __init__(self, db: Database, classifier: StateClassifier) -> None:
+    def __init__(
+        self, db: Database, classifier: StateClassifier, framer: RoundFramer | None = None
+    ) -> None:
         self._db = db
         self._classifier = classifier
+        # The learn-ENTRY framer (#1868), injected rather than built here: framing a round
+        # means creating its container, which is database + embedding work this module
+        # must not import at import time (the leaf discipline — see CandidateParameter).
+        # ``None`` leaves every move unframed, which is the pre-#1868 behaviour exactly.
+        self._framer = framer
 
     async def advance(
         self,
@@ -543,13 +605,16 @@ class ConversationMachine:
         run_target: str | None = None,
     ) -> StateDecision:
         """One incoming message, start to finish: settle any structural move
-        first, classify from where that leaves the machine, then record the
-        result (which is what applies it).  Returns the decision the caller
-        acts on."""
+        first, classify from where that leaves the machine, frame the round when the
+        move lands in learn, then record the result (which is what applies it).  Returns
+        the decision the caller acts on."""
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
-        self._record_decision(state, decision, message_id=message_id, run_id=run_id)
+        framing = await self._frame_round(state, decision, message, run_id=run_id)
+        self._record_decision(
+            state, decision, message_id=message_id, run_id=run_id, framing=framing
+        )
         return decision
 
     def state(self) -> ConversationState:
@@ -557,6 +622,17 @@ class ConversationMachine:
         at all is the cold start, and idle is what that means."""
         latest = self._db.machine.latest_transition()
         return ConversationState(latest.to_state) if latest else ConversationState.IDLE
+
+    def framing(self) -> RoundFraming | None:
+        """The round's framing (#1868), carried on the newest move — ``None`` when the
+        machine is idle, when the round could not be framed, or when nothing frames.
+
+        Read off the log for the same reason the state and the anchor are: the newest row
+        IS the machine, so there is nothing else that could disagree with it."""
+        latest = self._db.machine.latest_transition()
+        if latest is None or latest.skill_frame is None:
+            return None
+        return RoundFraming.model_validate_json(latest.skill_frame)
 
     def link_message(self, run_id: str, message_id: int) -> None:
         """Attach the incoming message to the moves it caused, once it has an id.
@@ -623,6 +699,38 @@ class ConversationMachine:
         latest = self._db.machine.latest_transition()
         return latest.anchor_message_id if latest else None
 
+    async def _frame_round(
+        self,
+        current: ConversationState,
+        decision: StateDecision,
+        message: str,
+        *,
+        run_id: str | None,
+    ) -> RoundFraming | None:
+        """The learn-ENTRY hook (#1868): every move that LANDS in learn frames the round
+        and builds the container its results are kept in.
+
+        Every move, not only the first — a correction re-enters learn, and re-entering is
+        exactly the occasion to ask again what the round is now for: the same identity
+        finds the container that already exists, a shifted one archives the near-empty
+        container it replaces (the framer's own find-or-create rule).
+
+        Its input is the round's user turns and nothing else, which at this moment is the
+        ask the round is anchored to plus the message that just arrived — the framer's own
+        contract, and both of them exist here, which is why the draw moved to this seam at
+        all.
+
+        ``None`` when the draw failed or nothing frames: the move is recorded unframed and
+        the round runs the way it did before this hook existed."""
+        if self._framer is None or next_state(current, decision) is not ConversationState.LEARN:
+            return None
+        return await self._framer.frame_entry(
+            ask=self._anchor_text(),
+            message=message,
+            run_id=run_id,
+            previous=self.framing(),
+        )
+
     def _record_decision(
         self,
         current: ConversationState,
@@ -630,6 +738,7 @@ class ConversationMachine:
         *,
         message_id: int | None,
         run_id: str | None,
+        framing: RoundFraming | None = None,
     ) -> None:
         """Append the move ``next_state`` allows — the write that applies it.
 
@@ -637,6 +746,7 @@ class ConversationMachine:
         held draws the log reports a perfect classifier by construction, and
         per-edge accuracy is exactly what it exists to make scorable."""
         target = next_state(current, decision)
+        carried = self._next_framing(target, framing)
         self._db.machine.record_transition(
             from_state=current.value,
             to_state=target.value,
@@ -646,6 +756,7 @@ class ConversationMachine:
             message_id=message_id,
             run_id=run_id,
             skill_name=decision.skill,
+            skill_frame=carried.model_dump_json() if carried is not None else None,
         )
 
     def _next_anchor(
@@ -660,3 +771,18 @@ class ConversationMachine:
         if current is ConversationState.IDLE:
             return message_id
         return self._anchor_message_id()
+
+    def _next_framing(
+        self, target: ConversationState, drawn: RoundFraming | None
+    ) -> RoundFraming | None:
+        """The framing lifecycle, shaped exactly like the anchor's (#1868): idle clears
+        it, a fresh entry draw replaces it, and every other move CARRIES it — the round's
+        framing belongs to the round, so the turn that accepts what was demonstrated reads
+        the same container the turn that demonstrated it wrote into.
+
+        A failed re-draw carries rather than clears, which is the same rule read the other
+        way: a correction whose framing could not be drawn keeps the container the round
+        already has, instead of losing it to a flaky draw."""
+        if target is ConversationState.IDLE:
+            return None
+        return drawn if drawn is not None else self.framing()

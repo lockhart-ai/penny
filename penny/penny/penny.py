@@ -39,6 +39,7 @@ from penny.plugins.zoho.mail_client import ZohoClient
 from penny.plugins.zoho.mail_models import ZohoCredentials
 from penny.preflight import Preflight, PreflightError
 from penny.responses import PennyResponse
+from penny.round_framing import RoundFramer
 from penny.scheduler import (
     BackgroundScheduler,
     PeriodicSchedule,
@@ -282,7 +283,14 @@ class Penny:
         # state already decided.  Wired onto the channel like the scheduler (the
         # manager forwards it to every concrete channel, which is where a
         # receive→reply loop actually lives).
-        self.conversation_machine = ConversationMachine(self.db, StateClassifier(self.model_client))
+        # A move that lands in learn also FRAMES the round and builds the container it
+        # runs into (#1868), which is why the machine holds a framer: the turn is entered
+        # with its destination decided, not just its state.
+        self.conversation_machine = ConversationMachine(
+            self.db,
+            StateClassifier(self.model_client),
+            RoundFramer(self.db, self.model_client, self.embedding_model_client),
+        )
         self.channel.set_conversation_machine(self.conversation_machine)
         self.chat_agent.set_channel(self.channel)
         self.send_queue_drainer.set_channel(self.channel)

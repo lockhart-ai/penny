@@ -69,6 +69,7 @@ class MachineStore:
         message_id: int | None = None,
         run_id: str | None = None,
         skill_name: str | None = None,
+        skill_frame: str | None = None,
     ) -> None:
         """Append one move — the single write that BOTH advances the machine and
         records how it moved.
@@ -76,7 +77,12 @@ class MachineStore:
         Deliberately NOT best-effort (unlike ``MutationStore.record``, whose
         swallowed failure protects the mutation it merely audits): this row *is*
         the state, so a swallowed failure here would silently lose the move
-        itself.  It raises, and the caller's move fails with it."""
+        itself.  It raises, and the caller's move fails with it.
+
+        ``skill_frame`` is the round's framing (#1868) as serialized JSON, taken as a
+        plain string for the same reason the states are: the typing seam lives in
+        ``conversation_machine.py``, which is a leaf, so this layer never learns what
+        shape a framing has."""
         with self._session() as session:
             session.add(
                 StateTransition(
@@ -88,6 +94,7 @@ class MachineStore:
                     message_id=message_id,
                     run_id=run_id,
                     skill_name=skill_name,
+                    skill_frame=skill_frame,
                 )
             )
             session.commit()

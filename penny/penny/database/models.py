@@ -579,4 +579,14 @@ class StateTransition(SQLModel, table=True):
     # The skill a SKILL-GATED decision bound, by name (``skill.name``) — a plain
     # column like ``messagelog.mechanism``, since a skill is REPLACE-able by name.
     skill_name: str | None = None
+    # The round's FRAMING (#1868) as serialized ``RoundFraming`` JSON: the signature the
+    # framer drew when the machine entered learn, and the container Python built from it.
+    # Beside ``skill_name`` because it answers the same kind of question about the move —
+    # what routine this is about — for the case where the routine does not exist yet: the
+    # skill row still enters the registry only at run end, from the ledger, so a framed
+    # name is not a ``skill.name`` to reference and would be a dangling one if it were.
+    # A draw varies, so the entry decision is RECORDED and later read rather than re-drawn
+    # (a re-draw is not a re-read); it rides the anchor's lifecycle — set on entry, carried
+    # while parked, NULL once idle.
+    skill_frame: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)

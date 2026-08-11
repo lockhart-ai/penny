@@ -37,6 +37,7 @@ from penny.conversation_machine import (
     ConversationMachine,
     ConversationState,
     MachineSnapshot,
+    RoundFraming,
     SkillCandidate,
     StateClassifier,
     build_snapshot,
@@ -51,6 +52,8 @@ from penny.prompts import Prompt
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
     STATE_CLASSIFIER_SYSTEM_PROMPT,
+    FramedParameter,
+    SkillSignature,
     StateDrawOutcome,
 )
 
@@ -856,6 +859,54 @@ def test_learn_instruction_whole_render():
         "Don't set it up yourself. Offering is where this turn ends — they will "
         "tell you if they want it running.\n\n"
     )
+
+
+def test_a_framed_round_names_its_routine_and_its_container():
+    """The round's framing renders as the learn instruction's closing paragraph (#1868),
+    verbatim — pinned so an edit is a visible diff.
+
+    Both anchors render EXACTLY as they are stored, which is the whole point: a
+    destination the model would otherwise have to invent a name for is now a name it
+    copies, so "one job, one container" stops being a judgment anybody makes.  It says
+    what the round IS — the routine being taught, the collection its results are kept in —
+    and leaves what to do about it to the instruction above, which already says a step
+    that remembers something is a real write.  Naming a tool here would key the sentence to
+    one way of keeping a result, and a routine is an arbitrary sequence of tool calls.
+
+    It sits INSIDE the instruction, between head and tail, so a framed learn turn is the
+    unframed one plus one paragraph and nothing else moves."""
+    framing = RoundFraming(
+        signature=SkillSignature(
+            name="watch-rental-price",
+            description="keep a rental page's current day rate up to date",
+            parameters=(
+                FramedParameter(
+                    name="url", description="the rental page to read", value="harborkayak.example"
+                ),
+            ),
+        ),
+        container="watch-rental-price-harborkayak-example",
+    )
+    framed = conversation_prompt(ConversationState.LEARN, framing)
+
+    assert framed == (
+        Prompt.CONVERSATION_HEAD
+        + Prompt.LEARN_INSTRUCTION
+        + "The routine you are being taught this round is called `watch-rental-price`, "
+        "and `watch-rental-price-harborkayak-example` is the collection set up to hold "
+        "what it produces. Where a step says to remember something, that collection is "
+        "where it goes — it is already there, so there is nothing to set up.\n\n"
+        + Prompt.CONVERSATION_TAIL
+    )
+
+
+def test_an_unframed_round_composes_the_prompt_it_always_did():
+    """A state with no framing composes the byte-identical prompt this function has always
+    composed — every state, so the framing is additive rather than a new shape every turn
+    has to absorb.  That is also the degrade path: a round whose entry draw failed reads
+    exactly like a round from before the draw existed."""
+    for state in ConversationState:
+        assert conversation_prompt(state, None) == conversation_prompt(state)
 
 
 def test_apply_instruction_whole_render():

@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationMachine, ConversationState
+from penny.conversation_machine import ConversationMachine, ConversationState, RoundFraming
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -681,6 +681,18 @@ class MessageChannel(ABC):
         logger.info("Conversation state: %s (%s)", state.value, decision.outcome.value)
         return state
 
+    def _round_framing(self) -> RoundFraming | None:
+        """The round's framing as the turn begins (#1868) — what the machine settled on
+        entering learn: the routine being taught and the container built for it.
+
+        A plain read off the machine, taken after ``_classify_state`` has moved it, so the
+        turn is entered with its framing decided exactly as it is entered with its state
+        decided.  ``None`` whenever the round has none — no machine wired, a state that
+        does not frame, or an entry draw that failed."""
+        if self._conversation_machine is None:
+            return None
+        return self._conversation_machine.framing()
+
     async def _run_message_through_agent(
         self,
         message: IncomingMessage,
@@ -715,6 +727,7 @@ class MessageChannel(ABC):
             quoted_text=message.quoted_text,
             run_id=run_id,
             state=state,
+            framing=self._round_framing(),
             **self._make_handle_kwargs(message, progress),
         )
         incoming_embedding = await self._embed_message(message.content)

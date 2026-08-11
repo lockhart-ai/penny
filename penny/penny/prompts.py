@@ -116,6 +116,23 @@ class Prompt:
         "tell you if they want it running.\n\n"
     )
 
+    # The round's own framing (#1868), rendered after the state's instruction when the
+    # machine settled one on entering learn.  Both anchors are rendered VERBATIM, which is
+    # the whole point of it: a destination the model would otherwise invent a name for is
+    # now a name it copies, and "one job, one container" stops being a judgment.
+    #
+    # It says what the round IS — the routine being taught, and the collection its results
+    # are kept in — and leaves what to do about that to the instruction it follows, which
+    # already says a step that remembers something is a real write.  Naming a tool here
+    # would key the sentence to one way of keeping a result, and a routine is an arbitrary
+    # sequence of tool calls.
+    ROUND_FRAMING_LINE = (
+        "The routine you are being taught this round is called `{skill}`, and "
+        "`{container}` is the collection set up to hold what it produces. Where a step "
+        "says to remember something, that collection is where it goes — it is already "
+        "there, so there is nothing to set up.\n\n"
+    )
+
     APPLY_INSTRUCTION = (
         "A skill you already know does what the user is asking, and their message "
         "contains all the information for its parameters. Set it up now, in one "
