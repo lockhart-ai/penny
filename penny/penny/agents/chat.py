@@ -16,11 +16,12 @@ from penny.agents.models import ControllerResponse
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants
-from penny.conversation_machine import ConversationState, conversation_prompt
+from penny.conversation_machine import ConversationState, RoundFraming, conversation_prompt
 from penny.datetime_utils import current_datetime_line
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
+from penny.round_framing import discard_round_container
 from penny.skill_extraction import (
     NoExtraction,
     SkillExtracted,
@@ -151,6 +152,12 @@ class ChatAgent(Agent):
         # Nothing READS the machine here — the value is the channel's decision passed
         # down and passed on.
         self._turn_state: ConversationState | None = None
+        # The round's framing (#1868), threaded and held exactly like the state above and
+        # for the same reason: the run-end extraction that reuses it happens several frames
+        # below ``handle``.  It is what the turn's own instruction named — the routine and
+        # the container — so reading it here rather than re-deciding is what keeps the
+        # skill filed under the name the turn ran under.
+        self._turn_framing: RoundFraming | None = None
 
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         tools = super().get_tools(run_id)
@@ -205,13 +212,16 @@ class ChatAgent(Agent):
         if run_id == self._extraction_run_id:
             return ctx
         self._extraction_run_id = run_id
-        frame = await self._extract_and_frame_skill(run_id, self._turn_state)
+        frame = await self._extract_and_frame_skill(run_id, self._turn_state, self._turn_framing)
         if frame is None:
             return ctx
         return ctx.model_copy(update={"learned_skill_frame": frame})
 
     async def _extract_and_frame_skill(
-        self, run_id: str, state: ConversationState | None
+        self,
+        run_id: str,
+        state: ConversationState | None,
+        framing: RoundFraming | None,
     ) -> str | None:
         """Extract a skill from this run and, on success, build the narration frame
         so the model narrates from the render, not from memory.  The render is the
@@ -227,8 +237,12 @@ class ChatAgent(Agent):
         The typed outcome is also RECORDED on ``_extraction_result``: a learn turn's
         one valid terminal state is a skill in the registry, and the run-end check
         that enforces it (#1839) reads what this attempt returned rather than
-        re-deriving it."""
-        result = await self._skill_extractor.extract(run_id, state=state)
+        re-deriving it.
+
+        ``framing`` is the round's entry framing (#1868), handed on the same way: the
+        interface was settled before the round ran, so extraction reads it rather than
+        drawing the routine's name a second time."""
+        result = await self._skill_extractor.extract(run_id, state=state, framing=framing)
         self._extraction_result = result
         match result:
             case SkillExtracted(skill=skill, origin_message=origin):
@@ -254,6 +268,7 @@ class ChatAgent(Agent):
         quoted_text: str | None = None,
         run_id: str | None = None,
         state: ConversationState | None = None,
+        framing: RoundFraming | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
@@ -272,11 +287,17 @@ class ChatAgent(Agent):
         it began (``None`` when nothing decided it — idle).  It picks the turn's one
         instruction, gates run-end skill extraction (#1850), and decides whether the
         learn terminal is enforced (#1839).
+
+        ``framing`` is the round's framing, settled when the machine entered learn
+        (#1868): it renders the routine and the container into the turn's instruction, is
+        reused by run-end extraction instead of a second draw, and is what a failed learn
+        turn takes its empty container down with.
         """
         self._current_user = sender
         self._pending_page_context = page_context
         self._extraction_result = None
         self._turn_state = state
+        self._turn_framing = framing
         run_id = run_id or uuid.uuid4().hex
         try:
             content, has_images = await self._process_images(content, images)
@@ -308,7 +329,7 @@ class ChatAgent(Agent):
             # unchanged default.
             system_prompt = await self._build_system_prompt(
                 sender,
-                instructions=conversation_prompt(state) if state is not None else None,
+                instructions=conversation_prompt(state, framing) if state is not None else None,
             )
             response = await self.run(
                 prompt=content,
@@ -321,15 +342,16 @@ class ChatAgent(Agent):
                 progress_scope="foreground",
                 prompt_type=ChatPromptType.USER_MESSAGE,
             )
-            return self._enforce_learn_terminal(state, response)
+            return self._enforce_learn_terminal(state, response, run_id)
         finally:
             self._current_user = None
             self._pending_page_context = None
             self._current_message = None
             self._turn_state = None
+            self._turn_framing = None
 
     def _enforce_learn_terminal(
-        self, state: ConversationState | None, response: ControllerResponse
+        self, state: ConversationState | None, response: ControllerResponse, run_id: str
     ) -> ControllerResponse:
         """A learn turn that produced no skill FAILED — say so instead of replying
         (#1839).
@@ -352,7 +374,12 @@ class ChatAgent(Agent):
         The state gate (#1850) declines every non-learn turn with its own
         ``NoExtraction``, and this check reads the SAME state the extractor was handed,
         so those refusals can never reach here: a turn is only failed for learning
-        nothing when learning was what it was for."""
+        nothing when learning was what it was for.
+
+        The round's CONTAINER goes with the failure (#1868): the container was built at
+        entry for a routine this turn did not learn, so leaving it would put a minutes-old
+        empty collection in the store map describing a job that is not happening.  Only an
+        empty one is retired — the guard lives with the retirement, not here."""
         if state is not ConversationState.LEARN:
             return response
         if not isinstance(self._extraction_result, NoExtraction):
@@ -361,6 +388,7 @@ class ChatAgent(Agent):
             "Learn turn produced no skill (%s) — replacing the reply with an honest failure",
             self._extraction_result.gate,
         )
+        discard_round_container(self.db, self._turn_framing, run_id=run_id)
         return response.model_copy(update={"answer": PennyResponse.LEARN_NOTHING_LEARNED})
 
     # ── Message building ────────────────────────────────────────────────

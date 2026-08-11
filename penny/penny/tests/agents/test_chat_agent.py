@@ -326,16 +326,17 @@ def _is_state_classifier(messages: list[dict]) -> bool:
 
 def _spy_extractor(penny) -> dict:
     """Wrap the chat agent's extractor to count how many times it runs — and with which
-    turn state — so a case can pin both the once-per-run guard (what stops the
-    post-narration re-reply re-extracting) and the state the turn threaded down to it
-    (#1850)."""
-    counter: dict = {"n": 0, "states": []}
+    turn state and round framing — so a case can pin the once-per-run guard (what stops the
+    post-narration re-reply re-extracting), the state the turn threaded down to it (#1850),
+    and the framing it threaded beside it (#1868)."""
+    counter: dict = {"n": 0, "states": [], "framings": []}
     original = penny.chat_agent._skill_extractor.extract
 
-    async def counting_extract(run_id: str, *, state):
+    async def counting_extract(run_id: str, *, state, framing=None):
         counter["n"] += 1
         counter["states"].append(state)
-        return await original(run_id, state=state)
+        counter["framings"].append(framing)
+        return await original(run_id, state=state, framing=framing)
 
     penny.chat_agent._skill_extractor.extract = counting_extract
     return counter

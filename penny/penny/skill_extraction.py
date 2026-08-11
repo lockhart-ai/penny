@@ -44,13 +44,16 @@ steps (house style: the summary method reads like a table of contents):
   extra leaf).  A labelled spot renders as what belongs there, never as the frozen
   demonstrated value; one the draw missed keeps its arg-derived name.  Extraction
   NEVER blocks on the rewrite.
-* **frame** — the routine's INTERFACE, written from the user's ask ALONE by a second
-  single-shot micro-context beside the labeller (#1830, the FOURTH customer): a generic
-  name, a one-line description, and one parameter per piece the user would have to say
-  again to set the routine up on a new occasion.  It never sees the tool calls and the
-  labeller never sees the ask, which is what stops the two halves contradicting each
-  other (#1824).  A failed framing falls to the deterministic slug of the triggering
-  message (URLs removed, ≤6 words) with nothing to bind.
+* **frame** — the routine's INTERFACE, written from the user's ask ALONE (#1830): a
+  generic name, a one-line description, and one parameter per piece the user would have
+  to say again to set the routine up on a new occasion.  It never sees the tool calls and
+  the labeller never sees the ask, which is what stops the two halves contradicting each
+  other (#1824).  Since #1868 it is normally READ rather than drawn — the framer runs when
+  the machine ENTERS learn, so the routine was named before the round ran and this pass
+  reuses that decision (a re-draw is not a re-read, and the turn was instructed under the
+  entry name).  The run-end draw survives for a round nothing framed, and a failed framing
+  still falls to the deterministic slug of the triggering message (URLs removed, ≤6 words)
+  with nothing to bind.
   **Interim, declared**: nothing joins a framed parameter to a leaf of the rendered
   program yet (the runtime-join beat), so the parameters live at SKILL level — rendered
   in the registry, enforced at ``collection_set``, decisive for job identity — over a
@@ -78,7 +81,7 @@ from similarity.embeddings import cosine_similarity
 
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState
+from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.memory import RunProjection, RunProjectionStep, project_run
 from penny.database.memory import _similarity as sim
@@ -303,7 +306,11 @@ class SkillExtractor:
         self._collector_surface = collector_tool_surface
 
     async def extract(
-        self, run_id: str, *, state: ConversationState | None
+        self,
+        run_id: str,
+        *,
+        state: ConversationState | None,
+        framing: RoundFraming | None = None,
     ) -> SkillExtractionResult:
         """Extract a skill from one completed run's ledger rows — the summary method.
 
@@ -315,7 +322,14 @@ class SkillExtractor:
         ``state`` is what the conversation machine decided for THIS turn, threaded in
         by the caller (``None`` = no machine decided it, which is idle).  It is a
         parameter rather than a read of ``db.machine`` so extraction cannot disagree
-        with the state the turn was actually run under."""
+        with the state the turn was actually run under.
+
+        ``framing`` is the round's ENTRY framing (#1868), threaded in the same way: the
+        interface was decided before the round ran, so this run-end pass READS it instead
+        of drawing it again — a second draw over the same turns would be free to answer
+        differently, and the name the turn was instructed under would stop being the name
+        the skill is filed under.  Absent (nothing frames, or the entry draw failed), the
+        framing is drawn here exactly as it was before the entry hook existed."""
         if state is not ConversationState.LEARN:
             return self._not_a_learn_turn(run_id, state)
         prompts = self._db.messages.get_run_prompts(run_id)
@@ -324,7 +338,7 @@ class SkillExtractor:
         gate = self._disqualify(prompts, projection, certified)
         if gate is not None:
             return NoExtraction(gate=gate)
-        draft = await self._draft(run_id, projection, certified)
+        draft = await self._draft(run_id, projection, certified, framing)
         return await self._persist(draft, projection.origin_message)
 
     @staticmethod
@@ -380,22 +394,26 @@ class SkillExtractor:
         run_id: str,
         projection: RunProjection,
         certified: list[RunProjectionStep],
+        framing: RoundFraming | None,
     ) -> SkillDraft:
-        """Distil the certified steps into structured steps + spots, then run the two
-        run-end draws that split the routine in half (#1824) and bundle the result.
+        """Distil the certified steps into structured steps + spots, label them, and
+        bundle the result with the round's interface (#1824).
 
-        The LABELLER names every spot in the implementation, from the demonstration;
-        the FRAMER writes the interface — name, description, parameters — from the
-        user's ask alone.  They share no evidence and no outputs, and either may fail
-        alone: a failed labelling leaves every spot with its arg-derived name, a failed
-        framing leaves the routine slug-named with no parameters.  Extraction never
-        blocks on either."""
+        The LABELLER names every spot in the implementation, from the demonstration; the
+        INTERFACE — name, description, parameters — comes from the user's ask alone.  They
+        share no evidence and no outputs, and either may be missing alone: a failed
+        labelling leaves every spot with its arg-derived name, a missing interface leaves
+        the routine slug-named with no parameters.  Extraction never blocks on either.
+
+        Since #1868 the interface is normally the round's ENTRY framing, read rather than
+        drawn — the routine was named before the round ran, and this is the same routine.
+        The run-end draw survives as the path for a round nothing framed."""
         steps, parameters = distill_steps(
             self._distill_inputs(projection, certified), attachment_names(self._db)
         )
         conversation = self._db.messages.recent_conversation(_NAMING_CONVERSATION_TURNS)
         labels = await self._label_skill(steps, parameters, projection, conversation)
-        signature = await self._frame_skill(projection, conversation)
+        signature = await self._signature(framing, projection, conversation)
         steps, parameters = _apply_leaf_labels(steps, parameters, labels)
         name, description = _naming(signature, projection.origin_message)
         return SkillDraft(
@@ -430,6 +448,23 @@ class SkillExtractor:
         return await self._micro_context.label_skill(
             content, [parameter.name for parameter in parameters], run_target=self._agent_name
         )
+
+    async def _signature(
+        self,
+        framing: RoundFraming | None,
+        projection: RunProjection,
+        conversation: list[tuple[str, str]],
+    ) -> SkillSignature | None:
+        """The routine's interface: the round's ENTRY framing when it has one, else a
+        run-end framing draw (#1868).
+
+        Reusing the entry framing is what makes the round coherent end to end — the turn
+        was instructed under this routine's name and wrote into the container derived from
+        it, so filing the skill under a name a second draw preferred would leave the
+        container pointing at a routine that no longer exists by that name."""
+        if framing is not None:
+            return framing.signature
+        return await self._frame_skill(projection, conversation)
 
     async def _frame_skill(
         self, projection: RunProjection, conversation: list[tuple[str, str]]
