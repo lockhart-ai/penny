@@ -11,7 +11,15 @@ dependencies = [
     "pydantic>=2.0.0",
     "sqlmodel>=0.0.14",
     "discord.py>=2.6.4",
-    "openai>=1.50.0",
+    # openai 3.0.0 moved the SDK onto httpx 2.x, which ships as its own distribution
+    # (`httpx2`) — so it installs alongside our `httpx[http2]` 0.28 instead of upgrading
+    # it, and the environment carries two unrelated httpx module trees. The SDK's public
+    # types then annotate `httpx2.Response`/`httpx2.Request` while everything we hand it
+    # is an `httpx.Response`/`httpx.Request`: CI went red on untouched files, and the
+    # mismatch is real at runtime too (the timeout object we pass `AsyncOpenAI`, the
+    # responses we build its exceptions from). Capped below 3 until Penny moves to
+    # httpx 2.x wholesale. See #1877.
+    "openai>=1.50.0,<3",
     "dateparser>=1.2.0",
     "timezonefinder>=6.5.0",
     "geopy>=2.4.0",
