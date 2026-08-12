@@ -55,6 +55,7 @@ from penny.validation import (
     run_validators,
 )
 from penny.validation.response_validators import (
+    AppliedConfigurationValidator,
     EmptyResponseValidator,
     HallucinatedToolCallRepair,
     HallucinatedUrlValidator,
@@ -3079,9 +3080,13 @@ class TestResponseValidators:
         # declares no invalid draws (any text is a legitimate answer there).
         assert Agent.run_shape_validators == []
         assert Agent.invalid_draw_conditions == ()
-        # Chat's run-shape chain is the run-end skill-narration nudge; its invalid draws
-        # are call-shaped text only, so a plain conversational reply stays valid.
-        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [SkillNarrationValidator]
+        # Chat's run-shape chain is the two narrate-from-the-RECORD nudges — what the run
+        # LEARNED (#1658) and what it SET RUNNING (#1869) — and its invalid draws are
+        # call-shaped text only, so a plain conversational reply stays valid.
+        assert [v.__class__ for v in ChatAgent.run_shape_validators] == [
+            SkillNarrationValidator,
+            AppliedConfigurationValidator,
+        ]
         assert [condition for condition, _ in ChatAgent.invalid_draw_conditions] == [
             ConditionKey.CALL_AS_TEXT,
             ConditionKey.CALL_FRAGMENT_REPLY,

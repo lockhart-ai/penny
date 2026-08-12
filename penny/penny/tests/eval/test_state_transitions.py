@@ -30,22 +30,24 @@ stands on its own, because what it measures belongs to the round rather than to
 the ask that reached it: a demonstration whose page does not carry the fact it
 was sent for, where the contract is the round stopping and reporting instead of
 inventing a value to finish with.  ``learn → apply`` then continues the five that
-chain, seeding the WHOLE round — four logged turns, both transition rows, and the
-naive collection the demonstration left — so the acceptance is answered as
-message five of one exchange, which is the shape production hands the classifier.
+chain, seeding the WHOLE round — four logged turns, both transition rows carrying the
+round's own framing, and the container that framing built with the demonstrated write in
+it — so the acceptance is answered as message five of one exchange, which is the shape
+production hands the classifier.
 
 **Learning attaches nothing** (#1706, replacing #1687's run-end auto-attach): the
 machine makes teaching and instantiating two clear turns, so the demonstrated
-round leaves a naive collection_write behind — a collection with a value in it
-and no skill, no rendered program, nothing scheduled — and a LATER turn applies
-the skill.  Scoring that separation is most of the point of these cases.
+round leaves its container holding a value and nothing else — no skill, no rendered
+program, nothing scheduled — and a LATER turn applies the skill.  Scoring that
+separation is most of the point of these cases.
 
-WHICH collection a job ends up on is deliberately out of scope (code owner): she
-has spread work across several collections where one was meant since long before
-this machine existed, so that is a collection-management question of its own and
-grading it per-transition would report a standing problem as an edge failure.
-The apply cases score that the skill is APPLIED correctly — bound, rendered,
-scheduled on the terms given — and carry the reuse question as an advisory.
+WHERE a job lands stopped being a question the model answers (#1869).  It used to be
+deliberately out of scope — she had spread work across several collections where one was
+meant since long before this machine existed — and it rode as an advisory so a standing
+collection-management problem was not reported as an edge failure.  Now the round settles
+its container on the way in, the APPLY instruction renders that name, and the
+configuration is aimed at it framework-side, so the landing is a certainty and the check
+is SCORED: a miss here is a defect in the mechanism, not a judgment the turn got wrong.
 """
 
 from __future__ import annotations
@@ -86,6 +88,11 @@ from penny.database.skills import (
     slug_skill_name,
 )
 from penny.penny import Penny
+
+# The SHIPPED container derivation, used as itself: a seeded round has to run into the
+# container production would have built for it, and a fixture spelling that name out would
+# be a second copy of the naming scheme, free to drift from the one jobs are identified by.
+from penny.round_framing import container_name
 
 # The production draw-application, used as itself: a fixture skill has to be the SHAPE
 # run-end extraction really produces, and re-implementing that mapping here would be a
@@ -160,7 +167,6 @@ from penny.tools.collection_instantiation import (
     render_reinstantiation_echo,
     render_schedule_clause,
 )
-from penny.tools.memory_tools import _AUTO_CREATED_DESCRIPTION
 from penny.tools.micro_context import (
     SKILL_TAG,
     STATE_CLASSIFIER_SYSTEM_PROMPT,
@@ -194,6 +200,7 @@ def _park(
     run_id: str | None = None,
     message_id: int | None = None,
     skill_name: str | None = None,
+    framing: RoundFraming | None = None,
 ) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
@@ -218,6 +225,12 @@ def _park(
     column the idle → apply cases read as half of the binding check, so a seeded
     apply move has to carry it exactly as a drawn one does.
 
+    ``framing`` is the round's own framing (#1868/#1869) — settled by the move that
+    ENTERED learn and carried by every move after it while the round is parked, so a
+    seeded round records it on exactly the moves production records it on.  The apply turn
+    reads it as the collection, the routine and the values it configures, which is why a
+    seeded round without it is a round the turn under test cannot be answered against.
+
     Every move recorded here is a DECIDED draw: these are the moves the machine
     really made, and a classifier row with no outcome is the fail → stay shape,
     which is not what a seeded history of completed rounds is."""
@@ -230,6 +243,7 @@ def _park(
         run_id=run_id,
         message_id=message_id,
         skill_name=skill_name,
+        skill_frame=framing.model_dump_json() if framing is not None else None,
     )
 
 
@@ -1964,8 +1978,20 @@ async def test_elicit_to_learn_stops_when_the_page_lacks_the_fact(
 # ask INCOMING (the anchor), Penny's teach question OUTGOING, the demonstration
 # INCOMING, her closing report OUTGOING, and the TWO transition rows that carried the
 # machine there — idle → elicit stamped on the ask, then elicit → learn keeping that
-# anchor unchanged (#1827's anchor lifecycle).  So the acceptance is answered as message
-# five of one exchange, which is what production hands the classifier.
+# anchor unchanged (#1827's anchor lifecycle) and RECORDING the round's framing.  So the
+# acceptance is answered as message five of one exchange, which is what production hands
+# the classifier.
+#
+# **The container is already there** (#1868/#1869).  Entering learn framed the round and
+# built the container derived from the routine plus the values the user said, and the
+# demonstration wrote into it — so this beat starts from a container the round is already
+# using, and the framing is carried onto the apply move the turn under test makes.  What
+# that buys the turn is everything it no longer has to work out: the APPLY instruction
+# renders the routine and the container verbatim, and the configuration call supplies only
+# the job's TERMS while the container, the routine and the values it is pointed at come off
+# the round.  So the three binding checks below read as certainties about the mechanism,
+# and what the cases still MEASURE is the terms — the cadence, the end condition, and
+# saying what will happen.
 #
 # **Recorded seeding reversal.**  This case used to OMIT the instigating ask and anchor
 # the park to the demonstration.  That was a workaround from before the classifier's
@@ -1990,16 +2016,33 @@ async def test_elicit_to_learn_stops_when_the_page_lacks_the_fact(
 # The reference replies quoted above each case are review targets, never scorer strings.
 
 
+def _framed(signature: SkillSignature) -> RoundFraming:
+    """The framing entering learn settles for one routine (#1868): the signature the
+    framer drew, and the container the SHIPPED derivation makes of it.
+
+    Derived rather than written down, because a fixture that spelled the container out
+    would be a second copy of the naming scheme — free to drift from the one production
+    actually names jobs with, and silently, since every claim these cases make about the
+    container would still be self-consistent."""
+    return RoundFraming(signature=signature, container=container_name(signature))
+
+
 class _DemonstratedRound(NamedTuple):
     """The canonical two-step round a fixture skill is distilled from — browse the page,
-    write what it said into a collection — and the naive world that round left behind.
+    write what it said into the round's own container — and the world that round left
+    behind.
 
     One shape for all five scenarios, because the shape is what the preceding beat
     produces: a routine is a look-up and a durable write, and everything that differs
     between subjects is a value in here.  ``entry_value`` is BOTH what the browse
     returned and what the write stored, so the write's content leaf binds to step 1
     exactly as a real demonstration's does — which is what leaves the other four leaves
-    as the spots the labeller names."""
+    as the spots the labeller names.
+
+    ``collection`` is the round's CONTAINER (#1868) — derived from the framing the machine
+    settled on entering learn, not a name the demonstration chose.  So the demonstrated
+    write lands where the LEARN instruction told the turn to write, which is what makes
+    the write's destination leaf a copy of a rendered anchor."""
 
     url: str
     extract: str
@@ -2181,10 +2224,23 @@ _ARRIVALS_RUNS = _journey_runs("arrivals")
 # run id and no rows — a routine learned before the history a case seeds begins.
 _DECOY_RUNS = _journey_runs("museum")
 
+_AURORA_FRAMING = _framed(
+    SkillSignature(
+        name="monitor_price",
+        description="Monitors a web listing and reports when its price changes.",
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="The URL of the listing to watch",
+                value=LISTING_URL,
+            ),
+        ),
+    )
+)
 _AURORA_DEMONSTRATED = _DemonstratedRound(
     url=LISTING_URL,
     extract="the current price",
-    collection="aurora-deck-2-price",
+    collection=_AURORA_FRAMING.container,
     entry_key="listing price",
     entry_value="$499",
 )
@@ -2204,26 +2260,36 @@ _AURORA_SKILL = _fixture_skill(
             name="entry_key",
             description="the key under which the extracted value is stored within that collection",
         ),
-        signature=SkillSignature(
-            name="monitor_price",
-            description="Monitors a web listing and reports when its price changes.",
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="The URL of the listing to watch",
-                    value=LISTING_URL,
-                ),
-            ),
-        ),
+        signature=_AURORA_FRAMING.signature,
     ),
     _AURORA_ROUND.demo,
     _AURORA_RUNS,
 )
 
+_FERRY_FRAMING = _framed(
+    SkillSignature(
+        name="check_ferry_timetable",
+        description=(
+            "Check a ferry timetable page for updates and report the status of a specified line"
+        ),
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="the URL of the timetable page to fetch",
+                value=_FERRY_TIMETABLE_URL,
+            ),
+            FramedParameter(
+                name="keyword",
+                description="text indicating which timetable entry to look for",
+                value="the late sailing line",
+            ),
+        ),
+    )
+)
 _FERRY_DEMONSTRATED = _DemonstratedRound(
     url=_FERRY_TIMETABLE_URL,
     extract="the late sailing line",
-    collection="harborferries-late",
+    collection=_FERRY_FRAMING.container,
     entry_key="late-sailing",
     entry_value="Late sailing: not scheduled this season.",
 )
@@ -2245,33 +2311,29 @@ _FERRY_SKILL = _fixture_skill(
             name="entry_key",
             description="the key under which the extracted value will be stored in the collection",
         ),
-        signature=SkillSignature(
-            name="check_ferry_timetable",
-            description=(
-                "Check a ferry timetable page for updates and report the status of a specified line"
-            ),
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="the URL of the timetable page to fetch",
-                    value=_FERRY_TIMETABLE_URL,
-                ),
-                FramedParameter(
-                    name="keyword",
-                    description="text indicating which timetable entry to look for",
-                    value="the late sailing line",
-                ),
-            ),
-        ),
+        signature=_FERRY_FRAMING.signature,
     ),
     _FERRY_ROUND.demo,
     _FERRY_RUNS,
 )
 
+_BAKERY_FRAMING = _framed(
+    SkillSignature(
+        name="fetch_daily_special",
+        description="retrieve the daily special from a bakery webpage",
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="the URL where the daily specials are listed",
+                value=_BAKERY_SPECIALS_URL,
+            ),
+        ),
+    )
+)
 _BAKERY_DEMONSTRATED = _DemonstratedRound(
     url=_BAKERY_SPECIALS_URL,
     extract="today's special",
-    collection="corner-bakery-daily-specials",
+    collection=_BAKERY_FRAMING.container,
     # The measured draws all keyed a day's special by its date, and the label
     # transcribed below says so — so the demonstrated key is one, which is exactly the
     # kind of value a placeholder exists to stop a collector re-writing every cycle.
@@ -2297,26 +2359,29 @@ _BAKERY_SKILL = _fixture_skill(
             name="entry_key",
             description="unique date-based key used to store each special in the collection",
         ),
-        signature=SkillSignature(
-            name="fetch_daily_special",
-            description="retrieve the daily special from a bakery webpage",
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="the URL where the daily specials are listed",
-                    value=_BAKERY_SPECIALS_URL,
-                ),
-            ),
-        ),
+        signature=_BAKERY_FRAMING.signature,
     ),
     _BAKERY_ROUND.demo,
     _BAKERY_RUNS,
 )
 
+_COLONY_FRAMING = _framed(
+    SkillSignature(
+        name="monitor_webpage_number",
+        description="track a numeric value on a webpage over time to detect changes",
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="the webpage to monitor",
+                value="harborseals.example/colony-count",
+            ),
+        ),
+    )
+)
 _COLONY_DEMONSTRATED = _DemonstratedRound(
     url=_COLONY_COUNT_URL,
     extract="the current count",
-    collection="harbor-seals",
+    collection=_COLONY_FRAMING.container,
     entry_key="current",
     entry_value="214",
 )
@@ -2334,26 +2399,29 @@ _COLONY_SKILL = _fixture_skill(
         entry_key=LeafLabel(
             name="entry_key", description="the key used for the entry in the collection"
         ),
-        signature=SkillSignature(
-            name="monitor_webpage_number",
-            description="track a numeric value on a webpage over time to detect changes",
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="the webpage to monitor",
-                    value="harborseals.example/colony-count",
-                ),
-            ),
-        ),
+        signature=_COLONY_FRAMING.signature,
     ),
     _COLONY_ROUND.demo,
     _COLONY_RUNS,
 )
 
+_ARRIVALS_FRAMING = _framed(
+    SkillSignature(
+        name="retrieve_newest_item",
+        description="Checks a web page and returns its newest arrival",
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="the URL of the list to check",
+                value=_NEW_ARRIVALS_URL,
+            ),
+        ),
+    )
+)
 _ARRIVALS_DEMONSTRATED = _DemonstratedRound(
     url=_NEW_ARRIVALS_URL,
     extract="the newest arrival",
-    collection="library-new-arrivals",
+    collection=_ARRIVALS_FRAMING.container,
     entry_key="newest arrival",
     entry_value="The Tidewater Almanac",
 )
@@ -2375,17 +2443,7 @@ _ARRIVALS_SKILL = _fixture_skill(
             name="entry_key",
             description="unique identifier for the arrival, typically its title",
         ),
-        signature=SkillSignature(
-            name="retrieve_newest_item",
-            description="Checks a web page and returns its newest arrival",
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="the URL of the list to check",
-                    value=_NEW_ARRIVALS_URL,
-                ),
-            ),
-        ),
+        signature=_ARRIVALS_FRAMING.signature,
     ),
     _ARRIVALS_ROUND.demo,
     _ARRIVALS_RUNS,
@@ -2398,10 +2456,23 @@ _ARRIVALS_SKILL = _fixture_skill(
 # so without an existing-but-wrong alternative the intended-skill check could only ever
 # pass.  Built through the same pipeline over the same canonical shape, so it is a
 # skill of the same standing rather than a rigged one.
+_DECOY_FRAMING = _framed(
+    SkillSignature(
+        name="check_museum_hours",
+        description="read a museum's hours page and record the opening times",
+        parameters=(
+            FramedParameter(
+                name="url",
+                description="the URL of the museum hours page",
+                value="https://citymuseum.example/hours",
+            ),
+        ),
+    )
+)
 _DECOY_DEMONSTRATED = _DemonstratedRound(
     url="https://citymuseum.example/hours",
     extract="the opening times",
-    collection="museum-hours",
+    collection=_DECOY_FRAMING.container,
     entry_key="opening times",
     entry_value="10am to 5pm, closed Mondays",
 )
@@ -2419,17 +2490,7 @@ _DECOY_SKILL = _fixture_skill(
         entry_key=LeafLabel(
             name="entry_key", description="the key under which the opening times are stored"
         ),
-        signature=SkillSignature(
-            name="check_museum_hours",
-            description="read a museum's hours page and record the opening times",
-            parameters=(
-                FramedParameter(
-                    name="url",
-                    description="the URL of the museum hours page",
-                    value="https://citymuseum.example/hours",
-                ),
-            ),
-        ),
+        signature=_DECOY_FRAMING.signature,
     ),
     "go to https://citymuseum.example/hours, find the opening times, and remember them",
     _DECOY_RUNS,
@@ -2450,7 +2511,7 @@ class _ApplyCase(NamedTuple):
     ``prior`` is the sibling elicit → learn case, whose ask, teach question,
     demonstration and closing report are seeded as the round's four logged turns.
     ``demonstrated`` is the canonical ledger that round ran, which is both what the
-    fixture ``skill`` was distilled from and what the naive collection seeded here
+    fixture ``skill`` was distilled from and what the round's container seeded here
     holds.  ``acceptance`` is the turn under test.
 
     The rest is what the acceptance's own terms ask for, per case: ``cadence_seconds`` is
@@ -2468,6 +2529,12 @@ class _ApplyCase(NamedTuple):
     turn that finished it, so the line the review reads and the line that world replays are
     one string.
 
+    ``framing`` is what entering learn settled (#1868) — the routine this round is about
+    and the container built for it.  It is recorded on the round's learn move and carried
+    onto every move after it, which is how the turn under test enters with the container
+    already known: the APPLY instruction renders it, and the routine and its bound values
+    are supplied from it rather than re-derived by the turn (#1869).
+
     ``runs`` is the journey's own run-id bundle — what every seeded turn of this round is
     written under, and what its skill, collection, entry and moves cite."""
 
@@ -2475,6 +2542,7 @@ class _ApplyCase(NamedTuple):
     prior: _LearnCase
     demonstrated: _DemonstratedRound
     skill: SkillDraft
+    framing: RoundFraming
     runs: _JourneyRuns
     acceptance: str
     confirmation: str
@@ -2493,6 +2561,7 @@ _AURORA_APPLY = _ApplyCase(
     prior=_AURORA_ROUND,
     demonstrated=_AURORA_DEMONSTRATED,
     skill=_AURORA_SKILL,
+    framing=_AURORA_FRAMING,
     runs=_AURORA_RUNS,
     acceptance="perfect — do that every hour until 10pm tonight and tell me if it changes",
     confirmation=(
@@ -2514,6 +2583,7 @@ _FERRY_APPLY = _ApplyCase(
     prior=_FERRY_ROUND,
     demonstrated=_FERRY_DEMONSTRATED,
     skill=_FERRY_SKILL,
+    framing=_FERRY_FRAMING,
     runs=_FERRY_RUNS,
     acceptance="great — do that every morning and let me know when the late sailing gets added",
     confirmation=(
@@ -2534,6 +2604,7 @@ _BAKERY_APPLY = _ApplyCase(
     prior=_BAKERY_ROUND,
     demonstrated=_BAKERY_DEMONSTRATED,
     skill=_BAKERY_SKILL,
+    framing=_BAKERY_FRAMING,
     runs=_BAKERY_RUNS,
     acceptance="great — do that every day and tell me what the special is",
     confirmation="done — i'll check the specials every day and message you what's on.",
@@ -2553,6 +2624,7 @@ _COLONY_APPLY = _ApplyCase(
     prior=_COLONY_ROUND,
     demonstrated=_COLONY_DEMONSTRATED,
     skill=_COLONY_SKILL,
+    framing=_COLONY_FRAMING,
     runs=_COLONY_RUNS,
     acceptance="perfect — do that every week and let me know if the count drops",
     confirmation="done — i'll check the colony count every week and message you if it drops.",
@@ -2571,6 +2643,7 @@ _ARRIVALS_APPLY = _ApplyCase(
     prior=_ARRIVALS_ROUND,
     demonstrated=_ARRIVALS_DEMONSTRATED,
     skill=_ARRIVALS_SKILL,
+    framing=_ARRIVALS_FRAMING,
     runs=_ARRIVALS_RUNS,
     acceptance=(
         "yes — check it every two hours until the end of the month and tell me the "
@@ -2607,9 +2680,10 @@ def seed_learned_round(case: _ApplyCase) -> Seeder:
     * the instigating ask INCOMING, Penny's teach question OUTGOING, the demonstration
       INCOMING, and her closing report OUTGOING — the offer this turn takes up
     * the machine's two moves: idle → elicit anchored to the ask, then elicit → learn
-      carrying that anchor unchanged
-    * the naive collection the demonstrated write created — the fact in it, no skill,
-      no rendered program, nothing scheduled (learning instantiates nothing)
+      carrying that anchor unchanged and RECORDING the round's framing (#1868)
+    * the round's container, built by that same learn move and holding what the
+      demonstration wrote — no skill, no rendered program, nothing scheduled (learning
+      instantiates nothing)
 
     The fixture skills and the case's page are laid down by the runner after this, so
     the world is only whole once they are — which is why the probe is a prepare hook.
@@ -2655,8 +2729,9 @@ def seed_round_through_learn(
         from_state=ConversationState.ELICIT,
         run_id=case.runs.learn_turn,
         message_id=demo_id,
+        framing=case.framing,
     )
-    _seed_naive_collection(db, case, demo_id)
+    _seed_round_container(db, case, demo_id)
     return ask_id, demo_id
 
 
@@ -2749,18 +2824,22 @@ def _seed_round_turns(db: Database, case: _ApplyCase) -> tuple[int, int]:
     return ask_id, demo_id
 
 
-def _seed_naive_collection(db: Database, case: _ApplyCase, demo_id: int) -> None:
-    """The collection the demonstrated write created, exactly as the AUTO-CREATE path
-    creates it: a description naming what it was made to hold (the production format,
-    imported rather than copied), stamped with the run that created it and linked to the
-    message that provoked it — which is what puts a resolvable ``run <id>`` on the mutation
-    line, since the create chokepoint records that event from this very argument.
+def _seed_round_container(db: Database, case: _ApplyCase, demo_id: int) -> None:
+    """The round's CONTAINER, exactly as the entry framer builds it (#1868): created when
+    the machine landed in learn, INERT — storage only, no program, no schedule, no notify
+    — carrying the framer's own one line of what the routine is for, stamped with the run
+    that created it and linked to the message that provoked it.  That link is what puts a
+    resolvable ``run <id>`` on the mutation line, since the create chokepoint records the
+    event from this very argument.
 
-    The entry carries the same run on both its write stamps, as a real write does."""
+    The demonstrated write then lands INSIDE it, which is what the LEARN instruction told
+    that turn to do — so the world this beat starts from is a container the round already
+    wrote into, not a collection the demonstration named for itself.  The entry carries the
+    round's run on both its write stamps, as a real write does."""
     demonstrated = case.demonstrated
     db.memories.create_collection(
-        demonstrated.collection,
-        _AUTO_CREATED_DESCRIPTION.format(key=demonstrated.entry_key),
+        case.framing.container,
+        case.framing.signature.description,
         created_by_run_id=case.runs.learn_turn,
     )
     db.memories.link_source_message(case.runs.learn_turn, demo_id)
@@ -2799,11 +2878,35 @@ def _probe_seeded_world(case: _ApplyCase) -> Preparer:
 
     def probe(penny: Penny) -> None:
         _assert_parked_on_the_ask(penny.db, case)
+        assert_round_is_framed(penny.db, case)
         _assert_seeded_registry(penny.db, case)
         assert_seeded_ledger(penny.db, case)
         assert_round_cites_its_run(penny.db, case)
 
     return probe
+
+
+def assert_round_is_framed(db: Database, case: _ApplyCase) -> None:
+    """The round the acceptance answers was FRAMED on the way in (#1868) — the move that
+    entered learn carries the framing, and the container it names exists, inert, holding
+    what the demonstration wrote.
+
+    This is the half beat 3 rests on: the turn under test enters with the container already
+    known, so a seed that recorded no framing would leave the APPLY instruction with
+    nothing to render and the configuration with nothing to be supplied from — and the
+    case would report that as the model's failure."""
+    latest = db.machine.latest_transition()
+    recorded = latest.skill_frame if latest is not None else None
+    assert recorded == case.framing.model_dump_json(), (
+        f"{case.case_id}: the learn move must carry the round's framing, not {recorded}"
+    )
+    row = db.memories.get(case.framing.container)
+    assert row is not None, (
+        f"{case.case_id}: the round's container {case.framing.container!r} exists"
+    )
+    assert row.skill_name is None and row.extraction_prompt is None and row.schedule is None, (
+        f"{case.case_id}: the container is INERT until the turn under test configures it"
+    )
 
 
 def assert_seeded_ledger(db: Database, case: _ApplyCase) -> None:
@@ -2907,15 +3010,13 @@ def _assert_seeded_registry(db: Database, case: _ApplyCase) -> None:
 
 
 def _instantiated(db: Database, case: _ApplyCase) -> MemoryRow | None:
-    """The collection the taught skill was applied to — WHICHEVER one she chose.
+    """The collection the taught skill was applied to — WHICHEVER one carries it.
 
-    Which collection a job lands on is deliberately NOT these cases' business (code
-    owner): she has created several where one was meant since well before the machine
-    existed, so where jobs accumulate is a collection-management question of its own and
-    grading it here would report that standing problem as a transition failure.  This
-    edge owns whether the skill is APPLIED correctly — bound, rendered, and scheduled on
-    the terms given — so every check reads the row that carries the skill, and the one
-    about reuse rides along unscored."""
+    Still read by the skill rather than by the container's name, even though #1869 makes
+    the landing structural: reading the row that carries the routine is what lets a job
+    that landed somewhere else be SEEN (by the container check below) instead of scoring
+    as no job at all.  Every other check reads whatever this returns, so a misplaced job
+    is one finding rather than a whole failed sample."""
     taught = slug_skill_name(case.skill.name)
     applied = [row for row in db.memories.list_all() if row.skill_name == taught]
     return applied[0] if applied else None
@@ -3167,18 +3268,22 @@ def _score_learn_to_apply(
     db: Database, before: set[str], reply: str, *, case: _ApplyCase
 ) -> list[Check]:
     """The taught routine became a live job on the terms they gave — the intended skill
-    bound, its program rendered, every parameter taken from the round, scheduled and
-    notifying — without re-running the round to answer.
+    bound onto the round's own container, its program rendered, pointed at what the round
+    settled, scheduled and notifying — without re-running the round to answer.
 
     ONE scorer for all five cases, bound to the case's own terms.  The labels are
     diff-join keys, so they read identically on every case and keep the wording the
     auction script gave them even where a ferry timetable is what the job watches.
-    WHERE the job lives is not scored (see ``_instantiated``); it rides along as an
-    advisory so the choice stays visible."""
+
+    Since #1869 the split between what the TURN decides and what the ROUND settled is the
+    split between the terms checks and the binding ones: the cadence, the end condition and
+    the telling-them clause are the model's answers to this acceptance, while the
+    container, the routine and its values are read off the round — so those read as
+    certainties, and a failure in one is a defect in the mechanism rather than a draw."""
     row = _instantiated(db, case)
     landed = db.machine.latest_transition()
     return [
-        *_binding_checks(db, row, landed, case),
+        *_binding_checks(db, before, row, landed, case),
         *_terms_checks(db, row, case),
         _decoy_check(db),
         _apply_anchor_check(db, landed, case),
@@ -3187,26 +3292,31 @@ def _score_learn_to_apply(
             any(token in reply.lower() for token in case.cadence_tokens),
             kind="reply",
         ),
-        *_apply_advisories(db, before, row, landed, case),
+        *_job_setup_advisories(db, row, landed),
     ]
 
 
 def _binding_checks(
-    db: Database, row: MemoryRow | None, landed: StateTransition | None, case: _ApplyCase
+    db: Database,
+    before: set[str],
+    row: MemoryRow | None,
+    landed: StateTransition | None,
+    case: _ApplyCase,
 ) -> list[Check]:
-    """She set a job up, on the right routine, pointed at what the round supplied."""
+    """She set a job up, on the right routine, on the round's own container, pointed at
+    what the round settled.
+
+    Every one of these is a CERTAINTY since #1869 rather than a draw the model could get
+    wrong: the container, the routine and the values come out of the round's framing at the
+    call.  They stay scored because that is exactly what makes them worth reading — the
+    mechanism either supplied them or it did not, and a red here names which half broke."""
     return [
         Check(
             "state: she set the job up with collection_set",
             tool_was_called(db, _SET_TOOL),
             kind="state",
         ),
-        Check(
-            "state: the taught skill was applied to a collection",
-            row is not None,
-            rationale=None if row else "no collection carries the skill",
-            kind="state",
-        ),
+        _container_check(db, before, row, case),
         Check(
             "state: the skill's program was rendered into it",
             row is not None and bool(row.extraction_prompt),
@@ -3218,7 +3328,9 @@ def _binding_checks(
             label="state: the decision bound the intended skill",
         ),
         _bound_parameters_check(
-            row, wanted=case.bound, label="state: every parameter bound from the round"
+            row,
+            wanted=case.bound,
+            label="state: the routine is pointed at what the round settled",
         ),
     ]
 
@@ -3243,40 +3355,34 @@ def _terms_checks(db: Database, row: MemoryRow | None, case: _ApplyCase) -> list
     ]
 
 
-def _reuse_advisory(
+def _container_check(
     db: Database, before: set[str], row: MemoryRow | None, case: _ApplyCase
 ) -> Check:
-    """The collection-management question, parked (code owner): does the job land on the
-    collection the round already wrote into, or on a new one?  Visible every run, graded
-    never, so the standing tendency to spread across collections is measured here
-    without this edge answering for it."""
+    """The job landed on the round's own container — SCORED since #1869, where it was an
+    advisory before.
+
+    The collection-management question it used to carry ("does she reuse or mint?") is no
+    longer a question this turn answers: the container was built when the round was framed,
+    the APPLY instruction renders its name, and the configuration is aimed at it
+    framework-side.  So this reads as a certainty and a failure here is a real defect in
+    the mechanism rather than the standing spread-across-collections tendency the code
+    owner parked.  Any collection the turn created anyway rides in the rationale, because
+    that is what a broken one would look like."""
     created = new_collections(db, before)
-    reused = row is not None and row.name == case.demonstrated.collection
+    landed = row is not None and row.name == case.framing.container
     return Check(
-        "state: applied onto the collection the round wrote into (not a new one)",
-        reused,
+        "state: the job landed on the round's own container",
+        landed,
         rationale=(
             None
-            if reused
+            if landed
             else (
-                f"applied to {row.name if row else None}, created {[each.name for each in created]}"
+                f"applied to {row.name if row else None}, expected {case.framing.container!r}, "
+                f"created {[each.name for each in created]}"
             )
         ),
-        scored=False,
         kind="state",
     )
-
-
-def _apply_advisories(
-    db: Database,
-    before: set[str],
-    row: MemoryRow | None,
-    landed: StateTransition | None,
-    case: _ApplyCase,
-) -> list[Check]:
-    """The unscored flavour: the parked collection-management question, then everything
-    any apply turn reports about itself."""
-    return [_reuse_advisory(db, before, row, case), *_job_setup_advisories(db, row, landed)]
 
 
 def _job_setup_advisories(
@@ -3335,10 +3441,9 @@ async def _run_apply_case(chat_eval: ChatEval, case: _ApplyCase) -> None:
 @pytest.mark.asyncio
 async def test_learn_to_apply_instantiates_the_taught_skill(chat_eval: ChatEval) -> None:
     """learn → apply: parked on the offer the demonstrated round ended with, the
-    user accepts and adds the job's terms.  She binds the taught skill onto the
-    collection that round already wrote into — one `collection_set`, the page
-    taken from the round rather than asked for again — and does NOT re-run the
-    round to answer."""
+    user accepts and adds the job's terms.  One `collection_set` stands the job up on the
+    container that round built — the routine and the page it watches come off the round
+    rather than being worked out again — and she does NOT re-run the round to answer."""
     await _run_apply_case(chat_eval, _AURORA_APPLY)
 
 
@@ -3347,9 +3452,9 @@ async def test_learn_to_apply_sets_a_cron_cadence_and_binds_both_parameters(
     chat_eval: ChatEval,
 ) -> None:
     """learn → apply on a routine that asks for two things and a cadence stated as a
-    time of day: "every morning" is the cron form, and both the timetable's address and
-    the late sailing line the user named have to come out of the round's own turns —
-    neither is in the acceptance."""
+    time of day: "every morning" has to state an hour to run at, and the job carries BOTH
+    of the round's values — the timetable's address and the late sailing line — neither of
+    which is in the acceptance."""
     await _run_apply_case(chat_eval, _FERRY_APPLY)
 
 
@@ -3362,8 +3467,8 @@ async def test_learn_to_apply_schedules_the_daily_digest(chat_eval: ChatEval) ->
 
 @pytest.mark.asyncio
 async def test_learn_to_apply_schedules_the_weekly_check(chat_eval: ChatEval) -> None:
-    """learn → apply on the weekly count: the longest cadence of the set, bound to the
-    scheme-less address the user typed rather than to a page she went and found."""
+    """learn → apply on the weekly count: the longest cadence of the set, on a job carrying
+    the scheme-less address the user typed rather than a page she went and found."""
     await _run_apply_case(chat_eval, _COLONY_APPLY)
 
 
@@ -3640,15 +3745,17 @@ class _Exchange(NamedTuple):
 class _AppliedJob(NamedTuple):
     """What one journey's APPLY turn stood up — the live mechanism it left behind.
 
-    ``schedule`` is the rule that turn set (the acceptance's cadence, in the one
-    grammar), ``expires_in`` how far ahead its end condition sits when the world is laid
-    down, and ``params`` what the routine was pointed at.  What she SAID when she was done
-    is not here: that is the round's own reference reply (``_ApplyCase.confirmation``), and
-    replaying it is the whole reason it is data."""
+    ``schedule`` is the rule that turn set (the acceptance's cadence, in the one grammar)
+    and ``expires_in`` how far ahead its end condition sits when the world is laid down —
+    the job's TERMS, which is all an apply turn supplies since #1869.  What the routine is
+    pointed at is NOT here: the round settled that, so it is read off the round's framing
+    (``_ApplyCase.framing.bound_values()``) and a second copy here could only drift from
+    it.  What she SAID when she was done is not here either: that is the round's own
+    reference reply (``_ApplyCase.confirmation``), and replaying it is the whole reason it
+    is data."""
 
     schedule: str
     expires_in: timedelta | None
-    params: dict[str, str]
 
 
 class _Journey(NamedTuple):
@@ -3671,11 +3778,7 @@ class _Journey(NamedTuple):
 _JOURNEYS = (
     _Journey(
         _AURORA_APPLY,
-        _AppliedJob(
-            schedule="FREQ=HOURLY",
-            expires_in=timedelta(hours=6),
-            params={"url": LISTING_URL},
-        ),
+        _AppliedJob(schedule="FREQ=HOURLY", expires_in=timedelta(hours=6)),
         _Exchange(
             said="great, thanks",
             answered="you're welcome — shout if you want anything else kept an eye on.",
@@ -3683,11 +3786,7 @@ _JOURNEYS = (
     ),
     _Journey(
         _FERRY_APPLY,
-        _AppliedJob(
-            schedule="FREQ=DAILY;BYHOUR=14",
-            expires_in=None,
-            params={"url": _FERRY_TIMETABLE_URL, "keyword": "late sailing"},
-        ),
+        _AppliedJob(schedule="FREQ=DAILY;BYHOUR=14", expires_in=None),
         _Exchange(
             said="perfect, appreciate it",
             answered="anytime — just say the word if there's anything else you want watched.",
@@ -3695,11 +3794,7 @@ _JOURNEYS = (
     ),
     _Journey(
         _BAKERY_APPLY,
-        _AppliedJob(
-            schedule="FREQ=DAILY",
-            expires_in=None,
-            params={"url": _BAKERY_SPECIALS_URL},
-        ),
+        _AppliedJob(schedule="FREQ=DAILY", expires_in=None),
         _Exchange(
             said="lovely, thank you",
             answered="my pleasure — tell me if there's anything else you'd like tracked.",
@@ -3707,11 +3802,7 @@ _JOURNEYS = (
     ),
     _Journey(
         _COLONY_APPLY,
-        _AppliedJob(
-            schedule="FREQ=WEEKLY",
-            expires_in=None,
-            params={"url": _COLONY_COUNT_URL},
-        ),
+        _AppliedJob(schedule="FREQ=WEEKLY", expires_in=None),
         _Exchange(
             said="brilliant, cheers",
             answered="no trouble at all — happy to take on anything else you want followed.",
@@ -3719,11 +3810,7 @@ _JOURNEYS = (
     ),
     _Journey(
         _ARRIVALS_APPLY,
-        _AppliedJob(
-            schedule="FREQ=HOURLY;INTERVAL=2",
-            expires_in=timedelta(days=12),
-            params={"url": _NEW_ARRIVALS_URL},
-        ),
+        _AppliedJob(schedule="FREQ=HOURLY;INTERVAL=2", expires_in=timedelta(days=12)),
         _Exchange(
             said="amazing, thanks so much",
             answered="you're welcome — just say if there's anything else worth watching.",
@@ -3883,6 +3970,7 @@ def _seed_apply_turn(
         run_id=case.runs.apply_turn,
         message_id=acceptance_id,
         skill_name=bound,
+        framing=case.framing,
     )
 
 
@@ -3908,27 +3996,32 @@ def _log_apply_draw(
 
 def _adopt_the_taught_routine(db: Database, journey: _Journey) -> MemoryRow:
     """The apply turn's durable half, written the way ``collection_set`` writes it: the
-    collection the round already wrote into ADOPTS the routine — the skill's steps
-    rendered into its ``extraction_prompt`` with the attachment bound to the collection's
-    own name, the acceptance's rule as its schedule, notify on, and the skill plus its
-    bound params stamped as provenance.
+    round's own CONTAINER adopts the routine — the skill's steps rendered into its
+    ``extraction_prompt`` with the attachment bound to the collection's own name, the
+    acceptance's rule as its schedule, notify on, and the skill plus its bound params
+    stamped as provenance.
+
+    The target and the params are the ROUND's (#1869), not this seeder's inventions: the
+    container is the one the framing built and the params are the values that framing
+    carries, which is exactly what the tool supplies for itself on a framed turn.
 
     Through the real store method the tool calls, so the update records its own mutation
     event citing this run — which is what makes "nothing has touched these five jobs
     since" a read rather than an assumption."""
     case, applied = journey.round, journey.applied
-    target = case.demonstrated.collection
+    target = case.framing.container
+    params = case.framing.bound_values()
     schedule = parse_schedule(applied.schedule)
     return db.memories.update_collection_metadata(
         target,
-        extraction_prompt=render_skill(retarget_writes(case.skill.steps, target), applied.params),
+        extraction_prompt=render_skill(retarget_writes(case.skill.steps, target), params),
         schedule=schedule.rule,
         replace_schedule=True,
         max_runs=schedule.max_runs,
         expires_at=_end_condition(applied),
         notify=True,
         skill_name=slug_skill_name(case.skill.name),
-        skill_params=applied.params,
+        skill_params=params,
         run_id=case.runs.apply_turn,
     )
 
@@ -3966,19 +4059,23 @@ def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
     """The ``collection_set`` call that stood the job up — the arguments it was made with
     and the result it came back with, framed by the PRODUCTION framer over the production
     echo, so the seeded ledger carries the text a real turn would have read rather than
-    an approximation of it."""
+    an approximation of it.
+
+    Terms ONLY since #1869: a turn configuring a framed round names the container and says
+    when the job runs, when it stops and whether to tell the user — the routine and the
+    values it is pointed at are supplied framework-side, so a seeded call carrying them
+    would be a call the model no longer makes.  The RESULT still echoes them, because the
+    echo states what actually landed."""
     applied = journey.applied
     skill_name = slug_skill_name(journey.round.skill.name)
     arguments: dict = {
         "name": row.name,
-        "skill": skill_name,
-        "params": applied.params,
         "schedule": applied.schedule,
         "notify": True,
     }
     if row.expires_at is not None:
         arguments["expires_at"] = row.expires_at.isoformat()
-    echo = render_reinstantiation_echo(row, skill_name, applied.params)
+    echo = render_reinstantiation_echo(row, skill_name, journey.round.framing.bound_values())
     return DistillInput(
         source_ordinal=1,
         tool=_SET_TOOL,
@@ -4099,8 +4196,8 @@ def _assert_five_live_jobs(db: Database) -> None:
     taught, a rendered program, a schedule and the notify its user asked for, none of them
     has retired itself, and each is pointed where its round pointed it."""
     for journey in _JOURNEYS:
-        row = db.memories.get(journey.round.demonstrated.collection)
-        assert row is not None, f"{journey.round.case_id}: the journey's collection must exist"
+        row = db.memories.get(journey.round.framing.container)
+        assert row is not None, f"{journey.round.case_id}: the journey's container must exist"
         _assert_live_job(journey, row)
 
 
@@ -4119,7 +4216,7 @@ def _assert_live_job(journey: _Journey, row: MemoryRow) -> None:
     assert (row.expires_at is not None) == expected_expiry, (
         f"{case.case_id}: the end condition must match what its acceptance gave"
     )
-    assert _bound_parameters(row) == journey.applied.params, (
+    assert _bound_parameters(row) == case.framing.bound_values(), (
         f"{case.case_id}: the job must be pointed where its round pointed it"
     )
 

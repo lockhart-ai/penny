@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import urllib.parse
+from abc import ABC, abstractmethod
 
 from penny.agents.models import MessageRole
 from penny.constants import PennyConstants
@@ -276,31 +277,68 @@ class HallucinatedToolCallRepair:
 # ── Chat-only run-shape validators ───────────────────────────────────────────
 
 
-class SkillNarrationValidator:
-    """A chat run that just AUTO-EXTRACTED a skill narrates it in the same turn
-    (#1658, SAID==DID).
+class _RecordNarrationValidator(ABC):
+    """The shared shape of the narrate-from-the-RECORD guards: a chat run that changed
+    something durable tells the user about it from what the framework stamped, never from
+    memory (SAID==DID).
 
-    Extraction is deterministic and runs at the text-branch prep
-    (``ChatAgent._prepare_text_shape``), which stamps the learned skill's rendered
-    frame onto ``ctx.learned_skill_frame`` on a qualifying run.  This validator —
-    a validator in the chat chain, not a branch in the loop — turns that frame into
-    a ``NudgeContinue`` so the model re-replies, telling the user what it just
-    learned FROM the render (its name, numbered recipe, required parameters)
-    rather than from memory.  The frame is present at most once per run (the prep
-    extracts once per run id), so the re-reply doesn't re-narrate — it falls through
-    to the real final answer.
+    The framework does the work deterministically at the text-branch prep
+    (``ChatAgent._prepare_text_shape``) and stamps a rendered frame on the ctx; a
+    subclass names which frame it reads.  Turning that into a ``NudgeContinue`` — a
+    validator in the chat chain, not a branch in the loop — makes the model re-reply
+    against the render.  A frame is stamped at most once per run (the prep runs once per
+    run id), so the re-reply falls through to the real final answer instead of narrating
+    twice.
 
-    On the final step there's no room to continue (tools stripped, the loop would
-    exhaust), so it Proceeds — the skill is still saved (extraction already ran) and
-    surfaces ambiently in the next turn's self-state header."""
+    On the final step there is no room to continue (tools stripped, the loop would
+    exhaust), so it Proceeds — what happened has already happened durably, and it surfaces
+    ambiently in the next turn's self-state header."""
 
     def check(self, response: LlmResponse, ctx: LoopContext) -> ValidationOutcome:
         if ctx.is_final_step or response.has_tool_calls:
             return Proceed(response=response)
-        if ctx.learned_skill_frame:
-            logger.info("Narrating an auto-extracted skill this turn")
-            return NudgeContinue(message=ctx.learned_skill_frame)
+        frame = self._frame(ctx)
+        if frame:
+            logger.info("Narrating %s this turn", self._narrating())
+            return NudgeContinue(message=frame)
         return Proceed(response=response)
+
+    @abstractmethod
+    def _frame(self, ctx: LoopContext) -> str | None:
+        """The rendered record this guard narrates, or ``None`` when there is none."""
+
+    @abstractmethod
+    def _narrating(self) -> str:
+        """What the log line says this run is narrating."""
+
+
+class SkillNarrationValidator(_RecordNarrationValidator):
+    """A chat run that just AUTO-EXTRACTED a skill narrates it in the same turn
+    (#1658, SAID==DID) — from the render (its name, what it's for, what it needs)
+    rather than from memory."""
+
+    def _frame(self, ctx: LoopContext) -> str | None:
+        return ctx.learned_skill_frame
+
+    def _narrating(self) -> str:
+        return "an auto-extracted skill"
+
+
+class AppliedConfigurationValidator(_RecordNarrationValidator):
+    """A chat run that just CONFIGURED the round's routine narrates it in the same turn
+    (#1869) — the applied-configuration sibling of the skill-learned frame above.
+
+    It exists because that turn no longer supplies the routine or the values it is
+    pointed at: the round settled both and the framework supplied them at the call, so
+    what is running is a record to READ.  The frame carries that record — cadence, end
+    condition, notify, what it watches — and a turn narrating from anything else would be
+    stating a configuration it did not make."""
+
+    def _frame(self, ctx: LoopContext) -> str | None:
+        return ctx.applied_configuration_frame
+
+    def _narrating(self) -> str:
+        return "the configuration this turn applied"
 
 
 # ── Collector-only run-shape validator ───────────────────────────────────────

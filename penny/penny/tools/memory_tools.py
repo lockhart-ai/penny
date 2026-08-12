@@ -20,7 +20,6 @@ same transient failure.
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 from abc import abstractmethod
 from datetime import datetime
@@ -34,6 +33,7 @@ from penny.constants import (
     PennyConstants,
     WriteGateOutcome,
 )
+from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.database.memory import (
     DedupThresholds,
@@ -80,6 +80,7 @@ from penny.tools.collection_instantiation import (
     render_schedule_field,
     render_tombstone_duplicate,
     render_unbound_parameters,
+    skill_params,
 )
 from penny.tools.memory_args import (
     CatalogArgs,
@@ -451,7 +452,7 @@ def _skill_provenance_line(row: MemoryRow) -> str | None:
     unmarked case is the quiet default."""
     if row.skill_name is None:
         return None
-    params: dict[str, str] = json.loads(row.skill_params) if row.skill_params else {}
+    params = skill_params(row)
     if not params:
         return f"from skill: {row.skill_name}"
     bound = ", ".join(f"{key}={value}" for key, value in params.items())
@@ -1696,13 +1697,6 @@ _NO_SCHEDULE_NOTE = (
 )
 
 
-def _current_skill_params(row: MemoryRow) -> dict[str, str]:
-    """The params currently bound into a collection's skill render (JSON on the row),
-    or ``{}`` when it has none — the refresh/rebind default when no new params are
-    passed, so a plain ``skill=<same>`` refresh keeps the existing bindings."""
-    return json.loads(row.skill_params) if row.skill_params else {}
-
-
 class CollectionSetTool(MemoryTool):
     """The ONE idempotent create-or-update entry point for a collection (the
     code-owner fusion): identity is dispatched HERE, in python — the model never
@@ -1714,7 +1708,16 @@ class CollectionSetTool(MemoryTool):
     path, aimed at the collection we have, because ``collection_set`` dispatching on
     the name alone is exactly what lets an invented name become a second copy of one
     job.  Otherwise → the create path.  Both inner paths keep their full validation —
-    this class is a dispatcher, not a re-implementation."""
+    this class is a dispatcher, not a re-implementation.
+
+    **Configuring a framed round carries only the TERMS (#1869).**  When the turn is
+    handed the round's framing, the collection, the routine and the values it is pointed
+    at are all supplied here, framework-side, before the dispatch above runs — so the
+    model's call says when the job runs, when it stops, and whether to tell the user, and
+    nothing else.  Reuse is then structural rather than a choice: the job lands on the
+    container the round built, every time, and tier-1 identity (same skill + same params)
+    holds by construction instead of depending on the model rebinding the same values it
+    bound last time.  With no framing this class is byte-identical to what it was."""
 
     name = "collection_set"
     description = (
@@ -1752,20 +1755,144 @@ class CollectionSetTool(MemoryTool):
             return f"You tried to set up {name} but it didn't work:"
         return f"You set up {name}:"
 
-    def __init__(self, db: Database, llm_client: LlmClient, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        llm_client: LlmClient,
+        run_id: str | None = None,
+        round_framing: RoundFraming | None = None,
+    ) -> None:
         self._db = db
         self._llm_client = llm_client
         self._create = CollectionCreateTool(db, llm_client, created_by_run_id=run_id)
         self._update = CollectionUpdateTool(db, llm_client, run_id=run_id)
+        # The round this turn CONFIGURES (#1869) — threaded down from the turn like
+        # ``run_id`` beside it, never read from anywhere ambient.  ``None`` on every turn
+        # that is not configuring a framed round (a collector cycle, an unframed apply,
+        # every ordinary chat turn), which leaves this tool byte-identical to what it was.
+        self._round_framing = round_framing
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         return await embed_text(self._llm_client, name)
 
     async def _run(self, **kwargs: Any) -> ToolResult:
-        """Dispatch on IDENTITY, not on the name alone: the collection this call
-        names, else the one it duplicates, else a new one.  Reads as a table of
+        """Refuse a round whose routine is not there to run, apply the round's own routine
+        when the turn is configuring one (#1869), then dispatch.  Reads as a table of
         contents."""
         args = CollectionSetArgs(**kwargs)
+        if (broken := self._unrunnable_round()) is not None:
+            return broken
+        requested = args.name
+        args = self._with_the_rounds_routine(args)
+        result = await self._dispatch(args)
+        return self._note_retarget(result, requested=requested, landed=args.name)
+
+    def _unrunnable_round(self) -> ToolResult | None:
+        """The round's routine is not something this call can stand up — refused HERE,
+        naming the round as the broken half (#1869).
+
+        This exists because supplying the routine framework-side takes it out of the
+        model's hands: the inner paths answer a missing or under-bound skill by asking for
+        a different ``skill`` or a fuller ``params``, and on a framed turn those are the
+        two arguments the call cannot change — so that guidance would be a remedy the
+        model is structurally prevented from enacting, retried until the turn ran out.
+        The reachable case is a learn turn that taught nothing: the machine stays parked
+        with its framing, so the next acceptance names a routine the registry never
+        gained.
+
+        Both checks are READS: the registry either holds a routine under the round's name
+        or it does not, and the values the round carries either cover what that routine
+        declares or they do not."""
+        framing = self._round_framing
+        if framing is None:
+            return None
+        skill = self._db.skills.get(framing.skill)
+        if skill is None:
+            return ToolResult(
+                message=_ROUND_ROUTINE_MISSING.format(skill=framing.skill), success=False
+            )
+        missing = unbound_required_parameters(
+            parameters_from_json(skill.parameters), framing.bound_values()
+        )
+        if not missing:
+            return None
+        return ToolResult(
+            message=_ROUND_ROUTINE_UNBOUND.format(
+                skill=framing.skill,
+                missing=", ".join(parameter.name for parameter in missing),
+            ),
+            success=False,
+        )
+
+    def _with_the_rounds_routine(self, args: CollectionSetArgs) -> CollectionSetArgs:
+        """The round's collection, routine and bound values, supplied FRAMEWORK-SIDE
+        (#1869) — so a turn that configures a framed round carries only the job's terms.
+
+        All three are things the round already settled and the turn cannot see: the
+        container was built when the machine entered learn, the routine is what run-end
+        extraction filed the round under, and the values are literal spans of the user's
+        own words from turns that may be several messages back.  Asking the turn to
+        re-supply them is asking it to re-derive what is already recorded, which is where
+        the measured naming and binding misses came from — so they are READ, and only the
+        cadence, the end condition and the telling-them flag are the model's.
+
+        With no round framing this returns ``args`` unchanged, which is the whole of the
+        degrade path — an unframed apply (a pre-framing world, or an entry draw that
+        failed) configures exactly the way it did before this existed."""
+        framing = self._round_framing
+        if framing is None:
+            return args
+        if slug(args.name) != slug(framing.container):
+            logger.info(
+                "Configuring the round's container %r — the call named %r",
+                framing.container,
+                args.name,
+            )
+        description = (
+            args.description if args.description is not None else self._round_description(framing)
+        )
+        return args.model_copy(
+            update={
+                "name": framing.container,
+                "skill": framing.skill,
+                "params": framing.bound_values(),
+                "description": description,
+            }
+        )
+
+    def _round_description(self, framing: RoundFraming) -> str | None:
+        """The round's own one line of what its collection is FOR — supplied only when
+        the container is not there yet.
+
+        A birth needs one (it is the meaning anchor), and a terms-only call carries none;
+        the round already answered that question when it built the container, so there is
+        nothing to ask the turn for.  When the container DOES exist — the ordinary case —
+        this stays ``None`` so the update leaves the description, and its anchor,
+        untouched."""
+        if self._db.memories.get(framing.container) is not None:
+            return None
+        return framing.signature.description
+
+    @staticmethod
+    def _note_retarget(result: ToolResult, *, requested: str, landed: str) -> ToolResult:
+        """Name the collection the call actually landed on when it is not the one the call
+        asked for — the ``_SAME_JOB_UPDATED`` / ``_SAME_JOB_TARGETED`` pair applied to the
+        round's container: what the model tells the user, and every later call it makes,
+        has to use the real name, so a silent retarget would leave it narrating a
+        collection that does not exist.
+
+        Two forms, selected on the OUTCOME, for that pair's own reason: a note saying the
+        call "landed on" a collection is a claim the configuration succeeded, and prepending
+        it to a refusal would have the tool assert an action its own result denies."""
+        if slug(requested) == slug(landed):
+            return result
+        template = _ROUND_CONTAINER_RETARGETED if result.success else _ROUND_CONTAINER_TARGETED
+        note = template.format(requested=requested, container=landed)
+        return result.model_copy(update={"message": f"{note}{result.message}"})
+
+    async def _dispatch(self, args: CollectionSetArgs) -> ToolResult:
+        """Dispatch on IDENTITY, not on the name alone: the collection this call
+        names, else the one it duplicates, else a new one."""
         if self._db.memories.get(args.name) is not None:
             return await self._apply_to(args, args.name)
         duplicate = self._db.memories.find_duplicate_collection(
@@ -1814,6 +1941,45 @@ class CollectionSetTool(MemoryTool):
         template = _SAME_JOB_UPDATED if result.success else _SAME_JOB_TARGETED
         note = template.format(requested=args.name, existing=duplicate.name)
         return result.model_copy(update={"message": f"{note}{result.message}"})
+
+
+# The round-container redirect (#1869): the turn was configuring a framed round, so the
+# call landed on the container that round built rather than on the name it asked for.
+# Named in the result for the same reason ``_SAME_JOB_UPDATED`` names its target —
+# everything downstream, the reply included, has to use the collection that exists.
+_ROUND_CONTAINER_RETARGETED = (
+    "'{requested}' isn't the collection this round set up — '{container}' is, so this "
+    "landed on '{container}'. It's '{container}' from here on: read it with "
+    "collection_read_latest('{container}') or adjust it with "
+    "collection_set(name='{container}', ...).\n"
+)
+
+# The same redirect when the call itself FAILED — the target is still named (the error
+# below is about '{container}'), but nothing changed, so the note must not say it landed.
+_ROUND_CONTAINER_TARGETED = (
+    "'{requested}' isn't the collection this round set up — '{container}' is, so this was "
+    "aimed at '{container}' rather than at the name you gave — but it didn't land:\n"
+)
+
+# A framed round whose routine the registry never gained — the reachable case being a
+# learn turn that taught nothing and left the machine parked with its framing.  It names
+# the ROUND as the broken half on purpose: which routine this is was settled by the round,
+# so "name a different skill" would be a remedy this call cannot carry out.
+_ROUND_ROUTINE_MISSING = (
+    "The routine this round taught, '{skill}', isn't in the registry, so there's nothing "
+    "to set running. Which routine this is was settled by the round, so naming a different "
+    "one here won't help. Tell the user the round didn't stick, and ask them to walk you "
+    "through it once more."
+)
+
+# The same shape for a routine that now asks for something the round never supplied — a
+# re-teach can change what a routine declares while an older round's values stay put.
+_ROUND_ROUTINE_UNBOUND = (
+    "The routine '{skill}' needs {missing}, which this round never supplied, so there's "
+    "nothing to set running. What this routine is pointed at was settled by the round, so "
+    "passing values here won't help. Tell the user what it's missing, and ask them to walk "
+    "you through it once more."
+)
 
 
 _SET_BIRTH_NEEDS_DESCRIPTION = (
@@ -2075,7 +2241,7 @@ class CollectionUpdateTool(MemoryTool):
         refresh); without one the collection's current skill is reused (rebind),
         refused actionably if it has none or if the pinned skill is gone."""
         current = _resolve(self._db, args.name).row
-        params = args.params if args.params is not None else _current_skill_params(current)
+        params = args.params if args.params is not None else skill_params(current)
         if args.skill is not None:
             resolution = await resolve_skill(self._db, self._llm_client, args.skill)
             if resolution.skill is None:
@@ -3209,6 +3375,7 @@ def build_memory_tools(
     scope: str | None = None,
     run_id: str | None = None,
     include_lifecycle: bool = True,
+    round_framing: RoundFraming | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -3258,6 +3425,12 @@ def build_memory_tools(
     NULL.  (The spawning ``source_message_id`` is linked afterward by the channel,
     since the message id isn't known until the run returns.)
 
+    ``round_framing`` is the round this turn CONFIGURES (#1869), threaded down the same
+    way ``run_id`` is: with one, ``collection_set`` supplies the round's container, its
+    routine and its bound values itself, so the turn's call carries only the job's terms.
+    ``None`` — every collector cycle, every unframed turn — leaves the surface byte-
+    identical to what it was.
+
     ``include_lifecycle`` gates the registry-shape tier — ``collection_set`` /
     ``collection_set`` / ``collection_merge`` / ``collection_archive`` /
     ``collection_unarchive`` / ``log_create``.  Chat-style agents get it (the user
@@ -3283,7 +3456,7 @@ def build_memory_tools(
         FindTool(db, llm_client),
     ]
     lifecycle: list[Tool] = [
-        CollectionSetTool(db, llm_client, run_id=run_id),
+        CollectionSetTool(db, llm_client, run_id=run_id, round_framing=round_framing),
         CollectionMergeTool(db, agent_name, run_id=run_id),
         CollectionArchiveTool(db, run_id=run_id),
         CollectionUnarchiveTool(db, run_id=run_id),

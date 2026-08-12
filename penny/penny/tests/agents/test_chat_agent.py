@@ -17,20 +17,23 @@ import pytest
 from sqlmodel import select
 
 from penny.constants import MutationAction, MutationActor, PennyConstants, TransitionCause
-from penny.conversation_machine import ConversationState
+from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
 from penny.database.skill_store import steps_from_json
-from penny.database.skills import SkillDraft, SkillStep
+from penny.database.skills import SkillDraft, SkillParameter, SkillStep
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmMessage, LlmResponse, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import ONE_PX_PNG_B64, TEST_SENDER, wait_until
 from penny.tests.mocks.llm_patches import deterministic_embed
+from penny.tools.collection_instantiation import render_applied_configuration, skill_params
 from penny.tools.micro_context import (
     SKILL_FRAME_SYSTEM_PROMPT,
     STATE_CLASSIFIER_SYSTEM_PROMPT,
+    FramedParameter,
+    SkillSignature,
 )
 from penny.tools.read_emails import ReadEmailsTool
 from penny.tools.search_emails import SearchEmailsTool
@@ -748,6 +751,252 @@ async def test_learn_turn_that_learns_a_skill_keeps_todays_reply(
 
         assert len(penny.db.skills.list_all()) == 1
         assert response.answer == reply
+
+
+# ── 1c. Applying a framed round: terms in, routine supplied (#1869) ───────
+#
+# The round that taught a routine settled three things the apply turn no longer works out:
+# the container, the routine, and the values it is pointed at.  What the turn supplies is
+# the job's TERMS.  The fixtures below are one such round's exit state.
+
+_APPLY_FRAMING = RoundFraming(
+    signature=SkillSignature(
+        name="watch-listing-price",
+        description="keep a listing's current price up to date",
+        parameters=(
+            FramedParameter(
+                name="listing",
+                description="the listing to watch",
+                value="the aurora deck 2 price",
+            ),
+        ),
+    ),
+    container="watch-listing-price-the-aurora-deck-2-price",
+)
+_CONFIGURED_MARKER = Prompt.CONFIGURATION_APPLIED_NARRATION.split("{configuration}")[0].strip()
+
+
+def _taught_routine(penny) -> None:
+    """The registry as the round left it: the routine run-end extraction filed under the
+    framing's own name, over a recipe whose write target is the attachment the apply turn
+    binds."""
+    penny.db.skills.upsert(
+        SkillDraft(
+            name=_APPLY_FRAMING.signature.name,
+            intent=_APPLY_FRAMING.signature.description,
+            description=_APPLY_FRAMING.signature.description,
+            steps=[
+                SkillStep(
+                    ordinal=1,
+                    source_ordinal=1,
+                    tool="browse",
+                    arguments={"queries": ["the listing"], "extract": "the current price"},
+                    substitutions=[],
+                )
+            ],
+            parameters=[
+                SkillParameter(name="listing", required=True, description="the listing to watch")
+            ],
+            source_run_id="run-teach",
+        ),
+        author="chat",
+    )
+
+
+def _round_container(penny) -> None:
+    """The container the entry framer built for that round — inert, and holding what the
+    demonstration wrote into it."""
+    penny.db.memories.create_collection(
+        _APPLY_FRAMING.container, _APPLY_FRAMING.signature.description
+    )
+    penny.db.memory(_APPLY_FRAMING.container).write(
+        [EntryInput(key="price", content="$499")], author="chat"
+    )
+
+
+def _terms_only_set(name: str) -> LlmResponse:
+    """The call an apply turn makes since #1869: the container by name and the job's terms
+    — no skill, no params, and no description either."""
+    return _tool_call(
+        "c0",
+        "collection_set",
+        {"name": name, "schedule": "FREQ=HOURLY", "notify": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_terms_only_call_stands_the_rounds_routine_up(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """The #1869 seam end to end: an apply turn entered with the round's framing renders
+    the container verbatim, makes ONE terms-only ``collection_set``, the framework supplies
+    the collection + the routine + the values it is pointed at, and the turn then narrates
+    what is running from the RECORD.
+
+    What the turn said is the cadence and the notify flag; everything else on the row came
+    off the round — which is the whole point, since the values are literal spans of turns
+    several messages back that this turn cannot see.  Reuse is then structural (the job
+    lands on the container the round built rather than on a name chosen now), and the
+    narration frame is the other half of that: a reply composed from the call's own
+    arguments could not state a routine those arguments never carried."""
+    ask = "great — do that every hour and tell me when it changes"
+    reply = "done — every hour, and i'll tell you. 🌟"
+    prompts: dict[str, str] = {}
+    captured: dict[str, str | None] = {"frame": None}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        frame = next(
+            (
+                m["content"]
+                for m in messages
+                if isinstance(m.get("content"), str) and _CONFIGURED_MARKER in m["content"]
+            ),
+            None,
+        )
+        if frame is not None:  # the narration nudge is present → the post-nudge re-reply
+            captured["frame"] = frame
+            return _text(reply)
+        prompts.setdefault("system", str(messages[0].get("content", "")))
+        if any(m.get("role") == "tool" for m in messages):
+            return _text("all set")
+        return _terms_only_set(_APPLY_FRAMING.container)
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        _taught_routine(penny)
+        _round_container(penny)
+
+        response = await penny.chat_agent.handle(
+            content=ask,
+            sender=TEST_SENDER,
+            state=ConversationState.APPLY,
+            framing=_APPLY_FRAMING,
+        )
+
+        # The turn's instruction named the container verbatim, which is what makes the
+        # call's target a copy rather than a choice.
+        assert (
+            Prompt.ROUND_CONTAINER_LINE.format(
+                skill=_APPLY_FRAMING.signature.name, container=_APPLY_FRAMING.container
+            )
+            in prompts["system"]
+        )
+
+        # The call carried the TERMS only — the model never re-supplied the routine.
+        call = next(record for record in response.tool_calls if record.tool == "collection_set")
+        assert sorted(call.arguments) == ["name", "notify", "schedule"]
+
+        # And the row carries everything: the routine, its bound values, a rendered
+        # program, and the terms the turn actually gave.
+        row = penny.db.memories.get(_APPLY_FRAMING.container)
+        assert row is not None
+        assert row.skill_name == _APPLY_FRAMING.signature.name
+        assert skill_params(row) == {"listing": "the aurora deck 2 price"}
+        assert row.extraction_prompt and row.schedule == "FREQ=HOURLY" and row.notify
+        # Nothing else was created — the round's container IS where the job lives.
+        assert [each.skill_name for each in penny.db.memories.list_all() if each.skill_name] == [
+            _APPLY_FRAMING.signature.name
+        ]
+
+        # And what she was handed to relay is the RECORD off that row — the routine and
+        # what it watches, neither of which her own call ever said.
+        frame = captured["frame"]
+        assert frame == Prompt.CONFIGURATION_APPLIED_NARRATION.format(
+            configuration=render_applied_configuration(row)
+        )
+        assert frame is not None
+        assert _APPLY_FRAMING.signature.name in frame
+        assert "the aurora deck 2 price" in frame
+        assert response.answer == reply
+
+
+@pytest.mark.asyncio
+async def test_a_call_naming_something_else_still_lands_on_the_rounds_container(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """Where the job lands is structural, not a name the turn chooses: a call naming
+    anything else is aimed at the round's container anyway, and the result SAYS so.
+
+    Silently retargeting would leave the reply — and every later call — using a collection
+    that does not exist, which is the same reason the same-job redirect names its target."""
+    ask = "great — do that every hour and tell me when it changes"
+    results: list[str] = []
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        tool_turns = [m for m in messages if m.get("role") == "tool"]
+        if tool_turns:
+            results.append(str(tool_turns[-1].get("content", "")))
+            return _text("all set")
+        return _terms_only_set("aurora-price-watch")
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        _taught_routine(penny)
+        _round_container(penny)
+
+        await penny.chat_agent.handle(
+            content=ask,
+            sender=TEST_SENDER,
+            state=ConversationState.APPLY,
+            framing=_APPLY_FRAMING,
+        )
+
+        assert penny.db.memories.get("aurora-price-watch") is None
+        row = penny.db.memories.get(_APPLY_FRAMING.container)
+        assert row is not None and row.skill_name == _APPLY_FRAMING.signature.name
+        assert "'aurora-price-watch' isn't the collection this round set up" in results[0]
+
+
+@pytest.mark.asyncio
+async def test_an_apply_turn_with_no_framing_configures_the_way_it_always_did(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """The degrade path, visible and tested: an apply turn arriving with NO framing — a
+    world from before the round was framed on entry, or an entry draw that failed — takes
+    the full ``collection_set`` path exactly as it did before #1869.
+
+    Nothing is supplied on its behalf, so a terms-only call is a plain metadata edit: the
+    schedule and notify land and the collection stays inert, which is the honest outcome of
+    a call that named no routine — and it is what the turn's own instruction, which has no
+    round line to render, still asks it to supply."""
+    ask = "great — do that every hour and tell me when it changes"
+    prompts: dict[str, str] = {}
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        blob = " ".join(str(m.get("content", "")) for m in messages)
+        if ask not in blob:
+            return _text("nothing to do")
+        prompts.setdefault("system", str(messages[0].get("content", "")))
+        if any(m.get("role") == "tool" for m in messages):
+            return _text("all set")
+        return _terms_only_set(_APPLY_FRAMING.container)
+
+    mock_llm.set_response_handler(handler)
+
+    async with running_penny(test_config) as penny:
+        _taught_routine(penny)
+        _round_container(penny)
+
+        await penny.chat_agent.handle(
+            content=ask, sender=TEST_SENDER, state=ConversationState.APPLY, framing=None
+        )
+
+        assert "is the collection set up to hold what it produces" not in prompts["system"]
+        row = penny.db.memories.get(_APPLY_FRAMING.container)
+        assert row is not None
+        assert row.skill_name is None and row.extraction_prompt is None
+        assert row.schedule == "FREQ=HOURLY" and row.notify
 
 
 @pytest.mark.asyncio

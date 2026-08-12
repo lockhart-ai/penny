@@ -18,7 +18,7 @@ from pydantic import BeforeValidator
 from sqlmodel import Session, select
 
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationState
+from penny.conversation_machine import ConversationState, RoundFraming
 from penny.database import Database
 from penny.database.memory import (
     WriteGateOutcome,
@@ -50,9 +50,11 @@ from penny.tools.collection_instantiation import (
     ScheduleError,
     parse_expires_at,
     parse_schedule,
+    render_applied_configuration,
     render_reinstantiation_echo,
     render_schedule_clause,
     render_unbound_parameters,
+    skill_params,
 )
 from penny.tools.memory_args import (
     OPTIONAL_ARG_FORMS,
@@ -95,6 +97,7 @@ from penny.tools.memory_tools import (
     build_memory_tools,
     collector_tool_surface,
 )
+from penny.tools.micro_context import FramedParameter, SkillSignature
 
 pytestmark = pytest.mark.bare_db
 
@@ -538,6 +541,236 @@ class TestCollectionCreateFrontDoor:
         # them (embeddings are not a merge signal, #1775 finding 1).
         assert db.memories.get("aurora-deck-3-price") is not None
         assert db.memories.get("aurora-deck-2-price") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_framed_round_supplies_its_own_routine_and_values(self, db):
+        """Configuring a framed round carries only the TERMS (#1869): the container, the
+        routine and the values it is pointed at are supplied here rather than by the call,
+        so a call that says nothing but the cadence stands the whole job up.
+
+        That is what makes reuse structural — the job lands on the round's own container
+        every time — and what makes tier-1 identity hold by construction, since the values
+        cannot drift from the ones the round settled."""
+        _seed_watch_skill(db)
+        framing = RoundFraming(
+            signature=SkillSignature(
+                name=_SKILL_NAME,
+                description="watch a peak's elevation and save it",
+                parameters=(
+                    FramedParameter(
+                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
+                    ),
+                ),
+            ),
+            container="watch-elevation-cinder-peak",
+        )
+        db.memories.create_collection(framing.container, framing.signature.description)
+
+        result = await CollectionSetTool(
+            db, cast(Any, MockLlmClient()), round_framing=framing
+        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+
+        assert result.success and result.mutated
+        row = db.memories.get(framing.container)
+        assert row is not None
+        assert row.skill_name == _SKILL_NAME
+        assert skill_params(row) == {_SKILL_HOLE: "Cinder Peak"}
+        assert row.schedule == "FREQ=HOURLY" and row.notify
+        assert row.extraction_prompt and "Cinder Peak" in row.extraction_prompt
+
+    @pytest.mark.asyncio
+    async def test_a_framed_call_naming_another_collection_is_retargeted_out_loud(self, db):
+        """Where a framed round's job lands is structural, so a call naming anything else
+        is aimed at the round's container anyway — and the result LEADS with that, since
+        everything downstream has to use the collection that exists."""
+        _seed_watch_skill(db)
+        framing = RoundFraming(
+            signature=SkillSignature(
+                name=_SKILL_NAME,
+                description="watch a peak's elevation and save it",
+                parameters=(
+                    FramedParameter(
+                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
+                    ),
+                ),
+            ),
+            container="watch-elevation-cinder-peak",
+        )
+        db.memories.create_collection(framing.container, framing.signature.description)
+
+        result = await CollectionSetTool(
+            db, cast(Any, MockLlmClient()), round_framing=framing
+        ).execute(name="cinder-peak-watch", schedule="FREQ=HOURLY", notify=True)
+
+        assert result.success
+        assert db.memories.get("cinder-peak-watch") is None
+        assert result.message.startswith(
+            "'cinder-peak-watch' isn't the collection this round set up — "
+            "'watch-elevation-cinder-peak' is, so this landed on "
+            "'watch-elevation-cinder-peak'. It's 'watch-elevation-cinder-peak' from here "
+            "on: read it with collection_read_latest('watch-elevation-cinder-peak') or "
+            "adjust it with collection_set(name='watch-elevation-cinder-peak', ...).\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_round_whose_routine_is_gone_is_refused_at_the_round(self, db):
+        """Supplying the routine framework-side takes it out of the model's hands, so a
+        round the registry never gained has to be refused NAMING THE ROUND (#1869).
+
+        Every inner failure answers a missing or under-bound skill by asking for a
+        different ``skill`` or a fuller ``params`` — the two arguments a framed call
+        cannot change — so that guidance would be a remedy the model is structurally
+        prevented from enacting, retried until the turn ran out.  The reachable case is a
+        learn turn that taught nothing: the machine stays parked with its framing, so the
+        next acceptance names a routine that was never filed."""
+        framing = RoundFraming(
+            signature=SkillSignature(
+                name="Watch nothing",
+                description="a routine the round never managed to teach",
+                parameters=(
+                    FramedParameter(
+                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
+                    ),
+                ),
+            ),
+            container="watch-nothing-cinder-peak",
+        )
+        db.memories.create_collection(framing.container, framing.signature.description)
+
+        result = await CollectionSetTool(
+            db, cast(Any, MockLlmClient()), round_framing=framing
+        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+
+        assert result.success is False and not result.mutated
+        assert result.message == (
+            "The routine this round taught, 'Watch nothing', isn't in the registry, so "
+            "there's nothing to set running. Which routine this is was settled by the "
+            "round, so naming a different one here won't help. Tell the user the round "
+            "didn't stick, and ask them to walk you through it once more."
+        )
+        assert db.memories.get(framing.container).skill_name is None
+
+    @pytest.mark.asyncio
+    async def test_a_round_that_never_supplied_what_the_routine_needs_is_refused(self, db):
+        """The same refusal for the other half: a re-teach can change what a routine
+        DECLARES while an older round's values stay put, so the round can carry values
+        that no longer cover it.  Named as the round's shortfall, since passing values
+        here is the one thing that cannot fix it."""
+        _seed_watch_skill(db)
+        framing = RoundFraming(
+            signature=SkillSignature(
+                name=_SKILL_NAME,
+                description="watch a peak's elevation and save it",
+                parameters=(
+                    FramedParameter(
+                        name="mountain", description="the peak to watch", value="Cinder Peak"
+                    ),
+                ),
+            ),
+            container="watch-elevation-cinder-peak",
+        )
+        db.memories.create_collection(framing.container, framing.signature.description)
+
+        result = await CollectionSetTool(
+            db, cast(Any, MockLlmClient()), round_framing=framing
+        ).execute(name=framing.container, schedule="FREQ=HOURLY", notify=True)
+
+        assert result.success is False and not result.mutated
+        assert result.message == (
+            "The routine 'Watch elevation' needs peak, which this round never supplied, "
+            "so there's nothing to set running. What this routine is pointed at was "
+            "settled by the round, so passing values here won't help. Tell the user "
+            "what it's missing, and ask them to walk you through it once more."
+        )
+        assert db.memories.get(framing.container).skill_name is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_framed_call_never_claims_it_landed(self, db):
+        """The retarget note is prepended to a REFUSAL too, so it says the call was AIMED
+        at the round's container rather than that it landed there — the
+        ``_SAME_JOB_TARGETED`` split, for the same reason: a tool must never assert an
+        action its own result denies."""
+        _seed_watch_skill(db)
+        framing = RoundFraming(
+            signature=SkillSignature(
+                name=_SKILL_NAME,
+                description="watch a peak's elevation and save it",
+                parameters=(
+                    FramedParameter(
+                        name=_SKILL_HOLE, description="the peak to watch", value="Cinder Peak"
+                    ),
+                ),
+            ),
+            container="watch-elevation-cinder-peak",
+        )
+        db.memories.create_collection(framing.container, framing.signature.description)
+
+        result = await CollectionSetTool(
+            db, cast(Any, MockLlmClient()), round_framing=framing
+        ).execute(name="cinder-peak-watch", schedule="every 2 hours please")
+
+        assert result.success is False
+        assert result.message.startswith(
+            "'cinder-peak-watch' isn't the collection this round set up — "
+            "'watch-elevation-cinder-peak' is, so this was aimed at "
+            "'watch-elevation-cinder-peak' rather than at the name you gave — but it "
+            "didn't land:\n"
+        )
+        assert db.memories.get(framing.container).schedule is None
+
+    @pytest.mark.asyncio
+    async def test_an_unframed_turn_configures_exactly_as_it_always_did(self, db):
+        """The degrade path (#1869): with no round framing nothing is supplied, so a
+        terms-only call is the plain metadata edit it has always been — the collection
+        stays inert, which is the honest outcome of a call that named no routine."""
+        _seed_watch_skill(db)
+        db.memories.create_collection("cinder-peak", "watch a peak's elevation and save it")
+
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-peak", schedule="FREQ=HOURLY", notify=True
+        )
+
+        assert result.success
+        row = db.memories.get("cinder-peak")
+        assert row is not None
+        assert row.skill_name is None and row.extraction_prompt is None
+        assert row.schedule == "FREQ=HOURLY" and row.notify
+
+    @pytest.mark.asyncio
+    async def test_the_applied_configuration_renders_whole(self, db):
+        """The record a configured collection states back, WHOLE (#1869) — what the
+        run-end narration frame carries, so a turn that supplied only the terms has the
+        routine and what it watches in front of it rather than in memory.
+
+        The echo's fields WITHOUT the rendered program, deliberately (#1799): what this is
+        read for is a description a person can act on, and a block of tool calls in front
+        of that request is a block that gets read aloud."""
+        _seed_watch_skill(db)
+        await CollectionCreateTool(db, cast(Any, MockLlmClient())).execute(
+            name="cinder-peak",
+            description="watch Cinder Peak's elevation",
+            skill=_SKILL_NAME,
+            params={_SKILL_HOLE: "Cinder Peak"},
+            schedule="FREQ=HOURLY",
+            notify=True,
+        )
+        row = db.memories.get("cinder-peak")
+        assert row is not None
+
+        assert render_applied_configuration(row) == (
+            "On the schedule FREQ=HOURLY I'll run 'Watch elevation' against 'cinder-peak' "
+            "and message you when something changes.\n"
+            "  collection: cinder-peak\n"
+            "  skill: Watch elevation\n"
+            "  params: peak=Cinder Peak\n"
+            "  schedule: FREQ=HOURLY\n"
+            "  notify: True\n"
+            "  expires: never"
+        )
+        # An inert container has no configuration to state, and saying it was set up
+        # would be the honest-failure rule broken from the other side.
+        inert = db.memories.create_collection("just-storage", "somewhere to put things")
+        assert render_applied_configuration(inert) is None
 
     @pytest.mark.asyncio
     async def test_tombstone_near_duplicate_surfaces_the_archived_row(self, db):

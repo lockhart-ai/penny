@@ -85,6 +85,7 @@ from penny.tests.eval.test_state_transitions import (
     assert_composed_world,
     assert_new_space_is_unknown,
     assert_round_cites_its_run,
+    assert_round_is_framed,
     assert_seeded_ledger,
     cadence_seconds,
     rule_parts,
@@ -240,17 +241,19 @@ def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
 
 def test_every_apply_case_seeds_a_round_that_cites_its_own_run(tmp_path) -> None:
     """The learn → apply seeds write a whole prior turn — messages, promptlog rows, the
-    collection and its entry, both transition rows — and their loud probes only run under
-    ``make eval``, where a raise costs an hour of GPU before it is seen.  Drive each case's
-    seeder here instead, against a real migrated database, and run the two probes that read
-    the LEDGER: the round's calls are in it, and everything it produced cites the run that
-    produced it.
+    round's container and its entry, both transition rows — and their loud probes only run
+    under ``make eval``, where a raise costs an hour of GPU before it is seen.  Drive each
+    case's seeder here instead, against a real migrated database, and run the three probes
+    that read the LEDGER: the round was FRAMED on the way in (#1868/#1869 — the move carries
+    the framing and the container it names exists, inert), the round's calls are in the
+    ledger, and everything it produced cites the run that produced it.
 
     The registry probe is not run here — it reads fixture skills the harness seeds after the
     case's own seed — so this pins exactly the half that is code."""
     for index, case in enumerate(APPLY_CASES):
         db = migrated_db(str(tmp_path / f"apply-{index}.db"))
         seed_learned_round(case)(db)
+        assert_round_is_framed(db, case)
         assert_seeded_ledger(db, case)
         assert_round_cites_its_run(db, case)
 

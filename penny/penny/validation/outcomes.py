@@ -113,6 +113,15 @@ class LoopContext(BaseModel):
     # did not qualify for extraction, so every non-chat / non-qualifying run reads
     # the same empty default.
     learned_skill_frame: str | None = None
+    # The rendered record of what this run just CONFIGURED (#1869), stamped onto the
+    # text-branch ctx by ``ChatAgent._prepare_text_shape`` so the chat
+    # ``AppliedConfigurationValidator`` can narrate it.  Its sibling above carries what a
+    # run LEARNED; this one carries what a run SET RUNNING — and it exists because the
+    # turn no longer supplies the routine or the values it is pointed at (the round
+    # settled both), so what is now running is something to read rather than remember.
+    # ``None`` on every run that configured nothing, which is every run that is not an
+    # apply turn standing a framed round up.
+    applied_configuration_frame: str | None = None
 
 
 @runtime_checkable

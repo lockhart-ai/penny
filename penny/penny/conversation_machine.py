@@ -358,6 +358,21 @@ class RoundFraming(BaseModel):
     signature: SkillSignature
     container: str
 
+    @property
+    def skill(self) -> str:
+        """What the round's routine is CALLED — the name run-end extraction files the
+        skill under, so it is also the name a later turn configures the container with."""
+        return self.signature.name
+
+    def bound_values(self) -> dict[str, str]:
+        """What the round POINTED the routine at: one value per declared parameter, each
+        a literal span of the user's own words (the framer's structural guarantee).
+
+        The apply turn binds exactly this (#1869) — the round already settled it, so the
+        values are READ off the round rather than re-supplied by a model that would be
+        guessing at spans it can no longer see."""
+        return {parameter.name: parameter.value for parameter in self.signature.parameters}
+
 
 class StateDecision(BaseModel):
     """One classification, typed for the machine: the draw outcome plus the
@@ -536,6 +551,19 @@ STATE_INSTRUCTIONS: dict[ConversationState, str] = {
 }
 
 
+# What each state RENDERS about the round it is in (#1868/#1869) — data, keyed by state,
+# because the two states that render the framing say different things about it and the
+# states that render nothing say nothing.  Learn is told the container is already there so
+# the demonstrated write copies an anchor; apply is told the routine and the values are
+# already settled so the turn configures the terms and nothing else.  A state absent from
+# this map composes the byte-identical prompt it always composed — which is every state
+# whose job the round's framing has no bearing on.
+ROUND_LINES: dict[ConversationState, str] = {
+    ConversationState.LEARN: Prompt.ROUND_FRAMING_LINE,
+    ConversationState.APPLY: Prompt.ROUND_CONTAINER_LINE,
+}
+
+
 def conversation_prompt(state: ConversationState, framing: RoundFraming | None = None) -> str:
     """The chat system prompt for a state: the invariant physics core with THIS
     state's instruction between head and tail.
@@ -546,29 +574,32 @@ def conversation_prompt(state: ConversationState, framing: RoundFraming | None =
     directly: a missing state is a programming error and should raise, never
     quietly compose some other state's prompt.
 
-    ``framing`` is the round's own state (#1868), rendered after LEARN's instruction when
-    the machine settled one at entry: the routine this round is teaching and the container
-    its results are kept in, both named VERBATIM, so the write the round demonstrates
-    copies an anchor rather than inventing a destination.  Absent — a round that could not
-    be framed — composes the byte-identical prompt this function has always composed."""
+    ``framing`` is the round's own state (#1868/#1869), rendered after the instruction of
+    the states it bears on (:data:`ROUND_LINES`): the routine the round is about and the
+    container its results are kept in, both named VERBATIM, so the write a learn turn
+    demonstrates — and the collection an apply turn configures — copy an anchor rather than
+    inventing a destination.  Absent — a round that could not be framed — composes the
+    byte-identical prompt this function has always composed."""
     instruction = STATE_INSTRUCTIONS[state] + _framing_line(state, framing)
     return Prompt.CONVERSATION_HEAD + instruction + Prompt.CONVERSATION_TAIL
 
 
 def _framing_line(state: ConversationState, framing: RoundFraming | None) -> str:
-    """The round's framing as LEARN's closing paragraph, or nothing at all.
+    """The round's framing as the state's closing paragraph, or nothing at all.
 
-    Keyed to the state because the sentence is about being TAUGHT a routine, and the
-    framing is CARRIED past learn — the round link a later turn reads.  Rendered onto
-    another state's instruction it would say two things at once: apply's instruction sets
-    the routine up, and a line telling the same turn its container "is already there, so
-    there is nothing to set up" contradicts it.  What apply renders about the round is its
-    own beat's to write."""
-    if framing is None or state is not ConversationState.LEARN:
+    Keyed to the state because the two states the framing bears on say DIFFERENT things
+    about it: learn is being taught the routine, so its line says the container is already
+    there and there is nothing to set up; apply is setting the routine up, so its line says
+    the routine and what it is pointed at are already settled and only the terms are left.
+    One line rendered on both would say two things at once, which is why the map is data
+    rather than one template with a conditional in it.
+
+    Both render the skill and the container VERBATIM: the whole point of the framing is
+    that a name the model would otherwise invent is a name it copies."""
+    template = ROUND_LINES.get(state)
+    if framing is None or template is None:
         return ""
-    return Prompt.ROUND_FRAMING_LINE.format(
-        skill=framing.signature.name, container=framing.container
-    )
+    return template.format(skill=framing.skill, container=framing.container)
 
 
 class ConversationMachine:

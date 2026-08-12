@@ -27,6 +27,7 @@ The orchestration (embed, resolve, validate parameters, dedup, create) lives on
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -581,6 +582,46 @@ def render_creation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]
     return _instantiation_echo(
         row, skill_name, params, f"Created collection '{row.name}' from skill '{skill_name}':"
     )
+
+
+def render_applied_configuration(row: MemoryRow) -> str | None:
+    """What a collection is now CONFIGURED to do, read off the row itself (#1869) — the
+    record the run-end narration frame carries.
+
+    The row IS the record: it holds the routine it runs, the values that routine is
+    pointed at, its cadence, its end condition and whether it tells the user, all written
+    by the call that configured it.  So a turn that no longer supplies the routine or its
+    values has somewhere to READ what it just set up, instead of narrating from a memory
+    of arguments the framework filled in for it.
+
+    ``None`` when the collection carries no routine — an inert container has no
+    configuration to state, and saying it was set up would be the claim the honest-failure
+    rule exists to stop.
+
+    Deliberately the echo's fields WITHOUT the rendered program (#1799): what this is read
+    for is a description a person can act on, and a block of tool calls in front of that
+    request is a block that gets read aloud."""
+    if row.skill_name is None:
+        return None
+    params = skill_params(row)
+    return "\n".join(
+        [
+            _lead_line(row, row.skill_name),
+            f"  collection: {row.name}",
+            f"  skill: {row.skill_name}",
+            _params_line(params),
+            _schedule_line(row),
+            f"  notify: {row.notify}",
+            _expires_line(row),
+        ]
+    )
+
+
+def skill_params(row: MemoryRow) -> dict[str, str]:
+    """The values a collection's routine is bound to, off its own provenance column —
+    ``{}`` when it has none.  One reading of that column, shared by the tool that rebinds
+    it and the render that states it back."""
+    return json.loads(row.skill_params) if row.skill_params else {}
 
 
 def render_reinstantiation_echo(row: MemoryRow, skill_name: str, params: dict[str, str]) -> str:

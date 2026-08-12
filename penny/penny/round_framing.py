@@ -106,7 +106,7 @@ class RoundFramer:
                 "so this round runs unframed and is framed at run end instead"
             )
             return None
-        framing = RoundFraming(signature=signature, container=_container_name(signature))
+        framing = RoundFraming(signature=signature, container=container_name(signature))
         await self._settle_container(framing, previous, run_id=run_id)
         return framing
 
@@ -180,9 +180,14 @@ class RoundFramer:
         )
 
 
-def _container_name(signature: SkillSignature) -> str:
+def container_name(signature: SkillSignature) -> str:
     """The container's derived name: the skill plus its demonstrated values, in declared
-    parameter order — the one place this module says how a job is identified."""
+    parameter order — the one place this module says how a job is identified.
+
+    PUBLIC because a seeded world has to build the container a real round would have
+    built: the transition suites lay down rounds that already happened, and a fixture
+    deriving the name its own way would be a second copy of the scheme, free to drift from
+    the one production actually names jobs with."""
     return derive_collection_name(
         signature.name, [parameter.value for parameter in signature.parameters]
     )

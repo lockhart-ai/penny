@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, assert_never
 from penny.agents.models import ChatMessage, ControllerResponse, MessageRole, ToolCallRecord
 from penny.config import Config
 from penny.constants import PennyConstants
+from penny.conversation_machine import RoundFraming
 from penny.database import Database
 from penny.datetime_utils import current_datetime_line
 from penny.llm import LlmClient
@@ -1060,6 +1061,17 @@ class Agent:
         """
         return None
 
+    def _configuring_round(self) -> RoundFraming | None:
+        """The round whose routine this turn is CONFIGURING (#1869), or ``None``.
+
+        Default: none — a collector cycle configures nothing, and neither does an
+        ordinary chat turn.  ``ChatAgent`` overrides it to return the round's framing on
+        the turn the machine landed in apply, which is what lets ``collection_set``
+        supply the container, the routine and its bound values itself.  A template method
+        on the agent (the run type decides), never a branch inside the tool builder.
+        """
+        return None
+
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
@@ -1093,6 +1105,7 @@ class Agent:
             scope=scope,
             run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
+            round_framing=self._configuring_round(),
         )
         tools.append(self._build_browse_tool(author=self.name))
         # ``choose`` — the fair random picker — is on every agent surface, like

@@ -145,6 +145,35 @@ class Prompt:
         "only if the call came back confirming it.\n\n"
     )
 
+    # The round's own framing on APPLY (#1869) — the sibling of ROUND_FRAMING_LINE above,
+    # rendered after APPLY's instruction when the round settled a framing on entering learn.
+    # Learn RENDERS the framing so the demonstrated write copies an anchor; apply renders it
+    # so the configuration lands on the container that round already built, and so the turn
+    # is not asked to re-supply a routine or values the round already settled.
+    #
+    # It names the STATE — which routine this round taught, which collection holds what it
+    # produces, and that both are already settled — and leaves the doing to the instruction
+    # above, which already says configuring it is the whole turn.  The three things it does
+    # name are the JOB's own terms (when it runs, when it stops, whether to tell them),
+    # never argument names: a routine is an arbitrary sequence of tool calls, and the terms
+    # are the part of a job that is never one of its steps.
+    #
+    # The PERMISSION clause is load-bearing rather than decorative.  The instruction above
+    # is written for a turn that binds the routine itself ("binding what they told you"),
+    # which is still every unframed apply turn, so on a framed one the two paragraphs would
+    # otherwise read as a contradiction — and a contradiction is the one thing a thinking
+    # model spends a whole turn deliberating over.  Saying plainly that it is okay to leave
+    # them out settles which of the two applies here, without rewriting an instruction that
+    # is correct wherever no round settled anything.
+    ROUND_CONTAINER_LINE = (
+        "The routine this round taught is called `{skill}`, and `{container}` is the "
+        "collection set up to hold what it produces. `{container}` is the one to "
+        "configure — call it by that name. Which routine it runs, and what it is pointed "
+        "at, come with the collection already: it is okay to leave them out, and saying "
+        "them again changes nothing. The only things left to say are when it runs, when it "
+        "stops if they gave an end, and whether to tell them.\n\n"
+    )
+
     REQUEST_INSTRUCTION = (
         "A skill you already know does what the user is asking, but something "
         "that skill needs is missing from what they have told you. Your job this "
@@ -284,6 +313,24 @@ class Prompt:
         "just this one instance), say plainly what it does, and name what you'd need "
         "from them to run it again. Then offer to set it running on a schedule if "
         "they'd like."
+    )
+
+    # Injected as a user turn after a chat run that just CONFIGURED the round's routine
+    # (#1869) — the applied-configuration sibling of SKILL_LEARNED_NARRATION above, and it
+    # exists for the same reason that one does, one step further along: the turn no longer
+    # supplies the routine or the values it is pointed at (the round settled both, and the
+    # framework supplied them at the call), so what is now running is something the model
+    # has to READ rather than remember.  ``{configuration}`` is the record the store holds
+    # — cadence, end condition, notify, and what it is pointed at — so SAID==DID holds by
+    # construction.  Deliberately not the rendered program, for SKILL_LEARNED_NARRATION's
+    # own reason (#1799): a block of tool calls in front of this request is a block that
+    # gets read aloud.
+    CONFIGURATION_APPLIED_NARRATION = (
+        "The routine is now set up, and here is exactly what was configured:\n\n"
+        "{configuration}\n\n"
+        "Reply to the user now. Tell them in your own words what is running: what it "
+        "watches, how often it runs, when it stops if it stops, and whether they will "
+        "hear from it. Say only what is above — anything not there was not set."
     )
 
     # Returned (in the tool-result field, success=False) when a collector calls

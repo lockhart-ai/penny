@@ -32,6 +32,7 @@ import pytest
 from penny.constants import PennyConstants, TransitionCause
 from penny.conversation_machine import (
     OUT_EDGES,
+    ROUND_LINES,
     STATE_INSTRUCTIONS,
     CandidateParameter,
     ConversationMachine,
@@ -861,6 +862,24 @@ def test_learn_instruction_whole_render():
     )
 
 
+def _framing() -> RoundFraming:
+    """One round's framing, shared by every render pin below — the same signature and the
+    same container, so what the two rendering states say about ONE framing is the only
+    thing that varies between them."""
+    return RoundFraming(
+        signature=SkillSignature(
+            name="watch-rental-price",
+            description="keep a rental page's current day rate up to date",
+            parameters=(
+                FramedParameter(
+                    name="url", description="the rental page to read", value="harborkayak.example"
+                ),
+            ),
+        ),
+        container="watch-rental-price-harborkayak-example",
+    )
+
+
 def test_a_framed_round_names_its_routine_and_its_container():
     """The round's framing renders as the learn instruction's closing paragraph (#1868),
     verbatim — pinned so an edit is a visible diff.
@@ -875,19 +894,7 @@ def test_a_framed_round_names_its_routine_and_its_container():
 
     It sits INSIDE the instruction, between head and tail, so a framed learn turn is the
     unframed one plus one paragraph and nothing else moves."""
-    framing = RoundFraming(
-        signature=SkillSignature(
-            name="watch-rental-price",
-            description="keep a rental page's current day rate up to date",
-            parameters=(
-                FramedParameter(
-                    name="url", description="the rental page to read", value="harborkayak.example"
-                ),
-            ),
-        ),
-        container="watch-rental-price-harborkayak-example",
-    )
-    framed = conversation_prompt(ConversationState.LEARN, framing)
+    framed = conversation_prompt(ConversationState.LEARN, _framing())
 
     assert framed == (
         Prompt.CONVERSATION_HEAD
@@ -909,31 +916,53 @@ def test_an_unframed_round_composes_the_prompt_it_always_did():
         assert conversation_prompt(state, None) == conversation_prompt(state)
 
 
-def test_only_learn_renders_the_round_s_framing():
-    """The framing is CARRIED past learn — it is the round link a later turn reads — but
-    only learn's instruction RENDERS it, because the sentence is about being taught a
-    routine.
+def test_an_apply_turn_enters_with_the_container_already_known():
+    """The round's framing renders as the APPLY instruction's closing paragraph (#1869),
+    verbatim — pinned so an edit is a visible diff.
 
-    Rendered onto apply's instruction it would say two things at once: apply sets the
-    routine up, and a line telling that same turn its container "is already there, so
-    there is nothing to set up" contradicts it.  What apply says about the round is its
-    own beat's to write."""
-    framing = RoundFraming(
-        signature=SkillSignature(
-            name="watch-rental-price",
-            description="keep a rental page's current day rate up to date",
-            parameters=(
-                FramedParameter(
-                    name="url", description="the rental page to read", value="harborkayak.example"
-                ),
-            ),
-        ),
-        container="watch-rental-price-harborkayak-example",
+    Learn and apply say DIFFERENT things about the same framing, which is why the line is
+    its own literal rather than one template with a conditional in it: learn is being
+    taught the routine, so its line says the container is already there and there is
+    nothing to set up; apply is standing the routine up, so its line says the routine and
+    what it is pointed at are already settled and only the job's terms are left.  The three
+    terms it names — when it runs, when it stops, whether to tell them — are the job's own,
+    never argument names, because a routine is an arbitrary sequence of tool calls and the
+    terms are the part of a job that is never one of its steps.
+
+    Both anchors render EXACTLY as they are stored, so the collection the turn configures
+    is a name it copies rather than one it works out.
+
+    The PERMISSION clause ("it is okay to leave them out") is load-bearing: the
+    instruction it follows is written for a turn that binds the routine itself, which is
+    still every UNframed apply turn, so without it the two paragraphs read as a
+    contradiction — and a contradiction is the one thing a thinking model spends a whole
+    turn deliberating over."""
+    framed = conversation_prompt(ConversationState.APPLY, _framing())
+
+    assert framed == (
+        Prompt.CONVERSATION_HEAD
+        + Prompt.APPLY_INSTRUCTION
+        + "The routine this round taught is called `watch-rental-price`, and "
+        "`watch-rental-price-harborkayak-example` is the collection set up to hold what "
+        "it produces. `watch-rental-price-harborkayak-example` is the one to configure — "
+        "call it by that name. Which routine it runs, and what it is pointed at, come "
+        "with the collection already: it is okay to leave them out, and saying them again "
+        "changes nothing. The only things left to say are when it runs, when it stops if "
+        "they gave an end, and whether to tell them.\n\n" + Prompt.CONVERSATION_TAIL
     )
+
+
+def test_only_learn_and_apply_render_the_round_s_framing():
+    """The framing is CARRIED on every non-idle move — it is the round link a later turn
+    reads — but only the two states it bears on RENDER it.
+
+    Learn is taught the routine and apply stands it up; elicit is still asking for it and
+    request is still asking for a detail, so neither has anything to say about a container
+    that may not exist yet.  Idle never carries one at all."""
     for state in ConversationState:
-        if state is ConversationState.LEARN:
+        if state in ROUND_LINES:
             continue
-        assert conversation_prompt(state, framing) == conversation_prompt(state), state
+        assert conversation_prompt(state, _framing()) == conversation_prompt(state), state
 
 
 def test_apply_instruction_whole_render():
@@ -961,6 +990,25 @@ def test_apply_instruction_whole_render():
         "gave you, and its first run is the first thing they'll hear about.\n\n"
         "Then tell them what you set up and what will happen. Say it is running "
         "only if the call came back confirming it.\n\n"
+    )
+
+
+def test_the_applied_configuration_narration_whole_render():
+    """The frame a turn that CONFIGURED the round's routine is handed, verbatim (#1869) —
+    pinned so an edit is a visible diff, like every other model-facing surface.
+
+    It is the skill-learned frame's sibling one step further along: that one carries what
+    a run LEARNED, this one what it SET RUNNING, and this one exists because the turn no
+    longer supplies the routine or the values it is pointed at.  So its last sentence is
+    the honesty clause — say only what is above — since the record is now the only place
+    those facts are, and a reply going beyond it would be stating a configuration the turn
+    never made."""
+    assert Prompt.CONFIGURATION_APPLIED_NARRATION == (
+        "The routine is now set up, and here is exactly what was configured:\n\n"
+        "{configuration}\n\n"
+        "Reply to the user now. Tell them in your own words what is running: what it "
+        "watches, how often it runs, when it stops if it stops, and whether they will "
+        "hear from it. Say only what is above — anything not there was not set."
     )
 
 
