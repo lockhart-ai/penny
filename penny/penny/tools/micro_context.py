@@ -418,8 +418,9 @@ SKILL_FRAME_SYSTEM_PROMPT = (
     f"{render_line(_FRAME_DESCRIPTION_LINE)}\n"
     f"{render_line(_PARAMETER_LINE)}\n"
     f"{render_line(_VALUE_LINE)}\n"
-    "Write the parameter lines first, then the value lines. Write nothing else — no "
-    "preamble, no explanation, no restating the ask."
+    "Write all four kinds of line: the NAME line, the DESCRIPTION line, then the "
+    "parameter lines, then the value lines. Write nothing else — no preamble, no "
+    "explanation, no restating the ask."
 )
 
 # The rule a model-written name must survive to be a BINDING KEY (#1668) — lowercase,

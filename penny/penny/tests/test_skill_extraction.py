@@ -1503,6 +1503,16 @@ def test_framing_system_prompt_whole_render():
     binder's line — one grammar, declared once, so a prompt and a parser cannot drift
     apart across two customers.
 
+    Round 11 (#1868, code-owner authored) rewrote the CLOSING sentence.  Adding the fourth
+    line had left it saying "write the parameter lines first, then the value lines" — a
+    sentence about the ORDER of the two repeating lines that names only half the shape, and
+    it is the last thing the draw reads.  Two of three draws in one sample then omitted the
+    NAME and DESCRIPTION lines entirely: both are REQUIRED by the declared shape, so each
+    draw was rejected whole and re-rolled, and four correct parameter judgments went with
+    them.  The closing sentence now states the whole shape — all four kinds of line, in
+    order — because the model's own last read of what to write should be a complete
+    statement of it rather than a detail about two of the four.
+
     The four tagged lines still RENDER from the declared shape (`render_line`), so the
     tags and separators the model is told to write remain literally the ones the parse
     splits on."""
@@ -1549,8 +1559,9 @@ def test_framing_system_prompt_whole_render():
         "DESCRIPTION: <one line: what the routine is for>\n"
         "PARAMETER <parameter_name> — <one line: what the user supplies for it>\n"
         "VALUE <parameter_name>: <the value, in the user's own words>\n"
-        "Write the parameter lines first, then the value lines. Write nothing else — no "
-        "preamble, no explanation, no restating the ask."
+        "Write all four kinds of line: the NAME line, the DESCRIPTION line, then the "
+        "parameter lines, then the value lines. Write nothing else — no preamble, no "
+        "explanation, no restating the ask."
     )
 
 
