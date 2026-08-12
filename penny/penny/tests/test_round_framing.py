@@ -17,6 +17,8 @@ What is pinned here is everything the framing decides that no later step can und
   before this hook existed;
 * the framing rides the anchor's lifecycle — carried while the round stays parked,
   dropped at idle;
+* a move into APPLY draws it once when the round arrived without one (#1875) and draws
+  nothing when the round already has one;
 * a round that taught nothing takes its empty container with it (#1839), and a container
   holding entries is never taken.
 
@@ -47,6 +49,9 @@ from penny.tools.micro_context import SKILL_FRAME_SYSTEM_PROMPT
 # ── The round: an ask, the teach question it got, and the demonstration ────────
 
 _ASK = "keep an eye on the price of the harbor kayak rental page"
+# The same ask with the page IN it — what an ask looks like when it settles the job on its
+# own, which is the only shape a framing drawn at apply entry can bind values from.
+_ASK_NAMING_THE_PAGE = "keep an eye on the price on harborkayak.example/rentals"
 _DEMO = "go to harborkayak.example/rentals, find the day rate, and remember it"
 _CORRECTION = "actually use harborkayak.example/tours — find the day rate there and remember it"
 
@@ -341,6 +346,89 @@ async def test_a_failed_re_draw_keeps_the_round_s_existing_framing(db):
     machine = _machine(db, _model(state="STATE: learn", framing=_FRAMED))
     framing = machine.framing()
     assert framing is not None and framing.container == _CONTAINER
+
+
+# ── Apply entry: the one retry, because apply cannot run unframed (#1875) ─────
+
+
+async def test_an_apply_move_frames_the_round_when_it_arrived_without_one(db):
+    """Apply configures the collection its round set up, so a round reaching apply with no
+    framing has nothing to configure at all — and the entry draw is retried HERE, once,
+    with the same input contract it had at learn entry.
+
+    The retry is the whole recovery: a round whose learn-entry draw came back malformed
+    can still be stood up, and the container it configures is built now rather than
+    invented by the turn.
+
+    The ask names the page for the same reason the framer's contract does — its input is
+    the round's ASK plus the message that just arrived, and every value it draws has to be
+    a literal span of those words.  So what the retry can settle is a job the ask itself
+    states, which is exactly the shape that reaches apply with nothing settled."""
+    anchor_id = _log(db, _ASK_NAMING_THE_PAGE)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db, framing="i think this is a price watcher of some sort")
+    assert db.memories.get(_CONTAINER) is None
+    _seed_skill(db)
+
+    machine = _machine(db, _model(state="STATE: apply\nSKILL: watch-rental-price", framing=_FRAMED))
+    await machine.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+
+    assert machine.state() is ConversationState.APPLY
+    framing = machine.framing()
+    assert framing is not None and framing.container == _CONTAINER
+    row = db.memories.get(_CONTAINER)
+    assert row is not None
+    assert row.extraction_prompt is None and row.schedule is None
+    assert row.created_by_run_id == "run-apply"
+
+
+async def test_an_apply_move_that_already_has_a_framing_draws_nothing(db):
+    """A round that arrives WITH its framing is answered by what it already has: no second
+    draw, so nothing can come back naming the job differently.
+
+    A re-draw is not a re-read — the round was taught under the entry name and wrote into
+    the container derived from it, so a fresh draw here could point the acceptance at a
+    container the demonstration never used."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    _seed_skill(db)
+    model = _model(state="STATE: apply\nSKILL: watch-rental-price", framing=_FRAMED_TOURS)
+
+    machine = _machine(db, model)
+    await machine.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+
+    assert not [
+        request
+        for request in model.requests
+        if any(m.get("content") == SKILL_FRAME_SYSTEM_PROMPT for m in request["messages"])
+    ]
+    framing = machine.framing()
+    assert framing is not None and framing.container == _CONTAINER
+    assert db.memories.get(_TOURS_CONTAINER) is None
+
+
+async def test_an_apply_move_whose_retry_fails_carries_no_framing(db):
+    """One retry, not a loop: when the draw fails again the move is recorded unframed and
+    no container is built, which is the state the turn then fails honestly on (#1875).
+
+    Nothing is invented to keep the turn alive — an apply turn with no framing has no
+    collection to configure, and saying so is the only honest thing left."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db, framing="i think this is a price watcher of some sort")
+    _seed_skill(db)
+
+    machine = _machine(
+        db, _model(state="STATE: apply\nSKILL: watch-rental-price", framing="still not a framing")
+    )
+    await machine.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+
+    assert machine.state() is ConversationState.APPLY
+    assert machine.framing() is None
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.skill_frame is None
+    assert db.memories.get(_CONTAINER) is None
 
 
 # ── The failed round takes its container with it (#1839) ──────────────────────

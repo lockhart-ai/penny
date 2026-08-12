@@ -133,45 +133,31 @@ class Prompt:
         "there, so there is nothing to set up.\n\n"
     )
 
+    # APPLY's instruction NAMES the round it is standing up (#1869/#1875): the container the
+    # round built and the routine it taught are rendered VERBATIM inside the instruction
+    # itself, so the collection the turn configures is a name it copies rather than one it
+    # works out, and the routine and the values it is pointed at are stated as settled
+    # rather than asked for.  There is no unframed form of this instruction and no unframed
+    # apply turn: a round that reaches apply with no framing has nothing to configure, and
+    # the turn fails honestly in python before a prompt is composed at all.
+    #
+    # It opens with the STATE — a collection exists, this is what it is called, this is what
+    # it runs — and asks for the one thing left, the job's own terms (when it runs, when it
+    # stops, whether to tell them).  Those terms are named as the job's, never as argument
+    # names: a routine is an arbitrary sequence of tool calls, and the terms are the part of
+    # a job that is never one of its steps.  What it does NOT carry is an end-date rule; that
+    # lives with the field it governs, on `expires_at`'s own description.
     APPLY_INSTRUCTION = (
-        "A skill you already know does what the user is asking, and their message "
-        "contains all the information for its parameters. Set it up now, in one "
-        "`collection_set` call, binding what they told you. Do not set an end date "
-        "unless they gave one.\n\n"
+        "A collection has been set up for this task from what the user asked. It is "
+        "named `{container}`, it runs the routine `{skill}`, and it is already pointed "
+        "at what they gave. Configure its schedule now, in one `collection_set` call on "
+        "`{container}`: when it runs, when it stops if they gave an end, and whether to "
+        "tell them — all from the user's own words.\n\n"
         "Configuring it is the whole turn — you are not carrying the routine out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
         "Then tell them what you set up and what will happen. Say it is running "
         "only if the call came back confirming it.\n\n"
-    )
-
-    # The round's own framing on APPLY (#1869) — the sibling of ROUND_FRAMING_LINE above,
-    # rendered after APPLY's instruction when the round settled a framing on entering learn.
-    # Learn RENDERS the framing so the demonstrated write copies an anchor; apply renders it
-    # so the configuration lands on the container that round already built, and so the turn
-    # is not asked to re-supply a routine or values the round already settled.
-    #
-    # It names the STATE — which routine this round taught, which collection holds what it
-    # produces, and that both are already settled — and leaves the doing to the instruction
-    # above, which already says configuring it is the whole turn.  The three things it does
-    # name are the JOB's own terms (when it runs, when it stops, whether to tell them),
-    # never argument names: a routine is an arbitrary sequence of tool calls, and the terms
-    # are the part of a job that is never one of its steps.
-    #
-    # The PERMISSION clause is load-bearing rather than decorative.  The instruction above
-    # is written for a turn that binds the routine itself ("binding what they told you"),
-    # which is still every unframed apply turn, so on a framed one the two paragraphs would
-    # otherwise read as a contradiction — and a contradiction is the one thing a thinking
-    # model spends a whole turn deliberating over.  Saying plainly that it is okay to leave
-    # them out settles which of the two applies here, without rewriting an instruction that
-    # is correct wherever no round settled anything.
-    ROUND_CONTAINER_LINE = (
-        "The routine this round taught is called `{skill}`, and `{container}` is the "
-        "collection set up to hold what it produces. `{container}` is the one to "
-        "configure — call it by that name. Which routine it runs, and what it is pointed "
-        "at, come with the collection already: it is okay to leave them out, and saying "
-        "them again changes nothing. The only things left to say are when it runs, when it "
-        "stops if they gave an end, and whether to tell them.\n\n"
     )
 
     REQUEST_INSTRUCTION = (

@@ -53,6 +53,11 @@ prose:
   framing is round state with the anchor's own lifecycle (set on entry, carried
   while parked, cleared at idle), and it is the framer collaborator's whole
   visible surface here: with none injected, every move is unframed.
+- **Entering apply RETRIES the framing when the round has none** (#1875): apply
+  configures the round's own container, so a framing is the one thing that turn
+  cannot do without — a move landing there without one draws it here, once, and a
+  round already carrying one is answered by what it already has.  A retry that
+  fails leaves the move unframed, which is the state the turn fails honestly on.
 
 Scope: the classifier machinery plus its DURABLE half.  :class:`ConversationMachine`
 holds the state across turns (``db.machine`` — the ``conversation_machine`` row)
@@ -551,17 +556,25 @@ STATE_INSTRUCTIONS: dict[ConversationState, str] = {
 }
 
 
-# What each state RENDERS about the round it is in (#1868/#1869) — data, keyed by state,
-# because the two states that render the framing say different things about it and the
-# states that render nothing say nothing.  Learn is told the container is already there so
-# the demonstrated write copies an anchor; apply is told the routine and the values are
-# already settled so the turn configures the terms and nothing else.  A state absent from
-# this map composes the byte-identical prompt it always composed — which is every state
-# whose job the round's framing has no bearing on.
+# What each state RENDERS about the round it is in as its own closing paragraph (#1868) —
+# data, keyed by state, so a state absent from this map composes the byte-identical prompt
+# it always composed.  Learn is told the container is already there, so the write its
+# demonstration makes copies an anchor rather than inventing a destination.  APPLY is not
+# here: its instruction NAMES the round inside itself (#1875), because by then the round is
+# not one more thing to know about the turn — it is what the turn is configuring.
 ROUND_LINES: dict[ConversationState, str] = {
     ConversationState.LEARN: Prompt.ROUND_FRAMING_LINE,
-    ConversationState.APPLY: Prompt.ROUND_CONTAINER_LINE,
 }
+
+
+# What an apply turn has to have, said where it is missed: apply configures the round's own
+# container, so a turn reaching this function without a framing has nothing to configure and
+# no instruction that could be composed for it.  It is a programming error rather than a
+# case to absorb — the caller fails the turn honestly BEFORE composing a prompt (#1875).
+_UNFRAMED_APPLY = (
+    "An apply turn has no unframed form — it configures the round's own container, "
+    "so the framing has to be settled before its instruction can be composed"
+)
 
 
 def conversation_prompt(state: ConversationState, framing: RoundFraming | None = None) -> str:
@@ -574,28 +587,40 @@ def conversation_prompt(state: ConversationState, framing: RoundFraming | None =
     directly: a missing state is a programming error and should raise, never
     quietly compose some other state's prompt.
 
-    ``framing`` is the round's own state (#1868/#1869), rendered after the instruction of
-    the states it bears on (:data:`ROUND_LINES`): the routine the round is about and the
-    container its results are kept in, both named VERBATIM, so the write a learn turn
+    ``framing`` is the round's own state (#1868/#1869): the routine the round is about and
+    the container its results are kept in, both named VERBATIM, so the write a learn turn
     demonstrates — and the collection an apply turn configures — copy an anchor rather than
-    inventing a destination.  Absent — a round that could not be framed — composes the
-    byte-identical prompt this function has always composed."""
-    instruction = STATE_INSTRUCTIONS[state] + _framing_line(state, framing)
-    return Prompt.CONVERSATION_HEAD + instruction + Prompt.CONVERSATION_TAIL
+    inventing a destination.  Learn renders it as a closing paragraph (:data:`ROUND_LINES`)
+    and composes the unchanged prompt without one; apply renders it INSIDE its instruction
+    and has no form without one at all."""
+    return Prompt.CONVERSATION_HEAD + _instruction(state, framing) + Prompt.CONVERSATION_TAIL
+
+
+def _instruction(state: ConversationState, framing: RoundFraming | None) -> str:
+    """The state's instruction as this turn reads it — the round rendered where that state
+    says it belongs.
+
+    Apply is the state that STANDS THE ROUND UP, so the round is its subject rather than a
+    note appended to it: the container and the routine render inside its own sentences, and
+    with no framing there is no turn to instruct.  Every other state's instruction is fixed
+    text, with the round's closing line after it when that state has one to say."""
+    if state is ConversationState.APPLY:
+        if framing is None:
+            raise ValueError(_UNFRAMED_APPLY)
+        return STATE_INSTRUCTIONS[state].format(skill=framing.skill, container=framing.container)
+    return STATE_INSTRUCTIONS[state] + _framing_line(state, framing)
 
 
 def _framing_line(state: ConversationState, framing: RoundFraming | None) -> str:
     """The round's framing as the state's closing paragraph, or nothing at all.
 
-    Keyed to the state because the two states the framing bears on say DIFFERENT things
-    about it: learn is being taught the routine, so its line says the container is already
-    there and there is nothing to set up; apply is setting the routine up, so its line says
-    the routine and what it is pointed at are already settled and only the terms are left.
-    One line rendered on both would say two things at once, which is why the map is data
-    rather than one template with a conditional in it.
+    Keyed to the state because a state with nothing to say about the round says nothing:
+    elicit is still asking for the task and request is still asking for a detail, so
+    neither has anything to say about a container that may not exist yet, and idle never
+    carries a framing at all.
 
-    Both render the skill and the container VERBATIM: the whole point of the framing is
-    that a name the model would otherwise invent is a name it copies."""
+    The skill and the container render VERBATIM: the whole point of the framing is that a
+    name the model would otherwise invent is a name it copies."""
     template = ROUND_LINES.get(state)
     if framing is None or template is None:
         return ""
@@ -739,29 +764,25 @@ class ConversationMachine:
     async def _frame_round(
         self, decision: StateDecision, message: str, *, run_id: str | None
     ) -> RoundFraming | None:
-        """The learn-ENTRY hook (#1868): every move that LANDS in learn frames the round
-        and builds the container its results are kept in.
-
-        Every move, not only the first — a correction re-enters learn, and re-entering is
-        exactly the occasion to ask again what the round is now for: the same identity
-        finds the container that already exists, a shifted one archives the near-empty
-        container it replaces (the framer's own find-or-create rule).
+        """The round-framing hook (#1868/#1875): the moves that draw the round's framing
+        and build the container its results are kept in.
 
         Its input is the round's user turns and nothing else, which at this moment is the
         ask the round is anchored to plus the message that just arrived — the framer's own
         contract, and both of them exist here, which is why the draw moved to this seam at
         all.
 
-        Only a DECIDED move into learn frames, never a fail → stay that LEAVES the machine
-        in learn: the machine's own rule is that a contract failure moves nothing, and
+        Only a DECIDED move frames, never a fail → stay that merely LEAVES the machine
+        where it was: the machine's own rule is that a contract failure moves nothing, and
         building a container (or archiving the one it replaces) off a draw the machine
         refused to act on would be that rule holding for the state and not for the
         registry.  ``decision.state`` says exactly that — it is ``None`` on every
         non-decision.
 
-        ``None`` when the draw failed or nothing frames: the move is recorded unframed and
-        the round runs the way it did before this hook existed."""
-        if self._framer is None or decision.state is not ConversationState.LEARN:
+        ``None`` when the draw failed or nothing frames.  Landing in learn that way runs
+        the round unframed, the way it did before this hook existed; landing in APPLY that
+        way leaves a turn with nothing to configure, which its own state fails honestly."""
+        if self._framer is None or not self._draws_a_framing(decision.state):
             return None
         return await self._framer.frame_entry(
             ask=self._anchor_text(),
@@ -769,6 +790,24 @@ class ConversationMachine:
             run_id=run_id,
             previous=self.framing(),
         )
+
+    def _draws_a_framing(self, target: ConversationState | None) -> bool:
+        """Whether this move draws the round's framing.
+
+        LEARN draws on every move that lands there, not only the first — a correction
+        re-enters learn, and re-entering is exactly the occasion to ask again what the
+        round is now for: the same identity finds the container that already exists, a
+        shifted one archives the near-empty container it replaces (the framer's own
+        find-or-create rule).
+
+        APPLY draws only when the round arrived WITHOUT one — the single retry at apply
+        entry (#1875).  Apply configures the round's own container, so a framing is the
+        one thing that turn cannot do without; a round already carrying one is answered by
+        what it already has, since a re-draw is not a re-read and would file the job under
+        a name the container it was built for no longer matches."""
+        if target is ConversationState.LEARN:
+            return True
+        return target is ConversationState.APPLY and self.framing() is None
 
     def _record_decision(
         self,

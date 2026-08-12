@@ -31,6 +31,12 @@ class PennyResponse:
         "so there's nothing saved. Can you walk me through it again?"
     )
 
+    # An apply turn configures the collection its round set up, so a round that reaches
+    # apply with no framing has nothing to configure (#1875).  The turn fails here, before
+    # any model call: this goes out instead of a reply, and — like the learn failure above
+    # — it claims nothing was saved or scheduled and asks for the one move that fixes it.
+    APPLY_NOTHING_TO_CONFIGURE = "Something went wrong setting up this task — ask me again?"
+
     # ── Channel ──────────────────────────────────────────────────────────────
 
     DELIVERY_FAILURE = "Sorry, I had trouble delivering that message. Please try again."

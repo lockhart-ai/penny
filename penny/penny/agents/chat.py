@@ -386,6 +386,8 @@ class ChatAgent(Agent):
                 )
 
             logger.info("Handling message from %s (conversation mode)", sender)
+            if (unconfigurable := self._unconfigurable_round(state, framing)) is not None:
+                return unconfigurable
             self._install_tools(self.get_tools(run_id=run_id))
             # The machine decided this turn's state before the turn began, so the
             # prompt carries THAT state's single instruction (#1706).  ``None`` —
@@ -413,6 +415,37 @@ class ChatAgent(Agent):
             self._current_message = None
             self._turn_state = None
             self._turn_framing = None
+
+    @staticmethod
+    def _unconfigurable_round(
+        state: ConversationState | None, framing: RoundFraming | None
+    ) -> ControllerResponse | None:
+        """An apply turn that arrived with no framing FAILED before it began (#1875) —
+        ``None`` on every other turn, which is the ordinary path untouched.
+
+        Apply configures the collection its own round set up: the container, the routine
+        and the values it is pointed at are all supplied framework-side, and the turn says
+        only the job's terms.  With no framing there is no container to configure, no
+        routine to name, and nothing the turn could truthfully report — so it ends here,
+        in python, with an honest reply and no model call at all (#1839's shape, moved to
+        the front of the turn because there is nothing to run rather than nothing learned).
+
+        The two things it must NOT do are what makes this a failure rather than a
+        fallback: instructing the turn as though it were binding the routine itself would
+        have it re-derive values it cannot see, and offering the full ``collection_set``
+        surface would have it invent a collection for a job the round never settled.  The
+        machine is left where it stands, so the user's retry is an ordinary next message.
+
+        Checked on the conversation branch, which is where both of those live: a vision
+        turn composes no state instruction and installs no tools, so it can neither be
+        instructed to bind a routine nor claim to have configured one, and answering an
+        image with a setup failure would be a worse reply than the caption it can give."""
+        if state is not ConversationState.APPLY or framing is not None:
+            return None
+        logger.warning(
+            "Apply turn arrived with no framing — nothing to configure, replying honestly"
+        )
+        return ControllerResponse(answer=PennyResponse.APPLY_NOTHING_TO_CONFIGURE)
 
     def _enforce_learn_terminal(
         self, state: ConversationState | None, response: ControllerResponse, run_id: str

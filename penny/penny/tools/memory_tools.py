@@ -709,10 +709,11 @@ class CollectionCreateTool(MemoryTool):
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "Omit it unless the user gave an end condition. A date and time "
-                    "('2026-09-01T09:00:00Z') or when it ends in the user's own words "
-                    "('in two weeks'), read in their timezone. The collection archives "
-                    "itself when it passes."
+                    "When it ends. If the user gave an end, always set it: a date and "
+                    "time ('2026-09-01T09:00:00Z') or their words ('in two weeks'), read "
+                    "in their timezone. If their words are loose ('the end of the "
+                    "month'), work out the date and write that. If they gave no end, "
+                    "leave it out. The collection archives itself when it passes."
                 ),
             },
             "notify": {
@@ -1768,8 +1769,10 @@ class CollectionSetTool(MemoryTool):
         self._update = CollectionUpdateTool(db, llm_client, run_id=run_id)
         # The round this turn CONFIGURES (#1869) — threaded down from the turn like
         # ``run_id`` beside it, never read from anywhere ambient.  ``None`` on every turn
-        # that is not configuring a framed round (a collector cycle, an unframed apply,
-        # every ordinary chat turn), which leaves this tool byte-identical to what it was.
+        # that is not configuring a framed round (a collector cycle, every ordinary chat
+        # turn), which leaves this tool byte-identical to what it was.  An apply turn is
+        # never among them: a round with no framing has nothing to configure, so that turn
+        # fails before any tool is offered (#1875).
         self._round_framing = round_framing
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
@@ -1836,9 +1839,10 @@ class CollectionSetTool(MemoryTool):
         the measured naming and binding misses came from — so they are READ, and only the
         cadence, the end condition and the telling-them flag are the model's.
 
-        With no round framing this returns ``args`` unchanged, which is the whole of the
-        degrade path — an unframed apply (a pre-framing world, or an entry draw that
-        failed) configures exactly the way it did before this existed."""
+        With no round framing this returns ``args`` unchanged — an ordinary chat turn
+        standing something up, or a collector cycle, calls this tool exactly as it did
+        before any of this existed.  What is NOT in that set is an apply turn: one with no
+        framing has no collection to configure and never reaches a tool (#1875)."""
         framing = self._round_framing
         if framing is None:
             return args
@@ -2121,10 +2125,11 @@ class CollectionUpdateTool(MemoryTool):
             "expires_at": {
                 "type": "string",
                 "description": (
-                    "Omit it unless the user gave an end condition. A date and time "
-                    "('2026-09-01T09:00:00Z') or when it ends in the user's own words "
-                    "('in two weeks'), read in their timezone. The collection archives "
-                    "itself when it passes."
+                    "When it ends. If the user gave an end, always set it: a date and "
+                    "time ('2026-09-01T09:00:00Z') or their words ('in two weeks'), read "
+                    "in their timezone. If their words are loose ('the end of the "
+                    "month'), work out the date and write that. If they gave no end, "
+                    "leave it out. The collection archives itself when it passes."
                 ),
             },
         },

@@ -881,7 +881,7 @@ async def test_a_terms_only_call_stands_the_rounds_routine_up(
         # The turn's instruction named the container verbatim, which is what makes the
         # call's target a copy rather than a choice.
         assert (
-            Prompt.ROUND_CONTAINER_LINE.format(
+            Prompt.APPLY_INSTRUCTION.format(
                 skill=_APPLY_FRAMING.signature.name, container=_APPLY_FRAMING.container
             )
             in prompts["system"]
@@ -958,45 +958,44 @@ async def test_a_call_naming_something_else_still_lands_on_the_rounds_container(
 
 
 @pytest.mark.asyncio
-async def test_an_apply_turn_with_no_framing_configures_the_way_it_always_did(
+async def test_an_apply_turn_with_no_framing_fails_honestly(
     signal_server, mock_llm, test_config, test_user_info, running_penny
 ):
-    """The degrade path, visible and tested: an apply turn arriving with NO framing — a
-    world from before the round was framed on entry, or an entry draw that failed — takes
-    the full ``collection_set`` path exactly as it did before #1869.
+    """An apply turn arriving with NO framing has nothing to configure, and says so
+    (#1875) — the turn ends in python, before any model call.
 
-    Nothing is supplied on its behalf, so a terms-only call is a plain metadata edit: the
-    schedule and notify land and the collection stays inert, which is the honest outcome of
-    a call that named no routine — and it is what the turn's own instruction, which has no
-    round line to render, still asks it to supply."""
-    ask = "great — do that every hour and tell me when it changes"
-    prompts: dict[str, str] = {}
+    There is no unframed apply any more: the machine retries the framing once at apply
+    entry, so reaching the turn without one means the round never settled what job it is.
+    Running anyway would mean one of the two things this replaces — instructing the turn to
+    bind a routine off values it cannot see, or offering the full ``collection_set``
+    surface so it invents a collection for a job nobody settled — and both end with Penny
+    telling the user something is running when nothing is.
+
+    So: no model call at all, no tool surface, nothing created, and a reply that claims
+    nothing."""
+    called: list[dict] = []
 
     def handler(request, _count):
-        messages = request.get("messages") or []
-        blob = " ".join(str(m.get("content", "")) for m in messages)
-        if ask not in blob:
-            return _text("nothing to do")
-        prompts.setdefault("system", str(messages[0].get("content", "")))
-        if any(m.get("role") == "tool" for m in messages):
-            return _text("all set")
-        return _terms_only_set(_APPLY_FRAMING.container)
+        called.append(request)
+        return _text("should never be reached")
 
     mock_llm.set_response_handler(handler)
 
     async with running_penny(test_config) as penny:
         _taught_routine(penny)
-        _round_container(penny)
+        before = {row.name for row in penny.db.memories.list_all()}
 
-        await penny.chat_agent.handle(
-            content=ask, sender=TEST_SENDER, state=ConversationState.APPLY, framing=None
+        response = await penny.chat_agent.handle(
+            content="great — do that every hour and tell me when it changes",
+            sender=TEST_SENDER,
+            state=ConversationState.APPLY,
+            framing=None,
         )
 
-        assert "is the collection set up to hold what it produces" not in prompts["system"]
-        row = penny.db.memories.get(_APPLY_FRAMING.container)
-        assert row is not None
-        assert row.skill_name is None and row.extraction_prompt is None
-        assert row.schedule == "FREQ=HOURLY" and row.notify
+        assert response.answer == PennyResponse.APPLY_NOTHING_TO_CONFIGURE
+        assert response.tool_calls == []
+        assert called == []
+        assert {row.name for row in penny.db.memories.list_all()} == before
 
 
 @pytest.mark.asyncio

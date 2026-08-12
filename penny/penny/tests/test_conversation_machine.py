@@ -757,17 +757,49 @@ async def test_state_is_a_fold_over_the_log_with_no_materialized_twin(db):
 # ── Per-state chat instructions (#1706) ─────────────────────────────────────
 
 
+def _framing() -> RoundFraming:
+    """One round's framing, shared by every render pin below — the same signature and the
+    same container, so what a state says about ONE framing is the only thing that varies
+    between the states that say anything at all."""
+    return RoundFraming(
+        signature=SkillSignature(
+            name="watch-rental-price",
+            description="keep a rental page's current day rate up to date",
+            parameters=(
+                FramedParameter(
+                    name="url", description="the rental page to read", value="harborkayak.example"
+                ),
+            ),
+        ),
+        container="watch-rental-price-harborkayak-example",
+    )
+
+
+def _composed(state: ConversationState) -> str:
+    """A state's prompt as that state can actually be composed: apply names the round
+    inside its own instruction and has no unframed form (#1875), so it is the one state
+    that cannot be asked for a prompt without one."""
+    return conversation_prompt(state, _framing() if state is ConversationState.APPLY else None)
+
+
 def test_every_state_has_an_instruction_and_there_is_no_fallback():
     """TOTAL by construction: the machine always has a state, so a turn always
     has exactly one instruction.  A default would mean the state failed to
     determine the prompt — the one thing the machine exists to fix — so a
-    missing entry must RAISE rather than quietly compose someone else's."""
+    missing entry must RAISE rather than quietly compose someone else's.
+
+    Apply's instruction is a TEMPLATE — it names the round's container and routine — so
+    what its prompt carries is that instruction rendered, which is the same claim read
+    through the framing it is composed with."""
     assert set(STATE_INSTRUCTIONS) == set(ConversationState)
     for state in ConversationState:
-        prompt = conversation_prompt(state)
+        prompt = _composed(state)
         assert prompt.startswith(Prompt.CONVERSATION_HEAD)
         assert prompt.endswith(Prompt.CONVERSATION_TAIL)
-        assert STATE_INSTRUCTIONS[state] in prompt
+        rendered = STATE_INSTRUCTIONS[state].format(
+            skill=_framing().skill, container=_framing().container
+        )
+        assert rendered in prompt
 
 
 def test_each_state_carries_only_its_own_instruction():
@@ -775,7 +807,7 @@ def test_each_state_carries_only_its_own_instruction():
     is what the machine buys — #1687's four-case block existed only so the model
     could work out which case applied, and that is answered in Python now."""
     for state in ConversationState:
-        prompt = conversation_prompt(state)
+        prompt = _composed(state)
         for other, instruction in STATE_INSTRUCTIONS.items():
             if other is not state:
                 assert instruction not in prompt, f"{state} leaked {other}'s instruction"
@@ -862,24 +894,6 @@ def test_learn_instruction_whole_render():
     )
 
 
-def _framing() -> RoundFraming:
-    """One round's framing, shared by every render pin below — the same signature and the
-    same container, so what the two rendering states say about ONE framing is the only
-    thing that varies between them."""
-    return RoundFraming(
-        signature=SkillSignature(
-            name="watch-rental-price",
-            description="keep a rental page's current day rate up to date",
-            parameters=(
-                FramedParameter(
-                    name="url", description="the rental page to read", value="harborkayak.example"
-                ),
-            ),
-        ),
-        container="watch-rental-price-harborkayak-example",
-    )
-
-
 def test_a_framed_round_names_its_routine_and_its_container():
     """The round's framing renders as the learn instruction's closing paragraph (#1868),
     verbatim — pinned so an edit is a visible diff.
@@ -909,58 +923,69 @@ def test_a_framed_round_names_its_routine_and_its_container():
 
 def test_an_unframed_round_composes_the_prompt_it_always_did():
     """A state with no framing composes the byte-identical prompt this function has always
-    composed — every state, so the framing is additive rather than a new shape every turn
-    has to absorb.  That is also the degrade path: a round whose entry draw failed reads
-    exactly like a round from before the draw existed."""
+    composed, so the framing is additive rather than a new shape every turn has to absorb
+    — and a round whose entry draw failed reads exactly like a round from before the draw
+    existed.  Apply is the one exception, and it is an exception by design: it has no
+    unframed form at all (below)."""
     for state in ConversationState:
+        if state is ConversationState.APPLY:
+            continue
         assert conversation_prompt(state, None) == conversation_prompt(state)
 
 
-def test_an_apply_turn_enters_with_the_container_already_known():
-    """The round's framing renders as the APPLY instruction's closing paragraph (#1869),
-    verbatim — pinned so an edit is a visible diff.
+def test_an_apply_turn_has_no_unframed_form():
+    """There IS no unframed apply prompt (#1875): apply configures the collection its own
+    round set up, so with no framing there is no container to name, no routine to state,
+    and nothing to instruct — composing one anyway would mean falling back to a turn that
+    binds the routine itself off values it cannot see.
 
-    Learn and apply say DIFFERENT things about the same framing, which is why the line is
-    its own literal rather than one template with a conditional in it: learn is being
-    taught the routine, so its line says the container is already there and there is
-    nothing to set up; apply is standing the routine up, so its line says the routine and
-    what it is pointed at are already settled and only the job's terms are left.  The three
-    terms it names — when it runs, when it stops, whether to tell them — are the job's own,
-    never argument names, because a routine is an arbitrary sequence of tool calls and the
-    terms are the part of a job that is never one of its steps.
+    So this raises rather than composing something, and the caller fails the turn honestly
+    before it ever gets here."""
+    with pytest.raises(ValueError, match="no unframed form"):
+        conversation_prompt(ConversationState.APPLY)
+
+
+def test_an_apply_turn_enters_with_the_container_already_known():
+    """The round renders INSIDE the apply instruction (#1875), verbatim — pinned so an
+    edit is a visible diff.
+
+    Learn and apply say DIFFERENT things about the same framing, which is why apply's is
+    not the closing line learn gets: learn is being taught the routine, so its line says
+    the container is already there and there is nothing to set up; apply is standing the
+    routine up, so the container is not a note appended to its instruction — it is the
+    subject of every sentence in it.
 
     Both anchors render EXACTLY as they are stored, so the collection the turn configures
-    is a name it copies rather than one it works out.
-
-    The PERMISSION clause ("it is okay to leave them out") is load-bearing: the
-    instruction it follows is written for a turn that binds the routine itself, which is
-    still every UNframed apply turn, so without it the two paragraphs read as a
-    contradiction — and a contradiction is the one thing a thinking model spends a whole
-    turn deliberating over."""
+    is a name it copies rather than one it works out."""
     framed = conversation_prompt(ConversationState.APPLY, _framing())
 
     assert framed == (
         Prompt.CONVERSATION_HEAD
-        + Prompt.APPLY_INSTRUCTION
-        + "The routine this round taught is called `watch-rental-price`, and "
-        "`watch-rental-price-harborkayak-example` is the collection set up to hold what "
-        "it produces. `watch-rental-price-harborkayak-example` is the one to configure — "
-        "call it by that name. Which routine it runs, and what it is pointed at, come "
-        "with the collection already: it is okay to leave them out, and saying them again "
-        "changes nothing. The only things left to say are when it runs, when it stops if "
-        "they gave an end, and whether to tell them.\n\n" + Prompt.CONVERSATION_TAIL
+        + "A collection has been set up for this task from what the user asked. It is "
+        "named `watch-rental-price-harborkayak-example`, it runs the routine "
+        "`watch-rental-price`, and it is already pointed at what they gave. Configure "
+        "its schedule now, in one `collection_set` call on "
+        "`watch-rental-price-harborkayak-example`: when it runs, when it stops if they "
+        "gave an end, and whether to tell them — all from the user's own words.\n\n"
+        "Configuring it is the whole turn — you are not carrying the routine out "
+        "yourself. Once it is set up it runs itself on the schedule they just "
+        "gave you, and its first run is the first thing they'll hear about.\n\n"
+        "Then tell them what you set up and what will happen. Say it is running "
+        "only if the call came back confirming it.\n\n" + Prompt.CONVERSATION_TAIL
     )
 
 
-def test_only_learn_and_apply_render_the_round_s_framing():
+def test_only_learn_renders_the_round_as_a_closing_line():
     """The framing is CARRIED on every non-idle move — it is the round link a later turn
-    reads — but only the two states it bears on RENDER it.
+    reads — but only learn renders it as its own closing paragraph.
 
-    Learn is taught the routine and apply stands it up; elicit is still asking for it and
-    request is still asking for a detail, so neither has anything to say about a container
-    that may not exist yet.  Idle never carries one at all."""
+    Elicit is still asking for the task and request is still asking for a detail, so
+    neither has anything to say about a container that may not exist yet; idle never
+    carries one at all.  Apply is absent from the map for the opposite reason: it renders
+    the round inside its own instruction rather than after it."""
+    assert set(ROUND_LINES) == {ConversationState.LEARN}
     for state in ConversationState:
-        if state in ROUND_LINES:
+        if state in ROUND_LINES or state is ConversationState.APPLY:
             continue
         assert conversation_prompt(state, _framing()) == conversation_prompt(state), state
 
@@ -968,23 +993,28 @@ def test_only_learn_and_apply_render_the_round_s_framing():
 def test_apply_instruction_whole_render():
     """The whole instruction, verbatim — pinned so an edit is a visible diff.
 
-    ONE coherent statement, not a boundary policed twice: the call to make, then the
-    scope of the turn (configuring is all of it, the routine runs itself afterwards),
-    then what to report and the one condition on claiming it is running.  It was
-    patched by accretion once — a third paragraph restating the reporting boundary from
-    another angle — which is the drift this literal makes visible.
+    ONE coherent statement, not a boundary policed twice: what already exists and what is
+    left to say, then the scope of the turn (configuring is all of it, the routine runs
+    itself afterwards), then what to report and the one condition on claiming it is
+    running.  It was patched by accretion once — a third paragraph restating the reporting
+    boundary from another angle — which is the drift this literal makes visible.
 
-    The opening paragraph mirrors the transition condition that selects this state (code-
-    owner authored): what the message must contain is the information for the skill's
-    PARAMETERS, said the same way in both places, so the turn is entered on the same
-    terms it was decided on.  Its last sentence is the end-date rule — measured, a
-    bounded watch was invented for asks that gave no end at all, and a job that stops on
-    a date nobody asked for goes quiet without anyone noticing."""
+    The opening paragraph is the round's own STATE (code-owner authored): a collection
+    exists, this is its name, this is the routine it runs, and it is already pointed at
+    what the user gave — so the three terms asked for are the only things the turn has to
+    decide, and the container it configures is a name it copies.  Both anchors are
+    placeholders because they are read off the round rather than worked out here.
+
+    What it no longer carries is the end-date rule.  That belongs with the field it
+    governs — ``expires_at``'s own description says when to set it and when to leave it
+    out — so the instruction says what the turn IS and the field says how the field
+    works, each in one place."""
     assert Prompt.APPLY_INSTRUCTION == (
-        "A skill you already know does what the user is asking, and their message "
-        "contains all the information for its parameters. Set it up now, in one "
-        "`collection_set` call, binding what they told you. Do not set an end date "
-        "unless they gave one.\n\n"
+        "A collection has been set up for this task from what the user asked. It is "
+        "named `{container}`, it runs the routine `{skill}`, and it is already pointed "
+        "at what they gave. Configure its schedule now, in one `collection_set` call on "
+        "`{container}`: when it runs, when it stops if they gave an end, and whether to "
+        "tell them — all from the user's own words.\n\n"
         "Configuring it is the whole turn — you are not carrying the routine out "
         "yourself. Once it is set up it runs itself on the schedule they just "
         "gave you, and its first run is the first thing they'll hear about.\n\n"
