@@ -661,10 +661,16 @@ class FramedParameter(BaseModel):
 
     The ``value`` is carried VERBATIM, because it is a literal span of the user's own
     words and the whole point is that it is theirs — it is what the round's container is
-    named from (``derive_collection_name``), so tidying it here would rename a job."""
+    named from (``derive_collection_name``), so tidying it here would rename a job.
+
+    ``description`` is ``None`` for an UNLABELLED parameter — which a framer draw never
+    produces (its ``PARAMETER`` line carries both halves or it is malformed), but a
+    parameter read back off the REGISTRY does (#1870: ``SkillParameter.description`` is
+    itself optional).  Carried as ``None`` rather than flattened to ``""`` so unlabelled
+    and labelled-with-nothing stay the two different facts they are."""
 
     name: str
-    description: str
+    description: str | None = None
     value: str
 
 

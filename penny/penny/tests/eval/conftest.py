@@ -3264,10 +3264,13 @@ def _without_examples(text: str) -> str:
 
 def _substance_tokens(parameter: FramedParameter) -> set[str]:
     """A parameter's tokens once its example garnish is gone — name and description
-    stripped SEPARATELY, so a trailing example on one can never eat the other."""
-    return _tokens(_without_examples(parameter.name)) | _tokens(
-        _without_examples(parameter.description)
-    )
+    stripped SEPARATELY, so a trailing example on one can never eat the other.
+
+    An UNLABELLED parameter (#1870 — one read back off the registry, where a description is
+    optional) contributes no description tokens, because it says nothing to read; a framer
+    draw always carries one, so this arm is the registry's case rather than a draw's."""
+    described = parameter.description or ""
+    return _tokens(_without_examples(parameter.name)) | _tokens(_without_examples(described))
 
 
 def _matching_family(
@@ -3282,7 +3285,7 @@ def _matching_family(
 
 
 def classify_by_family(
-    named: Sequence[tuple[str, str]], families: Sequence[ParameterFamily]
+    named: Sequence[tuple[str, str | None]], families: Sequence[ParameterFamily]
 ) -> list[ParameterFamily | None]:
     """The family each ``(name, description)`` pair answers, positionally — NAME FIRST
     (#1830).  ONE classification discipline, read by every suite that asks what a drawn
@@ -3297,14 +3300,18 @@ def classify_by_family(
 
     A ``name_only`` family sits out the description pass entirely — the page/url
     tightening from the first run's review: a parameter is the page when it is NAMED as
-    the page, and no description-level mention promotes one that isn't."""
+    the page, and no description-level mention promotes one that isn't.
+
+    A description of ``None`` is an UNLABELLED parameter (#1870), which the description
+    pass has nothing to read — so its name is the whole of its evidence, and it stays
+    unclassified rather than being classified off a blank."""
     by_name = [_matching_family(_name_tokens(name), families) for name, _ in named]
     claimed = {family.label for family in by_name if family is not None}
     open_families = [
         family for family in families if family.label not in claimed and not family.name_only
     ]
     return [
-        matched or _matching_family(_tokens(description), open_families)
+        matched or _matching_family(_tokens(description or ""), open_families)
         for matched, (_, description) in zip(by_name, named, strict=True)
     ]
 

@@ -82,6 +82,7 @@ from penny.database.skills import (
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
+    derive_collection_name,
     distill_steps,
     render_skill,
     retarget_writes,
@@ -4340,9 +4341,26 @@ def _probe_composed_world(case: _IdleApplyCase) -> Preparer:
     def probe(penny: Penny) -> None:
         assert_composed_world(penny.db)
         _assert_the_registry_holds_the_five(penny.db)
+        assert_the_ask_fills_the_routine(penny.db, case)
         assert_new_space_is_unknown(penny.db, case)
 
     return probe
+
+
+def assert_the_ask_fills_the_routine(db: Database, case: _IdleApplyCase) -> None:
+    """The case's ``bound`` values answer the routine's declared parameters — every one of
+    them, and nothing the routine does not declare.
+
+    That mapping is what the derived container's name is built from (#1870), so a fixture
+    naming a parameter the routine dropped, or missing one it added, would derive a name
+    that still looks plausible and still differs from every seeded job: the fresh-mint
+    check would go on passing while measuring a job nobody asked for.  Read off the
+    REGISTRY row rather than the fixture draft, since the registry is what the binder is
+    handed."""
+    declared = _declared_order(db, case)
+    assert sorted(declared) == sorted(case.bound), (
+        f"{case.case_id}: the routine declares {declared}, the ask supplies {sorted(case.bound)}"
+    )
 
 
 def _assert_the_registry_holds_the_five(db: Database) -> None:
@@ -4372,7 +4390,7 @@ def assert_new_space_is_unknown(db: Database, case: _IdleApplyCase) -> None:
         *(value for row in stored for value in _bound_parameters(row).values()),
         *(entry.content for entry in _pages_fetched(db)),
     ]
-    for wanted in case.bound:
+    for wanted in case.bound.values():
         assert not _mentions(wanted, known), (
             f"{case.case_id}: {wanted!r} must be new to this world — the history already has it"
         )
@@ -4399,7 +4417,14 @@ class _IdleApplyCase(NamedTuple):
     whatever rule spelling says so, ``anchored`` whether the terms name a time of DAY
     rather than a period (so the rule has to state an hour to run at), ``expects_expiry``
     whether they gave an end condition at all (inventing one is a failure), and ``bound``
-    every value the MESSAGE supplies that the routine has to be pointed at."""
+    every value the MESSAGE supplies that the routine has to be pointed at.
+
+    ``bound`` is KEYED BY PARAMETER NAME since #1870, because the container's name is
+    derived from those values in the routine's DECLARED ORDER — so the fixture states which
+    value answers which parameter and the order is read off the registry, rather than being
+    an order this tuple has to be kept in and nothing could check.  A fixture drifting out
+    of a positional order would derive a plausible name for the wrong job, silently; a
+    fixture naming a parameter the routine does not declare fails loudly in the probe."""
 
     case_id: str
     ask: str
@@ -4408,7 +4433,7 @@ class _IdleApplyCase(NamedTuple):
     cadence_seconds: int
     anchored: bool
     expects_expiry: bool
-    bound: tuple[str, ...]
+    bound: dict[str, str]
 
 
 _COLD_PRICE = _IdleApplyCase(
@@ -4419,7 +4444,7 @@ _COLD_PRICE = _IdleApplyCase(
     cadence_seconds=3600,
     anchored=False,
     expects_expiry=True,
-    bound=(_KEEL_LANTERN_URL,),
+    bound={"url": _KEEL_LANTERN_URL},
 )
 
 _COLD_TWO_PARAMS = _IdleApplyCase(
@@ -4430,7 +4455,7 @@ _COLD_TWO_PARAMS = _IdleApplyCase(
     cadence_seconds=86400,
     anchored=True,
     expects_expiry=False,
-    bound=(_NORTH_PIER_URL, "dawn sailing"),
+    bound={"url": _NORTH_PIER_URL, "keyword": "dawn sailing"},
 )
 
 _COLD_DIGEST = _IdleApplyCase(
@@ -4441,7 +4466,7 @@ _COLD_DIGEST = _IdleApplyCase(
     cadence_seconds=86400,
     anchored=False,
     expects_expiry=False,
-    bound=(_HARBOR_BAKERY_URL,),
+    bound={"url": _HARBOR_BAKERY_URL},
 )
 
 _COLD_THRESHOLD = _IdleApplyCase(
@@ -4452,7 +4477,7 @@ _COLD_THRESHOLD = _IdleApplyCase(
     cadence_seconds=604800,
     anchored=False,
     expects_expiry=False,
-    bound=(_RIVER_OTTERS_URL,),
+    bound={"url": _RIVER_OTTERS_URL},
 )
 
 _COLD_URGENCY = _IdleApplyCase(
@@ -4463,7 +4488,7 @@ _COLD_URGENCY = _IdleApplyCase(
     cadence_seconds=7200,
     anchored=False,
     expects_expiry=True,
-    bound=(_EAST_BRANCH_URL,),
+    bound={"url": _EAST_BRANCH_URL},
 )
 
 # Every cold ask, in one place — so the deterministic pin in ``test_eval_harness.py`` can
@@ -4516,12 +4541,18 @@ def _seeded_jobs_untouched_check(db: Database) -> Check:
     turn — the different-params side of the one-job-one-collection boundary, read directly
     off the mutation ledger.
 
+    Each job is named by its round's own DERIVED container (#1870), which is the name
+    find-or-create would have landed on had the cold ask been for that job again: the five
+    are exactly the names this turn must NOT derive, so reading them from the framing is
+    what makes "a different place mints its own" and "the same place reconfigures" two
+    sides of one claim rather than two independent readings.
+
     A live turn's mutation cites a live run and every event the seeded world wrote cites a
     seeded one, so "this turn changed nothing here" is a read rather than a diff."""
     touched = [
-        f"{journey.round.demonstrated.collection}: {event.action} by {event.run_id}"
+        f"{journey.round.framing.container}: {event.action} by {event.run_id}"
         for journey in _JOURNEYS
-        for event in db.mutations.history(journey.round.demonstrated.collection, _MUTATION_WINDOW)
+        for event in db.mutations.history(journey.round.framing.container, _MUTATION_WINDOW)
         if not is_seeded_run(event.run_id)
     ]
     return Check(
@@ -4600,11 +4631,61 @@ def _score_idle_to_apply(
     ]
 
 
+def _declared_order(db: Database, case: _IdleApplyCase) -> list[str]:
+    """The routine's declared parameter names, in declared order — read off the REGISTRY
+    row, which is the same list the binder is handed."""
+    routine = db.skills.get(slug_skill_name(case.skill.name))
+    assert routine is not None, f"{case.case_id}: the routine the ask needs must be registered"
+    return [parameter.name for parameter in parameters_from_json(routine.parameters)]
+
+
+def _derived_container(db: Database, case: _IdleApplyCase) -> str:
+    """The container this ask's job runs into — the SHIPPED derivation over the routine the
+    ask is covered by and the values it supplies, in the routine's own declared order.
+
+    Derived rather than written down, for the same reason the seeded rounds' containers
+    are: a name spelled out here would be a second copy of the naming scheme, free to drift
+    from the one production identifies jobs by, and silently — every claim these cases make
+    about the container would still be self-consistent.  The ORDER comes off the registry
+    rather than out of the fixture, so a fixture cannot put the right values in a wrong
+    order and derive a plausible name for a job nobody asked for."""
+    values = [case.bound[name] for name in _declared_order(db, case)]
+    return derive_collection_name(slug_skill_name(case.skill.name), values)
+
+
+def _fresh_mint_check(db: Database, row: MemoryRow | None, case: _IdleApplyCase) -> Check:
+    """The job landed on the container DERIVED for it (#1870) — a new space, so the name
+    the derivation makes of this routine and these values is one no collection carries yet
+    and find-or-create mints it.
+
+    This is where the beat's whole claim about identity is read: the name is a function of
+    the routine and the values it was pointed at, so a container under it is a job anybody
+    can find again by asking for the same thing — and the five already running, whose names
+    the untouched check reads the same way, are exactly the names it must not be."""
+    expected = _derived_container(db, case)
+    landed = row is not None and row.name == expected
+    return Check(
+        "state: the job landed on the container derived for it",
+        landed,
+        rationale=(
+            None if landed else f"landed on {row.name if row else None}, expected {expected!r}"
+        ),
+        kind="state",
+    )
+
+
 def _cold_binding_checks(
     db: Database, row: MemoryRow | None, landed: StateTransition | None, case: _IdleApplyCase
 ) -> list[Check]:
-    """She set a job up, on the routine the ask is covered by, pointed at what the ask
-    supplied."""
+    """She set a job up, on the routine the ask is covered by, in the container derived for
+    it.
+
+    What is NOT here since #1870 is whether each VALUE was read off the message: the turn
+    does not bind values any more — the binder does, before the turn begins — so scoring it
+    through a chat turn would be measuring one draw through another.  That contract is
+    ``test_skill_binding.py``'s, where the binder is driven on its own; what survives here
+    is the derived NAME, which is a function of those values and is what the rest of the
+    system identifies the job by."""
     return [
         Check(
             "state: she set the job up with collection_set",
@@ -4628,9 +4709,7 @@ def _cold_binding_checks(
             label="state: the decision bound the routine that covers the ask",
         ),
         _enactment_binding_check(row, case),
-        _bound_parameters_check(
-            row, wanted=case.bound, label="state: every parameter bound from the message"
-        ),
+        _fresh_mint_check(db, row, case),
     ]
 
 

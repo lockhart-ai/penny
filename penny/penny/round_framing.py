@@ -1,4 +1,4 @@
-"""Framing a round at learn ENTRY, and the container it runs into (#1868, epic #1866).
+"""Framing a round at its ENTRY, and the container it runs into (#1868/#1870, epic #1866).
 
 The framer used to run at the END of a learn turn, over the same user turns it reads
 here — which meant the routine's identity was settled only after the round had already
@@ -8,7 +8,16 @@ plus the values the user said, both of them literal spans of the user's own word
 name derived from them (``derive_collection_name``) is the same name every time the same
 job is asked for.
 
-So the draw moves to the moment the machine LANDS in learn — the ask and the
+A round reaches that identity by one of TWO draws, and which one is decided by what the
+round already has.  A round being TAUGHT has no routine yet, so the framer MINTS one from
+the ask (:meth:`RoundFramer.frame_entry`).  A round that asks for a routine Penny ALREADY
+KNOWS has one, so nothing is minted and the only open question is which part of the user's
+words fills each thing that routine already needs — the BINDER's question
+(:meth:`RoundFramer.bind_entry`, #1870).  Both end at the same place: a signature whose
+parameters carry values, a name derived from it, and a container found or created under
+that name — so what happens after them cannot tell which one ran.
+
+So the draw moves to the moment the machine LANDS in the state — the ask and the
 demonstration both exist there, which is the framer's whole input contract — and Python
 does the rest deterministically:
 
@@ -40,10 +49,24 @@ from typing import TYPE_CHECKING
 from penny.constants import MutationActor, PennyConstants
 from penny.conversation_machine import RoundFraming
 from penny.database import Database
-from penny.database.skills import derive_collection_name
+from penny.database.models import Skill
+from penny.database.skill_store import parameters_from_json
+from penny.database.skills import (
+    SkillParameter,
+    build_binding_content,
+    derive_collection_name,
+    render_spoken_turns,
+)
 from penny.llm.similarity import embed_text
 from penny.skill_extraction import build_framing_content
-from penny.tools.micro_context import MicroContext, SkillSignature
+from penny.tools.micro_context import (
+    BoundValues,
+    FramedParameter,
+    MicroContext,
+    MissingParameters,
+    SkillBinding,
+    SkillSignature,
+)
 
 if TYPE_CHECKING:
     from penny.llm.client import LlmClient
@@ -59,11 +82,16 @@ _REVIVED_SAME_JOB = "the same job is being taught again, into the container it a
 
 
 class RoundFramer:
-    """Frames a round at learn entry and settles the container it runs into.
+    """Frames a round at its entry and settles the container it runs into.
+
+    Two entries, two draws, one outcome: :meth:`frame_entry` MINTS a routine for a round
+    being taught, :meth:`bind_entry` FILLS one the registry already holds (#1870), and
+    both hand back the same :class:`~penny.conversation_machine.RoundFraming` over a
+    container settled by the same find-or-create rule.
 
     One instance per deployment, holding its clients and database (threaded, never
     ambient).  Injected into :class:`~penny.conversation_machine.ConversationMachine`,
-    which owns WHEN this runs; what a framed round then IS lives here.
+    which owns WHEN each of these runs; what a framed round then IS lives here.
     """
 
     def __init__(
@@ -120,6 +148,59 @@ class RoundFramer:
         conversation = [(PennyConstants.MessageDirection.INCOMING, ask)] if ask else []
         content = build_framing_content(message, conversation)
         return await self._micro_context.frame_skill(content, run_target=self._run_target)
+
+    async def bind_entry(
+        self, *, skill: str, ask: str | None, message: str, run_id: str | None
+    ) -> RoundFraming | None:
+        """Frame the round an APPLY entry is entering against a routine that ALREADY
+        EXISTS (#1870) — the summary method of the binder half.
+
+        The classifier bound ``skill`` when it decided apply, so nothing here decides what
+        the round is about: the routine is settled, and the only open question left is
+        which part of the user's words fills each thing that routine already declares.  The
+        binder answers exactly that, the container's name is derived from the answer, and
+        find-or-create does the rest — which IS tier-1 dedup by construction (#1775): the
+        same job asked for a second time derives the name it derived the first time and
+        runs into the container that already exists, while a different place mints its own.
+
+        ``None`` when the round cannot be settled — the routine is not in the registry, the
+        words fell short of something it needs, or no usable draw came back.  No container
+        is built in any of those cases, so nothing is left behind by a round that never
+        started, and the apply turn that follows has nothing to configure — which its own
+        state fails honestly rather than inventing one (#1875)."""
+        routine = self._db.skills.get(skill)
+        if routine is None:
+            logger.warning(
+                "The apply round bound %r, which the registry does not hold — no container "
+                "was built, so this round enters apply unframed",
+                skill,
+            )
+            return None
+        signature = await self._fill(routine, ask, message)
+        if signature is None:
+            return None
+        framing = RoundFraming(signature=signature, container=container_name(signature))
+        await self._settle_container(framing, previous=None, run_id=run_id)
+        return framing
+
+    async def _fill(self, routine: Skill, ask: str | None, message: str) -> SkillSignature | None:
+        """One BINDING draw over the round's user turns, typed back into the signature the
+        rest of this module deals in.
+
+        The draw is handed the turns twice over — once inside the rendered document, which
+        also renders the signature, and once on their own — because a value is only
+        evidence when the USER said it, and the second argument is the text the span check
+        actually tests against (#1867)."""
+        declared = parameters_from_json(routine.parameters)
+        spoken = render_spoken_turns(_spoken_turns(ask, message))
+        content = build_binding_content(spoken, routine.name, routine.description, declared)
+        bound = await self._micro_context.bind_skill(
+            content,
+            [parameter.name for parameter in declared],
+            spoken,
+            run_target=self._run_target,
+        )
+        return _filled_signature(routine, declared, bound)
 
     async def _settle_container(
         self, framing: RoundFraming, previous: RoundFraming | None, *, run_id: str | None
@@ -190,6 +271,71 @@ def container_name(signature: SkillSignature) -> str:
     the one production actually names jobs with."""
     return derive_collection_name(
         signature.name, [parameter.value for parameter in signature.parameters]
+    )
+
+
+def _spoken_turns(ask: str | None, message: str) -> list[str]:
+    """The round's USER turns, in the order they were said — the ask it is anchored to and
+    the message that just arrived.
+
+    A cold ask straight from idle is anchored to nothing, so it is the one turn on its own,
+    which is the floor both draws already handle.  Deduped for the same reason
+    ``build_framing_content`` dedupes: an anchor that IS this message would otherwise be
+    handed over twice, and every value would then be a span of a document that says
+    everything twice."""
+    turns = [ask] if ask else []
+    if message and message not in turns:
+        turns.append(message)
+    return turns
+
+
+def _filled_signature(
+    routine: Skill, declared: list[SkillParameter], bound: SkillBinding | None
+) -> SkillSignature | None:
+    """``routine``'s own interface with THIS round's values in it, or ``None`` on either
+    shortfall.
+
+    The name and the description are the REGISTRY's, never redrawn — the routine already
+    has an identity, and a second draw's preferred wording would derive a container name
+    for a job filed under a different one.  Only the values are this round's, and each is
+    looked up by the DECLARED name because that is the key the binder answers under, total
+    by construction for a :class:`BoundValues`."""
+    if not isinstance(bound, BoundValues):
+        _log_shortfall(routine, bound)
+        return None
+    return SkillSignature(
+        name=routine.name,
+        description=routine.description,
+        parameters=tuple(
+            FramedParameter(
+                name=parameter.name,
+                description=parameter.description,
+                value=bound.values[parameter.name],
+            )
+            for parameter in declared
+        ),
+    )
+
+
+def _log_shortfall(routine: Skill, bound: MissingParameters | None) -> None:
+    """Say which way the binding fell short, in the round's own terms.
+
+    The two are logged apart because they are different facts.  A draw that read the words
+    correctly and found them short of something NAMES what is missing — the structural
+    ``request`` signal, which #1866 declares as the follow-on and this beat does not wire,
+    so for now it is a logged outcome and an honest failure rather than a state the machine
+    parks in.  A draw that produced nothing usable names nothing at all."""
+    unframed = "no container was built, so this round enters apply unframed"
+    if bound is None:
+        logger.warning(
+            "The apply round asking for %r could not be bound — %s", routine.name, unframed
+        )
+        return
+    logger.warning(
+        "The apply round asking for %r supplied no value for %s — %s",
+        routine.name,
+        ", ".join(bound.names),
+        unframed,
     )
 
 

@@ -764,50 +764,79 @@ class ConversationMachine:
     async def _frame_round(
         self, decision: StateDecision, message: str, *, run_id: str | None
     ) -> RoundFraming | None:
-        """The round-framing hook (#1868/#1875): the moves that draw the round's framing
-        and build the container its results are kept in.
+        """The round-framing hook (#1868/#1875/#1870): the moves that settle the round's
+        framing and build the container its results are kept in — and WHICH of the two
+        draws settles it.
 
         Its input is the round's user turns and nothing else, which at this moment is the
-        ask the round is anchored to plus the message that just arrived — the framer's own
-        contract, and both of them exist here, which is why the draw moved to this seam at
+        ask the round is anchored to plus the message that just arrived — both draws' own
+        contract, and both of those exist here, which is why the draw moved to this seam at
         all.
 
-        Only a DECIDED move frames, never a fail → stay that merely LEAVES the machine
-        where it was: the machine's own rule is that a contract failure moves nothing, and
-        building a container (or archiving the one it replaces) off a draw the machine
-        refused to act on would be that rule holding for the state and not for the
+        Only a DECIDED move settles anything, never a fail → stay that merely LEAVES the
+        machine where it was: the machine's own rule is that a contract failure moves
+        nothing, and building a container (or archiving the one it replaces) off a draw the
+        machine refused to act on would be that rule holding for the state and not for the
         registry.  ``decision.state`` says exactly that — it is ``None`` on every
         non-decision.
 
         ``None`` when the draw failed or nothing frames.  Landing in learn that way runs
         the round unframed, the way it did before this hook existed; landing in APPLY that
         way leaves a turn with nothing to configure, which its own state fails honestly."""
-        if self._framer is None or not self._draws_a_framing(decision.state):
+        framer = self._framer
+        if framer is None or decision.state is None:
             return None
-        return await self._framer.frame_entry(
+        if decision.state is ConversationState.LEARN:
+            return await self._frame_learn_entry(framer, message, run_id=run_id)
+        if decision.state is ConversationState.APPLY and self.framing() is None:
+            return await self._bind_apply_entry(framer, decision, message, run_id=run_id)
+        return None
+
+    async def _frame_learn_entry(
+        self, framer: RoundFramer, message: str, *, run_id: str | None
+    ) -> RoundFraming | None:
+        """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868).
+
+        Every move that lands in learn draws, not only the first — a correction re-enters
+        learn, and re-entering is exactly the occasion to ask again what the round is now
+        for: the same identity finds the container that already exists, a shifted one
+        archives the near-empty container it replaces (the framer's own find-or-create
+        rule), which is why the framing the round already had is handed over."""
+        return await framer.frame_entry(
             ask=self._anchor_text(),
             message=message,
             run_id=run_id,
             previous=self.framing(),
         )
 
-    def _draws_a_framing(self, target: ConversationState | None) -> bool:
-        """Whether this move draws the round's framing.
+    async def _bind_apply_entry(
+        self, framer: RoundFramer, decision: StateDecision, message: str, *, run_id: str | None
+    ) -> RoundFraming | None:
+        """A round asking for a routine Penny ALREADY KNOWS has one, so the BINDER fills it
+        (#1870) — the apply entry's own draw, and the frameless-apply seam #1875 opened.
 
-        LEARN draws on every move that lands there, not only the first — a correction
-        re-enters learn, and re-entering is exactly the occasion to ask again what the
-        round is now for: the same identity finds the container that already exists, a
-        shifted one archives the near-empty container it replaces (the framer's own
-        find-or-create rule).
+        Apply configures the round's own container, so a framing is the one thing that turn
+        cannot do without; a round already carrying one is answered by what it already has
+        (the caller's guard), since a re-draw is not a re-read and would file the job under
+        a name the container it was built for no longer matches.  Arriving WITHOUT one is
+        the cold ask: the routine is whatever the skill-gated decision bound, and the
+        values are whatever this message supplies for what that routine declares.
 
-        APPLY draws only when the round arrived WITHOUT one — the single retry at apply
-        entry (#1875).  Apply configures the round's own container, so a framing is the
-        one thing that turn cannot do without; a round already carrying one is answered by
-        what it already has, since a re-draw is not a re-read and would file the job under
-        a name the container it was built for no longer matches."""
-        if target is ConversationState.LEARN:
-            return True
-        return target is ConversationState.APPLY and self.framing() is None
+        A decided apply always names a skill (the draw contract validates it against the
+        offered candidates), so a missing one is a broken contract rather than a case to
+        absorb — it is logged and the round stays unframed, never bound to a guess."""
+        if decision.skill is None:
+            logger.warning(
+                "An apply decision arrived naming no skill — the round cannot be bound, "
+                "so it enters apply unframed"
+            )
+            return None
+        return await framer.bind_entry(
+            skill=decision.skill,
+            ask=self._anchor_text(),
+            message=message,
+            run_id=run_id,
+        )
 
     def _record_decision(
         self,
