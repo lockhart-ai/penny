@@ -4898,30 +4898,14 @@ _UNKNOWN_SPACES = [
 # plus the forms a reply reaches for that no parameter would ever be named.  A person
 # asking for a page asks WHERE the thing is, or where it is POSTED — neither of which is a
 # noun for the page — and scoring that a miss would mark the plainest possible ask wrong.
-_ASKS_FOR_THE_PAGE = (*_PLACE_TOKENS, "where", "posted")
-
-# What a reply naming the missing FOUND-THING looks like.  The declared-parameter family
-# (``_FOUND_THING_FAMILY``) is what a PARAMETER may be called; a reply is written for a
-# person, so it also reaches for the plain verb — "what should i be looking out for" —
-# which no parameter would ever be named.  Both spellings are the same ask, so the reply
-# vocabulary is the parameter family plus that verb, in the forms it is actually written
-# in (the bare stem "look" is deliberately absent: "i'll look at the board" is a reply that
-# asked for nothing, and passing it would make the check mean nothing).
 #
-# It is a FLOOR, not a proof: it says the reply named the thing, and whether it named it
-# WELL is read at joint review against the reference reply.  That reference reply is the
-# check's own tripwire — a vocabulary that cannot match the wording the case declares
-# CORRECT would score the beat's own answer a miss, so the pin in ``test_eval_harness.py``
-# runs it through this set without a GPU.
-_ASKS_FOR_THE_FOUND_THING = (
-    *_FOUND_THING_FAMILY.tokens,
-    "look for",
-    "looking for",
-    "look out for",
-    "looking out for",
-    "watch for",
-    "watching for",
-)
+# All five cases ask for a page since the round-3 rewording, so it is the only reply
+# vocabulary this beat has.  It is a FLOOR, not a proof: it says the reply named the thing,
+# and whether it named it WELL is read at joint review against the reference reply.  That
+# reference reply is the check's own tripwire — a vocabulary that cannot match the wording
+# the case itself calls CORRECT would score the beat's own answer a miss, so the pin in
+# ``test_eval_harness.py`` runs every one of them through this set without a GPU.
+_ASKS_FOR_THE_PAGE = (*_PLACE_TOKENS, "where", "posted")
 
 
 # ── The five short asks ───────────────────────────────────────────────────────
@@ -4941,7 +4925,6 @@ _SHORT_ASK_TIMETABLE = (
 # Case 2 — a second listing, and no page, with the end condition given up front.  The
 # terms are complete and the thing to point at is not, which is the ask that most looks
 # like it could be acted on.
-#
 _SHORT_ASK_LISTING = (
     "i found another listing i want to track — watch its price every couple hours until "
     "sunday and tell me if it moves"
@@ -4949,23 +4932,37 @@ _SHORT_ASK_LISTING = (
 
 # Case 3 — the same watch on a different animal, the page supplied by neither the ask nor
 # the phrase "the same way", which points at a routine rather than at a page.
-#
 _SHORT_ASK_COUNT = "can you track the otter count the same way — weekly, and warn me if it drops?"
 
 # Case 4 — a new bakery, named only as new.  "the new bakery i just found" is a thing the
 # user knows and the history does not, so nothing but asking can supply it.
-#
 _SHORT_ASK_BAKERY = (
     "can you grab the daily special from the new bakery i just found too, each morning?"
 )
 
-# Case 5 — a second pier WITH its page, and no sailing to look for: the held-binding case.
-# The address is right there in the ask, so asking for it again is the failure this case
-# exists to catch, and what is missing is what to watch for on the board.
+# Case 5 — TWO harbours, one address given and the other named but not provided: the
+# held-binding case.  The north pier's address is right there in the ask, so asking for it
+# again is the failure this case exists to catch; the south harbour is named and its page
+# exists nowhere in the ask or the history, so that is what is left to ask for.
 #
+# Reworded after the round-2 rerun (code-owner ruling; ticket #1885 amended in place).  It
+# read "keep an eye on the sailings at <url> too … tell me when they add it", and the one
+# straggler sample bound the price watcher and drew apply — rationally, because ONE address
+# in the ask completes any single-source routine's signature, so a non-exhaustive scan of
+# the registry can always find one that fits.  Naming a second source the ask does not
+# supply closes that: no single-skill reading covers the whole ask with what is in hand,
+# whichever routine is looked at first.
+#
+# NOTE, for the review this beat is a round of: the declared parameter the BINDER reports
+# short is `keyword` (the routine asks what to look for on a board, and the ask names no
+# entry), while the piece a good reply asks the user for is the south harbour's PAGE — the
+# gap a reader of the message sees.  So the reply check below scores the page family per
+# the ruling, and a reply that asked only for the rendered parameter would miss it.  That
+# divergence is the case's own subject, not an oversight: the routine has one url slot and
+# the ask wants two sources, which is the multi-job shape the follow-on beat designs.
 _SHORT_ASK_PIER = (
-    f"keep an eye on the sailings at {_NORTH_PIER_URL} too, every morning — "
-    "tell me when they add it"
+    f"keep an eye on the ferry sailings at {_NORTH_PIER_URL} and for the south harbour "
+    "too, every morning — tell me when they add them"
 )
 
 
@@ -5055,10 +5052,10 @@ _SHORT_PIER = _IdleRequestCase(
     skill=_FERRY_SKILL,
     settled={"url": _NORTH_PIER_URL},
     missing=("keyword",),
-    asks_for=_ASKS_FOR_THE_FOUND_THING,
+    asks_for=_ASKS_FOR_THE_PAGE,
     reference=(
         f"got it — i'll check the sailings at {_NORTH_PIER_URL} every morning. "
-        "what should i be looking out for on it?"
+        "what's the page for the south harbour?"
     ),
     journeys=_WITHOUT_THE_URL_ONLY_WATCHERS,
 )
@@ -5358,13 +5355,15 @@ async def test_idle_to_request_asks_for_the_new_bakery(chat_eval: ChatEval) -> N
 async def test_idle_to_request_holds_the_page_and_asks_what_to_watch_for(
     chat_eval: ChatEval,
 ) -> None:
-    """idle → request, the held-binding case: the page is in the ask and what to look for
-    on it is not, so the reply asks for the second thing and works from the first — asking
-    again for an address the user just gave is the failure this case exists to catch.
+    """idle → request, the held-binding case: TWO harbours, one address given and the other
+    named but never supplied.  The reply asks for the second harbour's page and works from
+    the first — asking again for an address the user just gave is the failure this case
+    exists to catch.
 
-    Its world holds three journeys rather than five (``_WITHOUT_THE_URL_ONLY_WATCHERS``):
-    the two routines that watch a page for whatever is newest on it ask for a URL and
-    nothing else, so with the URL in this ask their signatures are COMPLETE and binding one
-    of them is the rational read — which is what four of five samples did, correctly, on the
-    first run.  The ask is unchanged; the history is what makes the shortfall reachable."""
+    Two rounds shaped it, each closing one way for a single routine to look complete.  Its
+    WORLD holds three journeys rather than five (``_WITHOUT_THE_URL_ONLY_WATCHERS``): the
+    two routines that watch a page for whatever is newest on it ask for a URL and nothing
+    else, so one address in the ask completes them.  Its ASK then names a second source it
+    does not supply, so no single-skill reading covers the whole of it with what is in hand,
+    whichever routine is looked at first."""
     await _run_idle_request_case(chat_eval, _SHORT_PIER)
