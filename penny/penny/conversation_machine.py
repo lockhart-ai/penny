@@ -203,6 +203,16 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # failed.  Naming your OWN near-misses is not that — the parked-learn correction edge
 # says which messages carry no correction, which is still a statement about what IT
 # is, and it is there because a nearby shape was measured landing here wrongly.
+#
+# The two SKILL-GATED conditions carry the same once-covers-repeatedly sentences, word
+# for word, and that is not one edge describing another: it is one fact about what a
+# SKILL is — it does the task once, and the schedule is added when it is set up — which
+# both conditions have to be read against, since both ask whether a known skill covers
+# the ask.  It was measured twice.  Added to apply, it cured the miss where an ongoing
+# ask read as uncovered; request then took the identical fall (the draw ruled apply out
+# for missing information, read the request bullet, and reasoned "neither skill sets up
+# repeats, so no skill covers it" — into elicit).  A reader who rules out one skill-gated
+# option and moves to the next must not lose the fact that made the first one legible.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
         "one of the known skills does what they are asking for, and their message "
@@ -213,7 +223,9 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     ),
     (ConversationState.IDLE, ConversationState.REQUEST): (
         "a known skill looks like it covers what they are asking for, but "
-        "something that skill needs is missing from their message — add a "
+        "something that skill needs is missing from their message. A skill does "
+        "the task once. The schedule and notifications are added when it is set up, "
+        "so a skill that does the task once covers an ask to do it repeatedly. Add a "
         f"second line naming that skill: {SKILL_TAG} <its name, exactly as quoted "
         "in Known skills>"
     ),
