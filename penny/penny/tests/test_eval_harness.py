@@ -280,8 +280,23 @@ def test_the_idle_world_seeds_five_finished_journeys_and_lands_idle(tmp_path) ->
     assert_composed_world(db)
     for case in IDLE_APPLY_CASES:
         assert_new_space_is_unknown(db, case)
-    for short in IDLE_REQUEST_CASES:
-        assert_values_are_new(db, short.case_id, short.settled.values())
+
+
+def test_every_short_ask_s_own_world_seeds_and_reads_back(tmp_path) -> None:
+    """Each idle → request case's world — which may hold FEWER journeys than the module's
+    full five — seeds cleanly and reads back as the history it claims, with the case's own
+    values still new to it.
+
+    Its own database per distinct world, because that is what the sample gets.  A case
+    seeding a reduced world is the one place the composed seeder is driven with something
+    other than its default, so a `_JOURNEYS` reference left behind in a probe or a window
+    would fail HERE — naming the world — rather than an hour into a GPU run as a case
+    answered against a history nothing produced."""
+    for index, case in enumerate(IDLE_REQUEST_CASES):
+        db = migrated_db(str(tmp_path / f"composed-request-{index}.db"))
+        seed_composed_world(case.journeys)(db)
+        assert_composed_world(db, case.journeys)
+        assert_values_are_new(db, case.case_id, case.settled.values())
 
 
 def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None:

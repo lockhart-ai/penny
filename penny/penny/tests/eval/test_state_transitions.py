@@ -3867,6 +3867,10 @@ _MOVES_PER_JOURNEY = 5
 # talk, and the turn under test — doubled, so the reader is never what decides what counts
 # as history.  Both stores drop the OLDEST rows when a cap binds, so a window that CUT
 # would let the novelty probe pass on a value the world does hold.
+#
+# Derived from the LARGEST world (every journey), which makes them a ceiling for a case
+# seeding fewer (#1885): a generous window over a smaller history still reads all of it,
+# while one sized per case would be a second thing to keep in step.
 _COMPOSED_MESSAGE_WINDOW = 2 * (_TURNS_PER_JOURNEY * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
 _COMPOSED_MOVE_WINDOW = 2 * (_MOVES_PER_JOURNEY * len(_JOURNEYS) + len(_IDLE_BANTER) + 1)
 
@@ -3885,9 +3889,9 @@ def _candidate(skill: SkillDraft) -> SkillCandidate:
     )
 
 
-def seed_composed_world() -> Seeder:
-    """The world all five cold asks are answered against: five journeys walked to their
-    end, then a few exchanges of small talk, in the order they were said.
+def seed_composed_world(journeys: tuple[_Journey, ...] = _JOURNEYS) -> Seeder:
+    """The world a returning user's ask is answered against: each of ``journeys`` walked
+    to its end, then a few exchanges of small talk, in the order they were said.
 
     Compositional by construction — a journey is ``seed_round_through_learn`` (the two
     beats the earlier cases are measured against) plus the apply turn that finished it,
@@ -3895,8 +3899,13 @@ def seed_composed_world() -> Seeder:
     as it really did: each journey's classifier draws are offered the routines taught
     BEFORE it, and its own only once its round has run.
 
-    The same world for every case — five live jobs, five routines, one machine sitting
-    idle — because what distinguishes the cases is the ask, not the history.
+    ``journeys`` is a PARAMETER because which routines a user has taught is part of the
+    situation an ask is answered in, not a constant (#1885's held-binding ruling): a world
+    holding a routine that covers the ask on its own is a world where binding that routine
+    is the rational read, so a case measuring what happens when NOTHING covers it fully has
+    to be seeded without one.  A user who never taught a given routine is ordinary seed
+    material; what does not vary is the fidelity of the journeys the world DOES hold —
+    every one of them is the same four turns, five moves, live job and closing exchange.
 
     Ordering is production-shaped; SPACING is best effort.  Every row is written through
     the real store methods, which stamp it at the moment they run, so the whole history
@@ -3906,12 +3915,31 @@ def seed_composed_world() -> Seeder:
 
     def seed(db: Database) -> None:
         taught: list[SkillCandidate] = []
-        for journey in _JOURNEYS:
+        for journey in journeys:
             _seed_journey(db, journey, taught_so_far=tuple(taught))
             taught.append(_candidate(journey.round.skill))
-        _seed_idle_banter(db, tuple(taught))
+        _seed_idle_banter(db, tuple(taught), penny_last_turn=journeys[-1].closing.answered)
 
     return seed
+
+
+# The world the HELD-BINDING case is answered in: the same composition minus the two
+# routines that watch a page for whatever is newest on it, each of which asks for a URL and
+# nothing else (#1885, code-owner ruling after the first eval).
+#
+# The finding it answers: 4 of 5 samples never parked in request, and the classifier was
+# RIGHT every time.  The ask names a page and says to be told when something is added; a
+# url-only watcher covers exactly that, and with the URL in the ask its signature is
+# COMPLETE — so apply was the honest draw and the binder had nothing to fall short of.  The
+# case was measuring which routine the world made obvious, not the held binding.
+#
+# The three that stay are the ferry (the in-flight application the ask rides on, and the
+# only routine asking for a second value) and the price and bakery watchers, neither of
+# which covers being told when something is added.  So the covering routine is the ferry's,
+# its keyword is genuinely unsaid, and the shortfall is reachable.
+_WITHOUT_THE_URL_ONLY_WATCHERS = tuple(
+    journey for journey in _JOURNEYS if journey.round.skill not in (_COLONY_SKILL, _ARRIVALS_SKILL)
+)
 
 
 def _seed_journey(
@@ -4092,14 +4120,19 @@ def _set_step(journey: _Journey, row: MemoryRow) -> DistillInput:
     )
 
 
-def _seed_idle_banter(db: Database, candidates: tuple[SkillCandidate, ...]) -> None:
+def _seed_idle_banter(
+    db: Database, candidates: tuple[SkillCandidate, ...], *, penny_last_turn: str
+) -> None:
     """The recent turns: a few exchanges of small talk after the last journey closed.
 
     The draws are offered every taught routine, as production offers them, and decide idle
     anyway — which is what makes this stretch a real absence of configuring rather than an
     absence of evidence.  The machine is already idle when they start (the last journey's
-    own acknowledgement carried the reset), so nothing structural happens here."""
-    penny_last_turn = _JOURNEYS[-1].closing.answered
+    own acknowledgement carried the reset), so nothing structural happens here.
+
+    ``penny_last_turn`` is what the LAST journey of this world closed on, passed in rather
+    than read off the module: the small talk answers whatever the history before it ended
+    with, and a world holding a different set of journeys ends on a different line."""
     for index, turn in enumerate(_IDLE_BANTER):
         _seed_exchange(
             db,
@@ -4166,25 +4199,27 @@ def _log_idle_draw(
 # ── The loud probe: the world is the one five finished journeys would have left ─
 
 
-def assert_composed_world(db: Database) -> None:
+def assert_composed_world(db: Database, journeys: tuple[_Journey, ...] = _JOURNEYS) -> None:
     """Everything the composed seeder is responsible for, asserted out loud.
 
-    Five cases share one world and one seeder, so a drift here is five cases answered
-    against a world nothing produces — and it costs an hour of GPU before anyone reads a
-    number.  The registry half is deliberately absent: the runner lays the fixture skills
-    down AFTER this seed, so it belongs to the prepare hook (and is asserted there), while
-    everything below is true the moment the seeder returns."""
-    _assert_the_machine_is_idle(db)
-    _assert_five_live_jobs(db)
-    _assert_every_round_is_in_the_ledger(db)
-    assert_conversation_window(db)
+    Several cases share one seeder, so a drift here is several cases answered against a
+    world nothing produces — and it costs an hour of GPU before anyone reads a number.
+    ``journeys`` is the set this world was seeded FROM, so the probe asserts the world the
+    case asked for rather than the one the module happens to define.  The registry half is
+    deliberately absent: the runner lays the fixture skills down AFTER this seed, so it
+    belongs to the prepare hook (and is asserted there), while everything below is true the
+    moment the seeder returns."""
+    _assert_the_machine_is_idle(db, journeys)
+    _assert_every_job_is_live(db, journeys)
+    _assert_every_round_is_in_the_ledger(db, journeys)
+    assert_conversation_window(db, journeys)
 
 
-def _assert_the_machine_is_idle(db: Database) -> None:
+def _assert_the_machine_is_idle(db: Database, journeys: tuple[_Journey, ...]) -> None:
     """The machine sits in idle, unanchored — the last thing it did was classify a piece
     of small talk as nothing in particular, which is what "some time later, mid-idle"
     means structurally.  Each finished journey is followed by its own structural reset,
-    so the log shows five of them, one per message that arrived on a finished round."""
+    so the log shows one per message that arrived on a finished round."""
     latest = db.machine.latest_transition()
     assert latest is not None and latest.to_state == ConversationState.IDLE.value, (
         f"the composed world must leave the machine idle, not {latest}"
@@ -4194,16 +4229,16 @@ def _assert_the_machine_is_idle(db: Database) -> None:
     )
     moves = db.machine.recent_transitions(limit=_COMPOSED_MOVE_WINDOW)
     resets = [row for row in moves if row.cause == TransitionCause.STRUCTURAL.value]
-    assert len(resets) == len(_JOURNEYS), (
+    assert len(resets) == len(journeys), (
         f"each finished journey is reset by the message after it, got {len(resets)} resets"
     )
 
 
-def _assert_five_live_jobs(db: Database) -> None:
-    """The five collections are LIVE mechanisms — each carries the routine its journey
-    taught, a rendered program, a schedule and the notify its user asked for, none of them
-    has retired itself, and each is pointed where its round pointed it."""
-    for journey in _JOURNEYS:
+def _assert_every_job_is_live(db: Database, journeys: tuple[_Journey, ...]) -> None:
+    """Every one of this world's collections is a LIVE mechanism — each carries the routine
+    its journey taught, a rendered program, a schedule and the notify its user asked for,
+    none of them has retired itself, and each is pointed where its round pointed it."""
+    for journey in journeys:
         row = db.memories.get(journey.round.framing.container)
         assert row is not None, f"{journey.round.case_id}: the journey's container must exist"
         _assert_live_job(journey, row)
@@ -4229,12 +4264,12 @@ def _assert_live_job(journey: _Journey, row: MemoryRow) -> None:
     )
 
 
-def _assert_every_round_is_in_the_ledger(db: Database) -> None:
+def _assert_every_round_is_in_the_ledger(db: Database, journeys: tuple[_Journey, ...]) -> None:
     """Each journey is READABLE as the turns it really was: its demonstrated calls under
     its own learn run, its apply turn's one ``collection_set`` call under its own apply
-    run, and everything it produced citing the run that produced it — plus the five pages
-    those rounds read, in browse-results."""
-    for journey in _JOURNEYS:
+    run, and everything it produced citing the run that produced it — plus the one page
+    each of those rounds read, in browse-results."""
+    for journey in journeys:
         case = journey.round
         assert_round_calls_logged(db, case)
         assert_round_rows_cite_their_run(db, case)
@@ -4247,12 +4282,12 @@ def _assert_every_round_is_in_the_ledger(db: Database) -> None:
             f"{case.case_id}: the apply turn made one set call, got {calls}"
         )
     fetched = _pages_fetched(db)
-    assert len(fetched) == len(_JOURNEYS), (
+    assert len(fetched) == len(journeys), (
         f"each round read one page, browse-results has {len(fetched)}"
     )
 
 
-def expected_conversation() -> list[tuple[str, str]]:
+def expected_conversation(journeys: tuple[_Journey, ...] = _JOURNEYS) -> list[tuple[str, str]]:
     """The world as a CONVERSATION — every turn, in the order it was said, each tagged with
     the direction it went.
 
@@ -4263,7 +4298,7 @@ def expected_conversation() -> list[tuple[str, str]]:
     incoming = PennyConstants.MessageDirection.INCOMING
     outgoing = PennyConstants.MessageDirection.OUTGOING
     turns: list[tuple[str, str]] = []
-    for journey in _JOURNEYS:
+    for journey in journeys:
         case = journey.round
         turns += [
             (incoming, case.prior.ask),
@@ -4287,7 +4322,7 @@ JOURNEY_CONFIRMATIONS = tuple(journey.round.confirmation for journey in _JOURNEY
 LAST_SPOKEN_TURNS = tuple(expected_conversation()[-2 * len(_IDLE_BANTER) :])
 
 
-def assert_conversation_window(db: Database) -> None:
+def assert_conversation_window(db: Database, journeys: tuple[_Journey, ...] = _JOURNEYS) -> None:
     """The world READS as a conversation — every turn present, in order, alternating.
 
     Asserted through ``get_messages_since``, the reader ``_build_conversation`` uses, rather
@@ -4305,7 +4340,7 @@ def assert_conversation_window(db: Database) -> None:
         TEST_SENDER, since=datetime.min, limit=_COMPOSED_MESSAGE_WINDOW
     )
     seen = [(row.direction, row.content) for row in window]
-    expected = expected_conversation()
+    expected = expected_conversation(journeys)
     assert seen == expected, (
         "the seeded world must read back as the conversation it claims to be — "
         f"diverges at turn {_first_divergence(seen, expected)}"
@@ -4347,7 +4382,7 @@ def _probe_composed_world(case: _IdleApplyCase) -> Preparer:
 
     def probe(penny: Penny) -> None:
         assert_composed_world(penny.db)
-        _assert_the_registry_holds_the_five(penny.db)
+        assert_the_registry_holds(penny.db, _JOURNEYS)
         assert_the_ask_fills_the_routine(penny.db, case)
         assert_new_space_is_unknown(penny.db, case)
 
@@ -4370,13 +4405,17 @@ def assert_the_ask_fills_the_routine(db: Database, case: _IdleApplyCase) -> None
     )
 
 
-def _assert_the_registry_holds_the_five(db: Database) -> None:
-    """Exactly the five routines the journeys taught — no decoy, and none wanted.  Five
-    real routines of the same kind ARE the distractor set here, so a sixth would only
-    dilute a selection that is already the hard part."""
+def assert_the_registry_holds(db: Database, journeys: tuple[_Journey, ...]) -> None:
+    """Exactly the routines THIS world's journeys taught — no decoy, and none wanted.  Real
+    routines of the same kind ARE the distractor set here, so an extra one would only dilute
+    a selection that is already the hard part.
+
+    Asserted against the world's own journeys rather than a fixed five, because which
+    routines the user taught is what a case varies (#1885's held-binding world): a probe
+    reading the module's full set would pass a world it does not describe."""
     taught = sorted(skill.name for skill in db.skills.list_all())
-    expected = sorted(slug_skill_name(journey.round.skill.name) for journey in _JOURNEYS)
-    assert taught == expected, f"the registry must hold the five taught routines, got {taught}"
+    expected = sorted(slug_skill_name(journey.round.skill.name) for journey in journeys)
+    assert taught == expected, f"the registry must hold exactly {expected}, got {taught}"
 
 
 def assert_new_space_is_unknown(db: Database, case: _IdleApplyCase) -> None:
@@ -4550,22 +4589,23 @@ def _enactment_binding_check(row: MemoryRow | None, case: _IdleApplyCase) -> Che
     )
 
 
-def _seeded_jobs_untouched_check(db: Database) -> Check:
-    """None of the five running jobs was reconfigured, re-rendered or archived by this
-    turn — the different-params side of the one-job-one-collection boundary, read directly
-    off the mutation ledger.
+def _seeded_jobs_untouched_check(db: Database, journeys: tuple[_Journey, ...] = _JOURNEYS) -> Check:
+    """None of the running jobs was reconfigured, re-rendered or archived by this turn —
+    the different-params side of the one-job-one-collection boundary, read directly off the
+    mutation ledger.
 
     Each job is named by its round's own DERIVED container (#1870), which is the name
-    find-or-create would have landed on had the cold ask been for that job again: the five
-    are exactly the names this turn must NOT derive, so reading them from the framing is
-    what makes "a different place mints its own" and "the same place reconfigures" two
-    sides of one claim rather than two independent readings.
+    find-or-create would have landed on had the ask been for that job again: they are
+    exactly the names this turn must NOT derive, so reading them from the framing is what
+    makes "a different place mints its own" and "the same place reconfigures" two sides of
+    one claim rather than two independent readings.  ``journeys`` is the world's own set,
+    since a case seeding fewer journeys has fewer jobs to leave alone.
 
     A live turn's mutation cites a live run and every event the seeded world wrote cites a
     seeded one, so "this turn changed nothing here" is a read rather than a diff."""
     touched = [
         f"{journey.round.framing.container}: {event.action} by {event.run_id}"
-        for journey in _JOURNEYS
+        for journey in journeys
         for event in db.mutations.history(journey.round.framing.container, _MUTATION_WINDOW)
         if not is_seeded_run(event.run_id)
     ]
@@ -4946,7 +4986,13 @@ class _IdleRequestCase(NamedTuple):
     review and never matched by the scorer.  It is DATA rather than a comment for one
     reason: a scorer that cannot pass the answer the case itself calls correct is a broken
     scorer, and holding the reply here lets the deterministic pin in
-    ``test_eval_harness.py`` run exactly that check without a GPU."""
+    ``test_eval_harness.py`` run exactly that check without a GPU.
+
+    ``journeys`` is the HISTORY the ask is answered in — which routines this user taught.
+    Per case since #1885's held-binding ruling: a world holding a routine that covers the
+    ask on its own makes binding that routine the rational read, so a case measuring the
+    shortfall has to be seeded without one.  Everything else about the world is unchanged
+    for every case — the journeys it does hold are the same full-fidelity journeys."""
 
     case_id: str
     ask: str
@@ -4955,6 +5001,7 @@ class _IdleRequestCase(NamedTuple):
     missing: tuple[str, ...]
     asks_for: tuple[str, ...]
     reference: str
+    journeys: tuple[_Journey, ...] = _JOURNEYS
 
 
 _SHORT_TIMETABLE = _IdleRequestCase(
@@ -5013,6 +5060,7 @@ _SHORT_PIER = _IdleRequestCase(
         f"got it — i'll check the sailings at {_NORTH_PIER_URL} every morning. "
         "what should i be looking out for on it?"
     ),
+    journeys=_WITHOUT_THE_URL_ONLY_WATCHERS,
 )
 
 # Every short ask, in one place — so the deterministic pin in ``test_eval_harness.py`` can
@@ -5034,8 +5082,8 @@ def _probe_short_ask(case: _IdleRequestCase) -> Preparer:
     once the runner has laid the fixture skills down, and this case's own two."""
 
     def probe(penny: Penny) -> None:
-        assert_composed_world(penny.db)
-        _assert_the_registry_holds_the_five(penny.db)
+        assert_composed_world(penny.db, case.journeys)
+        assert_the_registry_holds(penny.db, case.journeys)
         assert_the_ask_falls_one_short(penny.db, case)
         assert_values_are_new(penny.db, case.case_id, case.settled.values())
 
@@ -5231,7 +5279,7 @@ def _score_idle_to_request(
             label="state: the decision bound the routine that covers the ask",
         ),
         _nothing_was_created_check(db, before),
-        _seeded_jobs_untouched_check(db),
+        _seeded_jobs_untouched_check(db, case.journeys),
         Check(
             "state: she asked instead of going to look (no browse this turn)",
             tool_not_called(db, "browse"),
@@ -5254,16 +5302,20 @@ def _score_idle_to_request(
 
 
 async def _run_idle_request_case(chat_eval: ChatEval, case: _IdleRequestCase) -> None:
-    """Drive one idle → request case: the composed world behind it, the five taught
+    """Drive one idle → request case: the world its own journeys compose, exactly those
     routines in the registry, every unknown space installed as a live temptation, and the
     shared scorer bound to its own terms.  Report-only — the thresholds are the code
-    owner's to set once the numbers are read."""
+    owner's to set once the numbers are read.
+
+    The seeded world and the seeded REGISTRY come from one list, so a case can never be
+    answered against a history whose routines the registry does not hold, or a registry
+    holding one its history never taught."""
     await chat_eval(
         case_id=case.case_id,
         message=case.ask,
         browse=_UNKNOWN_SPACES,
-        seed=seed_composed_world(),
-        seed_skills=[journey.round.skill for journey in _JOURNEYS],
+        seed=seed_composed_world(case.journeys),
+        seed_skills=[journey.round.skill for journey in case.journeys],
         prepare=_probe_short_ask(case),
         score=partial(_score_idle_to_request, case=case),
         min_pass_rate=None,
@@ -5308,5 +5360,11 @@ async def test_idle_to_request_holds_the_page_and_asks_what_to_watch_for(
 ) -> None:
     """idle → request, the held-binding case: the page is in the ask and what to look for
     on it is not, so the reply asks for the second thing and works from the first — asking
-    again for an address the user just gave is the failure this case exists to catch."""
+    again for an address the user just gave is the failure this case exists to catch.
+
+    Its world holds three journeys rather than five (``_WITHOUT_THE_URL_ONLY_WATCHERS``):
+    the two routines that watch a page for whatever is newest on it ask for a URL and
+    nothing else, so with the URL in this ask their signatures are COMPLETE and binding one
+    of them is the rational read — which is what four of five samples did, correctly, on the
+    first run.  The ask is unchanged; the history is what makes the shortfall reachable."""
     await _run_idle_request_case(chat_eval, _SHORT_PIER)
