@@ -17,7 +17,13 @@ import pytest
 from sqlmodel import select
 
 from penny.constants import MutationAction, MutationActor, PennyConstants, TransitionCause
-from penny.conversation_machine import ConversationState, RoundFraming
+from penny.conversation_machine import (
+    CandidateParameter,
+    ConversationState,
+    RoundFraming,
+    RoundShortfall,
+    conversation_prompt,
+)
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import Media, MessageLog
 from penny.database.skill_store import steps_from_json
@@ -995,6 +1001,57 @@ async def test_an_apply_turn_with_no_framing_fails_honestly(
         assert response.answer == PennyResponse.APPLY_NOTHING_TO_CONFIGURE
         assert response.tool_calls == []
         assert called == []
+        assert {row.name for row in penny.db.memories.list_all()} == before
+
+
+@pytest.mark.asyncio
+async def test_a_request_turn_is_instructed_with_the_rounds_shortfall(
+    signal_server, mock_llm, test_config, test_user_info, running_penny
+):
+    """A request turn's instruction carries the round's SHORTFALL (#1885) — the routine
+    that covers the ask, what it is for, the values the words already settled, and the one
+    they did not.
+
+    The threading is what this pins: the machine settles the shortfall before the turn, and
+    it reaches the turn as a parameter (nothing stores it), so a channel or agent that
+    stopped passing it would leave the turn asking for a detail it can no longer name — and
+    every check would still pass, because a request turn with no shortfall composes a
+    perfectly valid prompt.  So the assertion is the composed prompt itself.
+
+    The turn asks and does nothing else: no tool call, and nothing created for a job whose
+    container has no name yet."""
+    prompts: dict[str, str] = {}
+    reply = "sure — which page should i be watching for the weekend rate?"
+
+    def handler(request, _count):
+        messages = request.get("messages") or []
+        prompts.setdefault("system", str(messages[0].get("content", "")))
+        return _text(reply)
+
+    mock_llm.set_response_handler(handler)
+    shortfall = RoundShortfall(
+        skill="watch-rental-price",
+        description="keep a rental page's current day rate up to date",
+        bound={"keyword": "the weekend rate"},
+        missing=(CandidateParameter(name="url", description="the rental page to read"),),
+    )
+
+    async with running_penny(test_config) as penny:
+        before = {row.name for row in penny.db.memories.list_all()}
+
+        response = await penny.chat_agent.handle(
+            content="keep an eye on the weekend rate for me",
+            sender=TEST_SENDER,
+            state=ConversationState.REQUEST,
+            shortfall=shortfall,
+        )
+
+        assert conversation_prompt(ConversationState.REQUEST, None, shortfall) in prompts["system"]
+        assert "watch-rental-price" in prompts["system"]
+        assert "- keyword: the weekend rate" in prompts["system"]
+        assert "- url — the rental page to read" in prompts["system"]
+        assert response.answer == reply
+        assert response.tool_calls == []
         assert {row.name for row in penny.db.memories.list_all()} == before
 
 

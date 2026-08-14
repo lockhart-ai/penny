@@ -711,7 +711,7 @@ class BoundValues(BaseModel):
 class MissingParameters(BaseModel):
     """The binder's SHORTFALL answer (#1867): the declared parameters the round's turns
     supply no value for, ``names`` in declared order — the structural ``request``
-    signal, wired later.
+    signal, which since #1885 routes the turn into that state rather than failing it.
 
     It is an ENUMERATED OUTCOME, not a failure: the draw read the words correctly and
     the words are short of something, which is a different fact from a draw that never

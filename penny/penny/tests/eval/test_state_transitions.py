@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import islice
@@ -3034,30 +3035,36 @@ def _bound_parameters(row: MemoryRow) -> dict[str, str]:
     return {key: str(value) for key, value in json.loads(row.skill_params).items()}
 
 
-def _landed_apply_move(landed: StateTransition | None) -> StateTransition | None:
-    """The turn's last move, but only when it put the machine in APPLY.
+def _landed_in(landed: StateTransition | None, state: ConversationState) -> StateTransition | None:
+    """The turn's last move, but only when it put the machine in ``state``.
 
     One predicate, read once per sample and shared by everything that conditions on it —
-    the two conditional-n/a checks below and the landed-state advisory — so they can
-    never disagree about where the turn ended up, which is what a per-check re-read of
-    the ledger would eventually let them do."""
-    if landed is None or landed.to_state != ConversationState.APPLY.value:
+    the conditional-n/a checks and the landed-state advisories — so they can never disagree
+    about where the turn ended up, which is what a per-check re-read of the ledger would
+    eventually let them do.  The state is the caller's because three beats condition on
+    three different landings and the reading itself must be one definition."""
+    if landed is None or landed.to_state != state.value:
         return None
     return landed
+
+
+def _landed_apply_move(landed: StateTransition | None) -> StateTransition | None:
+    """The turn's last move, but only when it put the machine in APPLY."""
+    return _landed_in(landed, ConversationState.APPLY)
 
 
 def _skill_binding_check(landed: StateTransition | None, *, intended: str, label: str) -> Check:
     """The decision bound the INTENDED routine — the landed transition's ``skill_name`` is
     the one that covers what was asked for, not another routine in the registry.
 
-    Scored only when the machine landed in apply: a misroute is already the landed-state
-    advisory's finding, and scoring the binding on top of it would recount one classifier
-    miss twice.
+    ``landed`` is the move the caller has ALREADY qualified by where it landed, so a
+    misroute is n/a here: that is the landed-state advisory's finding, and scoring the
+    binding on top of it would recount one classifier miss twice.
 
     ``label`` is the caller's because a label is a diff-join key: two beats ask this same
     question of two different situations and each names it in its own terms, while the
     reading itself must be one definition."""
-    applied = _landed_apply_move(landed)
+    applied = landed
     if applied is None:
         return Check.na(label, kind="state")
     bound = applied.skill_name
@@ -3324,7 +3331,7 @@ def _binding_checks(
             kind="state",
         ),
         _skill_binding_check(
-            landed,
+            _landed_apply_move(landed),
             intended=slug_skill_name(case.skill.name),
             label="state: the decision bound the intended skill",
         ),
@@ -4373,12 +4380,19 @@ def _assert_the_registry_holds_the_five(db: Database) -> None:
 
 
 def assert_new_space_is_unknown(db: Database, case: _IdleApplyCase) -> None:
-    """Every value this ask supplies is NEW — it appears in no message, no stored entry,
-    no bound parameter and no page already read.
+    """Every value this ask supplies is NEW to the world it is answered against."""
+    assert_values_are_new(db, case.case_id, case.bound.values())
 
-    This is what makes "bound from the message" a real claim: a value the history also
+
+def assert_values_are_new(db: Database, case_id: str, values: Iterable[str]) -> None:
+    """Every one of ``values`` is NEW — it appears in no message, no stored entry, no bound
+    parameter and no page already read.
+
+    This is what makes "read off the message" a real claim: a value the history also
     carries could have been copied out of the world instead of read out of the ask, and
-    the check would pass either way."""
+    the check would pass either way.  Both beats over this world need it — the cold apply
+    for the values it BINDS, the cold request for the ones its ask already settles — so it
+    is one reading rather than two."""
     stored = [row for row in db.memories.list_all() if row.type == MemoryType.COLLECTION.value]
     known = [
         *(
@@ -4390,9 +4404,9 @@ def assert_new_space_is_unknown(db: Database, case: _IdleApplyCase) -> None:
         *(value for row in stored for value in _bound_parameters(row).values()),
         *(entry.content for entry in _pages_fetched(db)),
     ]
-    for wanted in case.bound.values():
+    for wanted in values:
         assert not _mentions(wanted, known), (
-            f"{case.case_id}: {wanted!r} must be new to this world — the history already has it"
+            f"{case_id}: {wanted!r} must be new to this world — the history already has it"
         )
 
 
@@ -4704,7 +4718,7 @@ def _cold_binding_checks(
             kind="state",
         ),
         _skill_binding_check(
-            landed,
+            _landed_apply_move(landed),
             intended=slug_skill_name(case.skill.name),
             label="state: the decision bound the routine that covers the ask",
         ),
@@ -4794,3 +4808,505 @@ async def test_idle_to_apply_sets_the_tight_cadence_from_a_cold_start(
     two hours until a named day.  The urgency is a reason to set it up now, not a reason
     to go and look — and the end condition is a date the model has to work out."""
     await _run_idle_apply_case(chat_eval, _COLD_URGENCY)
+
+
+# ── idle → request: the routine is known, and the ask is one value short ──────
+#
+# Beat 5 (#1885).  Same world as the cold apply above — five journeys walked to their end,
+# five live jobs, then small talk, machine idle — and the same kind of ask: an ADDITIONAL
+# application of a routine already running, pointed somewhere new.  One thing differs, and
+# it is the whole beat: the ask does not carry everything the routine needs.
+#
+# Nothing new is asked of the CLASSIFIER.  It draws apply and names the routine, exactly as
+# it does above, because a covering routine is what apply means and the classifier cannot
+# see whether the words fill it.  The BINDER can — it reads those words against what the
+# routine declares — so its shortfall is what routes the turn, and the machine lands in
+# request instead of apply.
+#
+# What the turn must therefore do is ASK, and create nothing.  A container's name is
+# derived from the routine plus every one of its values, so a job short of one has no name
+# yet: there is nothing to build, nothing to configure, and the five jobs already running
+# are none of this turn's business.
+#
+# Two of the five settle SOMETHING — the sailing to look for, or the page — so "asks for
+# exactly what is missing" is a real claim rather than a vacuous one, and the held-binding
+# case (case 5) is the one where asking again for a value already given is the failure.
+#
+# The reference replies quoted above each ask are review targets, never scorer strings.
+#
+# request → apply — the user supplying what was asked for — is the DECLARED follow-on beat
+# with its own ticket.  Nothing here drives it.
+
+
+# Every new space, installed in every case as the live temptation.  A request turn's
+# tempting wrong move is to go and FIND the missing value instead of asking for it, so the
+# pages a plausible search would reach are all present: a turn that browses gets a real
+# page back and is caught by the no-browse check, rather than failing invisibly against a
+# world with nothing to find.  They are the cold-apply beat's own pages, reused rather than
+# restated — the spaces this world does not know are one set.
+_UNKNOWN_SPACES = [
+    _KEEL_LANTERN_LISTING,
+    _NORTH_PIER_DEPARTURES,
+    _HARBOR_BAKERY_MENU,
+    _RIVER_OTTERS_CENSUS,
+    _EAST_BRANCH_NEW_TITLES,
+]
+
+# What a reply naming the missing PAGE looks like: the framer suite's agreed vocabulary
+# (imported rather than restated — what the page-shaped piece may reasonably be CALLED is
+# one code-owner-agreed set, and a second copy here would drift into a second contract),
+# plus the forms a reply reaches for that no parameter would ever be named.  A person
+# asking for a page asks WHERE the thing is, or where it is POSTED — neither of which is a
+# noun for the page — and scoring that a miss would mark the plainest possible ask wrong.
+_ASKS_FOR_THE_PAGE = (*_PLACE_TOKENS, "where", "posted")
+
+# What a reply naming the missing FOUND-THING looks like.  The declared-parameter family
+# (``_FOUND_THING_FAMILY``) is what a PARAMETER may be called; a reply is written for a
+# person, so it also reaches for the plain verb — "what should i be looking out for" —
+# which no parameter would ever be named.  Both spellings are the same ask, so the reply
+# vocabulary is the parameter family plus that verb, in the forms it is actually written
+# in (the bare stem "look" is deliberately absent: "i'll look at the board" is a reply that
+# asked for nothing, and passing it would make the check mean nothing).
+#
+# It is a FLOOR, not a proof: it says the reply named the thing, and whether it named it
+# WELL is read at joint review against the reference reply.  That reference reply is the
+# check's own tripwire — a vocabulary that cannot match the wording the case declares
+# CORRECT would score the beat's own answer a miss, so the pin in ``test_eval_harness.py``
+# runs it through this set without a GPU.
+_ASKS_FOR_THE_FOUND_THING = (
+    *_FOUND_THING_FAMILY.tokens,
+    "look for",
+    "looking for",
+    "look out for",
+    "looking out for",
+    "watch for",
+    "watching for",
+)
+
+
+# ── The five short asks ───────────────────────────────────────────────────────
+
+# Case 1 — a second timetable, and no page.  The sailing to look for IS in the ask, so the
+# routine's other parameter binds and only the page is left.
+#
+# Each case's reference reply is DATA on the case below (``_IdleRequestCase.reference``)
+# rather than a comment here: it is still a review target and still never a scorer string,
+# but holding it as data is what lets the plain pin run it through this beat's own reply
+# vocabulary, so a scorer that could not pass the agreed answer fails before a GPU run.
+_SHORT_ASK_TIMETABLE = (
+    "there's another pier timetable i want too — keep an eye out for the dawn sailing "
+    "every morning and let me know when it shows up"
+)
+
+# Case 2 — a second listing, and no page, with the end condition given up front.  The
+# terms are complete and the thing to point at is not, which is the ask that most looks
+# like it could be acted on.
+#
+_SHORT_ASK_LISTING = (
+    "i found another listing i want to track — watch its price every couple hours until "
+    "sunday and tell me if it moves"
+)
+
+# Case 3 — the same watch on a different animal, the page supplied by neither the ask nor
+# the phrase "the same way", which points at a routine rather than at a page.
+#
+_SHORT_ASK_COUNT = "can you track the otter count the same way — weekly, and warn me if it drops?"
+
+# Case 4 — a new bakery, named only as new.  "the new bakery i just found" is a thing the
+# user knows and the history does not, so nothing but asking can supply it.
+#
+_SHORT_ASK_BAKERY = (
+    "can you grab the daily special from the new bakery i just found too, each morning?"
+)
+
+# Case 5 — a second pier WITH its page, and no sailing to look for: the held-binding case.
+# The address is right there in the ask, so asking for it again is the failure this case
+# exists to catch, and what is missing is what to watch for on the board.
+#
+_SHORT_ASK_PIER = (
+    f"keep an eye on the sailings at {_NORTH_PIER_URL} too, every morning — "
+    "tell me when they add it"
+)
+
+
+class _IdleRequestCase(NamedTuple):
+    """One agreed short ask, and what the turn it opens has to look like.
+
+    ``skill`` is the routine the ask is covered by — the same five-way selection the cold
+    apply beat makes, since every wrong pick is a real routine that exists.  ``settled`` is
+    every value the ask DOES supply, keyed by the parameter it answers, and ``missing`` the
+    parameters it supplies nothing for; together they are exactly the routine's declared
+    set, which the probe asserts rather than trusts.
+
+    ``asks_for`` is the vocabulary a reply naming the missing piece draws on — a floor on
+    the ask, never a reference reply to match.  What the turn must NOT do with ``settled``
+    is read off ``settled`` itself, so there is nothing else to state.
+
+    ``reference`` is how the ask would be answered WELL — a review target, read at joint
+    review and never matched by the scorer.  It is DATA rather than a comment for one
+    reason: a scorer that cannot pass the answer the case itself calls correct is a broken
+    scorer, and holding the reply here lets the deterministic pin in
+    ``test_eval_harness.py`` run exactly that check without a GPU."""
+
+    case_id: str
+    ask: str
+    skill: SkillDraft
+    settled: dict[str, str]
+    missing: tuple[str, ...]
+    asks_for: tuple[str, ...]
+    reference: str
+
+
+_SHORT_TIMETABLE = _IdleRequestCase(
+    case_id="transition-idle-to-request",
+    ask=_SHORT_ASK_TIMETABLE,
+    skill=_FERRY_SKILL,
+    settled={"keyword": "dawn sailing"},
+    missing=("url",),
+    asks_for=_ASKS_FOR_THE_PAGE,
+    reference="happy to — which timetable page should i be watching for the dawn sailing?",
+)
+
+_SHORT_LISTING = _IdleRequestCase(
+    case_id="transition-idle-to-request-listing",
+    ask=_SHORT_ASK_LISTING,
+    skill=_AURORA_SKILL,
+    settled={},
+    missing=("url",),
+    asks_for=_ASKS_FOR_THE_PAGE,
+    reference=(
+        "sure — send me the listing's link and i'll check the price every couple of "
+        "hours until sunday."
+    ),
+)
+
+_SHORT_COUNT = _IdleRequestCase(
+    case_id="transition-idle-to-request-count",
+    ask=_SHORT_ASK_COUNT,
+    skill=_COLONY_SKILL,
+    settled={},
+    missing=("url",),
+    asks_for=_ASKS_FOR_THE_PAGE,
+    reference=(
+        "yep — where's the otter count posted? i'll check it weekly and tell you if it drops."
+    ),
+)
+
+_SHORT_BAKERY = _IdleRequestCase(
+    case_id="transition-idle-to-request-digest",
+    ask=_SHORT_ASK_BAKERY,
+    skill=_BAKERY_SKILL,
+    settled={},
+    missing=("url",),
+    asks_for=_ASKS_FOR_THE_PAGE,
+    reference="sure — what's the bakery's page? i'll grab the special each morning.",
+)
+
+_SHORT_PIER = _IdleRequestCase(
+    case_id="transition-idle-to-request-held-binding",
+    ask=_SHORT_ASK_PIER,
+    skill=_FERRY_SKILL,
+    settled={"url": _NORTH_PIER_URL},
+    missing=("keyword",),
+    asks_for=_ASKS_FOR_THE_FOUND_THING,
+    reference=(
+        f"got it — i'll check the sailings at {_NORTH_PIER_URL} every morning. "
+        "what should i be looking out for on it?"
+    ),
+)
+
+# Every short ask, in one place — so the deterministic pin in ``test_eval_harness.py`` can
+# check each one's claims about the routine and the world without a GPU.
+IDLE_REQUEST_CASES = (
+    _SHORT_TIMETABLE,
+    _SHORT_LISTING,
+    _SHORT_COUNT,
+    _SHORT_BAKERY,
+    _SHORT_PIER,
+)
+
+
+# ── The probe: the ask really is one value short of the routine it names ──────
+
+
+def _probe_short_ask(case: _IdleRequestCase) -> Preparer:
+    """The prepare hook: the shared world's own claims, the registry one that is only true
+    once the runner has laid the fixture skills down, and this case's own two."""
+
+    def probe(penny: Penny) -> None:
+        assert_composed_world(penny.db)
+        _assert_the_registry_holds_the_five(penny.db)
+        assert_the_ask_falls_one_short(penny.db, case)
+        assert_values_are_new(penny.db, case.case_id, case.settled.values())
+
+    return probe
+
+
+def assert_the_ask_falls_one_short(db: Database, case: _IdleRequestCase) -> None:
+    """The case's ``settled`` and ``missing`` together answer the routine's declared
+    parameters — every one of them, and nothing the routine does not declare — and
+    ``missing`` is not empty.
+
+    Both halves matter and neither is checkable from the other.  A fixture claiming a
+    parameter the routine dropped would describe a shortfall nothing can produce, and the
+    case would fail as the model's miss; a fixture whose ``missing`` had gone empty
+    describes an ask the binder can complete, so the turn would land in apply and every
+    check here would read as a routing failure.  Read off the REGISTRY row, which is the
+    list the binder is actually handed."""
+    declared = sorted(
+        parameter.name for parameter in _declared_parameters(db, slug_skill_name(case.skill.name))
+    )
+    claimed = sorted([*case.settled, *case.missing])
+    assert declared == claimed, (
+        f"{case.case_id}: the routine declares {declared}, the case accounts for {claimed}"
+    )
+    assert case.missing, f"{case.case_id}: a request case is an ask the words fall SHORT of"
+
+
+def _declared_parameters(db: Database, skill: str) -> list[SkillParameter]:
+    """One registered routine's declared parameters, in declared order — the list the
+    binder is handed and the list the request instruction renders from."""
+    routine = db.skills.get(skill)
+    assert routine is not None, f"the routine {skill!r} must be registered"
+    return parameters_from_json(routine.parameters)
+
+
+# ── Scoring ───────────────────────────────────────────────────────────────────
+
+
+def _parked_in_request_check(landed: StateTransition | None) -> Check:
+    """The beat's headline: the turn left the machine parked in REQUEST.
+
+    Structural, off the move the turn recorded — where a turn ended up is a row, never a
+    reading of the reply.  Every other landing is a distinct finding and the rationale
+    names which one: apply means the binder filled a value the ask never gave, elicit means
+    the covering routine was not recognised, and idle means the ask was answered as chat."""
+    to_state = landed.to_state if landed is not None else None
+    parked = to_state == ConversationState.REQUEST.value
+    return Check(
+        "state: the turn parked in request",
+        parked,
+        rationale=None if parked else f"the machine landed in {to_state}",
+        kind="state",
+    )
+
+
+def _nothing_was_created_check(db: Database, before: set[str]) -> Check:
+    """No collection was created — not an inert one, not a configured one, none.
+
+    The container's name is derived from the routine plus EVERY value it is pointed at, so
+    a job short of one has no name yet; anything built here would be built under a name
+    nothing could derive again, which is a job the user can never be handed back."""
+    created = [row.name for row in new_collections(db, before)]
+    return Check(
+        "state: nothing was created for a job that is not settled yet",
+        not created,
+        rationale=f"created {created}" if created else None,
+        kind="state",
+    )
+
+
+def _request_anchor_check(
+    db: Database, landed: StateTransition | None, case: _IdleRequestCase
+) -> Check:
+    """The move came FROM idle and stamped the short ask as its anchor — the anchor
+    lifecycle's opening move (#1827), and the thing the follow-on turn is bound over: the
+    next message is read together with THIS ask, so an unanchored round is one whose reply
+    arrives with nothing to complete.
+
+    Conditional on the landing, like every other check that reads the move: where it went
+    is already the parked-in-request finding, and re-reading it here would count one miss
+    twice."""
+    label = "state: the move came from idle with the short ask as its anchor"
+    requested = _landed_in(landed, ConversationState.REQUEST)
+    if requested is None:
+        return Check.na(label, kind="state")
+    asked = _seeded_ask_id(db, case.ask, limit=_COMPOSED_MESSAGE_WINDOW)
+    opened = requested.from_state == ConversationState.IDLE.value
+    anchored = requested.anchor_message_id
+    ok = opened and asked is not None and anchored == asked
+    return Check(
+        label,
+        ok,
+        rationale=None
+        if ok
+        else f"came from {requested.from_state}, anchored to {anchored} (the ask is {asked})",
+        kind="state",
+    )
+
+
+def _asks_for_what_is_missing_check(reply: str, case: _IdleRequestCase) -> Check:
+    """The reply NAMES the missing piece, in words a person would use for it.
+
+    A floor rather than a proof: it says the ask was made at all, and how well it was
+    worded is read at joint review against the reference reply.  The page vocabulary is
+    the framer suite's own agreed set, imported rather than restated."""
+    named = _mentions_any(case.asks_for, reply)
+    return Check(
+        "reply: it asked for the piece that is missing",
+        named,
+        rationale=None if named else f"named none of {list(case.asks_for)}",
+        kind="reply",
+    )
+
+
+def _does_not_re_ask_check(reply: str, case: _IdleRequestCase) -> Check:
+    """It did not ask again for something the user had already given: every value the ask
+    SETTLED comes back in the reply, so the turn is demonstrably working from it.
+
+    The positive form on purpose.  "Did it ask for the page again?" has no honest
+    structural reading — a reply may name a page while asking about something else
+    entirely — while "did it say the page back" does: a turn that repeats what it was
+    given is a turn that has it, and one that never mentions it is the shape a re-ask
+    arrives in.  N/A for an ask that settled nothing, which is a real shape rather than a
+    free pass."""
+    label = "reply: it worked from what they had already given"
+    if not case.settled:
+        return Check.na(label, kind="reply")
+    absent = [value for value in case.settled.values() if not _said_back(value, reply)]
+    return Check(
+        label,
+        not absent,
+        rationale=f"never said back: {absent}" if absent else None,
+        kind="reply",
+    )
+
+
+def _said_back(value: str, reply: str) -> bool:
+    """Whether the reply repeats a value the ask already settled, case-folded and with any
+    address scheme stripped first.
+
+    An address is routinely written back without its scheme, and a reply naming
+    ``northpier.example/departures`` has plainly got the page — matching the stored form
+    literally would score that a miss, which is a scorer bug reported as a finding."""
+    spoken = value.lower().removeprefix("https://").removeprefix("http://")
+    return bool(spoken) and spoken in reply.lower()
+
+
+def _mentions_any(tokens: tuple[str, ...], text: str) -> bool:
+    """Whether any of ``tokens`` turns up in ``text``, case-folded — the same reading
+    ``_mentions`` makes, with the arguments the other way round."""
+    return any(token.lower() in text.lower() for token in tokens)
+
+
+def _request_advisories(landed: StateTransition | None, reply: str) -> list[Check]:
+    """What the turn actually did, verbatim and UNSCORED — where it left the machine, which
+    routine the decision bound, and the reply itself, so a report shows the answer whichever
+    way it went and the wording is read where wording is read: at review.
+
+    Read off the move the scorer already fetched rather than re-reading the ledger, so an
+    advisory can never disagree with the check beside it about where the turn ended up."""
+    return [
+        Check(
+            f"landed in {landed.to_state if landed is not None else None}",
+            True,
+            kind="state",
+            scored=False,
+        ),
+        Check(
+            f"the decision bound {landed.skill_name if landed is not None else None!r}",
+            True,
+            kind="state",
+            scored=False,
+        ),
+        Check(f"asked: {reply!r}", True, kind="reply", scored=False),
+    ]
+
+
+def _score_idle_to_request(
+    db: Database, before: set[str], reply: str, *, case: _IdleRequestCase
+) -> list[Check]:
+    """A routine she already knows covers the ask, and the ask is one value short of it —
+    so the turn asks for that value and does nothing else.
+
+    ONE scorer for all five cases, bound to the case's own terms.  The labels are
+    diff-join keys and are deliberately case-NEUTRAL: one wording reads the same whether
+    the missing piece is a page or the thing to watch for on it."""
+    landed = db.machine.latest_transition()
+    return [
+        _parked_in_request_check(landed),
+        _skill_binding_check(
+            _landed_in(landed, ConversationState.REQUEST),
+            intended=slug_skill_name(case.skill.name),
+            label="state: the decision bound the routine that covers the ask",
+        ),
+        _nothing_was_created_check(db, before),
+        _seeded_jobs_untouched_check(db),
+        Check(
+            "state: she asked instead of going to look (no browse this turn)",
+            tool_not_called(db, "browse"),
+            kind="state",
+        ),
+        Check("state: she configured nothing", tool_not_called(db, _SET_TOOL), kind="state"),
+        _request_anchor_check(db, landed, case),
+        _asks_for_what_is_missing_check(reply, case),
+        _does_not_re_ask_check(reply, case),
+        Check(
+            "reply: asked for no page structure",
+            asked_for_page_structure(reply) is None,
+            rationale=(
+                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
+            ),
+            kind="reply",
+        ),
+        *_request_advisories(landed, reply),
+    ]
+
+
+async def _run_idle_request_case(chat_eval: ChatEval, case: _IdleRequestCase) -> None:
+    """Drive one idle → request case: the composed world behind it, the five taught
+    routines in the registry, every unknown space installed as a live temptation, and the
+    shared scorer bound to its own terms.  Report-only — the thresholds are the code
+    owner's to set once the numbers are read."""
+    await chat_eval(
+        case_id=case.case_id,
+        message=case.ask,
+        browse=_UNKNOWN_SPACES,
+        seed=seed_composed_world(),
+        seed_skills=[journey.round.skill for journey in _JOURNEYS],
+        prepare=_probe_short_ask(case),
+        score=partial(_score_idle_to_request, case=case),
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_request_asks_which_timetable(chat_eval: ChatEval) -> None:
+    """idle → request: a second timetable, with the sailing to watch for but no page.  The
+    routine's other parameter binds off the ask, so what is missing is one thing and the
+    reply must ask for that one thing."""
+    await _run_idle_request_case(chat_eval, _SHORT_TIMETABLE)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_request_asks_for_the_listing(chat_eval: ChatEval) -> None:
+    """idle → request on the price watcher: the cadence and the end date are both given and
+    the listing itself is not, which is the ask that most looks complete enough to act
+    on."""
+    await _run_idle_request_case(chat_eval, _SHORT_LISTING)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_request_asks_where_the_count_is_posted(chat_eval: ChatEval) -> None:
+    """idle → request on the count watcher: "the same way" points at a routine, never at a
+    page, so the routine is recognisable and the page is still missing."""
+    await _run_idle_request_case(chat_eval, _SHORT_COUNT)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_request_asks_for_the_new_bakery(chat_eval: ChatEval) -> None:
+    """idle → request on the daily digest: the bakery is named only as the new one the user
+    just found, which is a thing they know and the history does not."""
+    await _run_idle_request_case(chat_eval, _SHORT_BAKERY)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_request_holds_the_page_and_asks_what_to_watch_for(
+    chat_eval: ChatEval,
+) -> None:
+    """idle → request, the held-binding case: the page is in the ask and what to look for
+    on it is not, so the reply asks for the second thing and works from the first — asking
+    again for an address the user just gave is the failure this case exists to catch."""
+    await _run_idle_request_case(chat_eval, _SHORT_PIER)

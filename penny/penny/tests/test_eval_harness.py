@@ -78,15 +78,20 @@ from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
     IDLE_APPLY_CASES,
+    IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
+    _asks_for_what_is_missing_check,
+    _does_not_re_ask_check,
     _interface_check,
     _overlaps,
+    _said_back,
     assert_composed_world,
     assert_new_space_is_unknown,
     assert_round_cites_its_run,
     assert_round_is_framed,
     assert_seeded_ledger,
+    assert_values_are_new,
     cadence_seconds,
     rule_parts,
     seed_composed_world,
@@ -275,6 +280,67 @@ def test_the_idle_world_seeds_five_finished_journeys_and_lands_idle(tmp_path) ->
     assert_composed_world(db)
     for case in IDLE_APPLY_CASES:
         assert_new_space_is_unknown(db, case)
+    for short in IDLE_REQUEST_CASES:
+        assert_values_are_new(db, short.case_id, short.settled.values())
+
+
+def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None:
+    """Each idle → request case accounts for its routine's declared parameters EXACTLY —
+    every one either settled by the ask or named missing — and names at least one missing.
+
+    Pinned without a GPU because it is the case's own premise, and both ways of getting it
+    wrong are silent on a run.  A case claiming a parameter the routine dropped describes a
+    shortfall the binder can never produce; a case whose ``missing`` went empty describes an
+    ask the binder can COMPLETE, so the turn would land in apply and every check in that
+    beat would read as a routing failure the model never made.  Read off the fixture DRAFT,
+    which is what the runner upserts into the registry the binder is handed."""
+    for case in IDLE_REQUEST_CASES:
+        declared = sorted(parameter.name for parameter in case.skill.parameters)
+        accounted = sorted([*case.settled, *case.missing])
+        assert declared == accounted, (
+            f"{case.case_id}: the routine declares {declared}, the case accounts for {accounted}"
+        )
+        assert case.missing, f"{case.case_id}: a request case is an ask the words fall SHORT of"
+
+
+def test_the_request_scorer_passes_each_case_s_own_reference_reply() -> None:
+    """Every idle → request case's reference reply — the answer the case itself calls
+    correct — passes that beat's two REPLY checks.
+
+    The tripwire for a scorer bug (the "check the scorer before you blame the model" rule,
+    applied before the run rather than after it).  Both checks read a vocabulary, and a
+    vocabulary that cannot match the agreed answer would score the beat's own reference a
+    miss on every sample: measured once already, where a found-thing set built from
+    parameter names had no entry for "looking out for", which is how a person writes it.
+    Cheap and deterministic, so it runs here rather than costing an hour of GPU to find."""
+    for case in IDLE_REQUEST_CASES:
+        asked = _asks_for_what_is_missing_check(case.reference, case)
+        assert asked.ok, f"{case.case_id}: {asked.rationale} — reference: {case.reference!r}"
+        held = _does_not_re_ask_check(case.reference, case)
+        assert held.ok or held.ignored, (
+            f"{case.case_id}: {held.rationale} — reference: {case.reference!r}"
+        )
+
+
+def test_a_settled_value_is_said_back_however_an_address_is_written() -> None:
+    """A value the ask already settled counts as said back when the reply repeats it,
+    case-folded and with any address scheme stripped first.
+
+    The reply is written for a person, so an address routinely comes back without its
+    scheme — and matching the stored form literally would score that a re-ask, which is the
+    scorer inventing a failure.  What it must still REFUSE is the half that would stop the
+    check meaning anything: a reply that names something else, or names nothing."""
+    address = "https://northpier.example/departures"
+    for reply in (
+        "i'll watch https://northpier.example/departures every morning — what for?",
+        "got it, northpier.example/departures. what should i look out for?",
+        "watching NORTHPIER.EXAMPLE/DEPARTURES — what am i looking for?",
+    ):
+        assert _said_back(address, reply), reply
+    for reply in ("sure — which page should i watch?", "what's the link?", ""):
+        assert not _said_back(address, reply), reply
+    assert _said_back("dawn sailing", "which page has the dawn sailing on it?")
+    assert not _said_back("dawn sailing", "which sailing did you mean?")
 
 
 def test_a_parameter_binds_on_any_value_that_locates_the_expected_one() -> None:

@@ -161,14 +161,50 @@ class Prompt:
     )
 
     REQUEST_INSTRUCTION = (
-        "A skill you already know does what the user is asking, but something "
-        "that skill needs is missing from what they have told you. Your job this "
-        "turn is to ask for it.\n\n"
-        "In ONE message, say which routine you would use — in plain words, what "
-        "it does — and ask for what's missing. Ask only for that.\n\n"
-        "Don't guess the missing value or substitute one you happen to know, and "
-        "don't run anything yet.\n\n"
+        "The user wants something done that you already know how to do, but they "
+        "have not said everything it needs. Your job this turn is to ask them for "
+        "the part that is missing.\n\n"
+        "In ONE message, say in plain words what you would do, then ask for what "
+        "is missing. Ask for that and nothing else.\n\n"
+        "Ask in their own words, the way they would say it. Don't guess the "
+        "missing part, don't use a value you happen to know, and don't do any of "
+        "the task yet.\n\n"
     )
+
+    # What a REQUEST turn is told about the round it is in (#1885) — the closing paragraph
+    # of the same shape ``ROUND_FRAMING_LINE`` is for learn, read from the other half of the
+    # round's entry: the BINDER said this routine covers the ask and named what the words
+    # fell short of, so the turn asks for exactly that.
+    #
+    # Everything the ask has to work from renders here VERBATIM — the routine, what it is
+    # for, each value the words already settled, and each missing detail with the registry's
+    # own one line of what to supply — so the reply needs no tool call at all and nothing on
+    # it is a guess.  The already-settled list is what stops the turn asking twice for
+    # something the user has already said, and it renders even when it is empty, because
+    # "they have given you none of it yet" is a fact the turn needs stated rather than
+    # inferred from a section that is not there.
+    #
+    # The missing detail is described, never named at the user: a parameter's NAME is a
+    # binding key and the description is the plain-words form of the same thing, so the
+    # sentence says to ask with the description.
+    ROUND_SHORTFALL_LINE = (
+        "The routine for this is `{skill}` — {description}\n\n"
+        "What they have already given you, which you must not ask for again:\n"
+        "{bound}\n\n"
+        "What is still missing, which is what to ask them for:\n"
+        "{missing}\n\n"
+        "Ask for the missing part by what it IS, using the plain description above — "
+        "never by the short name it is listed under.\n\n"
+    )
+    # One line per value the user's words already settled, and the line that stands in
+    # for all of them when the words settled none.
+    REQUEST_BOUND_ITEM = "- {name}: {value}"
+    REQUEST_NOTHING_BOUND = "- nothing yet — they have given you none of it"
+    # One line per missing detail: the registry's description when the routine carries one,
+    # and the bare name when it does not (a description is optional on a parameter, so an
+    # absent one is a real shape rather than empty text to render).
+    REQUEST_MISSING_ITEM = "- {name} — {description}"
+    REQUEST_MISSING_NAME_ONLY = "- {name}"
 
     CONVERSATION_TAIL = (
         "When a 'Current Browser Page' section appears above, the user is browsing "

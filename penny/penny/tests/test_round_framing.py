@@ -25,9 +25,12 @@ What is pinned here is everything the framing decides that no later step can und
   registry actually holds;
 * find-or-create on that derived name is tier-1 dedup by construction — the same job
   re-asked runs into the container it already had, a different value mints its own;
-* a binder shortfall (a routine the registry does not hold, or words that named no value
-  for something it needs) builds nothing and records nothing, which is the state the apply
-  turn then fails honestly on;
+* a binder that cannot settle the round at all (a routine the registry does not hold, or a
+  draw that came back unusable) builds nothing and records nothing, which is the state the
+  apply turn then fails honestly on — while a SHORTFALL (#1885) is the enumerated outcome
+  beside it: the routine covers the ask and the words named no value for something it
+  needs, so the move lands in REQUEST carrying what the turn has to ask for, still builds
+  nothing, and a next message the binder still cannot complete asks again;
 * a round that taught nothing takes its empty container with it (#1839), and a container
   holding entries is never taken.
 
@@ -530,25 +533,136 @@ async def test_binding_a_routine_the_registry_lacks_builds_nothing(db):
     assert db.memories.get(_CONTAINER) is None
 
 
-async def test_a_cold_apply_the_words_fall_short_of_carries_no_framing(db):
-    """The binder's SHORTFALL outcome, logged honestly and not yet wired to request
-    (#1866's declared follow-on): the draw read the words correctly and they named no value
-    for something the routine needs.
+async def test_a_cold_apply_the_words_fall_short_of_lands_in_request(db):
+    """The binder's SHORTFALL outcome, wired (#1885): the draw read the words correctly and
+    they named no value for something the routine needs, so the turn does not fail — it
+    lands in REQUEST and asks for the rest.
 
-    It is an enumerated outcome rather than a failure, but the round still cannot be
-    settled — so no container is built for a job nobody fully asked for, and the apply turn
-    that follows has nothing to configure."""
+    The classifier drew apply and bound the routine, which is unchanged and right: the
+    routine really does cover the ask.  Only the binder can tell a covered-and-bound ask
+    from a covered-but-short one, so the binding is what routes the move.  Nothing is built
+    for it — the container's name is derived from every value, so a job missing one has no
+    name yet — and the move carries no framing while still carrying the routine it bound and
+    the ask it opened on."""
     _seed_skill(db)
+    anchor_id = _log(db, _ASK)
 
-    machine, model = await _cold_apply(
-        db, ask="can you keep an eye on the price", binding="MISSING url"
-    )
+    model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url")
+    machine = _machine(db, model)
+    entered = await machine.advance(_ASK, message_id=anchor_id, run_id="run-request")
 
-    assert machine.framing() is None
+    assert machine.state() is ConversationState.REQUEST
+    assert entered.state is ConversationState.REQUEST
+    assert entered.decision.state is ConversationState.APPLY, "the draw itself is unchanged"
     assert _drew_against(model, BIND_SKILL_SYSTEM_PROMPT)
     latest = db.machine.latest_transition()
-    assert latest is not None and latest.skill_frame is None
+    assert latest is not None
+    assert latest.from_state == ConversationState.IDLE.value
+    assert latest.to_state == ConversationState.REQUEST.value
+    assert latest.cause == TransitionCause.CLASSIFIER.value
+    assert latest.skill_name == _SKILL
+    assert latest.anchor_message_id == anchor_id
+    assert latest.skill_frame is None
+    assert machine.framing() is None
     assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
+
+
+async def test_the_request_turn_is_handed_the_routine_and_what_is_still_missing(db):
+    """What the request turn is entered WITH: the routine the ask is covered by, what it is
+    for, the values the words already settled, and the ones they did not — each carrying the
+    registry's own line of what to supply.
+
+    Every one of those is a string the reply copies rather than works out, which is what
+    makes the ask n=0: nothing has to be looked up to write it.  The already-settled values
+    travel because throwing them away would have the turn ask a second time for something
+    the user has already said."""
+    db.skills.upsert(
+        SkillDraft(
+            name=_SKILL,
+            intent="keep a rental page's current day rate up to date",
+            description="keep a rental page's current day rate up to date",
+            steps=[],
+            parameters=[
+                SkillParameter(name="url", description="the rental page to read"),
+                SkillParameter(name="keyword", description="which rate to look for"),
+            ],
+            source_run_id="run-learn",
+        ),
+        author="chat",
+    )
+
+    ask = "keep an eye on the weekend rate for me"
+    machine = _machine(
+        db,
+        _model(
+            state=f"STATE: apply\nSKILL: {_SKILL}",
+            binding="MISSING url\nVALUE keyword: the weekend rate",
+        ),
+    )
+    entered = await machine.advance(ask, message_id=_log(db, ask), run_id="run-request")
+
+    shortfall = entered.shortfall
+    assert shortfall is not None
+    assert shortfall.skill == _SKILL
+    assert shortfall.description == "keep a rental page's current day rate up to date"
+    assert shortfall.bound == {"keyword": "the weekend rate"}
+    assert [(one.name, one.description) for one in shortfall.missing] == [
+        ("url", "the rental page to read")
+    ]
+
+
+async def test_a_request_the_next_message_still_falls_short_of_asks_again(db):
+    """A message arriving on a parked request that the binder STILL cannot complete lands
+    back in request, with a freshly drawn shortfall.
+
+    The same rule read a second time, and the same shape as the learn → learn
+    re-demonstration edge: the round stays parked on the ask that opened it, so the next
+    message is the retry.  Nothing is held between the two turns — the binder is handed the
+    anchor ask plus the arriving message and derives the whole binding again, exactly as a
+    cold apply does."""
+    _seed_skill(db)
+    anchor_id = _log(db, _ASK)
+    short = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url")
+    await _machine(db, short).advance(_ASK, message_id=anchor_id, run_id="run-request")
+
+    again = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding="MISSING url"))
+    entered = await again.advance(
+        "the usual one", message_id=_log(db, "the usual one"), run_id="run-request-2"
+    )
+
+    assert again.state() is ConversationState.REQUEST
+    assert entered.shortfall is not None
+    latest = db.machine.latest_transition()
+    assert latest is not None
+    assert latest.from_state == ConversationState.REQUEST.value
+    assert latest.anchor_message_id == anchor_id, "the round is still parked on its own ask"
+    assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
+
+
+async def test_a_request_landing_leaves_the_jobs_already_running_alone(db):
+    """A round that could not be settled touches NOTHING that already exists: a live job
+    beside it keeps its program, its schedule and its entries.
+
+    The claim is worth its own test because the failure it guards is silent — a turn that
+    reached for a container it had no name for would land on whichever one it could find,
+    and the job it disturbed is one the user is still relying on."""
+    _seed_skill(db)
+    db.memories.create_collection("a-live-job", "a job already running")
+    db.memories.update_collection_metadata(
+        "a-live-job", extraction_prompt="1. browse(...)", schedule="FREQ=DAILY", notify=True
+    )
+    require_memory(db, "a-live-job").write(
+        [EntryInput(key="day rate", content="$45")], author="chat"
+    )
+
+    await _cold_apply(db, ask="can you keep an eye on the price", binding="MISSING url")
+
+    row = db.memories.get("a-live-job")
+    assert row is not None
+    assert row.extraction_prompt == "1. browse(...)"
+    assert row.schedule == "FREQ=DAILY"
+    assert row.notify is True and row.archived is False
+    assert [entry.content for entry in require_memory(db, "a-live-job").read_all()] == ["$45"]
 
 
 async def test_an_apply_move_that_already_has_a_framing_draws_nothing(db):

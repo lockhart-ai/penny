@@ -39,6 +39,7 @@ from penny.conversation_machine import (
     ConversationState,
     MachineSnapshot,
     RoundFraming,
+    RoundShortfall,
     SkillCandidate,
     StateClassifier,
     build_snapshot,
@@ -645,9 +646,10 @@ async def test_machine_cold_starts_idle_and_records_the_move(db):
     assert machine.state() is ConversationState.IDLE
 
     message_id = _log(db, _KAYAK_ASK)
-    decision = await machine.advance(_KAYAK_ASK, message_id=message_id, run_id="run-1")
+    entered = await machine.advance(_KAYAK_ASK, message_id=message_id, run_id="run-1")
 
-    assert decision.state is ConversationState.APPLY
+    assert entered.decision.state is ConversationState.APPLY
+    assert entered.state is ConversationState.APPLY
     assert machine.state() is ConversationState.APPLY
     (transition,) = db.machine.recent_transitions(10)
     assert transition.from_state == ConversationState.IDLE.value
@@ -664,9 +666,10 @@ async def test_held_draw_stays_put_but_is_still_recorded(db):
     successful moves would report a perfect classifier by construction, so the
     held draw lands as a self-edge carrying its honest outcome."""
     machine = _machine(db, _responds("I think we should probably elicit here"))
-    decision = await machine.advance(_ASK, message_id=_log(db, _ASK))
+    entered = await machine.advance(_ASK, message_id=_log(db, _ASK))
 
-    assert decision.state is None
+    assert entered.decision.state is None
+    assert entered.shortfall is None
     assert machine.state() is ConversationState.IDLE
     (transition,) = db.machine.recent_transitions(10)
     assert transition.from_state == transition.to_state == ConversationState.IDLE.value
@@ -772,6 +775,21 @@ def _framing() -> RoundFraming:
             ),
         ),
         container="watch-rental-price-harborkayak-example",
+    )
+
+
+def _shortfall() -> RoundShortfall:
+    """One round's shortfall, shared by the render pins below — the SAME routine the
+    framing above is for, so what request says about a round and what learn says about it
+    differ only in which half of the entry each reads.
+
+    Two parameters on purpose: one the words settled and one they did not, which is the
+    only shape that can show both halves of the render at once."""
+    return RoundShortfall(
+        skill="watch-rental-price",
+        description="keep a rental page's current day rate up to date",
+        bound={"keyword": "the weekend rate"},
+        missing=(CandidateParameter(name="url", description="the rental page to read"),),
     )
 
 
@@ -1021,6 +1039,128 @@ def test_apply_instruction_whole_render():
         "Then tell them what you set up and what will happen. Say it is running "
         "only if the call came back confirming it.\n\n"
     )
+
+
+def test_request_instruction_whole_render():
+    """The whole instruction, verbatim — pinned so an edit is a visible diff.
+
+    Its own state and nothing else: they want something already known how to do, part of
+    what it needs is unsaid, so the turn asks.  What it does NOT carry, deliberately, is
+    elicit's "never ask about keywords, matching rules or selectors" clause — in elicit
+    nothing is known and every such question is the assistant asking the user to do its
+    job, while HERE the routine declares what it needs and one of those declared things
+    may well be the phrase to look for on a page.  A blanket prohibition would forbid
+    exactly the ask this state exists to make."""
+    assert Prompt.REQUEST_INSTRUCTION == (
+        "The user wants something done that you already know how to do, but they "
+        "have not said everything it needs. Your job this turn is to ask them for "
+        "the part that is missing.\n\n"
+        "In ONE message, say in plain words what you would do, then ask for what "
+        "is missing. Ask for that and nothing else.\n\n"
+        "Ask in their own words, the way they would say it. Don't guess the "
+        "missing part, don't use a value you happen to know, and don't do any of "
+        "the task yet.\n\n"
+    )
+
+
+def test_a_request_turn_names_the_routine_and_what_is_still_missing():
+    """The round's shortfall renders as the request instruction's closing paragraph
+    (#1885), verbatim — pinned so an edit is a visible diff.
+
+    Everything the ask has to work from is HERE: the routine, what it is for, each value
+    the words already settled, and each missing detail with the registry's own line of what
+    to supply.  So the reply is written at n=0 — no lookup, and nothing on it invented —
+    and the already-settled list is what stops the turn asking twice for something the user
+    has already said.
+
+    It sits INSIDE the instruction, between head and tail, so a request turn with a
+    shortfall is the plain one plus this paragraph and nothing else moves."""
+    composed = conversation_prompt(ConversationState.REQUEST, None, _shortfall())
+
+    assert composed == (
+        Prompt.CONVERSATION_HEAD
+        + Prompt.REQUEST_INSTRUCTION
+        + "The routine for this is `watch-rental-price` — keep a rental page's current "
+        "day rate up to date\n\n"
+        "What they have already given you, which you must not ask for again:\n"
+        "- keyword: the weekend rate\n\n"
+        "What is still missing, which is what to ask them for:\n"
+        "- url — the rental page to read\n\n"
+        "Ask for the missing part by what it IS, using the plain description above — "
+        "never by the short name it is listed under.\n\n" + Prompt.CONVERSATION_TAIL
+    )
+
+
+def test_a_request_turn_that_has_none_of_it_yet_says_so():
+    """The empty case is a STATED line, not an absent section: an ask whose words settled
+    nothing still renders the already-given list, saying there is nothing in it.
+
+    Inferring "they have given me none of it" from a section that is not there is exactly
+    the read a rendered state exists to remove — and it is the common shape, since a
+    routine asking for one thing that the words did not supply settles nothing at all."""
+    composed = conversation_prompt(
+        ConversationState.REQUEST, None, _shortfall().model_copy(update={"bound": {}})
+    )
+
+    assert composed == (
+        Prompt.CONVERSATION_HEAD
+        + Prompt.REQUEST_INSTRUCTION
+        + "The routine for this is `watch-rental-price` — keep a rental page's current "
+        "day rate up to date\n\n"
+        "What they have already given you, which you must not ask for again:\n"
+        "- nothing yet — they have given you none of it\n\n"
+        "What is still missing, which is what to ask them for:\n"
+        "- url — the rental page to read\n\n"
+        "Ask for the missing part by what it IS, using the plain description above — "
+        "never by the short name it is listed under.\n\n" + Prompt.CONVERSATION_TAIL
+    )
+
+
+def test_a_missing_detail_with_no_description_renders_as_its_bare_name():
+    """A parameter carrying no description renders as its name alone — no dash, no empty
+    clause after one.
+
+    A description is optional on the row (a labelling fallback leaves none), so an absent
+    one is a real shape rather than empty text to render: a trailing dash would read as a
+    description somebody wrote and left blank, which is the state presenting a fact that is
+    not true."""
+    bare = _shortfall().model_copy(
+        update={"missing": (CandidateParameter(name="url", description=None),)}
+    )
+    composed = conversation_prompt(ConversationState.REQUEST, None, bare)
+
+    assert "What is still missing, which is what to ask them for:\n- url\n\n" in composed, composed
+    assert "- url —" not in composed
+
+
+def test_a_request_turn_without_a_shortfall_composes_the_prompt_it_always_did():
+    """A request turn the classifier parked on its own carries no shortfall — nothing ran
+    the binder — so it composes the byte-identical prompt this function always composed.
+
+    The rendered state is ADDITIVE, like the framing before it: a turn that has it is
+    better instructed, and a turn that does not is instructed exactly as it was."""
+    assert conversation_prompt(ConversationState.REQUEST, None, None) == conversation_prompt(
+        ConversationState.REQUEST
+    )
+    assert Prompt.ROUND_SHORTFALL_LINE.split("{")[0] not in conversation_prompt(
+        ConversationState.REQUEST
+    )
+
+
+def test_only_request_renders_the_round_s_shortfall():
+    """The shortfall is request's alone: no other state's prompt moves when one is passed.
+
+    Learn reads the FRAMING and request the SHORTFALL because those are the two halves of a
+    round's entry and each state has exactly one of them — so handing a shortfall to a
+    state that does not read it changes nothing, which is what keeps the two paragraphs
+    from ever both appearing."""
+    for state in ConversationState:
+        if state is ConversationState.REQUEST:
+            continue
+        framing = _framing() if state is ConversationState.APPLY else None
+        assert conversation_prompt(state, framing, _shortfall()) == conversation_prompt(
+            state, framing
+        ), state
 
 
 def test_the_applied_configuration_narration_whole_render():

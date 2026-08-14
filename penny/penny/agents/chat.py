@@ -16,7 +16,12 @@ from penny.agents.models import ControllerResponse
 from penny.agents.self_state import SelfStateHeader
 from penny.channels.base import PageContext
 from penny.constants import ChatPromptType, PennyConstants
-from penny.conversation_machine import ConversationState, RoundFraming, conversation_prompt
+from penny.conversation_machine import (
+    ConversationState,
+    RoundFraming,
+    RoundShortfall,
+    conversation_prompt,
+)
 from penny.datetime_utils import current_datetime_line
 from penny.llm.models import LlmError
 from penny.prompts import Prompt
@@ -333,6 +338,7 @@ class ChatAgent(Agent):
         run_id: str | None = None,
         state: ConversationState | None = None,
         framing: RoundFraming | None = None,
+        shortfall: RoundShortfall | None = None,
         on_tool_start: Callable[[list[tuple[str, dict]]], Awaitable[None]] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> ControllerResponse:
@@ -356,6 +362,12 @@ class ChatAgent(Agent):
         (#1868): it renders the routine and the container into the turn's instruction, is
         reused by run-end extraction instead of a second draw, and is what a failed learn
         turn takes its empty container down with.
+
+        ``shortfall`` is the round's OTHER entry answer (#1885), present exactly on a turn
+        the binder landed in request: it renders the routine and the detail still missing
+        into that turn's instruction, so the ask is written from a state rather than from a
+        guess.  Turn-scoped — nothing stores it and nothing after this turn reads it, which
+        is why it is a parameter and not a read off the machine.
         """
         self._current_user = sender
         self._pending_page_context = page_context
@@ -395,7 +407,9 @@ class ChatAgent(Agent):
             # unchanged default.
             system_prompt = await self._build_system_prompt(
                 sender,
-                instructions=conversation_prompt(state, framing) if state is not None else None,
+                instructions=(
+                    conversation_prompt(state, framing, shortfall) if state is not None else None
+                ),
             )
             response = await self.run(
                 prompt=content,

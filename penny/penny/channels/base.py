@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from penny.config import Config
 from penny.constants import PennyConstants
-from penny.conversation_machine import ConversationMachine, ConversationState, RoundFraming
+from penny.conversation_machine import ConversationMachine, RoundFraming, TurnEntry
 from penny.database.models import Media, MessageLog
 from penny.llm import LlmClient
 from penny.llm.embeddings import serialize_embedding
@@ -651,15 +651,18 @@ class MessageChannel(ABC):
         )
         await self.send_message(message.sender, PennyResponse.PROFILE_REQUIRED)
 
-    async def _classify_state(
-        self, message: IncomingMessage, run_id: str
-    ) -> ConversationState | None:
+    async def _classify_state(self, message: IncomingMessage, run_id: str) -> TurnEntry | None:
         """Move the conversation state machine for this incoming message (#1706).
 
         Runs BEFORE the turn — the machine's whole purpose is that the turn is
         entered with its state already decided.  The message has no id yet (it
         is logged after the run, so it never doubles into that turn's recall),
         so the moves are linked to it afterwards by ``link_message``.
+
+        Returns what the turn is entered WITH — the landed state, and the round shortfall
+        when the move landed in request through the binder (#1885), which is turn-scoped
+        and reaches the turn only through this return.  ``None`` when nothing decided the
+        turn, which is the idle default the agent already composes for.
 
         A classifier failure must never cost the user their turn: the machine is
         fail → stay by construction, so a failed draw already leaves it where it
@@ -668,7 +671,7 @@ class MessageChannel(ABC):
         if self._conversation_machine is None:
             return None
         try:
-            decision = await self._conversation_machine.advance(
+            entry = await self._conversation_machine.advance(
                 message.content,
                 penny_last_turn=self._db.messages.last_outgoing_content(),
                 run_id=run_id,
@@ -677,9 +680,8 @@ class MessageChannel(ABC):
         except Exception as exc:
             logger.error("Conversation state classification failed: %s", exc)
             return None
-        state = self._conversation_machine.state()
-        logger.info("Conversation state: %s (%s)", state.value, decision.outcome.value)
-        return state
+        logger.info("Conversation state: %s (%s)", entry.state.value, entry.decision.outcome.value)
+        return entry
 
     def _round_framing(self) -> RoundFraming | None:
         """The round's framing as the turn begins (#1868) — what the machine settled on
@@ -718,7 +720,7 @@ class MessageChannel(ABC):
         parent_id: int | None = None
         if message.quoted_text:
             parent_id, _ = self._db.messages.get_thread_context(message.quoted_text)
-        state = await self._classify_state(message, run_id)
+        entered = await self._classify_state(message, run_id)
         response = await self._message_agent.handle(
             content=message.content,
             sender=user_sender,
@@ -726,8 +728,9 @@ class MessageChannel(ABC):
             page_context=message.page_context,
             quoted_text=message.quoted_text,
             run_id=run_id,
-            state=state,
+            state=entered.state if entered is not None else None,
             framing=self._round_framing(),
+            shortfall=entered.shortfall if entered is not None else None,
             **self._make_handle_kwargs(message, progress),
         )
         incoming_embedding = await self._embed_message(message.content)
