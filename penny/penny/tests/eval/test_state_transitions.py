@@ -189,6 +189,10 @@ _FAMILY = "state-transitions"
 # learn → apply scorer, the seeded apply turn's ledger, and the idle → apply scorer).
 _SET_TOOL = "collection_set"
 
+# The call every edge here must NOT make: going and looking instead of asking, teaching or
+# setting up.  Named once for the same reason — five sections check for its absence.
+_BROWSE_TOOL = "browse"
+
 
 # ── Shared across the edges ───────────────────────────────────────────────────
 
@@ -359,6 +363,19 @@ def _pages_fetched(db: Database) -> list[MemoryEntry]:
     return require_memory(db, PennyConstants.MEMORY_BROWSE_RESULTS_LOG).read_recent(
         window_seconds=3600, cap=None
     )
+
+
+def _declared_parameters(db: Database, skill: str) -> list[SkillParameter]:
+    """One registered routine's declared parameters, in declared order — the list the
+    binder is handed and the list the request instruction renders from.
+
+    Shared rather than per-beat: three sections ask what a routine declares — the short ask
+    to say what it falls short of, the supply to say it completes it, and the derived
+    container's name to put the values in the routine's own order — and a second reading of
+    the registry is a second answer waiting to disagree."""
+    routine = db.skills.get(skill)
+    assert routine is not None, f"the routine {skill!r} must be registered"
+    return parameters_from_json(routine.parameters)
 
 
 def _leaf_at(arguments: dict, path: list):
@@ -1636,7 +1653,7 @@ def _score_elicit_to_learn(
     return [
         Check(
             "state: she browsed the listing (the demonstrated fetch happened)",
-            tool_was_called(db, "browse"),
+            tool_was_called(db, _BROWSE_TOOL),
             kind="state",
         ),
         # The fact counts wherever in the entry it landed — its KEY or its content
@@ -1910,11 +1927,11 @@ def _score_elicit_to_learn_absent(db: Database, before: set[str], reply: str) ->
     framing = _round_framing(db)
     landed = _landed_state(db)
     parked = landed == ConversationState.LEARN.value
-    browses = count_tool_calls(db, "browse")
+    browses = count_tool_calls(db, _BROWSE_TOOL)
     return [
         Check(
             "state: she browsed the noticeboard (the demonstrated fetch happened)",
-            tool_was_called(db, "browse"),
+            tool_was_called(db, _BROWSE_TOOL),
             kind="state",
         ),
         # Read off the ENTRIES, not their texts: what this case claims is that no entry
@@ -2080,7 +2097,7 @@ def _demonstrated_ledger(demonstrated: _DemonstratedRound) -> list[DistillInput]
     return [
         DistillInput(
             source_ordinal=1,
-            tool="browse",
+            tool=_BROWSE_TOOL,
             arguments={"queries": [demonstrated.url], "extract": demonstrated.extract},
             result=f"You opened {demonstrated.url} (browse result)\n{demonstrated.entry_value}",
         ),
@@ -3357,7 +3374,7 @@ def _terms_checks(db: Database, row: MemoryRow | None, case: _ApplyCase) -> list
         ),
         Check(
             "state: she set it running instead of running it again (no browse this turn)",
-            tool_not_called(db, "browse"),
+            tool_not_called(db, _BROWSE_TOOL),
             kind="state",
         ),
     ]
@@ -4399,7 +4416,7 @@ def assert_the_ask_fills_the_routine(db: Database, case: _IdleApplyCase) -> None
     check would go on passing while measuring a job nobody asked for.  Read off the
     REGISTRY row rather than the fixture draft, since the registry is what the binder is
     handed."""
-    declared = _declared_order(db, case)
+    declared = _declared_order(db, case.skill)
     assert sorted(declared) == sorted(case.bound), (
         f"{case.case_id}: the routine declares {declared}, the ask supplies {sorted(case.bound)}"
     )
@@ -4568,7 +4585,7 @@ def _minted_job(db: Database, before: set[str]) -> MemoryRow | None:
     return next((row for row in new_collections(db, before) if row.skill_name is not None), None)
 
 
-def _enactment_binding_check(row: MemoryRow | None, case: _IdleApplyCase) -> Check:
+def _enactment_binding_check(row: MemoryRow | None, skill: SkillDraft) -> Check:
     """The other half of the selection claim (the decision half is
     ``_skill_binding_check``): the JOB runs the routine that covers the ask.
 
@@ -4577,7 +4594,7 @@ def _enactment_binding_check(row: MemoryRow | None, case: _IdleApplyCase) -> Che
     now on — and it is a different failure from deciding wrongly, so it reads as its own
     row."""
     label = "state: the job runs the routine that covers the ask"
-    intended = slug_skill_name(case.skill.name)
+    intended = slug_skill_name(skill.name)
     bound = row.skill_name if row is not None else None
     return Check(
         label,
@@ -4669,7 +4686,13 @@ def _score_idle_to_apply(
     landed = db.machine.latest_transition()
     return [
         *_cold_binding_checks(db, row, landed, case),
-        *_cold_terms_checks(db, row, case),
+        *_job_terms_checks(
+            db,
+            row,
+            fires_every=case.cadence_seconds,
+            anchored=case.anchored,
+            expects_expiry=case.expects_expiry,
+        ),
         _seeded_jobs_untouched_check(db),
         _no_teach_question_check(landed),
         Check(
@@ -4685,17 +4708,19 @@ def _score_idle_to_apply(
     ]
 
 
-def _declared_order(db: Database, case: _IdleApplyCase) -> list[str]:
-    """The routine's declared parameter names, in declared order — read off the REGISTRY
-    row, which is the same list the binder is handed."""
-    routine = db.skills.get(slug_skill_name(case.skill.name))
-    assert routine is not None, f"{case.case_id}: the routine the ask needs must be registered"
-    return [parameter.name for parameter in parameters_from_json(routine.parameters)]
+def _declared_order(db: Database, skill: SkillDraft) -> list[str]:
+    """The routine's declared parameter NAMES, in declared order — the registry read
+    ``_declared_parameters`` owns, projected onto the half a derived name needs.
+
+    The routine is passed as a VALUE rather than read off a case, because both apply beats
+    over this world ask the same question of two different case shapes and the reading
+    itself must be one definition."""
+    return [parameter.name for parameter in _declared_parameters(db, slug_skill_name(skill.name))]
 
 
-def _derived_container(db: Database, case: _IdleApplyCase) -> str:
-    """The container this ask's job runs into — the SHIPPED derivation over the routine the
-    ask is covered by and the values it supplies, in the routine's own declared order.
+def _derived_container(db: Database, skill: SkillDraft, bound: dict[str, str]) -> str:
+    """The container a job runs into — the SHIPPED derivation over the routine it runs and
+    the values it is pointed at, in the routine's own declared order.
 
     Derived rather than written down, for the same reason the seeded rounds' containers
     are: a name spelled out here would be a second copy of the naming scheme, free to drift
@@ -4703,11 +4728,13 @@ def _derived_container(db: Database, case: _IdleApplyCase) -> str:
     about the container would still be self-consistent.  The ORDER comes off the registry
     rather than out of the fixture, so a fixture cannot put the right values in a wrong
     order and derive a plausible name for a job nobody asked for."""
-    values = [case.bound[name] for name in _declared_order(db, case)]
-    return derive_collection_name(slug_skill_name(case.skill.name), values)
+    values = [bound[name] for name in _declared_order(db, skill)]
+    return derive_collection_name(slug_skill_name(skill.name), values)
 
 
-def _fresh_mint_check(db: Database, row: MemoryRow | None, case: _IdleApplyCase) -> Check:
+def _fresh_mint_check(
+    db: Database, row: MemoryRow | None, skill: SkillDraft, bound: dict[str, str]
+) -> Check:
     """The job landed on the container DERIVED for it (#1870) — a new space, so the name
     the derivation makes of this routine and these values is one no collection carries yet
     and find-or-create mints it.
@@ -4716,7 +4743,7 @@ def _fresh_mint_check(db: Database, row: MemoryRow | None, case: _IdleApplyCase)
     the routine and the values it was pointed at, so a container under it is a job anybody
     can find again by asking for the same thing — and the five already running, whose names
     the untouched check reads the same way, are exactly the names it must not be."""
-    expected = _derived_container(db, case)
+    expected = _derived_container(db, skill, bound)
     landed = row is not None and row.name == expected
     return Check(
         "state: the job landed on the container derived for it",
@@ -4728,18 +4755,14 @@ def _fresh_mint_check(db: Database, row: MemoryRow | None, case: _IdleApplyCase)
     )
 
 
-def _cold_binding_checks(
-    db: Database, row: MemoryRow | None, landed: StateTransition | None, case: _IdleApplyCase
-) -> list[Check]:
-    """She set a job up, on the routine the ask is covered by, in the container derived for
-    it.
+def _job_stood_up_checks(db: Database, row: MemoryRow | None) -> list[Check]:
+    """A job exists at all: the call that stands one up was made, a new collection carries
+    it, and the routine's program was rendered into it.
 
-    What is NOT here since #1870 is whether each VALUE was read off the message: the turn
-    does not bind values any more — the binder does, before the turn begins — so scoring it
-    through a chat turn would be measuring one draw through another.  That contract is
-    ``test_skill_binding.py``'s, where the binder is driven on its own; what survives here
-    is the derived NAME, which is a function of those values and is what the rest of the
-    system identifies the job by."""
+    The three claims every beat that mints a job from a routine the registry ALREADY holds
+    makes in the same words — the cold ask and the short ask completed over two turns — so
+    they are read once here rather than restated per beat, where the labels (which are
+    diff-join keys) would drift apart a word at a time."""
     return [
         Check(
             "state: she set the job up with collection_set",
@@ -4757,23 +4780,47 @@ def _cold_binding_checks(
             row is not None and bool(row.extraction_prompt),
             kind="state",
         ),
+    ]
+
+
+def _cold_binding_checks(
+    db: Database, row: MemoryRow | None, landed: StateTransition | None, case: _IdleApplyCase
+) -> list[Check]:
+    """She set a job up, on the routine the ask is covered by, in the container derived for
+    it.
+
+    What is NOT here since #1870 is whether each VALUE was read off the message: the turn
+    does not bind values any more — the binder does, before the turn begins — so scoring it
+    through a chat turn would be measuring one draw through another.  That contract is
+    ``test_skill_binding.py``'s, where the binder is driven on its own; what survives here
+    is the derived NAME, which is a function of those values and is what the rest of the
+    system identifies the job by."""
+    return [
+        *_job_stood_up_checks(db, row),
         _skill_binding_check(
             _landed_apply_move(landed),
             intended=slug_skill_name(case.skill.name),
             label="state: the decision bound the routine that covers the ask",
         ),
-        _enactment_binding_check(row, case),
-        _fresh_mint_check(db, row, case),
+        _enactment_binding_check(row, case.skill),
+        _fresh_mint_check(db, row, case.skill, case.bound),
     ]
 
 
-def _cold_terms_checks(db: Database, row: MemoryRow | None, case: _IdleApplyCase) -> list[Check]:
-    """The job runs on the terms the ask gave — its cadence, its end condition (or the
+def _job_terms_checks(
+    db: Database, row: MemoryRow | None, *, fires_every: int, anchored: bool, expects_expiry: bool
+) -> list[Check]:
+    """The job runs on the terms it was given — its cadence, its end condition (or the
     absence of one), and the telling-them clause every one of these asks carries — and she
-    set it running instead of running it once."""
+    set it running instead of running it once.
+
+    The terms are passed as VALUES rather than read off a case, because both beats that
+    stand a job up from a cold registry ask exactly this of it — the cold ask in one turn
+    and the short ask completed in two — and the labels are diff-join keys, so one reading
+    is what lets the two report under the same rows."""
     return [
-        _schedule_check(row, fires_every=case.cadence_seconds, anchored=case.anchored),
-        _expiry_check(row, expected=case.expects_expiry),
+        _schedule_check(row, fires_every=fires_every, anchored=anchored),
+        _expiry_check(row, expected=expects_expiry),
         Check(
             "state: it will tell them when something changes",
             row is not None and bool(row.notify),
@@ -4781,7 +4828,7 @@ def _cold_terms_checks(db: Database, row: MemoryRow | None, case: _IdleApplyCase
         ),
         Check(
             "state: she set it running instead of running it now (no browse this turn)",
-            tool_not_called(db, "browse"),
+            tool_not_called(db, _BROWSE_TOOL),
             kind="state",
         ),
     ]
@@ -5117,14 +5164,6 @@ def assert_the_ask_falls_one_short(db: Database, case: _IdleRequestCase) -> None
     assert case.missing, f"{case.case_id}: a request case is an ask the words fall SHORT of"
 
 
-def _declared_parameters(db: Database, skill: str) -> list[SkillParameter]:
-    """One registered routine's declared parameters, in declared order — the list the
-    binder is handed and the list the request instruction renders from."""
-    routine = db.skills.get(skill)
-    assert routine is not None, f"the routine {skill!r} must be registered"
-    return parameters_from_json(routine.parameters)
-
-
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 
@@ -5288,7 +5327,7 @@ def _score_idle_to_request(
         _seeded_jobs_untouched_check(db, case.journeys),
         Check(
             "state: she asked instead of going to look (no browse this turn)",
-            tool_not_called(db, "browse"),
+            tool_not_called(db, _BROWSE_TOOL),
             kind="state",
         ),
         Check("state: she configured nothing", tool_not_called(db, _SET_TOOL), kind="state"),
@@ -5374,3 +5413,691 @@ async def test_idle_to_request_holds_the_page_and_asks_what_to_watch_for(
     of them is the rational read — which is what four of five samples did, correctly, on the
     first run.  The ask is unchanged; the history is what makes the shortfall reachable."""
     await _run_idle_request_case(chat_eval, _SHORT_PIER)
+
+
+# ── request → apply: the missing value arrives and the job stands up ──────────
+#
+# Beat 6 (#1892), and the second half of #1885's agreed pairs: each case starts exactly
+# where its short ask left the machine — parked in request, still anchored to that ask —
+# and the message that arrives is the answer to what the reply asked for.
+#
+# Nothing new is asked of the CLASSIFIER or the BINDER.  The request → apply edge already
+# exists and names the routine again; the binder then reads the anchor ask AND the arriving
+# message against what that routine declares, which is the same call a cold apply makes,
+# over two turns instead of one.  What is new is that the values come from BOTH turns:
+# case 1 takes the page from this message and the sailing from the ask, case 5 the other
+# way round, and case 4 supplies a value and a fresh term together.
+#
+# The turn's job is then the framed apply shape every apply has (beats 3-4): Python
+# find-or-creates the container on the derived name, the routine and its values are
+# injected framework-side, and the call says only when the job runs, when it stops and
+# whether to tell the user.  ONE ask, ONE collection — every case completes exactly one job.
+#
+# A message that still left the signature short would land back in request, structurally
+# (the second door #1885 built).  Nothing here drives that: it is the shape these cases
+# must NOT produce, and the headline check names it when they do.
+#
+# The reference replies quoted above each supply are review targets, never scorer strings.
+
+
+_NEW_BAKERY_URL = "https://newbakery.example/specials"
+# The one space the cold-apply beat's pages do not already cover: the bakery ask names no
+# page at all, so its address arrives only in the message that answers the request turn.
+# Matched on its host rather than on "bakery" — the harbour bakery beside it is a
+# DIFFERENT bakery, and a token broad enough to catch both would answer a read of one with
+# the other's body.
+_NEW_BAKERY_SPECIALS = CannedPage(
+    match="newbakery",
+    text=(
+        "Title: New Bakery — today's specials | newbakery\n"
+        f"{_NEW_BAKERY_URL}\n"
+        "\n"
+        "A fictional bakery at the quiet end of the parade, posting before it opens.\n"
+        "Today's special: apricot and almond galette\n"
+        f"[Today's specials]({_NEW_BAKERY_URL})\n"
+        "The special is baked once and comes off the board when it sells out.\n"
+        "Open from 07:00 until the afternoon, closed on Sundays.\n"
+        "\n"
+        "Always on the counter\n"
+        "Country loaf, malted brown, cinnamon buns and one savoury pastry a day\n"
+        f"[Standing menu]({_NEW_BAKERY_URL}/menu)\n"
+        "Yesterday's loaves go out at half price from midday.\n"
+        "Celebration cakes need three days' notice.\n"
+        "\n"
+        "Orders and allergens\n"
+        "Everything is baked in a kitchen that handles nuts, sesame and dairy\n"
+        f"[Allergen list]({_NEW_BAKERY_URL}/allergens)\n"
+        "Orders are taken at the counter or by telephone.\n"
+        "Nothing is delivered; every order is collected.\n"
+    ),
+)
+
+# The live temptations for this beat: the cold-apply spaces — which every supplied address
+# but one already reaches — plus the new bakery's own page, so a turn that goes and LOOKS
+# instead of setting the job up gets a real page back and is caught by the no-browse check.
+# Kept BESIDE ``_UNKNOWN_SPACES`` rather than added to it: that list is the world the idle →
+# request cases were measured against, and a page added there would change it.
+_SUPPLIED_SPACES = [*_UNKNOWN_SPACES, _NEW_BAKERY_SPECIALS]
+
+
+# ── The five supplies ─────────────────────────────────────────────────────────
+#
+# Each answers the reply its own case is parked on, in the plainest form the answer arrives
+# in: an address on its own, an address inside a sentence, an address with a new term after
+# it, and — where the page was given with the ask — the thing to look for on it.
+
+# Case 1 — the page for the second timetable.  The sailing to watch for came with the ask,
+# so the completed signature takes one value from each turn.
+_SUPPLY_TIMETABLE = _NORTH_PIER_URL
+
+# Case 2 — the listing itself, bare.  Its terms were complete from the start, so this
+# message settles the one thing that was missing and adds nothing.
+_SUPPLY_LISTING = _KEEL_LANTERN_URL
+
+# Case 3 — the address inside a sentence, which is how a person answers "where is it
+# posted?".
+_SUPPLY_COUNT = f"they post it at {_RIVER_OTTERS_URL}"
+
+# Case 4 — the page AND a term the ask never gave.  The cadence stays the ask's ("each
+# morning") and the end condition is this message's, so the job's terms COMPOSE across the
+# two turns — the thing a beat about one ask spread over two messages exists to measure.
+_SUPPLY_BAKERY = f"{_NEW_BAKERY_URL} — oh and just until the end of the month"
+
+# Case 5 — the held binding completed from the other side: the address was in the ask, and
+# what to look for on it is what arrives now.
+_SUPPLY_PIER = "the dawn sailing"
+
+
+# ── The replies they answer ───────────────────────────────────────────────────
+#
+# TRANSCRIPTIONS of measured draws, never inventions: each is a reply one sample of the
+# merged idle → request beat really sent, sampled from that beat's most recent artifact run
+# and picked as the modal shape — asks for the piece that is missing, works from what the
+# ask already gave, and names the cadence back.  Re-sample them whenever the request
+# instruction changes, since what is seeded here is that instruction's own output.
+
+_ASKED_WHICH_TIMETABLE = (
+    "Got it—just let me know the exact URL of the pier timetable page (and if there’s a "
+    "specific phrase or line you want me to look for, like “Dawn Sailing”) and I’ll start "
+    "checking it every morning for that entry. 🚢"
+)
+
+_ASKED_FOR_THE_LISTING = (
+    "Got it—just drop the URL of the listing you want to watch, and I’ll start checking "
+    "its price every couple of hours until Sunday. 📦"
+)
+
+_ASKED_WHERE_THE_COUNT_IS = (
+    "Sure thing! Just shoot me the URL of the page where the otter count is listed, and "
+    "I’ll set up weekly checks to ping you if it drops 🌊"
+)
+
+_ASKED_FOR_THE_BAKERY_PAGE = (
+    "Sure thing! Just give me the bakery’s webpage address and I’ll grab its daily "
+    "special every morning."
+)
+
+_ASKED_WHAT_TO_WATCH_FOR = (
+    "Sure thing! I’ll track that page for you every morning, but I need the exact "
+    "text/keyword to look for in the departures list – what phrase identifies the sailing "
+    "you’re after?"
+)
+
+
+class _RequestApplyCase(NamedTuple):
+    """One agreed supply, and the job the turn it opens has to stand up.
+
+    ``parked`` is the idle → request case this continues — its ask, the routine that covers
+    it, what the ask settled and what it left out, and the world it is answered in.  Read
+    rather than restated, so the two beats cannot describe the same round differently.
+
+    ``reply`` is what Penny said when she asked for the missing piece, and ``supply`` the
+    message under test.  ``supplies`` is what THAT message settles, keyed by the parameter
+    it answers — so the completed binding (``bound``) is the ask's values and this message's
+    together, which is the whole shape of the edge.
+
+    The rest is what the two turns' terms ask for: ``cadence_seconds`` is how far apart the
+    job should fire whatever rule spelling says so, ``anchored`` whether those terms name a
+    time of DAY rather than a period (so the rule has to state an hour to run at),
+    ``expects_expiry`` whether an end condition was given at all (inventing one is a
+    failure), and ``cadence_tokens`` what a reply naming the cadence back would contain.
+
+    ``reference`` is how the supply would be answered WELL — a review target, read at joint
+    review and never matched by the scorer.  It is DATA for the reason the short ask's is:
+    a scorer that cannot pass the answer the case itself calls correct is a broken scorer,
+    and holding the reply here lets the deterministic pin in ``test_eval_harness.py`` run
+    the cadence vocabulary through it without a GPU."""
+
+    case_id: str
+    parked: _IdleRequestCase
+    reply: str
+    supply: str
+    supplies: dict[str, str]
+    cadence_seconds: int
+    anchored: bool
+    expects_expiry: bool
+    cadence_tokens: tuple[str, ...]
+    reference: str
+
+    @property
+    def bound(self) -> dict[str, str]:
+        """Every value the completed signature carries — what the ask settled plus what
+        this message supplies.
+
+        Composed rather than written out, because the two halves are stated where they are
+        DECIDED: a value restated here could drift from the ask it is supposed to have come
+        from, and the container's derived name is built from all of them."""
+        return {**self.parked.settled, **self.supplies}
+
+
+_SUPPLIED_TIMETABLE = _RequestApplyCase(
+    case_id="transition-request-to-apply",
+    parked=_SHORT_TIMETABLE,
+    reply=_ASKED_WHICH_TIMETABLE,
+    supply=_SUPPLY_TIMETABLE,
+    supplies={"url": _NORTH_PIER_URL},
+    cadence_seconds=86400,
+    anchored=True,
+    expects_expiry=False,
+    cadence_tokens=("morning",),
+    reference=(
+        "done — i'll check the north pier timetable every morning and message you when "
+        "the dawn sailing shows up."
+    ),
+)
+
+_SUPPLIED_LISTING = _RequestApplyCase(
+    case_id="transition-request-to-apply-listing",
+    parked=_SHORT_LISTING,
+    reply=_ASKED_FOR_THE_LISTING,
+    supply=_SUPPLY_LISTING,
+    supplies={"url": _KEEL_LANTERN_URL},
+    cadence_seconds=7200,
+    anchored=False,
+    expects_expiry=True,
+    cadence_tokens=("couple", "two hours", "2 hours", "120 min"),
+    reference=(
+        "done — i'll check that listing's price every couple of hours until sunday and "
+        "message you if it moves."
+    ),
+)
+
+_SUPPLIED_COUNT = _RequestApplyCase(
+    case_id="transition-request-to-apply-count",
+    parked=_SHORT_COUNT,
+    reply=_ASKED_WHERE_THE_COUNT_IS,
+    supply=_SUPPLY_COUNT,
+    supplies={"url": _RIVER_OTTERS_URL},
+    cadence_seconds=604800,
+    anchored=False,
+    expects_expiry=False,
+    cadence_tokens=("week",),
+    reference=("done — i'll check the otter count every week and message you if it drops."),
+)
+
+_SUPPLIED_BAKERY = _RequestApplyCase(
+    case_id="transition-request-to-apply-digest",
+    parked=_SHORT_BAKERY,
+    reply=_ASKED_FOR_THE_BAKERY_PAGE,
+    supply=_SUPPLY_BAKERY,
+    supplies={"url": _NEW_BAKERY_URL},
+    cadence_seconds=86400,
+    anchored=True,
+    expects_expiry=True,
+    cadence_tokens=("morning",),
+    reference=(
+        "done — i'll grab the new bakery's special every morning until the end of the "
+        "month and message you what's on."
+    ),
+)
+
+_SUPPLIED_PIER = _RequestApplyCase(
+    case_id="transition-request-to-apply-held-binding",
+    parked=_SHORT_PIER,
+    reply=_ASKED_WHAT_TO_WATCH_FOR,
+    supply=_SUPPLY_PIER,
+    supplies={"keyword": "dawn sailing"},
+    cadence_seconds=86400,
+    anchored=True,
+    expects_expiry=False,
+    cadence_tokens=("morning",),
+    reference=(
+        "done — i'll check the north pier board every morning and message you when the "
+        "dawn sailing appears."
+    ),
+)
+
+# Every supply, in one place — so the deterministic pin in ``test_eval_harness.py`` can
+# drive each one's seeder and check its claims about the routine without a GPU.
+REQUEST_APPLY_CASES = (
+    _SUPPLIED_TIMETABLE,
+    _SUPPLIED_LISTING,
+    _SUPPLIED_COUNT,
+    _SUPPLIED_BAKERY,
+    _SUPPLIED_PIER,
+)
+
+
+# ── The world: the composed world, then the round that is waiting on an answer ─
+
+# The run ids the parked round's own turn is written under.  One turn per world, so one
+# bundle rather than the per-journey mint the composed history needs — and seeded-prefixed,
+# so every "what did this sample do" reader excludes them.
+_REQUEST_DRAW_RUN = seeded_run_id("request-draw")
+_REQUEST_TURN_RUN = seeded_run_id("request-turn")
+
+# The parked round adds ONE exchange to the composed world — the short ask and the reply
+# that asked for what it left out — so the window a reader reads through is the composed
+# one plus that exchange's two turns, derived the same way rather than picked.
+_PARKED_MESSAGE_WINDOW = _COMPOSED_MESSAGE_WINDOW + 2
+
+
+def seed_parked_in_request(case: _RequestApplyCase) -> Seeder:
+    """The world the supply is answered in: the composed world its own short ask was
+    measured against, then the turn that ask opened.
+
+    Compositional like every world before it — the journeys are ``seed_composed_world``'s
+    and the ask is the idle → request case's own — so nothing here restates a history or an
+    ask an earlier beat already defines."""
+
+    def seed(db: Database) -> None:
+        seed_composed_world(case.parked.journeys)(db)
+        _seed_request_turn(db, case)
+
+    return seed
+
+
+def _seed_request_turn(db: Database, case: _RequestApplyCase) -> None:
+    """The turn that parked the machine, with everything it left behind: the short ask
+    INCOMING, the draw that decided request and named the routine, the text-only run that
+    answered, the reply OUTGOING threaded to the ask, and the move itself — anchored to
+    that ask, carrying the routine's name and NO framing.
+
+    The absent framing and the absent binder row are what the measured turns really left.
+    A request turn arrives through one of two doors — the classifier's own idle → request
+    edge, or the binder's shortfall redirecting a drawn apply (#1885) — and every measured
+    sample of that beat came through the FIRST: the draw said request and no binder ran.
+    Both doors leave the same row (request, anchored to the ask, the routine named, no
+    framing, decided by a classifier), so the world the supply is answered in is the same
+    either way; what the second door would add is a binder call, and seeding one the
+    measured turns never made would be a ledger no run has written."""
+    ask_id = _log_ask(db, case.parked.ask, case.case_id)
+    _log_short_ask_draw(db, case)
+    _log_chat_step(
+        db,
+        run_id=_REQUEST_TURN_RUN,
+        messages=[{"role": "user", "content": case.parked.ask}],
+        response=_seeded_response(case.reply),
+    )
+    _log_reply(db, case.reply, answering=ask_id)
+    _park(
+        db,
+        ConversationState.REQUEST,
+        anchor_message_id=ask_id,
+        run_id=_REQUEST_TURN_RUN,
+        message_id=ask_id,
+        skill_name=slug_skill_name(case.parked.skill.name),
+    )
+
+
+def _log_short_ask_draw(db: Database, case: _RequestApplyCase) -> None:
+    """The draw that parked the machine — over an idle machine with nothing anchored, every
+    taught routine offered as production offers them, deciding request and naming the
+    routine it negotiates on its second line."""
+    _log_classifier_draw(
+        db,
+        run_id=_REQUEST_DRAW_RUN,
+        snapshot=MachineSnapshot(
+            state=ConversationState.IDLE,
+            penny_last_turn=_IDLE_BANTER[-1].answered,
+            skill_candidates=[_candidate(journey.round.skill) for journey in case.parked.journeys],
+        ),
+        message=case.parked.ask,
+        drawn=_drawn_state(
+            ConversationState.REQUEST, skill=slug_skill_name(case.parked.skill.name)
+        ),
+    )
+
+
+# ── The loud probe: the machine really is waiting on this one answer ──────────
+
+
+def assert_parked_in_request_world(db: Database, case: _RequestApplyCase) -> None:
+    """Everything the parked-in-request seeder is responsible for, asserted out loud.
+
+    The composed world's own claims minus the one this round changes — the machine is
+    parked rather than idle, so ``_assert_the_machine_is_idle`` is replaced by the parked
+    assertion below — plus the round the supply answers.  Five cases share one seeder, and
+    a drift here is five turns answered against a world nothing produces, an hour of GPU
+    before anyone reads a number."""
+    journeys = case.parked.journeys
+    _assert_every_job_is_live(db, journeys)
+    _assert_every_round_is_in_the_ledger(db, journeys)
+    _assert_the_parked_conversation(db, case)
+    _assert_parked_on_the_short_ask(db, case)
+
+
+def _assert_the_parked_conversation(db: Database, case: _RequestApplyCase) -> None:
+    """The world READS as the conversation it claims to be: the composed world's turns,
+    then the short ask and the reply that asked for what it left out — in that order,
+    alternating, every reply threaded to the message it answers.
+
+    Read through ``get_messages_since``, the reader ``_build_conversation`` uses, for the
+    reason the composed probe reads through it: an unthreaded reply is in the record and
+    out of the conversation, and only the parent link tells the two apart."""
+    window = db.messages.get_messages_since(
+        TEST_SENDER, since=datetime.min, limit=_PARKED_MESSAGE_WINDOW
+    )
+    seen = [(row.direction, row.content) for row in window]
+    expected = [
+        *expected_conversation(case.parked.journeys),
+        (PennyConstants.MessageDirection.INCOMING, case.parked.ask),
+        (PennyConstants.MessageDirection.OUTGOING, case.reply),
+    ]
+    assert seen == expected, (
+        "the parked world must read back as the conversation it claims to be — "
+        f"diverges at turn {_first_divergence(seen, expected)}"
+    )
+    _assert_every_reply_is_threaded(window)
+
+
+def _assert_parked_on_the_short_ask(db: Database, case: _RequestApplyCase) -> None:
+    """The machine is parked in REQUEST on the short ask, naming the routine it is
+    negotiating and carrying NO framing.
+
+    The absent framing is load-bearing: a parked request round holds no partial binding
+    (#1885), so the turn under test binds the ask and the arriving message from scratch —
+    a framing recorded here would send it down the already-framed path instead, and the
+    case would be measuring a round production never parks in."""
+    ask_id = _seeded_ask_id(db, case.parked.ask, limit=_PARKED_MESSAGE_WINDOW)
+    assert ask_id is not None, f"{case.case_id}: the seeded ask must be findable by its content"
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.to_state == ConversationState.REQUEST.value, (
+        f"{case.case_id}: the machine must be parked in request, not {latest}"
+    )
+    assert latest.anchor_message_id == ask_id, (
+        f"{case.case_id}: the round must be anchored to the ask, not {latest.anchor_message_id}"
+    )
+    assert latest.skill_name == slug_skill_name(case.parked.skill.name), (
+        f"{case.case_id}: the move must name the routine it negotiates, not {latest.skill_name}"
+    )
+    assert latest.skill_frame is None, (
+        f"{case.case_id}: a parked request round holds no framing, got {latest.skill_frame}"
+    )
+
+
+def _probe_parked_round(case: _RequestApplyCase) -> Preparer:
+    """The prepare hook: the seeder's own claims, the registry one that is only true once
+    the runner has laid the fixture skills down, and this case's own three — the ask really
+    did fall short, the supply really does complete it, and the job it completes really is
+    one this world has never stood up."""
+
+    def probe(penny: Penny) -> None:
+        assert_parked_in_request_world(penny.db, case)
+        assert_the_registry_holds(penny.db, case.parked.journeys)
+        assert_the_ask_falls_one_short(penny.db, case.parked)
+        assert_the_supply_completes_the_routine(penny.db, case)
+        assert_the_job_has_no_container_yet(penny.db, case)
+        assert_values_are_new(penny.db, case.case_id, case.supplies.values())
+
+    return probe
+
+
+def assert_the_supply_completes_the_routine(db: Database, case: _RequestApplyCase) -> None:
+    """The supply answers exactly what the ask left out, and the two together answer the
+    routine's declared parameters — every one of them, and nothing it does not declare.
+
+    Both halves matter.  A supply that answers something the ask had already settled would
+    leave the signature short whatever the model did, so every check in the beat would read
+    as a failure the turn never made; a supply that answers a parameter the routine dropped
+    would point the job at a value nothing binds.  Read off the REGISTRY row, which is the
+    list the binder is actually handed."""
+    declared = sorted(
+        parameter.name
+        for parameter in _declared_parameters(db, slug_skill_name(case.parked.skill.name))
+    )
+    assert declared == sorted(case.bound), (
+        f"{case.case_id}: the routine declares {declared}, the two turns settle "
+        f"{sorted(case.bound)}"
+    )
+    assert sorted(case.supplies) == sorted(case.parked.missing), (
+        f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
+        f"the supply answers {sorted(case.supplies)}"
+    )
+
+
+def assert_the_job_has_no_container_yet(db: Database, case: _RequestApplyCase) -> None:
+    """Nothing carries this job yet: the container its completed values derive is a name no
+    collection in this world holds.
+
+    The premise of the whole beat — the request turn built nothing, because a job short of
+    a value has no name to build under — and the thing the fresh-mint check would otherwise
+    read as a mint when it was a find."""
+    container = _derived_container(db, case.parked.skill, case.bound)
+    assert db.memories.get(container) is None, (
+        f"{case.case_id}: {container!r} must not exist until this turn builds it"
+    )
+
+
+# ── Scoring ───────────────────────────────────────────────────────────────────
+
+
+def _landed_in_apply_check(landed: StateTransition | None) -> Check:
+    """The beat's headline: the supply moved the machine out of request and into apply.
+
+    Structural, off the move the turn recorded — where a turn ended up is a row, never a
+    reading of the reply.  Every other landing is a distinct finding and the rationale names
+    which one: request means the binder is still short of something, elicit means the
+    routine was taken to be the wrong one, idle means the answer was read as chat.
+
+    It is the only check that reads the landing.  Nothing else scores it — a second check
+    conditioned on the same row would count one miss twice."""
+    to_state = landed.to_state if landed is not None else None
+    applied = to_state == ConversationState.APPLY.value
+    return Check(
+        "state: the turn landed in apply",
+        applied,
+        rationale=None if applied else f"the machine landed in {to_state}",
+        kind="state",
+    )
+
+
+def _supplied_anchor_check(
+    db: Database, landed: StateTransition | None, case: _RequestApplyCase
+) -> Check:
+    """The move came FROM request and still points at the ask that opened the round
+    (#1827) — the anchor is the turn the supply was bound TOGETHER WITH, so a move arriving
+    with a different one (or none) is a round that lost half of what it is completing.
+    Same conditional-n/a as every other check that reads the move."""
+    label = "state: the move came from request with the ask still its anchor"
+    applied = _landed_apply_move(landed)
+    if applied is None:
+        return Check.na(label, kind="state")
+    asked = _seeded_ask_id(db, case.parked.ask, limit=_PARKED_MESSAGE_WINDOW)
+    carried = (
+        applied.from_state == ConversationState.REQUEST.value
+        and asked is not None
+        and applied.anchor_message_id == asked
+    )
+    return Check(
+        label,
+        carried,
+        rationale=None
+        if carried
+        else (
+            f"came from {applied.from_state}, anchored to {applied.anchor_message_id} "
+            f"(the ask is {asked})"
+        ),
+        kind="state",
+    )
+
+
+def _one_container_check(db: Database, before: set[str]) -> Check:
+    """ONE ask, ONE collection: the turn built exactly one container.
+
+    The completing half of the derived-name claim.  A second collection is a second job
+    nobody asked for — and since the job the user is handed back is the one carrying the
+    routine, an extra one is a mechanism that either runs unnoticed or takes the name the
+    next ask for this job would derive."""
+    created = [row.name for row in new_collections(db, before)]
+    built_one = len(created) == 1
+    return Check(
+        "state: exactly one collection was built for the job",
+        built_one,
+        rationale=None if built_one else f"created {created}",
+        kind="state",
+    )
+
+
+def _score_request_to_apply(
+    db: Database, before: set[str], reply: str, *, case: _RequestApplyCase
+) -> list[Check]:
+    """The answer the request turn asked for arrived, so the job it was negotiating stands
+    up — on the routine it named, in the container its completed values derive, pointed at
+    what BOTH turns settled, on the terms they gave, and without disturbing any of the jobs
+    already running.
+
+    ONE scorer for all five cases, bound to the case's own terms.  The labels are diff-join
+    keys and are deliberately case-NEUTRAL: one wording reads the same whether the value
+    that arrived was the page or the thing to look for on it."""
+    row = _minted_job(db, before)
+    landed = db.machine.latest_transition()
+    return [
+        _landed_in_apply_check(landed),
+        *_supplied_binding_checks(db, before, row, landed, case),
+        # The cadence is the ASK's, and the end condition only where one was given at all —
+        # case 4's arriving with the value, case 2's back with the ask.
+        *_job_terms_checks(
+            db,
+            row,
+            fires_every=case.cadence_seconds,
+            anchored=case.anchored,
+            expects_expiry=case.expects_expiry,
+        ),
+        _seeded_jobs_untouched_check(db, case.parked.journeys),
+        _supplied_anchor_check(db, landed, case),
+        Check(
+            "reply: asked for no page structure",
+            asked_for_page_structure(reply) is None,
+            rationale=(
+                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
+            ),
+            kind="reply",
+        ),
+        _names_the_cadence_check(reply, case),
+        *_job_setup_advisories(db, row, landed),
+    ]
+
+
+def _names_the_cadence_check(reply: str, case: _RequestApplyCase) -> Check:
+    """The reply says what is RUNNING now, in the terms they gave — a floor on the answer,
+    read as the cadence being named at all, with how well it was said read at joint review
+    against the reference reply.
+
+    That reference reply is the check's own tripwire: a vocabulary that cannot match the
+    wording the case declares CORRECT would score the beat's own answer a miss on every
+    sample, so the pin in ``test_eval_harness.py`` runs it through this set without a
+    GPU."""
+    named = _mentions_any(case.cadence_tokens, reply)
+    return Check(
+        "reply: she says what is running now, naming the cadence",
+        named,
+        rationale=None if named else f"named none of {list(case.cadence_tokens)}",
+        kind="reply",
+    )
+
+
+def _supplied_binding_checks(
+    db: Database,
+    before: set[str],
+    row: MemoryRow | None,
+    landed: StateTransition | None,
+    case: _RequestApplyCase,
+) -> list[Check]:
+    """She set a job up, on the routine the round was negotiating, in the ONE container its
+    completed values derive, pointed at everything the two turns settled.
+
+    The values are the binder's since #1870, so what is scored here is that the COMPLETED
+    signature reached the job: the container's name is a function of every value, and the
+    bound parameters are what the framework injected from it — which is exactly what a
+    binding completed over two turns has to get right."""
+    return [
+        _skill_binding_check(
+            _landed_apply_move(landed),
+            intended=slug_skill_name(case.parked.skill.name),
+            label="state: the decision bound the routine the round was negotiating",
+        ),
+        *_job_stood_up_checks(db, row),
+        _enactment_binding_check(row, case.parked.skill),
+        _fresh_mint_check(db, row, case.parked.skill, case.bound),
+        _one_container_check(db, before),
+        _bound_parameters_check(
+            row,
+            wanted=tuple(case.bound.values()),
+            label="state: the routine is pointed at what both turns settled",
+        ),
+    ]
+
+
+async def _run_request_apply_case(chat_eval: ChatEval, case: _RequestApplyCase) -> None:
+    """Drive one request → apply case: parked in request on its own short ask with the
+    composed world behind it, exactly the routines its history taught in the registry, every
+    supplied space installed as a live temptation, and the shared scorer bound to the terms
+    its two turns give.  Report-only — the thresholds are the code owner's to set once the
+    numbers are read."""
+    await chat_eval(
+        case_id=case.case_id,
+        message=case.supply,
+        browse=_SUPPLIED_SPACES,
+        seed=seed_parked_in_request(case),
+        seed_skills=[journey.round.skill for journey in case.parked.journeys],
+        prepare=_probe_parked_round(case),
+        score=partial(_score_request_to_apply, case=case),
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_to_apply_stands_the_job_up_on_the_page_that_arrives(
+    chat_eval: ChatEval,
+) -> None:
+    """request → apply: the page for the second timetable arrives on its own, and the
+    sailing to watch for is still back in the ask — so the job that stands up carries one
+    value from each turn, on the cadence the ask gave."""
+    await _run_request_apply_case(chat_eval, _SUPPLIED_TIMETABLE)
+
+
+@pytest.mark.asyncio
+async def test_request_to_apply_binds_the_listing_the_ask_left_out(chat_eval: ChatEval) -> None:
+    """request → apply on the price watcher: the terms were complete from the start and only
+    the listing was missing, so this bare address is the whole answer — and the end
+    condition the ASK gave still has to reach the job."""
+    await _run_request_apply_case(chat_eval, _SUPPLIED_LISTING)
+
+
+@pytest.mark.asyncio
+async def test_request_to_apply_sets_up_the_weekly_count(chat_eval: ChatEval) -> None:
+    """request → apply on the count watcher: the address arrives inside a sentence, which is
+    how a person answers where something is posted — the value is a span of the message
+    rather than the whole of it."""
+    await _run_request_apply_case(chat_eval, _SUPPLIED_COUNT)
+
+
+@pytest.mark.asyncio
+async def test_request_to_apply_composes_the_new_end_with_the_asks_cadence(
+    chat_eval: ChatEval,
+) -> None:
+    """request → apply where the answer brings a term with it: the page AND an end
+    condition the ask never gave, so the job's terms compose across the two turns — the
+    cadence from the ask, the end from this message."""
+    await _run_request_apply_case(chat_eval, _SUPPLIED_BAKERY)
+
+
+@pytest.mark.asyncio
+async def test_request_to_apply_completes_the_held_binding(chat_eval: ChatEval) -> None:
+    """request → apply from the other side of the held binding: the page came with the ask
+    and what to look for on it arrives now, so the completed signature is assembled in the
+    reverse order — and the job still lands on the one container both values derive."""
+    await _run_request_apply_case(chat_eval, _SUPPLIED_PIER)

@@ -81,13 +81,16 @@ from penny.tests.eval.test_state_transitions import (
     IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
+    REQUEST_APPLY_CASES,
     _asks_for_what_is_missing_check,
     _does_not_re_ask_check,
     _interface_check,
+    _names_the_cadence_check,
     _overlaps,
     _said_back,
     assert_composed_world,
     assert_new_space_is_unknown,
+    assert_parked_in_request_world,
     assert_round_cites_its_run,
     assert_round_is_framed,
     assert_seeded_ledger,
@@ -96,6 +99,7 @@ from penny.tests.eval.test_state_transitions import (
     rule_parts,
     seed_composed_world,
     seed_learned_round,
+    seed_parked_in_request,
 )
 from penny.tests.schema_template import migrated_db, schema_only_db
 from penny.tools.base import FRAMEWORK_NARRATION_INVALID_ARGS, Tool
@@ -316,6 +320,43 @@ def test_every_short_ask_falls_one_value_short_of_the_routine_it_names() -> None
             f"{case.case_id}: the routine declares {declared}, the case accounts for {accounted}"
         )
         assert case.missing, f"{case.case_id}: a request case is an ask the words fall SHORT of"
+
+
+def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path) -> None:
+    """Each request → apply case's world — the composed history its short ask was measured
+    against, then the turn that ask opened — seeds cleanly and reads back as the history it
+    claims: the jobs still running, every round readable under its own run, the conversation
+    ending on the ask and the reply that asked for what it left out, and the machine parked
+    in request on that ask with no framing.
+
+    Driven here against a real migrated database because the seeder is CODE, and its loud
+    probe otherwise runs only under ``make eval`` — where a raise costs an hour of GPU
+    before it is seen.  Its own database per case, because that is what the sample gets, and
+    because a case seeding a reduced world is where a leftover ``_JOURNEYS`` reference would
+    show.  The case's own premise rides along in the same loop: the supply answers exactly
+    what the ask fell short of, and the two turns together answer the routine's declared
+    parameters — read off the fixture DRAFT, since the registry the probe reads is seeded by
+    the runner and not here.  Both ways of getting that wrong are silent on a run, and each
+    turns the whole beat into a measurement of something else.  The reply check rides along
+    for the reason its sibling beat's does: a cadence vocabulary that cannot match the
+    answer the case itself calls correct would score every sample a miss, and that is a
+    scorer bug this suite has shipped once already."""
+    for index, case in enumerate(REQUEST_APPLY_CASES):
+        db = migrated_db(str(tmp_path / f"parked-request-{index}.db"))
+        seed_parked_in_request(case)(db)
+        assert_parked_in_request_world(db, case)
+        assert_values_are_new(db, case.case_id, case.supplies.values())
+        named = _names_the_cadence_check(case.reference, case)
+        assert named.ok, f"{case.case_id}: {named.rationale} — reference: {case.reference!r}"
+        declared = sorted(parameter.name for parameter in case.parked.skill.parameters)
+        assert declared == sorted(case.bound), (
+            f"{case.case_id}: the routine declares {declared}, the two turns settle "
+            f"{sorted(case.bound)}"
+        )
+        assert sorted(case.supplies) == sorted(case.parked.missing), (
+            f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
+            f"the supply answers {sorted(case.supplies)}"
+        )
 
 
 def test_the_request_scorer_passes_each_case_s_own_reference_reply() -> None:
