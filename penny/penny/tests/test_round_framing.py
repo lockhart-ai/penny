@@ -38,7 +38,12 @@ What is pinned here is everything the framing decides that no later step can und
   job up in apply, on the container the completed values derive, still anchored to the ask
   that opened the round (#1892) — and dropped the moment the round leaves request;
 * a round that taught nothing takes its empty container with it (#1839), and a container
-  holding entries is never taken.
+  holding entries is never taken;
+* a round that BAILS to idle takes its container with it too (#1896), the emptiness guard
+  notwithstanding — the bail discards the round's intermediate state, and what a
+  demonstration wrote is part of that state — while the post-apply structural reset, which
+  clears the framing before anything is classified, leaves a job that was just set running
+  alone.
 
 The live-model half — whether a draw picks the right values — is the framing and binding
 evals'.  All content is synthetic.
@@ -59,7 +64,7 @@ from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.skills import SkillDraft, SkillParameter
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.round_framing import RoundFramer, discard_round_container
+from penny.round_framing import RoundFramer, abandon_round_container, discard_round_container
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -944,6 +949,116 @@ async def test_a_round_that_leaves_request_stops_waiting_on_anything(db):
     assert machine.shortfall() is None
     latest = db.machine.latest_transition()
     assert latest is not None and latest.round_shortfall is None
+
+
+# ── The bail takes the round's container with it (#1896) ─────────────────────
+
+
+async def _bail(db: Database, message: str = "actually forget it, i don't need this") -> None:
+    """One classified move to idle — the break-out edge every parked state carries."""
+    machine = _machine(db, _model(state="STATE: idle", framing=""))
+    await machine.advance(message, message_id=_log(db, message), run_id="run-bail")
+
+
+async def test_a_round_that_bails_to_idle_takes_its_container_with_it(db):
+    """The bail preserves nothing: the move drops the anchor, the framing and the binding,
+    and the container that framing pointed at is ARCHIVED.
+
+    Clearing the row alone would leave an inert collection named for a job nobody is doing,
+    reachable by nothing — the orphan a learn round abandoned mid-teach left behind before
+    this.  Archived rather than deleted, so it is a visible tombstone and the same job
+    taught again revives it."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    assert db.memories.get(_CONTAINER) is not None
+
+    await _bail(db)
+
+    retired = db.memories.get(_CONTAINER)
+    assert retired is not None and retired.archived is True
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.to_state == ConversationState.IDLE.value
+    assert latest.anchor_message_id is None
+    assert latest.skill_frame is None
+    assert latest.round_shortfall is None
+
+
+async def test_a_bail_archives_a_container_the_demonstration_already_wrote_into(db):
+    """The one retirement here that is NOT guarded on emptiness, and the reason: what the
+    demonstration wrote is the round's own intermediate state, which is exactly what a bail
+    discards — not an exception to it.
+
+    The emptiness guard belongs to the retirements that clear LITTER a mechanism left
+    behind; this one clears a round the USER called off, and archiving keeps every entry
+    readable either way."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    require_memory(db, _CONTAINER).write([EntryInput(key="day rate", content="$45")], author="chat")
+
+    await _bail(db)
+
+    retired = db.memories.get(_CONTAINER)
+    assert retired is not None and retired.archived is True
+    assert [entry.content for entry in require_memory(db, _CONTAINER).read_all()] == ["$45"]
+
+
+async def test_retiring_a_container_twice_records_no_second_archive(db):
+    """The retirement is a no-op on a container that is already retired, and on a round that
+    was never framed at all — read off the row rather than attempted and swallowed.
+
+    A second archive line would say the bail happened twice, which is a mutation ledger
+    describing something that did not occur; the ledger is what the store map's "recent
+    changes" block renders, so an invented event is one the model then reasons from."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    framing = RoundFraming.model_validate_json(_latest_frame(db))
+    await _bail(db)
+    recorded = [event.action for event in db.mutations.history(_CONTAINER, 10)]
+
+    abandon_round_container(db, framing, run_id="run-bail-again")
+    abandon_round_container(db, None, run_id="run-bail-again")
+
+    assert [event.action for event in db.mutations.history(_CONTAINER, 10)] == recorded
+
+
+async def test_a_bail_from_request_stops_waiting_and_leaves_nothing_behind(db):
+    """The same landing from the other parked state: a round short of a value never built
+    anything, so the bail has nothing to retire — and what it does drop is the binding it
+    was waiting on, along with the ask it was anchored to."""
+    _seed_two_parameter_skill(db)
+    await _park_in_request(db)
+
+    await _bail(db, "eh never mind, it's not important")
+
+    latest = db.machine.latest_transition()
+    assert latest is not None and latest.to_state == ConversationState.IDLE.value
+    assert latest.round_shortfall is None
+    assert latest.anchor_message_id is None
+    assert not [row for row in db.memories.list_all() if row.name.startswith("watch-rental")]
+
+
+async def test_the_post_apply_reset_leaves_the_job_s_container_alone(db):
+    """The landing a bail must never be confused with: apply has no out-edges, so the next
+    message resets the machine structurally BEFORE anything is classified — and that row
+    carries no framing, so the classified idle move after it finds no round to end.
+
+    Which is what keeps a job the user has just set running out of this path: the container
+    an apply turn configured is a live mechanism, not a round anybody walked away from."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    _seed_skill(db)
+    accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
+    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+    assert accepting.state() is ConversationState.APPLY
+
+    await _bail(db, "great, thanks")
+
+    kept = db.memories.get(_CONTAINER)
+    assert kept is not None and kept.archived is False
 
 
 # ── The failed round takes its container with it (#1839) ──────────────────────

@@ -39,6 +39,13 @@ construction (#1775) — while a correction that SHIFTS the job's identity archi
 near-empty container it is replacing and builds the one it now needs.  Archiving is
 guarded on emptiness: litter is a container minutes old with nothing in it, and a
 container holding entries is not litter whatever the round did next.
+
+**A round that ENDS in idle takes its container with it** (:func:`abandon_round_container`,
+#1896).  A bail preserves nothing — once the machine is idle the round is over and any
+next task opens a flow of its own — so the one retirement in this module that is NOT
+guarded on emptiness is this one: what the demonstration wrote is the round's own
+intermediate state rather than an exception to it.  Archive, never delete, like every
+other retirement here.
 """
 
 from __future__ import annotations
@@ -84,6 +91,7 @@ logger = logging.getLogger(__name__)
 _ARCHIVED_ROUND_FAILED = "the round that created this container taught nothing"
 _ARCHIVED_IDENTITY_SHIFTED = "the corrected round is a different job, with its own container"
 _REVIVED_SAME_JOB = "the same job is being taught again, into the container it already had"
+_ABANDONED_ROUND = "the round that created this container was called off"
 
 
 class RoundFramer:
@@ -487,11 +495,45 @@ def discard_round_container(
 
     A module function rather than a method because the caller is the run-end learn-terminal
     check, which holds the round's framing and the database and has no business holding a
-    micro-context to make draws with.  Guarded on emptiness like every other retirement
-    here: a round that failed after writing something leaves that something reachable."""
+    micro-context to make draws with.  Guarded on emptiness — unlike
+    :func:`abandon_round_container` below, which is the round the USER called off rather
+    than the one that failed: a round that failed after writing something leaves that
+    something reachable, because the user never said they were done with it."""
     if framing is None:
         return
     archive_round_container(db, framing.container, run_id=run_id, note=_ARCHIVED_ROUND_FAILED)
+
+
+def abandon_round_container(
+    db: Database, framing: RoundFraming | None, *, run_id: str | None
+) -> None:
+    """Retire the container of a round that ENDED IN IDLE (#1896) — the bail's durable half.
+
+    An idle landing ends the round, and a bail preserves nothing: any next task opens a
+    flow of its own, so the container the round built stops being somewhere anything writes
+    and becomes a collection named for a job nobody is doing.  Nothing retired it before
+    this, so a round walked away from left one behind for good.
+
+    Unlike the retirements above this one is NOT guarded on emptiness, and that is the
+    difference between the two reasons a container is retired.  Those retire LITTER — a
+    container a mechanism built and then had no use for — where something the user can
+    still read is not litter.  This one retires the round's own intermediate state, which
+    is exactly what the code owner's bail ruling discards, and what a demonstration wrote
+    into it is part of that state rather than an exception to it.  Archiving keeps it
+    readable either way: an archived collection is a tombstone, not a deletion, so a bail
+    drawn off a flaky classification stays recoverable and the same job taught again
+    revives the very container this retires (:meth:`RoundFramer._settle_container`).
+
+    A module function beside :func:`discard_round_container`, and for the same reason: the
+    caller holds the round's framing and the database and has no business holding a
+    micro-context to make draws with."""
+    if framing is None:
+        return
+    row = db.memories.get(framing.container)
+    if row is None or row.archived:
+        return
+    db.memories.archive(row.name, actor=MutationActor.SYSTEM, run_id=run_id, note=_ABANDONED_ROUND)
+    logger.info("Archived the abandoned round's container %r (%s)", row.name, _ABANDONED_ROUND)
 
 
 def archive_round_container(db: Database, container: str, *, run_id: str | None, note: str) -> None:

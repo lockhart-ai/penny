@@ -76,6 +76,12 @@ prose:
   what the round is waiting on: the classifier is shown the settled values and the named
   gap, and the apply draw completes the binding from those values plus the arriving
   message instead of re-deriving the whole thing from raw conversation.
+- **An idle landing ENDS the round, and the container goes with it**
+  (:meth:`ConversationMachine._end_round`, #1896): a bail back to idle preserves nothing —
+  the anchor, the framing and the binding are all dropped from the move, and the container
+  the framing pointed at is ARCHIVED, since clearing the row alone would leave an inert
+  collection named for a job nobody is doing and nothing able to reach it.  Archive, never
+  delete: the same job taught again revives it.
 
 Scope: the classifier machinery plus its DURABLE half.  :class:`ConversationMachine`
 holds the state across turns (``db.machine`` — the ``conversation_machine`` row)
@@ -1194,10 +1200,15 @@ class ConversationMachine:
         A move that landed in request through a shortfall carries no framing (#1885): the
         container's name needs every value, so a job missing one has nothing built for it
         and nothing to record.  It carries the SHORTFALL instead (#1894) — the two halves
-        of the entry, each recorded on the move that settled it."""
+        of the entry, each recorded on the move that settled it.
+
+        A landing in IDLE ends the round, so the move drops both halves AND the container
+        the framing pointed at is retired (:meth:`_end_round`, #1896) — the row's clearing
+        and the store's, which are one fact stated in two places."""
         target = _landing(current, decision, entry)
         carried = self._next_framing(target, framing_of(entry))
         waiting = self._next_shortfall(target, shortfall_of(entry))
+        self._end_round(target, run_id=run_id)
         self._db.machine.record_transition(
             from_state=current.value,
             to_state=target.value,
@@ -1210,6 +1221,33 @@ class ConversationMachine:
             skill_frame=carried.model_dump_json() if carried is not None else None,
             round_shortfall=waiting.model_dump_json() if waiting is not None else None,
         )
+
+    def _end_round(self, target: ConversationState, *, run_id: str | None) -> None:
+        """An idle landing ENDS the round, so the container the round built goes with it
+        (#1896) — the DURABLE half of the clearing the two lifecycles below do on the row.
+
+        ``_next_framing`` drops the framing from the move and this retires what that
+        framing pointed at, because dropping it alone leaves an inert collection named for
+        a job nobody is doing and nothing able to reach it.  A bail preserves nothing: once
+        the machine is idle the round is over, and any next task opens a flow of its own.
+
+        Read off the framing the round is CARRYING, which is why it runs BEFORE the move is
+        recorded — and that order is also the safe one: a write that then fails leaves the
+        machine parked where it was over an archived container, which the next move back
+        into learn revives by name (the framer's find-or-create), while the other order
+        would leave an idle machine with nothing pointing at the container any more.
+
+        Only a round that was framed has a container at all, so every other landing here is
+        a no-op — and the post-apply reset is not this path (it is its own structural row,
+        appended before the draw, and it drops the framing first), so a job the user has
+        just set running is never what a later bail retires."""
+        if target is not ConversationState.IDLE:
+            return
+        # Function-local: the framer's module imports this one, and the leaf discipline
+        # keeps every database-touching import off this module's import time.
+        from penny.round_framing import abandon_round_container
+
+        abandon_round_container(self._db, self.framing(), run_id=run_id)
 
     def _next_anchor(
         self, current: ConversationState, target: ConversationState, message_id: int | None
