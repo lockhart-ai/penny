@@ -69,6 +69,7 @@ from penny.conversation_machine import (
     ConversationState,
     MachineSnapshot,
     RoundFraming,
+    RoundShortfall,
     SkillCandidate,
     render_classifier_content,
 )
@@ -207,6 +208,7 @@ def _park(
     message_id: int | None = None,
     skill_name: str | None = None,
     framing: RoundFraming | None = None,
+    shortfall: RoundShortfall | None = None,
 ) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
@@ -237,6 +239,12 @@ def _park(
     reads it as the collection, the routine and the values it configures, which is why a
     seeded round without it is a round the turn under test cannot be answered against.
 
+    ``shortfall`` is the round's PARTIAL binding (#1894) — the framing's other half, settled
+    by a move that landed in REQUEST and carried while the round is parked there.  Recorded
+    the same way and for the same reason: a later turn READS what the round is waiting on
+    (the classifier renders it, and the next binder completes from it), so a seeded parked
+    round without one is a round production can no longer produce.
+
     Every move recorded here is a DECIDED draw: these are the moves the machine
     really made, and a classifier row with no outcome is the fail → stay shape,
     which is not what a seeded history of completed rounds is."""
@@ -250,6 +258,7 @@ def _park(
         message_id=message_id,
         skill_name=skill_name,
         skill_frame=framing.model_dump_json() if framing is not None else None,
+        round_shortfall=shortfall.model_dump_json() if shortfall is not None else None,
     )
 
 
@@ -5711,16 +5720,22 @@ def _seed_request_turn(db: Database, case: _RequestApplyCase) -> None:
     """The turn that parked the machine, with everything it left behind: the short ask
     INCOMING, the draw that decided request and named the routine, the text-only run that
     answered, the reply OUTGOING threaded to the ask, and the move itself — anchored to
-    that ask, carrying the routine's name and NO framing.
+    that ask, carrying the routine's name, the round's PARTIAL BINDING, and no framing.
 
-    The absent framing and the absent binder row are what the measured turns really left.
-    A request turn arrives through one of two doors — the classifier's own idle → request
-    edge, or the binder's shortfall redirecting a drawn apply (#1885) — and every measured
-    sample of that beat came through the FIRST: the draw said request and no binder ran.
-    Both doors leave the same row (request, anchored to the ask, the routine named, no
-    framing, decided by a classifier), so the world the supply is answered in is the same
-    either way; what the second door would add is a binder call, and seeding one the
-    measured turns never made would be a ledger no run has written."""
+    The binding is the load-bearing half since #1894: the binder now runs at request entry
+    through EITHER door, and what it settled is recorded on the move, so a parked round
+    knows what it is waiting on.  A seeded round without one is a round production can no
+    longer produce — the classifier would be shown no waiting-on section, and the apply
+    draw would have no settled values to complete from — which would make this beat measure
+    a world nothing produces rather than the edge.
+
+    The absent framing is the other half of the same fact: a job short of a value has no
+    name yet, so nothing is built and nothing is framed.
+
+    Which DOOR the turn came through is not seeded, because the row is the same either way
+    (request, anchored to the ask, the routine named, the binding carried, no framing) —
+    and the measured draws all came through the classifier's own idle → request edge, so
+    that is what the seeded draw says."""
     ask_id = _log_ask(db, case.parked.ask, case.case_id)
     _log_short_ask_draw(db, case)
     _log_chat_step(
@@ -5737,6 +5752,36 @@ def _seed_request_turn(db: Database, case: _RequestApplyCase) -> None:
         run_id=_REQUEST_TURN_RUN,
         message_id=ask_id,
         skill_name=slug_skill_name(case.parked.skill.name),
+        shortfall=parked_binding(case),
+    )
+
+
+def parked_binding(case: _RequestApplyCase) -> RoundShortfall:
+    """What the request turn's binder settled, in the shape production records (#1894):
+    the routine's registry name and description, the values the ask supplied keyed by the
+    parameter each answers, and the parameters that got none — both lists in the routine's
+    DECLARED order, which is the order ``_shortfall`` builds them in.
+
+    Built through the production model (so the serialization is production's own, not a
+    hand-written JSON copy) off the case's fixture DRAFT rather than the registry row: the
+    runner lays the fixture skills down AFTER this seed runs, and the draft is exactly what
+    it upserts.  That the two agree is not assumed — the probe reads the recorded binding
+    back against the REGISTRY once both exist, so a drift fails in the seed."""
+    parked = case.parked
+    declared = parked.skill.parameters
+    return RoundShortfall(
+        skill=slug_skill_name(parked.skill.name),
+        description=parked.skill.description,
+        bound={
+            parameter.name: parked.settled[parameter.name]
+            for parameter in declared
+            if parameter.name in parked.settled
+        },
+        missing=tuple(
+            CandidateParameter(name=parameter.name, description=parameter.description)
+            for parameter in declared
+            if parameter.name in parked.missing
+        ),
     )
 
 
@@ -5803,12 +5848,12 @@ def _assert_the_parked_conversation(db: Database, case: _RequestApplyCase) -> No
 
 def _assert_parked_on_the_short_ask(db: Database, case: _RequestApplyCase) -> None:
     """The machine is parked in REQUEST on the short ask, naming the routine it is
-    negotiating and carrying NO framing.
+    negotiating, carrying the round's PARTIAL BINDING and no framing.
 
-    The absent framing is load-bearing: a parked request round holds no partial binding
-    (#1885), so the turn under test binds the ask and the arriving message from scratch —
-    a framing recorded here would send it down the already-framed path instead, and the
-    case would be measuring a round production never parks in."""
+    The absent framing is a job with no name yet: the container's name is derived from
+    every value, so a round short of one has nothing built and nothing framed.  What it
+    carries instead is the binding (#1894), asserted in full below — the state the whole
+    beat is answered from."""
     ask_id = _seeded_ask_id(db, case.parked.ask, limit=_PARKED_MESSAGE_WINDOW)
     assert ask_id is not None, f"{case.case_id}: the seeded ask must be findable by its content"
     latest = db.machine.latest_transition()
@@ -5822,20 +5867,82 @@ def _assert_parked_on_the_short_ask(db: Database, case: _RequestApplyCase) -> No
         f"{case.case_id}: the move must name the routine it negotiates, not {latest.skill_name}"
     )
     assert latest.skill_frame is None, (
-        f"{case.case_id}: a parked request round holds no framing, got {latest.skill_frame}"
+        f"{case.case_id}: a job short of a value has no container, got {latest.skill_frame}"
+    )
+    _assert_the_round_knows_what_it_waits_on(db, case, latest)
+
+
+def _assert_the_round_knows_what_it_waits_on(
+    db: Database, case: _RequestApplyCase, parked: StateTransition
+) -> None:
+    """The move carries the round's partial binding, and that binding says what the ask
+    settled and what it left out (#1894).
+
+    Read back through the production model and compared against the case's own terms — the
+    routine, the values it settled, and the parameters still open — so a seeded world that
+    has drifted from what a request turn really leaves fails HERE rather than as a puzzling
+    number after a GPU run.  It is what the turn under test is answered from twice over:
+    the classifier is shown it as what the round is waiting on, and the binder completes it
+    from those values plus the arriving message."""
+    recorded = parked.round_shortfall
+    assert recorded is not None, (
+        f"{case.case_id}: a parked request round carries the binding it is waiting on"
+    )
+    waiting = RoundShortfall.model_validate_json(recorded)
+    assert waiting == parked_binding(case), (
+        f"{case.case_id}: the recorded binding must be the one the ask left, got {waiting}"
+    )
+    assert waiting.bound == case.parked.settled, (
+        f"{case.case_id}: the binding must hold what the ask settled, got {waiting.bound}"
+    )
+    assert tuple(parameter.name for parameter in waiting.missing) == case.parked.missing, (
+        f"{case.case_id}: the binding must name what the ask left out, got {waiting.missing}"
+    )
+
+
+def _assert_the_binding_reads_the_registry(db: Database, case: _RequestApplyCase) -> None:
+    """The recorded binding names the routine as the REGISTRY holds it — its name, its
+    description, and each missing parameter's own what-to-supply.
+
+    The drift check the seeder cannot make: it builds the binding from the fixture draft
+    because the runner lays the registry down after it, so this is where the two are read
+    against each other.  A binding naming a routine or a description the registry does not
+    carry would render the classifier a waiting-on section describing a job nobody could
+    look up, and the case would report that as the model's miss."""
+    latest = db.machine.latest_transition()
+    recorded = latest.round_shortfall if latest is not None else None
+    assert recorded is not None, f"{case.case_id}: the parked round must carry its binding"
+    waiting = RoundShortfall.model_validate_json(recorded)
+    routine = db.skills.get(waiting.skill)
+    assert routine is not None, (
+        f"{case.case_id}: the binding must name a routine the registry holds, got {waiting.skill}"
+    )
+    assert waiting.description == routine.description, (
+        f"{case.case_id}: the binding must carry the registry's description, got "
+        f"{waiting.description!r}"
+    )
+    declared = {
+        parameter.name: parameter.description
+        for parameter in _declared_parameters(db, waiting.skill)
+    }
+    asked = {parameter.name: parameter.description for parameter in waiting.missing}
+    assert asked == {name: declared[name] for name in asked}, (
+        f"{case.case_id}: each missing parameter must carry the registry's own line, got {asked}"
     )
 
 
 def _probe_parked_round(case: _RequestApplyCase) -> Preparer:
-    """The prepare hook: the seeder's own claims, the registry one that is only true once
-    the runner has laid the fixture skills down, and this case's own three — the ask really
-    did fall short, the supply really does complete it, and the job it completes really is
-    one this world has never stood up."""
+    """The prepare hook: the seeder's own claims, the two that are only true once the
+    runner has laid the fixture skills down (the registry holds exactly this world's
+    routines, and the recorded binding reads back against the registry), and this case's
+    own three — the ask really did fall short, the supply really does complete it, and the
+    job it completes really is one this world has never stood up."""
 
     def probe(penny: Penny) -> None:
         assert_parked_in_request_world(penny.db, case)
         assert_the_registry_holds(penny.db, case.parked.journeys)
         assert_the_ask_falls_one_short(penny.db, case.parked)
+        _assert_the_binding_reads_the_registry(penny.db, case)
         assert_the_supply_completes_the_routine(penny.db, case)
         assert_the_job_has_no_container_yet(penny.db, case)
         assert_values_are_new(penny.db, case.case_id, case.supplies.values())

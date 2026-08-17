@@ -26,8 +26,14 @@ import pytest
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
 from penny.constants import PennyConstants
+from penny.conversation_machine import RoundShortfall
 from penny.database import Database
-from penny.database.skills import SkillParameter, build_binding_content, render_spoken_turns
+from penny.database.skills import (
+    SkillParameter,
+    build_binding_content,
+    render_spoken_turns,
+    slug_skill_name,
+)
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
@@ -96,6 +102,7 @@ from penny.tests.eval.test_state_transitions import (
     assert_seeded_ledger,
     assert_values_are_new,
     cadence_seconds,
+    parked_binding,
     rule_parts,
     seed_composed_world,
     seed_learned_round,
@@ -327,7 +334,7 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     against, then the turn that ask opened — seeds cleanly and reads back as the history it
     claims: the jobs still running, every round readable under its own run, the conversation
     ending on the ask and the reply that asked for what it left out, and the machine parked
-    in request on that ask with no framing.
+    in request on that ask, carrying the binding it is waiting on (#1894) and no framing.
 
     Driven here against a real migrated database because the seeder is CODE, and its loud
     probe otherwise runs only under ``make eval`` — where a raise costs an hour of GPU
@@ -340,12 +347,24 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
     turns the whole beat into a measurement of something else.  The reply check rides along
     for the reason its sibling beat's does: a cadence vocabulary that cannot match the
     answer the case itself calls correct would score every sample a miss, and that is a
-    scorer bug this suite has shipped once already."""
+    scorer bug this suite has shipped once already.
+
+    The recorded BINDING is read back through the production model here too, against the
+    values the case declares: the seeder writes what a request turn's binder left (#1894),
+    and everything the turn under test is answered from — the waiting-on section the
+    classifier is shown, and the values the next binder completes from — is that one row."""
     for index, case in enumerate(REQUEST_APPLY_CASES):
         db = migrated_db(str(tmp_path / f"parked-request-{index}.db"))
         seed_parked_in_request(case)(db)
         assert_parked_in_request_world(db, case)
         assert_values_are_new(db, case.case_id, case.supplies.values())
+        parked = db.machine.latest_transition()
+        assert parked is not None and parked.round_shortfall is not None
+        waiting = RoundShortfall.model_validate_json(parked.round_shortfall)
+        assert waiting == parked_binding(case)
+        assert waiting.skill == slug_skill_name(case.parked.skill.name)
+        assert waiting.bound == case.parked.settled
+        assert tuple(one.name for one in waiting.missing) == case.parked.missing
         named = _names_the_cadence_check(case.reference, case)
         assert named.ok, f"{case.case_id}: {named.rationale} — reference: {case.reference!r}"
         declared = sorted(parameter.name for parameter in case.parked.skill.parameters)
