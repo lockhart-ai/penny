@@ -418,6 +418,155 @@ def test_render_idle_with_candidates_whole():
     )
 
 
+def test_render_parked_request_slice_whole():
+    """The parked-request render, whole (#1894): the round's partial binding is its own
+    section beside the task it belongs to — the routine that was named, the values the
+    user's words already settled, and the detail still missing with the registry's own
+    line of what to supply.
+
+    It is what makes the move out of request a READ rather than a completeness audit: the
+    apply condition asks whether this message supplies the details that were asked for,
+    and the details that were asked for are right there, named, with the skill's own token
+    to copy onto the SKILL: line."""
+    parked_request = MachineSnapshot(
+        state=ConversationState.REQUEST,
+        penny_last_turn="Sure — which page should I be watching for the weekend rate?",
+        task_anchor="keep an eye on the weekend rate for me",
+        skill_candidates=[_SKILL],
+        round_binding=RoundShortfall(
+            skill=_SKILL.name,
+            description=_SKILL.description,
+            bound={"keyword": "the weekend rate"},
+            missing=(CandidateParameter(name="url", description="the listing page to watch"),),
+        ),
+    )
+    assert render_classifier_content(parked_request, "harborkayak.example/rentals") == (
+        "## The assistant's last message\n"
+        "Sure — which page should I be watching for the weekend rate?\n"
+        "\n"
+        "## The task being worked on\n"
+        "keep an eye on the weekend rate for me\n"
+        "\n"
+        "## The details this task is waiting on\n"
+        'skill: "watch a listing price for changes"\n'
+        "already given:\n"
+        "- keyword: the weekend rate\n"
+        "still needed:\n"
+        "- url — the listing page to watch\n"
+        "\n"
+        "## Known skills\n"
+        '- "watch a listing price for changes" — checks a page and records the current '
+        "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## The user's newest message\n"
+        "harborkayak.example/rentals\n"
+        "\n"
+        "## Current state\n"
+        "request — a known skill looks like it covers what the user wants, and the "
+        "assistant has named that skill and asked for the details it needs before "
+        "running it\n"
+        "\n"
+        "## Transitions\n"
+        "- apply — their message supplies the details the assistant asked for, or "
+        "confirms the skill it named — add a second line naming that skill: SKILL: <its "
+        "name, exactly as quoted in Known skills>\n"
+        "- elicit — they say that skill is not what they meant, and still want the task "
+        "done\n"
+        "- idle — in all other cases"
+    )
+
+
+def test_render_a_binding_that_has_nothing_yet_whole():
+    """The same section when the words settled NOTHING — the ask named a routine and no
+    part of it — and when the missing parameter carries no description of its own.
+
+    Both are stated rather than left out: an empty list under a header reads as a
+    rendering fault, and "they have given you none of it" is exactly the fact the next
+    message is judged against.  A description is optional on a parameter row, so the line
+    falls back to the bare name instead of trailing a dash into nothing."""
+    parked_request = MachineSnapshot(
+        state=ConversationState.REQUEST,
+        task_anchor="can you keep an eye on the price for me",
+        skill_candidates=[SkillCandidate(name="watch-a-price", description="records a price")],
+        round_binding=RoundShortfall(
+            skill="watch-a-price",
+            description="records a price",
+            missing=(CandidateParameter(name="url"),),
+        ),
+    )
+    assert render_classifier_content(parked_request, "the usual one") == (
+        "## The assistant's last message\n"
+        "(none)\n"
+        "\n"
+        "## The task being worked on\n"
+        "can you keep an eye on the price for me\n"
+        "\n"
+        "## The details this task is waiting on\n"
+        'skill: "watch-a-price"\n'
+        "already given:\n"
+        "- nothing yet\n"
+        "still needed:\n"
+        "- url\n"
+        "\n"
+        "## Known skills\n"
+        '- "watch-a-price" — records a price\n'
+        "\n"
+        "## The user's newest message\n"
+        "the usual one\n"
+        "\n"
+        "## Current state\n"
+        "request — a known skill looks like it covers what the user wants, and the "
+        "assistant has named that skill and asked for the details it needs before "
+        "running it\n"
+        "\n"
+        "## Transitions\n"
+        "- apply — their message supplies the details the assistant asked for, or "
+        "confirms the skill it named — add a second line naming that skill: SKILL: <its "
+        "name, exactly as quoted in Known skills>\n"
+        "- elicit — they say that skill is not what they meant, and still want the task "
+        "done\n"
+        "- idle — in all other cases"
+    )
+
+
+def test_a_round_with_no_binding_renders_no_waiting_section():
+    """The section is ADDITIVE, so a round carrying no binding renders exactly the slice it
+    always rendered — the shape a request round the binder could not settle at all still
+    has, and the shape every state that never binds has."""
+    bare = MachineSnapshot(
+        state=ConversationState.REQUEST,
+        task_anchor="can you keep an eye on the price for me",
+        skill_candidates=[_SKILL],
+    )
+    assert render_classifier_content(bare, "the usual one") == (
+        "## The assistant's last message\n"
+        "(none)\n"
+        "\n"
+        "## The task being worked on\n"
+        "can you keep an eye on the price for me\n"
+        "\n"
+        "## Known skills\n"
+        '- "watch a listing price for changes" — checks a page and records the current '
+        "price (needs: url — the listing page to watch)\n"
+        "\n"
+        "## The user's newest message\n"
+        "the usual one\n"
+        "\n"
+        "## Current state\n"
+        "request — a known skill looks like it covers what the user wants, and the "
+        "assistant has named that skill and asked for the details it needs before "
+        "running it\n"
+        "\n"
+        "## Transitions\n"
+        "- apply — their message supplies the details the assistant asked for, or "
+        "confirms the skill it named — add a second line naming that skill: SKILL: <its "
+        "name, exactly as quoted in Known skills>\n"
+        "- elicit — they say that skill is not what they meant, and still want the task "
+        "done\n"
+        "- idle — in all other cases"
+    )
+
+
 # ── The classifier draw: membership, rerolls, attribution, fail → stay ────────
 
 

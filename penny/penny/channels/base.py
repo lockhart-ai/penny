@@ -659,10 +659,10 @@ class MessageChannel(ABC):
         is logged after the run, so it never doubles into that turn's recall),
         so the moves are linked to it afterwards by ``link_message``.
 
-        Returns what the turn is entered WITH — the landed state, and the round shortfall
-        when the move landed in request through the binder (#1885), which is turn-scoped
-        and reaches the turn only through this return.  ``None`` when nothing decided the
-        turn, which is the idle default the agent already composes for.
+        Returns what the turn is entered WITH — the landed state, and the round's partial
+        binding whenever the move landed in request (#1885/#1894), drawn by this turn's
+        binder or read back off the parked round.  ``None`` when nothing decided the turn,
+        which is the idle default the agent already composes for.
 
         A classifier failure must never cost the user their turn: the machine is
         fail → stay by construction, so a failed draw already leaves it where it

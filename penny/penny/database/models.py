@@ -589,4 +589,13 @@ class StateTransition(SQLModel, table=True):
     # (a re-draw is not a re-read); it rides the anchor's lifecycle — set on entry, carried
     # while parked, NULL once idle.
     skill_frame: str | None = None
+    # The round's PARTIAL binding (#1894) as serialized ``RoundShortfall`` JSON: the routine
+    # the ask is covered by, the values the user's words already settled, and the parameters
+    # that got none.  ``skill_frame``'s sibling — the same round state for a round the words
+    # fall SHORT of, which has no signature and no container yet — recorded for the same
+    # reason: a draw varies, so what a round is waiting on is READ on every later turn
+    # instead of being re-derived from raw conversation.  Only a move that LANDS in request
+    # carries one: a round that gets its details bound carries a framing instead, one that
+    # turns out to be about a different task carries neither, and idle clears it.
+    round_shortfall: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)
