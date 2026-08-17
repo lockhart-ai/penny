@@ -34,8 +34,9 @@ What is pinned here is everything the framing decides that no later step can und
 * a request the classifier drew DIRECTLY runs that same binder (#1894), so both doors into
   request carry the same partial binding — and that binding is round state: recorded on
   the move, read back by later turns, rendered to the classifier as what the round is
-  waiting on, completed from the message that finally supplies the rest, and dropped the
-  moment the round leaves request;
+  waiting on, completed from the message that finally supplies the rest — which stands the
+  job up in apply, on the container the completed values derive, still anchored to the ask
+  that opened the round (#1892) — and dropped the moment the round leaves request;
 * a round that taught nothing takes its empty container with it (#1839), and a container
   holding entries is never taken.
 
@@ -797,9 +798,16 @@ async def test_the_message_that_arrives_completes_the_parked_binding(db):
 
     Only the still-open parameter is drawn — the value the user gave two turns ago is read,
     not re-derived, so it cannot come back different — and the container is derived from
-    the whole set, which is the job they actually asked for."""
+    the whole set, which is the job they actually asked for.
+
+    The move it records is the request → apply edge (#1892): it comes FROM request and
+    keeps the ask that opened the round as its anchor, which is what says the job that
+    stood up is the one the user asked for two turns ago rather than a fresh round this
+    message started."""
     _seed_two_parameter_skill(db)
     await _park_in_request(db)
+    parked = db.machine.latest_transition()
+    assert parked is not None and parked.anchor_message_id is not None
 
     model = _model(state=f"STATE: apply\nSKILL: {_SKILL}", binding=_BOUND)
     machine = _machine(db, model)
@@ -816,6 +824,12 @@ async def test_the_message_that_arrives_completes_the_parked_binding(db):
     assert framing.container == _TWO_VALUE_CONTAINER
     assert db.memories.get(_TWO_VALUE_CONTAINER) is not None
     assert machine.shortfall() is None, "a round that is bound is waiting on nothing"
+    landed = db.machine.latest_transition()
+    assert landed is not None
+    assert landed.from_state == ConversationState.REQUEST.value
+    assert landed.anchor_message_id == parked.anchor_message_id, (
+        "the round is still the one the ask opened"
+    )
     asked = _drawn_content(model, BIND_SKILL_SYSTEM_PROMPT)
     assert "- url: the rental page to read" in asked
     assert "keyword" not in asked, "a settled parameter is not a question to ask again"
