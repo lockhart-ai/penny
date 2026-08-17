@@ -83,12 +83,14 @@ from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
 from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
+    BAIL_CASES,
     IDLE_APPLY_CASES,
     IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
     REQUEST_APPLY_CASES,
     _asks_for_what_is_missing_check,
+    _claims_no_job_check,
     _does_not_re_ask_check,
     _interface_check,
     _names_the_cadence_check,
@@ -100,6 +102,7 @@ from penny.tests.eval.test_state_transitions import (
     assert_round_cites_its_run,
     assert_round_is_framed,
     assert_seeded_ledger,
+    assert_the_round_built_what_it_claims,
     assert_values_are_new,
     cadence_seconds,
     parked_binding,
@@ -376,6 +379,41 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
             f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
             f"the supply answers {sorted(case.supplies)}"
         )
+
+
+def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
+    """Each bail case's world — the parked state its own edge was measured against — seeds
+    cleanly and reads back as that state, with its container premise intact.
+
+    Driven here against a real migrated database for the reason its sibling beats' pins are:
+    the seeders are CODE, and their loud probes otherwise run only under ``make eval``, where
+    a raise costs an hour of GPU before it is seen.  Its own database per case, because that
+    is what the sample gets, and because two of these worlds seed FEWER journeys than the
+    module's five — where a leftover ``_JOURNEYS`` reference would show.
+
+    The container premise rides along in the same loop, and both ways of getting it wrong
+    are silent on a run: a container that arrived already archived would score the beat's
+    one cleanup claim green for free, and a world carrying a framing nobody accounted for
+    would make that claim's n/a a real miss.  The registry claim stays out, exactly as it
+    does for the learn → apply pin: the harness seeds fixture skills after the case's seed."""
+    for index, case in enumerate(BAIL_CASES):
+        db = migrated_db(str(tmp_path / f"bail-{index}.db"))
+        case.world.seed(db)
+        case.world.seeded(db)
+        assert_the_round_built_what_it_claims(db, case)
+
+
+def test_the_bail_scorer_passes_each_case_s_own_reference_reply() -> None:
+    """Every bail case's reference reply — the answer the case itself calls correct — passes
+    that beat's one reply check.
+
+    The same tripwire the request beats carry, on the check most likely to trip it: a
+    job-was-set-up vocabulary wide enough to catch an ordinary acknowledgement would score
+    every sample a miss, and the correct answers here are exactly the sentences that say
+    "dropped it" without saying anything is running."""
+    for case in BAIL_CASES:
+        claimed = _claims_no_job_check(case.reference)
+        assert claimed.ok, f"{case.case_id}: {claimed.rationale} — reference: {case.reference!r}"
 
 
 def test_the_request_scorer_passes_each_case_s_own_reference_reply() -> None:
