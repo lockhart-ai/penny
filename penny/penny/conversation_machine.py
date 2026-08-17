@@ -62,14 +62,20 @@ prose:
   #1885): the binder's ``MissingParameters`` is an enumerated outcome, not a failure —
   the routine really does cover the ask — so it ROUTES the move (:func:`_landing`)
   instead of failing the turn.  No classifier condition is added or changed for it: the
-  idle → request edge already exists and still fires on its own (such a turn simply
-  carries no shortfall), while this is a SECOND door no edge declares, because only the
-  binder can tell a covered-and-bound ask from a covered-but-short one — it is the one
-  that reads the words against what the routine declares.  Nothing is built (the
-  container's derived name needs every value) and nothing is stored: the shortfall is
-  turn-scoped, and the next message is bound the way a cold apply is bound, over the
-  anchor ask plus that message — which is also how a message the binder still cannot
-  complete lands back in request.
+  idle → request edge already exists and still fires on its own, while this is a SECOND
+  door no edge declares, because only the binder can tell a covered-and-bound ask from a
+  covered-but-short one — it is the one that reads the words against what the routine
+  declares.  Nothing is built for it: the container's derived name needs every value.
+- **Entering request BINDS the round too, from either door** (#1894): a request the
+  classifier drew directly runs the SAME binder against the skill it named, so both doors
+  produce one :class:`RoundShortfall` and the turn is instructed from a partial binding
+  rather than from a generic ask.  That binding is ROUND STATE — recorded on the move
+  (``state_transition.round_shortfall``) with the shape ``skill_frame`` has, carried by
+  the state that reads it (only a move landing in request keeps one; a round that gets its
+  details bound carries a framing instead, and idle clears both).  So a later turn READS
+  what the round is waiting on: the classifier is shown the settled values and the named
+  gap, and the apply draw completes the binding from those values plus the arriving
+  message instead of re-deriving the whole thing from raw conversation.
 
 Scope: the classifier machinery plus its DURABLE half.  :class:`ConversationMachine`
 holds the state across turns (``db.machine`` — the ``conversation_machine`` row)
@@ -280,6 +286,13 @@ SKILL_GATED_STATES = (
     ConversationState.REQUEST.value,
 )
 
+# The states whose ENTRY the binder settles (#1894) — the same two, read as states rather
+# than as the draw's wire values, because a routine was named either way and what the round
+# needs to know is which of its parameters the words fill.  They are one tuple rather than
+# two branches so a third skill-gated landing cannot be added to the draw contract and
+# silently miss the binder.
+_BINDING_STATES = (ConversationState.APPLY, ConversationState.REQUEST)
+
 # The conversation-slice section headers — fixed strings, whole-render pinned.
 # Markdown headers, not label lines: the parked, populated contexts this slice
 # grows into (many candidates, quoted turns that carry their own lists and
@@ -287,11 +300,27 @@ SKILL_GATED_STATES = (
 # typographic ones a long context swallows.
 _LAST_TURN_HEADER = "## The assistant's last message"
 _TASK_HEADER = "## The task being worked on"
+_WAITING_HEADER = "## The details this task is waiting on"
 _SKILLS_HEADER = "## Known skills"
 _MESSAGE_HEADER = "## The user's newest message"
 _CURRENT_STATE_HEADER = "## Current state"
 _TRANSITIONS_HEADER = "## Transitions"
 _NONE_PLACEHOLDER = "(none)"
+
+# The parked round's partial binding, as the classifier reads it (#1894).  Its item shapes
+# deliberately match the ones the request turn's own instruction renders — same facts, same
+# words, so the two surfaces cannot disagree from different evidence — without being single
+# sourced with them, the same call ``SkillCandidate.render`` makes against
+# ``render_skill_brief`` (this module is a leaf, and a chat-prompt edit is not a classifier
+# edit).  The skill is QUOTED for the reason it is quoted in the candidate list: the move
+# out of request has to copy that name back on its ``SKILL:`` line.
+_WAITING_SKILL = 'skill: "{skill}"'
+_WAITING_GIVEN_HEADER = "already given:"
+_WAITING_GIVEN_ITEM = "- {name}: {value}"
+_WAITING_NOTHING_GIVEN = "- nothing yet"
+_WAITING_MISSING_HEADER = "still needed:"
+_WAITING_MISSING_ITEM = "- {name} — {description}"
+_WAITING_MISSING_NAME_ONLY = "- {name}"
 
 
 class CandidateParameter(BaseModel):
@@ -343,27 +372,6 @@ class SkillCandidate(BaseModel):
         return f"{line} (needs: {needs})"
 
 
-class MachineSnapshot(BaseModel):
-    """The classifier's input — the machine's situation at the moment a message
-    arrives, constructed by the caller (the eval harness in v1; chat wiring
-    later).  Deliberately narrow: the slice is scoped by the machine's own
-    facts, never a raw conversation-recency window.
-
-    ``penny_last_turn`` is what the assistant just said — the newest message is
-    a REPLY, and replies are only classifiable against what they answer ("just
-    the headline" is steps-arrived only against "what should I look for?").
-    ``task_anchor`` is the instigating ask, present when the machine is parked
-    in a non-idle state.  ``skill_candidates`` are the registry's ranked
-    resolution for this message (the structural pre-pass, built by
-    :func:`build_snapshot` — the classifier picks among evidence, it does not
-    retrieve); empty means the ``apply`` edge is withheld entirely."""
-
-    state: ConversationState
-    penny_last_turn: str | None = None
-    task_anchor: str | None = None
-    skill_candidates: list[SkillCandidate] = []
-
-
 class RoundFraming(BaseModel):
     """What a round is FOR, settled when the machine entered learn (#1868) — the framer's
     signature and the name of the container Python built from it.
@@ -404,15 +412,16 @@ class RoundFraming(BaseModel):
 
 
 class RoundShortfall(BaseModel):
-    """What a cold apply entry FELL SHORT of (#1885) — the round's OTHER entry answer, and
-    the structural signal that routes the turn into request.
+    """What a round's entry FELL SHORT of (#1885/#1894) — the round's OTHER entry answer,
+    and the state a request turn is negotiated from.
 
-    The classifier decided apply and bound a routine; the binder then read the user's words
-    against what that routine declares and found them short of something.  That is an
-    enumerated outcome rather than a failure — the routine really does cover the ask — so
-    the turn is not failed, it is turned into the ask for what is missing.  No container is
-    built: the container's name is derived from the routine plus ALL its values, so a job
-    missing one of them has no name yet and there is nothing to create.
+    A routine was named — by an apply draw the binder then found the words short of, or by
+    a request draw that said so outright — and the binder read the user's words against
+    what that routine declares.  That is an enumerated outcome rather than a failure: the
+    routine really does cover the ask, so the turn is not failed, it is turned into the ask
+    for what is missing.  No container is built: the container's name is derived from the
+    routine plus ALL its values, so a job missing one of them has no name yet and there is
+    nothing to create.
 
     It carries everything that ask has to be written from, and nothing else: the routine's
     registry ``skill`` name and ``description`` (what it is for, in words the user can be
@@ -422,10 +431,12 @@ class RoundShortfall(BaseModel):
     one line of what to supply).  ``CandidateParameter`` is reused for those because it is
     exactly that pair — a declared input's name and what to supply for it.
 
-    It is TURN SCOPED and nothing stores it.  A parked request round holds no partial
-    binding: the next message is bound the way a cold apply is bound, over the anchor ask
-    plus that message, so the binding is DERIVED where it is needed rather than kept
-    somewhere it could go stale against the words it was drawn from."""
+    It is ROUND STATE (#1894), recorded on the move that settled it and read back on every
+    later turn of the round — the same treatment ``RoundFraming`` gets, for the same
+    reason: a draw varies, so what the round is waiting on is READ rather than re-decided
+    each turn against the whole conversation.  Its lifecycle is the state that can read it:
+    a move landing in request carries one, a move that binds the round carries a framing
+    instead, and idle clears it."""
 
     skill: str
     description: str
@@ -454,6 +465,35 @@ def shortfall_of(entry: RoundEntry | None) -> RoundShortfall | None:
     return entry if isinstance(entry, RoundShortfall) else None
 
 
+class MachineSnapshot(BaseModel):
+    """The classifier's input — the machine's situation at the moment a message
+    arrives, constructed by the caller (the eval harness in v1; chat wiring
+    later).  Deliberately narrow: the slice is scoped by the machine's own
+    facts, never a raw conversation-recency window.
+
+    ``penny_last_turn`` is what the assistant just said — the newest message is
+    a REPLY, and replies are only classifiable against what they answer ("just
+    the headline" is steps-arrived only against "what should I look for?").
+    ``task_anchor`` is the instigating ask, present when the machine is parked
+    in a non-idle state.  ``skill_candidates`` are the registry's ranked
+    resolution for this message (the structural pre-pass, built by
+    :func:`build_snapshot` — the classifier picks among evidence, it does not
+    retrieve); empty means the ``apply`` edge is withheld entirely.
+
+    ``round_binding`` is what a round parked in request is WAITING ON (#1894) — the
+    routine it named, the values the earlier words settled, and the parameters that got
+    none — read off the machine rather than re-derived, so the move out of request is
+    judged against a named gap instead of a fresh completeness audit of the conversation.
+    Present only while a round is parked that way, which is the only state that carries
+    one."""
+
+    state: ConversationState
+    penny_last_turn: str | None = None
+    task_anchor: str | None = None
+    skill_candidates: list[SkillCandidate] = []
+    round_binding: RoundShortfall | None = None
+
+
 class StateDecision(BaseModel):
     """One classification, typed for the machine: the draw outcome plus the
     decided state (``None`` on any non-decision — the fail → stay input) and,
@@ -469,11 +509,13 @@ class TurnEntry(BaseModel):
     """What the machine settled for the message that just arrived — what the caller needs
     to enter the turn with.
 
-    ``state`` is where the machine now stands (the move has already been recorded, so this
-    is a read of the log rather than a prediction), ``decision`` the classifier's own typed
-    answer, and ``shortfall`` the cold apply entry's other one (#1885) — present exactly on
-    the turns that land in request through the binder, and carried HERE rather than read
-    back off the machine because nothing durable holds it (see :class:`RoundShortfall`)."""
+    ``state`` is where the machine now stands, ``decision`` the classifier's own typed
+    answer, and ``shortfall`` what the round is waiting on (#1885/#1894) — whether this
+    turn's binder drew it or an earlier turn of the same round did, and absent whenever the
+    round holds none (a routine the registry does not hold, a draw that came back unusable,
+    or a landing that is not request at all).  State and shortfall are both READS of the log
+    taken after the move was recorded (#1894), never predictions and never copies: the row
+    is the machine, so what the turn is entered with is what the machine says it is."""
 
     state: ConversationState
     decision: StateDecision
@@ -551,10 +593,16 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     because an edge meaning references it ("no known skill covers it"): the
     no-coverage fact must be a READ off the rendered state, never an inference
     from a missing section (the rational-actor doctrine).  The task anchor, by
-    contrast, renders only when parked: no meaning references an absent task."""
+    contrast, renders only when parked: no meaning references an absent task.
+
+    The parked round's BINDING renders beside the anchor for the same reason and on the
+    same rule (#1894): it is what the round is waiting on, so it belongs with the task it
+    belongs to, and it is there only while a round is parked waiting for it."""
     sections = [f"{_LAST_TURN_HEADER}\n{snapshot.penny_last_turn or _NONE_PLACEHOLDER}"]
     if snapshot.task_anchor is not None:
         sections.append(f"{_TASK_HEADER}\n{snapshot.task_anchor}")
+    if snapshot.round_binding is not None:
+        sections.append(_waiting_section(snapshot.round_binding))
     if snapshot.skill_candidates:
         listing = "\n".join(f"- {candidate.render()}" for candidate in snapshot.skill_candidates)
         sections.append(f"{_SKILLS_HEADER}\n{listing}")
@@ -569,6 +617,45 @@ def render_classifier_content(snapshot: MachineSnapshot, message: str) -> str:
     )
     sections.append(f"{_TRANSITIONS_HEADER}\n{transitions}")
     return "\n\n".join(sections)
+
+
+def _waiting_section(binding: RoundShortfall) -> str:
+    """What the parked round has and what it lacks, as its own section (#1894).
+
+    Both halves render because the move out of request is judged against both: whether the
+    newest message supplies what is still needed, and — since a user often restates what
+    they already said — whether it adds anything at all.  The values are the user's own
+    words, so the section is a READ, and the skill's name is right there to copy back."""
+    lines = [_WAITING_HEADER, _WAITING_SKILL.format(skill=binding.skill)]
+    lines.append(_WAITING_GIVEN_HEADER)
+    lines.extend(_waiting_given_lines(binding))
+    lines.append(_WAITING_MISSING_HEADER)
+    lines.extend(_waiting_missing_lines(binding))
+    return "\n".join(lines)
+
+
+def _waiting_given_lines(binding: RoundShortfall) -> list[str]:
+    """One line per value the round already settled, VERBATIM — or the stated
+    nothing-yet line, because an empty list under a header reads as a rendering fault
+    rather than as a fact."""
+    if not binding.bound:
+        return [_WAITING_NOTHING_GIVEN]
+    return [
+        _WAITING_GIVEN_ITEM.format(name=name, value=value) for name, value in binding.bound.items()
+    ]
+
+
+def _waiting_missing_lines(binding: RoundShortfall) -> list[str]:
+    """One line per detail still missing, with the registry's own what-to-supply — the
+    plain-words form of the gap the newest message either fills or does not.  A parameter
+    with no description falls back to its bare name (a description is optional on the
+    row)."""
+    return [
+        _WAITING_MISSING_ITEM.format(name=parameter.name, description=parameter.description)
+        if parameter.description
+        else _WAITING_MISSING_NAME_ONLY.format(name=parameter.name)
+        for parameter in binding.missing
+    ]
 
 
 def _transition_condition(current: ConversationState, target: ConversationState) -> str:
@@ -605,10 +692,11 @@ def _landing(
 
     It is a SECOND door into request, not a new edge.  ``OUT_EDGES`` already offers request
     from idle and that condition is untouched — a classifier that can see the ask is short
-    still parks there directly, and such a turn simply carries no shortfall.  This door is
-    the one no edge declares, which is why ``OUT_EDGES`` gains nothing: it opens on a fact
-    only the binder holds, and it is also the only way a machine already sitting in request
-    lands back in request (the move request has no offered self-edge for).
+    still parks there directly, and since #1894 that turn is bound at entry too, so both
+    doors arrive carrying the same partial binding.  This one is the door no edge declares,
+    which is why ``OUT_EDGES`` gains nothing: it opens on a fact only the binder holds, and
+    it is also the only way a machine already sitting in request lands back in request (the
+    move request has no offered self-edge for).
 
     The move is still recorded as a classifier move, because a model WAS in the loop and
     its draw is what bound the routine; the raw ``STATE: apply`` it drew stays readable on
@@ -625,6 +713,7 @@ def build_snapshot(
     message: str,
     penny_last_turn: str | None = None,
     task_anchor: str | None = None,
+    round_binding: RoundShortfall | None = None,
 ) -> MachineSnapshot:
     """The production snapshot builder — the machine's situation as the
     classifier's input.
@@ -646,6 +735,7 @@ def build_snapshot(
         state=state,
         penny_last_turn=penny_last_turn,
         task_anchor=task_anchor,
+        round_binding=round_binding,
         skill_candidates=[
             SkillCandidate(
                 name=skill.name,
@@ -719,8 +809,11 @@ def conversation_prompt(
     ``shortfall`` is the round entry's OTHER answer (#1885), and it is request's closing
     paragraph for the same reason: the routine, what it is for, what the words already
     settled and what they did not are all rendered verbatim, so the ask is a copy rather
-    than a guess.  With none, request composes the byte-identical prompt it always did —
-    the shape a request turn the classifier parked directly still has."""
+    than a guess.  Since #1894 both doors bind at entry and a parked round's binding is read
+    back on the turns that follow, so an ordinary request turn is entered with one.  What is
+    left formless is the round that has no shortfall to state — the binder could not settle
+    it at all, or it settled COMPLETELY on a turn the classifier still parked in request —
+    and that composes the byte-identical prompt it always did."""
     return (
         Prompt.CONVERSATION_HEAD
         + _instruction(state, framing, shortfall)
@@ -764,9 +857,10 @@ def _round_line(
 def _shortfall_line(shortfall: RoundShortfall | None) -> str:
     """The round's shortfall as request's closing paragraph (#1885), or nothing at all.
 
-    Nothing when the round settled none, which is the request turn the classifier parked on
-    its own: it composes the prompt it always composed, so the rendered state is additive
-    rather than a shape every request turn has to have."""
+    Nothing when the round settled none — a routine the registry does not hold, or a draw
+    that came back unusable (#1894 binds at both doors, so an ordinary request turn always
+    has one): it composes the prompt it always composed, so the rendered state stays
+    additive rather than a shape every request turn has to have."""
     if shortfall is None:
         return ""
     return Prompt.ROUND_SHORTFALL_LINE.format(
@@ -866,19 +960,19 @@ class ConversationMachine:
     ) -> TurnEntry:
         """One incoming message, start to finish: settle any structural move
         first, classify from where that leaves the machine, settle the round's entry when
-        the move lands in learn or a cold apply, then record the result (which is what
-        applies it).  Returns what the caller enters the turn with.
+        the move lands in learn or against a known routine, then record the result (which
+        is what applies it).  Returns what the caller enters the turn with.
 
-        The entry is returned as well as recorded because its two halves are held
-        differently: a FRAMING is durable round state and every later reader reads it back
-        off the machine, while a SHORTFALL belongs to this turn alone and nothing stores it
-        (#1885), so the only way it reaches the turn is out of here."""
+        Both halves of the entry are recorded, so what comes back is a READ of where that
+        left the machine (#1894) rather than a hand-off of something nothing holds: the
+        shortfall a turn is entered with is the round's, whether this turn's binder drew it
+        or an earlier turn did."""
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
         entry = await self._frame_round(decision, message, run_id=run_id)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
-        return TurnEntry(state=self.state(), decision=decision, shortfall=shortfall_of(entry))
+        return TurnEntry(state=self.state(), decision=decision, shortfall=self.shortfall())
 
     def state(self) -> ConversationState:
         """Where the machine stands — the newest move's destination.  No history
@@ -896,6 +990,20 @@ class ConversationMachine:
         if latest is None or latest.skill_frame is None:
             return None
         return RoundFraming.model_validate_json(latest.skill_frame)
+
+    def shortfall(self) -> RoundShortfall | None:
+        """The round's partial binding (#1894), carried on the newest move — the routine a
+        parked request round named, what the words have settled so far, and what they have
+        not.  ``None`` unless a round is parked in request holding one.
+
+        Read off the log exactly like the framing, and for the same reason: the newest row
+        IS the machine, so the turn's ask, the classifier's view of the gap, and the
+        completion of the binding are all the same fact rather than three derivations of
+        it."""
+        latest = self._db.machine.latest_transition()
+        if latest is None or latest.round_shortfall is None:
+            return None
+        return RoundShortfall.model_validate_json(latest.round_shortfall)
 
     def link_message(self, run_id: str, message_id: int) -> None:
         """Attach the incoming message to the moves it caused, once it has an id.
@@ -936,15 +1044,16 @@ class ConversationMachine:
     def _snapshot(
         self, state: ConversationState, message: str, *, penny_last_turn: str | None
     ) -> MachineSnapshot:
-        """The classifier's input, with the anchor resolved from the machine's
-        own log — the parked ask is READ from the conversation it points at,
-        never a copy this layer keeps."""
+        """The classifier's input, with the anchor and the parked round's binding resolved
+        from the machine's own log — the ask is READ from the conversation it points at and
+        the binding from the move that settled it, never a copy this layer keeps."""
         return build_snapshot(
             self._db,
             state=state,
             message=message,
             penny_last_turn=penny_last_turn,
             task_anchor=self._anchor_text(),
+            round_binding=self.shortfall(),
         )
 
     def _anchor_text(self) -> str | None:
@@ -965,9 +1074,9 @@ class ConversationMachine:
     async def _frame_round(
         self, decision: StateDecision, message: str, *, run_id: str | None
     ) -> RoundEntry | None:
-        """The round-framing hook (#1868/#1875/#1870): the moves that settle the round's
-        framing and build the container its results are kept in — and WHICH of the two
-        draws settles it.
+        """The round-framing hook (#1868/#1875/#1870/#1894): the moves that settle the
+        round's entry — its framing and the container its results are kept in, or the
+        partial binding it is still waiting on — and WHICH of the two draws settles it.
 
         Its input is the round's user turns and nothing else, which at this moment is the
         ask the round is anchored to plus the message that just arrived — both draws' own
@@ -985,15 +1094,20 @@ class ConversationMachine:
         the round unframed, the way it did before this hook existed; landing in APPLY that
         way leaves a turn with nothing to configure, which its own state fails honestly.  A
         SHORTFALL is neither of those (#1885): the routine covers the ask and the words are
-        short of something it needs, so the move lands in request instead (:func:`_landing`)
-        and the turn asks for the rest."""
+        short of something it needs, so the turn asks for the rest — and the move lands in
+        request whether the draw said request outright or apply (:func:`_landing`).
+
+        BOTH skill-gated draws bind (:data:`_BINDING_STATES`, #1894), which is what makes
+        the two doors into request one door: a request the classifier drew directly is a
+        routine it named and details it says are missing, which is the binder's question
+        exactly, and answering it here is what lets that turn ask for something specific."""
         framer = self._framer
         if framer is None or decision.state is None:
             return None
         if decision.state is ConversationState.LEARN:
             return await self._frame_learn_entry(framer, message, run_id=run_id)
-        if decision.state is ConversationState.APPLY and self.framing() is None:
-            return await self._bind_apply_entry(framer, decision, message, run_id=run_id)
+        if decision.state in _BINDING_STATES and self.framing() is None:
+            return await self._bind_round_entry(framer, decision, message, run_id=run_id)
         return None
 
     async def _frame_learn_entry(
@@ -1013,26 +1127,33 @@ class ConversationMachine:
             previous=self.framing(),
         )
 
-    async def _bind_apply_entry(
+    async def _bind_round_entry(
         self, framer: RoundFramer, decision: StateDecision, message: str, *, run_id: str | None
     ) -> RoundEntry | None:
         """A round asking for a routine Penny ALREADY KNOWS has one, so the BINDER fills it
-        (#1870) — the apply entry's own draw, and the frameless-apply seam #1875 opened.
+        (#1870/#1894) — the entry draw of every skill-gated landing, apply and request
+        alike, and the frameless-apply seam #1875 opened.
 
         Apply configures the round's own container, so a framing is the one thing that turn
         cannot do without; a round already carrying one is answered by what it already has
         (the caller's guard), since a re-draw is not a re-read and would file the job under
         a name the container it was built for no longer matches.  Arriving WITHOUT one is
         the cold ask: the routine is whatever the skill-gated decision bound, and the
-        values are whatever this message supplies for what that routine declares.
+        values are whatever the round's words supply for what that routine declares.
 
-        A decided apply always names a skill (the draw contract validates it against the
-        offered candidates), so a missing one is a broken contract rather than a case to
-        absorb — it is logged and the round stays unframed, never bound to a guess."""
+        What the round ALREADY settled is handed over rather than re-derived (#1894), so a
+        message arriving on a parked request completes a binding instead of starting one —
+        and only the parameters still open are drawn, which is why the value the user gave
+        two turns ago cannot come back different this turn.
+
+        A decided skill-gated draw always names a skill (the draw contract validates it
+        against the offered candidates), so a missing one is a broken contract rather than a
+        case to absorb — it is logged and the round stays unbound, never bound to a guess."""
         if decision.skill is None:
             logger.warning(
-                "An apply decision arrived naming no skill — the round cannot be bound, "
-                "so it enters apply unframed"
+                "A %s decision arrived naming no skill — the round cannot be bound, "
+                "so it enters its turn unframed",
+                decision.state,
             )
             return None
         return await framer.bind_entry(
@@ -1040,7 +1161,20 @@ class ConversationMachine:
             ask=self._anchor_text(),
             message=message,
             run_id=run_id,
+            settled=self._settled_values(decision.skill),
         )
+
+    def _settled_values(self, skill: str) -> dict[str, str]:
+        """What a parked round has already bound for ``skill`` (#1894) — read off the
+        recorded shortfall, empty for a cold entry.
+
+        Gated on the ROUTINE matching, because a round that turns out to be about a
+        different skill is a different job: values bound against one routine's parameters
+        say nothing about another's, whatever the names happen to be."""
+        waiting = self.shortfall()
+        if waiting is None or waiting.skill != skill:
+            return {}
+        return waiting.bound
 
     def _record_decision(
         self,
@@ -1059,9 +1193,11 @@ class ConversationMachine:
 
         A move that landed in request through a shortfall carries no framing (#1885): the
         container's name needs every value, so a job missing one has nothing built for it
-        and nothing to record."""
+        and nothing to record.  It carries the SHORTFALL instead (#1894) — the two halves
+        of the entry, each recorded on the move that settled it."""
         target = _landing(current, decision, entry)
         carried = self._next_framing(target, framing_of(entry))
+        waiting = self._next_shortfall(target, shortfall_of(entry))
         self._db.machine.record_transition(
             from_state=current.value,
             to_state=target.value,
@@ -1072,6 +1208,7 @@ class ConversationMachine:
             run_id=run_id,
             skill_name=decision.skill,
             skill_frame=carried.model_dump_json() if carried is not None else None,
+            round_shortfall=waiting.model_dump_json() if waiting is not None else None,
         )
 
     def _next_anchor(
@@ -1101,3 +1238,21 @@ class ConversationMachine:
         if target is ConversationState.IDLE:
             return None
         return drawn if drawn is not None else self.framing()
+
+    def _next_shortfall(
+        self, target: ConversationState, drawn: RoundShortfall | None
+    ) -> RoundShortfall | None:
+        """The partial binding's lifecycle (#1894), one rule: it belongs to a round parked
+        in REQUEST, so a move landing there carries one — a freshly drawn binding replacing
+        whatever the round held, and anything else keeping what the round already had (the
+        same fail-→-stay reading the framing gets) — while every move that leaves clears it.
+
+        Leaving covers the whole of the rest: a round whose details arrived carries a
+        FRAMING instead and has nothing left to wait on; one that turns out to be about a
+        different task is waiting on nothing that was ever true of it; a draw that could not
+        be bound at all lands in apply, which fails honestly and resets; and idle ends the
+        round.  A binding kept past any of those would be state describing a negotiation
+        that is over — the exact thing the model would then reason from."""
+        if target is not ConversationState.REQUEST:
+            return None
+        return drawn if drawn is not None else self.shortfall()

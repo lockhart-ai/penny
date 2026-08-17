@@ -363,11 +363,12 @@ class ChatAgent(Agent):
         reused by run-end extraction instead of a second draw, and is what a failed learn
         turn takes its empty container down with.
 
-        ``shortfall`` is the round's OTHER entry answer (#1885), present exactly on a turn
-        the binder landed in request: it renders the routine and the detail still missing
-        into that turn's instruction, so the ask is written from a state rather than from a
-        guess.  Turn-scoped — nothing stores it and nothing after this turn reads it, which
-        is why it is a parameter and not a read off the machine.
+        ``shortfall`` is the round's OTHER entry answer (#1885/#1894), present on a turn
+        that landed in request: it renders the routine and the detail still missing into
+        that turn's instruction, so the ask is written from a state rather than from a
+        guess.  It is the round's own state, recorded on the move and read back by the
+        channel, so a turn arriving on a parked round asks for exactly what the turn that
+        parked it asked for.
         """
         self._current_user = sender
         self._pending_page_context = page_context

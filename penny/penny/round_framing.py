@@ -97,6 +97,12 @@ class RoundFramer:
     words are SHORT of something it needs, which comes back as a
     :class:`~penny.conversation_machine.RoundShortfall` and routes the turn into request.
 
+    :meth:`bind_entry` is the ONE door for every entry against a known routine (#1894) —
+    an apply the words fall short of and a request the classifier drew directly both come
+    through it, so both present the same partial binding rather than one of them getting
+    specifics and the other a generic ask.  A round that comes back for its missing detail
+    hands over what it already settled, and only the still-open parameters are drawn.
+
     One instance per deployment, holding its clients and database (threaded, never
     ambient).  Injected into :class:`~penny.conversation_machine.ConversationMachine`,
     which owns WHEN each of these runs; what a framed round then IS lives here.
@@ -158,18 +164,30 @@ class RoundFramer:
         return await self._micro_context.frame_skill(content, run_target=self._run_target)
 
     async def bind_entry(
-        self, *, skill: str, ask: str | None, message: str, run_id: str | None
+        self,
+        *,
+        skill: str,
+        ask: str | None,
+        message: str,
+        run_id: str | None,
+        settled: dict[str, str] | None = None,
     ) -> RoundEntry | None:
-        """Frame the round an APPLY entry is entering against a routine that ALREADY
-        EXISTS (#1870) — the summary method of the binder half.
+        """Frame the round an entry is entering against a routine that ALREADY EXISTS
+        (#1870/#1894) — the summary method of the binder half, and the ONE door both a
+        cold apply and a request entry come through.
 
-        The classifier bound ``skill`` when it decided apply, so nothing here decides what
-        the round is about: the routine is settled, and the only open question left is
-        which part of the user's words fills each thing that routine already declares.  The
+        The classifier bound ``skill`` when it decided, so nothing here decides what the
+        round is about: the routine is settled, and the only open question left is which
+        part of the user's words fills each thing that routine already declares.  The
         binder answers exactly that, the container's name is derived from the answer, and
         find-or-create does the rest — which IS tier-1 dedup by construction (#1775): the
         same job asked for a second time derives the name it derived the first time and
         runs into the container that already exists, while a different place mints its own.
+
+        ``settled`` is what a PARKED round already bound (#1894) — read off its recorded
+        shortfall rather than re-derived — so a round coming back for its missing detail
+        draws only the parameters still open and keeps the values the earlier turn read out
+        of the earlier words.  Empty for a cold entry, which is every parameter open.
 
         A :class:`~penny.conversation_machine.RoundShortfall` when the words fell SHORT of
         something the routine needs (#1885) — the routine covers the ask, so the round is
@@ -184,22 +202,56 @@ class RoundFramer:
         routine = self._db.skills.get(skill)
         if routine is None:
             logger.warning(
-                "The apply round bound %r, which the registry does not hold — no container "
-                "was built, so this round enters apply unframed",
+                "The round bound %r, which the registry does not hold — no container was "
+                "built, so this round enters its turn unframed",
                 skill,
             )
             return None
         declared = parameters_from_json(routine.parameters)
-        bound = await self._bind(routine, declared, ask, message)
+        already = _already_settled(declared, settled)
+        return await self._settle_binding(routine, declared, already, ask, message, run_id=run_id)
+
+    async def _settle_binding(
+        self,
+        routine: Skill,
+        declared: list[SkillParameter],
+        already: dict[str, str],
+        ask: str | None,
+        message: str,
+        *,
+        run_id: str | None,
+    ) -> RoundEntry | None:
+        """Fill what is still OPEN and settle the round on the result (#1894).
+
+        A round whose every parameter is already settled needs no draw at all — its values
+        are read, not re-decided — so the framing is built straight from them; asking a
+        model to re-answer a question Python already holds the answer to is the model-space
+        detour this whole seam exists to remove."""
+        open_parameters = [parameter for parameter in declared if parameter.name not in already]
+        if not open_parameters:
+            return await self._framed(routine, declared, already, run_id=run_id)
+        bound = await self._bind(routine, open_parameters, ask, message)
         if not isinstance(bound, BoundValues):
-            return _shortfall(routine, declared, bound)
-        signature = _filled_signature(routine, declared, bound)
+            return _shortfall(routine, declared, already, bound)
+        return await self._framed(routine, declared, already | bound.values, run_id=run_id)
+
+    async def _framed(
+        self,
+        routine: Skill,
+        declared: list[SkillParameter],
+        values: dict[str, str],
+        *,
+        run_id: str | None,
+    ) -> RoundFraming:
+        """The round settled: ``routine``'s own interface carrying ``values``, and the
+        container derived from it, found or created."""
+        signature = _filled_signature(routine, declared, values)
         framing = RoundFraming(signature=signature, container=container_name(signature))
         await self._settle_container(framing, previous=None, run_id=run_id)
         return framing
 
     async def _bind(
-        self, routine: Skill, declared: list[SkillParameter], ask: str | None, message: str
+        self, routine: Skill, open_parameters: list[SkillParameter], ask: str | None, message: str
     ) -> SkillBinding | None:
         """One BINDING draw over the round's user turns, in the binder's own typed union —
         which of its two directions came back is the caller's to read, because the two
@@ -208,12 +260,16 @@ class RoundFramer:
         The draw is handed the turns twice over — once inside the rendered document, which
         also renders the signature, and once on their own — because a value is only
         evidence when the USER said it, and the second argument is the text the span check
-        actually tests against (#1867)."""
+        actually tests against (#1867).
+
+        Only the OPEN parameters are rendered and offered (#1894): the draw's contract is
+        that it answers for exactly the parameters it was handed, so a parameter a parked
+        round already settled is not a question to ask again — it is an answer to carry."""
         spoken = render_spoken_turns(_spoken_turns(ask, message))
-        content = build_binding_content(spoken, routine.name, routine.description, declared)
+        content = build_binding_content(spoken, routine.name, routine.description, open_parameters)
         return await self._micro_context.bind_skill(
             content,
-            [parameter.name for parameter in declared],
+            [parameter.name for parameter in open_parameters],
             spoken,
             run_target=self._run_target,
         )
@@ -305,8 +361,30 @@ def _spoken_turns(ask: str | None, message: str) -> list[str]:
     return turns
 
 
+def _already_settled(
+    declared: list[SkillParameter], settled: dict[str, str] | None
+) -> dict[str, str]:
+    """What a parked round already bound, narrowed to what this routine still DECLARES
+    (#1894) — in declared order, so everything downstream reads the routine's own order.
+
+    The narrowing is what makes the carry safe across a re-taught routine: a skill is
+    REPLACE-able by name, so a value bound to a parameter that no longer exists is a value
+    with nowhere to go, and carrying it would put it in a signature the registry does not
+    describe."""
+    if not settled:
+        return {}
+    return {
+        parameter.name: settled[parameter.name]
+        for parameter in declared
+        if parameter.name in settled
+    }
+
+
 def _shortfall(
-    routine: Skill, declared: list[SkillParameter], bound: MissingParameters | None
+    routine: Skill,
+    declared: list[SkillParameter],
+    already: dict[str, str],
+    bound: MissingParameters | None,
 ) -> RoundShortfall | None:
     """The two empty-handed directions, told apart and typed for the caller (#1885).
 
@@ -318,10 +396,15 @@ def _shortfall(
     words did settle is what stops the turn asking for them a second time.
 
     A draw that produced nothing usable names nothing at all, so there is nothing to ask
-    for and nothing to state: it stays the honest ``None`` the apply turn fails on."""
+    for and nothing to state: it stays the honest ``None`` the apply turn fails on.
+
+    ``already`` is what the round had settled before this draw (#1894), and it joins what
+    this one settled: the round is one negotiation, so what it holds is everything the user
+    has said across it, not only what the newest turn's draw was asked about."""
     _log_shortfall(routine, bound)
     if bound is None:
         return None
+    values = already | bound.values
     return RoundShortfall(
         skill=routine.name,
         description=routine.description,
@@ -329,9 +412,9 @@ def _shortfall(
         # happened to answer in, so the rendered state reads the way the routine is
         # written wherever else it renders.
         bound={
-            parameter.name: bound.values[parameter.name]
+            parameter.name: values[parameter.name]
             for parameter in declared
-            if parameter.name in bound.values
+            if parameter.name in values
         },
         missing=tuple(
             CandidateParameter(name=parameter.name, description=parameter.description)
@@ -342,15 +425,18 @@ def _shortfall(
 
 
 def _filled_signature(
-    routine: Skill, declared: list[SkillParameter], bound: BoundValues
+    routine: Skill, declared: list[SkillParameter], values: dict[str, str]
 ) -> SkillSignature:
     """``routine``'s own interface with THIS round's values in it.
 
     The name and the description are the REGISTRY's, never redrawn — the routine already
     has an identity, and a second draw's preferred wording would derive a container name
     for a job filed under a different one.  Only the values are this round's, and each is
-    looked up by the DECLARED name because that is the key the binder answers under, total
-    by construction for a :class:`BoundValues`."""
+    looked up by the DECLARED name because that is the key the binder answers under.
+
+    ``values`` is TOTAL over ``declared`` by construction: the caller reaches this only
+    when what a parked round already settled plus what the draw filled covers every
+    parameter, which is exactly the two halves the round is made of (#1894)."""
     return SkillSignature(
         name=routine.name,
         description=routine.description,
@@ -358,7 +444,7 @@ def _filled_signature(
             FramedParameter(
                 name=parameter.name,
                 description=parameter.description,
-                value=bound.values[parameter.name],
+                value=values[parameter.name],
             )
             for parameter in declared
         ),
@@ -377,13 +463,13 @@ def _log_shortfall(routine: Skill, bound: MissingParameters | None) -> None:
     an apply turn ends on."""
     if bound is None:
         logger.warning(
-            "The apply round asking for %r could not be bound — no container was built, "
-            "so this round enters apply unframed",
+            "The round asking for %r could not be bound — no container was built, "
+            "so this round enters its turn unframed",
             routine.name,
         )
         return
     logger.info(
-        "The apply round asking for %r supplied no value for %s — no container was built, "
+        "The round asking for %r supplied no value for %s — no container was built, "
         "so this round enters request and asks for it",
         routine.name,
         ", ".join(bound.names),
