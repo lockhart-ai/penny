@@ -456,7 +456,9 @@ def test_every_correction_is_answered_against_the_round_it_corrects(tmp_path) ->
     its correction answers — seeds cleanly and reads back as that state: the five jobs still
     running, the round readable under its own run with its container inert and holding what
     the demonstration wrote, the conversation ending on the teach and the report, and the
-    machine parked in learn on that teach carrying the round's framing.
+    machine parked in learn on that teach carrying both pieces of the round's entry state —
+    the framing a correction carries rather than re-draws, and the minted-fresh provenance
+    (#1902) saying the routine standing under that pinned name is the round's own.
 
     Driven here against a real migrated database for the reason its sibling beats' pins are:
     the seeder is CODE, and its loud probe otherwise runs only under ``make eval``, where a

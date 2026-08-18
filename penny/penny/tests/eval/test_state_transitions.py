@@ -69,6 +69,7 @@ from penny.conversation_machine import (
     ConversationState,
     MachineSnapshot,
     RoundFraming,
+    RoundProvenance,
     RoundShortfall,
     SkillCandidate,
     render_classifier_content,
@@ -210,6 +211,7 @@ def _park(
     skill_name: str | None = None,
     framing: RoundFraming | None = None,
     shortfall: RoundShortfall | None = None,
+    provenance: RoundProvenance | None = None,
 ) -> None:
     """Leave the machine where the edge under test starts from, through the real
     store — a seeded transition row IS the machine's state (#1706), so nothing
@@ -246,6 +248,12 @@ def _park(
     (the classifier renders it, and the next binder completes from it), so a seeded parked
     round without one is a round production can no longer produce.
 
+    ``provenance`` is the round's third piece of entry state (#1902) — what the round's own
+    registry write REPLACED, taken on the move that OPENS its teaching and carried the
+    framing's way.  A seeded round that minted a routine has to carry it for the same reason
+    it carries the framing: a bail READS it to decide what the registry is owed, so a round
+    parked without one is a round production can no longer produce.
+
     Every move recorded here is a DECIDED draw: these are the moves the machine
     really made, and a classifier row with no outcome is the fail → stay shape,
     which is not what a seeded history of completed rounds is."""
@@ -260,6 +268,7 @@ def _park(
         skill_name=skill_name,
         skill_frame=framing.model_dump_json() if framing is not None else None,
         round_shortfall=shortfall.model_dump_json() if shortfall is not None else None,
+        round_provenance=provenance.model_dump_json() if provenance is not None else None,
     )
 
 
@@ -7439,11 +7448,17 @@ async def test_idle_to_learn_learns_a_new_routine_from_a_here_s_how(
 #     beside the one the round already had.
 #
 # What a correction leaves behind is ONE routine whose program carries the corrected step
-# and every step the correction said nothing about.  Both failures are reachable by
-# construction — entering learn frames the round again (#1868, every decided move in,
-# "because a correction re-enters learn and re-entering is exactly the occasion to ask again
-# what the round is now for"), so a fresh name derives a fresh container and files the
-# re-extraction under it.
+# and every step the correction said nothing about.
+#
+# The FORK was, until #1902, a certainty rather than a risk: entering learn re-drew the
+# framing on every decided move in, so a corrected ask read as a different subject derived a
+# fresh name, find-or-create minted a sibling container under it, and run-end extraction
+# registered a second routine beside the first — ~21 of 25 measured samples.  That is now
+# closed on both sides: a learn → learn move CARRIES the round's framing and re-settles only
+# the container (``RoundFramer.carry_entry``), and run-end extraction is KEYED by the
+# framing's pinned name, so the round's second run replaces its own routine in place.  The
+# two checks below are what that deletion is watched by — the gate cases that would catch its
+# absence — so they are kept and scored rather than retired as satisfied.
 #
 # What must NOT happen is still the fold (#1706): nothing is configured, on any of the five.
 # Case 4 is where that is a live temptation rather than an absence — its teach stated a
@@ -7855,6 +7870,21 @@ CORRECTION_CASES = (
 # never a number picked to fit.
 _CORRECTION_MESSAGE_WINDOW = _COMPOSED_MESSAGE_WINDOW + 2
 
+# The provenance every teach round here carries (#1902): PRESENT, replacing NOTHING.
+#
+# Present because the round MINTED its routine — the framer ran at its entry, which is the
+# only draw that mints and therefore the only one that records provenance at all.  Replacing
+# nothing because the name that framing pinned was new to the registry at that moment:
+# production reads ``snapshot_replaced_skill`` on the move that opens the teaching, and every
+# one of these five rounds teaches a job none of the world's five journeys taught (asserted,
+# rather than assumed, in the probe below — a fixture renamed onto a journey's routine would
+# make the round a RE-TEACH and this the wrong state entirely).
+#
+# The production TYPE, serialized by the production call, rather than a hand-written JSON
+# string — a seeded round has to be indistinguishable from one the machine really recorded,
+# and a second spelling of this shape is one free to drift from it.
+MINTED_FRESH = RoundProvenance()
+
 
 # ── Seeding: the composed world, then the round the teach ran ─────────────────
 
@@ -7883,8 +7913,8 @@ def _seed_teach_round(db: Database, case: _CorrectionCase) -> None:
 
     One turn, not two: this is the single-turn teach beat 8 measures, so the round is opened
     and run by the same message and there is no elicit turn in front of it.  What it leaves
-    is a machine parked in learn ON that message, carrying the framing the entry settled,
-    and a container holding what the demonstration wrote."""
+    is a machine parked in learn ON that message, carrying the framing AND the provenance
+    the entry settled, and a container holding what the demonstration wrote."""
     teach_id = _log_ask(db, case.prior.teach, case.case_id)
     _log_reply(db, case.prior.reference, answering=teach_id)
     _seed_teach_turn_ledger(db, case)
@@ -7895,6 +7925,7 @@ def _seed_teach_round(db: Database, case: _CorrectionCase) -> None:
         run_id=case.runs.learn_turn,
         message_id=teach_id,
         framing=case.framing,
+        provenance=MINTED_FRESH,
     )
     _seed_teach_container(db, case, teach_id)
 
@@ -8040,8 +8071,12 @@ def _assert_the_teach_round_is_in_the_ledger(db: Database, case: _CorrectionCase
 
 
 def _assert_parked_on_the_teach(db: Database, case: _CorrectionCase) -> None:
-    """The machine is parked in learn ON THE TEACH, carrying the round's framing — the state
-    the correction is classified against, and the framing a re-entry compares itself with."""
+    """The machine is parked in learn ON THE TEACH, carrying both pieces of entry state the
+    round settled — the framing a re-entry carries, and the provenance a bail would read.
+
+    Both are what the correction turn is answered against: the framing is the identity the
+    re-entry keeps rather than re-draws (#1902), and the provenance is what says the routine
+    standing under that name is the round's own."""
     teach_id = _seeded_ask_id(db, case.prior.teach, limit=_CORRECTION_MESSAGE_WINDOW)
     assert teach_id is not None, f"{case.case_id}: the seeded teach must be findable by content"
     latest = db.machine.latest_transition()
@@ -8053,6 +8088,37 @@ def _assert_parked_on_the_teach(db: Database, case: _CorrectionCase) -> None:
     )
     assert latest.skill_frame == case.framing.model_dump_json(), (
         f"{case.case_id}: the learn move must carry the round's framing, not {latest.skill_frame}"
+    )
+    _assert_the_round_minted_its_routine(db, case, latest)
+
+
+def _assert_the_round_minted_its_routine(
+    db: Database, case: _CorrectionCase, latest: StateTransition
+) -> None:
+    """The round's PROVENANCE says it minted its routine over nothing (#1902) — present on
+    the move that opened the teaching, carrying no replaced row, and pinned to the name the
+    round's framing settled.
+
+    Three claims, each silent on a run if it breaks.  An ABSENT provenance is the state a
+    skill-gated round records, so a world seeded without one describes a round that taught
+    nothing — and a bail from it would leave the routine standing.  A provenance carrying a
+    replaced ROW would say the user already had this routine, which would make the corrected
+    round a re-teach and a bail a restore.  And the state is only truthful while the round's
+    pinned name really is new to the world: production reads the registry at the moment the
+    round opens, so a fixture renamed onto one of the journeys' routines would be a re-teach
+    seeded as a mint."""
+    assert latest.round_provenance == MINTED_FRESH.model_dump_json(), (
+        f"{case.case_id}: the opening move must carry a minted-fresh provenance, "
+        f"not {latest.round_provenance}"
+    )
+    assert case.framing.skill == case.skill.name, (
+        f"{case.case_id}: the round's framing must pin the routine it taught, "
+        f"not {case.framing.skill!r}"
+    )
+    taught_before = {slug_skill_name(journey.round.skill.name) for journey in _JOURNEYS}
+    assert slug_skill_name(case.framing.skill) not in taught_before, (
+        f"{case.case_id}: {case.framing.skill!r} is one of the world's routines — the round "
+        "would be RE-teaching it, so minted-fresh is the wrong provenance"
     )
 
 
@@ -8206,9 +8272,11 @@ def _one_routine_check(db: Database, learned: list[Skill]) -> Check:
     forked (#1706/#1827).
 
     Read against the world's own five, so what is counted is the routines this round is
-    responsible for however the re-framing named them.  Two is the fork: entering learn
-    frames the round again, so a fresh name files the re-extraction beside the routine the
-    teach taught rather than over it, and the user is left with two routines for one job.
+    responsible for however the round ended up named.  Two is the fork: the re-extraction
+    filed beside the routine the teach taught rather than over it, leaving the user two
+    routines for one job.  Since #1902 the write is KEYED by the name the round's framing
+    pinned, so this is the gate case watching that — a regression there would put the second
+    routine back and nothing else would notice.
 
     Not applicable when nothing was re-extracted, the same guard its three siblings carry:
     the world arrives holding exactly one routine for this round, so a turn that learned
@@ -8233,9 +8301,10 @@ def _kept_its_container_check(db: Database, before: set[str], case: _CorrectionC
     """The corrected round ran into the container it already had — no SIBLING beside it.
 
     The other half of the fork, on the store rather than the registry: find-or-create means
-    a re-framing that keeps the job's identity derives the same name and continues into what
-    the round was already writing, while one that shifts it builds a second container for
-    what the user experiences as one job.
+    a round that keeps its identity derives the same name and continues into what it was
+    already writing, while one that shifts it builds a second container for what the user
+    experiences as one job.  Since #1902 a correction CARRIES the round's framing and
+    re-settles only the container, so this is the gate case watching that carry.
 
     Conditioned on the machine landing in LEARN rather than on anything being learned, since
     the container is settled by the ENTRY draw and a re-framing that minted a sibling and
