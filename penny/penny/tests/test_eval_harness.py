@@ -84,14 +84,18 @@ from penny.tests.eval.test_skill_labelling import FIXTURES as LABELLING_FIXTURES
 from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
     BAIL_CASES,
+    CORRECTION_CASES,
     IDLE_APPLY_CASES,
     IDLE_LEARN_CASES,
     IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
     REQUEST_APPLY_CASES,
+    SHAPE_DELTA_WITHOUT_RE_RUNNING,
+    SHAPE_RE_RAN_AND_APPLIED,
     _asks_for_what_is_missing_check,
     _claims_no_job_check,
+    _correction_shape,
     _does_not_re_ask_check,
     _interface_check,
     _names_the_cadence_check,
@@ -104,13 +108,16 @@ from penny.tests.eval.test_state_transitions import (
     assert_round_cites_its_run,
     assert_round_is_framed,
     assert_seeded_ledger,
+    assert_the_correction_is_unsaid,
     assert_the_round_built_what_it_claims,
     assert_the_teach_is_new_to_the_world,
+    assert_the_teach_round_is_parked,
     assert_values_are_new,
     cadence_seconds,
     parked_binding,
     rule_parts,
     seed_composed_world,
+    seed_corrected_round,
     seed_learned_round,
     seed_parked_in_request,
 )
@@ -442,6 +449,88 @@ def test_the_teach_scorer_passes_each_case_s_own_reference_reply() -> None:
     for case in IDLE_LEARN_CASES:
         for check in _round_reported_checks(case.stored, case.reference, [case.reference]):
             assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
+
+
+def test_every_correction_is_answered_against_the_round_it_corrects(tmp_path) -> None:
+    """Each learn → learn case's world — the composed history plus the completed teach round
+    its correction answers — seeds cleanly and reads back as that state: the five jobs still
+    running, the round readable under its own run with its container inert and holding what
+    the demonstration wrote, the conversation ending on the teach and the report, and the
+    machine parked in learn on that teach carrying the round's framing.
+
+    Driven here against a real migrated database for the reason its sibling beats' pins are:
+    the seeder is CODE, and its loud probe otherwise runs only under ``make eval``, where a
+    raise costs an hour of GPU before it is seen.  Its own database per case, because that
+    is what the sample gets.
+
+    The case's own premise rides along, and every way of getting it wrong is silent on a
+    run: a corrected target the page does not carry contracts the round to find something
+    that is not there; one the correction spells out itself makes a stored value prove
+    nothing about a page being read; one equal to the value already stored is a redirect to
+    where the round already was; and one the world has already said or stored would score
+    green with the page unread.  The registry claim stays out, exactly as it does for the
+    sibling beats' pins: the harness seeds fixture skills after the case's own seed."""
+    for index, case in enumerate(CORRECTION_CASES):
+        db = migrated_db(str(tmp_path / f"corrected-{index}.db"))
+        seed_corrected_round(case)(db)
+        assert_the_teach_round_is_parked(db, case)
+        assert_the_correction_is_unsaid(db, case)
+
+
+def test_the_correction_scorer_passes_each_case_s_own_reference_reply() -> None:
+    """Every learn → learn case's reference reply — the answer the case itself calls correct
+    — passes that beat's two REPLY checks.
+
+    The same tripwire every beat over this world carries (the "check the scorer before you
+    blame the model" rule, applied before the run rather than after it): a reply check that
+    cannot pass the agreed answer scores every sample a miss.  Here it reads the CORRECTED
+    value, which is the whole point — a report naming the value the round replaced would be
+    the wrong answer stated well."""
+    for case in CORRECTION_CASES:
+        for check in _round_reported_checks(case.corrected, case.reference, [case.reference]):
+            assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
+
+
+def test_every_way_a_correction_can_be_answered_has_its_own_name() -> None:
+    """The shape naming PARTITIONS the observations it is composed from — every combination
+    of "did it re-run", "did it store the corrected value" and "did it store the one it
+    replaced" lands on a phrase of its own, and the claim breaks a tie in exactly one of
+    them.
+
+    Pinned because that phrase is what the report hands the code owner to answer the
+    question this beat exists for, and a naming that collapsed two observations onto one
+    wording would read as an answer while hiding which failure occurred — which the first
+    draft did, reporting a run that stored the corrected value AND re-stored the one it
+    replaced as a clean delta-apply.
+
+    Stated as PROPERTIES rather than as a second copy of the table, which would pass by
+    agreeing with whatever the function does: the eight observations must produce eight
+    distinct phrases, and the claim may only decide the one where nothing was fetched and
+    nothing was written — the only place a reply is the sole evidence there is.  Two anchors
+    say which combination holds the pass and which holds the shape this whole beat watches
+    for, read from the module's own constants so a rewording moves both sites at once."""
+    named = {
+        (refetched, stored, kept, said): _correction_shape(
+            refetched=refetched, stored=stored, kept=kept, said=said
+        )
+        for refetched in (True, False)
+        for stored in (True, False)
+        for kept in (True, False)
+        for said in (True, False)
+    }
+    observations = [key[:3] for key in named if key[3]]
+    decided_by_the_claim = {
+        triple for triple in observations if named[(*triple, True)] != named[(*triple, False)]
+    }
+    assert decided_by_the_claim == {(False, False, False)}, (
+        f"the claim must decide one observation, it decided {sorted(decided_by_the_claim)}"
+    )
+    phrases = {named[(*triple, False)] for triple in observations}
+    assert len(phrases) == len(observations), (
+        f"every observation must have its own name, got {named}"
+    )
+    assert named[True, True, False, False] == SHAPE_RE_RAN_AND_APPLIED
+    assert named[False, True, False, False] == SHAPE_DELTA_WITHOUT_RE_RUNNING
 
 
 def test_the_bail_scorer_passes_each_case_s_own_reference_reply() -> None:
