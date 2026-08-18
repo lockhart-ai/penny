@@ -95,6 +95,40 @@ class SkillStore:
         with self._session() as session:
             return session.get(Skill, slug_skill_name(name))
 
+    def delete(self, name: str) -> bool:
+        """Remove the skill of that name from the registry; ``True`` when a row went.
+
+        The table is versionless, so a name is either in the registry or it is not —
+        there is no archived flag to set and no tombstone to leave, unlike a ``memory``
+        row.  Its one caller is the round that MINTED the skill taking it back when the
+        user calls the round off (#1902); a name nobody holds is a plain ``False``, never
+        an error, because the caller is asking for an end state rather than for a row."""
+        with self._session() as session:
+            skill = session.get(Skill, slug_skill_name(name))
+            if skill is None:
+                return False
+            session.delete(skill)
+            session.commit()
+        logger.debug("Deleted skill %s", name)
+        return True
+
+    def restore(self, row: Skill) -> None:
+        """Put ``row`` back EXACTLY as given — every column, timestamps included.
+
+        ``delete``'s sibling for the other half of a bail (#1902): a round that was
+        RE-TEACHING a routine the user already had has, by the time it is called off,
+        already replaced that routine's content through ``upsert``, so taking the round
+        back means restoring the version it found rather than removing the name.
+
+        Distinct from ``upsert``, which is for a NEW demonstration and therefore stamps
+        ``updated_at`` and re-derives from a draft.  Nothing is stamped here: the point is
+        that the row ends up indistinguishable from the one the round replaced, so the
+        registry reads as if the round never happened."""
+        with self._session() as session:
+            session.merge(row)
+            session.commit()
+        logger.debug("Restored skill %s", row.name)
+
     def list_all(self) -> list[Skill]:
         """Every skill, name order — the read surface's catalog listing."""
         with self._session() as session:

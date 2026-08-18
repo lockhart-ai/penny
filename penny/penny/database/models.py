@@ -598,4 +598,15 @@ class StateTransition(SQLModel, table=True):
     # carries one: a round that gets its details bound carries a framing instead, one that
     # turns out to be about a different task carries neither, and idle clears it.
     round_shortfall: str | None = None
+    # The round's PROVENANCE (#1902) as serialized ``RoundProvenance`` JSON: what the
+    # round's own registry write REPLACED.  Three states, because calling a round off owes
+    # the registry three different things — NULL when the round minted nothing (a
+    # skill-gated round binds a routine the user already had and teaches nothing, so a bail
+    # leaves it alone), present-and-empty when the round minted its pinned name over
+    # nothing (a bail deletes it), and present-carrying-a-row when the round was re-teaching
+    # (a bail restores that row, since by then the round's own extraction has replaced what
+    # the routine does).  Round state like the two above, settled at the same moment (the
+    # move that mints the routine — the last point at which "what was here before" is still
+    # readable) and carried the same way: set on entry, carried while parked, NULL at idle.
+    round_provenance: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)

@@ -58,9 +58,13 @@ steps (house style: the summary method reads like a table of contents):
   program yet (the runtime-join beat), so the parameters live at SKILL level — rendered
   in the registry, enforced at ``collection_set``, decisive for job identity — over a
   recipe that still reads in the labeller's placeholder descriptions.
-* **dedup (REPLACE semantics)** — exact name match → REPLACE; else a same-shape,
-  same-meaning skill (the GENERIC ``description_embedding`` converges cross-instance)
-  → REPLACE keeping ITS name; otherwise insert.
+* **dedup (REPLACE semantics)** — a round carrying a FRAMING writes under the name that
+  framing PINNED, and nothing else is consulted (#1902): the round's second run replaces
+  its own routine rather than registering a sibling, and no same-shaped skill can capture
+  the write and file this round under another job's name.  With no framing the ladder
+  stands — exact name match → REPLACE; else a same-shape, same-meaning skill (the GENERIC
+  ``description_embedding`` converges cross-instance) → REPLACE keeping ITS name;
+  otherwise insert.
 
 Every outcome is TYPED and loggable — the extracted/replaced skill, or a
 no-extraction outcome naming which gate failed — never a silent ``None`` (visible
@@ -339,7 +343,7 @@ class SkillExtractor:
         if gate is not None:
             return NoExtraction(gate=gate)
         draft = await self._draft(run_id, projection, certified, framing)
-        return await self._persist(draft, projection.origin_message)
+        return await self._persist(draft, projection.origin_message, framing)
 
     @staticmethod
     def _not_a_learn_turn(run_id: str, state: ConversationState | None) -> NoExtraction:
@@ -499,18 +503,20 @@ class SkillExtractor:
 
     # ── Persist (embed → dedup → upsert) ──────────────────────────────────────
 
-    async def _persist(self, draft: SkillDraft, origin_message: str) -> SkillExtracted:
-        """Embed the GENERIC description, resolve the dedup target
-        (name-or-shape+meaning), and upsert — REPLACE by name, so a re-demonstration
-        of the same routine overwrites the prior skill in place.  ``origin_message``
-        (the demonstrated-on instance) rides back for the narration frame (#1665).
+    async def _persist(
+        self, draft: SkillDraft, origin_message: str, framing: RoundFraming | None
+    ) -> SkillExtracted:
+        """Embed the GENERIC description, resolve the write's target name, and upsert —
+        REPLACE by name, so a re-demonstration of the same routine overwrites the prior
+        skill in place.  ``origin_message`` (the demonstrated-on instance) rides back for
+        the narration frame (#1665).
 
         The embedding anchors on the FRAMER's description now (#1830) — a statement of
         the kind of task, which is what makes two demonstrations of the same routine on
         different occasions converge; before the framer landed this anchored on the
         triggering message itself, which is the occasion rather than the kind."""
         embedding = await embed_text(self._embedding, draft.description)
-        target_name = self._dedup_target(draft, embedding)
+        target_name = self._dedup_target(draft, embedding, framing)
         if target_name != draft.name:
             draft = draft.model_copy(update={"name": target_name})
         skill, replaced = self._db.skills.upsert(
@@ -524,10 +530,26 @@ class SkillExtractor:
         )
         return SkillExtracted(skill=skill, replaced=replaced, origin_message=origin_message)
 
-    def _dedup_target(self, draft: SkillDraft, embedding: list[float] | None) -> str:
-        """The name to upsert under (REPLACE semantics): (a) an exact name match →
-        replace it; (b) else a same-tool-sequence, same-meaning skill → replace THAT
-        one keeping its name; otherwise the fresh slug (insert)."""
+    def _dedup_target(
+        self, draft: SkillDraft, embedding: list[float] | None, framing: RoundFraming | None
+    ) -> str:
+        """The name to upsert under (REPLACE semantics).
+
+        A round that carries a FRAMING has already PINNED its identity (#1902), so the
+        write is KEYED by that name and the ladder below does not run at all.  Two things
+        follow, both structural rather than judged.  A round that runs a SECOND time — the
+        correction — writes the name its first run wrote, and ``upsert`` is REPLACE by
+        name, so a corrected round refines its own routine instead of registering another
+        one beside it.  And nothing can capture the write: a same-shaped sibling matching
+        by meaning would file this round's routine under another job's name, leaving the
+        container the round has been writing into pointing at a routine no longer called
+        that.
+
+        With no framing the ladder stands, unchanged: (a) an exact name match → replace it;
+        (b) else a same-tool-sequence, same-meaning skill → replace THAT one keeping its
+        name; otherwise the fresh slug (insert)."""
+        if framing is not None:
+            return framing.skill
         if self._db.skills.get(draft.name) is not None:
             return draft.name
         match = self._shape_and_meaning_match(draft, embedding)

@@ -27,6 +27,11 @@ parameters — and its every violation class is pinned against
 is a claim about how many times the model was asked.  Both system prompts ride as
 whole-render literals, and the two draws are shown provably different documents.
 
+#1902: a round that carries a framing writes under the name that framing PINNED, and the
+meaning ladder does not run — so a corrected round REPLACES its own routine in place (one
+round, one routine, the corrected program end to end) and no same-shaped sibling can
+capture the write and file it under another job's name.
+
 All content is synthetic (aurora / faux-market).
 """
 
@@ -94,6 +99,39 @@ _READ_OK = "You looked up your notes: (collection_read_latest result)\n(empty)"
 
 _BROWSE = ("browse", _BROWSE_ARGS, _BROWSE_OK, True)
 _WRITE = ("collection_write", _WRITE_ARGS, _WRITE_OK, True)
+
+# The SAME round, corrected: the user changes what the first step reads and leaves the
+# write alone, and the corrected turn re-runs the whole flow (which is what the measured
+# corrections do), so one round's second run is a complete demonstration of its own.
+_CORRECTION = "no, read the clearance listing instead — same price, same place to save it"
+_CORRECTED_BROWSE_ARGS = {
+    "queries": ["aurora deck 2 clearance price"],
+    "extract": "the current price",
+}
+_CORRECTED_BROWSE = ("browse", _CORRECTED_BROWSE_ARGS, _BROWSE_OK, True)
+
+# What the round's framing pinned when the machine entered learn — the name every run of
+# that round files its routine under (#1868/#1902).
+_PINNED_SKILL = "watch-lantern-price"
+
+
+def _round_framing() -> RoundFraming:
+    """The framing a round carries from its entry: the routine's interface as the framer
+    settled it, plus the container Python derived from it."""
+    return RoundFraming(
+        signature=SkillSignature(
+            name=_PINNED_SKILL,
+            description="keep a lantern listing's price up to date",
+            parameters=(
+                FramedParameter(
+                    name="listing_url",
+                    description="the listing whose price to read",
+                    value="the aurora deck 2 listing",
+                ),
+            ),
+        ),
+        container=f"{_PINNED_SKILL}-the-aurora-deck-2-listing",
+    )
 
 
 pytestmark = pytest.mark.bare_db
@@ -854,34 +892,87 @@ async def test_the_round_s_entry_framing_is_reused_at_run_end_and_never_re_drawn
     (#1824)."""
     model = _run_end_model(labels=_LABELLED_ROUND, framing=_FRAMED_ROUND)
     _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _INVENTED_WRITE])
-    framing = RoundFraming(
-        signature=SkillSignature(
-            name="watch-lantern-price",
-            description="keep a lantern listing's price up to date",
-            parameters=(
-                FramedParameter(
-                    name="listing_url",
-                    description="the listing whose price to read",
-                    value="the aurora deck 2 listing",
-                ),
-            ),
-        ),
-        container="watch-lantern-price-the-aurora-deck-2-listing",
-    )
 
     result = await _extractor(db, model=model).extract(
-        "run-A", state=ConversationState.LEARN, framing=framing
+        "run-A", state=ConversationState.LEARN, framing=_round_framing()
     )
 
     assert isinstance(result, SkillExtracted)
     assert _draws(model, SKILL_FRAME_SYSTEM_PROMPT) == 0, "the round was framed once, at entry"
     assert _draws(model, SKILL_NAMING_SYSTEM_PROMPT) == 1, "the labelling half still runs"
-    assert result.skill.name == "watch-lantern-price"
+    assert result.skill.name == _PINNED_SKILL
     assert result.skill.description == "keep a lantern listing's price up to date"
     params = parameters_from_json(result.skill.parameters)
     assert [(p.name, p.description, p.required) for p in params] == [
         ("listing_url", "the listing whose price to read", True)
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_corrected_round_replaces_its_own_routine_in_place(db):
+    """One round, one routine (#1902): the round's SECOND run writes the name its first run
+    wrote, so the corrected demonstration REPLACES the routine rather than registering a
+    sibling beside it.
+
+    The fork this closes: the framer re-drew on every move into learn, a corrected ask read
+    as a different subject, the fresh draw derived a fresh name — and run-end extraction
+    filed a second routine, so one round left two.  Keying the write by the round's pinned
+    identity is what makes the replacement structural rather than a coincidence of naming.
+
+    The corrected round re-runs the whole flow, so the routine that lands is the corrected
+    one END TO END: the step the user changed carries its new value, and the step they did
+    not change is still there, unchanged."""
+    extractor = _extractor(db, model=_run_end_model(labels=_LABELLED_ROUND))
+    framing = _round_framing()
+
+    _log_run(db, "run-A", _UTTERANCE, [_BROWSE, _WRITE])
+    first = await extractor.extract("run-A", state=ConversationState.LEARN, framing=framing)
+    assert isinstance(first, SkillExtracted) and not first.replaced
+
+    _log_run(db, "run-B", _CORRECTION, [_CORRECTED_BROWSE, _WRITE])
+    second = await extractor.extract("run-B", state=ConversationState.LEARN, framing=framing)
+
+    assert isinstance(second, SkillExtracted) and second.replaced
+    assert [skill.name for skill in db.skills.list_all()] == [_PINNED_SKILL]
+    assert second.skill.source_run_id == "run-B"
+    steps = steps_from_json(second.skill.steps)
+    assert [step.tool for step in steps] == ["browse", "collection_write"]
+    assert steps[0].arguments["queries"] == _CORRECTED_BROWSE_ARGS["queries"]
+    assert steps[1].arguments == _WRITE_ARGS, "the step the correction left alone is retained"
+
+
+@pytest.mark.asyncio
+async def test_a_framed_round_s_routine_is_never_captured_by_a_same_meaning_sibling(db):
+    """The other half of keying the write by the round's identity (#1902): the meaning
+    ladder does not run at all for a framed round.
+
+    A same-shaped, same-meaning routine already in the registry would otherwise CAPTURE the
+    write and file this round's routine under that job's name — leaving the container the
+    round has been writing into pointing at a routine no longer called that, and the user
+    with one job's steps overwritten by another's."""
+    mock = MockLlmClient()
+
+    def embed_handler(_model: str, texts: str | list[str]) -> list[list[float]]:
+        items = texts if isinstance(texts, list) else [texts]
+        return [[1.0, 0.0, 0.0] for _ in items]  # every description is the same meaning
+
+    mock.set_embed_handler(embed_handler)
+    extractor = _extractor(db, mock, model=_run_end_model(labels=_LABELLED_ROUND))
+
+    _log_run(db, "run-A", "watch the aurora deck 2 price", [_BROWSE, _WRITE])
+    sibling = await extractor.extract("run-A", state=ConversationState.LEARN)
+    assert isinstance(sibling, SkillExtracted)
+
+    _log_run(db, "run-B", _UTTERANCE, [_BROWSE, _WRITE])
+    framed = await extractor.extract(
+        "run-B", state=ConversationState.LEARN, framing=_round_framing()
+    )
+
+    assert isinstance(framed, SkillExtracted) and not framed.replaced
+    assert framed.skill.name == _PINNED_SKILL
+    assert len(db.skills.list_all()) == 2
+    existing = db.skills.get(sibling.skill.name)
+    assert existing is not None and existing.source_run_id == "run-A"
 
 
 @pytest.mark.asyncio

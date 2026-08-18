@@ -98,6 +98,7 @@ pieces (:func:`presented_edges`, :func:`render_classifier_content`,
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -466,6 +467,64 @@ class RoundShortfall(BaseModel):
     missing: tuple[CandidateParameter, ...] = ()
 
 
+class ReplacedSkill(BaseModel):
+    """The routine that stood under a round's pinned name BEFORE the round opened
+    (#1902) — the whole of what a bail has to put back.
+
+    It is the row's whole content rather than a marker, because skipping the delete is
+    not enough to undo a re-teach: by the time the user bails, the round's own
+    extraction has already replaced what the canonical routine DOES, so leaving the row
+    standing would leave an abandoned, half-corrected program live under a name existing
+    jobs still run.  Restoring it is what makes "a bail preserves nothing" true on this
+    side too — the registry goes back to exactly the state the round found it in,
+    timestamps included.
+
+    ``description_embedding`` rides base64-encoded rather than as the stored blob or a
+    float list, because round state has to be JSON and this row is re-serialized onto
+    every move of the round: the vector is the bulk of it, and base64 of the blob is a
+    quarter the size of the same floats spelled out."""
+
+    name: str
+    steps: str
+    parameters: str
+    intent: str
+    description: str
+    description_embedding: str | None = None
+    source_run_id: str | None = None
+    author: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RoundProvenance(BaseModel):
+    """What a round's own registry write REPLACED, settled when the round's routine was
+    minted (#1902) — the round's third piece of entry state, beside the framing and the
+    shortfall.
+
+    Run-end extraction writes under the name the round's framing pinned, so a round
+    TEACHING a new job creates that row while a round RE-TEACHING one the registry already
+    holds overwrites it — and from the row alone those two writes are identical.  Which one
+    happened is a fact about the ROUND, so it is settled at the round's entry and carried
+    on the transition row, and a bail READS it rather than re-deciding it.
+
+    Three states, each a different answer to "what does calling this round off owe the
+    registry", and the type is what tells them apart:
+
+    * **absent** (no ``RoundProvenance`` on the move) — the round MINTED nothing.  A
+      skill-gated round binds a routine the registry already holds and teaches nothing, so
+      it replaced nothing and a bail leaves the registry alone.  This is the quiet default:
+      only the framer's minting entry records provenance at all.
+    * **present, ``replaced`` empty** — the round minted its name over nothing, so the
+      routine standing there is the round's own and a bail DELETES it.
+    * **present, ``replaced`` set** — the round is re-teaching a routine the user already
+      had, so a bail RESTORES that version.
+
+    There is no draft flag anywhere in this: promotion is implicit SURVIVAL, and this type
+    exists only for the one landing that does not survive."""
+
+    replaced: ReplacedSkill | None = None
+
+
 # What settling a round's ENTRY produces — the two enumerated answers, as two types rather
 # than one carrying an emptiable field, so a caller holding a framing can never be holding
 # an incomplete one (the same carve ``SkillBinding`` makes one level down).
@@ -697,6 +756,18 @@ def next_state(current: ConversationState, decision: StateDecision) -> Conversat
     if decision.outcome is StateDrawOutcome.DECIDED and decision.state is not None:
         return decision.state
     return current
+
+
+def _opens_the_teaching(current: ConversationState, decision: StateDecision) -> bool:
+    """Whether this move is the round's FIRST entry into learn (#1902) — the one moment a
+    round's provenance is readable, and the only move that mints a routine.
+
+    Two facts, both structural.  Only a LEARN turn registers a routine, so a move arriving
+    from anywhere else is a move made before the round has written anything: what stands in
+    the registry then is what came before the round.  And a decision that lands in learn is
+    the FRAMER's — a skill-gated landing binds a routine the registry already holds, which
+    is a round that teaches nothing and therefore replaces nothing."""
+    return decision.state is ConversationState.LEARN and current is not ConversationState.LEARN
 
 
 def _landing(
@@ -992,7 +1063,7 @@ class ConversationMachine:
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
-        entry = await self._frame_round(decision, message, run_id=run_id)
+        entry = await self._frame_round(state, decision, message, run_id=run_id)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
         return TurnEntry(state=self.state(), decision=decision, shortfall=self.shortfall())
 
@@ -1026,6 +1097,20 @@ class ConversationMachine:
         if latest is None or latest.round_shortfall is None:
             return None
         return RoundShortfall.model_validate_json(latest.round_shortfall)
+
+    def provenance(self) -> RoundProvenance | None:
+        """The round's PROVENANCE (#1902), carried on the newest move — what the round's
+        own registry write replaced, and ``None`` on every move whose round minted nothing.
+
+        Read off the log exactly like the framing and the binding, and for the same
+        reason: whether this round minted its routine, drafted over one the user already
+        had, or taught nothing at all is settled once, when the routine is minted.
+        Re-deciding it later — after the round's own extraction has written that name —
+        would read the round's own work as what the round replaced."""
+        latest = self._db.machine.latest_transition()
+        if latest is None or latest.round_provenance is None:
+            return None
+        return RoundProvenance.model_validate_json(latest.round_provenance)
 
     def link_message(self, run_id: str, message_id: int) -> None:
         """Attach the incoming message to the moves it caused, once it has an id.
@@ -1094,7 +1179,12 @@ class ConversationMachine:
         return latest.anchor_message_id if latest else None
 
     async def _frame_round(
-        self, decision: StateDecision, message: str, *, run_id: str | None
+        self,
+        current: ConversationState,
+        decision: StateDecision,
+        message: str,
+        *,
+        run_id: str | None,
     ) -> RoundEntry | None:
         """The round-framing hook (#1868/#1875/#1870/#1894): the moves that settle the
         round's entry — its framing and the container its results are kept in, or the
@@ -1127,27 +1217,43 @@ class ConversationMachine:
         if framer is None or decision.state is None:
             return None
         if decision.state is ConversationState.LEARN:
-            return await self._frame_learn_entry(framer, message, run_id=run_id)
+            return await self._frame_learn_entry(framer, current, message, run_id=run_id)
         if decision.state in _BINDING_STATES and self.framing() is None:
             return await self._bind_round_entry(framer, decision, message, run_id=run_id)
         return None
 
     async def _frame_learn_entry(
-        self, framer: RoundFramer, message: str, *, run_id: str | None
+        self,
+        framer: RoundFramer,
+        current: ConversationState,
+        message: str,
+        *,
+        run_id: str | None,
     ) -> RoundFraming | None:
-        """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868).
+        """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868) — on
+        the round's FIRST entry into learn, and only that one (#1902).
 
-        Every move that lands in learn draws, not only the first — a correction re-enters
-        learn, and re-entering is exactly the occasion to ask again what the round is now
-        for: the same identity finds the container that already exists, a shifted one
-        archives the near-empty container it replaces (the framer's own find-or-create
-        rule), which is why the framing the round already had is handed over."""
-        return await framer.frame_entry(
-            ask=self._anchor_text(),
-            message=message,
-            run_id=run_id,
-            previous=self.framing(),
-        )
+        A move from learn back into learn is a correction, and a correction refines the
+        PROGRAM of the round's one job rather than deciding what that job is: the round
+        settled its identity when it entered, the turn that demonstrated it was instructed
+        under that name, and the container derived from it is where the round has been
+        writing.  So the framing carries and only the container is re-settled — the same
+        routine, the same container, the corrected write landing in place.
+
+        Re-drawing is what forked a round in two: a corrected ask read as a different
+        subject, the fresh draw derived a fresh name, find-or-create minted a sibling
+        container under it, and run-end extraction registered a second routine beside the
+        first.
+
+        Nothing is returned on the carry: the framing is round state the machine already
+        holds, so the move settles nothing NEW and every lifecycle below reads it that way
+        — which is also what keeps the round's provenance from being re-taken over the
+        round's own draft."""
+        carried = self.framing()
+        if current is ConversationState.LEARN and carried is not None:
+            await framer.carry_entry(carried, run_id=run_id)
+            return None
+        return await framer.frame_entry(ask=self._anchor_text(), message=message, run_id=run_id)
 
     async def _bind_round_entry(
         self, framer: RoundFramer, decision: StateDecision, message: str, *, run_id: str | None
@@ -1218,12 +1324,18 @@ class ConversationMachine:
         and nothing to record.  It carries the SHORTFALL instead (#1894) — the two halves
         of the entry, each recorded on the move that settled it.
 
-        A landing in IDLE ends the round, so the move drops both halves AND the container
-        the framing pointed at is retired (:meth:`_end_round`, #1896) — the row's clearing
-        and the store's, which are one fact stated in two places."""
+        The move that MINTS a round's routine also records what stood under that name
+        before it (:meth:`_next_provenance`, #1902) — the round's provenance, settled once
+        and carried the same way as the other two.
+
+        A landing in IDLE ends the round, so the move drops all three AND what the round
+        left in the store is resolved (:meth:`_end_round`, #1896/#1902) — the row's
+        clearing and the store's, which are one fact stated in two places."""
         target = _landing(current, decision, entry)
-        carried = self._next_framing(target, framing_of(entry))
+        drawn = framing_of(entry)
+        carried = self._next_framing(target, drawn)
         waiting = self._next_shortfall(target, shortfall_of(entry))
+        provenance = self._next_provenance(current, target, decision, drawn)
         self._end_round(target, run_id=run_id)
         self._db.machine.record_transition(
             from_state=current.value,
@@ -1236,34 +1348,46 @@ class ConversationMachine:
             skill_name=decision.skill,
             skill_frame=carried.model_dump_json() if carried is not None else None,
             round_shortfall=waiting.model_dump_json() if waiting is not None else None,
+            round_provenance=provenance.model_dump_json() if provenance is not None else None,
         )
 
     def _end_round(self, target: ConversationState, *, run_id: str | None) -> None:
-        """An idle landing ENDS the round, so the container the round built goes with it
-        (#1896) — the DURABLE half of the clearing the two lifecycles below do on the row.
+        """An idle landing ENDS the round, so BOTH things the round left behind go with it
+        (#1896/#1902) — the DURABLE half of the clearing the three lifecycles below do on
+        the row: the container it built, and the registry entry it wrote.
 
         ``_next_framing`` drops the framing from the move and this retires what that
         framing pointed at, because dropping it alone leaves an inert collection named for
-        a job nobody is doing and nothing able to reach it.  A bail preserves nothing: once
-        the machine is idle the round is over, and any next task opens a flow of its own.
+        a job nobody is doing, and a routine ambient in every later prompt for a job the
+        user just called off.  A bail preserves nothing: once the machine is idle the round
+        is over, and any next task opens a flow of its own.
 
-        Read off the framing the round is CARRYING, which is why it runs BEFORE the move is
+        WHAT the registry side does is read from the round's PROVENANCE, never re-decided:
+        a round that minted its name loses the routine outright, a round that was
+        re-teaching one the user already had puts the pre-round version BACK — because by
+        now the round's own extraction has replaced what that routine does, and preserving
+        nothing means the registry ends where the round found it — and a round that minted
+        nothing at all leaves the registry untouched, since it never wrote to it.
+
+        Read off the state the round is CARRYING, which is why it runs BEFORE the move is
         recorded — and that order is also the safe one: a write that then fails leaves the
         machine parked where it was over an archived container, which the next move back
         into learn revives by name (the framer's find-or-create), while the other order
-        would leave an idle machine with nothing pointing at the container any more.
+        would leave an idle machine with nothing pointing at either any more.
 
-        Only a round that was framed has a container at all, so every other landing here is
-        a no-op — and the post-apply reset is not this path (it is its own structural row,
-        appended before the draw, and it drops the framing first), so a job the user has
-        just set running is never what a later bail retires."""
+        Only a round that was framed has a container or a pinned routine at all, so every
+        other landing here is a no-op — and the post-apply reset is not this path (it is
+        its own structural row, appended before the draw, and it drops the framing first),
+        so a job the user has just set running is never what a later bail retires."""
         if target is not ConversationState.IDLE:
             return
         # Function-local: the framer's module imports this one, and the leaf discipline
         # keeps every database-touching import off this module's import time.
-        from penny.round_framing import abandon_round_container
+        from penny.round_framing import abandon_round_container, abandon_round_skill
 
-        abandon_round_container(self._db, self.framing(), run_id=run_id)
+        framing = self.framing()
+        abandon_round_container(self._db, framing, run_id=run_id)
+        abandon_round_skill(self._db, framing, self.provenance(), run_id=run_id)
 
     def _next_anchor(
         self, current: ConversationState, target: ConversationState, message_id: int | None
@@ -1286,9 +1410,11 @@ class ConversationMachine:
         framing belongs to the round, so the turn that accepts what was demonstrated reads
         the same container the turn that demonstrated it wrote into.
 
-        A failed re-draw carries rather than clears, which is the same rule read the other
-        way: a correction whose framing could not be drawn keeps the container the round
-        already has, instead of losing it to a flaky draw."""
+        A move that settled nothing carries rather than clears, which is the same rule read
+        the other way: a held draw that merely leaves the machine in learn keeps the
+        framing the round already has, instead of losing it to a flaky draw.  Since #1902 a
+        correction is that case by construction — it settles the framing the round was
+        already carrying, so the replacement and the carry are the same framing."""
         if target is ConversationState.IDLE:
             return None
         return drawn if drawn is not None else self.framing()
@@ -1310,3 +1436,37 @@ class ConversationMachine:
         if target is not ConversationState.REQUEST:
             return None
         return drawn if drawn is not None else self.shortfall()
+
+    def _next_provenance(
+        self,
+        current: ConversationState,
+        target: ConversationState,
+        decision: StateDecision,
+        drawn: RoundFraming | None,
+    ) -> RoundProvenance | None:
+        """The round's PROVENANCE lifecycle (#1902), the framing's own shape: idle clears
+        it, the move that MINTS the round's routine takes it, every other move carries it.
+
+        Taken on the move that opens the round's teaching and nowhere else, because that is
+        the one moment it reads truthfully.  Only a learn turn registers a routine, so
+        before the round's first one the registry still holds what came BEFORE the round;
+        from inside learn it does not, and the same read would take the round's own work
+        for the thing it replaced.  And only the FRAMER mints — a skill-gated entry binds a
+        routine the registry already holds and teaches nothing, so such a round replaced
+        nothing and records no provenance at all, which is what keeps a bail from request
+        away from a routine the round never wrote."""
+        if target is ConversationState.IDLE:
+            return None
+        if _opens_the_teaching(current, decision) and drawn is not None:
+            return self._mint_provenance(drawn)
+        return self.provenance()
+
+    def _mint_provenance(self, framing: RoundFraming) -> RoundProvenance:
+        """The round's provenance at the moment its routine is minted — carrying whatever
+        the registry already holds under that pinned name, and carrying nothing when it
+        holds none."""
+        # Function-local, like ``_end_round``'s: the leaf discipline keeps every
+        # database-touching import off this module's import time.
+        from penny.round_framing import snapshot_replaced_skill
+
+        return RoundProvenance(replaced=snapshot_replaced_skill(self._db, framing))

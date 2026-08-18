@@ -35,33 +35,47 @@ entry settles is the round's framing and its container, which is why a round tha
 
 **The container's lifecycle is find-or-create, never mint-per-round.**  Re-asking for the
 same job derives the same name and finds the container that exists — tier-1 dedup by
-construction (#1775) — while a correction that SHIFTS the job's identity archives the
-near-empty container it is replacing and builds the one it now needs.  Archiving is
-guarded on emptiness: litter is a container minutes old with nothing in it, and a
-container holding entries is not litter whatever the round did next.
+construction (#1775).
 
-**A round that ENDS in idle takes its container with it** (:func:`abandon_round_container`,
-#1896).  A bail preserves nothing — once the machine is idle the round is over and any
-next task opens a flow of its own — so the one retirement in this module that is NOT
-guarded on emptiness is this one: what the demonstration wrote is the round's own
-intermediate state rather than an exception to it.  Archive, never delete, like every
-other retirement here.
+**A round's identity is settled ONCE, at its first entry** (:meth:`RoundFramer.carry_entry`,
+#1902).  A correction re-enters learn to refine the PROGRAM of the round's one job, so the
+re-entry makes no draw at all and the framing the round already holds carries: the same
+routine, the same container, the corrected write landing in place.  The re-draw this
+replaces derived a fresh name from a corrected ask, found no container under it, minted a
+sibling, and left run-end extraction filing a second routine beside the first.
+
+**A round that ENDS in idle takes its container AND what it wrote to the registry with it**
+(:func:`abandon_round_container` / :func:`abandon_round_skill`, #1896/#1902).  A bail
+preserves nothing — once the machine is idle the round is over and any next task opens a
+flow of its own — so the one container retirement in this module that is NOT guarded on
+emptiness is this one: what the demonstration wrote is the round's own intermediate state
+rather than an exception to it.  The container is archived (a tombstone, like every other
+retirement here).  The routine is resolved by the round's PROVENANCE, recorded when the
+round's routine was MINTED (:func:`snapshot_replaced_skill`): a name the round minted over
+nothing is deleted, a routine the round was RE-TEACHING is RESTORED to the version the
+round found — because the round's own extraction already replaced what it does, and
+un-deleting is not the same as putting it back — and a round that minted nothing at all,
+having only bound a routine the user already had, leaves the registry alone.
 """
 
 from __future__ import annotations
 
 import logging
+from base64 import b64decode, b64encode
 from typing import TYPE_CHECKING
 
-from penny.constants import MutationActor, PennyConstants
+from penny.constants import MutationAction, MutationActor, MutationEntityType, PennyConstants
 from penny.conversation_machine import (
     CandidateParameter,
+    ReplacedSkill,
     RoundEntry,
     RoundFraming,
+    RoundProvenance,
     RoundShortfall,
 )
 from penny.database import Database
 from penny.database.models import Skill
+from penny.database.mutation_store import MutationDetail
 from penny.database.skill_store import parameters_from_json
 from penny.database.skills import (
     SkillParameter,
@@ -89,9 +103,12 @@ logger = logging.getLogger(__name__)
 # cannot state for itself, in the three shapes it happens in.  Private: every caller of
 # these is in this file, and what a retirement MEANS is this module's own vocabulary.
 _ARCHIVED_ROUND_FAILED = "the round that created this container taught nothing"
-_ARCHIVED_IDENTITY_SHIFTED = "the corrected round is a different job, with its own container"
 _REVIVED_SAME_JOB = "the same job is being taught again, into the container it already had"
 _ABANDONED_ROUND = "the round that created this container was called off"
+
+# And what it records about a round's ROUTINE, in the two shapes a bail takes it back in.
+_ABANDONED_DRAFT = "the round that taught this routine was called off"
+_RESTORED_PRE_ROUND = "the round re-teaching this routine was called off, so it is back as it was"
 
 
 class RoundFramer:
@@ -100,10 +117,14 @@ class RoundFramer:
     Two entries, two draws, one outcome: :meth:`frame_entry` MINTS a routine for a round
     being taught, :meth:`bind_entry` FILLS one the registry already holds (#1870), and
     both hand back the same :class:`~penny.conversation_machine.RoundFraming` over a
-    container settled by the same find-or-create rule.  The binder has one further
-    answer the framer cannot have (#1885): the routine covers the ask and the user's
-    words are SHORT of something it needs, which comes back as a
+    container settled by the same find-or-create rule.  The binder has one further answer
+    the framer cannot have (#1885): the routine covers the ask and the user's words are
+    SHORT of something it needs, which comes back as a
     :class:`~penny.conversation_machine.RoundShortfall` and routes the turn into request.
+
+    :meth:`carry_entry` is the THIRD entry and the one that draws nothing (#1902): a round
+    re-entering learn already settled what it is about, so its framing carries unchanged
+    and only its container is re-settled.
 
     :meth:`bind_entry` is the ONE door for every entry against a known routine (#1894) —
     an apply the words fall short of and a request the classifier drew directly both come
@@ -132,19 +153,15 @@ class RoundFramer:
         self._run_target = run_target
 
     async def frame_entry(
-        self,
-        *,
-        ask: str | None,
-        message: str,
-        run_id: str | None,
-        previous: RoundFraming | None,
+        self, *, ask: str | None, message: str, run_id: str | None
     ) -> RoundFraming | None:
-        """Frame the round the machine is entering, and settle its container — the
-        summary method.
+        """Frame the round the machine is entering FOR THE FIRST TIME, and settle its
+        container — the summary method.
 
         Draws the interface from the round's user turns, derives the container's name from
-        it, reconciles that against whatever the round had before, and returns the framing
-        for the machine to record.
+        it, finds-or-creates that container, and returns the framing for the machine to
+        record.  A round that already carries a framing never reaches here (#1902): it is
+        :meth:`carry_entry`'s, because a round's identity is settled once.
 
         ``None`` when the draw failed: NO container is built, the gate is logged, and
         everything downstream degrades to what it did before this existed — the round runs
@@ -157,8 +174,31 @@ class RoundFramer:
             )
             return None
         framing = RoundFraming(signature=signature, container=container_name(signature))
-        await self._settle_container(framing, previous, run_id=run_id)
+        await self._settle_container(framing, run_id=run_id)
         return framing
+
+    async def carry_entry(self, framing: RoundFraming, *, run_id: str | None) -> None:
+        """The round's framing CARRIED into a re-entry, with no draw at all (#1902).
+
+        Returns nothing, because nothing is settled that the machine does not already
+        hold: the framing on the round's newest move IS the answer, and handing back a
+        copy would make a carried move indistinguishable from one that settled something —
+        which is exactly the distinction the round's provenance is read against.
+
+        A correction re-enters learn to refine the PROGRAM of the round's one job, never to
+        decide what that job is: the round settled that at its first entry, the turn that
+        demonstrated it was instructed under that name, and the container derived from it
+        is where the round has been writing.  Asking again is what forked a round in two —
+        a corrected ask read as a different subject, a fresh draw derived a fresh name,
+        find-or-create minted a sibling under it, and run-end extraction registered a
+        second routine beside the first.
+
+        The CONTAINER is still settled, because the round may have lost it since: a learn
+        turn that taught nothing takes it with the failure
+        (:func:`discard_round_container`), and the correction that follows is exactly the
+        round coming back for it.  Find-or-create is the same rule both draws end on, so
+        the round always has somewhere to write."""
+        await self._settle_container(framing, run_id=run_id)
 
     async def _draw(self, ask: str | None, message: str) -> SkillSignature | None:
         """One framing draw over the round's USER turns — the ask it is anchored to and
@@ -255,7 +295,7 @@ class RoundFramer:
         container derived from it, found or created."""
         signature = _filled_signature(routine, declared, values)
         framing = RoundFraming(signature=signature, container=container_name(signature))
-        await self._settle_container(framing, previous=None, run_id=run_id)
+        await self._settle_container(framing, run_id=run_id)
         return framing
 
     async def _bind(
@@ -282,26 +322,18 @@ class RoundFramer:
             run_target=self._run_target,
         )
 
-    async def _settle_container(
-        self, framing: RoundFraming, previous: RoundFraming | None, *, run_id: str | None
-    ) -> None:
-        """Find-or-create the round's container, retiring the one it replaces.
+    async def _settle_container(self, framing: RoundFraming, *, run_id: str | None) -> None:
+        """Find-or-create the round's container — the one rule every entry ends on.
 
-        A correction that keeps the job's identity derives the same name and finds the
-        same container — nothing is created, nothing is retired, and the round continues
-        into what it was already writing.  A correction that SHIFTS it leaves the old
-        container behind with nothing in it, so that one is archived (guarded on
-        emptiness) before the new one is built.
+        The same job asked for again derives the same name and finds the container that
+        already exists: nothing is created, and the round continues into what it was
+        already writing (tier-1 dedup by construction, #1775).
 
         Find-or-create is also what makes a container STRANDED by a failure harmless: if
         the turn dies between this step and the machine recording the move, what is left
         behind is an inert, empty collection carrying this job's own name — which the next
         attempt at the same job finds and continues into, rather than an orphan nothing can
         reach."""
-        if previous is not None and previous.container != framing.container:
-            archive_round_container(
-                self._db, previous.container, run_id=run_id, note=_ARCHIVED_IDENTITY_SHIFTED
-            )
         existing = self._db.memories.get(framing.container)
         if existing is None:
             await self._create(framing, run_id=run_id)
@@ -534,6 +566,135 @@ def abandon_round_container(
         return
     db.memories.archive(row.name, actor=MutationActor.SYSTEM, run_id=run_id, note=_ABANDONED_ROUND)
     logger.info("Archived the abandoned round's container %r (%s)", row.name, _ABANDONED_ROUND)
+
+
+def snapshot_replaced_skill(db: Database, framing: RoundFraming) -> ReplacedSkill | None:
+    """What the registry ALREADY holds under ``framing``'s pinned name — the thing the
+    round's own write is about to replace (#1902).
+
+    ``None`` says the round is minting over nothing, so the routine it registers will be
+    the round's own.  A row means it is RE-TEACHING something the user already had, and
+    the WHOLE row is carried, because that is what putting it back requires.
+
+    WHEN this is truthful is the caller's (:meth:`ConversationMachine._next_provenance`);
+    all this does is read.  The embedding is base64-encoded rather than deserialized to
+    floats: round state has to be JSON and this row rides every later move of the round, so
+    the vector — which is the bulk of it — travels in the compact form and goes back into
+    the column byte-for-byte."""
+    row = db.skills.get(framing.skill)
+    if row is None:
+        return None
+    return ReplacedSkill(
+        name=row.name,
+        steps=row.steps,
+        parameters=row.parameters,
+        intent=row.intent,
+        description=row.description,
+        description_embedding=_encode_embedding(row.description_embedding),
+        source_run_id=row.source_run_id,
+        author=row.author,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def abandon_round_skill(
+    db: Database,
+    framing: RoundFraming | None,
+    provenance: RoundProvenance | None,
+    *,
+    run_id: str | None,
+) -> None:
+    """Take back what a round that ENDED IN IDLE wrote to the registry (#1902) — the
+    bail's other durable half, beside :func:`abandon_round_container`.
+
+    A round that TAUGHT something registers its routine at run end under the name its
+    framing pinned, and every later turn of the same round REPLACES that row rather than
+    adding beside it — so the registry entry standing mid-round is this round's own work.
+    A bail preserves nothing, and that entry is the round's intermediate state exactly as
+    the container is: the user called the job off, and a routine nobody asked for is worse
+    standing than absent, because the registry is AMBIENT — every later turn reads it.
+
+    WHICH way it is taken back is READ from the round's provenance, never re-decided, and
+    the three answers are the three shapes that state comes in:
+
+    * **no provenance** — the round minted nothing.  A skill-gated round binds a routine
+      the registry already holds and teaches nothing, so it wrote nothing and the registry
+      is left alone.  This is the case that must never fall through to a delete: the
+      routine such a round names is the USER's, not the round's;
+    * **provenance carrying nothing** — the round minted its name over an empty slot, so
+      the routine standing there is the round's own and it is DELETED;
+    * **provenance carrying a row** — the round was re-teaching, so the pre-round version
+      is RESTORED.  Skipping the delete would not do: by now the round's own extraction has
+      replaced what that routine DOES, so leaving it standing would leave an abandoned,
+      half-corrected program live under a name existing jobs still run.  Preserving nothing
+      means the registry ends where the round found it, not merely un-deleted.
+
+    There is no draft flag to read and none to clear.  Promotion is implicit SURVIVAL: a
+    round that ends any other way simply leaves its routine standing, and it stops being a
+    draft because only the round holding that framing could have replaced it.
+
+    Deletion rather than archival is the one place this parts company with the container:
+    the skill table is versionless and carries no archived flag, so a name is either in the
+    registry or it is not — which is also why the restore path carries a whole row.  Either
+    way the change is recorded on the mutation ledger under the SYSTEM actor, like the
+    container archive beside it: the registry renders ambiently, so a routine that vanishes
+    or reverts between turns is a configuration change the recent-changes block has to
+    show."""
+    if framing is None or provenance is None:
+        return
+    if provenance.replaced is not None:
+        _restore_round_skill(db, provenance.replaced, run_id=run_id)
+        return
+    if db.skills.delete(framing.skill):
+        _record_skill_mutation(db, framing.skill, MutationAction.DELETED, run_id, _ABANDONED_DRAFT)
+        logger.info("Discarded the abandoned round's routine %r", framing.skill)
+
+
+def _restore_round_skill(db: Database, replaced: ReplacedSkill, *, run_id: str | None) -> None:
+    """Put the pre-round routine back, exactly as the round found it."""
+    db.skills.restore(
+        Skill(
+            name=replaced.name,
+            steps=replaced.steps,
+            parameters=replaced.parameters,
+            intent=replaced.intent,
+            description=replaced.description,
+            description_embedding=_decode_embedding(replaced.description_embedding),
+            source_run_id=replaced.source_run_id,
+            author=replaced.author,
+            created_at=replaced.created_at,
+            updated_at=replaced.updated_at,
+        )
+    )
+    _record_skill_mutation(db, replaced.name, MutationAction.UPDATED, run_id, _RESTORED_PRE_ROUND)
+    logger.info("Restored the re-taught routine %r to its pre-round version", replaced.name)
+
+
+def _encode_embedding(blob: bytes | None) -> str | None:
+    """The stored description vector as base64 — the JSON-safe form round state carries."""
+    return b64encode(blob).decode("ascii") if blob is not None else None
+
+
+def _decode_embedding(encoded: str | None) -> bytes | None:
+    """The carried base64 back as the blob the column stores, byte-for-byte — so a restored
+    routine is still resolvable by meaning."""
+    return b64decode(encoded) if encoded is not None else None
+
+
+def _record_skill_mutation(
+    db: Database, name: str, action: MutationAction, run_id: str | None, note: str
+) -> None:
+    """Record one registry change on the mutation ledger, SYSTEM actor — no model asked for
+    this, exactly as with the container archive beside it."""
+    db.mutations.record(
+        entity_type=MutationEntityType.SKILL,
+        entity_name=name,
+        action=action,
+        actor=MutationActor.SYSTEM,
+        run_id=run_id,
+        detail=MutationDetail(note=note),
+    )
 
 
 def archive_round_container(db: Database, container: str, *, run_id: str | None, note: str) -> None:

@@ -30,6 +30,7 @@ from similarity.embeddings import token_containment_ratio
 from penny.constants import (
     WRITE_GATE_MUTATING_OUTCOMES,
     WRITE_GATE_STOP_REASONS,
+    MutationEntityType,
     PennyConstants,
     WriteGateOutcome,
 )
@@ -467,7 +468,14 @@ def _recent_changes_block(db: Database, name: str) -> list[str]:
     recent-N used for a memory's run history), so no new limit is invented.  Empty
     (no block) for a collection with no recorded mutations (seeded / migration
     rows)."""
-    events = db.mutations.history(name, PennyConstants.RUN_HISTORY_RECORDS)
+    events = db.mutations.history(
+        name,
+        PennyConstants.RUN_HISTORY_RECORDS,
+        # This block is a COLLECTION's history, so it is scoped to one (#1902): the ledger
+        # carries routines too, and a routine sharing this collection's name would
+        # otherwise render as changes to the collection.
+        entity_type=MutationEntityType.COLLECTION,
+    )
     if not events:
         return []
     return ["", "Recent changes (newest first):", *(f"  {render_mutation(e)}" for e in events)]

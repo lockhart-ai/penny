@@ -114,12 +114,20 @@ class MutationAction(StrEnum):
     """The kind of registry-entity lifecycle change a mutation event records
     (#1560).  Each create / update / archive / unarchive of a collection writes
     one ``mutation_event`` row, so "when was this archived, and by what?" is a
-    read, not a memory the model re-asserts from its own past narration."""
+    read, not a memory the model re-asserts from its own past narration.
+
+    ``DELETED`` is the SKILL registry's retirement (#1902): that table is
+    versionless and carries no archived flag, so a routine a bail takes back
+    LEAVES rather than becoming a tombstone row — and the event is the only
+    trace there is.  Naming it as its own action rather than reusing
+    ``ARCHIVED`` keeps the render honest: a reader following an archived
+    collection finds it, a reader following a deleted routine does not."""
 
     CREATED = "created"
     UPDATED = "updated"
     ARCHIVED = "archived"
     UNARCHIVED = "unarchived"
+    DELETED = "deleted"
 
 
 class MutationActor(StrEnum):
@@ -153,11 +161,16 @@ class TransitionCause(StrEnum):
 class MutationEntityType(StrEnum):
     """The kind of registry entity a mutation event points at (#1560).
 
-    Only ``COLLECTION`` today — post-#1556 the collection is the one background
-    mechanism.  Declared as an enum so a future first-class ``skill`` (its
-    versioning is #1562/#1471) slots in without reshaping the event."""
+    ``COLLECTION`` is the background mechanism post-#1556.  ``SKILL`` is the
+    second customer the enum was declared for (#1902): a round that ends in idle
+    takes its routine back — deleted outright when the round minted the name,
+    reverted to its pre-round content when the round was re-teaching one that
+    already stood — and the registry is AMBIENT, so a routine vanishing or
+    reverting between turns has to appear in the recent-changes render like any
+    other configuration change."""
 
     COLLECTION = "collection"
+    SKILL = "skill"
 
 
 class ProgressEmoji(StrEnum):
