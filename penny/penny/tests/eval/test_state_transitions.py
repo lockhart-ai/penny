@@ -75,7 +75,7 @@ from penny.conversation_machine import (
 )
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput, MemoryType
-from penny.database.models import MemoryEntry, MemoryRow, MessageLog, StateTransition
+from penny.database.models import MemoryEntry, MemoryRow, MessageLog, Skill, StateTransition
 from penny.database.skill_store import parameters_from_json, steps_from_json
 from penny.database.skills import (
     DistillInput,
@@ -1229,14 +1229,26 @@ def _mentions(token: str, texts: list[str]) -> bool:
     return any(token.lower() in text.lower() for text in texts)
 
 
-def _skill_steps(db: Database) -> list[SkillStep]:
-    """Every step of every learned skill — the ROUTINE run-end extraction left behind,
+def _learned_this_turn(db: Database) -> list[Skill]:
+    """Every routine THIS turn's round left in the registry.
+
+    Read by the run that TAUGHT it (#1846's seeded-run exclusion, the same reading
+    ``_entries_written_by_this_run`` uses for entries), because a round is not always
+    taught into an empty registry: the beat that teaches beside five running jobs starts
+    with five routines already there, and "is there a skill?" would then be true before
+    the turn began.  Where the registry does start empty — the elicit → learn rounds —
+    this is every row, so both beats read one definition."""
+    return [skill for skill in db.skills.list_all() if not is_seeded_run(skill.source_run_id)]
+
+
+def _skill_steps(skills: list[Skill]) -> list[SkillStep]:
+    """Every step of the routines ``skills`` holds — what run-end extraction left behind,
     read structurally off the stored rows rather than off the demonstration.
 
     The step, not its substitutions alone, because a leaf's demonstrated value lives in
     its step's ``arguments`` and that is what says whether the leaf is a destination
     (#1854)."""
-    return [step for skill in db.skills.list_all() for step in steps_from_json(skill.steps)]
+    return [step for skill in skills for step in steps_from_json(skill.steps)]
 
 
 def _skill_substitutions(steps: list[SkillStep]) -> list[SkillSubstitution]:
@@ -1244,15 +1256,11 @@ def _skill_substitutions(steps: list[SkillStep]) -> list[SkillSubstitution]:
     return [sub for step in steps for sub in step.substitutions]
 
 
-def _skill_parameters(db: Database) -> list[SkillParameter]:
-    """Every declared parameter of every learned skill — the routine's INTERFACE, which
+def _skill_parameters(skills: list[Skill]) -> list[SkillParameter]:
+    """Every declared parameter of the routines ``skills`` holds — the INTERFACE, which
     since #1830 is the framer's draw and lives at SKILL level (its declared interim:
     nothing joins a parameter to a leaf of the program yet)."""
-    return [
-        parameter
-        for skill in db.skills.list_all()
-        for parameter in parameters_from_json(skill.parameters)
-    ]
+    return [parameter for skill in skills for parameter in parameters_from_json(skill.parameters)]
 
 
 # The three shape labels, named once: each is read BOTH as a scored check and as the
@@ -1442,7 +1450,7 @@ def _interface_rationale(
     return f"{pages[0].name} + {found[0].name} (user-named)"
 
 
-def _interface_advisories(db: Database) -> list[Check]:
+def _interface_advisories(skills: list[Skill]) -> list[Check]:
     """What the framer committed to, verbatim — one ADVISORY row per parameter.
 
     Whether a name is WELL judged is read at joint review against the reference outputs
@@ -1454,15 +1462,19 @@ def _interface_advisories(db: Database) -> list[Check]:
             scored=False,
             kind="state",
         )
-        for parameter in _skill_parameters(db)
+        for parameter in _skill_parameters(skills)
     ]
 
 
-def _extraction_shape_checks(db: Database) -> list[Check]:
+def _extraction_shape_checks(db: Database, learned: list[Skill]) -> list[Check]:
     """The shape run-end extraction produced, read off the stored skill: the LABELLER's
     half (every spot a placeholder, and — where the routine keeps anything — the
     destination still marked) and the FRAMER's half (one required parameter, described),
     with the drawn interface riding advisory.
+
+    ``learned`` is what THIS round taught (``_learned_this_turn``), never the whole
+    registry: a beat that teaches beside routines the user already has would otherwise
+    grade five fixtures' shapes as the round's own work.
 
     All three go NOT-APPLICABLE when no skill was learned at all.  That miss is already
     the scored "a skill was learned from the round" check, so grading the shape of a
@@ -1470,23 +1482,25 @@ def _extraction_shape_checks(db: Database) -> list[Check]:
     a placeholder" over an empty routine is vacuously true, which would render as a pass
     for a round that produced nothing.  The mark check has a second not-applicable case
     of its own (#1854): a routine with no destination has nothing to mark."""
-    if not db.skills.list_all():
+    if not learned:
         return [
             Check.na(_PLACEHOLDERS_ONLY_LABEL, kind="state"),
             Check.na(_ATTACHMENT_MARK_LABEL, kind="state"),
             Check.na(_INTERFACE_LABEL, kind="state"),
         ]
-    steps = _skill_steps(db)
-    required = [parameter for parameter in _skill_parameters(db) if parameter.required]
+    steps = _skill_steps(learned)
+    required = [parameter for parameter in _skill_parameters(learned) if parameter.required]
     return [
         _placeholders_only_check(_skill_substitutions(steps)),
         _attachment_mark_check(db, steps),
         _interface_check(required),
-        *_interface_advisories(db),
+        *_interface_advisories(learned),
     ]
 
 
-def _attaches_nothing_checks(db: Database, created: list[MemoryRow]) -> list[Check]:
+def _attaches_nothing_checks(
+    db: Database, created: list[MemoryRow], *, already_running: tuple[str, ...] = ()
+) -> list[Check]:
     """Learning must not INSTANTIATE (#1706).  Scored against what this turn PRODUCED: the
     collections that did not exist before it — since #1868 that is normally the container
     the entry hook built plus anything the round made itself — or, when the round reused an
@@ -1495,8 +1509,19 @@ def _attaches_nothing_checks(db: Database, created: list[MemoryRow]) -> list[Che
 
     The claims hold either way, and that is the point: a framework-built container is inert
     by construction, so "no program, nothing scheduled" is true of it for a structural
-    reason rather than because the model refrained."""
-    instantiated = [row for row in db.memories.list_all() if row.skill_name is not None]
+    reason rather than because the model refrained.
+
+    ``already_running`` names the collections that carried a routine BEFORE the turn — empty
+    for a round taught into a world with no jobs in it, and the world's own live containers
+    for a round taught beside them, which would otherwise read as five things this turn
+    attached.  Named rather than inferred from newness, because the claim is about
+    attaching a routine ANYWHERE and a turn attaching one to a collection it did not create
+    is exactly the fold this check exists to catch."""
+    instantiated = [
+        row
+        for row in db.memories.list_all()
+        if row.skill_name is not None and row.name not in already_running
+    ]
     return [
         Check(
             "state: no skill was attached anywhere (learning does not instantiate)",
@@ -1612,6 +1637,74 @@ def _wrote_into_the_container_check(db: Database, framing: RoundFraming | None) 
     )
 
 
+# The two claims a demonstrated round makes wherever one is watched, named once: each is a
+# diff-join key, and two beats spelling them out would drift a word at a time.  They keep
+# the wording the auction script gave them even where a harbour signal board is what was
+# read — the same reason the elicit → learn set keeps it across five subjects.
+_FETCH_HAPPENED_LABEL = "state: she browsed the listing (the demonstrated fetch happened)"
+_LANDED_DURABLY_LABEL = "state: the browsed price landed durably (remember = a plain write)"
+
+
+def _round_ran_checks(db: Database, fact: str) -> list[Check]:
+    """The demonstrated round RAN: the page was read, and what it said landed durably.
+
+    Shared by both beats that watch a round being taught — the demonstration answered
+    against an elicit question, and the teach that arrives whole from idle — because it is
+    one contract read twice.
+
+    The fact counts wherever in the entry it landed — its KEY or its content (#1854,
+    code-owner ruling: "loosen the scorer; we can reason about the semantics of
+    keys/values/remembering later").  Two measured samples wrote the arrival's title as the
+    KEY and the date as the value, which is a workable shape for an arrival-shaped watch —
+    a repeat title is KEY_EXISTS_UNCHANGED and a new one is a new key — and was scored a
+    miss for putting the fact on the wrong side of the entry.  What the check tests is
+    still that the browsed fact landed durably."""
+    written = _written_texts(_entries_written_by_this_run(db))
+    landed = _mentions(fact, written)
+    return [
+        Check(_FETCH_HAPPENED_LABEL, tool_was_called(db, _BROWSE_TOOL), kind="state"),
+        Check(
+            _LANDED_DURABLY_LABEL,
+            landed,
+            rationale=None
+            if landed
+            else (f"wrote {written}" if written else "nothing was written"),
+            kind="state",
+        ),
+    ]
+
+
+def _round_reported_checks(fact: str, reply: str, replies: list[str]) -> list[Check]:
+    """What the turn that ran a demonstrated round SAID: it reports the value the round
+    really stored (SAID == DID), and it does not ask the user how the page is built.
+
+    Whether the report also makes the OFFER — the round's own closing move — is read at
+    joint review against the case's reference reply: one line of English carries no
+    structural signal, and a vocabulary for "would you like me to keep doing this" would
+    fail ordinary phrasings instead.
+
+    ``replies`` is every turn of Penny's this sample rather than the last one alone, so a
+    round that reported the value and then said something else still counts.  Both are
+    passed IN rather than read from a database, so the deterministic pin can run these
+    checks over a case's reference reply without one."""
+    said = _mentions(fact, replies)
+    term = asked_for_page_structure(reply)
+    return [
+        Check(
+            "reply: she reports the value she stored (SAID == DID)",
+            said,
+            rationale=None if said else f"no reply names {fact!r}",
+            kind="reply",
+        ),
+        Check(
+            "reply: asked for no page structure",
+            term is None,
+            rationale=f"asked for {term!r}" if term else None,
+            kind="reply",
+        ),
+    ]
+
+
 def _anchor_carried_check(db: Database, ask: str) -> Check:
     """The anchor was CARRIED: the move that parked the machine in learn still points at
     the ask that opened the round (#1827's anchor rule — every transition that keeps the
@@ -1657,53 +1750,20 @@ def _score_elicit_to_learn(
     read."""
     created = new_collections(db, before)
     framing = _round_framing(db)
-    written = _written_texts(_entries_written_by_this_run(db))
-    landed = _mentions(case.stored, written)
+    learned = _learned_this_turn(db)
     return [
-        Check(
-            "state: she browsed the listing (the demonstrated fetch happened)",
-            tool_was_called(db, _BROWSE_TOOL),
-            kind="state",
-        ),
-        # The fact counts wherever in the entry it landed — its KEY or its content
-        # (#1854, code-owner ruling: "loosen the scorer; we can reason about the
-        # semantics of keys/values/remembering later").  Two measured samples wrote the
-        # arrival's title as the KEY and the date as the value, which is a workable
-        # shape for an arrival-shaped watch — a repeat title is KEY_EXISTS_UNCHANGED
-        # and a new one is a new key — and was scored a miss for putting the fact on
-        # the wrong side of the entry.  The label is unchanged: it is a diff-join key,
-        # and what the check tests is still that the browsed fact landed durably.
-        Check(
-            "state: the browsed price landed durably (remember = a plain write)",
-            landed,
-            rationale=None
-            if landed
-            else (f"wrote {written}" if written else "nothing was written"),
-            kind="state",
-        ),
+        *_round_ran_checks(db, case.stored),
         *_framed_checks(db, framing),
         _wrote_into_the_container_check(db, framing),
         Check(
             "state: a skill was learned from the round",
-            bool(db.skills.list_all()),
+            bool(learned),
             kind="state",
         ),
         *_attaches_nothing_checks(db, created),
-        *_extraction_shape_checks(db),
+        *_extraction_shape_checks(db, learned),
         _anchor_carried_check(db, case.ask),
-        Check(
-            "reply: she reports the value she stored (SAID == DID)",
-            _mentions(case.stored, outgoing_replies(db)),
-            kind="reply",
-        ),
-        Check(
-            "reply: asked for no page structure",
-            asked_for_page_structure(reply) is None,
-            rationale=(
-                f"asked for {term!r}" if (term := asked_for_page_structure(reply)) else None
-            ),
-            kind="reply",
-        ),
+        *_round_reported_checks(case.stored, reply, outgoing_replies(db)),
         Check(
             "calls: the machine landed in learn",
             _landed_state(db) == ConversationState.LEARN.value,
@@ -6727,3 +6787,549 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(chat_eval: ChatEval
     configured or registered, and none of the running jobs touched — because the failure
     this case exists to catch is firing anything at all."""
     await _run_bail_case(chat_eval, _BANTER_ON_IDLE)
+
+
+# ── idle → learn: the teach arrives whole, and the round runs in one turn ─────
+#
+# Beat 8 (#1898) — the chat-side transition matrix's last uncovered edge, and the only
+# learn entry with no elicit turn in front of it.  The user's opening message INTRODUCES a
+# teaching act and carries the instructions in the same breath, so everything the two-turn
+# path spreads over an ask and an answer arrives at once: the classifier draws learn from a
+# COLD machine, the framer mints the round's routine and its container at that entry (from
+# the one turn, which is the floor ``RoundFramer._draw`` already handles for an unanchored
+# entry), the demonstrated round runs the steps, and the round closes on the offer.  The
+# exit contract is elicit → learn's, minus the elicit turn — which is why the scorer below
+# is that beat's own machinery rather than a second copy of it.
+#
+# The ask shape is the code owner's ruling: every case carries an explicit teaching
+# INTRODUCTION — "i'm gonna teach you how to", "i have a new job for you, here's how" —
+# never a bare cold imperative.  What varies beside it is how the steps are written (prose,
+# a numbered list, a here's-how), whether one of them FILTERS what the page carries, and
+# whether the message also states a term that belongs to setting the job up rather than to
+# demonstrating it.
+#
+# The world is the composed five-journey one — five live jobs, the whole threaded history,
+# the small talk, the machine idle.  These are in-addition teaches beside running work, so
+# the five jobs are what the untouched-jobs check is about, and the five taught routines sit
+# in the registry while a sixth is being taught, which is a pressure the elicit-parked path
+# never sees: the idle menu offers apply and request above learn, so a taught subject a
+# known routine looks close to is read as covered before learn is reached at all.
+#
+# What must NOT happen is the fold (#1706): the round demonstrates and offers, and nothing
+# is configured this turn.  Case 4 is where that is a live temptation rather than an absence
+# — its message states a notify condition ("if it ever changes to a total ban i'll want to
+# hear about it right away") — and the contract is that the condition WAITS for the apply
+# turn that accepts the offer.
+#
+# TWO CHANGES came out of the first pass (run 1: 8 of 25 draws went to apply, 3 to elicit,
+# 1 to idle), both code-owner ruled.  The idle menu's learn CONDITION was rewritten — it
+# read "instructions to follow for the task being worked on", which is false at cold idle
+# where no task is in flight — and the taught SUBJECTS were replaced: four of the five sat
+# close enough to a registry routine that reading the ask as covered was the honest draw,
+# so the beat was measuring subject overlap rather than the edge.  The final five are
+# audited against the registry's five descriptions: a harbour signal flag, a coastal path's
+# status line, an event marked free among priced ones, a watering restriction in text, and
+# a choir's piece for the week — none of them a price, a ferry timetable, a bakery's daily
+# special, a number tracked over time, or a newest arrival.
+#
+# The reference replies are review targets, never scorer strings — carried as DATA so the
+# deterministic pin can run the beat's two reply checks through them without a GPU.
+
+
+# ── The five spaces a teach points at ─────────────────────────────────────────
+#
+# Catalogue-grade pages, on the composed world's own register: each carries far more than
+# its task needs — neighbouring readings, housekeeping notes, a section the task never asks
+# about — because a real page does, and a fixture thin enough to answer only the asked
+# question cannot tell a careful read from a lucky one.  Every markdown link sits at the
+# CENTRE of its block: a SEARCH-shaped read is trimmed to ±2 lines around each solo link
+# (``_trim_search_result``), so a block laid out any other way would lose the very lines the
+# page was written to carry.
+#
+# Each page holds exactly ONE controllable fact — the value its own case scores — and the
+# probe asserts that fact is new to the world it is taught in, so a match in the entry or in
+# the reply can only have come off the page.
+
+_HARBOUR_SIGNALS_URL = "https://harbormaster.example/signals"
+# Matched on "signals", which the address carries in its path and a search phrasing the job
+# ("harbour signals flag") carries too.  The HOST is no good for either: the ask spells the
+# word "harbour" and the host spells it "harbor", so a search that phrases the ask shares no
+# token with it at all.
+#
+# The flag is a NAME rather than a number or a status word, and the meanings section below
+# names two more — so a page read that stops at the first flag-shaped token it sees lands on
+# the wrong one.
+_HARBOUR_SIGNALS = CannedPage(
+    match="signals",
+    text=(
+        "Title: Harbourmaster signals — today's flag | harbormaster\n"
+        f"{_HARBOUR_SIGNALS_URL}\n"
+        "\n"
+        "Signals hoisted at the mast of a fictional harbour, changed as conditions do.\n"
+        "Flying today: Bravo — dangerous cargo working on the inner quay\n"
+        f"[Harbourmaster signals]({_HARBOUR_SIGNALS_URL})\n"
+        "Hoisted at first light and lowered when the working party stands down.\n"
+        "The mast is visible from the pier head and from the outer moorings.\n"
+        "\n"
+        "What the flags mean\n"
+        "A short list of the signals this harbour keeps at the mast\n"
+        f"[Signal meanings]({_HARBOUR_SIGNALS_URL}/meanings)\n"
+        "Alpha: a diver is down, keep well clear and pass at slow speed.\n"
+        "Charlie: the harbour is shut to movements until further notice.\n"
+        "\n"
+        "Notices to mariners\n"
+        "Standing notices are posted here and read out on the harbour channel\n"
+        f"[Notices]({_HARBOUR_SIGNALS_URL}/notices)\n"
+        "The fairway buoy is unlit for the moment while its lamp is replaced.\n"
+        "Small craft are asked to keep the inner quay clear on working days.\n"
+    ),
+)
+
+_CLIFF_WALK_URL = "https://cliffwalk.example/trail-status"
+# Matched on "trail", which the address carries in its path and a search phrasing the job
+# ("north loop trail") carries too — the host word appears nowhere in the ask, so matching
+# on it would serve a direct read and leave a search with nothing to find.
+_CLIFF_WALK = CannedPage(
+    match="trail",
+    text=(
+        "Title: Cliff walk — trail status | cliffwalk\n"
+        f"{_CLIFF_WALK_URL}\n"
+        "\n"
+        "Status of a fictional coastal path, posted by the ranger each morning.\n"
+        "North loop: diverted inland at the quarry fence while the path is shored up\n"
+        f"[Cliff walk trail status]({_CLIFF_WALK_URL})\n"
+        "South loop: open end to end, with the usual mud at the field gate.\n"
+        "Headland spur: open, though the last stretch is exposed in a westerly.\n"
+        "\n"
+        "Access\n"
+        "The lower car park takes about forty cars and fills by mid-morning\n"
+        f"[Access and parking]({_CLIFF_WALK_URL}/access)\n"
+        "The bus stops at the village hall, ten minutes from the lower gate.\n"
+        "Dogs are welcome on a lead where the path crosses grazing.\n"
+        "\n"
+        "Works\n"
+        "Fencing along the quarry edge runs through the summer\n"
+        f"[Path works]({_CLIFF_WALK_URL}/works)\n"
+        "The ranger posts any change here before it reaches the noticeboards.\n"
+        "Waymarks are being replaced a section at a time.\n"
+    ),
+)
+
+_TOWN_HALL_EVENTS_URL = "https://townhall.example/events"
+# Matched on "events", which the address carries in its path and a search phrasing the job
+# ("town hall events") carries too.
+#
+# The listing sits in the opening block, one event per line, because the task is a FILTER:
+# keeping the one marked free means reading past two that carry a price.  Exactly ONE event
+# is free and the word appears nowhere else on the page — the other sections deal in
+# tickets, concessions and hire rates — so the filter has a single answer and a page read
+# that guesses lands on a priced event.
+_TOWN_HALL_EVENTS = CannedPage(
+    match="events",
+    text=(
+        "Title: Town hall — this month's events | townhall\n"
+        f"{_TOWN_HALL_EVENTS_URL}\n"
+        "\n"
+        "Events in a fictional town hall, listed by the clerk at the start of each month.\n"
+        "Chamber recital in the long room — £8 on the door, doors at seven\n"
+        f"[Town hall events]({_TOWN_HALL_EVENTS_URL})\n"
+        "Lantern parade from the quay to the square — free, no ticket needed\n"
+        "Harvest supper in the assembly hall — £14 a head, book by the Friday\n"
+        "\n"
+        "Booking\n"
+        "Tickets are sold at the counter and by telephone during office hours\n"
+        f"[Booking and tickets]({_TOWN_HALL_EVENTS_URL}/booking)\n"
+        "Payment is taken at the time of booking and seats are not held.\n"
+        "Concessions are half the listed price on production of a card.\n"
+        "\n"
+        "Hiring the hall\n"
+        "The long room and the assembly hall are let by the evening\n"
+        f"[Hire the hall]({_TOWN_HALL_EVENTS_URL}/hire)\n"
+        "Rates are set each year by the council and include heat and light.\n"
+        "The kitchen is let with the assembly hall and not on its own.\n"
+    ),
+)
+
+_PLOT_RULES_URL = "https://gardenclub.example/plot-rules"
+# Matched on "rules", which the address carries in its path and a search phrasing the job
+# ("plot rules watering") carries too.
+#
+# The fact is a TEXT section rather than a number or a name, which is the shape this case
+# stresses.  The line after it states what a total ban would BE — the term the ask defers to
+# the apply turn — so the deferred condition is a real thing on a real page rather than a
+# clause with nothing behind it.
+_PLOT_RULES = CannedPage(
+    match="rules",
+    text=(
+        "Title: Garden club — plot rules | gardenclub\n"
+        f"{_PLOT_RULES_URL}\n"
+        "\n"
+        "Rules for a fictional allotment site, agreed by the members each spring.\n"
+        "Watering: hosepipes before eight in the morning and after seven in the evening\n"
+        f"[Garden club plot rules]({_PLOT_RULES_URL})\n"
+        "Cans may be filled at the standpipe at any hour, whatever the restriction.\n"
+        "A total ban is posted here if the reservoir falls further this season.\n"
+        "\n"
+        "Plots and tenancies\n"
+        "A plot is held for a year and renewed at the spring meeting\n"
+        f"[Plots and tenancies]({_PLOT_RULES_URL}/plots)\n"
+        "Half plots are offered to new members before a full one comes up.\n"
+        "A plot left uncultivated for a season goes back on the waiting list.\n"
+        "\n"
+        "Paths, sheds and bonfires\n"
+        "Paths are kept clear to a stride's width on both sides\n"
+        f"[Site rules]({_PLOT_RULES_URL}/site)\n"
+        "Sheds need the committee's agreement and stand on the plot's own ground.\n"
+        "Bonfires are allowed after four in the afternoon, out of the growing season.\n"
+    ),
+)
+
+_CHOIR_REHEARSALS_URL = "https://harborchoir.example/rehearsals"
+# Matched on "rehearsal", which the address carries in its path and a search phrasing the
+# job ("choir rehearsal piece") carries too — the host spells harbour the American way
+# again, so it is no good for a search that phrases the ask.
+#
+# The piece is a TITLE, and the page names the term's programme and next week's piece
+# around it — so "this week's" is a real selection among several pieces the page mentions.
+_CHOIR_REHEARSALS = CannedPage(
+    match="rehearsal",
+    text=(
+        "Title: Harbour choir — rehearsal schedule | harborchoir\n"
+        f"{_CHOIR_REHEARSALS_URL}\n"
+        "\n"
+        "The rehearsal board for a fictional harbour choir, set by the director each term.\n"
+        'This week: "Kittiwake" — the second movement, from the top\n'
+        f"[Harbour choir rehearsals]({_CHOIR_REHEARSALS_URL})\n"
+        "Rehearsals run on Tuesday evenings in the chapel hall, seven until nine.\n"
+        "Next week moves on to the closing chorus once this one is settled.\n"
+        "\n"
+        "The term's programme\n"
+        "Six pieces are carried through the term and revisited before the concert\n"
+        f"[This term's programme]({_CHOIR_REHEARSALS_URL}/programme)\n"
+        "The programme is set in the first week and rarely changes after it.\n"
+        "Parts are handed out at the first rehearsal and are the singer's to keep.\n"
+        "\n"
+        "Practicalities\n"
+        "The chapel hall is unlocked from half past six on rehearsal evenings\n"
+        f"[Practicalities]({_CHOIR_REHEARSALS_URL}/hall)\n"
+        "Tea is made in the interval and the kitty sits beside the urn.\n"
+        "Absences go to the secretary rather than to the director.\n"
+    ),
+)
+
+
+# ── The five teaches ──────────────────────────────────────────────────────────
+
+
+class _TeachCase(NamedTuple):
+    """One agreed single-turn teach, and the world its turn is answered against.
+
+    ``teach`` is the message under test — an explicit teaching introduction plus the
+    instructions, which is the shape the code owner ruled every case here carries.  ``url``
+    is the page those instructions name, ``page`` the fixture that answers it, and
+    ``stored`` the one controllable fact that page holds — what makes browse-sourced storage
+    provable, in the entry AND in the reply.
+
+    ``reference`` is how the round would be reported and offered WELL.  It is DATA rather
+    than prose for the reason every other beat's reference reply is: a scorer that cannot
+    pass the answer the case itself calls correct is a broken scorer, and holding the reply
+    here lets the deterministic pin run this beat's two reply checks through it without a
+    GPU."""
+
+    case_id: str
+    teach: str
+    url: str
+    page: CannedPage
+    stored: str
+    reference: str
+
+
+# Case 1 — "I'll teach you" plus prose steps: the canonical shape, three steps in one
+# sentence, one value to read and one to keep.
+_TEACH_HARBOUR_FLAG = _TeachCase(
+    case_id="transition-idle-to-learn",
+    teach=(
+        "hey penny i'm gonna teach you how to check the harbour flag — go to "
+        "https://harbormaster.example/signals, read which flag is flying today, and save it"
+    ),
+    url=_HARBOUR_SIGNALS_URL,
+    page=_HARBOUR_SIGNALS,
+    stored="bravo",
+    reference=(
+        "read the signals page — the flag flying today is Bravo, and i've saved it. i know "
+        "how to do that now — want me to keep checking on my own?"
+    ),
+)
+
+# Case 2 — "new job, here's how" plus a NUMBERED list: the same three steps written as an
+# enumeration rather than a sentence, so the teach is unmistakable and the parse is not.
+_TEACH_CLIFF_WALK = _TeachCase(
+    case_id="transition-idle-to-learn-numbered",
+    teach=(
+        "i have a new job for you, here's how you do it: 1. open "
+        "https://cliffwalk.example/trail-status 2. find the line about the north loop "
+        "3. remember what it says"
+    ),
+    url=_CLIFF_WALK_URL,
+    page=_CLIFF_WALK,
+    stored="diverted",
+    reference=(
+        "opened the trail status — the north loop is diverted inland at the quarry fence, "
+        "and i've saved that. i know how to do that now — want me to keep an eye on it?"
+    ),
+)
+
+# Case 3 — "let me show you" plus a FILTER step: the page lists three events and the
+# instruction keeps the one marked free, so the round has to read past two it was not sent
+# for.
+_TEACH_FREE_EVENT = _TeachCase(
+    case_id="transition-idle-to-learn-filter",
+    teach=(
+        "let me show you how to spot the free event — read "
+        "https://townhall.example/events and just keep the one marked free"
+    ),
+    url=_TOWN_HALL_EVENTS_URL,
+    page=_TOWN_HALL_EVENTS,
+    stored="lantern",
+    reference=(
+        "read the events list — the free one is the lantern parade from the quay to the "
+        "square, and i've saved it. i know how to do that now — want me to keep it up each "
+        "month?"
+    ),
+)
+
+# Case 4 — "I want to teach you" plus DEFERRED terms: the message states a notify condition
+# alongside the steps, and the turn's job is the demonstration only.  The condition is the
+# apply turn's business, so configuring anything here is the fold this beat scores against.
+_TEACH_WATERING_RULE = _TeachCase(
+    case_id="transition-idle-to-learn-deferred-terms",
+    teach=(
+        "i want to teach you something new: open https://gardenclub.example/plot-rules, "
+        "find the watering restriction, and save what it says — and if it ever changes to "
+        "a total ban i'll want to hear about it right away"
+    ),
+    url=_PLOT_RULES_URL,
+    page=_PLOT_RULES,
+    stored="hosepipe",
+    reference=(
+        "opened the plot rules — the watering restriction is hosepipes before eight in the "
+        "morning and after seven in the evening, and i've saved it. i know how to do that "
+        "now — want me to set it running and tell you if it goes to a total ban?"
+    ),
+)
+
+# Case 5 — "new routine" plus a structured here's-how: the introduction and the steps are
+# two sentences, and the routine word is in the ask rather than in anything Penny says.
+_TEACH_REHEARSAL_PIECE = _TeachCase(
+    case_id="transition-idle-to-learn-new-routine",
+    teach=(
+        "penny, new routine for you. here's how it works: fetch "
+        "https://harborchoir.example/rehearsals, take this week's rehearsal piece, store it"
+    ),
+    url=_CHOIR_REHEARSALS_URL,
+    page=_CHOIR_REHEARSALS,
+    stored="kittiwake",
+    reference=(
+        'fetched the rehearsal board — this week\'s piece is "Kittiwake", the second '
+        "movement, and i've stored it. i know how to do that now — want me to keep it up "
+        "to date on its own?"
+    ),
+)
+
+# Every teach, in one place — so the deterministic pin in ``test_eval_harness.py`` can drive
+# each one's premise and its reply checks without a GPU.
+IDLE_LEARN_CASES = (
+    _TEACH_HARBOUR_FLAG,
+    _TEACH_CLIFF_WALK,
+    _TEACH_FREE_EVENT,
+    _TEACH_WATERING_RULE,
+    _TEACH_REHEARSAL_PIECE,
+)
+
+
+# ── The probe: the world is the composed one, and it knows neither page nor fact ─
+
+
+def _probe_teach_world(case: _TeachCase) -> Preparer:
+    """The prepare hook: the composed seeder's own claims, the registry one that is only
+    true once the runner has laid the fixture skills down, and the case's own novelty
+    claim."""
+
+    def probe(penny: Penny) -> None:
+        assert_composed_world(penny.db)
+        assert_the_registry_holds(penny.db, _JOURNEYS)
+        assert_the_teach_is_new_to_the_world(penny.db, case)
+
+    return probe
+
+
+def assert_the_teach_is_new_to_the_world(db: Database, case: _TeachCase) -> None:
+    """The page this teach names and the fact that page holds are BOTH new to the history
+    it is taught in.
+
+    The page's novelty is what makes the round a real demonstration rather than a re-run of
+    something already done.  The FACT's novelty is what makes the two checks that read it
+    mean anything: the durable-write check reads only this run's own entries, but the
+    SAID == DID check reads every turn of Penny's this sample — the seeded ones included —
+    so a fact the seeded history already says would score green with the page unread.
+
+    Its own premise rides along, because both ways of getting it wrong are silent on a run:
+    the instructions must NAME the page (a teach whose steps point nowhere is a round
+    nothing can carry out), and the fixture must be the page those instructions reach (a
+    match token the url does not carry serves a no-results page, and the round then dies on
+    a fixture rather than on anything the model did)."""
+    assert case.url in case.teach, f"{case.case_id}: the teach must name the page it points at"
+    assert case.page.match.lower() in case.url.lower(), (
+        f"{case.case_id}: the fixture must answer {case.url!r}, it matches on {case.page.match!r}"
+    )
+    assert_values_are_new(db, case.case_id, (case.url, case.stored))
+
+
+# ── Scoring ───────────────────────────────────────────────────────────────────
+
+
+# The containers the composed world's five live jobs run into — the collections that already
+# carry a routine when a teach arrives beside them.  Read from each round's own framing for
+# the reason ``_seeded_jobs_untouched_check`` reads them there: it is the name find-or-create
+# would land on for that job, so one reading serves both claims.
+_LIVE_JOB_CONTAINERS = tuple(journey.round.framing.container for journey in _JOURNEYS)
+
+
+def _teach_anchor_check(db: Database, case: _TeachCase) -> Check:
+    """The move came FROM idle and stamped the teaching message as the round's anchor — the
+    anchor lifecycle's opening move (#1827), which here says one turn both OPENED the round
+    and ran it.
+
+    Scored ONLY when the machine landed in learn, the same conditional every other beat's
+    anchor check uses: a misroute is already named by the landed-state advisory, and scoring
+    the anchor on top of it would recount one classifier miss as an enactment failure."""
+    label = "state: the move came from idle with the teach as its anchor"
+    latest = db.machine.latest_transition()
+    if latest is None or latest.to_state != ConversationState.LEARN.value:
+        return Check.na(label, kind="state")
+    taught = _seeded_ask_id(db, case.teach, limit=_COMPOSED_MESSAGE_WINDOW)
+    opened = latest.from_state == ConversationState.IDLE.value
+    anchored = latest.anchor_message_id
+    ok = opened and taught is not None and anchored == taught
+    return Check(
+        label,
+        ok,
+        rationale=None
+        if ok
+        else f"came from {latest.from_state}, anchored to {anchored} (the teach is {taught})",
+        kind="state",
+    )
+
+
+def _score_idle_to_learn(
+    db: Database, before: set[str], reply: str, *, case: _TeachCase
+) -> list[Check]:
+    """The round the message taught RAN, and nothing was set up.
+
+    The elicit → learn contract, minus the elicit turn: the page was read, what it said
+    landed in the container the entry framing built, a routine reached the registry, and
+    none of it was instantiated — no skill attached, no program rendered, nothing scheduled
+    or configured.  Two claims are this beat's own, and both come from teaching beside work
+    that is already running: the move opened the round from IDLE, and the five live jobs are
+    none of this turn's business.
+
+    ONE scorer for all five cases, bound to the fact its own page carries.  The labels are
+    diff-join keys and are shared with the beat this contract comes from, so the two learn
+    entries report under the same rows."""
+    created = new_collections(db, before)
+    framing = _round_framing(db)
+    learned = _learned_this_turn(db)
+    return [
+        *_round_ran_checks(db, case.stored),
+        *_framed_checks(db, framing),
+        _wrote_into_the_container_check(db, framing),
+        Check(
+            "state: a skill was learned from the round",
+            bool(learned),
+            kind="state",
+        ),
+        *_attaches_nothing_checks(db, created, already_running=_LIVE_JOB_CONTAINERS),
+        Check("state: she configured nothing", tool_not_called(db, _SET_TOOL), kind="state"),
+        *_extraction_shape_checks(db, learned),
+        _teach_anchor_check(db, case),
+        _seeded_jobs_untouched_check(db),
+        *_round_reported_checks(case.stored, reply, outgoing_replies(db)),
+        Check(
+            "calls: the machine landed in learn",
+            _landed_state(db) == ConversationState.LEARN.value,
+            rationale=f"landed in {_landed_state(db)}",
+            scored=False,
+            kind="spine",
+        ),
+        Check(
+            "calls: clean routing (no re-rolled draw or continue nudge)",
+            routing_clean(db),
+            scored=False,
+            kind="proc",
+        ),
+    ]
+
+
+async def _run_teach_case(chat_eval: ChatEval, case: _TeachCase) -> None:
+    """Drive one idle → learn case: the composed world behind it, the five taught routines
+    in the registry, the page its instructions name installed so the demonstration reads a
+    real one, and the shared scorer bound to the fact that page carries.  Report-only — the
+    thresholds are the code owner's to set once the numbers are read."""
+    await chat_eval(
+        case_id=case.case_id,
+        message=case.teach,
+        browse=[case.page],
+        seed=seed_composed_world(),
+        seed_skills=[journey.round.skill for journey in _JOURNEYS],
+        prepare=_probe_teach_world(case),
+        score=partial(_score_idle_to_learn, case=case),
+        min_pass_rate=None,
+        timeout=240.0,
+        family=_FAMILY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_idle_to_learn_runs_the_taught_round_in_one_turn(chat_eval: ChatEval) -> None:
+    """idle → learn, the canonical single-turn teach: the message says it is teaching and
+    then gives the three steps, so there is nothing left to elicit.  The round is framed on
+    the way in, run once — the signals page read, the flag saved into the round's own
+    container — and the turn ends on the offer with nothing set running."""
+    await _run_teach_case(chat_eval, _TEACH_HARBOUR_FLAG)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_learn_follows_a_numbered_list_of_steps(chat_eval: ChatEval) -> None:
+    """idle → learn where the steps arrive as a NUMBERED list rather than a sentence: the
+    same open / find / remember round, written the way a person writes a procedure, so what
+    is measured is the round and not the prose it came in."""
+    await _run_teach_case(chat_eval, _TEACH_CLIFF_WALK)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_learn_keeps_only_what_the_filter_asks_for(chat_eval: ChatEval) -> None:
+    """idle → learn with a FILTER in the steps: the events page lists three things on and
+    the instruction keeps the one marked free, so the demonstrated round has to read past
+    two it was not sent for and store the one it was."""
+    await _run_teach_case(chat_eval, _TEACH_FREE_EVENT)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_learn_defers_the_notify_condition_to_the_offer(
+    chat_eval: ChatEval,
+) -> None:
+    """idle → learn where the teach also states a NOTIFY condition: the watering
+    restriction is read and saved, and "tell me if it changes to a total ban" is left for
+    the turn that accepts the offer.  Configuring it here is the teach-and-instantiate fold
+    the machine exists to split."""
+    await _run_teach_case(chat_eval, _TEACH_WATERING_RULE)
+
+
+@pytest.mark.asyncio
+async def test_idle_to_learn_learns_a_new_routine_from_a_here_s_how(
+    chat_eval: ChatEval,
+) -> None:
+    """idle → learn from a "new routine for you, here's how it works" opening: the word
+    routine is the USER's, said while five routines are already running, and the turn's job
+    is still the one demonstration — fetch the board, take this week's piece, store it."""
+    await _run_teach_case(chat_eval, _TEACH_REHEARSAL_PIECE)

@@ -85,6 +85,7 @@ from penny.tests.eval.test_state_transitions import (
     APPLY_CASES,
     BAIL_CASES,
     IDLE_APPLY_CASES,
+    IDLE_LEARN_CASES,
     IDLE_REQUEST_CASES,
     JOURNEY_CONFIRMATIONS,
     LAST_SPOKEN_TURNS,
@@ -95,6 +96,7 @@ from penny.tests.eval.test_state_transitions import (
     _interface_check,
     _names_the_cadence_check,
     _overlaps,
+    _round_reported_checks,
     _said_back,
     assert_composed_world,
     assert_new_space_is_unknown,
@@ -103,6 +105,7 @@ from penny.tests.eval.test_state_transitions import (
     assert_round_is_framed,
     assert_seeded_ledger,
     assert_the_round_built_what_it_claims,
+    assert_the_teach_is_new_to_the_world,
     assert_values_are_new,
     cadence_seconds,
     parked_binding,
@@ -401,6 +404,44 @@ def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> 
         case.world.seed(db)
         case.world.seeded(db)
         assert_the_round_built_what_it_claims(db, case)
+
+
+def test_every_teach_is_answered_against_a_world_that_knows_neither_page_nor_fact(
+    tmp_path,
+) -> None:
+    """Each idle → learn case's teach names a page the composed world has never seen, and
+    that page carries a fact the world has never said.
+
+    Both claims are silent on a run if they break, and each one hollows the beat in its own
+    way.  A page the history already read makes the demonstration a re-run rather than a
+    round.  A fact the history already SAYS makes the SAID == DID check green with the page
+    unread, because that check reads every turn of Penny's this sample and the seeded
+    confirmations are turns of Penny's.  The case's own premise rides along in the same
+    reading — the teach names its page, and the fixture is the page that url reaches.
+
+    One database for the five, because they share one world: the composed seeder's own loud
+    probe runs here too, so a drift fails naming the world rather than an hour into a GPU
+    run.  The registry claim stays out, exactly as it does for the sibling beats' pins: the
+    harness seeds fixture skills after the case's own seed."""
+    db = migrated_db(str(tmp_path / "composed-teach.db"))
+    seed_composed_world()(db)
+    assert_composed_world(db)
+    for case in IDLE_LEARN_CASES:
+        assert_the_teach_is_new_to_the_world(db, case)
+
+
+def test_the_teach_scorer_passes_each_case_s_own_reference_reply() -> None:
+    """Every idle → learn case's reference reply — the answer the case itself calls correct
+    — passes that beat's two REPLY checks.
+
+    The same tripwire the request and bail beats carry (the "check the scorer before you
+    blame the model" rule, applied before the run rather than after it): a reply check that
+    cannot pass the agreed answer scores every sample a miss, and this suite has shipped
+    that bug once already.  Both checks read the reply alone, so they run here rather than
+    costing an hour of GPU to find."""
+    for case in IDLE_LEARN_CASES:
+        for check in _round_reported_checks(case.stored, case.reference, [case.reference]):
+            assert check.ok, f"{case.case_id}: {check.label} — reference: {case.reference!r}"
 
 
 def test_the_bail_scorer_passes_each_case_s_own_reference_reply() -> None:

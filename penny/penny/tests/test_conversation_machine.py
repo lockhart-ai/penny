@@ -195,7 +195,14 @@ def test_render_idle_slice_whole():
     """The idle render, whole: the slice sections, then WHERE the machine
     stands (current state + its canonical definition) and WHAT MOVES IT (one
     line per transition with its condition; idle last as the declared
-    default).  Apply is absent — no candidates."""
+    default).  Apply is absent — no candidates.
+
+    The learn condition here is COLD idle's own (code-owner authored, #1898): the user
+    says they are teaching and the steps are in the message.  Its elicit-parked twin
+    below still reads "instructions to follow for the task being worked on", which is
+    accurate from inside a round and was false from a standing start — there is no task
+    in flight at idle, so the phrase read as disqualifying the very messages this edge
+    exists for."""
     assert render_classifier_content(_IDLE_SNAPSHOT, _ASK) == (
         "## The assistant's last message\n"
         "(none)\n"
@@ -211,9 +218,10 @@ def test_render_idle_slice_whole():
         "put off for later; no task is being given or taught right now\n"
         "\n"
         "## Transitions\n"
-        "- learn — the user's message is a set of instructions to follow for the task "
-        "being worked on — what to read, what to look for, what to remember, including "
-        "corrections to previous steps\n"
+        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "'here's how', 'new job for you') and their message carries the steps — what to "
+        "read, what to look for, what to remember. When they are teaching, choose learn "
+        "even if a known skill looks close — their steps are the new way to do it.\n"
         "- elicit — they are asking to set up an ongoing task or routine and no known "
         "skill covers it\n"
         "- idle — in all other cases"
@@ -378,7 +386,14 @@ def test_render_idle_with_candidates_whole():
     one, which the choice-menu discipline above ``TRANSITIONS`` forbids — request is
     right there in the same list saying what it is.  What it guarded (a skill that
     merely looks related being applied) is the classifier suite's idle-apply-hold cases'
-    to gate, and they are its gate now."""
+    to gate, and they are its gate now.
+
+    This render is also the ONE place the learn condition's sibling clause is legible —
+    apply, request and learn in one list — which is why it is worded the way it is
+    (code-owner authored, #1898).  With same-kind routines in the registry, 8 of 25
+    measured teaches were drawn as apply: the skill-gated conditions are read first and
+    answered honestly, and neither of them can say anything about a teach, so where a
+    user's own steps stand against a close-looking routine has nowhere else to live."""
     assert SkillCandidate(name="x", description="y").render() == '"x" — y'
     with_skills = MachineSnapshot(state=ConversationState.IDLE, skill_candidates=[_SKILL])
     assert render_classifier_content(with_skills, "what's the ferry price at today?") == (
@@ -409,9 +424,10 @@ def test_render_idle_with_candidates_whole():
         "up, so a skill that does the task once covers an ask to do it repeatedly. Add "
         "a second line naming that skill: SKILL: <its name, exactly as quoted in Known "
         "skills>\n"
-        "- learn — the user's message is a set of instructions to follow for the task "
-        "being worked on — what to read, what to look for, what to remember, including "
-        "corrections to previous steps\n"
+        "- learn — the user is teaching a new routine: they say so ('let me teach you', "
+        "'here's how', 'new job for you') and their message carries the steps — what to "
+        "read, what to look for, what to remember. When they are teaching, choose learn "
+        "even if a known skill looks close — their steps are the new way to do it.\n"
         "- elicit — they are asking to set up an ongoing task or routine and no known "
         "skill covers it\n"
         "- idle — in all other cases"
