@@ -35,17 +35,23 @@ entry settles is the round's framing and its container, which is why a round tha
 
 **The container's lifecycle is find-or-create, never mint-per-round.**  Re-asking for the
 same job derives the same name and finds the container that exists — tier-1 dedup by
-construction (#1775) — while a correction that SHIFTS the job's identity archives the
-near-empty container it is replacing and builds the one it now needs.  Archiving is
-guarded on emptiness: litter is a container minutes old with nothing in it, and a
-container holding entries is not litter whatever the round did next.
+construction (#1775).
 
-**A round that ENDS in idle takes its container with it** (:func:`abandon_round_container`,
-#1896).  A bail preserves nothing — once the machine is idle the round is over and any
-next task opens a flow of its own — so the one retirement in this module that is NOT
-guarded on emptiness is this one: what the demonstration wrote is the round's own
-intermediate state rather than an exception to it.  Archive, never delete, like every
-other retirement here.
+**A round's identity is settled ONCE, at its first entry** (:meth:`RoundFramer.carry_entry`,
+#1902).  A correction re-enters learn to refine the PROGRAM of the round's one job, so the
+re-entry makes no draw at all and the framing the round already holds carries: the same
+routine, the same container, the corrected write landing in place.  The re-draw this
+replaces derived a fresh name from a corrected ask, found no container under it, minted a
+sibling, and left run-end extraction filing a second routine beside the first.
+
+**A round that ENDS in idle takes its container AND its draft routine with it**
+(:func:`abandon_round_container` / :func:`abandon_round_skill`, #1896/#1902).  A bail
+preserves nothing — once the machine is idle the round is over and any next task opens a
+flow of its own — so the one container retirement in this module that is NOT guarded on
+emptiness is this one: what the demonstration wrote is the round's own intermediate state
+rather than an exception to it.  The container is archived (a tombstone, like every other
+retirement here); the routine is deleted, because the skill table is versionless and holds
+no archived flag.
 """
 
 from __future__ import annotations
@@ -89,7 +95,6 @@ logger = logging.getLogger(__name__)
 # cannot state for itself, in the three shapes it happens in.  Private: every caller of
 # these is in this file, and what a retirement MEANS is this module's own vocabulary.
 _ARCHIVED_ROUND_FAILED = "the round that created this container taught nothing"
-_ARCHIVED_IDENTITY_SHIFTED = "the corrected round is a different job, with its own container"
 _REVIVED_SAME_JOB = "the same job is being taught again, into the container it already had"
 _ABANDONED_ROUND = "the round that created this container was called off"
 
@@ -100,10 +105,14 @@ class RoundFramer:
     Two entries, two draws, one outcome: :meth:`frame_entry` MINTS a routine for a round
     being taught, :meth:`bind_entry` FILLS one the registry already holds (#1870), and
     both hand back the same :class:`~penny.conversation_machine.RoundFraming` over a
-    container settled by the same find-or-create rule.  The binder has one further
-    answer the framer cannot have (#1885): the routine covers the ask and the user's
-    words are SHORT of something it needs, which comes back as a
+    container settled by the same find-or-create rule.  The binder has one further answer
+    the framer cannot have (#1885): the routine covers the ask and the user's words are
+    SHORT of something it needs, which comes back as a
     :class:`~penny.conversation_machine.RoundShortfall` and routes the turn into request.
+
+    :meth:`carry_entry` is the THIRD entry and the one that draws nothing (#1902): a round
+    re-entering learn already settled what it is about, so its framing carries unchanged
+    and only its container is re-settled.
 
     :meth:`bind_entry` is the ONE door for every entry against a known routine (#1894) —
     an apply the words fall short of and a request the classifier drew directly both come
@@ -132,19 +141,15 @@ class RoundFramer:
         self._run_target = run_target
 
     async def frame_entry(
-        self,
-        *,
-        ask: str | None,
-        message: str,
-        run_id: str | None,
-        previous: RoundFraming | None,
+        self, *, ask: str | None, message: str, run_id: str | None
     ) -> RoundFraming | None:
-        """Frame the round the machine is entering, and settle its container — the
-        summary method.
+        """Frame the round the machine is entering FOR THE FIRST TIME, and settle its
+        container — the summary method.
 
         Draws the interface from the round's user turns, derives the container's name from
-        it, reconciles that against whatever the round had before, and returns the framing
-        for the machine to record.
+        it, finds-or-creates that container, and returns the framing for the machine to
+        record.  A round that already carries a framing never reaches here (#1902): it is
+        :meth:`carry_entry`'s, because a round's identity is settled once.
 
         ``None`` when the draw failed: NO container is built, the gate is logged, and
         everything downstream degrades to what it did before this existed — the round runs
@@ -157,7 +162,26 @@ class RoundFramer:
             )
             return None
         framing = RoundFraming(signature=signature, container=container_name(signature))
-        await self._settle_container(framing, previous, run_id=run_id)
+        await self._settle_container(framing, run_id=run_id)
+        return framing
+
+    async def carry_entry(self, framing: RoundFraming, *, run_id: str | None) -> RoundFraming:
+        """The round's framing CARRIED into a re-entry, with no draw at all (#1902).
+
+        A correction re-enters learn to refine the PROGRAM of the round's one job, never to
+        decide what that job is: the round settled that at its first entry, the turn that
+        demonstrated it was instructed under that name, and the container derived from it
+        is where the round has been writing.  Asking again is what forked a round in two —
+        a corrected ask read as a different subject, a fresh draw derived a fresh name,
+        find-or-create minted a sibling under it, and run-end extraction registered a
+        second routine beside the first.
+
+        The CONTAINER is still settled, because the round may have lost it since: a learn
+        turn that taught nothing takes it with the failure
+        (:func:`discard_round_container`), and the correction that follows is exactly the
+        round coming back for it.  Find-or-create is the same rule both draws end on, so
+        the round always has somewhere to write."""
+        await self._settle_container(framing, run_id=run_id)
         return framing
 
     async def _draw(self, ask: str | None, message: str) -> SkillSignature | None:
@@ -255,7 +279,7 @@ class RoundFramer:
         container derived from it, found or created."""
         signature = _filled_signature(routine, declared, values)
         framing = RoundFraming(signature=signature, container=container_name(signature))
-        await self._settle_container(framing, previous=None, run_id=run_id)
+        await self._settle_container(framing, run_id=run_id)
         return framing
 
     async def _bind(
@@ -282,26 +306,18 @@ class RoundFramer:
             run_target=self._run_target,
         )
 
-    async def _settle_container(
-        self, framing: RoundFraming, previous: RoundFraming | None, *, run_id: str | None
-    ) -> None:
-        """Find-or-create the round's container, retiring the one it replaces.
+    async def _settle_container(self, framing: RoundFraming, *, run_id: str | None) -> None:
+        """Find-or-create the round's container — the one rule every entry ends on.
 
-        A correction that keeps the job's identity derives the same name and finds the
-        same container — nothing is created, nothing is retired, and the round continues
-        into what it was already writing.  A correction that SHIFTS it leaves the old
-        container behind with nothing in it, so that one is archived (guarded on
-        emptiness) before the new one is built.
+        The same job asked for again derives the same name and finds the container that
+        already exists: nothing is created, and the round continues into what it was
+        already writing (tier-1 dedup by construction, #1775).
 
         Find-or-create is also what makes a container STRANDED by a failure harmless: if
         the turn dies between this step and the machine recording the move, what is left
         behind is an inert, empty collection carrying this job's own name — which the next
         attempt at the same job finds and continues into, rather than an orphan nothing can
         reach."""
-        if previous is not None and previous.container != framing.container:
-            archive_round_container(
-                self._db, previous.container, run_id=run_id, note=_ARCHIVED_IDENTITY_SHIFTED
-            )
         existing = self._db.memories.get(framing.container)
         if existing is None:
             await self._create(framing, run_id=run_id)
@@ -534,6 +550,41 @@ def abandon_round_container(
         return
     db.memories.archive(row.name, actor=MutationActor.SYSTEM, run_id=run_id, note=_ABANDONED_ROUND)
     logger.info("Archived the abandoned round's container %r (%s)", row.name, _ABANDONED_ROUND)
+
+
+def abandon_round_skill(db: Database, framing: RoundFraming | None) -> None:
+    """Remove the DRAFT routine of a round that ENDED IN IDLE (#1902) — the bail's other
+    durable half, beside :func:`abandon_round_container`.
+
+    A round that ran registers its routine at run end under the name its framing pinned,
+    and every later turn of the same round REPLACES that row rather than adding beside it —
+    so what stands in the registry mid-round is this round's own draft.  A bail preserves
+    nothing, and the draft is exactly the round's intermediate state the container archive
+    already discards: the user called the job off, and a routine nobody asked for is worse
+    standing than absent, because the registry is AMBIENT — every later turn reads it.
+
+    There is no draft flag to read and none to clear.  Promotion is implicit SURVIVAL: a
+    round that ends any other way simply leaves its routine standing, and it stops being a
+    draft because only the round holding that framing could have replaced it.
+
+    DELETED rather than archived, which is the one place this parts company with the
+    container: the skill table is versionless and carries no archived flag, so a name is
+    either in the registry or it is not.  A framing whose routine never reached the
+    registry — a round that bailed before any turn of it completed — is the plain ``False``
+    this reads and says nothing about.
+
+    **Declared reach of the ruling**: the row is identified by the round's pinned NAME and
+    nothing narrows it to the round's own registration, so a round RE-TEACHING a routine
+    the registry already held — which derives that routine's name and replaces its row —
+    takes that routine with it when the user calls the round off, and the deletion is
+    permanent.  That is the "a bail preserves nothing" ruling read literally, pinned by
+    ``test_a_bail_takes_a_routine_the_round_re_taught_over``; narrowing it to rows this
+    round wrote would be a draft/canonical distinction, which is exactly the machinery the
+    same ruling refuses."""
+    if framing is None:
+        return
+    if db.skills.delete(framing.skill):
+        logger.info("Discarded the abandoned round's draft routine %r", framing.skill)
 
 
 def archive_round_container(db: Database, container: str, *, run_id: str | None, note: str) -> None:

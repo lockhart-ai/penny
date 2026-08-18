@@ -992,7 +992,7 @@ class ConversationMachine:
         state = self._settle_structural(message_id=message_id)
         snapshot = self._snapshot(state, message, penny_last_turn=penny_last_turn)
         decision = await self._classifier.classify(snapshot, message, run_target=run_target)
-        entry = await self._frame_round(decision, message, run_id=run_id)
+        entry = await self._frame_round(state, decision, message, run_id=run_id)
         self._record_decision(state, decision, message_id=message_id, run_id=run_id, entry=entry)
         return TurnEntry(state=self.state(), decision=decision, shortfall=self.shortfall())
 
@@ -1094,7 +1094,12 @@ class ConversationMachine:
         return latest.anchor_message_id if latest else None
 
     async def _frame_round(
-        self, decision: StateDecision, message: str, *, run_id: str | None
+        self,
+        current: ConversationState,
+        decision: StateDecision,
+        message: str,
+        *,
+        run_id: str | None,
     ) -> RoundEntry | None:
         """The round-framing hook (#1868/#1875/#1870/#1894): the moves that settle the
         round's entry — its framing and the container its results are kept in, or the
@@ -1127,27 +1132,37 @@ class ConversationMachine:
         if framer is None or decision.state is None:
             return None
         if decision.state is ConversationState.LEARN:
-            return await self._frame_learn_entry(framer, message, run_id=run_id)
+            return await self._frame_learn_entry(framer, current, message, run_id=run_id)
         if decision.state in _BINDING_STATES and self.framing() is None:
             return await self._bind_round_entry(framer, decision, message, run_id=run_id)
         return None
 
     async def _frame_learn_entry(
-        self, framer: RoundFramer, message: str, *, run_id: str | None
+        self,
+        framer: RoundFramer,
+        current: ConversationState,
+        message: str,
+        *,
+        run_id: str | None,
     ) -> RoundFraming | None:
-        """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868).
+        """A round being TAUGHT has no routine yet, so the framer MINTS one (#1868) — on
+        the round's FIRST entry into learn, and only that one (#1902).
 
-        Every move that lands in learn draws, not only the first — a correction re-enters
-        learn, and re-entering is exactly the occasion to ask again what the round is now
-        for: the same identity finds the container that already exists, a shifted one
-        archives the near-empty container it replaces (the framer's own find-or-create
-        rule), which is why the framing the round already had is handed over."""
-        return await framer.frame_entry(
-            ask=self._anchor_text(),
-            message=message,
-            run_id=run_id,
-            previous=self.framing(),
-        )
+        A move from learn back into learn is a correction, and a correction refines the
+        PROGRAM of the round's one job rather than deciding what that job is: the round
+        settled its identity when it entered, the turn that demonstrated it was instructed
+        under that name, and the container derived from it is where the round has been
+        writing.  So the framing carries and only the container is re-settled — the same
+        routine, the same container, the corrected write landing in place.
+
+        Re-drawing is what forked a round in two: a corrected ask read as a different
+        subject, the fresh draw derived a fresh name, find-or-create minted a sibling
+        container under it, and run-end extraction registered a second routine beside the
+        first."""
+        carried = self.framing()
+        if current is ConversationState.LEARN and carried is not None:
+            return await framer.carry_entry(carried, run_id=run_id)
+        return await framer.frame_entry(ask=self._anchor_text(), message=message, run_id=run_id)
 
     async def _bind_round_entry(
         self, framer: RoundFramer, decision: StateDecision, message: str, *, run_id: str | None
@@ -1239,31 +1254,35 @@ class ConversationMachine:
         )
 
     def _end_round(self, target: ConversationState, *, run_id: str | None) -> None:
-        """An idle landing ENDS the round, so the container the round built goes with it
-        (#1896) — the DURABLE half of the clearing the two lifecycles below do on the row.
+        """An idle landing ENDS the round, so BOTH things the round left behind go with it
+        (#1896/#1902) — the DURABLE half of the clearing the two lifecycles below do on the
+        row: the container it built, and the draft routine it registered.
 
         ``_next_framing`` drops the framing from the move and this retires what that
         framing pointed at, because dropping it alone leaves an inert collection named for
-        a job nobody is doing and nothing able to reach it.  A bail preserves nothing: once
-        the machine is idle the round is over, and any next task opens a flow of its own.
+        a job nobody is doing, and a routine ambient in every later prompt for a job the
+        user just called off.  A bail preserves nothing: once the machine is idle the round
+        is over, and any next task opens a flow of its own.
 
         Read off the framing the round is CARRYING, which is why it runs BEFORE the move is
         recorded — and that order is also the safe one: a write that then fails leaves the
         machine parked where it was over an archived container, which the next move back
         into learn revives by name (the framer's find-or-create), while the other order
-        would leave an idle machine with nothing pointing at the container any more.
+        would leave an idle machine with nothing pointing at either any more.
 
-        Only a round that was framed has a container at all, so every other landing here is
-        a no-op — and the post-apply reset is not this path (it is its own structural row,
-        appended before the draw, and it drops the framing first), so a job the user has
-        just set running is never what a later bail retires."""
+        Only a round that was framed has a container or a pinned routine at all, so every
+        other landing here is a no-op — and the post-apply reset is not this path (it is
+        its own structural row, appended before the draw, and it drops the framing first),
+        so a job the user has just set running is never what a later bail retires."""
         if target is not ConversationState.IDLE:
             return
         # Function-local: the framer's module imports this one, and the leaf discipline
         # keeps every database-touching import off this module's import time.
-        from penny.round_framing import abandon_round_container
+        from penny.round_framing import abandon_round_container, abandon_round_skill
 
-        abandon_round_container(self._db, self.framing(), run_id=run_id)
+        framing = self.framing()
+        abandon_round_container(self._db, framing, run_id=run_id)
+        abandon_round_skill(self._db, framing)
 
     def _next_anchor(
         self, current: ConversationState, target: ConversationState, message_id: int | None
@@ -1286,9 +1305,11 @@ class ConversationMachine:
         framing belongs to the round, so the turn that accepts what was demonstrated reads
         the same container the turn that demonstrated it wrote into.
 
-        A failed re-draw carries rather than clears, which is the same rule read the other
-        way: a correction whose framing could not be drawn keeps the container the round
-        already has, instead of losing it to a flaky draw."""
+        A move that settled nothing carries rather than clears, which is the same rule read
+        the other way: a held draw that merely leaves the machine in learn keeps the
+        framing the round already has, instead of losing it to a flaky draw.  Since #1902 a
+        correction is that case by construction — it settles the framing the round was
+        already carrying, so the replacement and the carry are the same framing."""
         if target is ConversationState.IDLE:
             return None
         return drawn if drawn is not None else self.framing()

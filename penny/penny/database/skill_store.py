@@ -95,6 +95,24 @@ class SkillStore:
         with self._session() as session:
             return session.get(Skill, slug_skill_name(name))
 
+    def delete(self, name: str) -> bool:
+        """Remove the skill of that name from the registry; ``True`` when a row went.
+
+        The table is versionless, so a name is either in the registry or it is not —
+        there is no archived flag to set and no tombstone to leave, unlike a ``memory``
+        row.  Its one caller is the round that REGISTERED the skill taking it back when
+        the user calls the round off (#1902); a name nobody holds is a plain ``False``,
+        never an error, because the caller is asking for an end state rather than for a
+        row."""
+        with self._session() as session:
+            skill = session.get(Skill, slug_skill_name(name))
+            if skill is None:
+                return False
+            session.delete(skill)
+            session.commit()
+        logger.debug("Deleted skill %s", name)
+        return True
+
     def list_all(self) -> list[Skill]:
         """Every skill, name order — the read surface's catalog listing."""
         with self._session() as session:

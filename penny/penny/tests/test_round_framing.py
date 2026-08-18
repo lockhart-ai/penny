@@ -12,8 +12,10 @@ What is pinned here is everything the framing decides that no later step can und
 * the container is built INERT — storage with no program, no schedule, no notify — and
   the framing lands on the transition row, so the turn is entered with its destination
   already decided;
-* a correction that keeps the job's identity finds the SAME container, and one that
-  shifts it archives the empty container it replaces and builds the one it now needs;
+* a round's identity is settled ONCE, at its first entry (#1902): a correction re-enters
+  learn and makes NO framing draw, so the same routine and the same container carry and
+  the corrected write lands in place — while a round still unframed (its entry draw
+  failed) has no identity to keep and is drawn again;
 * a failed draw builds nothing and records nothing, and the round runs exactly as it did
   before this hook existed;
 * the framing rides the anchor's lifecycle — carried while the round stays parked,
@@ -41,9 +43,9 @@ What is pinned here is everything the framing decides that no later step can und
   holding entries is never taken;
 * a round that BAILS to idle takes its container with it too (#1896), the emptiness guard
   notwithstanding — the bail discards the round's intermediate state, and what a
-  demonstration wrote is part of that state — while the post-apply structural reset, which
-  clears the framing before anything is classified, leaves a job that was just set running
-  alone.
+  demonstration wrote is part of that state — AND the draft routine the round registered
+  goes with it (#1902), while the post-apply structural reset, which clears the framing
+  before anything is classified, leaves a job that was just set running alone.
 
 The live-model half — whether a draw picks the right values — is the framing and binding
 evals'.  All content is synthetic.
@@ -64,7 +66,12 @@ from penny.database import Database
 from penny.database.memory import EntryInput
 from penny.database.skills import SkillDraft, SkillParameter
 from penny.llm.models import LlmMessage, LlmResponse
-from penny.round_framing import RoundFramer, abandon_round_container, discard_round_container
+from penny.round_framing import (
+    RoundFramer,
+    abandon_round_container,
+    abandon_round_skill,
+    discard_round_container,
+)
 from penny.tests.conftest import require_memory
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tools.micro_context import (
@@ -281,55 +288,66 @@ async def test_a_failed_entry_draw_builds_nothing_and_records_no_framing(db):
     assert db.memories.get(_CONTAINER) is None
 
 
-# ── Corrections: the entry hook runs again, and identity decides the container ─
+# ── Corrections: the round's identity is settled ONCE, at its first entry (#1902) ─
 
 
-async def test_a_correction_that_keeps_the_job_reuses_the_same_container(db):
-    """A correction re-enters learn, so the hook runs again — and the same skill bound to
-    the same value derives the same name, which FINDS the container the round is already
-    writing into.  Find-or-create is tier-1 dedup by construction (#1775), so nothing is
-    created and nothing is retired."""
+async def test_a_correction_keeps_the_round_s_framing_and_draws_nothing(db):
+    """A correction re-enters learn to refine the PROGRAM of the round's one job, never to
+    decide what that job is (#1902) — so the framer is not asked at all, and the framing
+    the round settled at its first entry is what the corrected move records.
+
+    Re-drawing is what forked a round in two: a corrected ask read as a different subject,
+    the fresh draw derived a fresh name, find-or-create minted a sibling container under
+    it, and run-end extraction registered a second routine beside the first."""
     anchor_id = _log(db, _ASK)
     _park_in_elicit(db, anchor_id)
     await _enter_learn(db)
     before = db.memories.get(_CONTAINER)
     assert before is not None
 
-    await _enter_learn(db, message="same page, but take the weekend rate instead")
+    # The correction points at a different page and its draw would frame a different job —
+    # neither reaches the round, because no draw is made.
+    model = _model(state="STATE: learn", framing=_FRAMED_TOURS)
+    correcting = _machine(db, model)
+    await correcting.advance(_CORRECTION, message_id=_log(db, _CORRECTION), run_id="run-fix")
 
-    assert [row.name for row in db.memories.list_all() if row.name == _CONTAINER] == [_CONTAINER]
+    assert not _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
+    framing = correcting.framing()
+    assert framing is not None and framing.container == _CONTAINER
+    assert framing.skill == _SKILL
+    assert db.memories.get(_TOURS_CONTAINER) is None, "no sibling container was minted"
     after = db.memories.get(_CONTAINER)
     assert after is not None and after.archived is False
     assert after.created_at == before.created_at, "the container was found, not rebuilt"
 
 
-async def test_a_correction_that_shifts_the_job_archives_the_empty_container(db):
-    """A correction that points the round at a different place is a DIFFERENT job, so it
-    derives a different name — and the container the round no longer needs is archived
-    rather than left in the store map describing a job nobody is doing.
+async def test_a_correction_brings_a_failed_round_s_container_back(db):
+    """The one thing a carried re-entry still SETTLES: the container (#1902).
 
-    Archived, not deleted: a retired mechanism stays a visible tombstone, so a container
-    that came and went is answerable."""
+    A learn turn that taught nothing takes its empty container with it (#1839), and the
+    correction that follows is exactly the round coming back for it — so find-or-create
+    runs on the carried framing and the container is revived, rather than the corrected
+    demonstration writing into an archived collection nothing can configure."""
     anchor_id = _log(db, _ASK)
     _park_in_elicit(db, anchor_id)
     await _enter_learn(db)
+    discard_round_container(
+        db, RoundFraming.model_validate_json(_latest_frame(db)), run_id="run-learn"
+    )
+    discarded = db.memories.get(_CONTAINER)
+    assert discarded is not None and discarded.archived is True
 
-    await _enter_learn(db, framing=_FRAMED_TOURS, message=_CORRECTION)
+    await _enter_learn(db, message="try that again, take the weekend rate this time")
 
-    retired = db.memories.get(_CONTAINER)
-    assert retired is not None and retired.archived is True
-    built = db.memories.get(_TOURS_CONTAINER)
-    assert built is not None and built.archived is False
-    machine = _machine(db, _model(state="STATE: learn", framing=_FRAMED))
-    framing = machine.framing()
-    assert framing is not None and framing.container == _TOURS_CONTAINER
+    revived = db.memories.get(_CONTAINER)
+    assert revived is not None and revived.archived is False
 
 
-async def test_a_shifted_job_keeps_a_container_that_holds_entries(db):
-    """The no-litter rule's one guard, read rather than judged: litter is a container
-    minutes old with nothing in it.  A container holding entries is something the user can
-    still read, whatever the round did next, so the shift leaves it alone and simply builds
-    the one it now needs."""
+async def test_a_correction_leaves_what_the_round_already_wrote_in_place(db):
+    """The correction keeps writing into the container the round has been writing into, so
+    what the first demonstration put there is still there and reachable — one identity, one
+    container.  The re-draw this replaces would have left those entries behind in a
+    container the round no longer pointed at."""
     anchor_id = _log(db, _ASK)
     _park_in_elicit(db, anchor_id)
     await _enter_learn(db)
@@ -339,7 +357,8 @@ async def test_a_shifted_job_keeps_a_container_that_holds_entries(db):
 
     kept = db.memories.get(_CONTAINER)
     assert kept is not None and kept.archived is False
-    assert db.memories.get(_TOURS_CONTAINER) is not None
+    assert [entry.key for entry in require_memory(db, _CONTAINER).read_all()] == ["day rate"]
+    assert db.memories.get(_TOURS_CONTAINER) is None
 
 
 async def test_re_teaching_a_job_brings_its_archived_container_back(db):
@@ -410,18 +429,26 @@ async def test_a_held_draw_frames_nothing_and_touches_no_container(db):
     assert framing is not None and framing.container == _CONTAINER
 
 
-async def test_a_failed_re_draw_keeps_the_round_s_existing_framing(db):
-    """A correction whose framing could not be drawn keeps the container the round already
-    has, instead of losing it to a flaky draw — the carry rule read the other way."""
+async def test_a_round_that_is_still_unframed_is_drawn_again_on_re_entry(db):
+    """The boundary case of the carry rule (#1902): what a re-entry keeps is the round's
+    IDENTITY, and a round whose entry draw failed has none to keep.
+
+    So it is drawn again — the round runs unframed until some entry settles it, rather
+    than being locked out of ever having a container because its first draw was flaky."""
     anchor_id = _log(db, _ASK)
     _park_in_elicit(db, anchor_id)
-    await _enter_learn(db)
+    await _enter_learn(db, framing="not a framing at all")
+    unframed = _machine(db, _model(state="STATE: learn", framing=""))
+    assert unframed.state() is ConversationState.LEARN and unframed.framing() is None
 
-    await _enter_learn(db, framing="not a framing at all", message="try that again please")
+    model = _model(state="STATE: learn", framing=_FRAMED)
+    retrying = _machine(db, model)
+    await retrying.advance(_DEMO, message_id=_log(db, _DEMO), run_id="run-retry")
 
-    machine = _machine(db, _model(state="STATE: learn", framing=_FRAMED))
-    framing = machine.framing()
+    assert _drew_against(model, SKILL_FRAME_SYSTEM_PROMPT)
+    framing = retrying.framing()
     assert framing is not None and framing.container == _CONTAINER
+    assert db.memories.get(_CONTAINER) is not None
 
 
 # ── Apply entry: the BINDER settles it, because apply cannot run unframed (#1870) ─
@@ -951,7 +978,7 @@ async def test_a_round_that_leaves_request_stops_waiting_on_anything(db):
     assert latest is not None and latest.round_shortfall is None
 
 
-# ── The bail takes the round's container with it (#1896) ─────────────────────
+# ── The bail takes the round's container AND its draft routine (#1896/#1902) ──
 
 
 async def _bail(db: Database, message: str = "actually forget it, i don't need this") -> None:
@@ -1022,6 +1049,111 @@ async def test_retiring_a_container_twice_records_no_second_archive(db):
     abandon_round_container(db, None, run_id="run-bail-again")
 
     assert [event.action for event in db.mutations.history(_CONTAINER, 10)] == recorded
+
+
+async def test_a_bail_discards_the_draft_routine_the_round_registered(db):
+    """The bail's other durable half (#1902): the routine the round registered at run end
+    goes with the container it wrote into.
+
+    A bail preserves nothing, and the draft is the round's intermediate state exactly as
+    the container is — the difference being that the registry is AMBIENT, so a routine
+    left standing for a job the user called off is read by every later turn.  Deleted
+    rather than archived: the skill table is versionless and holds no archived flag."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    # What run-end extraction leaves behind: the routine filed under the name the round's
+    # framing pinned (#1902's keyed write).
+    _seed_skill(db)
+    assert db.skills.get(_SKILL) is not None
+
+    await _bail(db)
+
+    assert db.skills.get(_SKILL) is None
+    assert db.skills.list_all() == []
+
+
+async def test_a_bail_after_a_correction_discards_the_one_routine_the_round_has(db):
+    """The corrected-then-bailed shape, end to end: the round is taught, corrected, and
+    then called off.
+
+    Because the correction kept the round's identity (#1902), the correction's own
+    extraction REPLACED the routine rather than adding one — so there is exactly one
+    routine to discard, and the bail leaves the registry as it found it.  The fork this
+    replaces left two: one per learn turn, and a bail could only ever name the last."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    _seed_skill(db)
+    await _enter_learn(db, framing=_FRAMED_TOURS, message=_CORRECTION)
+    # The corrected round re-registers under its ONE pinned name — a replacement, so the
+    # registry still holds a single routine when the bail arrives.
+    _seed_skill(db)
+    assert [skill.name for skill in db.skills.list_all()] == [_SKILL]
+
+    await _bail(db)
+
+    assert db.skills.list_all() == []
+    retired = db.memories.get(_CONTAINER)
+    assert retired is not None and retired.archived is True
+
+
+async def test_a_bail_takes_a_routine_the_round_re_taught_over(db):
+    """The declared REACH of the bail ruling, pinned so the consequence is visible rather
+    than latent: the discard names the round's pinned routine and nothing narrows it to the
+    round's own registration.
+
+    So a round re-teaching a routine the registry already held — which derives that
+    routine's name, and whose run-end extraction therefore REPLACES its row — takes that
+    routine with it when the user calls the round off, permanently (the table has no
+    archived flag, unlike the container half).  Narrowing this to rows the round itself
+    wrote would be a draft/canonical distinction, which the same ruling refuses; this test
+    is here so the trade is a decision on the record rather than a surprise."""
+    _seed_skill(db)  # a routine standing in the registry BEFORE the round opens
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    assert _latest_frame(db), "the round pinned the name that routine is already filed under"
+
+    await _bail(db)
+
+    assert db.skills.get(_SKILL) is None
+
+
+async def test_discarding_a_draft_twice_is_a_no_op(db):
+    """The discard is a read of an end state, not of a row: a round whose routine never
+    reached the registry — one bailed before any turn of it completed — and a second call
+    after the first both leave the registry untouched, with no error to absorb."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    framing = RoundFraming.model_validate_json(_latest_frame(db))
+
+    await _bail(db)
+    abandon_round_skill(db, framing)
+    abandon_round_skill(db, None)
+
+    assert db.skills.list_all() == []
+
+
+async def test_the_post_apply_reset_leaves_the_round_s_routine_alone(db):
+    """The landing a bail must never be confused with, on the registry side: a job the user
+    accepted is a live mechanism, so the structural reset after apply drops the framing on
+    its own row and the classified idle move that follows finds no round to end.
+
+    Promotion is implicit SURVIVAL — there is no flag to set here.  The routine simply
+    outlives the round, because only the round holding that framing could have replaced or
+    discarded it."""
+    anchor_id = _log(db, _ASK)
+    _park_in_elicit(db, anchor_id)
+    await _enter_learn(db)
+    _seed_skill(db)
+    accepting = _machine(db, _model(state=f"STATE: apply\nSKILL: {_SKILL}", framing=""))
+    await accepting.advance("yes please", message_id=_log(db, "yes please"), run_id="run-apply")
+
+    await _bail(db, "great, thanks")
+
+    assert db.skills.get(_SKILL) is not None
 
 
 async def test_a_bail_from_request_stops_waiting_and_leaves_nothing_behind(db):
