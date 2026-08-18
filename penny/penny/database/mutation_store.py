@@ -165,18 +165,27 @@ class MutationStore:
         except Exception as exc:
             logger.error("Failed to record mutation event for %s: %s", entity_name, exc)
 
-    def history(self, entity_name: str, limit: int) -> list[MutationEvent]:
+    def history(
+        self, entity_name: str, limit: int, *, entity_type: MutationEntityType | None = None
+    ) -> list[MutationEvent]:
         """One entity's mutations, newest first — its configuration history in
-        time order (criterion 2/4).  Ordered by ``created_at`` (never id)."""
+        time order (criterion 2/4).  Ordered by ``created_at`` (never id).
+
+        ``entity_type`` narrows the name to one KIND of entity, which a caller rendering a
+        particular entity's history has to do now that the ledger carries more than one
+        (#1902 added skills): a name identifies a row only within its own table, so a
+        collection and a routine that happen to share one would otherwise interleave into
+        each other's history.  Left off, the read spans every kind — which is what a
+        name-only lookup means."""
         if limit <= 0:
             return []
+        query = select(MutationEvent).where(MutationEvent.entity_name == entity_name)
+        if entity_type is not None:
+            query = query.where(MutationEvent.entity_type == entity_type.value)
         with self._session() as session:
             return list(
                 session.exec(
-                    select(MutationEvent)
-                    .where(MutationEvent.entity_name == entity_name)
-                    .order_by(col(MutationEvent.created_at).desc())
-                    .limit(limit)
+                    query.order_by(col(MutationEvent.created_at).desc()).limit(limit)
                 ).all()
             )
 
