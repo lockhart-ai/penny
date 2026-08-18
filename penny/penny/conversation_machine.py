@@ -225,6 +225,20 @@ STATE_DEFINITIONS: dict[ConversationState, str] = {
 # for missing information, read the request bullet, and reasoned "neither skill sets up
 # repeats, so no skill covers it" — into elicit).  A reader who rules out one skill-gated
 # option and moves to the next must not lose the fact that made the first one legible.
+#
+# The IDLE → LEARN condition is the ONE edge whose wording differs from its elicit-parked
+# twin, and the one that names a sibling outright (code-owner authored, after the #1898
+# first pass).  Both are deliberate.  The wording: "instructions to follow for the task
+# being worked on" is accurate from a parked round and FALSE at cold idle, where no task
+# is in flight — the same message read as disqualifying because there was nothing it could
+# be instructions FOR.  So this edge says what a teach IS from a standing start: the user
+# says they are teaching, and the steps are in the message.  The sibling clause: with a
+# registry of same-kind routines, 8 of 25 measured draws read a taught subject as covered
+# and went to apply, which is the skill-gated conditions being read FIRST and answered
+# honestly — a teach is not something they can say anything about, so the fact that a
+# user's own steps outrank a close-looking routine has nowhere else to live.  The
+# ELICIT → LEARN and parked-LEARN conditions are untouched: from inside a round there IS
+# a task being worked on, and the correction shape is what that edge is about.
 TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
     (ConversationState.IDLE, ConversationState.APPLY): (
         "one of the known skills does what they are asking for, and their message "
@@ -245,9 +259,11 @@ TRANSITIONS: dict[tuple[ConversationState, ConversationState], str] = {
         "they are asking to set up an ongoing task or routine and no known skill covers it"
     ),
     (ConversationState.IDLE, ConversationState.LEARN): (
-        "the user's message is a set of instructions to follow for the task "
-        "being worked on — what to read, what to look for, what to remember, "
-        "including corrections to previous steps"
+        "the user is teaching a new routine: they say so ('let me teach you', "
+        "'here's how', 'new job for you') and their message carries the steps — "
+        "what to read, what to look for, what to remember. When they are "
+        "teaching, choose learn even if a known skill looks close — their steps "
+        "are the new way to do it."
     ),
     (ConversationState.REQUEST, ConversationState.APPLY): (
         "their message supplies the details the assistant asked for, or "

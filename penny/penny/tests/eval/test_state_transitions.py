@@ -1639,8 +1639,8 @@ def _wrote_into_the_container_check(db: Database, framing: RoundFraming | None) 
 
 # The two claims a demonstrated round makes wherever one is watched, named once: each is a
 # diff-join key, and two beats spelling them out would drift a word at a time.  They keep
-# the wording the auction script gave them even where a tide gauge is what was read — the
-# same reason the elicit → learn set keeps it across five subjects.
+# the wording the auction script gave them even where a harbour signal board is what was
+# read — the same reason the elicit → learn set keeps it across five subjects.
 _FETCH_HAPPENED_LABEL = "state: she browsed the listing (the demonstrated fetch happened)"
 _LANDED_DURABLY_LABEL = "state: the browsed price landed durably (remember = a plain write)"
 
@@ -6812,20 +6812,25 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(chat_eval: ChatEval
 # the small talk, the machine idle.  These are in-addition teaches beside running work, so
 # the five jobs are what the untouched-jobs check is about, and the five taught routines sit
 # in the registry while a sixth is being taught, which is a pressure the elicit-parked path
-# never sees: the idle menu offers apply and request above learn, and each of these subjects
-# has a same-kind routine already in there.
+# never sees: the idle menu offers apply and request above learn, so a taught subject a
+# known routine looks close to is read as covered before learn is reached at all.
 #
 # What must NOT happen is the fold (#1706): the round demonstrates and offers, and nothing
 # is configured this turn.  Case 4 is where that is a live temptation rather than an absence
-# — its message states a notify condition ("if it ever drops to zero i'll want to hear about
-# it right away") — and the contract is that the condition WAITS for the apply turn that
-# accepts the offer.
+# — its message states a notify condition ("if it ever changes to a total ban i'll want to
+# hear about it right away") — and the contract is that the condition WAITS for the apply
+# turn that accepts the offer.
 #
-# One wording wrinkle rides into the first run UNFIXED, deliberately: the idle menu's learn
-# condition reads "instructions to follow for the task being worked on", and at cold idle no
-# task is in flight.  Whether that phrase reads as disqualifying and leaks these messages to
-# elicit is what this beat MEASURES; it is a one-lever condition-wording round afterwards if
-# the leak shows, as on every other edge.
+# TWO CHANGES came out of the first pass (run 1: 8 of 25 draws went to apply, 3 to elicit,
+# 1 to idle), both code-owner ruled.  The idle menu's learn CONDITION was rewritten — it
+# read "instructions to follow for the task being worked on", which is false at cold idle
+# where no task is in flight — and the taught SUBJECTS were replaced: four of the five sat
+# close enough to a registry routine that reading the ask as covered was the honest draw,
+# so the beat was measuring subject overlap rather than the edge.  The final five are
+# audited against the registry's five descriptions: a harbour signal flag, a coastal path's
+# status line, an event marked free among priced ones, a watering restriction in text, and
+# a choir's piece for the week — none of them a price, a ferry timetable, a bakery's daily
+# special, a number tracked over time, or a newest arrival.
 #
 # The reference replies are review targets, never scorer strings — carried as DATA so the
 # deterministic pin can run the beat's two reply checks through them without a GPU.
@@ -6845,33 +6850,38 @@ async def test_idle_to_idle_fires_nothing_on_ordinary_banter(chat_eval: ChatEval
 # probe asserts that fact is new to the world it is taught in, so a match in the entry or in
 # the reply can only have come off the page.
 
-_TIDE_GAUGE_URL = "https://tidegauge.example/harbor"
-# Matched on "tide", the token the ask and the address SHARE: the ask says "the tide gauge"
-# and the host is "tidegauge", so a direct read of the url and a search that phrases the ask
-# both land here.  Matching on the host alone would answer the read and miss the search.
-_TIDE_GAUGE = CannedPage(
-    match="tide",
+_HARBOUR_SIGNALS_URL = "https://harbormaster.example/signals"
+# Matched on "signals", which the address carries in its path and a search phrasing the job
+# ("harbour signals flag") carries too.  The HOST is no good for either: the ask spells the
+# word "harbour" and the host spells it "harbor", so a search that phrases the ask shares no
+# token with it at all.
+#
+# The flag is a NAME rather than a number or a status word, and the meanings section below
+# names two more — so a page read that stops at the first flag-shaped token it sees lands on
+# the wrong one.
+_HARBOUR_SIGNALS = CannedPage(
+    match="signals",
     text=(
-        "Title: Harbour tide gauge — live water level | tidegauge\n"
-        f"{_TIDE_GAUGE_URL}\n"
+        "Title: Harbourmaster signals — today's flag | harbormaster\n"
+        f"{_HARBOUR_SIGNALS_URL}\n"
         "\n"
-        "Readings from a fictional harbour gauge, republished every ten minutes.\n"
-        "Water level: 1.86 m above chart datum\n"
-        f"[Harbour tide gauge]({_TIDE_GAUGE_URL})\n"
-        "Gauge zero sits below the quay coping stone and the datum is unchanged this year.\n"
-        "Readings stay provisional until the harbour office checks the board at noon.\n"
+        "Signals hoisted at the mast of a fictional harbour, changed as conditions do.\n"
+        "Flying today: Bravo — dangerous cargo working on the inner quay\n"
+        f"[Harbourmaster signals]({_HARBOUR_SIGNALS_URL})\n"
+        "Hoisted at first light and lowered when the working party stands down.\n"
+        "The mast is visible from the pier head and from the outer moorings.\n"
         "\n"
-        "Today's tides\n"
-        "High water at a quarter past four and again in the late afternoon\n"
-        f"[Tide tables]({_TIDE_GAUGE_URL}/tables)\n"
-        "Times are given for the entrance and run a few minutes later inside the basin.\n"
-        "The range today is a little under the seasonal mean.\n"
+        "What the flags mean\n"
+        "A short list of the signals this harbour keeps at the mast\n"
+        f"[Signal meanings]({_HARBOUR_SIGNALS_URL}/meanings)\n"
+        "Alpha: a diver is down, keep well clear and pass at slow speed.\n"
+        "Charlie: the harbour is shut to movements until further notice.\n"
         "\n"
-        "Station notes\n"
-        "The float was recalibrated at the start of the season\n"
-        f"[Station notes]({_TIDE_GAUGE_URL}/notes)\n"
-        "Weed on the float is the usual cause of a reading that stops moving.\n"
-        "Faults go to the harbour office rather than onto this page.\n"
+        "Notices to mariners\n"
+        "Standing notices are posted here and read out on the harbour channel\n"
+        f"[Notices]({_HARBOUR_SIGNALS_URL}/notices)\n"
+        "The fairway buoy is unlit for the moment while its lamp is replaced.\n"
+        "Small craft are asked to keep the inner quay clear on working days.\n"
     ),
 )
 
@@ -6905,99 +6915,105 @@ _CLIFF_WALK = CannedPage(
     ),
 )
 
-_HARBOR_CAFE_URL = "https://harborcafe.example/menu"
-# Matched on "cafe", the token the ask and the address SHARE — the ask says "the cafe
-# special" and the host is "harborcafe".
+_TOWN_HALL_EVENTS_URL = "https://townhall.example/events"
+# Matched on "events", which the address carries in its path and a search phrasing the job
+# ("town hall events") carries too.
 #
-# The specials sit in their own block, one per line, because the task is a FILTER: keeping
-# the vegetarian one means reading past two that are not.  The standing menu below names a
-# soup that usually is vegetarian and says in the same breath that it is not one of the
-# specials — a distractor a real menu carries, with the resolution stated on the page.
-_HARBOR_CAFE = CannedPage(
-    match="cafe",
+# The listing sits in the opening block, one event per line, because the task is a FILTER:
+# keeping the one marked free means reading past two that carry a price.  Exactly ONE event
+# is free and the word appears nowhere else on the page — the other sections deal in
+# tickets, concessions and hire rates — so the filter has a single answer and a page read
+# that guesses lands on a priced event.
+_TOWN_HALL_EVENTS = CannedPage(
+    match="events",
     text=(
-        "Title: Harbour Cafe — menu and today's specials | harborcafe\n"
-        f"{_HARBOR_CAFE_URL}\n"
+        "Title: Town hall — this month's events | townhall\n"
+        f"{_TOWN_HALL_EVENTS_URL}\n"
         "\n"
-        "Cooked to order in a fictional kitchen on the quay and posted before opening.\n"
-        "The specials are chalked up each morning and come down at closing.\n"
-        f"[Harbour Cafe menu]({_HARBOR_CAFE_URL})\n"
-        "Opening hours: eight in the morning until the kitchen runs out, shut on Tuesdays.\n"
-        "Everything is served all day; the counter takes orders and telephone bookings.\n"
+        "Events in a fictional town hall, listed by the clerk at the start of each month.\n"
+        "Chamber recital in the long room — £8 on the door, doors at seven\n"
+        f"[Town hall events]({_TOWN_HALL_EVENTS_URL})\n"
+        "Lantern parade from the quay to the square — free, no ticket needed\n"
+        "Harvest supper in the assembly hall — £14 a head, book by the Friday\n"
         "\n"
-        "Today's specials\n"
-        "Smoked haddock chowder with soda bread\n"
-        f"[Today's specials]({_HARBOR_CAFE_URL}#specials)\n"
-        "Beetroot and barley bowl with whipped feta — vegetarian\n"
-        "Braised beef with horseradish mash and buttered greens\n"
+        "Booking\n"
+        "Tickets are sold at the counter and by telephone during office hours\n"
+        f"[Booking and tickets]({_TOWN_HALL_EVENTS_URL}/booking)\n"
+        "Payment is taken at the time of booking and seats are not held.\n"
+        "Concessions are half the listed price on production of a card.\n"
         "\n"
-        "Always on the counter\n"
-        "Crab sandwiches, a chowder of the day, and cakes made on the premises\n"
-        f"[Standing menu]({_HARBOR_CAFE_URL}/standing)\n"
-        "The soup of the day is usually vegetarian, but it is not one of the specials.\n"
-        "Cakes sell out by the afternoon and are not made to order.\n"
+        "Hiring the hall\n"
+        "The long room and the assembly hall are let by the evening\n"
+        f"[Hire the hall]({_TOWN_HALL_EVENTS_URL}/hire)\n"
+        "Rates are set each year by the council and include heat and light.\n"
+        "The kitchen is let with the assembly hall and not on its own.\n"
     ),
 )
 
-_MARINA_MOORINGS_URL = "https://marina.example/moorings"
-# Matched on "marina": the ask NAMES this page, so a direct read is the shape, and the host
-# is the one distinctive token a search phrasing would carry too.
-_MARINA_MOORINGS = CannedPage(
-    match="marina",
+_PLOT_RULES_URL = "https://gardenclub.example/plot-rules"
+# Matched on "rules", which the address carries in its path and a search phrasing the job
+# ("plot rules watering") carries too.
+#
+# The fact is a TEXT section rather than a number or a name, which is the shape this case
+# stresses.  The line after it states what a total ban would BE — the term the ask defers to
+# the apply turn — so the deferred condition is a real thing on a real page rather than a
+# clause with nothing behind it.
+_PLOT_RULES = CannedPage(
+    match="rules",
     text=(
-        "Title: Marina moorings — visitor berth availability | marina\n"
-        f"{_MARINA_MOORINGS_URL}\n"
+        "Title: Garden club — plot rules | gardenclub\n"
+        f"{_PLOT_RULES_URL}\n"
         "\n"
-        "Berth availability for a fictional marina, refreshed as boats come and go.\n"
-        "Visitor slips available: 23\n"
-        f"[Marina moorings]({_MARINA_MOORINGS_URL})\n"
-        "Counted across the three visitor pontoons; annual berths are not included.\n"
-        "The figure is a snapshot and can move by several slips in an afternoon.\n"
+        "Rules for a fictional allotment site, agreed by the members each spring.\n"
+        "Watering: hosepipes before eight in the morning and after seven in the evening\n"
+        f"[Garden club plot rules]({_PLOT_RULES_URL})\n"
+        "Cans may be filled at the standpipe at any hour, whatever the restriction.\n"
+        "A total ban is posted here if the reservoir falls further this season.\n"
         "\n"
-        "Rates and services\n"
-        "Visitor rates are charged by the metre and include water and power\n"
-        f"[Rates and services]({_MARINA_MOORINGS_URL}/rates)\n"
-        "Showers, laundry and a chandlery sit at the head of the pontoons.\n"
-        "The fuel berth keeps shorter hours than the office does.\n"
+        "Plots and tenancies\n"
+        "A plot is held for a year and renewed at the spring meeting\n"
+        f"[Plots and tenancies]({_PLOT_RULES_URL}/plots)\n"
+        "Half plots are offered to new members before a full one comes up.\n"
+        "A plot left uncultivated for a season goes back on the waiting list.\n"
         "\n"
-        "Arriving\n"
-        "Call the office on the way in and hold off until a berth is called\n"
-        f"[Arrival notes]({_MARINA_MOORINGS_URL}/arriving)\n"
-        "The entrance shoals on a spring low and is buoyed on both sides.\n"
-        "Rafting is asked for on busy weekends and is arranged by the office.\n"
+        "Paths, sheds and bonfires\n"
+        "Paths are kept clear to a stride's width on both sides\n"
+        f"[Site rules]({_PLOT_RULES_URL}/site)\n"
+        "Sheds need the committee's agreement and stand on the plot's own ground.\n"
+        "Bonfires are allowed after four in the afternoon, out of the growing season.\n"
     ),
 )
 
-_STATION_BOARD_URL = "https://stationboard.example/departures"
-# Matched on "station", which the host carries and a search phrasing the job ("station
-# board") carries too — "departures" would match as well, but it is the generic word and
-# the host is what makes this page itself.
+_CHOIR_REHEARSALS_URL = "https://harborchoir.example/rehearsals"
+# Matched on "rehearsal", which the address carries in its path and a search phrasing the
+# job ("choir rehearsal piece") carries too — the host spells harbour the American way
+# again, so it is no good for a search that phrases the ask.
 #
-# The times are written the way a board writes them, without a leading zero, so a report
-# that repeats the first one reads back as the same string whichever form it chooses.
-_STATION_BOARD = CannedPage(
-    match="station",
+# The piece is a TITLE, and the page names the term's programme and next week's piece
+# around it — so "this week's" is a real selection among several pieces the page mentions.
+_CHOIR_REHEARSALS = CannedPage(
+    match="rehearsal",
     text=(
-        "Title: Station board — today's departures | stationboard\n"
-        f"{_STATION_BOARD_URL}\n"
+        "Title: Harbour choir — rehearsal schedule | harborchoir\n"
+        f"{_CHOIR_REHEARSALS_URL}\n"
         "\n"
-        "The departure board for a fictional branch line, republished as it changes.\n"
-        "Departures: 5:48am, 7:16am, 9:32am, 12:04pm, 3:27pm, 6:41pm, 9:09pm\n"
-        f"[Station departure board]({_STATION_BOARD_URL})\n"
-        "Listed in running order; the first service of the day heads down the valley.\n"
-        "The board is the authority and printed cards may lag a day behind it.\n"
+        "The rehearsal board for a fictional harbour choir, set by the director each term.\n"
+        'This week: "Kittiwake" — the second movement, from the top\n'
+        f"[Harbour choir rehearsals]({_CHOIR_REHEARSALS_URL})\n"
+        "Rehearsals run on Tuesday evenings in the chapel hall, seven until nine.\n"
+        "Next week moves on to the closing chorus once this one is settled.\n"
         "\n"
-        "Journey times\n"
-        "The run to the junction takes fifty minutes and calls at every halt\n"
-        f"[Journey times]({_STATION_BOARD_URL}/times)\n"
-        "Connections are held for ten minutes when the branch is running late.\n"
-        "Bicycles travel free but need a space reserved on the busier services.\n"
+        "The term's programme\n"
+        "Six pieces are carried through the term and revisited before the concert\n"
+        f"[This term's programme]({_CHOIR_REHEARSALS_URL}/programme)\n"
+        "The programme is set in the first week and rarely changes after it.\n"
+        "Parts are handed out at the first rehearsal and are the singer's to keep.\n"
         "\n"
-        "Notices\n"
-        "Engineering work closes the line on the last weekend of the month\n"
-        f"[Notices]({_STATION_BOARD_URL}/notices)\n"
-        "A replacement bus runs from the station forecourt on those days.\n"
-        "Cancellations are posted here and read out on the platform.\n"
+        "Practicalities\n"
+        "The chapel hall is unlocked from half past six on rehearsal evenings\n"
+        f"[Practicalities]({_CHOIR_REHEARSALS_URL}/hall)\n"
+        "Tea is made in the interval and the kitty sits beside the urn.\n"
+        "Absences go to the secretary rather than to the director.\n"
     ),
 )
 
@@ -7030,18 +7046,18 @@ class _TeachCase(NamedTuple):
 
 # Case 1 — "I'll teach you" plus prose steps: the canonical shape, three steps in one
 # sentence, one value to read and one to keep.
-_TEACH_TIDE_GAUGE = _TeachCase(
+_TEACH_HARBOUR_FLAG = _TeachCase(
     case_id="transition-idle-to-learn",
     teach=(
-        "hey penny i'm gonna teach you how to check the tide gauge — go to "
-        "https://tidegauge.example/harbor, read the water level number, and save it"
+        "hey penny i'm gonna teach you how to check the harbour flag — go to "
+        "https://harbormaster.example/signals, read which flag is flying today, and save it"
     ),
-    url=_TIDE_GAUGE_URL,
-    page=_TIDE_GAUGE,
-    stored="1.86",
+    url=_HARBOUR_SIGNALS_URL,
+    page=_HARBOUR_SIGNALS,
+    stored="bravo",
     reference=(
-        "read the gauge — the water level is 1.86 m above chart datum, and i've saved it. "
-        "i know how to do that now — want me to keep checking on my own?"
+        "read the signals page — the flag flying today is Bravo, and i've saved it. i know "
+        "how to do that now — want me to keep checking on my own?"
     ),
 )
 
@@ -7063,67 +7079,71 @@ _TEACH_CLIFF_WALK = _TeachCase(
     ),
 )
 
-# Case 3 — "let me show you" plus a FILTER step: the page lists three specials and the
-# instruction keeps one of them, so the round has to read past what it was not sent for.
-_TEACH_HARBOR_CAFE = _TeachCase(
+# Case 3 — "let me show you" plus a FILTER step: the page lists three events and the
+# instruction keeps the one marked free, so the round has to read past two it was not sent
+# for.
+_TEACH_FREE_EVENT = _TeachCase(
     case_id="transition-idle-to-learn-filter",
     teach=(
-        "let me show you how to grab the cafe special — read the specials at "
-        "https://harborcafe.example/menu and just keep the vegetarian one"
+        "let me show you how to spot the free event — read "
+        "https://townhall.example/events and just keep the one marked free"
     ),
-    url=_HARBOR_CAFE_URL,
-    page=_HARBOR_CAFE,
-    stored="beetroot",
+    url=_TOWN_HALL_EVENTS_URL,
+    page=_TOWN_HALL_EVENTS,
+    stored="lantern",
     reference=(
-        "read the specials — the vegetarian one is the beetroot and barley bowl, and i've "
-        "saved it. i know how to do that now — want me to keep it up each day?"
+        "read the events list — the free one is the lantern parade from the quay to the "
+        "square, and i've saved it. i know how to do that now — want me to keep it up each "
+        "month?"
     ),
 )
 
 # Case 4 — "I want to teach you" plus DEFERRED terms: the message states a notify condition
 # alongside the steps, and the turn's job is the demonstration only.  The condition is the
 # apply turn's business, so configuring anything here is the fold this beat scores against.
-_TEACH_MARINA = _TeachCase(
+_TEACH_WATERING_RULE = _TeachCase(
     case_id="transition-idle-to-learn-deferred-terms",
     teach=(
-        "i want to teach you something new: open https://marina.example/moorings, look for "
-        "slip availability, and save the count — and if it ever drops to zero i'll want to "
-        "hear about it right away"
+        "i want to teach you something new: open https://gardenclub.example/plot-rules, "
+        "find the watering restriction, and save what it says — and if it ever changes to "
+        "a total ban i'll want to hear about it right away"
     ),
-    url=_MARINA_MOORINGS_URL,
-    page=_MARINA_MOORINGS,
-    stored="23",
+    url=_PLOT_RULES_URL,
+    page=_PLOT_RULES,
+    stored="hosepipe",
     reference=(
-        "opened the moorings page — 23 visitor slips available, and i've saved the count. "
-        "i know how to do that now — want me to set it running and tell you if it hits zero?"
+        "opened the plot rules — the watering restriction is hosepipes before eight in the "
+        "morning and after seven in the evening, and i've saved it. i know how to do that "
+        "now — want me to set it running and tell you if it goes to a total ban?"
     ),
 )
 
 # Case 5 — "new routine" plus a structured here's-how: the introduction and the steps are
 # two sentences, and the routine word is in the ask rather than in anything Penny says.
-_TEACH_STATION_BOARD = _TeachCase(
+_TEACH_REHEARSAL_PIECE = _TeachCase(
     case_id="transition-idle-to-learn-new-routine",
     teach=(
         "penny, new routine for you. here's how it works: fetch "
-        "https://stationboard.example/departures, take the first train time listed, store it"
+        "https://harborchoir.example/rehearsals, take this week's rehearsal piece, store it"
     ),
-    url=_STATION_BOARD_URL,
-    page=_STATION_BOARD,
-    stored="5:48",
+    url=_CHOIR_REHEARSALS_URL,
+    page=_CHOIR_REHEARSALS,
+    stored="kittiwake",
     reference=(
-        "fetched the board — the first train is at 5:48am, and i've stored it. i know how "
-        "to do that now — want me to keep it up to date on its own?"
+        'fetched the rehearsal board — this week\'s piece is "Kittiwake", the second '
+        "movement, and i've stored it. i know how to do that now — want me to keep it up "
+        "to date on its own?"
     ),
 )
 
 # Every teach, in one place — so the deterministic pin in ``test_eval_harness.py`` can drive
 # each one's premise and its reply checks without a GPU.
 IDLE_LEARN_CASES = (
-    _TEACH_TIDE_GAUGE,
+    _TEACH_HARBOUR_FLAG,
     _TEACH_CLIFF_WALK,
-    _TEACH_HARBOR_CAFE,
-    _TEACH_MARINA,
-    _TEACH_STATION_BOARD,
+    _TEACH_FREE_EVENT,
+    _TEACH_WATERING_RULE,
+    _TEACH_REHEARSAL_PIECE,
 )
 
 
@@ -7273,9 +7293,9 @@ async def _run_teach_case(chat_eval: ChatEval, case: _TeachCase) -> None:
 async def test_idle_to_learn_runs_the_taught_round_in_one_turn(chat_eval: ChatEval) -> None:
     """idle → learn, the canonical single-turn teach: the message says it is teaching and
     then gives the three steps, so there is nothing left to elicit.  The round is framed on
-    the way in, run once — gauge read, level saved into the round's own container — and the
-    turn ends on the offer with nothing set running."""
-    await _run_teach_case(chat_eval, _TEACH_TIDE_GAUGE)
+    the way in, run once — the signals page read, the flag saved into the round's own
+    container — and the turn ends on the offer with nothing set running."""
+    await _run_teach_case(chat_eval, _TEACH_HARBOUR_FLAG)
 
 
 @pytest.mark.asyncio
@@ -7288,20 +7308,21 @@ async def test_idle_to_learn_follows_a_numbered_list_of_steps(chat_eval: ChatEva
 
 @pytest.mark.asyncio
 async def test_idle_to_learn_keeps_only_what_the_filter_asks_for(chat_eval: ChatEval) -> None:
-    """idle → learn with a FILTER in the steps: the specials page lists three dishes and the
-    instruction keeps the vegetarian one, so the demonstrated round has to read past two it
-    was not sent for and store the one it was."""
-    await _run_teach_case(chat_eval, _TEACH_HARBOR_CAFE)
+    """idle → learn with a FILTER in the steps: the events page lists three things on and
+    the instruction keeps the one marked free, so the demonstrated round has to read past
+    two it was not sent for and store the one it was."""
+    await _run_teach_case(chat_eval, _TEACH_FREE_EVENT)
 
 
 @pytest.mark.asyncio
 async def test_idle_to_learn_defers_the_notify_condition_to_the_offer(
     chat_eval: ChatEval,
 ) -> None:
-    """idle → learn where the teach also states a NOTIFY condition: the count is read and
-    saved, and "tell me if it drops to zero" is left for the turn that accepts the offer.
-    Configuring it here is the teach-and-instantiate fold the machine exists to split."""
-    await _run_teach_case(chat_eval, _TEACH_MARINA)
+    """idle → learn where the teach also states a NOTIFY condition: the watering
+    restriction is read and saved, and "tell me if it changes to a total ban" is left for
+    the turn that accepts the offer.  Configuring it here is the teach-and-instantiate fold
+    the machine exists to split."""
+    await _run_teach_case(chat_eval, _TEACH_WATERING_RULE)
 
 
 @pytest.mark.asyncio
@@ -7310,5 +7331,5 @@ async def test_idle_to_learn_learns_a_new_routine_from_a_here_s_how(
 ) -> None:
     """idle → learn from a "new routine for you, here's how it works" opening: the word
     routine is the USER's, said while five routines are already running, and the turn's job
-    is still the one demonstration — fetch the board, take the first time, store it."""
-    await _run_teach_case(chat_eval, _TEACH_STATION_BOARD)
+    is still the one demonstration — fetch the board, take this week's piece, store it."""
+    await _run_teach_case(chat_eval, _TEACH_REHEARSAL_PIECE)
