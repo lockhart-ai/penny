@@ -56,18 +56,32 @@ from penny.constants import (
 )
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
-from penny.database.models import MemoryRow
+from penny.database.models import MemoryRow, Skill
+from penny.database.skill_store import parameters_from_json
+from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
+from penny.tools.collection_instantiation import skill_params
 from penny.tools.memory_tools import DoneTool
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# The composed prompt's routine block (#1907) — the two of the code owner's three things
+# that are not the program itself: WHICH routine is running, and WHAT it is pointed at.
+# Both are read off the collection's own row and the routine's, so nothing here is a
+# claim the framework has to remember; a term with no value says so rather than
+# rendering an empty slot, and a routine the registry no longer holds says that too.
+_ROUTINE_HEAD = "The routine you run:"
+_ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the routine registry."
+_VALUES_HEAD = "The values it is pointed at:"
+_VALUES_NONE = f"{_VALUES_HEAD} none — this routine takes none."
+_NO_VALUE = "nothing was supplied for this"
 
 
 class Collector(BackgroundAgent):
@@ -454,10 +468,26 @@ class Collector(BackgroundAgent):
         Reading from the DB instead of caching means a chat-side
         ``collection_set`` call that changes ``extraction_prompt`` is
         picked up on the very next collector cycle, no restart needed.
+
+        The routine's own row is read alongside it, for the same reason: what the
+        collection is running and what it declares it needs are the collector's to
+        state (#1907), and reading them each cycle means a re-taught routine's current
+        description and parameter set are what the cycle sees.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        return self._compose_prompt(fresh) + self._run_history_section(fresh.name)
+        return self._compose_prompt(fresh, self._routine(fresh)) + self._run_history_section(
+            fresh.name
+        )
+
+    def _routine(self, target: MemoryRow) -> Skill | None:
+        """The skill this collection runs, off its own ``skill_name`` — ``None`` for a
+        hand-authored or seeded collection (no routine to state), and ``None`` too when
+        the name no longer resolves, which is the honest reading of a routine that has
+        been renamed or removed out from under a running collection."""
+        if target.skill_name is None:
+            return None
+        return self.db.skills.get(target.skill_name)
 
     def _run_history_section(self, target_name: str) -> str:
         """A trailing block of this collector's own recent run outcomes (newest
@@ -486,9 +516,18 @@ class Collector(BackgroundAgent):
         )
 
     @classmethod
-    def _compose_prompt(cls, target: MemoryRow) -> str:
-        """Frame the extraction_prompt with target identity + the assembly-owned
-        step tail + runtime rules — one continuous numbered program (#1557).
+    def _compose_prompt(cls, target: MemoryRow, skill: Skill | None) -> str:
+        """Frame the extraction_prompt with target identity + what the collection is
+        set up to run + the assembly-owned step tail + runtime rules (#1557/#1907).
+
+        Three things (#1907): the INSTRUCTIONS (the program, with the collection's bound
+        values already joined into its leaves at the render seam), the SKILL — what
+        routine this is and what it is for — and the VALUES it is pointed at, named and
+        listed.  The values are in the program already; listing them beside it is what
+        makes each one readable as a term of the job rather than only as a string inside
+        a call, and it is the one place a term the program has no leaf for can still be
+        read.  All three are absent for a hand-authored or seeded collection, which has
+        no routine to state, so its prompt is byte-identical to what it always was.
 
         The runtime-rules tail is appended structurally — not relayed through
         Penny when she authors the extraction_prompt.  This guarantees the
@@ -510,11 +549,61 @@ class Collector(BackgroundAgent):
         """
         return (
             f"You are the collector for the `{target.name}` collection.\n"
-            f"Description: {target.description}\n\n"
+            f"Description: {target.description}\n"
+            f"{cls._routine_section(target, skill)}"
+            "\n"
             f"{target.extraction_prompt}\n"
             f"{cls._injected_steps(target)}\n\n"
             f"{cls._RUNTIME_RULES}"
         )
+
+    @classmethod
+    def _routine_section(cls, target: MemoryRow, skill: Skill | None) -> str:
+        """The routine this collection runs and the values it is pointed at — empty for
+        a collection with no routine at all, so a hand-authored one renders unchanged."""
+        if target.skill_name is None:
+            return ""
+        return f"\n{cls._routine_line(target, skill)}\n{cls._values_block(target, skill)}\n"
+
+    @staticmethod
+    def _routine_line(target: MemoryRow, skill: Skill | None) -> str:
+        """What routine is running here and what it is for.  A ``skill_name`` that no
+        longer resolves says exactly that rather than nothing — a collection running a
+        routine the registry has lost is a state worth reading, not one to hide."""
+        if skill is None:
+            return _ROUTINE_GONE.format(name=target.skill_name)
+        return f"{_ROUTINE_HEAD} {skill.name} — {skill.description}"
+
+    @classmethod
+    def _values_block(cls, target: MemoryRow, skill: Skill | None) -> str:
+        """The job's terms, one per line — every value the routine declares it needs,
+        against what this collection was configured with."""
+        declared = cls._declared_parameters(target, skill)
+        if not declared:
+            return _VALUES_NONE
+        bound = skill_params(target)
+        lines = "\n".join(cls._value_line(parameter, bound) for parameter in declared)
+        return f"{_VALUES_HEAD}\n{lines}"
+
+    @staticmethod
+    def _declared_parameters(target: MemoryRow, skill: Skill | None) -> list[SkillParameter]:
+        """What the routine says it needs — read off the skill row, or, when that row is
+        gone, the names the collection was configured with (all a vanished routine leaves
+        behind, and still better than dropping the terms silently)."""
+        if skill is not None:
+            return parameters_from_json(skill.parameters)
+        return [SkillParameter(name=name) for name in skill_params(target)]
+
+    @staticmethod
+    def _value_line(parameter: SkillParameter, bound: dict[str, str]) -> str:
+        """One term of the job: its name and the value it was given, or an honest gap
+        naming what is missing (a re-taught routine can declare something the running
+        collection was never configured with) — never a blank standing in for a value."""
+        if parameter.name in bound:
+            return f"- {parameter.name}: {bound[parameter.name]}"
+        if parameter.description:
+            return f"- {parameter.name}: {_NO_VALUE} — it needs {parameter.description}"
+        return f"- {parameter.name}: {_NO_VALUE}"
 
     @classmethod
     def _injected_steps(cls, target: MemoryRow) -> str:

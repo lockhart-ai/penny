@@ -59,7 +59,12 @@ from penny.database.memory.types import slug
 from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.mutation_store import render_mutation
 from penny.database.skill_store import parameters_from_json, steps_from_json
-from penny.database.skills import render_skill, retarget_writes, unbound_required_parameters
+from penny.database.skills import (
+    bind_parameters,
+    render_skill,
+    retarget_writes,
+    unbound_required_parameters,
+)
 from penny.datetime_utils import format_log_timestamp, user_timezone_name
 from penny.llm.similarity import embed_text
 from penny.text_validity import check_extraction_prompt, check_extraction_prompt_tools
@@ -545,11 +550,21 @@ def render_skill_prompt(
     the collection's own name — the rendered program never lies about the collection it
     acts on, on either the one-call create or the adopt path.  A leaf the labeller
     judged the USER to have chosen carries no mark and stays a parameter ``params``
-    binds, so a routine the user gave two destinations keeps them distinct."""
-    missing = unbound_required_parameters(parameters_from_json(skill.parameters), params)
+    binds, so a routine the user gave two destinations keeps them distinct.
+
+    The bound ``params`` are joined into the program's own leaves here too (#1907,
+    :func:`bind_parameters`) — this is the seam BECAUSE the values are static for the
+    life of the configuration: baking them into the stored ``extraction_prompt`` means
+    the program the collector runs is the program the creation echo showed the user,
+    with no second substitution layer that could disagree with it, and every re-render
+    path (refresh after a re-teach, rebind, swap, adopt — #1620/#1827) comes back
+    through here and re-joins against the routine's CURRENT leaves."""
+    declared = parameters_from_json(skill.parameters)
+    missing = unbound_required_parameters(declared, params)
     if missing:
         return "", ToolResult(message=render_unbound_parameters(skill.name, missing), success=False)
-    steps = retarget_writes(steps_from_json(skill.steps), target_name)
+    attached = retarget_writes(steps_from_json(skill.steps), target_name)
+    steps = bind_parameters(attached, declared, params)
     prompt = render_skill(steps, params)
     if (too_short := check_extraction_prompt(prompt)) is not None:
         return "", ToolResult(message=too_short, success=False)

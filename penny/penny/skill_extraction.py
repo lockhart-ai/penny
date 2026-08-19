@@ -54,10 +54,13 @@ steps (house style: the summary method reads like a table of contents):
   entry name).  The run-end draw survives for a round nothing framed, and a failed framing
   still falls to the deterministic slug of the triggering message (URLs removed, ≤6 words)
   with nothing to bind.
-  **Interim, declared**: nothing joins a framed parameter to a leaf of the rendered
-  program yet (the runtime-join beat), so the parameters live at SKILL level — rendered
-  in the registry, enforced at ``collection_set``, decisive for job identity — over a
-  recipe that still reads in the labeller's placeholder descriptions.
+  Each framed parameter keeps the VALUE the round demonstrated it with, and that is
+  what JOINS it to the program (#1907): the two halves share no evidence, so the value
+  both of them independently point at is the only thing that can say which leaf a
+  parameter fills.  ``bind_parameters`` reads it at the instantiation seam, so a
+  configured collection's recipe carries the page it fetches instead of a description
+  of one — while the parameters still live at SKILL level (rendered in the registry,
+  enforced at ``collection_set``, decisive for job identity).
 * **dedup (REPLACE semantics)** — a round carrying a FRAMING writes under the name that
   framing PINNED, and nothing else is consulted (#1902): the round's second run replaces
   its own routine rather than registering a sibling, and no same-shaped skill can capture
@@ -245,19 +248,28 @@ def _interface_parameters(
     ask, they name pieces of the user's own request rather than tool arguments, and
     they carry the one-line what-to-supply the ambient ``needs:`` row renders.
 
-    **The declared interim of this beat**: nothing joins a framed parameter to a leaf
-    of the rendered program yet — that is the runtime-join beat.  So the parameters
-    live at SKILL level over an all-placeholder recipe: the registry row renders them,
-    ``collection_set`` enforces that each one is bound, and job identity (``is_same_job``
-    tier 1: same skill + same params) works again — while the program itself still
-    reads in the labeller's descriptions.
+    Each one also carries the VALUE this round demonstrated it with, which is what
+    closes the interim this function used to declare (#1907): the framer and the
+    labeller share no inputs and no outputs, so the demonstrated value is the one thing
+    that can say WHICH leaf of the program a parameter fills, and
+    ``bind_parameters`` reads it at the instantiation seam.  The parameters still live
+    at SKILL level — the registry row renders them, ``collection_set`` enforces that
+    each one is bound, job identity (``is_same_job`` tier 1) reads them — and now the
+    rendered program does too.
 
     With no framing, the skill falls back to whatever the labelling pass left: nothing
-    when every spot was named, and the arg-derived spots when that draw failed too."""
+    when every spot was named, and the arg-derived spots when that draw failed too.
+    Those carry no demonstrated value, so they join nothing and the program renders
+    exactly as it did before."""
     if signature is None:
         return distilled
     return [
-        SkillParameter(name=parameter.name, required=True, description=parameter.description)
+        SkillParameter(
+            name=parameter.name,
+            required=True,
+            description=parameter.description,
+            value=parameter.value,
+        )
         for parameter in signature.parameters
     ]
 

@@ -59,6 +59,7 @@ from penny.database.skills import (
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
+    bind_parameters,
     render_skill,
     retarget_writes,
 )
@@ -1833,15 +1834,18 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
     other spot (``WRITE_TARGET_DESCRIPTION`` is the fallback for a spot no line
     covered, which is not this fixture's case).
 
-    The shape is the framer's declared interim (#1830): the recipe is ALL
-    placeholders — the labeller covers every spot or its draw fails whole, so a
-    partly-named routine is not a state extraction can reach — and the interface
-    is ONE skill-level parameter, the page, joined to no leaf yet.  Nothing the
-    round demonstrated survives into the render: not the collection, not the key,
-    not the page, not what it pulled off it.  That is the harm placeholders exist
-    to prevent — a collector re-running this routine writing the demonstration's
-    own values back every cycle — and it is the property the enactment case leans
-    on when the apply turn has to supply the page itself."""
+    The recipe is ALL placeholders — the labeller covers every spot or its draw
+    fails whole, so a partly-named routine is not a state extraction can reach —
+    and the interface is ONE skill-level parameter, the page, carrying the value
+    the round demonstrated it with.  Nothing the round demonstrated survives into
+    the STORED render: not the collection, not the key, not the page, not what it
+    pulled off it.  That is the harm placeholders exist to prevent — a collector
+    re-running this routine writing the demonstration's own values back every
+    cycle — and it is the property the enactment case leans on when the apply turn
+    has to supply the page itself.  The join is the other half (#1907): at the
+    instantiation seam that same parameter's bound value goes into the leaf the
+    demonstration put its own page in, so the collection's program reads with the
+    page it fetches."""
     skill = learn_to_apply_fixture_skill()
     assert sorted(parameter.name for parameter in skill.parameters) == ["url"]
     placeholders = [
@@ -1856,14 +1860,32 @@ def test_learn_to_apply_eval_fixture_is_the_shape_this_pipeline_produces():
         "the identifier for the storage area where scraped data will be saved",
         "the key under which the extracted value is stored within that collection",
     ]
-    # The whole recipe, verbatim — every spot says what belongs there and NOTHING the
-    # round demonstrated survives into it: not the collection, not the key, not the
-    # page, not what it pulled off the page.  Binding the framer's parameter changes
-    # nothing here, because nothing joins it to a leaf yet (#1830's declared interim).
-    assert render_skill(skill.steps, {"url": "https://example.test"}) == (
+    # The whole STORED recipe, verbatim — every spot says what belongs there and NOTHING
+    # the round demonstrated survives into it: not the collection, not the key, not the
+    # page, not what it pulled off the page.  This is the render the ambient registry and
+    # ``skill_read`` show, where the routine is attached to nothing and pointed at
+    # nothing.
+    assert render_skill(skill.steps) == (
         "1. browse(queries=[{the url of the page to browse}], "
         "extract={a plain text description of what information to retrieve from the page})\n"
         "2. collection_write(memory={the identifier for the storage area where scraped "
         "data will be saved}, entries=[{'key': {the key under which the extracted value "
+        "is stored within that collection}, 'content': the value from step 1}])"
+    )
+    # And the same routine at the INSTANTIATION seam (#1907): the page the collection is
+    # pointed at goes into the leaf the demonstration put its own page in, the attachment
+    # fills the destination, and every spot nobody supplies keeps saying what belongs in
+    # it.  This is the program the apply turn's collection actually runs.
+    assert render_skill(
+        bind_parameters(
+            retarget_writes(skill.steps, "watch-a-listing-price"),
+            skill.parameters,
+            {"url": "https://example.test/listing"},
+        )
+    ) == (
+        "1. browse(queries=['https://example.test/listing'], "
+        "extract={a plain text description of what information to retrieve from the page})\n"
+        "2. collection_write(memory='watch-a-listing-price', "
+        "entries=[{'key': {the key under which the extracted value "
         "is stored within that collection}, 'content': the value from step 1}])"
     )

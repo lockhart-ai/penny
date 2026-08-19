@@ -49,11 +49,14 @@ tool-derived — distillation is handed the collection names and compares VALUES
 nothing clears it: a destination is never a parameter, so where a routine writes is
 always what it is applied to.
 
-Everything above is the round that TAUGHT a routine.  The last section is every round
-that asks for it AGAIN (#1867): :func:`build_binding_content`, the document the binding
-micro-context reads (the signature as it stands, then the user's own words), and
-:func:`derive_collection_name`, the pure (skill, values) → container name that makes a
-job's identity deterministic instead of a naming judgment.
+Everything above is the round that TAUGHT a routine.  The last sections are every round
+that asks for it AGAIN: :func:`bind_parameters`, the RUNTIME JOIN (#1907) that writes a
+collection's bound values into the program leaves the demonstration put them in, so the
+rendered steps read with the page they fetch rather than a description of it; and
+(#1867) :func:`build_binding_content`, the document the binding micro-context reads (the
+signature as it stands, then the user's own words), and :func:`derive_collection_name`,
+the pure (skill, values) → container name that makes a job's identity deterministic
+instead of a naming judgment.
 
 This module is pure (no engine, no tool imports): the step/parameter models, the
 provenance inference (:func:`distill_steps`), the load-bearing render
@@ -153,11 +156,23 @@ class SkillParameter(BaseModel):
     by :func:`distill_steps` is ``required`` by construction: structural provenance
     can't know a safe fallback, so the model must bind each explicitly — an
     out-of-context guess would be untraceable later.  ``required`` stays a declared
-    field so a future authoring path can still mark a parameter optional."""
+    field so a future authoring path can still mark a parameter optional.
+
+    ``value`` is the value the round that taught the routine DEMONSTRATED this
+    parameter with (#1907) — the join key onto the program's own leaves.  The
+    interface and the implementation are drawn by two contexts that share no inputs
+    and no outputs (#1824), so the only thing that can connect a declared parameter
+    to the leaf it fills is the demonstration both of them independently point at:
+    the framer says the user's word for it, the ledger says what the call actually
+    carried, and where those agree the leaf is that parameter's site.  ``None`` for a
+    parameter no framing minted (a legacy row, or a round whose framing failed) —
+    such a parameter binds nothing in the program and is stated plainly instead.
+    """
 
     name: str
     required: bool = True
     description: str | None = None
+    value: str | None = None
 
 
 class SkillDraft(BaseModel):
@@ -624,6 +639,133 @@ def retarget_writes(steps: list[SkillStep], target: str) -> list[SkillStep]:
             step.model_copy(update={"arguments": arguments, "substitutions": substitutions})
         )
     return retargeted
+
+
+# ── Binding the framed parameters into the program (#1907) ────────────────────
+
+
+# How two independently-drawn spellings of one demonstrated value are compared.
+# Deliberately small — surrounding whitespace, whitespace runs, case — because the two
+# halves are QUOTING the same round rather than paraphrasing it.  Punctuation and
+# spelling compare exactly: a looser relation would let a short value ("price") claim a
+# leaf that merely contains it ("listing price") and point that leaf at the wrong thing
+# every cycle, which is the class #1809 already had to unpick once on the binding side.
+def _demonstrated_form(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+# What a leaf says when its parameter got no value.  It names the parameter — the key
+# someone rebinds with — and it cannot be misread as the instruction the step wants,
+# which is the whole point: the leaf's own description ("the url of the timetable page
+# to browse each run") reads like something to go and do, so leaving it standing over an
+# unbound parameter is a step that looks runnable and is not.
+_UNSUPPLIED_SLOT = "no value was supplied for the parameter '{name}'"
+
+
+def _parameter_sites(parameters: Sequence[SkillParameter]) -> dict[str, SkillParameter]:
+    """The demonstrated values that name exactly ONE declared parameter.
+
+    Two parameters demonstrated with the same value are dropped from the map rather
+    than resolved: nothing in the program distinguishes their leaves, so binding either
+    would be a coin toss, and a wrong value written every cycle is worse than a leaf that
+    still says what belongs in it."""
+    claims: dict[str, SkillParameter | None] = {}
+    for parameter in parameters:
+        if parameter.value is None:
+            continue
+        key = _demonstrated_form(parameter.value)
+        if not key:
+            continue
+        claims[key] = None if key in claims else parameter
+    return {key: claim for key, claim in claims.items() if claim is not None}
+
+
+def _leaf_value(arguments: dict[str, Any], path: list[str | int]) -> Any:
+    """The DEMONSTRATED value at ``path`` — the verbatim ledger argument a stored step
+    keeps under its substitution (indexed directly, like :func:`_set_at_path`: a path a
+    step's own substitution addresses either resolves or the stored skill is corrupt)."""
+    node: Any = arguments
+    for part in path:
+        node = node[part]
+    return node
+
+
+def _parameter_for(
+    step: SkillStep, sub: SkillSubstitution, sites: dict[str, SkillParameter]
+) -> SkillParameter | None:
+    """The declared parameter whose site this leaf is, or ``None``.
+
+    A BINDING leaf is out by construction (it takes a prior step's result, so no value
+    the user supplies belongs in it), and so is an ATTACHMENT-marked one — where a
+    routine writes is decided by what it is applied to, never by a parameter (#1827
+    principle 4).  Everything else is compared on the value the demonstration put there."""
+    if sub.kind == SkillSubKind.BINDING or sub.attachment:
+        return None
+    demonstrated = _leaf_value(step.arguments, sub.path)
+    if not isinstance(demonstrated, str):
+        return None
+    return sites.get(_demonstrated_form(demonstrated))
+
+
+def _unsupplied(sub: SkillSubstitution, parameter: SkillParameter) -> SkillSubstitution:
+    """This leaf's parameter, with nothing bound to it — the leaf says so, by name."""
+    return sub.model_copy(
+        update={
+            "kind": SkillSubKind.PLACEHOLDER,
+            "parameter": None,
+            "description": _UNSUPPLIED_SLOT.format(name=parameter.name),
+        }
+    )
+
+
+def _bind_step(
+    step: SkillStep, sites: dict[str, SkillParameter], params: dict[str, str]
+) -> SkillStep:
+    """One step with every parameter site resolved — the bound value written into the
+    argument (and the substitution dropped, so the render prints it), or the honest
+    unsupplied slot when nothing was bound to it."""
+    arguments = copy.deepcopy(step.arguments)
+    substitutions: list[SkillSubstitution] = []
+    for sub in step.substitutions:
+        parameter = _parameter_for(step, sub, sites)
+        if parameter is None:
+            substitutions.append(sub)
+        elif parameter.name in params:
+            _set_at_path(arguments, sub.path, params[parameter.name])
+        else:
+            substitutions.append(_unsupplied(sub, parameter))
+    if substitutions == step.substitutions:
+        return step
+    return step.model_copy(update={"arguments": arguments, "substitutions": substitutions})
+
+
+def bind_parameters(
+    steps: list[SkillStep], parameters: Sequence[SkillParameter], params: dict[str, str]
+) -> list[SkillStep]:
+    """Join each declared parameter's bound value to the program leaves it fills — the
+    RUNTIME JOIN (#1907), and :func:`retarget_writes`' sibling at the same seam.
+
+    A routine's interface and its implementation are written by two contexts that share
+    no inputs and no outputs (#1824): the framer names what has to be supplied, the
+    labeller says what belongs in each spot, and neither sees the other.  So the only
+    thing that can connect them is the round they were both drawn from — the value the
+    framer recorded for a parameter (:attr:`SkillParameter.value`) against the value the
+    ledger recorded at a leaf.  Where those are the same value, the leaf is that
+    parameter's site, and the value ``params`` binds is written into it: the rendered
+    program reads with the page it actually fetches and the thing it actually looks for,
+    instead of a description of them.
+
+    A parameter with no bound value leaves its sites saying so BY NAME rather than
+    keeping a description that reads like an instruction (visible degradation over
+    silent success).  A leaf no parameter claims is untouched, so a routine nothing
+    framed renders exactly as it did before.  Pure, like ``retarget_writes``: the stored
+    skill keeps its verbatim ledger arguments and only the rendered-into-a-collection
+    copy is bound.
+    """
+    sites = _parameter_sites(parameters)
+    if not sites:
+        return list(steps)
+    return [_bind_step(step, sites, params) for step in steps]
 
 
 # ── Applying a routine again: the binder's document + the derived name (#1867) ─
