@@ -717,8 +717,13 @@ attaches a DEBUG `FileHandler` to the `penny` logger for the span of ONE sample 
 is attributable, and the handler + raised level are both gone afterwards), and every runner
 stands its sample up through the `eval_penny(config, server)` wrapper rather than
 `run_penny_with_server` directly — one seam that covers the runners that exist and the ones
-added later. Mechanical and unfiltered: no content filter, and the path is derived from the
-sample's own `db_path`, so off-report runs write it into the throwaway tmp dir.
+added later, **held by a structural pin** rather than by convention (`make check` parses the
+harness's own AST and refuses any caller of `run_penny_with_server` but `eval_penny`; a runner
+that bypasses the seam is byte-identical in every other respect and its only symptom is a log
+file silently never written — measured on the multi-cycle collector runner, which was written
+before the seam existed and survived a rebase still bypassing it). Mechanical and unfiltered: no
+content filter, and the path is derived from the sample's own `db_path`, so off-report runs write
+it into the throwaway tmp dir.
 
 **Failure-cause partition (#1695).** Every FAILED sample is tagged with its cause, derived
 STRUCTURALLY (never a model judgment): **harness** (a `TimeoutError`), **pathology** (a known

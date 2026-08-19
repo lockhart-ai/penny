@@ -2330,7 +2330,7 @@ def collector_cycles_eval(
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     results.append(
                         await _sample(
                             penny,

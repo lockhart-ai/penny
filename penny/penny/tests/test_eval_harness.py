@@ -16,9 +16,11 @@ check`` rather than only on the ``eval``-marked run the marker deselects.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -41,6 +43,7 @@ from penny.database.skills import (
 from penny.llm.models import LlmMessage, LlmToolCall, LlmToolCallFunction
 from penny.prompts import Prompt
 from penny.skill_extraction import build_framing_content
+from penny.tests import eval as eval_package
 from penny.tests.conftest import TEST_SENDER
 from penny.tests.eval import report
 from penny.tests.eval.artifacts import (
@@ -290,6 +293,43 @@ def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path) -> None:
     assert "after the sample" not in path.read_text()
     assert logging.getLogger("penny").level == level_before
     assert logging.getLogger("penny").handlers == handlers_before
+
+
+def test_every_runner_stands_its_sample_up_through_the_logging_seam() -> None:
+    """``eval_penny`` is the ONLY caller of ``run_penny_with_server`` in the eval harness
+    (#1909), so every runner's samples get their penny log written beside their DB.
+
+    The seam's whole claim is that it "covers the runners that exist and the ones added
+    later", and nothing held it: a runner that stands its sample up directly is
+    byte-identical in every other respect, its samples pass exactly as before, and the
+    only symptom is a log file that is silently never written — for the runner whose
+    samples the log was needed on.  Measured: the multi-cycle collector runner was added
+    before the seam existed and the rebase left it bypassing it, which is the case this
+    reads.  Structural, off the module's own AST, so a runner added tomorrow is covered
+    without anybody remembering this rule.
+
+    Read as a FILE rather than through an import: a ``conftest.py`` imported as an
+    ordinary module is a second copy of every fixture it defines, which is a pytest
+    collection error in ~700 tests, not a readable failure."""
+    tree = ast.parse(_EVAL_CONFTEST.read_text())
+    callers = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Name) and inner.id == _SAMPLE_SEAM
+    }
+    assert callers == {"eval_penny"}, (
+        f"only eval_penny may stand a sample up — {sorted(callers - {'eval_penny'})} "
+        f"call {_SAMPLE_SEAM} directly, so their samples write no per-sample log"
+    )
+
+
+# The construction helper every eval sample must reach THROUGH ``eval_penny`` rather than
+# directly, named once since the pin above reads it by name, and the harness file the pin
+# parses — located off the package the runners live in, never off a string path.
+_SAMPLE_SEAM = "run_penny_with_server"
+_EVAL_CONFTEST = Path(str(eval_package.__file__)).parent / "conftest.py"
 
 
 def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
