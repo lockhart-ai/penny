@@ -607,21 +607,37 @@ fully enacted, and nothing had ever verified the COLLECTOR can run what chat bui
 one per collection the `request → apply` beat leaves behind, each seeding that beat's FULL exit
 world — the composed history, the turn that parked the round, and the turn that stood the job up,
 with the configured row transcribed from that beat's measured draws — then driving the REAL
-collector cycle TWICE with no chat turns in the measured window: cycle 1 against the page as it
-stood when the job was set up, cycle 2 against the same page with its ONE controllable fact moved.
-The scorer is structural throughout — the cycle fetched the page the job is pointed at, the value
-it recorded is the page's controllable fact, the write landed (or the cycle STOPPED at the write
-chokepoint), nothing was sent while nothing had changed, exactly ONE message named the change, the
-run records state what each cycle did, and nothing outside the collection was touched — with the
-notify read EXPLICITLY off the send queue (a cycle enqueues and the drainer is a separate schedule,
-so a pending-only read reports a delivered notification as silence). The otter case's
+collector cycle THREE times with no chat turns in the measured window: cycle 1 the BASELINE (the
+page as it stood when the job was set up), cycle 2 the QUIET cycle (that same page again), cycle 3
+the CHANGE (the same page with its ONE controllable fact moved). Three because they are three
+different claims: a collection arrives from apply EMPTY, so its first observation is a new key and
+a first observation is news; the write-gate STOP that makes no-news structurally silent
+(`KEY_EXISTS_UNCHANGED`) fires only on a SECOND reading of the same value, so "stay quiet and never
+run the notify steps" has no cycle it can fire on until cycle 2 exists; and cycle 3 is then the only
+place a notification is owed. The scorer is structural throughout — the cycle fetched the page the
+job is pointed at, the value it recorded is the page's controllable fact, the baseline write landed,
+the quiet cycle STOPPED at the write chokepoint and neither queued a message nor called
+`send_message`, the change cycle queued exactly ONE naming what moved, the run records state what
+each cycle did, and nothing outside the collection was touched — with the notify read EXPLICITLY off
+the send queue (a cycle enqueues and the drainer is a separate schedule, so a pending-only read
+reports a delivered notification as silence). The seed goes through the production instantiation
+seam's own three steps (retarget → **`bind_parameters`** → render), so the stored program carries
+the job's values since #1907, and each case DECLARES which values the join fills (`joins`), asserted
+both ways by the loud probe: four of the five join every value, while the otter census joins NONE —
+its framer recorded the page as the bare host and path the user spoke while the demonstration's own
+call carried the full address with its scheme, and the join compares on whitespace and case alone.
+Declared rather than repaired, because the fixtures are transcriptions of measured draws and the
+cost of the equality rule is what the case is there to show. The otter case's
 direction-conditional goal ("warn me if it drops") is a WATCHED question: the check scores what the
-configured terms actually carry and names WHERE, so a condition surviving only in a prose
-description reads as that rather than as the mechanism carrying it. The `collector_cycles_eval`
+configured terms actually carry — every surface a cycle reads, which since #1907 is the composed
+prompt's three parts (instructions · routine · values by name) plus the collection's own name and
+description — and names WHERE, so a condition surviving only in a prose description reads as that
+rather than as the mechanism carrying it. The `collector_cycles_eval`
 runner (`collector_eval`'s multi-cycle sibling — each cycle's footprint kept apart as a
 `CycleObservation`, plus a ran-guard `Check` so a dispatcher refusal can never read as the model
-doing nothing), report-only, with the seeded world, the page variants and the scorer's own
-ideal-pair pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
+doing nothing), report-only, with the seeded world, the page variants, the scorer's own
+three-good-cycles fixture, and every configured surface held against `Collector._compose_prompt`
+pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

@@ -26,9 +26,12 @@ import pytest
 # ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
+from penny.agents.collector import Collector
 from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
+from penny.database.memory import MemoryType
+from penny.database.models import MemoryRow, Skill
 from penny.database.skills import (
     SkillParameter,
     build_binding_content,
@@ -84,11 +87,16 @@ from penny.tests.eval.conftest import (
     tool_was_called,
 )
 from penny.tests.eval.test_collector_enactment import (
+    _STOP_REASON as _STOP,
+)
+from penny.tests.eval.test_collector_enactment import (
     DIRECTION_CHECK_LABEL,
     ENACTMENT_CASES,
     _EnactmentCase,
     _score_enactment,
     assert_applied_world,
+    configured_terms,
+    rendered_program,
     seed_applied_job,
 )
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
@@ -453,7 +461,13 @@ def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_pa
     leave the job pointed at nothing while every cycle check read as the collector's miss;
     values that disagreed with what the two turns settled would name a container for a job
     nobody asked for.  The measured binding is a SPAN of what the case declares (the
-    held-binding turn bound the whole spoken phrase), so containment is the reading."""
+    held-binding turn bound the whole spoken phrase), so containment is the reading.
+
+    The RUNTIME JOIN (#1907) is asserted by the probe against each case's declared
+    ``joins`` — so a job whose program stopped carrying the page it fetches, or one whose
+    recorded reason for not carrying it went stale, fails here rather than after three live
+    cycles per sample.  The declared set must name only parameters the job actually binds:
+    a name outside that is a claim about a leaf nothing could fill."""
     for index, case in enumerate(ENACTMENT_CASES):
         db = migrated_db(str(tmp_path / f"applied-{index}.db"))
         seed_applied_job(case)(db)
@@ -467,6 +481,10 @@ def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_pa
                 f"{case.case_id}: the job's {name!r} is {case.values[name]!r}, the two turns "
                 f"settled {settled!r}"
             )
+        assert set(case.joins) <= set(case.values), (
+            f"{case.case_id}: the join can only fill parameters the job binds, got "
+            f"{sorted(set(case.joins) - set(case.values))}"
+        )
 
 
 def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> None:
@@ -494,31 +512,22 @@ def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> No
         )
 
 
-def test_the_enactment_scorer_passes_a_pair_of_cycles_that_did_the_job(tmp_path) -> None:
-    """A quiet cycle that read the page and recorded it in silence, then a change cycle
-    that read it again and said so once, scores every check the beat gates on.
+def test_the_enactment_scorer_passes_three_cycles_that_did_the_job(tmp_path) -> None:
+    """A baseline cycle, then a quiet one that re-read the same value and stopped at the
+    write chokepoint in silence, then a change cycle that said so once — every check the
+    beat gates on scores green.
 
     The same tripwire the reply beats carry (the "check the scorer before you blame the
     model" rule, applied before the run rather than after it): a scorer that cannot pass
     the behaviour the case itself calls correct scores every sample a miss, and this suite
-    has shipped that bug once already.  Two cycles per sample makes it the most expensive
-    place to find it, so it is found here.
+    has shipped that bug once already.  THREE cycles per sample makes it the most expensive
+    place in the suite to find it, so it is found here.
 
     The direction check is the one row that legitimately varies — it reads the CONFIGURED
     terms rather than the cycles — so it is read as a report and excluded from the claim."""
     db = migrated_db(str(tmp_path / "enactment-scorer.db"))
     for case in ENACTMENT_CASES:
-        cycles = [
-            _did_the_job(case, index=0, before={}, fact=case.fact.quiet, sent=[]),
-            _did_the_job(
-                case,
-                index=1,
-                before={_ENACTMENT_KEY: case.fact.quiet},
-                fact=case.fact.changed,
-                sent=[f"heads up — it now says {case.fact.changed}"],
-            ),
-        ]
-        for check in _score_enactment(db, cycles, case=case):
+        for check in _score_enactment(db, _three_good_cycles(case), case=case):
             if check.label == DIRECTION_CHECK_LABEL:
                 continue
             assert check.ok, f"{case.case_id}: {check.label} — {check.rationale}"
@@ -529,24 +538,92 @@ def test_the_enactment_scorer_passes_a_pair_of_cycles_that_did_the_job(tmp_path)
 _ENACTMENT_KEY = "current"
 
 
+def _three_good_cycles(case: _EnactmentCase) -> list[CycleObservation]:
+    """The three cycles the beat's contract describes, each doing exactly what is asked of
+    it: the baseline write, the silent re-read that stops at the chokepoint, and the change
+    that queues one message naming what moved."""
+    quiet = {_ENACTMENT_KEY: case.fact.quiet}
+    return [
+        _did_the_job(case, index=0, before={}, after=quiet),
+        _did_the_job(
+            case, index=1, before=quiet, after=quiet, outcome=RunOutcome.NO_WORK, reason=_STOP
+        ),
+        _did_the_job(
+            case,
+            index=2,
+            before=quiet,
+            after={_ENACTMENT_KEY: case.fact.changed},
+            sent=[f"heads up — it now says {case.fact.changed}"],
+        ),
+    ]
+
+
 def _did_the_job(
-    case: _EnactmentCase, *, index: int, before: dict[str, str], fact: str, sent: list[str]
+    case: _EnactmentCase,
+    *,
+    index: int,
+    before: dict[str, str],
+    after: dict[str, str],
+    sent: list[str] | None = None,
+    outcome: RunOutcome = RunOutcome.WORKED,
+    reason: str | None = None,
 ) -> CycleObservation:
-    """One cycle that did exactly what the watch contract asks: fetched the page the job is
-    pointed at, wrote what it said, queued whatever the change warranted, and closed with a
-    run record stating it."""
+    """One cycle that did exactly what the watch contract asks of it: fetched the page the
+    job is pointed at, wrote what it said, queued whatever the change warranted, and closed
+    with a run record stating it."""
+    queued = sent or []
+    calls = [
+        CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
+        CycleCall(tool="collection_write", arguments={"memory": case.container}),
+    ]
+    if queued:
+        calls.append(CycleCall(tool="send_message", arguments={"content": queued[0]}))
     return CycleObservation(
         index=index,
         before=before,
-        after={_ENACTMENT_KEY: fact},
-        sent=sent,
-        calls=[
-            CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
-            CycleCall(tool="collection_write", arguments={"memory": case.container}),
-        ],
-        outcome=RunOutcome.WORKED.value,
-        reason=None,
+        after=after,
+        sent=queued,
+        calls=calls,
+        outcome=outcome.value,
+        reason=reason,
     )
+
+
+def test_every_configured_term_reads_off_the_prompt_the_collector_composes() -> None:
+    """Every surface the directionality check reads is text the collector really composes
+    for that collection (#1907) — the instructions, the routine and what it is for, the
+    values by name, and the collection's own name and description.
+
+    The check answers WHERE a term survived configuration, so its surfaces have to be the
+    collector's own rather than a plausible restatement of them; a surface that drifted out
+    of the composed prompt would report a condition as reachable when nothing the cycle
+    reads carries it.  Driven against the SHIPPED composer with the job's row and its
+    routine, so the claim is a read rather than a second copy of the composition."""
+    for case in ENACTMENT_CASES:
+        routine = slug_skill_name(case.skill.name)
+        row = MemoryRow(
+            name=case.container,
+            type=MemoryType.COLLECTION.value,
+            description=case.job.description,
+            extraction_prompt=rendered_program(case),
+            skill_name=routine,
+            skill_params=json.dumps(case.values),
+            notify=True,
+        )
+        skill = Skill(
+            name=routine,
+            intent=case.skill.description,
+            description=case.skill.description,
+            steps="[]",
+            parameters=json.dumps([{"name": name} for name in case.values]),
+            author=PennyConstants.CHAT_AGENT_NAME,
+        )
+        composed = Collector._compose_prompt(row, skill)
+        for surface, text in configured_terms(case).items():
+            assert text in composed, (
+                f"{case.case_id}: the {surface!r} surface must be text the collector reads — "
+                f"{text!r} is not in the composed prompt"
+            )
 
 
 def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
