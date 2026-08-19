@@ -19,6 +19,7 @@ from penny.database.skills import (
     SkillStep,
     SkillSubKind,
     SkillSubstitution,
+    bind_parameters,
     build_binding_content,
     derive_collection_name,
     distill_steps,
@@ -646,6 +647,172 @@ def test_retarget_writes_leaves_unmarked_steps_untouched():
     steps = _elevation_steps()
     retargeted = retarget_writes(steps, "target-b")
     assert retargeted[0].arguments == steps[0].arguments  # the browse step is identical
+
+
+# ── The runtime join: framed parameters onto the program's leaves (#1907) ─────
+#
+# The post-#1828 shape a taught routine really has: every spot is a PLACEHOLDER
+# carrying what belongs there, the write target additionally marked, and the
+# interface is the framer's — each parameter carrying the value the round
+# DEMONSTRATED it with, which is the only thing the two draws share.
+
+_TIMETABLE_URL = "https://harbour-ferry.example/timetable"
+_DEMONSTRATED_LINE = "the first sailing"
+
+
+def _timetable_steps() -> list[SkillStep]:
+    return [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": [_TIMETABLE_URL], "extract": _DEMONSTRATED_LINE},
+            substitutions=[
+                SkillSubstitution(
+                    path=["queries", 0],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the url of the timetable page to browse each run",
+                ),
+                SkillSubstitution(
+                    path=["extract"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the text or line to look for on that page",
+                ),
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "sailings",
+                "entries": [{"key": "first sailing", "content": "07:10"}],
+            },
+            substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                    attachment=True,
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "key"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the key the extracted value is stored under",
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
+                ),
+            ],
+        ),
+    ]
+
+
+def _timetable_parameters() -> list[SkillParameter]:
+    return [
+        SkillParameter(
+            name="url",
+            description="the timetable page to read",
+            value=_TIMETABLE_URL,
+        ),
+        SkillParameter(
+            name="line",
+            description="which sailing to look for",
+            value=_DEMONSTRATED_LINE,
+        ),
+    ]
+
+
+def test_bind_parameters_writes_the_bound_values_into_the_leaves_they_fill():
+    """The join, whole (#1907): the page a run fetches and the thing it looks for read
+    as themselves in the program, instead of as descriptions of themselves.
+
+    Each is found by the value the DEMONSTRATION put there — the framer recorded the
+    user's word for the page, the ledger recorded what the browse actually carried, and
+    where those agree that leaf is the parameter's site.  The entry key is claimed by
+    nobody and keeps saying what belongs in it (it is a per-run value, not a term of the
+    job), and the write target is the ATTACHMENT's, bound to the collection the routine
+    was applied to and never to a parameter."""
+    steps = bind_parameters(
+        retarget_writes(_timetable_steps(), "ferry-departures"),
+        _timetable_parameters(),
+        {"url": "https://northpier.example/departures", "line": "the dawn sailing"},
+    )
+
+    assert render_skill(steps) == (
+        "1. browse(queries=['https://northpier.example/departures'], "
+        "extract='the dawn sailing')\n"
+        "2. collection_write(memory='ferry-departures', "
+        "entries=[{'key': {the key the extracted value is stored under}, "
+        "'content': the value from step 1}])"
+    )
+
+
+def test_bind_parameters_says_so_by_name_when_a_parameter_got_no_value():
+    """Visible degradation over silent success: a parameter with nothing bound to it
+    leaves its leaf naming the gap, not the description it had.
+
+    The description reads like an instruction — "the url of the timetable page to browse
+    each run" is something a collector could try to act on — so leaving it standing over
+    an unsupplied parameter is a step that looks runnable and is not.  The parameter's
+    own name is what the leaf says, because that name is the key someone rebinds with."""
+    steps = bind_parameters(
+        retarget_writes(_timetable_steps(), "ferry-departures"),
+        _timetable_parameters(),
+        {"line": "the dawn sailing"},
+    )
+
+    assert render_skill(steps) == (
+        "1. browse(queries=[{no value was supplied for the parameter 'url'}], "
+        "extract='the dawn sailing')\n"
+        "2. collection_write(memory='ferry-departures', "
+        "entries=[{'key': {the key the extracted value is stored under}, "
+        "'content': the value from step 1}])"
+    )
+
+
+def test_bind_parameters_joins_nothing_for_a_routine_that_recorded_no_values():
+    """A routine taught before the join existed — or one whose framing failed — declares
+    parameters with no demonstrated value, so nothing can say which leaf each fills.  The
+    program renders exactly as it did before rather than guessing a site."""
+    steps = retarget_writes(_timetable_steps(), "ferry-departures")
+    unrecorded = [SkillParameter(name="url", description="the timetable page to read")]
+
+    assert bind_parameters(steps, unrecorded, {"url": "https://northpier.example/x"}) == steps
+
+
+def test_bind_parameters_declines_a_value_two_parameters_both_claim():
+    """Two parameters demonstrated with the SAME value: nothing in the program tells
+    their leaves apart, so neither binds.  A leaf that keeps saying what belongs in it is
+    recoverable; one silently carrying the other parameter's value is a wrong write every
+    cycle."""
+    steps = retarget_writes(_timetable_steps(), "ferry-departures")
+    twins = [
+        SkillParameter(name="url", value=_TIMETABLE_URL),
+        SkillParameter(name="mirror", value=_TIMETABLE_URL),
+    ]
+
+    bound = bind_parameters(
+        steps, twins, {"url": "https://a.example", "mirror": "https://b.example"}
+    )
+    assert "https://a.example" not in render_skill(bound)
+    assert "https://b.example" not in render_skill(bound)
+
+
+def test_bind_parameters_never_claims_the_attachment_marked_leaf():
+    """Where a routine writes is decided by what it is applied to (#1827 principle 4),
+    so a parameter demonstrated with the collection's own name still binds nothing there
+    — the attachment fills it at the seam before this runs, and the mark is what says so.
+    """
+    steps = _timetable_steps()
+    impostor = [SkillParameter(name="destination", value="sailings")]
+
+    bound = bind_parameters(steps, impostor, {"destination": "somewhere-else"})
+    assert "somewhere-else" not in render_skill(bound)
+    assert (
+        render_skill(retarget_writes(bound, "ferry-departures")).count("memory='ferry-departures'")
+        == 1
+    )
 
 
 # ── Asking for a routine again: the binder's document + the derived name (#1867)

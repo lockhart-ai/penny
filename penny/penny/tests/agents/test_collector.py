@@ -29,13 +29,25 @@ from penny.constants import (
 from penny.database import Database
 from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
+from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmResponse
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
+from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
-from penny.tools.memory_tools import LogReadTool, build_memory_tools, collector_tool_surface
+from penny.tests.tools.test_memory_tools import (
+    _TAUGHT_LINE,
+    _TAUGHT_URL,
+    seed_timetable_skill,
+)
+from penny.tools.memory_tools import (
+    CollectionSetTool,
+    LogReadTool,
+    build_memory_tools,
+    collector_tool_surface,
+)
 
 
 def _llm_client() -> LlmClient:
@@ -670,7 +682,11 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     rules are load-bearing (provenance, batched writes, gated send_message,
     structured done) — chat doesn't relay them, the collector base attaches
     them on every cycle.  notify=false: the injected tail is the terminal
-    ``done()`` alone, numbered continuing from the stored prompt (#1557)."""
+    ``done()`` alone, numbered continuing from the stored prompt (#1557).
+
+    This is the no-routine collection — hand-authored or seeded, ``skill_name``
+    NULL — so the routine block #1907 adds is absent entirely and the prompt is
+    byte-identical to what it was before the join existed."""
     target = MemoryRow(
         name="board-games",
         type="collection",
@@ -684,7 +700,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         ),
     )
 
-    composed = Collector._compose_prompt(target)
+    composed = Collector._compose_prompt(target, None)
 
     expected = (
         "You are the collector for the `board-games` collection.\n"
@@ -747,7 +763,7 @@ def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true(
         extraction_prompt=_NOTIFY_RENDERED_PROMPT,
     )
 
-    composed = Collector._compose_prompt(target)
+    composed = Collector._compose_prompt(target, None)
 
     expected = (
         "You are the collector for the `indie-metroidvanias` collection.\n"
@@ -789,7 +805,7 @@ def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
         extraction_prompt=legacy_prompt,
     )
 
-    composed = Collector._compose_prompt(target)
+    composed = Collector._compose_prompt(target, None)
 
     expected = (
         "You are the collector for the `summit-status` collection.\n"
@@ -810,6 +826,119 @@ def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
     )
     assert composed == expected, (
         f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+# ── What a CONFIGURED collection's cycle reads (#1907) ────────────────────────
+
+
+async def _configure_timetable_collection(db: Database) -> None:
+    """A collection stood up the way chat stands one up: a taught routine, instantiated
+    through the real front door with the values the job is pointed at."""
+    seed_timetable_skill(db)
+    result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+        name="ferry-departures",
+        description="the dawn sailing on the north pier timetable",
+        skill="check_timetable",
+        params={"url": "https://northpier.example/departures", "line": "the dawn sailing"},
+        schedule="FREQ=HOURLY",
+    )
+    assert result.success, result.message
+
+
+async def _composed_for(collector: Collector, db: Database, name: str) -> str:
+    """The per-cycle system prompt the collector really builds for ``name``."""
+    collector._current_target = _get(db, name)
+    return await collector._build_system_prompt(None)
+
+
+@pytest.mark.asyncio
+async def test_configured_collection_cycle_reads_routine_values_and_joined_program(
+    test_config, tmp_path
+):
+    """The whole composed prompt for a collection chat configured, byte-for-byte — the
+    three things a cycle needs, in one prompt (#1907).
+
+    The INSTRUCTIONS carry the page this job fetches and the thing it looks for, because
+    the values were joined into the program's leaves when the collection was configured.
+    Beside them the ROUTINE says what is running and what it is for, and the VALUES are
+    listed by name.  Before this, a cycle read a program of descriptions — told to browse
+    "the url of the timetable page to browse each run" — and nothing it could read named
+    the page at all."""
+    collector, db = _make_collector(test_config, tmp_path)
+    await _configure_timetable_collection(db)
+
+    composed = await _composed_for(collector, db, "ferry-departures")
+
+    expected = (
+        "You are the collector for the `ferry-departures` collection.\n"
+        "Description: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "The routine you run: check_timetable — read a timetable page and record a "
+        "sailing time\n"
+        "The values it is pointed at:\n"
+        "- url: https://northpier.example/departures\n"
+        "- line: the dawn sailing\n"
+        "\n"
+        "1. browse(queries=['https://northpier.example/departures'], "
+        "extract='the dawn sailing')\n"
+        "2. collection_write(memory='ferry-departures', "
+        "entries=[{'key': {the key the extracted value is stored under}, "
+        "'content': the value from step 1}])\n"
+        "3. done()\n"
+        "\n"
+        f"{Collector._RUNTIME_RULES}"
+    )
+    assert composed == expected, (
+        f"Configured collection prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_config, tmp_path):
+    """Visible degradation over silent success: re-teaching a routine so it needs
+    something more leaves the running collection short of a term, and the cycle SAYS so,
+    naming the term and what it wants.
+
+    This is the reachable shape of an unbound parameter — the collection was configured
+    against a routine that declared two things and now runs one that declares three — and
+    the honest reading is that its stored program is still the one it was configured
+    with, which the values block is what makes visible."""
+    collector, db = _make_collector(test_config, tmp_path)
+    await _configure_timetable_collection(db)
+    seed_timetable_skill(
+        db,
+        parameters=[
+            SkillParameter(name="url", description="the timetable page to read", value=_TAUGHT_URL),
+            SkillParameter(
+                name="line", description="which sailing to look for", value=_TAUGHT_LINE
+            ),
+            SkillParameter(name="cutoff", description="how late a sailing still counts"),
+        ],
+    )
+
+    composed = await _composed_for(collector, db, "ferry-departures")
+
+    assert composed == (
+        "You are the collector for the `ferry-departures` collection.\n"
+        "Description: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "The routine you run: check_timetable — read a timetable page and record a "
+        "sailing time\n"
+        "The values it is pointed at:\n"
+        "- url: https://northpier.example/departures\n"
+        "- line: the dawn sailing\n"
+        "- cutoff: nothing was supplied for this — it needs how late a sailing still "
+        "counts\n"
+        "\n"
+        "1. browse(queries=['https://northpier.example/departures'], "
+        "extract='the dawn sailing')\n"
+        "2. collection_write(memory='ferry-departures', "
+        "entries=[{'key': {the key the extracted value is stored under}, "
+        "'content': the value from step 1}])\n"
+        "3. done()\n"
+        "\n"
+        f"{Collector._RUNTIME_RULES}"
     )
 
 

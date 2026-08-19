@@ -42,7 +42,7 @@ from penny.datetime_utils import format_log_timestamp
 from penny.llm.client import LlmClient
 from penny.llm.embeddings import serialize_embedding
 from penny.llm.models import LlmConnectionError
-from penny.skill_extraction import SkillExtracted, SkillExtractor
+from penny.skill_extraction import SkillExtracted, SkillExtractor, _interface_parameters
 from penny.tests.mocks.llm_patches import MockLlmClient
 from penny.tests.schema_template import schema_only_db
 from penny.tools.collection_instantiation import (
@@ -2056,6 +2056,207 @@ class TestWriteRetargetAtApply:
             "1. browse(queries=['Cinder Peak'], extract='the elevation above sea level')\n"
             "2. collection_write(memory='target-b', "
             "entries=[{'key': 'Cinder Peak', 'content': the value from step 1}])"
+        )
+
+
+# ── The runtime join at the instantiation seam (#1907) ────────────────────────
+#
+# The post-#1828 shape a taught routine really has: the recipe is all placeholders
+# saying what belongs in each spot, and the INTERFACE is the framer's — each parameter
+# carrying the value the round demonstrated it with.  That value is the only thing the
+# two draws share, and it is what says which leaf a parameter fills.
+
+_TIMETABLE_SKILL = "check_timetable"
+_TAUGHT_URL = "https://harbour-ferry.example/timetable"
+_TAUGHT_LINE = "the first sailing"
+_CONFIGURED_URL = "https://northpier.example/departures"
+_CONFIGURED_LINE = "the dawn sailing"
+_TIMETABLE_PARAMS = {"url": _CONFIGURED_URL, "line": _CONFIGURED_LINE}
+
+
+def _timetable_steps(url: str, line: str, key_description: str) -> list[SkillStep]:
+    """One demonstrated round as extraction stores it: browse the page, write what it
+    said into the round's own container.  Every spot is a placeholder; the destination
+    additionally carries the attachment mark."""
+    return [
+        SkillStep(
+            ordinal=1,
+            source_ordinal=1,
+            tool="browse",
+            arguments={"queries": [url], "extract": line},
+            substitutions=[
+                SkillSubstitution(
+                    path=["queries", 0],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the url of the timetable page to browse each run",
+                ),
+                SkillSubstitution(
+                    path=["extract"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description="the text or line to look for on that page",
+                ),
+            ],
+        ),
+        SkillStep(
+            ordinal=2,
+            source_ordinal=2,
+            tool="collection_write",
+            arguments={
+                "memory": "sailings",
+                "entries": [{"key": "first sailing", "content": "07:10"}],
+            },
+            substitutions=[
+                SkillSubstitution(
+                    path=["memory"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=WRITE_TARGET_DESCRIPTION,
+                    attachment=True,
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "key"],
+                    kind=SkillSubKind.PLACEHOLDER,
+                    description=key_description,
+                ),
+                SkillSubstitution(
+                    path=["entries", 0, "content"], kind=SkillSubKind.BINDING, step=1
+                ),
+            ],
+        ),
+    ]
+
+
+def seed_timetable_skill(
+    db,
+    *,
+    url: str = _TAUGHT_URL,
+    line: str = _TAUGHT_LINE,
+    key_description: str = "the key the extracted value is stored under",
+    parameters: list[SkillParameter] | None = None,
+) -> str:
+    """Upsert the fictional timetable routine, built through the SAME
+    ``_interface_parameters`` production path that carries a framed parameter's
+    demonstrated value onto the stored interface."""
+    signature = SkillSignature(
+        name=_TIMETABLE_SKILL,
+        description="read a timetable page and record a sailing time",
+        parameters=(
+            FramedParameter(name="url", description="the timetable page to read", value=url),
+            FramedParameter(name="line", description="which sailing to look for", value=line),
+        ),
+    )
+    draft = SkillDraft(
+        name=_TIMETABLE_SKILL,
+        intent=signature.description,
+        description=signature.description,
+        steps=_timetable_steps(url, line, key_description),
+        parameters=parameters if parameters is not None else _interface_parameters(signature, []),
+        source_run_id="run-teach",
+    )
+    db.skills.upsert(
+        draft, author="chat", description_embedding=_single_hash_vec(draft.description)
+    )
+    return _TIMETABLE_SKILL
+
+
+# The joined program — the page the collection actually fetches and the thing it
+# actually looks for, read as themselves.  The entry key stays a placeholder (a per-run
+# value, not a term of the job) and the write target is the attachment's.
+_JOINED_PROGRAM = (
+    "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
+    "2. collection_write(memory='ferry-departures', "
+    "entries=[{'key': {the key the extracted value is stored under}, "
+    "'content': the value from step 1}])"
+)
+
+
+class TestRuntimeParameterJoin:
+    """The runtime join (#1907): a collection's bound values land in the program's own
+    leaves at the instantiation seam, so the stored ``extraction_prompt`` the collector
+    runs names the page it fetches instead of describing one."""
+
+    @pytest.mark.asyncio
+    async def test_configuring_a_collection_bakes_its_values_into_the_program(self, db):
+        """The whole stored program, byte-pinned.  Before the join every leaf read as the
+        labeller's description — a collector was told to browse "the url of the timetable
+        page to browse each run" and nothing it could read named the page at all."""
+        seed_timetable_skill(db)
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="ferry-departures",
+            description="the dawn sailing on the north pier timetable",
+            skill=_TIMETABLE_SKILL,
+            params=_TIMETABLE_PARAMS,
+            schedule="FREQ=HOURLY",
+        )
+
+        assert result.success and result.mutated
+        stored = db.memories.get("ferry-departures")
+        assert stored.extraction_prompt == _JOINED_PROGRAM
+        # The demonstration's own page and line are gone from the program: a collector
+        # re-running this routine can no longer fetch the page the round happened to use.
+        assert _TAUGHT_URL not in stored.extraction_prompt
+
+    @pytest.mark.asyncio
+    async def test_re_teaching_the_routine_re_joins_against_its_new_leaves(self, db):
+        """A replaced skill re-renders (#1620/#1827), and the join is part of that render
+        — so the re-taught routine's OWN leaves are what the collection's values land in.
+        The second demonstration used a different page and a different line, and the
+        stored bindings still find their sites because the join reads each version's own
+        demonstrated values rather than a link frozen at first instantiation."""
+        seed_timetable_skill(db)
+        await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="ferry-departures",
+            description="the dawn sailing on the north pier timetable",
+            skill=_TIMETABLE_SKILL,
+            params=_TIMETABLE_PARAMS,
+            schedule="FREQ=HOURLY",
+        )
+
+        seed_timetable_skill(
+            db,
+            url="https://ridge-trails.example/summit-loop",
+            line="the trail status",
+            key_description="the key this reading is filed under",
+        )
+        refreshed = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="ferry-departures", skill=_TIMETABLE_SKILL
+        )
+
+        assert refreshed.success
+        assert db.memories.get("ferry-departures").extraction_prompt == (
+            "1. browse(queries=['https://northpier.example/departures'], "
+            "extract='the dawn sailing')\n"
+            "2. collection_write(memory='ferry-departures', "
+            "entries=[{'key': {the key this reading is filed under}, "
+            "'content': the value from step 1}])"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_routine_that_recorded_no_values_renders_as_it_always_did(self, db):
+        """A routine taught before the join, or one whose framing failed, declares
+        parameters with no demonstrated value — nothing can say which leaf each fills, so
+        the program keeps saying what belongs in each spot rather than guessing a site."""
+        seed_timetable_skill(
+            db,
+            parameters=[
+                SkillParameter(name="url", description="the timetable page to read"),
+                SkillParameter(name="line", description="which sailing to look for"),
+            ],
+        )
+        result = await CollectionSetTool(db, cast(Any, MockLlmClient())).execute(
+            name="ferry-departures",
+            description="the dawn sailing on the north pier timetable",
+            skill=_TIMETABLE_SKILL,
+            params=_TIMETABLE_PARAMS,
+            schedule="FREQ=HOURLY",
+        )
+
+        assert result.success
+        assert db.memories.get("ferry-departures").extraction_prompt == (
+            "1. browse(queries=[{the url of the timetable page to browse each run}], "
+            "extract={the text or line to look for on that page})\n"
+            "2. collection_write(memory='ferry-departures', "
+            "entries=[{'key': {the key the extracted value is stored under}, "
+            "'content': the value from step 1}])"
         )
 
 
