@@ -17,6 +17,7 @@ check`` rather than only on the ``eval``-marked run the marker deselects.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 
 import pytest
@@ -73,6 +74,8 @@ from penny.tests.eval.conftest import (
     routing_clean,
     run_exhibited_pathology,
     sample_is_fragile,
+    sample_log_path,
+    sample_logging,
     seeded_run_id,
     tool_call_rejected,
     tool_not_called,
@@ -238,6 +241,37 @@ def test_tool_not_called_reads_the_promptlog(tmp_path) -> None:
     assert tool_was_called(db, "collection_write")
     assert not tool_not_called(db, "collection_write")
     assert tool_not_called(db, "send_message")
+
+
+def test_a_sample_s_penny_log_lands_beside_its_db(tmp_path) -> None:
+    """The per-sample log file (#1909): every line the penny loggers emit while a sample
+    runs is written beside that sample's DB, under the same stem.
+
+    A failing model call writes no promptlog row — it raises before the client's persist
+    step — so what the run said about the failure exists only as logger output, which
+    pytest captures and then discards for every sample that passes.  Unfiltered by
+    design: a DEBUG line lands as readily as the WARNING the client logs when a chat
+    call fails.  Scoped to one sample, so the handler and the raised level are both gone
+    afterwards and nothing leaks into the next sample or the rest of the suite."""
+    db_path = str(tmp_path / "watch-a-page-0.db")
+    logger = logging.getLogger("penny.agents.base")
+    level_before = logging.getLogger("penny").level
+    handlers_before = list(logging.getLogger("penny").handlers)
+
+    with sample_logging(db_path) as path:
+        logger.warning("LLM chat failed: Connection refused")
+        logger.debug("Tool parse error: raw='...'")
+
+    assert path == sample_log_path(db_path) == tmp_path / "watch-a-page-0.log"
+    captured = path.read_text()
+    assert "LLM chat failed: Connection refused" in captured
+    assert "Tool parse error: raw='...'" in captured
+    # Scoped: the handler is gone and the level restored, so a line logged after the
+    # sample cannot land in its file.
+    logger.warning("after the sample")
+    assert "after the sample" not in path.read_text()
+    assert logging.getLogger("penny").level == level_before
+    assert logging.getLogger("penny").handlers == handlers_before
 
 
 def test_a_cadence_is_read_from_the_rule_not_from_its_spelling() -> None:
