@@ -601,7 +601,27 @@ structural check that no job TERM (a cadence, an end date) rode into a value; th
 the user's turns — pinned by the same kind of drift probe. Membership, coverage and "is
 this even in the user's words" are the PRODUCTION validator's, so an accepted draw never
 reaches the scorer carrying an invented value; what the cases measure is whether it picked
-the RIGHT span and whether it knew when to decline). Browse is stubbed; a case injects realistic pages via the
+the RIGHT span and whether it knew when to decline),
+`test_collector_enactment.py` (#1905 — the BACKGROUND half of the north star: chat's half is
+fully enacted, and nothing had ever verified the COLLECTOR can run what chat built. Five cases,
+one per collection the `request → apply` beat leaves behind, each seeding that beat's FULL exit
+world — the composed history, the turn that parked the round, and the turn that stood the job up,
+with the configured row transcribed from that beat's measured draws — then driving the REAL
+collector cycle TWICE with no chat turns in the measured window: cycle 1 against the page as it
+stood when the job was set up, cycle 2 against the same page with its ONE controllable fact moved.
+The scorer is structural throughout — the cycle fetched the page the job is pointed at, the value
+it recorded is the page's controllable fact, the write landed (or the cycle STOPPED at the write
+chokepoint), nothing was sent while nothing had changed, exactly ONE message named the change, the
+run records state what each cycle did, and nothing outside the collection was touched — with the
+notify read EXPLICITLY off the send queue (a cycle enqueues and the drainer is a separate schedule,
+so a pending-only read reports a delivered notification as silence). The otter case's
+direction-conditional goal ("warn me if it drops") is a WATCHED question: the check scores what the
+configured terms actually carry and names WHERE, so a condition surviving only in a prose
+description reads as that rather than as the mechanism carrying it. The `collector_cycles_eval`
+runner (`collector_eval`'s multi-cycle sibling — each cycle's footprint kept apart as a
+`CycleObservation`, plus a ran-guard `Check` so a dispatcher refusal can never read as the model
+doing nothing), report-only, with the seeded world, the page variants and the scorer's own
+ideal-pair pinned in `make check`). Browse is stubbed; a case injects realistic pages via the
 `browse=` kwarg (query-aware `install_browse` / `CannedPage` in `conftest.py`) to
 score multi-step tool reasoning. A `CannedPage(fails=True)` makes a matched read
 *error* (renders `## browse error:` without the real retry backoff), and the

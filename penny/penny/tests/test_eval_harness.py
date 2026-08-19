@@ -26,7 +26,7 @@ import pytest
 # ``Tool.format_result`` dispatches their real ``to_result_narration`` — the rejection-probe
 # tests below build frames from the PRODUCTION templates, never hand-invented text.
 import penny.tools.memory_tools  # noqa: F401  (imported for registration side effect)
-from penny.constants import PennyConstants
+from penny.constants import PennyConstants, RunOutcome
 from penny.conversation_machine import RoundShortfall
 from penny.database import Database
 from penny.database.skills import (
@@ -51,6 +51,8 @@ from penny.tests.eval.baseline import load_baseline
 from penny.tests.eval.conftest import (
     BoundExpectation,
     Check,
+    CycleCall,
+    CycleObservation,
     ParameterFamily,
     SampleResult,
     _assert_threshold,
@@ -80,6 +82,14 @@ from penny.tests.eval.conftest import (
     tool_call_rejected,
     tool_not_called,
     tool_was_called,
+)
+from penny.tests.eval.test_collector_enactment import (
+    DIRECTION_CHECK_LABEL,
+    ENACTMENT_CASES,
+    _EnactmentCase,
+    _score_enactment,
+    assert_applied_world,
+    seed_applied_job,
 )
 from penny.tests.eval.test_skill_binding import FIXTURES as BINDING_FIXTURES
 from penny.tests.eval.test_skill_framing import FIXTURES as FRAMING_FIXTURES
@@ -423,6 +433,120 @@ def test_every_supply_is_answered_against_a_world_parked_on_its_own_ask(tmp_path
             f"{case.case_id}: the ask fell short of {sorted(case.parked.missing)}, "
             f"the supply answers {sorted(case.supplies)}"
         )
+
+
+def test_every_applied_job_seeds_and_reads_back_as_the_apply_turn_left_it(tmp_path) -> None:
+    """Each collector-enactment case's world — the parked round its supply answered, then
+    the turn that stood the job up — seeds cleanly and reads back as the exit state it
+    claims: the container derived from the routine and the values, the routine's steps
+    rendered into it, the turn's schedule, notify on, nothing stored yet, and the machine
+    landed in apply carrying the completed framing.
+
+    Driven here against a real migrated database for the reason its sibling beats' pins
+    are: the seeder is CODE, and its loud probe otherwise runs only under ``make eval``,
+    where each sample costs TWO live cycles.  Its own database per case, because that is
+    what the sample gets, and because the held-binding world seeds fewer journeys than the
+    module's five — where a leftover ``_JOURNEYS`` reference would show.
+
+    The case's own premise rides along in the same loop, and both ways of getting it wrong
+    are silent on a run.  Values that did not cover the routine's declared parameters would
+    leave the job pointed at nothing while every cycle check read as the collector's miss;
+    values that disagreed with what the two turns settled would name a container for a job
+    nobody asked for.  The measured binding is a SPAN of what the case declares (the
+    held-binding turn bound the whole spoken phrase), so containment is the reading."""
+    for index, case in enumerate(ENACTMENT_CASES):
+        db = migrated_db(str(tmp_path / f"applied-{index}.db"))
+        seed_applied_job(case)(db)
+        assert_applied_world(db, case)
+        declared = sorted(parameter.name for parameter in case.skill.parameters)
+        assert declared == sorted(case.values), (
+            f"{case.case_id}: the routine declares {declared}, the job binds {sorted(case.values)}"
+        )
+        for name, settled in case.parked.bound.items():
+            assert settled in case.values[name], (
+                f"{case.case_id}: the job's {name!r} is {case.values[name]!r}, the two turns "
+                f"settled {settled!r}"
+            )
+
+
+def test_every_change_cycle_page_moves_exactly_the_fact_its_case_watches() -> None:
+    """Each enactment case's two pages differ, and differ on the ONE fact the case says
+    they do: the quiet page carries what the job was set up around and not what comes
+    next, the altered page the other way round.
+
+    Pinned without a GPU because both ways of getting it wrong are silent on a run and each
+    makes the change cycle measure nothing.  A variant that matched no replacement is
+    byte-identical to the page before it, so the "the collection holds what the page says"
+    check would read the SAME value twice and score the change cycle a miss on every
+    sample; a variant carrying both facts would score it green without the value ever
+    moving."""
+    for case in ENACTMENT_CASES:
+        assert case.quiet.text != case.altered.text, f"{case.case_id}: the pages must differ"
+        assert case.fact.quiet in case.quiet.text, f"{case.case_id}: the quiet fact must be there"
+        assert case.fact.changed not in case.quiet.text, (
+            f"{case.case_id}: the quiet page must not already carry {case.fact.changed!r}"
+        )
+        assert case.fact.changed in case.altered.text, (
+            f"{case.case_id}: the altered page must carry {case.fact.changed!r}"
+        )
+        assert case.fact.quiet not in case.altered.text, (
+            f"{case.case_id}: the altered page must no longer carry {case.fact.quiet!r}"
+        )
+
+
+def test_the_enactment_scorer_passes_a_pair_of_cycles_that_did_the_job(tmp_path) -> None:
+    """A quiet cycle that read the page and recorded it in silence, then a change cycle
+    that read it again and said so once, scores every check the beat gates on.
+
+    The same tripwire the reply beats carry (the "check the scorer before you blame the
+    model" rule, applied before the run rather than after it): a scorer that cannot pass
+    the behaviour the case itself calls correct scores every sample a miss, and this suite
+    has shipped that bug once already.  Two cycles per sample makes it the most expensive
+    place to find it, so it is found here.
+
+    The direction check is the one row that legitimately varies — it reads the CONFIGURED
+    terms rather than the cycles — so it is read as a report and excluded from the claim."""
+    db = migrated_db(str(tmp_path / "enactment-scorer.db"))
+    for case in ENACTMENT_CASES:
+        cycles = [
+            _did_the_job(case, index=0, before={}, fact=case.fact.quiet, sent=[]),
+            _did_the_job(
+                case,
+                index=1,
+                before={_ENACTMENT_KEY: case.fact.quiet},
+                fact=case.fact.changed,
+                sent=[f"heads up — it now says {case.fact.changed}"],
+            ),
+        ]
+        for check in _score_enactment(db, cycles, case=case):
+            if check.label == DIRECTION_CHECK_LABEL:
+                continue
+            assert check.ok, f"{case.case_id}: {check.label} — {check.rationale}"
+
+
+# The key an ideal cycle stores its reading under — a fixture stand-in for whatever the
+# routine's own program names, since the scorer reads keys and contents alike.
+_ENACTMENT_KEY = "current"
+
+
+def _did_the_job(
+    case: _EnactmentCase, *, index: int, before: dict[str, str], fact: str, sent: list[str]
+) -> CycleObservation:
+    """One cycle that did exactly what the watch contract asks: fetched the page the job is
+    pointed at, wrote what it said, queued whatever the change warranted, and closed with a
+    run record stating it."""
+    return CycleObservation(
+        index=index,
+        before=before,
+        after={_ENACTMENT_KEY: fact},
+        sent=sent,
+        calls=[
+            CycleCall(tool="browse", arguments={"queries": [case.values["url"]]}),
+            CycleCall(tool="collection_write", arguments={"memory": case.container}),
+        ],
+        outcome=RunOutcome.WORKED.value,
+        reason=None,
+    )
 
 
 def test_every_bail_is_answered_against_the_parked_world_it_claims(tmp_path) -> None:
