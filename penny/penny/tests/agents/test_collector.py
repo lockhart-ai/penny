@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
-from penny.agents.models import ControllerResponse, ToolCallRecord
+from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, ToolCallRecord
 from penny.constants import (
     WRITE_GATE_STOP_REASONS,
     MutationAction,
@@ -31,7 +31,7 @@ from penny.database.memory import EntryInput, LogEntryInput
 from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
-from penny.llm.models import LlmResponse
+from penny.llm.models import LlmConnectionError, LlmResponse
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
@@ -50,10 +50,14 @@ from penny.tools.memory_tools import (
 )
 
 
-def _llm_client() -> LlmClient:
+def _llm_client(db: Database | None = None) -> LlmClient:
+    """The model client a test collector calls through.  ``db`` is what makes it LOG
+    its prompts — production wires one into every client, so a test that reads a
+    cycle's own ledger rows (its run outcome, its stamped reason) passes one too."""
     return LlmClient(
         api_url="http://localhost:11434",
         model="test-model",
+        db=db,
         max_retries=1,
         retry_delay=0.0,
     )
@@ -62,7 +66,7 @@ def _llm_client() -> LlmClient:
 def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
     db = schema_only_db(str(tmp_path / "t.db"))
     collector = Collector(
-        model_client=_llm_client(),
+        model_client=_llm_client(db),
         db=db,
         config=test_config,
         embedding_model_client=_llm_client(),
@@ -1385,6 +1389,23 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
         "max steps exceeded — no done() call",
     )
 
+    # The loop aborted on a failed model call → the abort's own structural facts are
+    # the reason (#1909), instead of the generic no-done() line that made the whole
+    # class diagnosable only by exclusion.  The aborted response carries no tool
+    # calls, so the outcome stays the FAILED bail it always was.
+    aborted = ControllerResponse(
+        answer=PennyResponse.AGENT_MODEL_ERROR,
+        abort=RunAbort(
+            step=5,
+            after_tool="read_similar",
+            error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
+        ),
+    )
+    assert Collector._cycle_result(aborted) == (
+        RunOutcome.FAILED,
+        "model call failed at step 5 after read_similar: LlmTimeoutError: Request timed out.",
+    )
+
 
 def test_cycle_result_write_gate_stop_closes_cleanly():
     """A write-gate STOP (#1587) closes the cycle at the chokepoint with NO done():
@@ -1476,6 +1497,39 @@ def test_tag_promptlog_run_stamps_outcome_reason_target(test_config, tmp_path):
     assert runs[0]["run_outcome"] == "worked"
     assert runs[0]["run_reason"] == "wrote 2 new games"
     assert runs[0]["run_target"] == "board-games"
+
+
+@pytest.mark.asyncio
+async def test_aborted_cycle_stamps_the_failed_call_on_the_run(mock_llm, test_config, tmp_path):
+    """END TO END (#1909): a cycle whose model call dies MID-PROGRAM stamps the cause
+    onto its run, so the sample DB alone says what happened.
+
+    The measured failure class — 31 of 75 collector cycles — left no evidence at all:
+    the failing call raises before the client persists, so it writes no promptlog row,
+    and the run's reason said only ``cycle ended without a done() call``.  Here step 1's
+    read lands (and logs its row), step 2 dies on the transport, and the reason stamped
+    on that surviving row names the step, the tool the run had reached, and the error."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if count == 1:
+            return mock_llm._make_tool_call_response(
+                request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+            )
+        raise LlmConnectionError("Connection refused")
+
+    mock_llm.set_response_handler(handler)
+
+    await collector.run_for("indie-metroidvanias")
+
+    runs = db.messages.get_prompt_log_runs()
+    assert len(runs) == 1
+    assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
+    assert runs[0]["run_reason"] == (
+        "model call failed at step 2 after collection_read_latest: "
+        "LlmConnectionError: Connection refused"
+    )
 
 
 def test_tag_promptlog_run_with_unknown_run_id_is_noop(test_config, tmp_path):

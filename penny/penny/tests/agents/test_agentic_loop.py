@@ -9,7 +9,13 @@ from sqlmodel import Session, select
 
 from penny.agents.base import Agent, BackgroundAgent, _any_text
 from penny.agents.chat import ChatAgent
-from penny.agents.models import MessageRole, ToolCallRecord
+from penny.agents.models import (
+    REROLL_EXHAUSTED,
+    MessageRole,
+    ModelCallError,
+    RunAbort,
+    ToolCallRecord,
+)
 from penny.config import Config
 from penny.config_params import RuntimeParams
 from penny.constants import PennyConstants
@@ -20,6 +26,7 @@ from penny.llm.models import (
     LlmConnectionError,
     LlmMessage,
     LlmResponse,
+    LlmResponseError,
     LlmTimeoutError,
     LlmToolCall,
     LlmToolCallFunction,
@@ -690,7 +697,9 @@ class TestModelErrorHandling:
 
     @pytest.mark.asyncio
     async def test_llm_error_returns_agent_model_error(self, test_db, mock_llm):
-        """Connection/response errors from the LLM result in AGENT_MODEL_ERROR, not a crash."""
+        """Connection/response errors from the LLM result in AGENT_MODEL_ERROR, not a crash
+        — and the aborted run names its own cause (#1909): the failing call writes no
+        promptlog row, so the error's class and message live only on this record."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm)
 
@@ -701,6 +710,54 @@ class TestModelErrorHandling:
 
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert response.abort is not None
+        assert response.abort == RunAbort(
+            step=1,
+            after_tool=None,
+            error=ModelCallError(error_class="LlmConnectionError", message="backend down"),
+        )
+        # The first call died, so there is no tool to name — the reason says so rather
+        # than claiming a step that never ran.
+        assert response.abort.render() == (
+            "model call failed at step 1: LlmConnectionError: backend down"
+        )
+
+        await agent.close()
+
+    @pytest.mark.asyncio
+    async def test_abort_names_the_step_and_the_last_successful_tool(self, test_db, mock_llm):
+        """A run that dies MID-PROGRAM says where it had got to (#1909) — the step index
+        plus the tool the last SUCCESSFUL step executed, which is the anchor the step
+        number alone doesn't give.
+
+        The last step here FAILED (a tool that doesn't exist), so naming the most recent
+        call would point at the one thing the run never actually did; the anchor walks
+        back to the read that landed."""
+
+        agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=5)
+
+        def handler(request, count):
+            if count == 1:
+                return mock_llm._make_tool_call_response(request, "search", {"query": "lakes"})
+            if count == 2:
+                return mock_llm._make_tool_call_response(request, "no_such_tool", {})
+            raise LlmResponseError("500 Internal Server Error")
+
+        mock_llm.set_response_handler(handler)
+
+        response = await agent.run("test prompt", max_steps=max_steps)
+        assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert response.abort is not None
+        assert response.abort == RunAbort(
+            step=3,
+            after_tool="search",
+            error=ModelCallError(
+                error_class="LlmResponseError", message="500 Internal Server Error"
+            ),
+        )
+        assert response.abort.render() == (
+            "model call failed at step 3 after search: LlmResponseError: 500 Internal Server Error"
+        )
 
         await agent.close()
 
@@ -762,7 +819,9 @@ class TestToolParseErrorReroll:
     @pytest.mark.asyncio
     async def test_persistent_tool_parse_error_fails_the_run(self, test_db, mock_llm):
         """Budget exhausted → the run fails honestly via the existing aborted-run path,
-        after exactly DEGENERATE_REROLL_ATTEMPTS draws (the ONE shared budget)."""
+        after exactly DEGENERATE_REROLL_ATTEMPTS draws (the ONE shared budget) — and the
+        abort names the tripped condition, once per discarded draw (#1909), so a run
+        killed by parse failures is distinguishable from one killed by collapses."""
 
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
@@ -774,6 +833,19 @@ class TestToolParseErrorReroll:
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        assert response.abort is not None
+        assert response.abort == RunAbort(
+            step=1,
+            after_tool=None,
+            error=ModelCallError(
+                error_class=REROLL_EXHAUSTED,
+                message=("3 unusable draws: tool_parse_error, tool_parse_error, tool_parse_error"),
+            ),
+        )
+        assert response.abort.render() == (
+            "model call failed at step 1: reroll-exhausted: 3 unusable draws: "
+            "tool_parse_error, tool_parse_error, tool_parse_error"
+        )
 
         await agent.close()
 
@@ -792,6 +864,10 @@ class TestToolParseErrorReroll:
             response = await agent.run("test prompt", max_steps=max_steps)
 
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
+        assert response.abort is not None
+        assert response.abort.error == ModelCallError(
+            error_class="LlmTimeoutError", message="Request timed out."
+        )
         warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         error_msgs = [r.message for r in caplog.records if r.levelno == logging.ERROR]
         assert any("timed out" in m.lower() for m in warning_msgs)
@@ -948,7 +1024,8 @@ class TestDegenerateOutputGuard:
     async def test_persistent_degeneration_aborts_run(self, test_db, mock_llm):
         """When every reroll is still degenerate, the run is thrown out with
         AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — poison is
-        never acted on or stored."""
+        never acted on or stored — and the abort names the collapse as the condition
+        that spent the budget (#1909)."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
@@ -959,6 +1036,11 @@ class TestDegenerateOutputGuard:
         response = await agent.run("test prompt", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        assert response.abort is not None
+        assert response.abort.error == ModelCallError(
+            error_class=REROLL_EXHAUSTED,
+            message="3 unusable draws: degenerate_output, degenerate_output, degenerate_output",
+        )
 
         await agent.close()
 
@@ -1057,7 +1139,8 @@ class TestHarmonyEnvelopeLeakGuard:
     async def test_persistent_leak_aborts_run(self, test_db, mock_llm):
         """When every reroll still leaks the envelope, the run is thrown out with
         AGENT_MODEL_ERROR after exactly DEGENERATE_REROLL_ATTEMPTS calls — raw
-        Harmony tokens are never delivered."""
+        Harmony tokens are never delivered — and the abort names the leak rather than
+        the collapse the same budget also serves (#1909)."""
         agent, _db, max_steps = _make_agent(test_db, mock_llm, max_steps=3)
 
         def handler(request, count):
@@ -1068,6 +1151,11 @@ class TestHarmonyEnvelopeLeakGuard:
         response = await agent.run("what's the deepest lake?", max_steps=max_steps)
         assert response.answer == PennyResponse.AGENT_MODEL_ERROR
         assert len(mock_llm.requests) == PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        assert response.abort is not None
+        assert response.abort.error == ModelCallError(
+            error_class=REROLL_EXHAUSTED,
+            message="3 unusable draws: tool_call_leak, tool_call_leak, tool_call_leak",
+        )
 
         await agent.close()
 

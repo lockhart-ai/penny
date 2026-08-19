@@ -11,7 +11,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, assert_never
 
-from penny.agents.models import ChatMessage, ControllerResponse, MessageRole, ToolCallRecord
+from penny.agents.models import (
+    REROLL_EXHAUSTED,
+    ChatMessage,
+    ControllerResponse,
+    MessageRole,
+    ModelCallAbortedError,
+    ModelCallError,
+    RunAbort,
+    ToolCallRecord,
+)
 from penny.config import Config
 from penny.constants import PennyConstants
 from penny.conversation_machine import RoundFraming
@@ -140,6 +149,23 @@ def _any_text(_content: str) -> bool:
     invalid-draw declaration, deliberately keyed to the STATE (there is no call) and
     not to any wording (#1839)."""
     return True
+
+
+def _call_aborted(exception: LlmError) -> ModelCallAbortedError:
+    """The failed call's own class and message (#1909) — the exception carries both, so
+    nothing here decides what the failure was."""
+    error = ModelCallError(error_class=type(exception).__name__, message=str(exception))
+    return ModelCallAbortedError(error)
+
+
+def _rerolls_exhausted(conditions: list[ConditionKey]) -> ModelCallAbortedError:
+    """The reroll budget ran out (#1909): the failure is the budget, and the message
+    names every condition that tripped, in draw order."""
+    error = ModelCallError(
+        error_class=REROLL_EXHAUSTED,
+        message=f"{len(conditions)} unusable draws: {', '.join(conditions)}",
+    )
+    return ModelCallAbortedError(error)
 
 
 class Agent:
@@ -479,6 +505,27 @@ class Agent:
             return "error"
         return "completed"
 
+    @classmethod
+    def _aborted_response(
+        cls, error: ModelCallError, step: int, records: list[ToolCallRecord]
+    ) -> ControllerResponse:
+        """The run's terminal response when a model call produced nothing usable.
+
+        Behaviourally what it replaced — the ``AGENT_MODEL_ERROR`` answer with no tool
+        calls, so every downstream outcome classification is unchanged — with the
+        abort's structural facts attached (#1909).  The failed call logged no
+        ``promptlog`` row, so this record is the only place the cause is written down.
+        """
+        abort = RunAbort(step=step, after_tool=cls._last_successful_tool(records), error=error)
+        return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR, abort=abort)
+
+    @staticmethod
+    def _last_successful_tool(records: list[ToolCallRecord]) -> str | None:
+        """The tool the last SUCCESSFUL step of this run executed — where in its program
+        the run had got to when the call failed, which the step index alone doesn't say.
+        ``None`` when the run died before any call landed."""
+        return next((record.tool for record in reversed(records) if not record.failed), None)
+
     async def _run_agentic_loop_body(
         self,
         messages: list[dict],
@@ -515,12 +562,19 @@ class Agent:
             is_final_step = step == steps - 1 or len(tool_call_records) >= steps - 1
             step_tools = self._tools_for_step(tools, is_final_step)
 
-            response = await self._call_model_validated(messages, step_tools, run_id, prompt_type)
+            try:
+                response = await self._call_model_validated(
+                    messages, step_tools, run_id, prompt_type
+                )
+            except ModelCallAbortedError as aborted:
+                # A call that came back with nothing still carried every turn so far, so
+                # the tail boundary advances exactly as on the success path (#1778) — and
+                # the run closes naming what killed it (#1909).
+                logged.turns = len(messages)
+                return self._aborted_response(aborted.error, step + 1, tool_call_records)
             # The call carried (and logged) every turn accumulated so far, so the
             # record already holds them — the tail restarts from here.
             logged.turns = len(messages)
-            if response is None:
-                return ControllerResponse(answer=PennyResponse.AGENT_MODEL_ERROR)
 
             ctx = self._loop_context(step, is_final_step, step_tools, messages, tool_call_records)
             if response.has_tool_calls:
@@ -727,7 +781,7 @@ class Agent:
         tools: list[dict],
         run_id: str | None = None,
         prompt_type: str | None = None,
-    ):
+    ) -> LlmResponse:
         """Call the model, driving the response-validation chain on each output.
 
         Builds a ``LoopContext`` and runs ``self.response_validators`` via
@@ -741,19 +795,17 @@ class Agent:
         which discards and re-rolls an UNUSABLE one (a transport artifact, or a draw
         that violates this agent's shape) — so the dispositions here only ever apply
         to a draw that legitimately entered the run.
+
+        Raises ``ModelCallAbortedError`` when no usable draw could be had at all: the first
+        draw is taken before the loop and each ``Retry`` takes the next, so the method
+        always has a response to answer with or has already raised (#1909).
         """
         max_retries = PennyConstants.RESPONSE_VALIDATION_RETRIES
         effective_tools = tools if tools else None
         retried: set[ConditionKey] = set()
-        response = None
+        response = await self._invoke_nondegenerate(messages, effective_tools, run_id, prompt_type)
 
         for attempt in range(max_retries):
-            response = await self._invoke_nondegenerate(
-                messages, effective_tools, run_id, prompt_type
-            )
-            if response is None:
-                return None
-
             if response.has_tool_calls and effective_tools is not None:
                 return response
 
@@ -776,14 +828,21 @@ class Agent:
                     self._apply_retry(
                         messages, appended, condition, nudge, retried, attempt, max_retries
                     )
+                    if attempt + 1 == max_retries:
+                        # Retries exhausted — the last response in its appended
+                        # (tool-stripped, if no tools) form, so the loop's text/tool
+                        # branching matches the validated form.
+                        return appended
+                    response = await self._invoke_nondegenerate(
+                        messages, effective_tools, run_id, prompt_type
+                    )
                 case Repair() | RejectToolCall() | NudgeContinue() | Stop():
                     raise AssertionError("response validators produced an unexpected disposition")
                 case unreachable:
                     assert_never(unreachable)
 
-        # Retries exhausted — return the (tool-stripped, if no tools) last response
-        # so the loop's text/tool branching matches the validated form.
-        return self._repaired_for_append(response, effective_tools) if response else response
+        # Only reached with no retry budget at all — the first draw is the answer.
+        return response
 
     @staticmethod
     def _repaired_for_append(
@@ -831,8 +890,14 @@ class Agent:
         effective_tools: list[dict] | None,
         run_id: str | None,
         prompt_type: str | None,
-    ):
-        """Call the LLM, returning ``None`` on connection/response errors.
+    ) -> LlmResponse:
+        """Call the LLM, raising ``ModelCallAbortedError`` on connection/response errors.
+
+        The failure is a typed exception carrying the error's class and message rather
+        than a swallowed ``None`` (#1909): a call that raises never reaches the client's
+        persist step, so it writes no ``promptlog`` row and its cause exists nowhere
+        else — the run that dies on it had nothing to say about why.  The log lines stay
+        exactly as they were.
 
         Re-raises ``LlmToolParseError`` so ``_call_model_validated`` can inject a
         format nudge and retry — the model needs a different message, not the same one.
@@ -858,10 +923,10 @@ class Agent:
             raise
         except LlmTimeoutError as exception:
             logger.warning("LLM request timed out (model slow or temporarily busy): %s", exception)
-            return None
+            raise _call_aborted(exception) from exception
         except LlmError as exception:
             logger.error("LLM chat failed: %s", exception)
-            return None
+            raise _call_aborted(exception) from exception
 
     async def _invoke_nondegenerate(
         self,
@@ -869,7 +934,7 @@ class Agent:
         effective_tools: list[dict] | None,
         run_id: str | None,
         prompt_type: str | None,
-    ) -> LlmResponse | None:
+    ) -> LlmResponse:
         """Call the model, discarding an UNUSABLE draw and re-rolling on the
         *unchanged* context.
 
@@ -890,12 +955,16 @@ class Agent:
         parses or acts on it.  The bad draw is DROPPED, never appended: re-appending a
         collapse feeds it back into the conversation (a poisoned step makes the next
         ~4× more likely to collapse too), and re-appending a leaked envelope or a
-        call-shaped blob would ship it.  After ``DEGENERATE_REROLL_ATTEMPTS`` it
-        returns ``None`` so the caller throws out the whole run rather than act on it —
-        one shared budget for every family.  The warning names WHICH condition tripped
-        (the reroll mechanism is shared; the log label must stay honest).
+        call-shaped blob would ship it.  After ``DEGENERATE_REROLL_ATTEMPTS`` it raises
+        ``ModelCallAbortedError`` so the caller throws out the whole run rather than act on
+        it — one shared budget for every family.  The warning names WHICH condition
+        tripped (the reroll mechanism is shared; the log label must stay honest), and so
+        does the raised error: the conditions are collected in draw order, since a run
+        killed by three parse failures and one killed by three collapses are different
+        problems (#1909).
         """
         attempts = PennyConstants.DEGENERATE_REROLL_ATTEMPTS
+        discarded: list[ConditionKey] = []
         for attempt in range(attempts):
             try:
                 response = await self._invoke_model(messages, effective_tools, run_id, prompt_type)
@@ -905,15 +974,19 @@ class Agent:
                 # fresh one on the unchanged context is the only move.
                 logger.debug("Tool parse error: %s", error)
                 self._log_reroll(ConditionKey.TOOL_PARSE_ERROR, attempt, attempts)
+                discarded.append(ConditionKey.TOOL_PARSE_ERROR)
                 continue
-            if response is None:
-                return response
             condition = self._unusable_output_condition(response)
             if condition is None:
                 return response
             self._log_reroll(condition, attempt, attempts)
-        logger.error("Model output still unusable after %d re-rolls — aborting run", attempts)
-        return None
+            discarded.append(condition)
+        logger.error(
+            "Model output still unusable after %d re-rolls (%s) — aborting run",
+            attempts,
+            ", ".join(discarded),
+        )
+        raise _rerolls_exhausted(discarded)
 
     @staticmethod
     def _log_reroll(condition: ConditionKey, attempt: int, attempts: int) -> None:

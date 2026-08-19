@@ -449,13 +449,20 @@ class Collector(BackgroundAgent):
 
     @staticmethod
     def _no_done_reason(response: ControllerResponse | None) -> str:
-        """The structural reason a cycle ended without a ``done()`` — distinguish
-        actually hitting the step cap from the model trailing off with a text answer
-        (both are failures, but only one is "max steps").  The loop returns the
-        ``AGENT_MAX_STEPS`` sentinel only on the real cap; anything else is an early
-        give-up without reporting an outcome."""
+        """The structural reason a cycle ended without a ``done()`` — distinguish a run
+        the model call KILLED from actually hitting the step cap from the model trailing
+        off with a text answer (all failures, but for three different reasons).
+
+        A run that aborted on a model call carries the abort's own facts (#1909): which
+        step died, the tool the last successful step ran, and the error's class and
+        message.  That case used to fall through to the generic no-``done()`` line, so
+        the whole class — a failed call writes no ``promptlog`` row — was diagnosable
+        only by exclusion.  The loop returns the ``AGENT_MAX_STEPS`` sentinel only on
+        the real cap; anything else is an early give-up without reporting an outcome."""
         if response is None:
             return "no response from cycle"
+        if response.abort is not None:
+            return response.abort.render()
         if response.answer == PennyResponse.AGENT_MAX_STEPS:
             return "max steps exceeded — no done() call"
         return "cycle ended without a done() call"

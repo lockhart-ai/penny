@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -1279,6 +1281,64 @@ def _sample_db_path(tmp_path, case_id: str, sample_index: int, attempt: int = 0)
     return str(Path(base) / f"{case_id}-{sample_index}{suffix}.db")
 
 
+# The logger every penny module logs through (each is ``logging.getLogger(__name__)``, so
+# one handler on the package root catches the client, the agent loop and the collector alike).
+PENNY_LOGGER = "penny"
+SAMPLE_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def sample_log_path(db_path: str) -> Path:
+    """Where a sample's penny log lands: beside its DB, under the same stem (#1909)."""
+    return Path(db_path).with_suffix(".log")
+
+
+@contextmanager
+def sample_logging(db_path: str) -> Iterator[Path]:
+    """Capture one sample's penny logger output into ``<sample>.log`` beside its DB.
+
+    A model call that fails writes NO promptlog row — it raises before the client's
+    persist step — so everything the run says about the failure ("LLM chat failed", a
+    timeout attempt, each discarded draw's reroll condition) exists only as logger
+    output, which pytest captures and then discards for every sample that passes.  This
+    is the same doctrine the sample DB and the transcripts follow: the evidence always
+    survives the run (#1909).
+
+    Mechanical and unfiltered — DEBUG level, no content filter — and scoped to ONE
+    sample, so every line is attributable to the sample whose name the file carries.
+    The handler is removed and the logger's level restored on the way out, so nothing
+    leaks into the next sample or into the rest of the suite.
+    """
+    path = sample_log_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, mode="w")
+    handler.setFormatter(logging.Formatter(SAMPLE_LOG_FORMAT))
+    handler.setLevel(logging.DEBUG)
+    penny_logger = logging.getLogger(PENNY_LOGGER)
+    previous_level = penny_logger.level
+    penny_logger.setLevel(logging.DEBUG)
+    penny_logger.addHandler(handler)
+    try:
+        yield path
+    finally:
+        penny_logger.removeHandler(handler)
+        penny_logger.setLevel(previous_level)
+        handler.close()
+
+
+@asynccontextmanager
+async def eval_penny(config: Config, server: MockSignalServer) -> AsyncIterator[Penny]:
+    """One sample's Penny, with its log captured beside its DB (#1909).
+
+    Every runner stands its sample up through here rather than calling
+    ``run_penny_with_server`` directly, so the capture is one seam that covers the
+    runners that exist and the ones added later — the log's path is derived from the
+    config's own ``db_path``, which is already the sample's identity.
+    """
+    with sample_logging(config.db_path):
+        async with run_penny_with_server(config, server) as penny:
+            yield penny
+
+
 # ── Transcript extraction: promptlog → report.SampleTranscript (#1725 iteration-6) ──
 
 
@@ -1862,7 +1922,7 @@ def chat_eval(make_config: Callable[..., Config], tmp_path, request) -> ChatEval
                         signal_api_url=f"http://localhost:{server.port}",
                         db_path=_sample_db_path(tmp_path, case_id, sample_index, attempt),
                     )
-                    async with run_penny_with_server(config, server) as penny:
+                    async with eval_penny(config, server) as penny:
                         await _seed_sample(
                             penny,
                             seed=seed,
@@ -1948,7 +2008,7 @@ def collector_eval(make_config: Callable[..., Config], tmp_path, request) -> Col
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     seed_user(penny.db)
                     seed(penny.db)
                     await _embed_seeds(penny)
@@ -2141,7 +2201,7 @@ def nudge_eval(make_config: Callable[..., Config], tmp_path, request) -> NudgeEv
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     seed_user(penny.db)
                     seed(penny.db)
                     await _embed_seeds(penny)
@@ -2481,7 +2541,7 @@ def guard_recovery_eval(make_config: Callable[..., Config], tmp_path, request) -
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     seed_user(penny.db)
                     seed(penny.db)
                     await _embed_seeds(penny)
@@ -2560,7 +2620,7 @@ def startup_eval(make_config: Callable[..., Config], tmp_path, request) -> Start
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     seed_user(penny.db)
                     prior = os.environ.get("GIT_COMMIT_MESSAGE")
                     os.environ["GIT_COMMIT_MESSAGE"] = commit_message
@@ -2860,7 +2920,7 @@ def classifier_eval(make_config: Callable[..., Config], tmp_path, request) -> Cl
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     seed_user(penny.db)
                     if seed is not None:
                         seed(penny.db)
@@ -3530,7 +3590,7 @@ def framer_eval(make_config: Callable[..., Config], tmp_path, request) -> Framer
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
                         signature = await asyncio.wait_for(
@@ -3619,7 +3679,7 @@ def labeller_eval(make_config: Callable[..., Config], tmp_path, request) -> Labe
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
                         labels = await asyncio.wait_for(
@@ -3859,7 +3919,7 @@ def binder_eval(make_config: Callable[..., Config], tmp_path, request) -> Binder
                     signal_api_url=f"http://localhost:{server.port}",
                     db_path=_sample_db_path(tmp_path, case_id, sample_index),
                 )
-                async with run_penny_with_server(config, server) as penny:
+                async with eval_penny(config, server) as penny:
                     micro = MicroContext(penny.model_client)
                     try:
                         binding = await asyncio.wait_for(

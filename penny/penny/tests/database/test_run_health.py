@@ -10,6 +10,7 @@ worked run and a healthy quiet read carry no flags.
 
 import json
 
+from penny.agents.models import ModelCallError, RunAbort
 from penny.constants import PennyConstants
 from penny.database.memory import (
     LoggedToolCall,
@@ -147,6 +148,39 @@ def test_no_tool_call_run_is_incomplete_not_bailed():
 [games] max steps exceeded — no done() call
 ⚠ INCOMPLETE — hit the step ceiling without a closing done(); work landed but \
 the cycle never finished cleanly"""
+    )
+
+
+def test_aborted_run_record_names_the_failed_model_call():
+    """A run the MODEL CALL killed says so in its own record (#1909).
+
+    A failing call raises before the client persists anything, so it writes no
+    promptlog row — before this, every such run rendered as the generic
+    ``cycle ended without a done() call`` line and the whole class was diagnosable
+    only by exclusion (31 of 75 measured collector cycles).  The reason the loop
+    stamps carries the abort's structural facts, and it renders verbatim as the
+    record's header line: which step died, the tool the last successful step ran,
+    and the error's class and message.
+
+    It carries NO ⚠ flag, and that is right: the run neither bailed (it made a real
+    read before it died) nor ran out of steps, so no health condition applies — the
+    header IS the whole story, which is exactly what the flags could not say."""
+    abort = RunAbort(
+        step=4,
+        after_tool="collection_read_latest",
+        error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
+    )
+    run = [
+        _prompt([_call("collection_read_latest", {"memory": "games"})]),
+        _prompt([], outcome="failed", reason=abort.render()),
+    ]
+    health = classify_run(run)
+    assert health.bailed is False
+    assert health.flags == []
+    assert (
+        render_run_record(run)
+        == "[games] model call failed at step 4 after collection_read_latest: "
+        "LlmTimeoutError: Request timed out."
     )
 
 
