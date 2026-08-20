@@ -45,7 +45,6 @@ from penny.tools.memory_tools import (
     UpdateEntryTool,
 )
 from penny.tools.models import ToolResult
-from penny.tools.send_message import SendMessageTool
 
 
 class _DummyTool(Tool):
@@ -363,32 +362,6 @@ class TestMemoryWriteNarration:
         assert (
             LogAppendTool.to_result_narration(args, ToolResult(message="e", success=False))
             == "You tried to add an entry to `events` but it didn't work:"
-        )
-
-
-class TestSendMessageNarration:
-    """``send_message`` narrates a queued send (``mutated``), a correct no-op
-    decline (mute/refusal — ``success`` but not ``mutated``, so she "held off"),
-    and a failure."""
-
-    def test_messaged(self):
-        assert (
-            SendMessageTool.to_result_narration(
-                {}, ToolResult(message="Message sent.", mutated=True)
-            )
-            == "You messaged the user:"
-        )
-
-    def test_held_off(self):
-        assert (
-            SendMessageTool.to_result_narration({}, ToolResult(message="muted", mutated=False))
-            == "You started to message the user but held off:"
-        )
-
-    def test_failure(self):
-        assert (
-            SendMessageTool.to_result_narration({}, ToolResult(message="e", success=False))
-            == "You tried to message the user but it didn't work:"
         )
 
 

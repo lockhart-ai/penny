@@ -464,37 +464,11 @@ class Prompt:
     # discards and re-rolls before any nudge could be appended (#1839).
     CONTINUE_NUDGE = "Please provide your response."
 
-    # Emission-as-property (#1557): the run-time notify steps.  A 4-step TEMPLATE
-    # (no numbers — the assembler numbers them, continuing the stored prompt's
-    # numbering) appended to a collector's system prompt only when the bound
-    # collection's ``notify`` flag is set, and never written into the stored
-    # ``extraction_prompt`` (uniform for skill-backed and legacy hand-authored
-    # collections).  It is the retired ``notifier`` consumer's prompt distilled to
-    # today's conventions: the drain step + entry variable are gone (the steps run
-    # in the same loop that just made the find — full context, no handoff), the
-    # nothing-new guard is gone (a write-gate STOP ends the cycle before these
-    # steps on a no-change cycle, so no-news never notifies, structurally), the
-    # variable-storage dialect is gone (results are referenced naturally), and the
-    # mandatory snippet references became conditional on genuine relevance.  No
-    # ``done()`` here — the terminal ``done()`` is assembly's
-    # (``COLLECTOR_DONE_STEP``), injected exactly once, always last.
-    # ``read_similar``'s signature is ``(memory, anchor, k)``.
-    COLLECTOR_NOTIFY_STEPS = (
-        'read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
-        "the user's past messages closest to this find.",
-        'read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
-        "your own past replies about it.",
-        "Compose one short, friendly message: a quick greeting, what you just found "
-        "(the key detail in plain words), the source URL if there is one, and — only if "
-        "one of those past messages is genuinely related — a one-line callback to it.",
-        "send_message(content=<the message>)",
-    )
-
-    # The terminal ``done()`` step every collector prompt ends with (#1557).  A
-    # stored ``extraction_prompt`` never contains it (a skill render CANNOT produce
-    # one — the chat ledger has no ``done`` tool, a chat turn ends in text; and
-    # migration 0087 stripped the legacy seeds' trailing done steps): assembly
-    # injects it as the final numbered step, after the notify steps when the
-    # collection notifies.  ``done()`` is argless (#1569) — the run record is
-    # generated from the ledger, so there is nothing to summarise here.
-    COLLECTOR_DONE_STEP = "done()"
+    # ``COLLECTOR_NOTIFY_STEPS`` and ``COLLECTOR_DONE_STEP`` are DELETED (#1911).
+    # The composed collector prompt carries ONLY the skill now: no notify tail, no
+    # injected terminal ``done()``.  Telling the user moved out of the cycle
+    # altogether — it is a framework-entered micro-context that runs after the
+    # program's calls are covered (``penny.notification``), whose message-framing
+    # wording is ``micro_context.NOTIFY_SYSTEM_PROMPT``, distilled from the steps
+    # that used to live here.  What that removed is the long chat-flavoured tail 42
+    # of 49 measured cycle deaths landed in, immediately after a ``read_similar``.

@@ -100,6 +100,25 @@ WRITE_GATE_STOP_REASONS: dict[WriteGateOutcome, str] = {
 }
 
 
+# The reason a cycle that ran its whole PROGRAM is stamped with (#1911) — declared
+# here, beside the STOP table, because both are the closed set of structural reasons a
+# collector run record carries, and both are read by the collector that stamps them AND
+# by the render that has to tell one terminal shape from another.  A record whose
+# reason STARTS with this is a completed cycle; the render reads that rather than
+# inferring completion from the absence of a ``done()`` call, which used to be the only
+# available signal and now means something else entirely.
+COLLECTOR_COVERED_REASON = "program complete — every step ran"
+
+# The reason a cycle gets when its stored program names no call the collector could run
+# — a purely prose prompt.  There is no coverage to read, so the structural close was
+# never available to it, and the record says so rather than leaving the state to be
+# diagnosed by exclusion (visible degradation).
+COLLECTOR_UNREADABLE_PROGRAM_REASON = (
+    "cycle ended without a done() call, and its program names no runnable call to read "
+    "completion from"
+)
+
+
 # The write-gate outcomes that changed durable state — either a genuinely new key
 # landed (``NEW_KEY``) or an existing key's baseline was auto-refreshed in place
 # (``KEY_EXISTS_CHANGED``, #1633).  Read by the write path's change-notify and the
@@ -458,6 +477,18 @@ class PennyConstants:
     # the filling draw stay the two separate questions they are (#1803).
     SKILL_BIND_AGENT_NAME = "skill-binder"
     SKILL_BIND_PROMPT_TYPE = "skill_bind"
+    # The ledger identity of the NOTIFY-COMPOSING micro-context (#1911) — the SIXTH
+    # customer, and the first that closes a collector cycle rather than a chat turn.
+    # Its own agent/prompt type so a run trace shows the message-writing draw apart
+    # from the cycle's own calls: they are two contexts, and the whole point of the
+    # split is that the second one is short and carries no tool channel.
+    NOTIFY_COMPOSE_AGENT_NAME = "notify-composer"
+    NOTIFY_COMPOSE_PROMPT_TYPE = "notify_compose"
+    # How many nearest past messages the notify document carries from each of the two
+    # message logs (#1911) — the ``k=5`` the retired notify steps asked for, kept
+    # because a handful is what a callback line can be judged from and the document
+    # stays short.
+    NOTIFY_RELATED_MESSAGES = 5
     # How many recent conversational runs ``read_run_calls`` returns per batch —
     # bounded like every other cursored log read (``LOG_READ_LIMIT``).
     RUN_CALLS_LIMIT = 10

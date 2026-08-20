@@ -247,7 +247,7 @@ class Penny:
             config=config,
             embedding_model_client=self.embedding_model_client,
         )
-        # Deterministic task (no LLM) that delivers queued send_message output
+        # Deterministic task (no LLM) that delivers queued autonomous messages
         # once the autonomous-send cooldown clears.
         self.send_queue_drainer = SendQueueDrainer(db=self.db, config=config)
 
@@ -294,9 +294,9 @@ class Penny:
         self.channel.set_conversation_machine(self.conversation_machine)
         self.chat_agent.set_channel(self.channel)
         self.send_queue_drainer.set_channel(self.channel)
-        # Collector needs the channel so a notify-shaped cycle (a collection whose
-        # ``notify`` flag drives the run-time notify suffix, #1557) can call
-        # send_message to tell the user about a new find.
+        # Collector needs the channel so a cycle can reach the browser addon; the
+        # notification a ``notify`` collection sends after a covered cycle (#1911)
+        # goes through the send queue and the drainer, not through here.
         self.collector.set_channel(self.channel)
         if isinstance(self.channel, IosChannel):
             self.collector._progress_factory = self.channel.make_background_progress_callback

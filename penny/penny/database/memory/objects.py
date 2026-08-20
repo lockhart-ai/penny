@@ -44,7 +44,9 @@ from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
 from penny.constants import (
+    COLLECTOR_COVERED_REASON,
     WRITE_GATE_MUTATING_OUTCOMES,
+    WRITE_GATE_STOP_REASONS,
     PennyConstants,
     RunOutcome,
     WriteGateOutcome,
@@ -900,18 +902,29 @@ def _run_tool_calls(prompts: list[PromptLog]) -> list[tuple[str, object]]:
 
 def _ended_via_write_gate_stop(prompts: list[PromptLog]) -> bool:
     """True when a write-gate STOP ended the run (#1587): the run reached a clean
-    outcome (``no_work`` / ``worked``) but recorded NO ``done()`` call.
+    outcome (``no_work`` / ``worked``) carrying one of the DECLARED stop reasons.
 
-    Structural signal, no new column: in the normal path a ``no_work`` / ``worked``
-    close always follows a successful ``done()`` (that's how the outcome is
-    determined), so a clean outcome with no ``done()`` in the trace can only be a
-    tool STOP — the collector exited at the chokepoint before ``done()``.  Historical
-    rows never satisfy it (they all closed via ``done()``), so it never misfires."""
+    Read against the declared table rather than inferred from the absence of a
+    ``done()`` call (#1911).  That inference held while ``done()`` was how every clean
+    cycle closed, so "clean and no done" could only be a STOP; a cycle now closes
+    CLEANLY when its program is covered, with no ``done()`` either, and the old read
+    would have called every completed run a write-gate stop.  The stamped reason is
+    the fact that actually distinguishes them, and it was always there."""
     outcome, reason, _ = _run_outcome(prompts)
-    if not reason or outcome not in (RunOutcome.NO_WORK.value, RunOutcome.WORKED.value):
+    if outcome not in (RunOutcome.NO_WORK.value, RunOutcome.WORKED.value):
         return False
-    calls = _run_tool_calls(prompts)
-    return bool(calls) and not any(name == "done" for name, _ in calls)
+    return reason in set(WRITE_GATE_STOP_REASONS.values())
+
+
+def _completed_its_program(prompts: list[PromptLog]) -> bool:
+    """True when the run closed by COVERING its program (#1911) — the collector's
+    ordinary end, read off the stamped reason the collector wrote.
+
+    A completed cycle's reason opens with the declared completion phrase and may carry
+    what telling the user came to after it, so the test is a prefix rather than
+    equality: the notification note is part of the same one reason."""
+    _, reason, _ = _run_outcome(prompts)
+    return reason is not None and reason.startswith(COLLECTOR_COVERED_REASON)
 
 
 def _run_tool_failures(prompts: list[PromptLog]) -> int:
@@ -1273,16 +1286,19 @@ def _run_origin(prompts: list[PromptLog]) -> str:
 
 
 def _run_conclusion(prompts: list[PromptLog]) -> str:
-    """How the run ended, STRUCTURALLY (#1569): ``penny: <reply>`` (chat — the
-    user-facing reply stays model-authored), ``done: <outcome>`` (a collector that
-    closed via the argless ``done()`` — its structural outcome enum, never a
-    model-authored summary), ``stopped: <reason>`` (a write-gate STOP at the
-    chokepoint, #1587), or ``ended: <reason>`` (a collector that never closed
-    cleanly — its structural no-``done()`` reason).  Chat vs. collector is read off
-    ``run_target`` (collectors stamp it, chat doesn't)."""
+    """How the run ended, STRUCTURALLY (#1569/#1911): ``penny: <reply>`` (chat — the
+    user-facing reply stays model-authored), ``stopped: <reason>`` (a write-gate STOP
+    at the chokepoint, #1587), ``completed: <reason>`` (a collector whose program's
+    calls all ran — the ordinary end, carrying what telling the user came to when the
+    collection notifies), ``done: <outcome>`` (a collector that closed EARLY via the
+    argless ``done()``), or ``ended: <reason>`` (a collector that never closed at all —
+    its structural no-close reason).  Chat vs. collector is read off ``run_target``
+    (collectors stamp it, chat doesn't)."""
     outcome, reason, target = _run_outcome(prompts)
     if _ended_via_write_gate_stop(prompts):
         return f"stopped: {reason}"
+    if _completed_its_program(prompts):
+        return f"completed: {reason}"
     if target is not None:  # a collector run
         if any(name == "done" for name, _ in _run_tool_calls(prompts)):
             return f"done: {outcome}" if outcome else ""

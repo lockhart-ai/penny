@@ -41,7 +41,6 @@ from penny.tools.base import RESULT_TAG
 from penny.tools.browse import BrowseTool
 from penny.tools.choose import ChooseTool
 from penny.tools.memory_tools import CursorReadTool, DoneTool, build_memory_tools
-from penny.tools.send_message import SendMessageTool
 from penny.validation import (
     ConditionKey,
     LoopContext,
@@ -188,9 +187,10 @@ class Agent:
     # explicitly to ``run()``.
     system_prompt: str = ""
 
-    # Tool name that signals a successful cycle exit.  ``done`` is the
-    # default; ``send_message`` for agents that signal completion by
-    # delivering a message (notify).
+    # Tool name that signals a successful cycle exit.  ``done`` is the only one:
+    # a collector's EARLY out, for a cycle with nothing left to do.  The cycle's
+    # ordinary end is not a tool call at all since #1911 — the framework closes it
+    # once the program's own calls are covered.
     terminator_tool: str = DoneTool.name
 
     # Recovery move bound into a browse channel-outage error (no browser
@@ -274,10 +274,10 @@ class Agent:
             for tool in tools:
                 self._tool_registry.register(tool)
         self._tool_executor = ToolExecutor(self._tool_registry, timeout=config.tool_timeout)
-        # Background subagents exit via the terminator tool (`done` / `send_message`)
-        # — they keep tools available on the final step so the model can call its
-        # exit tool. Chat overrides to False because its terminator is final
-        # text output, not a tool call.
+        # Background subagents can exit early via the terminator tool (`done`) — they
+        # keep tools available on the final step so the model can call it. Chat
+        # overrides to False because its terminator is final text output, not a tool
+        # call.
         self._keep_tools_on_final_step = True
         self._on_tool_start_factory: (
             Callable[
@@ -307,9 +307,9 @@ class Agent:
         """Run a scheduled cycle.
 
         Penny is single-user — every agent gets the identical tool surface
-        (memory + browse + send_message), and ``send_message`` resolves the
-        primary recipient itself at execute time.  No per-agent user
-        binding is plumbed through here.
+        (memory + browse), and the framework resolves the primary recipient itself
+        when a finished cycle has something to say.  No per-agent user binding is
+        plumbed through here.
         """
         run_id = uuid.uuid4().hex
         progress: ProgressCallback | None = None
@@ -361,16 +361,7 @@ class Agent:
             on_progress=on_progress,
             progress_scope="background",
         )
-        # A cycle ends successfully on a real ``done()`` tool call OR a write-gate
-        # STOP (#1587) — both are clean, deliberate closes at the chokepoint, so the
-        # cursor commits and the tick isn't re-run.  A model that signals completion
-        # as prose instead is not accommodated (no text-form parsing) — the cycle is
-        # not successful, its cursor doesn't commit, and it re-runs next tick, guided
-        # toward a structured ``done()`` by the in-loop tool-call nudge.
-        success = any(
-            record.tool == self.terminator_tool or record.stop_reason is not None
-            for record in response.tool_calls
-        )
+        success = self._closed_cleanly(response)
 
         # Commit every cursored read's pending advance on a productive cycle,
         # discard on a failed one, so a cursor only moves over input actually
@@ -383,6 +374,25 @@ class Agent:
                 cursor_tool.discard_pending()
 
         return CycleResult(success=success, response=response)
+
+    def _closed_cleanly(self, response: ControllerResponse) -> bool:
+        """Did this cycle reach a clean, deliberate close?
+
+        The base answer is the terminator tool or a write-gate STOP (#1587) — both are
+        deliberate closes at the chokepoint, so the cursor commits and the tick isn't
+        re-run.  A model that signals completion as prose instead is not accommodated
+        (no text-form parsing): the cycle is not successful, its cursor doesn't commit,
+        and it re-runs next tick.
+
+        A template method rather than an expression inline, because the ``Collector``
+        adds the close its own run type has (#1911): a cycle whose PROGRAM's calls have
+        all executed is finished, read off the program rather than announced by the
+        model.  The run type decides what closing means; the shell just asks.
+        """
+        return any(
+            record.tool == self.terminator_tool or record.stop_reason is not None
+            for record in response.tool_calls
+        )
 
     @staticmethod
     def _consumed_input(success: bool, response: ControllerResponse) -> bool:
@@ -593,7 +603,7 @@ class Agent:
                 )
                 self._absorb_tool_step_result(result, messages, tool_call_records, source_urls)
                 await self.after_step(result.records, result.messages, messages)
-                if self.should_stop_loop(result.records):
+                if self.should_stop_loop(tool_call_records):
                     logger.info("Loop stop requested after step %d/%d", step + 1, steps)
                     return ControllerResponse(answer="", tool_calls=tool_call_records)
                 continue
@@ -763,17 +773,22 @@ class Agent:
                 if content:
                     self._tool_result_text.append(content)
 
-    def should_stop_loop(self, step_records: list[ToolCallRecord]) -> bool:
+    def should_stop_loop(self, records: list[ToolCallRecord]) -> bool:
         """Check if the loop should stop early.
 
-        Default: any *successful* call to the ``done`` tool is a graceful
-        terminator.  A done call whose args failed validation (missing
-        required ``success``/``summary`` fields) keeps the loop going so
-        the model sees the validation error and can retry with the full
-        triple — otherwise the cycle would exit with a recorded-but-
-        empty done and produce a misleading audit row.
+        ``records`` is the run's WHOLE ordered tool-call history including the step
+        that just ran — not that step alone.  The base answer reads the same either
+        way (a successful ``done()`` in an earlier step would already have stopped the
+        loop), and what needs the history is the ``Collector``'s coverage read (#1911):
+        "has every call the program makes executed, in order" is a question about the
+        run, not about one step.
+
+        Default: any *successful* call to the ``done`` tool is a graceful terminator.
+        A done call whose args failed validation keeps the loop going so the model sees
+        the validation error and can retry — otherwise the cycle would exit with a
+        recorded-but-empty done and produce a misleading audit row.
         """
-        return any(record.tool == DoneTool.name and not record.failed for record in step_records)
+        return any(record.tool == DoneTool.name and not record.failed for record in records)
 
     async def _call_model_validated(
         self,
@@ -1120,7 +1135,7 @@ class Agent:
     # ── Tool management ──────────────────────────────────────────────────
 
     def set_channel(self, channel: MessageChannel) -> None:
-        """Bind a channel so this agent can send messages via SendMessageTool."""
+        """Bind a channel so this agent's run can reach the user's channel."""
         self._channel = channel
 
     def _memory_scope(self) -> str | None:
@@ -1148,9 +1163,8 @@ class Agent:
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         """Tool surface — memory + browse, dispatched by ``_memory_scope``.
 
-        ``BackgroundAgent.get_tools`` extends this with ``done`` and
-        (optionally) ``send_message`` for agents that terminate via a
-        terminator tool or deliver outbound to the user.
+        ``BackgroundAgent.get_tools`` extends this with ``done``, the early-out
+        terminator a background cycle keeps.
 
         Builds fresh each cycle so runtime config changes take effect
         immediately and the underlying ``BrowseTool``'s author + cursor
@@ -1701,11 +1715,15 @@ class BackgroundAgent(Agent):
     (read inputs → process → write outputs → done) and need more loop
     iterations than a single chat turn.
 
-    Adds ``done`` and ``send_message`` to the chat-style tool surface
-    so background flows have a way to terminate and deliver to the
-    user.  Chat agents reply inline via final text and don't need
-    either — having ``done`` available there causes the model to call
-    it instead of producing a reply.
+    Adds ``done`` to the chat-style tool surface so a background cycle with
+    nothing left to do has a way out.  Chat agents reply inline via final text and
+    must not have it — having ``done`` available there causes the model to call it
+    instead of producing a reply.
+
+    It adds NO ``send_message`` (#1911).  Telling the user is not something a cycle
+    does any more: the framework enters a scoped micro-context once the cycle's
+    program is covered and queues the message itself, so there is no send call left
+    on any surface for a decayed tool-call envelope to fail on.
     """
 
     # A collector acts ONLY through tool calls, so a draw carrying none is invalid
@@ -1741,15 +1759,4 @@ class BackgroundAgent(Agent):
     def get_tools(self, run_id: str | None = None) -> list[Tool]:
         tools = super().get_tools(run_id)
         tools.append(DoneTool())
-        # send_message only enters the surface when a channel is wired, since the
-        # drain schedule needs one to deliver.  The tool itself only enqueues, so
-        # it takes no channel — it's attributed to the bound collection
-        # (``_memory_scope()``) so the queue records which collector queued it.
-        if self._channel is not None:
-            tools.append(
-                SendMessageTool(
-                    agent_name=self._memory_scope() or self.name,
-                    db=self.db,
-                )
-            )
         return tools

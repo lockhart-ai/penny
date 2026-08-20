@@ -20,9 +20,12 @@ from penny.agents.base import CycleResult
 from penny.agents.collector import Collector
 from penny.agents.models import ControllerResponse, ModelCallError, RunAbort, ToolCallRecord
 from penny.constants import (
+    COLLECTOR_COVERED_REASON,
+    COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
     MutationAction,
     MutationActor,
+    PennyConstants,
     RunOutcome,
     WriteGateOutcome,
 )
@@ -32,6 +35,7 @@ from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmResponse
+from penny.program import ProgramCall
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
 from penny.tests.conftest import require_memory
@@ -48,6 +52,7 @@ from penny.tools.memory_tools import (
     build_memory_tools,
     collector_tool_surface,
 )
+from penny.tools.micro_context import NOTIFY_SYSTEM_PROMPT
 
 
 def _llm_client(db: Database | None = None) -> LlmClient:
@@ -714,17 +719,10 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         '1. log_read("user-messages")\n'
         "2. browse for new games\n"
         '3. collection_write("board-games", entries=[...])\n'
-        "4. done()\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- End every cycle with `done()` — it takes NO arguments.  It just marks the cycle "
-        "finished; the run record is generated automatically from the tool calls you actually "
-        "made, so there is nothing to summarise or report.\n"
-        "- If nothing new matched, this is a QUIET cycle: do NOT force a `collection_write` "
-        "just to have one — read your sources, then call `done()`.  Quiet cycles are normal "
-        "and expected.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
@@ -738,11 +736,11 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
     )
 
 
-# ── Notify steps + injected terminal (emission-as-property, #1557) ────────────
+# ── The composed prompt carries ONLY the skill (#1911) ───────────────────────
 
 # A skill-rendered extraction_prompt (every step one canonical tool call, NO
 # done() — the chat ledger has no done tool, so a render cannot produce one) —
-# the kitchen-sink case the continuous-script render is asserted against.
+# the kitchen-sink case the composed prompt is asserted against.
 _NOTIFY_RENDERED_PROMPT = (
     "Collect indie metroidvania releases and keep me posted on the good ones.\n"
     '1. browse(queries=["new indie metroidvania releases"], extract="pull out the '
@@ -752,20 +750,25 @@ _NOTIFY_RENDERED_PROMPT = (
 )
 
 
-def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true():
-    """A notify=true collection composes ONE continuous numbered program (#1557):
-    the stored steps 1..A, the notify steps A+1..A+4, then the injected terminal
-    ``done()`` — no headers, no lead-in, asserted char-for-char (kitchen-sink: a
-    skill-rendered extraction_prompt).  Nothing here is ever written into the
-    stored prompt; it is appended at assembly time only."""
-    target = MemoryRow(
+def test_compose_prompt_carries_only_the_skill_when_notify_true():
+    """THE WATCHED DELETION (#1911): a notify=true collection's composed prompt is the
+    stored program and nothing else — asserted char-for-char, so the retired tail
+    cannot come back by accident.
+
+    What is gone, and why each one: the four notify steps (telling the user is a
+    framework-entered micro-context after the cycle, not four more steps inside it —
+    42 of 49 measured cycle deaths landed in that tail), and the injected terminal
+    ``done()`` (the cycle ends when the program's own calls are covered, which is a
+    read of the program rather than a move the model makes).  A notify=true prompt is
+    now byte-identical to the same collection's notify=false prompt."""
+    quiet = MemoryRow(
         name="indie-metroidvanias",
         type="collection",
         description="Indie metroidvania releases the user tracks",
         archived=False,
-        notify=True,
         extraction_prompt=_NOTIFY_RENDERED_PROMPT,
     )
+    target = quiet.model_copy(update={"notify": True})
 
     composed = Collector._compose_prompt(target, None)
 
@@ -774,28 +777,24 @@ def test_compose_prompt_appends_notify_steps_and_terminal_done_when_notify_true(
         "Description: Indie metroidvania releases the user tracks\n"
         "\n"
         f"{_NOTIFY_RENDERED_PROMPT}\n"
-        '3. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
-        "the user's past messages closest to this find.\n"
-        '4. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
-        "your own past replies about it.\n"
-        "5. Compose one short, friendly message: a quick greeting, what you just found "
-        "(the key detail in plain words), the source URL if there is one, and — only if "
-        "one of those past messages is genuinely related — a one-line callback to it.\n"
-        "6. send_message(content=<the message>)\n"
-        "7. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
     assert composed == expected, (
         f"Composed notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
     )
+    # The flag no longer changes a single character of what the model reads.
+    assert Collector._compose_prompt(quiet, None) == composed
+    # Named gate cases: the retired steps and terminal are absent by name.
+    for retired in ("read_similar", "send_message", "done()"):
+        assert retired not in composed
 
 
-def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
-    """Uniform for legacy hand-authored collections (#1557), including the
-    unnumbered-prose shape: with no leading step numbers in the stored prompt,
-    A = 0, so the injected notify steps number 1..4 and the terminal done() is 5
-    — byte-for-byte."""
+def test_compose_prompt_appends_nothing_to_a_prose_prompt():
+    """Uniform for legacy hand-authored collections: with nothing appended at all, an
+    unnumbered-prose prompt composes to itself.  The step-numbering machinery that had
+    to continue from the stored prompt's highest step is gone with the steps it
+    numbered, so there is no ``A`` to compute and no way for it to be computed wrong."""
     legacy_prompt = (
         "Watch the summit webcam page, read the status banner, and record the "
         "current trail status in the collection under the key `trail`."
@@ -816,21 +815,43 @@ def test_compose_prompt_numbers_injected_steps_from_one_for_prose_prompt():
         "Description: Summit trail status\n"
         "\n"
         f"{legacy_prompt}\n"
-        '1. read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
-        "the user's past messages closest to this find.\n"
-        '2. read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
-        "your own past replies about it.\n"
-        "3. Compose one short, friendly message: a quick greeting, what you just found "
-        "(the key detail in plain words), the source URL if there is one, and — only if "
-        "one of those past messages is genuinely related — a one-line callback to it.\n"
-        "4. send_message(content=<the message>)\n"
-        "5. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
     assert composed == expected, (
         f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
     )
+
+
+def test_the_retired_notify_and_done_prompt_constants_are_gone():
+    """THE WATCHED DELETION, named (#1911): the two prompt constants that carried the
+    in-cycle notify tail and the injected terminal no longer exist.
+
+    Pinned as a gate rather than left to the absence of a reference, because a
+    re-introduction would be silent otherwise — and the whole design turns on the
+    cycle having no notify steps and no framework-supplied ``done()`` step at all."""
+    assert not hasattr(Prompt, "COLLECTOR_NOTIFY_STEPS")
+    assert not hasattr(Prompt, "COLLECTOR_DONE_STEP")
+
+
+def test_send_message_is_not_on_the_collector_surface(test_config, tmp_path):
+    """THE WATCHED DELETION, at the surface (#1911): a collector cycle has no
+    ``send_message`` tool, so a cycle cannot message the user at all — telling them is
+    the framework's, after the program is covered.
+
+    ``done`` is still there: it is the model's EARLY out for a cycle with nothing left
+    to do (and the only close a program the framework cannot read has), while the
+    ordinary end is coverage.  And the authoring-time guard reads the same surface, so
+    a stored program naming ``send_message`` is refused rather than persisted."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("board-games", "games", extraction_prompt="x" * 30)
+    collector._current_target = db.memories.get("board-games")
+
+    names = {tool.name for tool in collector.get_tools()}
+
+    assert "send_message" not in names
+    assert "done" in names
+    assert "send_message" not in collector_tool_surface(db, collector._model_client)
 
 
 # ── What a CONFIGURED collection's cycle reads (#1907) ────────────────────────
@@ -889,7 +910,6 @@ async def test_configured_collection_cycle_reads_routine_values_and_joined_progr
         "2. collection_write(memory='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
-        "3. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
@@ -940,38 +960,31 @@ async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_c
         "2. collection_write(memory='ferry-departures', "
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
-        "3. done()\n"
         "\n"
         f"{Collector._RUNTIME_RULES}"
     )
 
 
-def test_collector_notify_steps_constants_pinned():
-    """The notify-step template + the injected terminal, pinned verbatim (#1557).
-    The template carries no numbers (assembly numbers it, continuing from the
-    stored prompt) and no done() (the terminal is assembly's).  ``read_similar``'s
-    signature is (memory, anchor, k) — a drift here changes what every notify=true
-    collector is told to do."""
-    assert Prompt.COLLECTOR_NOTIFY_STEPS == (
-        'read_similar(memory="user-messages", anchor=<what you just found>, k=5) — '
-        "the user's past messages closest to this find.",
-        'read_similar(memory="penny-messages", anchor=<what you just found>, k=5) — '
-        "your own past replies about it.",
-        "Compose one short, friendly message: a quick greeting, what you just found "
-        "(the key detail in plain words), the source URL if there is one, and — only if "
-        "one of those past messages is genuinely related — a one-line callback to it.",
-        "send_message(content=<the message>)",
-    )
-    assert Prompt.COLLECTOR_DONE_STEP == "done()"
-
-
 _NOTIFY_SEED_KEY = "Hollow Verge"
 _NOTIFY_SEED_CONTENT = "Hollow Verge — a hand-drawn metroidvania. https://ex.example/hv"
 
+# The two-call program a notify collection runs in these tests: read what is already
+# stored, then write what this cycle found.  Both calls are real collector tools that
+# need nothing but the database, so a cycle can be driven end to end without stubbing
+# the outside world — and two calls is what makes the ORDER in coverage visible.
+_NOTIFY_PROGRAM = (
+    "Keep the user posted on new indie metroidvania releases.\n"
+    '1. collection_read_latest(memory="indie-metroidvanias")\n'
+    '2. collection_write("indie-metroidvanias", entries=[{key: <release name>, '
+    "content: <name + hook + URL>}])"
+)
 
-def _seed_notify_collection(db: Database) -> None:
-    """A notify=true collection holding one existing entry, plus a primary user so a
-    notify-step send_message can enqueue."""
+_DRAWN_MESSAGE = "Hey! Cinder Drift just dropped — a new metroidvania. https://ex.example/cd"
+
+
+def _seed_notify_collection(db: Database, *, notify: bool = True) -> None:
+    """A collection running the two-call program above, holding one existing entry,
+    plus a primary user so a queued notification has a recipient."""
     db.users.save_info(
         sender="+15551230000",
         name="Test User",
@@ -982,128 +995,202 @@ def _seed_notify_collection(db: Database) -> None:
     db.memories.create_collection(
         "indie-metroidvanias",
         "Indie metroidvania releases",
-        extraction_prompt=_NOTIFY_RENDERED_PROMPT,
+        extraction_prompt=_NOTIFY_PROGRAM,
         schedule="FREQ=HOURLY",
-        notify=True,
+        notify=notify,
     )
     require_memory(db, "indie-metroidvanias").write(
         [EntryInput(key=_NOTIFY_SEED_KEY, content=_NOTIFY_SEED_CONTENT)], author="producer"
     )
 
 
-@pytest.mark.asyncio
-async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_config, tmp_path):
-    """STOP interplay (#1557): a notify=true run that re-observes the watched key with
-    an UNCHANGED value STOPs at the write gate and never reaches the notify suffix — so
-    a no-change cycle emits NOTHING.  Drives the real loop with a mocked model."""
-    collector, db = _make_collector(test_config, tmp_path)
-    _seed_notify_collection(db)
-    collector.set_channel(cast(Any, object()))  # presence flag: enables send_message
+def _program_handler(mock_llm, *, key: str = "Cinder Drift", content: str, drawn: str | None):
+    """A handler that runs the two-call program and then answers the notify draw.
+
+    It branches on the CONVERSATION rather than on a call ordinal — the notify draw by
+    its own system prompt, the program step by whether a tool result has come back yet
+    — so a test that runs two cycles gets the same behaviour in each.
+
+    ``drawn`` is what the notify micro-context replies; ``None`` makes it reply with
+    something that is not a message at all, which is how the no-usable-draw path is
+    exercised without reaching for a mock of the micro-context itself."""
 
     def handler(request: dict, count: int) -> LlmResponse:
-        # The only step the model gets to make: the write STOPs the loop before send.
+        messages = request["messages"]
+        if messages[0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
+            return mock_llm._make_text_response(request, drawn or "I could not think of anything.")
+        if not any(message.get("role") == "tool" for message in messages):
+            return mock_llm._make_tool_call_response(
+                request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+            )
         return mock_llm._make_tool_call_response(
             request,
             "collection_write",
-            {
-                "memory": "indie-metroidvanias",
-                "entries": [{"key": _NOTIFY_SEED_KEY, "content": _NOTIFY_SEED_CONTENT}],
-            },
+            {"memory": "indie-metroidvanias", "entries": [{"key": key, "content": content}]},
         )
 
-    mock_llm.set_response_handler(handler)
+    return handler
 
-    await collector.run_for("indie-metroidvanias")
 
-    # The write-gate STOP closed the cycle at the chokepoint — the model was asked
-    # exactly once (the write), and nothing was queued to the user.
-    assert len(mock_llm.requests) == 1
-    assert db.send_queue.next_pending() is None
+def _run_reason(db: Database) -> str:
+    """The reason stamped on the CYCLE's run — the run record's own account of which
+    terminal shape it had.
+
+    Selected by agent name because the notify draw is its own ledger-visible run beside
+    it (that separation is the point: two contexts, two runs), so "the run" has to say
+    which one."""
+    runs = [run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"]
+    assert len(runs) == 1
+    return runs[0]["run_reason"]
+
+
+def _notify_draws(db: Database) -> list[dict]:
+    """The notify micro-context's own runs, attributed under its own ledger identity."""
+    return [
+        run
+        for run in db.messages.get_prompt_log_runs()
+        if run["agent_name"] == PennyConstants.NOTIFY_COMPOSE_AGENT_NAME
+    ]
 
 
 @pytest.mark.asyncio
-async def test_notify_cycle_composes_and_sends_on_a_productive_write(
-    mock_llm, test_config, tmp_path
-):
-    """The productive path (#1557): a notify=true run that writes a NEW entry does not
-    STOP, so it runs the notify suffix in the same cycle — reaching send_message and
-    queuing one message to the user."""
+async def test_a_covered_cycle_queues_exactly_one_notification(mock_llm, test_config, tmp_path):
+    """THE TRIGGER (#1911): a notify=true cycle that runs its program to completion
+    without a STOP enters the notify micro-context and hands what it writes to the
+    existing send queue.
+
+    Three things are asserted together because they are one mechanism: the loop closed
+    on COVERAGE (the model was never asked for a ``done()`` and never made one), the
+    micro-context was asked exactly once on its own scoped prompt, and the queue holds
+    the drawn message under the collection that produced it.  The run record says which
+    terminal shape this was."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)
-    collector.set_channel(cast(Any, object()))
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            content="Cinder Drift — a new metroidvania. https://ex.example/cd",
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+        )
+    )
 
-    def handler(request: dict, count: int) -> LlmResponse:
-        if count == 1:  # a productive write — a genuinely new find, no STOP
-            return mock_llm._make_tool_call_response(
-                request,
-                "collection_write",
-                {
-                    "memory": "indie-metroidvanias",
-                    "entries": [
-                        {
-                            "key": "Cinder Drift",
-                            "content": "Cinder Drift — a new metroidvania. https://ex.example/cd",
-                        }
-                    ],
-                },
-            )
-        if count == 2:  # the notify suffix's send step
-            return mock_llm._make_tool_call_response(
-                request, "send_message", {"content": "Found a new one: Cinder Drift! 🎮"}
-            )
-        return mock_llm._make_tool_call_response(request, "done", {})
+    success, _ = await collector.run_for("indie-metroidvanias")
 
-    mock_llm.set_response_handler(handler)
+    assert success is True
+    # The two program calls, then the ONE notify draw — nothing else, and no done().
+    assert len(mock_llm.requests) == 3
+    assert len(_notify_draws(db)) == 1  # its own ledger identity, beside the cycle's run
+    pending = db.send_queue.pending_items()
+    assert [item.content for item in pending] == [_DRAWN_MESSAGE]
+    assert pending[0].collection == "indie-metroidvanias"
+    assert _run_reason(db) == f"{COLLECTOR_COVERED_REASON}; the user was told"
+
+
+@pytest.mark.asyncio
+async def test_a_covered_cycle_without_notify_stays_quiet(mock_llm, test_config, tmp_path):
+    """The completed-QUIET shape: the same covered cycle on a collection that does not
+    notify draws nothing and queues nothing, and its record says it completed without
+    claiming anybody was told."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            content="Cinder Drift — a new metroidvania. https://ex.example/cd",
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+        )
+    )
 
     await collector.run_for("indie-metroidvanias")
 
-    pending = db.send_queue.next_pending()
-    assert pending is not None
-    assert "Cinder Drift" in pending.content
+    assert len(mock_llm.requests) == 2  # the program's two calls, no notify draw
+    assert db.send_queue.next_pending() is None
+    assert _run_reason(db) == COLLECTOR_COVERED_REASON
+
+
+@pytest.mark.asyncio
+async def test_an_undrawable_notification_records_honestly_and_sends_nothing(
+    mock_llm, test_config, tmp_path
+):
+    """Visible degradation (#1911): when no usable message can be drawn within the
+    reroll budget, the cycle sends NOTHING and its run record says so — never a silent
+    skip, and never a crash that would lose the write the cycle already made.
+
+    The draw here comes back as prose with no MESSAGE line at all, which is a contract
+    violation the micro-context re-rolls and then fails honestly."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            content="Cinder Drift — a new metroidvania. https://ex.example/cd",
+            drawn=None,
+        )
+    )
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert db.send_queue.next_pending() is None
+    # The find still landed — the failure costs the message, not the work.
+    assert require_memory(db, "indie-metroidvanias").get("Cinder Drift")
+    assert _run_reason(db) == (
+        f"{COLLECTOR_COVERED_REASON}; nothing was sent — no usable message could be written"
+    )
+
+
+@pytest.mark.asyncio
+async def test_notify_cycle_sends_nothing_on_a_no_change_write(mock_llm, test_config, tmp_path):
+    """STOP interplay (#1557, carried to #1911): a notify=true run that re-observes the
+    watched key with an UNCHANGED value STOPs at the write gate, so a no-change cycle
+    emits NOTHING.
+
+    The STOP lands on the very call that would otherwise COMPLETE the program, which is
+    exactly why the trigger reads it: coverage alone would call this a finished job and
+    tell the user about a find that never happened."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            key=_NOTIFY_SEED_KEY,
+            content=_NOTIFY_SEED_CONTENT,
+            drawn=f"MESSAGE: {_DRAWN_MESSAGE}",
+        )
+    )
+
+    await collector.run_for("indie-metroidvanias")
+
+    # The read, then the write that STOPped — and no notify draw after it.
+    assert len(mock_llm.requests) == 2
+    assert db.send_queue.next_pending() is None
+    assert _run_reason(db) == WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
 
 @pytest.mark.asyncio
 async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     mock_llm, test_config, tmp_path
 ):
-    """The anti-spam proof (#1633): the last prose gate in the watch chain is gone.
+    """The anti-spam proof (#1633, carried to #1911): the last prose gate in the watch
+    chain is gone.
 
     A notify=true watch collector observes its key.  The source value CHANGES, so the
     model writes the SAME key with a new value → the write gate auto-refreshes the
     stored baseline IN PLACE (stamping the writing run) and, because CHANGED is not a
-    STOP, the notify suffix runs and emits ONCE.  The refresh is structural, at the
-    write chokepoint — the model needs no ``update_entry`` step (its absence from the
-    write-gate mechanism is pinned in test_memory_store / test_memory_tools; here the
-    model, like the live journey, only writes/notifies).  The NEXT cycle re-observes
-    the now-current value: the gate reads UNCHANGED and STOPs before the notify suffix,
-    so it emits NOTHING.  Changed once → notified once → quiet.  Driven through the
-    real collector loop with a mocked model."""
+    STOP, the program completes and the framework tells the user ONCE.  The NEXT cycle
+    re-observes the now-current value: the gate reads UNCHANGED and STOPs, so it emits
+    NOTHING.  Changed once → notified once → quiet."""
     collector, db = _make_collector(test_config, tmp_path)
     _seed_notify_collection(db)  # baseline: _NOTIFY_SEED_KEY = _NOTIFY_SEED_CONTENT
-    collector.set_channel(cast(Any, object()))  # presence flag: enables send_message
-
     new_value = f"{_NOTIFY_SEED_CONTENT} — now with a playable demo!"
 
-    # Cycle 1: the source changed.  The model writes the SAME key with a new value,
-    # then (CHANGED is not a STOP) runs the notify suffix and sends once — no
-    # update_entry step (the gate refreshed the baseline itself).
-    def changed_handler(request: dict, count: int) -> LlmResponse:
-        if count == 1:
-            return mock_llm._make_tool_call_response(
-                request,
-                "collection_write",
-                {
-                    "memory": "indie-metroidvanias",
-                    "entries": [{"key": _NOTIFY_SEED_KEY, "content": new_value}],
-                },
-            )
-        if count == 2:
-            return mock_llm._make_tool_call_response(
-                request, "send_message", {"content": f"Update on {_NOTIFY_SEED_KEY}!"}
-            )
-        return mock_llm._make_tool_call_response(request, "done", {})
-
-    mock_llm.set_response_handler(changed_handler)
+    mock_llm.set_response_handler(
+        _program_handler(
+            mock_llm,
+            key=_NOTIFY_SEED_KEY,
+            content=new_value,
+            drawn=f"MESSAGE: Update on {_NOTIFY_SEED_KEY}!",
+        )
+    )
     await collector.run_for("indie-metroidvanias")
 
     # The gate auto-refreshed the baseline in place: one row, now the new value,
@@ -1112,31 +1199,17 @@ async def test_changed_cycle_auto_refreshes_baseline_then_next_cycle_is_quiet(
     assert len(stored) == 1
     assert stored[0].content == new_value
     assert stored[0].last_written_by_run_id is not None
-    # CHANGED reached the notify suffix — exactly one message queued.
     assert [item.content for item in db.send_queue.pending_items()] == [
         f"Update on {_NOTIFY_SEED_KEY}!"
     ]
 
-    # Cycle 2: the source is unchanged since the refresh.  The model re-observes the
-    # same value → the gate reads UNCHANGED and STOPs at the write, before the notify
-    # suffix.  The model is asked exactly once and nothing new is queued.
+    # Cycle 2: the source is unchanged since the refresh, so the write STOPs and the
+    # notify draw is never reached.
     requests_before_cycle_2 = len(mock_llm.requests)
-
-    def unchanged_handler(request: dict, count: int) -> LlmResponse:
-        return mock_llm._make_tool_call_response(
-            request,
-            "collection_write",
-            {
-                "memory": "indie-metroidvanias",
-                "entries": [{"key": _NOTIFY_SEED_KEY, "content": new_value}],
-            },
-        )
-
-    mock_llm.set_response_handler(unchanged_handler)
     await collector.run_for("indie-metroidvanias")
 
-    # The write-gate STOP closed cycle 2 at the chokepoint — one model call, no new send.
-    assert len(mock_llm.requests) == requests_before_cycle_2 + 1
+    # The read, then the write that STOPped — and no notify draw after it.
+    assert len(mock_llm.requests) == requests_before_cycle_2 + 2
     assert len(db.send_queue.pending_items()) == 1
 
 
@@ -1244,17 +1317,10 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
-        "2. done()\n"
         "\n"
         "## Runtime rules (always apply)\n"
         "\n"
         "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- End every cycle with `done()` — it takes NO arguments.  It just marks the cycle "
-        "finished; the run record is generated automatically from the tool calls you actually "
-        "made, so there is nothing to summarise or report.\n"
-        "- If nothing new matched, this is a QUIET cycle: do NOT force a `collection_write` "
-        "just to have one — read your sources, then call `done()`.  Quiet cycles are normal "
-        "and expected.\n"
         "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
         "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
         "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
@@ -1339,15 +1405,21 @@ def _target() -> MemoryRow:
     )
 
 
-def test_cycle_result_classifies_worked_no_work_incomplete_failed():
+def test_cycle_result_classifies_worked_no_work_incomplete_failed(test_config, tmp_path):
     """Structural outcome from the tool trace ALONE (#1569) — ``done()`` is an
-    argless sentinel, so there is no ``success``/``summary`` to read.  A ``done()``
-    close is ``worked``/``no_work`` by whether real work landed; without a ``done()``
-    the run never closed cleanly → ``incomplete`` (work landed) / ``failed`` (a
-    bail).  The reason is structural: EMPTY on a clean ``done()`` close (the run
-    record's header falls back to the outcome enum), the no-``done()`` reason
-    otherwise."""
-    # done() + work → worked, empty reason.
+    argless sentinel, so there is no ``success``/``summary`` to read.  An EARLY
+    ``done()`` close is ``worked``/``no_work`` by whether real work landed; with no
+    close at all the run never finished → ``incomplete`` (work landed) / ``failed`` (a
+    bail).  The reason is structural: EMPTY on an early ``done()`` close (the run
+    record's header falls back to the outcome enum), the no-close reason otherwise.
+
+    The collector here is bound to a one-call program none of these traces covers, so
+    the completion branch is out of the way — those shapes are driven end to end
+    above."""
+    collector, _ = _make_collector(test_config, tmp_path)
+    collector._program = (ProgramCall(ordinal=1, tool="log_read"),)
+
+    # an early done() + work → worked, empty reason.
     worked = ControllerResponse(
         answer="",
         tool_calls=[
@@ -1355,7 +1427,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
             ToolCallRecord(tool="done", arguments={}),
         ],
     )
-    assert Collector._cycle_result(worked) == (RunOutcome.WORKED, "")
+    assert collector._cycle_result(worked, None) == (RunOutcome.WORKED, "")
 
     # done() + read only (nothing produced) → no_work, empty reason (a quiet cycle).
     no_work = ControllerResponse(
@@ -1365,7 +1437,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
             ToolCallRecord(tool="done", arguments={}),
         ],
     )
-    assert Collector._cycle_result(no_work) == (RunOutcome.NO_WORK, "")
+    assert collector._cycle_result(no_work, None) == (RunOutcome.NO_WORK, "")
 
     # Wrote durable state but never closed with done() (trailed off) → incomplete
     # (the work is real), stamped with the structural no-done() reason.
@@ -1373,7 +1445,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, mutated=True)],
     )
-    assert Collector._cycle_result(incomplete) == (
+    assert collector._cycle_result(incomplete, None) == (
         RunOutcome.INCOMPLETE,
         "cycle ended without a done() call",
     )
@@ -1384,7 +1456,7 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
         answer=PennyResponse.AGENT_MAX_STEPS,
         tool_calls=[ToolCallRecord(tool="browse", arguments={"queries": ["x"]})],
     )
-    assert Collector._cycle_result(maxed) == (
+    assert collector._cycle_result(maxed, None) == (
         RunOutcome.FAILED,
         "max steps exceeded — no done() call",
     )
@@ -1401,19 +1473,29 @@ def test_cycle_result_classifies_worked_no_work_incomplete_failed():
             error=ModelCallError(error_class="LlmTimeoutError", message="Request timed out."),
         ),
     )
-    assert Collector._cycle_result(aborted) == (
+    assert collector._cycle_result(aborted, None) == (
         RunOutcome.FAILED,
         "model call failed at step 5 after read_similar: LlmTimeoutError: Request timed out.",
     )
 
+    # A program the framework cannot READ gets its own line (#1911): with no runnable
+    # call in it there was never a structural close available, and saying so is the
+    # difference between a diagnosable state and one found by exclusion.
+    collector._program = ()
+    assert collector._cycle_result(incomplete, None) == (
+        RunOutcome.INCOMPLETE,
+        COLLECTOR_UNREADABLE_PROGRAM_REASON,
+    )
 
-def test_cycle_result_write_gate_stop_closes_cleanly():
+
+def test_cycle_result_write_gate_stop_closes_cleanly(test_config, tmp_path):
     """A write-gate STOP (#1587) closes the cycle at the chokepoint with NO done():
     a watch's unchanged re-observation carries ``stop_reason`` on the write record —
     the outcome is a clean ``no_work`` (nothing changed) stamped with the declared
     stop reason, NOT a ``failed`` bail (the mislabel that would fire if the missing
     done() fell through to the no-``done()`` path).  A STOP that also changed durable
     state stays ``worked``."""
+    collector, _ = _make_collector(test_config, tmp_path)
     reason = WRITE_GATE_STOP_REASONS[WriteGateOutcome.KEY_EXISTS_UNCHANGED]
 
     unchanged_stop = ControllerResponse(
@@ -1427,7 +1509,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly():
             )
         ],
     )
-    assert Collector._cycle_result(unchanged_stop) == (RunOutcome.NO_WORK, reason)
+    assert collector._cycle_result(unchanged_stop, None) == (RunOutcome.NO_WORK, reason)
 
     # A STOP preceded by a real write this cycle stays worked (work landed).
     stop_after_work = ControllerResponse(
@@ -1442,7 +1524,7 @@ def test_cycle_result_write_gate_stop_closes_cleanly():
             ),
         ],
     )
-    assert Collector._cycle_result(stop_after_work) == (RunOutcome.WORKED, reason)
+    assert collector._cycle_result(stop_after_work, None) == (RunOutcome.WORKED, reason)
 
 
 def test_should_stop_loop_honors_write_gate_stop(test_config, tmp_path):

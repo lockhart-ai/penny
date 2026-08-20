@@ -3354,30 +3354,32 @@ def collector_tool_surface(db: Database, llm_client: LlmClient) -> frozenset[str
     prompt, so only collector-runnable steps belong in the recipe).
 
     Discovered from the *real* assembly (``build_memory_tools`` + browse + choose +
-    done + send_message, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded
-    list, so it can never drift from what a collector actually runs — add a collector
-    tool and it's covered for free.  ``choose`` rides here so a demonstrated
+    done, i.e. ``BackgroundAgent.get_tools``) rather than a hardcoded list, so it can
+    never drift from what a collector actually runs — add a collector tool and it's
+    covered for free.  ``choose`` rides here so a demonstrated
     ``choose`` step is capture-eligible for a skill (it is not orientation and not a
     write — a read-shaped step) and an ``extraction_prompt`` naming it is not rejected
     at authoring time.  ``include_lifecycle=False`` mirrors the collector's masked
     surface (#1556): the registry-shape tools are absent from a cadence run, so an
     ``extraction_prompt`` that names ``collection_set`` / ``collection_set`` /
     archive / merge is rejected at authoring time rather than persisted into a prompt
-    the collector could never run.  ``BrowseTool`` / ``SendMessageTool`` are imported
-    lazily: ``send_message`` imports ``DoneTool`` from this module, so a top-level
-    import here would close that cycle.
+    the collector could never run.
+
+    ``send_message`` is GONE from it (#1911): telling the user is no longer something
+    a cycle does, so a stored program naming it is refused at authoring time exactly
+    like a hallucinated tool — which is the structural version of the standing rule
+    that the chat agent must map "keep me posted" onto the ``notify`` flag and never
+    onto a step.  ``BrowseTool`` is imported lazily to keep this module's import
+    surface flat.
     """
     from penny.tools.browse import BrowseTool
     from penny.tools.choose import ChooseTool
-    from penny.tools.send_message import SendMessageTool
 
     memory_names = {
         tool.name
         for tool in build_memory_tools(db, llm_client, _VOCAB_PROBE_AGENT, include_lifecycle=False)
     }
-    return frozenset(
-        memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name, SendMessageTool.name}
-    )
+    return frozenset(memory_names | {BrowseTool.name, ChooseTool.name, DoneTool.name})
 
 
 def _reject_unknown_extraction_tools(
@@ -3437,10 +3439,11 @@ def build_memory_tools(
     with how to
     address it, the guess-free fallback that every not-found error points at.
 
-    ``DoneTool`` / ``send_message`` are intentionally not here — they're
-    loop-control, not capability, added in ``BackgroundAgent.get_tools``.
-    Chat replies via final text and must not have ``done`` available, or
-    the model may call it instead of producing a reply.
+    ``DoneTool`` is intentionally not here — it's loop-control, not capability, added
+    in ``BackgroundAgent.get_tools``.  Chat replies via final text and must not have
+    ``done`` available, or the model may call it instead of producing a reply.  There
+    is no ``send_message`` on any surface any more (#1911): an autonomous message is
+    the framework's to write and queue, after a cycle's program is covered.
 
     ``run_id`` is the id of the run that built the surface — the chat turn's run,
     or the collector cycle's — passed as an explicit parameter, never ambient state

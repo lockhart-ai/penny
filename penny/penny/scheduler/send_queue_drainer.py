@@ -1,7 +1,7 @@
 """SendQueueDrainer — delivers queued outbound messages on the send cooldown.
 
-``send_message`` enqueues into ``db.send_queue`` rather than dropping a message
-when the autonomous-send cooldown hasn't elapsed.  This deterministic task is
+A finished cycle's notification is enqueued into ``db.send_queue`` rather than
+dropped when the autonomous-send cooldown hasn't elapsed.  This deterministic task is
 the other half: each tick it pops the oldest pending message and delivers it,
 but only once the flat-interval cooldown has cleared — so no message is lost,
 just delayed.
@@ -10,8 +10,8 @@ It's a plain ``ScheduledTask`` (not an LLM agent): no model calls, all Python.
 Wired as an idle-gated ``PeriodicSchedule`` so a queued message never interrupts
 an active conversation — it goes out during the next idle window.
 
-The cooldown logic is identical to the gate ``send_message`` used to apply
-inline: bypassed when the user has spoken since Penny's last message (the queued
+The cooldown logic is identical to the gate the retired ``send_message`` tool
+used to apply inline: bypassed when the user has spoken since Penny's last message (the queued
 send is then conversational, not autonomous), otherwise the message waits
 ``SEND_COOLDOWN_SECONDS`` since Penny's previous outgoing message of any kind
 (chat reply included — the cooldown is per-Penny, not per-collection).
