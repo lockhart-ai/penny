@@ -35,6 +35,7 @@ from penny.database.models import MemoryRow
 from penny.database.skills import SkillParameter
 from penny.llm.client import LlmClient
 from penny.llm.models import LlmConnectionError, LlmResponse
+from penny.notification import NotificationOutcome
 from penny.program import ProgramCall
 from penny.prompts import Prompt
 from penny.responses import PennyResponse
@@ -100,6 +101,18 @@ def _memory(db: Database, name: str):
     memory = db.memory(name)
     assert memory is not None
     return memory
+
+
+_STAMP = "[YYYY-MM-DD HH:MM UTC]"
+
+
+def _normalise_stamps(text: str) -> str:
+    """Collapse every rendered log timestamp to one placeholder so a whole-render
+    literal is stable — the stamps are real wall-clock values written by the test
+    itself.  One helper, because three renders in this file carry stamps (a run-history
+    line, a holdings entry, the whole message array) and three copies of the pattern
+    would drift."""
+    return re.sub(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", _STAMP, text)
 
 
 def _backdate_collected(db: Database, name: str, *, minutes: int) -> None:
@@ -1068,7 +1081,11 @@ async def test_configured_collection_cycle_reads_routine_values_and_joined_progr
     Beside them the ROUTINE says what is running and what it is for, and the VALUES are
     listed by name.  Before this, a cycle read a program of descriptions — told to browse
     "the url of the timetable page to browse each run" — and nothing it could read named
-    the page at all."""
+    the page at all.
+
+    The EMPTY holdings shape rides along (#1914): a collection that has never been
+    written to says so in the plainest words there are, rather than carrying a heading
+    over nothing or leaving the cycle to wonder whether the block failed to render."""
     collector, db = _make_collector(test_config, tmp_path)
     await _configure_timetable_collection(db)
 
@@ -1091,6 +1108,10 @@ async def test_configured_collection_cycle_reads_routine_values_and_joined_progr
         "'content': the value from step 1}])\n"
         "\n"
         f"{Collector._runtime_rules(_FULL_SURFACE)}"
+        "\n"
+        "\n"
+        "## What this collection holds (newest first)\n"
+        "It holds nothing yet."
     )
     assert composed == expected, (
         f"Configured collection prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
@@ -1141,7 +1162,138 @@ async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_c
         "'content': the value from step 1}])\n"
         "\n"
         f"{Collector._runtime_rules(_FULL_SURFACE)}"
+        "\n"
+        "\n"
+        "## What this collection holds (newest first)\n"
+        "It holds nothing yet."
     )
+
+
+# ── What the collection holds (#1914) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_configured_cycle_reads_the_entries_the_collection_already_holds(
+    test_config, tmp_path
+):
+    """THE PRESENTATION (#1914): the entries a collection holds are rendered in the
+    cycle's own prompt, beside the program that acts on them.
+
+    Measured on PR #1906's round-3 run, 15 of 25 quiet cycles completed-and-notified
+    because the model invented a fresh key every time — nothing it could read said what
+    key the value was already stored under, so the write gate saw a NEW_KEY where the
+    value had not changed at all.  Each key renders in INVOCATION form (``key='…'``,
+    the shared entry render the read tools use), so the key the next write should land
+    on is copied rather than derived: the n≤1 anchor discipline, applied to the one
+    fact a re-observing routine cannot do without.
+
+    Presentation only — nothing here says a routine must reuse a key.  A dated digest
+    reads its own past keys and files a new one, which is the same read."""
+    collector, db = _make_collector(test_config, tmp_path)
+    await _configure_timetable_collection(db)
+    require_memory(db, "ferry-departures").write(
+        [
+            EntryInput(key="dawn sailing", content="06:40 from the north pier"),
+            EntryInput(key="last return", content="21:15 from the island"),
+        ],
+        author="collector",
+    )
+
+    composed = _normalise_stamps(await _composed_for(collector, db, "ferry-departures"))
+
+    assert composed == (
+        "You are the collector for the `ferry-departures` collection.\n"
+        "Description: the dawn sailing on the north pier timetable\n"
+        "\n"
+        "The routine you run: check_timetable — read a timetable page and record a "
+        "sailing time\n"
+        "The values it is pointed at:\n"
+        "- url: https://northpier.example/departures\n"
+        "- line: the dawn sailing\n"
+        "\n"
+        "1. browse(queries=['https://northpier.example/departures'], "
+        "extract='the dawn sailing')\n"
+        "2. collection_write(memory='ferry-departures', "
+        "entries=[{'key': {the key the extracted value is stored under}, "
+        "'content': the value from step 1}])\n"
+        "\n"
+        f"{Collector._runtime_rules(_FULL_SURFACE)}"
+        "\n"
+        "\n"
+        "## What this collection holds (newest first)\n"
+        "The entries it holds right now, and the key each one is stored under.\n"
+        f"1. {_STAMP} key='last return' 21:15 from the island\n"
+        f"2. {_STAMP} key='dawn sailing' 06:40 from the north pier"
+    ), f"Holdings render mismatch:\n{composed!r}"
+
+
+def _expected_holdings(newest_first: range, tail: str) -> str:
+    """The whole holdings block for the numbered day-entries the truncation test seeds,
+    written out independently of the production render so the assertion is a contract
+    rather than an echo."""
+    body = "\n".join(
+        f"{position}. {_STAMP} key='day-{index:02d}' reading {index}"
+        for position, index in enumerate(newest_first, start=1)
+    )
+    return (
+        "\n"
+        "\n"
+        "## What this collection holds (newest first)\n"
+        "The entries it holds right now, and the key each one is stored under.\n"
+        f"{body}\n"
+        f"{tail}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_holdings_beyond_the_budget_state_how_many_are_not_shown(test_config, tmp_path):
+    """The TRUNCATED shape: a collection deeper than the block's reading budget renders
+    its newest entries and then says, in a number, how many it left out.
+
+    A prompt-budget bound of the self-state header's kind — the cut is stated, never
+    silent, so a cycle reasoning about a collection it cannot see all of knows that is
+    what it is doing.  The overflow line names no fetch tool on purpose: a cycle's
+    surface is scoped to its program's calls, so a tool named here might not be on it.
+
+    Both counts are pinned — a remainder of two and, after one of the hidden entries is
+    deleted, of one — because the singular arm is the one a plural-only literal would
+    let rot."""
+    collector, db = _make_collector(test_config, tmp_path)
+    await _configure_timetable_collection(db)
+    collection = require_memory(db, "ferry-departures")
+    limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
+    for index in range(1, limit + 3):
+        collection.write(
+            [EntryInput(key=f"day-{index:02d}", content=f"reading {index}")], author="collector"
+        )
+
+    section = _normalise_stamps(collector._holdings_section("ferry-departures"))
+
+    # Newest-first: the last-written `limit` entries show, the two oldest are counted.
+    shown = range(limit + 2, 2, -1)
+    assert section == _expected_holdings(shown, "2 older entries not shown."), (
+        f"Truncated holdings mismatch:\n{section!r}"
+    )
+
+    # One of the hidden entries goes: the remainder reads as the one entry it now is.
+    collection.delete("day-01")
+    section = _normalise_stamps(collector._holdings_section("ferry-departures"))
+    assert section == _expected_holdings(shown, "1 older entry not shown."), (
+        f"Singular remainder mismatch:\n{section!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_collection_that_vanished_mid_cycle_renders_no_holdings_block(
+    test_config, tmp_path
+):
+    """Visible degradation, not a blank: a target whose row is gone by the time the
+    prompt is composed leaves the block out entirely — the prompt is byte-identical to
+    what it was — and says so in the log rather than rendering a heading over nothing."""
+    collector, db = _make_collector(test_config, tmp_path)
+    await _configure_timetable_collection(db)
+
+    assert collector._holdings_section("a-collection-that-is-not-there") == ""
 
 
 _NOTIFY_SEED_KEY = "Hollow Verge"
@@ -1161,9 +1313,15 @@ _NOTIFY_PROGRAM = (
 _DRAWN_MESSAGE = "Hey! Cinder Drift just dropped — a new metroidvania. https://ex.example/cd"
 
 
-def _seed_notify_collection(db: Database, *, notify: bool = True) -> None:
+def _seed_notify_collection(
+    db: Database, *, notify: bool = True, extraction_prompt: str = _NOTIFY_PROGRAM
+) -> None:
     """A collection running the two-call program above, holding one existing entry,
-    plus a primary user so a queued notification has a recipient."""
+    plus a primary user so a queued notification has a recipient.
+
+    ``extraction_prompt`` is a parameter so a test can run the same collection on a
+    READ-ONLY routine — the shape that has nothing to mutate, so the only thing its
+    cycle does is tell the user (#1914)."""
     db.users.save_info(
         sender="+15551230000",
         name="Test User",
@@ -1174,7 +1332,7 @@ def _seed_notify_collection(db: Database, *, notify: bool = True) -> None:
     db.memories.create_collection(
         "indie-metroidvanias",
         "Indie metroidvania releases",
-        extraction_prompt=_NOTIFY_PROGRAM,
+        extraction_prompt=extraction_prompt,
         schedule="FREQ=HOURLY",
         notify=notify,
     )
@@ -1211,16 +1369,21 @@ def _program_handler(mock_llm, *, key: str = "Cinder Drift", content: str, drawn
     return handler
 
 
-def _run_reason(db: Database) -> str:
-    """The reason stamped on the CYCLE's run — the run record's own account of which
-    terminal shape it had.
+def _collector_run(db: Database) -> dict:
+    """The CYCLE's own run row.
 
     Selected by agent name because the notify draw is its own ledger-visible run beside
     it (that separation is the point: two contexts, two runs), so "the run" has to say
     which one."""
     runs = [run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"]
     assert len(runs) == 1
-    return runs[0]["run_reason"]
+    return runs[0]
+
+
+def _run_reason(db: Database) -> str:
+    """The reason stamped on the CYCLE's run — the run record's own account of which
+    terminal shape it had."""
+    return _collector_run(db)["run_reason"]
 
 
 def _notify_draws(db: Database) -> list[dict]:
@@ -1285,6 +1448,72 @@ async def test_a_covered_cycle_without_notify_stays_quiet(mock_llm, test_config,
     assert len(mock_llm.requests) == 2  # the program's two calls, no notify draw
     assert db.send_queue.next_pending() is None
     assert _run_reason(db) == COLLECTOR_COVERED_REASON
+
+
+# A routine with no write in it at all — the shape the produced-work fold exists for:
+# nothing it does carries ``mutated=True``, so the ONLY thing its cycle produced is the
+# notification the framework queued afterwards.
+_READ_ONLY_PROGRAM = (
+    "Look in on what the collection already holds and tell the user about it.\n"
+    '1. collection_read_latest(memory="indie-metroidvanias")'
+)
+
+
+def _read_only_handler(mock_llm, *, drawn: str):
+    """Runs the one-call read-only program, then answers the notify draw — branching on
+    the CONVERSATION (the draw by its own system prompt) like ``_program_handler``."""
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        if request["messages"][0].get("content", "") == NOTIFY_SYSTEM_PROMPT:
+            return mock_llm._make_text_response(request, drawn)
+        return mock_llm._make_tool_call_response(
+            request, "collection_read_latest", {"memory": "indie-metroidvanias"}
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_cycle_that_told_the_user_records_worked(mock_llm, test_config, tmp_path):
+    """THE FOLD, end to end (#1914): a cycle whose routine only READ, and which then
+    told the user what it found, records ``worked``.
+
+    Its tool trace carries no mutation at all, and since #1911 no tool call carries the
+    notification either — so read against the trace alone the cycle looks idle, and the
+    run record said ``no_work`` on the cycle that did the single thing the collection
+    exists for.  The reason line already named the notification; the outcome now agrees
+    with it."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, extraction_prompt=_READ_ONLY_PROGRAM)
+    mock_llm.set_response_handler(_read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}"))
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert [item.content for item in db.send_queue.pending_items()] == [_DRAWN_MESSAGE]
+    run = _collector_run(db)
+    assert run["run_outcome"] == RunOutcome.WORKED.value
+    assert run["run_reason"] == f"{COLLECTOR_COVERED_REASON}; the user was told"
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_cycle_that_told_nobody_still_records_no_work(
+    mock_llm, test_config, tmp_path
+):
+    """The other direction, unchanged: the same read-only cycle on a collection that
+    does NOT notify changed nothing and reached nobody, so it stays ``no_work``.
+
+    The fold counts a queued notification and nothing else — it does not turn every
+    completed cycle into work."""
+    collector, db = _make_collector(test_config, tmp_path)
+    _seed_notify_collection(db, notify=False, extraction_prompt=_READ_ONLY_PROGRAM)
+    mock_llm.set_response_handler(_read_only_handler(mock_llm, drawn=f"MESSAGE: {_DRAWN_MESSAGE}"))
+
+    await collector.run_for("indie-metroidvanias")
+
+    assert db.send_queue.next_pending() is None
+    run = _collector_run(db)
+    assert run["run_outcome"] == RunOutcome.NO_WORK.value
+    assert run["run_reason"] == COLLECTOR_COVERED_REASON
 
 
 @pytest.mark.asyncio
@@ -1424,7 +1653,7 @@ async def test_run_history_section_shows_timestamped_outcomes(test_config, tmp_p
     # Verbatim: newest-first (run-b ran after run-a), each outcome stamped with an
     # absolute UTC timestamp the model can compare against the "Current date and
     # time: … UTC" line (timestamps normalised to a placeholder for stability).
-    section = re.sub(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", "[YYYY-MM-DD HH:MM UTC]", section)
+    section = _normalise_stamps(section)
     assert section == (
         "\n\n## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
@@ -1460,7 +1689,10 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     THE SCOPED SHAPE (#1911): this collection's program is one ``log_read``, so the
     cycle's surface is one ``log_read`` — and every runtime rule names a tool it does not
     have, so the whole rules block is ABSENT rather than instructing calls the model
-    cannot make.  A read-only routine reads a prompt about reading."""
+    cannot make.  A read-only routine reads a prompt about reading.
+
+    The two trailing state blocks sit in their fixed order (#1914): what the collection
+    holds — nothing, here, said plainly — then what its recent runs did."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games",
@@ -1488,11 +1720,10 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     messages = collector._build_messages("", None, system_prompt)
 
     # ── System message: date + body + runtime-rules tail + run history ─────
-    system_text = re.sub(
-        r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0]["content"]
-    )
-    system_text = re.sub(
-        r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\]", "[YYYY-MM-DD HH:MM UTC]", system_text
+    system_text = _normalise_stamps(
+        re.sub(
+            r"Current date and time: [^\n]*", "Current date and time: DATE", messages[0]["content"]
+        )
     )
     expected_system = (
         "Current date and time: DATE\n"
@@ -1502,6 +1733,9 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
+        "\n"
+        "## What this collection holds (newest first)\n"
+        "It holds nothing yet.\n"
         "\n"
         "## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "
@@ -1997,15 +2231,15 @@ def _work_response() -> ControllerResponse:
 
 
 def test_produced_work_distinguishes_state_changes():
-    assert Collector._produced_work(_work_response()) is True
-    assert Collector._produced_work(_idle_response()) is False
-    assert Collector._produced_work(None) is False
+    assert Collector._produced_work(_work_response(), None) is True
+    assert Collector._produced_work(_idle_response(), None) is False
+    assert Collector._produced_work(None, None) is False
     # A failed mutation isn't work.
     failed = ControllerResponse(
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=True)],
     )
-    assert Collector._produced_work(failed) is False
+    assert Collector._produced_work(failed, None) is False
     # The bug this fix targets: a duplicate-rejected write doesn't error
     # (``failed=False``) but changed nothing (``mutated=False``), so it must read
     # as no-work — a successful no-op changed nothing.
@@ -2013,7 +2247,18 @@ def test_produced_work_distinguishes_state_changes():
         answer="",
         tool_calls=[ToolCallRecord(tool="collection_write", arguments={}, failed=False)],
     )
-    assert Collector._produced_work(duplicate) is False
+    assert Collector._produced_work(duplicate, None) is False
+    # THE FOLD (#1914): the framework-queued notification is the cycle's SECOND way of
+    # doing something, and since #1911 no tool call records it — so a cycle whose
+    # routine only read, and which then told the user what it found, is work.  Only
+    # QUEUED counts: the two failure outcomes put nothing in front of the user, so they
+    # leave the cycle exactly as idle as its tool trace says it was.
+    assert Collector._produced_work(_idle_response(), NotificationOutcome.QUEUED) is True
+    assert Collector._produced_work(None, NotificationOutcome.QUEUED) is True
+    assert Collector._produced_work(_idle_response(), NotificationOutcome.NOT_DRAWN) is False
+    assert Collector._produced_work(_idle_response(), NotificationOutcome.NOT_DELIVERABLE) is False
+    # A write still carries the cycle on its own when nothing was sent.
+    assert Collector._produced_work(_work_response(), NotificationOutcome.NOT_DRAWN) is True
 
 
 def test_consumed_input_advances_cursor_on_work_even_without_done():

@@ -52,12 +52,13 @@ from penny.constants import (
     COLLECTOR_UNREADABLE_PROGRAM_REASON,
     WRITE_GATE_STOP_REASONS,
     MutationActor,
+    PennyConstants,
     RunOutcome,
     WriteGateOutcome,
 )
 from penny.database import Database
 from penny.database.memory.types import MemoryNotFoundError
-from penny.database.models import MemoryRow, Skill
+from penny.database.models import MemoryEntry, MemoryRow, Skill
 from penny.database.skill_store import parameters_from_json
 from penny.database.skills import SkillParameter
 from penny.datetime_utils import format_log_timestamp
@@ -68,6 +69,7 @@ from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
 from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import skill_params
+from penny.tools.memory_tools import format_entries
 
 if TYPE_CHECKING:
     pass
@@ -84,6 +86,27 @@ _ROUTINE_GONE = f"{_ROUTINE_HEAD} {{name}} — it is no longer in the routine re
 _VALUES_HEAD = "The values it is pointed at:"
 _VALUES_NONE = f"{_VALUES_HEAD} none — this routine takes none."
 _NO_VALUE = "nothing was supplied for this"
+
+# The composed prompt's holdings block (#1914) — WHAT THE COLLECTION HOLDS at the moment
+# the cycle starts, rendered beside its recent runs.  A cycle can only act on what it is
+# presented, and until now nothing on the surface said what was already stored: a routine
+# re-observing the same thing each cycle had no way to see the key it wrote under last
+# time, so it invented a fresh one and the write gate read NEW_KEY where the value was
+# in fact unchanged (measured: 15 of 25 quiet cycles).  Presentation only — nothing here
+# constrains what a routine may be or which keys it may use; a genuinely many-keyed
+# routine (a dated digest) reads its own past keys and carries on.
+#
+# The entries render through the SAME ``format_entries`` the read tools use, so a key
+# read ambiently is in the invocation form a ``key=`` argument takes — copied, never
+# guessed (n≤1).
+_HOLDINGS_HEAD = "## What this collection holds (newest first)"
+_HOLDINGS_LEAD = "The entries it holds right now, and the key each one is stored under."
+_HOLDINGS_EMPTY = "It holds nothing yet."
+_HOLDINGS_MORE = "{count} older {noun} not shown."
+_HOLDINGS_GONE = (
+    "Collection '%s' vanished between binding the cycle and composing its prompt — the "
+    "cycle runs without the block stating what it holds."
+)
 
 
 class Collector(BackgroundAgent):
@@ -360,16 +383,29 @@ class Collector(BackgroundAgent):
         return rendered if len(rendered) <= 50 else rendered[:47] + "..."
 
     @staticmethod
-    def _produced_work(response: ControllerResponse | None) -> bool:
-        """Did this cycle change a collection or message the user?
+    def _produced_work(
+        response: ControllerResponse | None, notified: NotificationOutcome | None
+    ) -> bool:
+        """Did this cycle change a collection or reach the user?
 
-        Reads the per-call ``ToolCallRecord.mutated`` flag — set from each tool's
-        own structured ``ToolResult`` (a row actually written, an entry
-        moved/deleted, a message actually sent).  A *successful no-op* (a
-        duplicate-rejected write, an update/delete/move on a missing key, a
-        muted/cooled-down send) carries ``mutated=False``, so it correctly reads
-        as idle.  This is what splits the run's ``worked`` / ``no_work`` outcome.
+        TWO sources, because since #1911 a cycle has two ways of doing something and
+        only one of them is a tool call.  The per-call ``ToolCallRecord.mutated`` flag —
+        set from each tool's own structured ``ToolResult`` (a row actually written, an
+        entry moved/deleted) — is what the MODEL did.  A *successful no-op* (a
+        duplicate-rejected write, an update/delete/move on a missing key) carries
+        ``mutated=False``, so it correctly reads as idle.
+
+        The other is the notification the FRAMEWORK queued after the cycle (#1914).
+        Telling the user is the whole point of a collection that notifies, and no tool
+        call carries it any more — so a cycle that ran its routine and told the user
+        recorded ``no_work``, the outcome saying nothing happened on the cycle that did
+        the one thing it exists for.  Only ``QUEUED`` counts: the two failure outcomes
+        put nothing in front of the user, exactly like a muted send's ``mutated=False``.
+
+        This is what splits the run's ``worked`` / ``no_work`` outcome.
         """
+        if notified is NotificationOutcome.QUEUED:
+            return True
         if response is None:
             return False
         return any(record.mutated for record in response.tool_calls)
@@ -418,7 +454,9 @@ class Collector(BackgroundAgent):
           whether durable state changed.  A stopped cycle never notifies.
         - **completed** — every call the program makes executed, in order.  The reason
           says so, and carries what the notification did when the collection notifies:
-          queued, or the honest note that nothing was sent and why.
+          queued, or the honest note that nothing was sent and why.  A queued
+          notification is also WORK (#1914) — it is the only terminal shape where the
+          cycle did something no tool call records.
         - **aborted** — no close at all: durable state changed → ``incomplete``,
           nothing changed → a ``failed`` bail, both naming what ended the run.  With no
           terminator to reach for, a cycle that gave up lands here honestly instead of
@@ -426,7 +464,7 @@ class Collector(BackgroundAgent):
 
         (``cancelled`` is handled separately — a preempted cycle never reaches here.)
         """
-        produced = self._produced_work(response)
+        produced = self._produced_work(response, notified)
         clean = RunOutcome.WORKED if produced else RunOutcome.NO_WORK
         stop = self._stop_reason(response)
         if stop is not None:
@@ -602,12 +640,19 @@ class Collector(BackgroundAgent):
         collection is running and what it declares it needs are the collector's to
         state (#1907), and reading them each cycle means a re-taught routine's current
         description and parameter set are what the cycle sees.
+
+        The two trailing blocks are the cycle's own STATE, read the same way: what the
+        collection holds now (#1914) and what this collector's recent runs did (#1569).
+        Holdings first — the entries are what the program acts ON, so they sit next to
+        it, and the run outcomes close the prompt as they always have.
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
         surface = frozenset(tool.name for tool in self._tool_registry.get_all())
-        return self._compose_prompt(fresh, self._routine(fresh), surface) + (
-            self._run_history_section(fresh.name)
+        return (
+            self._compose_prompt(fresh, self._routine(fresh), surface)
+            + self._holdings_section(fresh.name)
+            + self._run_history_section(fresh.name)
         )
 
     def _routine(self, target: MemoryRow) -> Skill | None:
@@ -618,6 +663,47 @@ class Collector(BackgroundAgent):
         if target.skill_name is None:
             return None
         return self.db.skills.get(target.skill_name)
+
+    def _holdings_section(self, target_name: str) -> str:
+        """A trailing block of what the bound collection HOLDS right now — its entries,
+        newest first, each with the key it is stored under (#1914).
+
+        Presentation, not policy: the block states what is there and nothing about what
+        to do with it, so a routine that re-observes one thing sees the key it wrote
+        under last time and a routine that files a fresh entry each run sees the ones it
+        already filed.  Neither is prescribed; both are now reading their own state
+        instead of guessing at it.
+
+        The window is bounded in the QUERY and the remainder is a COUNT, so a deep
+        collection is never materialized to render twenty lines of it.  A collection
+        that vanished between binding and composing has nothing to state: the block is
+        absent and the prompt is byte-identical to what it was, said out loud rather
+        than swallowed.
+        """
+        memory = self.db.memory(target_name)
+        if memory is None:
+            logger.warning(_HOLDINGS_GONE, target_name)
+            return ""
+        limit = PennyConstants.COLLECTOR_HOLDINGS_LIMIT
+        body = self._holdings_body(memory.read_latest(limit), memory.entry_count())
+        return f"\n\n{_HOLDINGS_HEAD}\n{body}"
+
+    @staticmethod
+    def _holdings_body(newest: list[MemoryEntry], total: int) -> str:
+        """The holdings block's body: the plain empty line, or the newest entries plus
+        an honest count of the ones the budget left out.
+
+        The overflow is a stated number rather than a silent cut — a collection deep
+        enough to overflow is one whose older entries the cycle can still reason about
+        the existence of."""
+        if not newest:
+            return _HOLDINGS_EMPTY
+        shown = f"{_HOLDINGS_LEAD}\n{format_entries(newest)}"
+        rest = total - len(newest)
+        if rest <= 0:
+            return shown
+        noun = "entry" if rest == 1 else "entries"
+        return f"{shown}\n{_HOLDINGS_MORE.format(count=rest, noun=noun)}"
 
     def _run_history_section(self, target_name: str) -> str:
         """A trailing block of this collector's own recent run outcomes (newest
