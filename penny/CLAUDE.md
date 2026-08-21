@@ -613,14 +613,21 @@ the CHANGE (the same page with its ONE controllable fact moved). Three because t
 different claims: a collection arrives from apply EMPTY, so its first observation is a new key and
 a first observation is news; the write-gate STOP that makes no-news structurally silent
 (`KEY_EXISTS_UNCHANGED`) fires only on a SECOND reading of the same value, so "stay quiet and never
-run the notify steps" has no cycle it can fire on until cycle 2 exists; and cycle 3 is then the only
+enter a notification" has no cycle it can fire on until cycle 2 exists; and cycle 3 is then the only
 place a notification is owed. The scorer is structural throughout — the cycle fetched the page the
 job is pointed at, the value it recorded is the page's controllable fact, the baseline write landed,
-the quiet cycle STOPPED at the write chokepoint and neither queued a message nor called
-`send_message`, the change cycle queued exactly ONE naming what moved, the run records state what
-each cycle did, and nothing outside the collection was touched — with the notify read EXPLICITLY off
-the send queue (a cycle enqueues and the drainer is a separate schedule, so a pending-only read
-reports a delivered notification as silence). The seed goes through the production instantiation
+each working cycle COVERED its program, the quiet cycle STOPPED at the write chokepoint and both
+queued nothing and entered no notification, the change cycle queued exactly ONE naming what moved
+and recorded `QUEUED`, the run records state what each cycle did, and nothing outside the collection
+was touched. Since #1911 the cycle checks read the four structural terminal shapes off the run's own
+declared reason (stopped · completed · completed-and-notified · aborted-with-cause) rather than
+inferring a close from an absent `done()`, and both notify claims read the SEND QUEUE beside the run
+record's notification outcome — the queue says what the user will receive, the outcome says what the
+framework decided, and a notification entered then declined is a different finding from one never
+entered. The loud probe additionally holds the stored program against the STRICT rendered dialect
+and the bound cycle's tool surface against that program's calls closed over `Tool.advises`, since an
+unreadable program yields an empty surface and a config-defect run record that every later check
+would report as the model doing nothing. The seed goes through the production instantiation
 seam's own three steps (retarget → **`bind_parameters`** → render), so the stored program carries
 the job's values since #1907, and each case DECLARES which values the join fills (`joins`), asserted
 both ways by the loud probe: four of the five join every value, while the otter census joins NONE —

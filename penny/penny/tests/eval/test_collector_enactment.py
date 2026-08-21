@@ -20,10 +20,10 @@ Three, not two, because the three cycles are three different claims and the midd
 cannot be folded into either neighbour.  A collection arrives from apply EMPTY, so its
 first observation is a new key: it is a baseline, and a first observation is news.  The
 write-gate STOP that makes no-news structurally silent (``KEY_EXISTS_UNCHANGED``) fires
-only on a SECOND reading of the same value — so the "stay quiet, and never run the notify
-steps" contract has no cycle it can fire on until cycle 2 exists.  Cycle 3 is then the
-only place a notification is owed, which is what makes "exactly one per change" a
-measurement rather than a hope.
+only on a SECOND reading of the same value — so "stay quiet, and never enter a
+notification" has no cycle it can fire on until cycle 2 exists.  Cycle 3 is then the only
+place a notification is owed, which is what makes "exactly one per change" a measurement
+rather than a hope.
 
 What the three cycles are asked is the whole watch contract: fetch the page the job is
 pointed at, record what it says, stay silent while nothing has changed, and say something
@@ -31,6 +31,20 @@ exactly once when it has.  Everything is scored off PERSISTED state — the coll
 entries, the run records, and the SEND QUEUE read explicitly (a collector cycle enqueues,
 and the drainer that delivers is a separate schedule, so a pending-only read reports a
 delivered notification as silence).
+
+Since #1911 a cycle CLOSES by covering its program rather than by declaring itself done,
+and telling the user is framework-entered rather than four more steps the model has to
+survive.  So the cycle checks read the four structural terminal shapes off the run's own
+declared reason — stopped at the chokepoint · completed · completed-and-notified ·
+aborted-with-cause — instead of inferring a close from an absent ``done()``, and both
+notify claims read the SEND QUEUE beside the run record's notification outcome: the queue
+says what the user will receive, the outcome says what the framework decided, and a
+notification entered and then declined is a different finding from one never entered.
+The loud probe gained the two things that state now rests on — the stored program PARSES
+under the strict rendered dialect, and a cycle's tool surface is exactly that program's
+calls closed over the advice relation — because an unreadable program yields an empty
+surface and a config-defect run record, which every later check would report as the model
+doing nothing.
 
 The five collections are the five the apply beat leaves behind, transcribed from that
 beat's own measured draws — the configured row (name, routine, injected values, schedule,
@@ -65,12 +79,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from functools import partial
 from typing import NamedTuple
 
 import pytest
 
-from penny.constants import WRITE_GATE_STOP_REASONS, PennyConstants, RunOutcome, WriteGateOutcome
+from penny.agents.base import Agent
+from penny.constants import (
+    COLLECTOR_COVERED_REASON,
+    WRITE_GATE_STOP_REASONS,
+    PennyConstants,
+    RunOutcome,
+    WriteGateOutcome,
+)
 from penny.conversation_machine import ConversationState, MachineSnapshot, RoundFraming
 from penny.database import Database
 from penny.database.models import MemoryRow
@@ -84,7 +106,9 @@ from penny.database.skills import (
     retarget_writes,
     slug_skill_name,
 )
+from penny.notification import NOTIFICATION_NOTES, NotificationOutcome
 from penny.penny import Penny
+from penny.program import program_calls
 from penny.tests.conftest import TEST_SENDER, require_memory
 from penny.tests.eval.conftest import (
     Check,
@@ -141,11 +165,10 @@ from penny.tests.eval.test_state_transitions import (
     parked_binding,
     seed_parked_in_request,
 )
-from penny.tools.base import Tool
+from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import parse_schedule, render_reinstantiation_echo
 from penny.tools.micro_context import FramedParameter, SkillSignature
 from penny.tools.models import ToolResult
-from penny.tools.send_message import SendMessageTool
 
 pytestmark = pytest.mark.eval
 
@@ -158,6 +181,13 @@ _BROWSE_RESULTS = "browse-results"
 
 # The call a cycle fetches its page with.  Named once, since two checks read it.
 _BROWSE_TOOL = "browse"
+
+# The calls every one of these five routines makes, in order — all five were taught as
+# the canonical two-step round (read the page, write what it said), so the shape is
+# stated once rather than five times.  It is what the STRICT dialect must parse the
+# stored program back into, so a routine that grows or reorders a step fails in the seed
+# naming the case rather than as a puzzling coverage miss after three live cycles.
+_PROGRAM_TOOLS = (_BROWSE_TOOL, "collection_write")
 
 # The write-gate STOP a no-change cycle ends on, as the run record states it — read from
 # the shipped table rather than restated, so a reworded reason cannot silently stop
@@ -703,8 +733,30 @@ def _assert_the_program_is_rendered(db: Database, case: _EnactmentCase, row: Mem
         f"{row.extraction_prompt!r}"
     )
     _assert_the_values_are_joined(case, row.extraction_prompt or "")
+    _assert_the_program_parses(case, row.extraction_prompt or "")
     entries = require_memory(db, case.container).read_all()
     assert not entries, f"{case.case_id}: a job the apply turn just built holds nothing yet"
+
+
+def _assert_the_program_parses(case: _EnactmentCase, program: str) -> None:
+    """The stored program reads back as the calls it makes, under the STRICT dialect
+    (#1911) — each numbered step OPENING with its call, in order.
+
+    Since the soft reboot this is load-bearing twice over, and both failures are silent:
+    a cycle's TOOL SURFACE is the program's own calls closed over advice, and its EXIT is
+    a cursor walked over them.  A program the parser cannot read yields an EMPTY surface
+    and a run record naming the config defect — so a case seeded with one would measure a
+    cycle that had no tools and could never finish, three live cycles at a time, and
+    report it as the model doing nothing.
+
+    Read against the calls the case says the routine makes rather than against a live
+    surface, because that is the claim: these five were taught as the same two-step round,
+    and a routine that grew, dropped or reordered a step is a different measurement."""
+    parsed = tuple(call.tool for call in program_calls(program, frozenset(_PROGRAM_TOOLS)))
+    assert parsed == _PROGRAM_TOOLS, (
+        f"{case.case_id}: the stored program must read back as {list(_PROGRAM_TOOLS)} under "
+        f"the rendered dialect, got {list(parsed)} — program: {program!r}"
+    )
 
 
 def _assert_the_values_are_joined(case: _EnactmentCase, program: str) -> None:
@@ -760,8 +812,34 @@ def _probe_applied_world(case: _EnactmentCase) -> Preparer:
         assert_applied_world(penny.db, case)
         routine = penny.db.skills.get(slug_skill_name(case.skill.name))
         assert routine is not None, f"{case.case_id}: the job's routine must be registered"
+        _assert_the_surface_is_the_program(penny, case)
 
     return probe
+
+
+def _assert_the_surface_is_the_program(penny: Penny, case: _EnactmentCase) -> None:
+    """A cycle on this job runs with EXACTLY its program's own calls, closed over the
+    advice relation — the scoped surface (#1911).
+
+    Driven through the collector's real binding rather than recomputed beside it: what a
+    cycle can call is derived from the program the framework reads, so this asserts the
+    two agree at the one place production derives them.  A surface that came back EMPTY
+    is the unreadable-program state — a cycle with no tools at all — which every later
+    check would report as the model doing nothing."""
+    row = penny.db.memories.get(case.container)
+    collector = penny.collector
+    try:
+        collector._bind(row)
+        # The UNSCOPED surface, read the way the binding reads it — every tool a collector
+        # could run, which is the vocabulary the scoping narrows from.
+        expected = close_over_advice(_PROGRAM_TOOLS, Agent.get_tools(collector))
+        surface = {tool.name for tool in collector.get_tools()}
+    finally:
+        collector._bind(None)
+    assert surface == set(expected), (
+        f"{case.case_id}: a cycle must run with its program's calls closed over advice — "
+        f"expected {sorted(expected)}, the bound surface is {sorted(surface)}"
+    )
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -769,6 +847,46 @@ def _probe_applied_world(case: _EnactmentCase) -> Preparer:
 # One scorer for all five cases, bound to the case's own terms.  Labels are diff-join keys
 # and are deliberately case-NEUTRAL — one wording reads the same whether the fact that
 # moved was a price, a count, a dish or a sailing.
+
+
+class _TerminalShape(StrEnum):
+    """How a cycle ended — the four structural shapes a run record carries (#1911).
+
+    ``done()`` is gone, so a cycle no longer declares its own close: it either STOPPED at
+    the write chokepoint, COMPLETED by covering its program, or ABORTED carrying the cause
+    it ended on.  The fourth shape, completed-and-notified, is COMPLETED plus a
+    notification outcome — read separately by ``_notification_of``, because whether the
+    user was told is a different question from whether the job finished."""
+
+    STOPPED = "stopped"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+
+
+def _shape_of(cycle: CycleObservation) -> _TerminalShape:
+    """Which terminal shape a cycle's run record carries, read off its declared reason
+    rather than inferred from what is absent (the inference that died with ``done()``)."""
+    reason = cycle.reason or ""
+    if reason == _STOP_REASON:
+        return _TerminalShape.STOPPED
+    if reason.startswith(COLLECTOR_COVERED_REASON):
+        return _TerminalShape.COMPLETED
+    return _TerminalShape.ABORTED
+
+
+def _notification_of(cycle: CycleObservation) -> NotificationOutcome | None:
+    """What the framework's notification came to on this cycle, or ``None`` when it was
+    never entered at all.
+
+    Read off the completed reason's own tail — the note the outcome is rendered as — so
+    "the user was told" is a read of the run record rather than an inference from the
+    queue.  The three outcomes are three different findings: queued (delivered or
+    pending), no usable message drawn, and the send declined."""
+    _, _, note = (cycle.reason or "").partition("; ")
+    return next(
+        (outcome for outcome, text in NOTIFICATION_NOTES.items() if note and text == note),
+        None,
+    )
 
 
 def _entry_texts(entries: dict[str, str]) -> str:
@@ -834,9 +952,11 @@ def _stopped_check(cycle: CycleObservation) -> Check:
 
     This is what makes silence structural rather than a judgment the model makes each
     cycle: the write gate compares the value it was handed against the one already stored
-    and ends the run there, so the steps after the write — the notify steps — are never
-    reached.  It needs a SECOND reading of the same value to fire at all, which is why the
-    quiet cycle is the middle one."""
+    and raises its STOP on the very call that would otherwise complete the program, so
+    the notification the framework would have entered is never entered.  It needs a
+    SECOND reading of the same value to fire, which is why the quiet cycle is the middle
+    one — and since #1911 there is no tail after the write for the cycle to die in, so
+    this is reachable rather than a claim nothing could satisfy."""
     stopped = cycle.reason == _STOP_REASON
     return Check(
         f"cycle {cycle.index + 1}: the cycle stopped at the write chokepoint",
@@ -846,37 +966,66 @@ def _stopped_check(cycle: CycleObservation) -> Check:
     )
 
 
+def _completed_check(cycle: CycleObservation) -> Check:
+    """The cycle COVERED its program — every call the routine makes executed, in order —
+    which since #1911 is what finishing means.
+
+    Read off the run's own reason, which opens with the covered line: there is no
+    ``done()`` for the model to close on any more, so a cycle either walks its program or
+    ends carrying the cause it ended on (a write-gate STOP, a failed model call, the step
+    cap).  The rationale names whichever of those it was."""
+    completed = _shape_of(cycle) is _TerminalShape.COMPLETED
+    return Check(
+        f"cycle {cycle.index + 1}: the cycle covered its program",
+        completed,
+        rationale=None if completed else f"the run closed {cycle.reason or cycle.outcome or '—'}",
+        kind="spine",
+    )
+
+
 def _silent_check(cycle: CycleObservation) -> Check:
     """Nothing was sent while nothing had changed — the quiet cycle's whole contract, read
-    off the SEND QUEUE explicitly AND off the calls the cycle made.
+    off the SEND QUEUE and off the run record's own notification note.
 
-    Both halves, because they fail differently: a message on the queue is the user being
-    told about nothing, while a ``send_message`` call that never reached the queue is the
-    notify steps having RUN — the thing the chokepoint STOP exists to make unreachable —
-    and a contract that only counted queued messages would score that green."""
-    sent = not cycle.sent
-    never_ran = SendMessageTool.name not in cycle.tools
+    Both halves, because they fail differently and only one of them is about delivery: a
+    message on the queue is the user being told about nothing, while a notification
+    OUTCOME on the run record is the framework having ENTERED the notification at all —
+    which the STOP is what prevents — and a notification that was entered and then
+    declined would leave the queue empty while the thing this measures already happened."""
+    silent = not cycle.sent
+    never_entered = _notification_of(cycle) is None
     return Check(
-        f"cycle {cycle.index + 1}: nothing was sent and the notify steps never ran",
-        sent and never_ran,
+        f"cycle {cycle.index + 1}: nothing was sent and no notification was entered",
+        silent and never_entered,
         rationale=None
-        if sent and never_ran
-        else f"queued {len(cycle.sent)} message(s), called {cycle.tools}",
+        if silent and never_entered
+        else f"queued {len(cycle.sent)} message(s); the run recorded {_notification_of(cycle)}",
         kind="state",
     )
 
 
 def _one_notify_check(case: _EnactmentCase, cycle: CycleObservation) -> Check:
-    """Exactly one message, naming what changed — one notification per change, never a
-    repeat and never a silent change.  Read off the SEND QUEUE, delivered rows included."""
+    """Exactly one message, naming what changed, and the run says it was sent — one
+    notification per change, never a repeat and never a silent change.
+
+    The SEND QUEUE is the primary read (delivered rows included — a cycle enqueues and
+    the drainer is a separate schedule, so a pending-only read reports a delivered
+    notification as silence), with the run record's own notification outcome beside it:
+    the queue says what the user will receive, the outcome says what the framework
+    decided, and a draw that produced nothing usable is a different finding from a
+    message that was never composed at all."""
     named = [text for text in cycle.sent if case.fact.changed.casefold() in text.casefold()]
-    ok = len(cycle.sent) == 1 and len(named) == 1
+    queued = _notification_of(cycle) is NotificationOutcome.QUEUED
+    ok = len(cycle.sent) == 1 and len(named) == 1 and queued
     return Check(
         f"cycle {cycle.index + 1}: one message, naming what changed",
         ok,
         rationale=None
         if ok
-        else f"queued {len(cycle.sent)} message(s), {len(named)} naming {case.fact.changed!r}",
+        else (
+            f"queued {len(cycle.sent)} message(s), {len(named)} naming "
+            f"{case.fact.changed!r}; the run recorded {_notification_of(cycle)}"
+        ),
         kind="state",
     )
 
@@ -885,8 +1034,12 @@ def _honest_record_check(cycle: CycleObservation) -> Check:
     """The run record states what the cycle did: ``worked`` exactly when it changed
     something or queued a message, ``no_work`` exactly when it did neither.
 
-    Structural on both sides — the record is generated from the ledger (#1569) and what it
-    is compared against is persisted state, so neither half is a model's own account."""
+    Unchanged in meaning by #1911 — the outcome still splits on whether any durable state
+    moved — but its two failing values changed meaning underneath it: ``incomplete`` and
+    ``failed`` now mean the cycle did NOT cover its program, which is the terminal shape
+    ``_completed_check`` reads.  Structural on both sides: the record is generated from
+    the ledger and what it is compared against is persisted state, so neither half is a
+    model's own account."""
     did = cycle.changed or bool(cycle.sent)
     expected = RunOutcome.WORKED if did else RunOutcome.NO_WORK
     ok = cycle.outcome == expected.value
@@ -993,6 +1146,7 @@ def _score_enactment(
         _fetched_check(case, first),
         _recorded_check(first, fact=case.fact.quiet),
         _baseline_check(first),
+        _completed_check(first),
         _honest_record_check(first),
         _fetched_check(case, quiet),
         _recorded_check(quiet, fact=case.fact.quiet),
@@ -1001,6 +1155,7 @@ def _score_enactment(
         _honest_record_check(quiet),
         _fetched_check(case, changed),
         _recorded_check(changed, fact=case.fact.changed, absent=case.fact.quiet),
+        _completed_check(changed),
         _one_notify_check(case, changed),
         _honest_record_check(changed),
         _nothing_else_touched_check(db, case),
