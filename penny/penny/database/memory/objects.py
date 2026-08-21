@@ -10,8 +10,9 @@ read-only) via a base no-op.
     Memory (base)            memory_entry row primitives + shared similarity /
     │                        cursor reads; every shape op is a no-op that
     │                        raises WrongShapeError (overridden where it applies)
-    ├─ Collection            keyed: get / keys / read_latest / read_random /
-    │                        write / update / move / delete  (log ops refuse)
+    ├─ Collection            keyed: get / keys / entry_count / read_latest /
+    │                        read_random / write / update / move / delete
+    │                        (log ops refuse)
     └─ Log                   stream: read_batch (cursored) / read_window /
         │                    append  (keyed ops refuse)
         ├─ MessageLogMemory  row primitives → ``messagelog`` (user-/penny-
@@ -40,6 +41,7 @@ from typing import Any, cast
 
 import numpy as np
 from pydantic import BaseModel, Field, computed_field
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from penny.config_params import RuntimeParams
@@ -139,6 +141,10 @@ class Memory:
     def keys(self) -> list[str]:
         self._refuse_collection_op()
         return []
+
+    def entry_count(self) -> int:
+        self._refuse_collection_op()
+        return 0
 
     def read_latest(
         self, k: int | None = None, offset: int = 0, search: str | None = None
@@ -339,6 +345,23 @@ class Collection(Memory):
     def get(self, key: str) -> list[MemoryEntry]:
         with self._session() as session:
             return self._rows_by_key(session, self.name, key)
+
+    def entry_count(self) -> int:
+        """How many entries this collection holds — a COUNT in SQL, never the length
+        of a read.
+
+        What a caller rendering a BOUNDED window needs to say honestly how much it
+        left out (the collector's holdings block, #1914): reading the whole partition
+        just to subtract is the materialize-then-paginate shape, and this collection
+        is the partition the write path already scans on every write.  Collection-only
+        like every other keyed read — a log's entries are counted through its own
+        cursored reads."""
+        with self._session() as session:
+            return session.exec(
+                select(func.count(MemoryEntry.id)).where(  # ty: ignore[invalid-argument-type]
+                    MemoryEntry.memory_name == self.name
+                )
+            ).one()
 
     def keys(self) -> list[str]:
         with self._session() as session:
@@ -663,7 +686,7 @@ class MessageLogMemory(Log):
     """
 
     # The inline provenance marker, rendered between the timestamp stamp (added by
-    # the tool layer's ``_format_entries``) and the message content:
+    # the tool layer's ``format_entries``) and the message content:
     # ``3. [2026-07-02 09:14 UTC] (sent by price-watch) Heads up: …``.
     SENT_BY_MARKER = "(sent by {mechanism}) "
 

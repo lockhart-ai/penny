@@ -25,6 +25,7 @@ from penny.database.memory import (
     ResolvedEntry,
     ResolvedKind,
     ResolvedMatch,
+    WrongShapeError,
 )
 from penny.database.models import MemoryRow, MutationEvent, Skill
 from penny.database.mutation_store import MutationDetail, render_mutation
@@ -724,6 +725,32 @@ class TestReads:
         db.memories.memory("likes").write([EntryInput(key="b", content="2")], author="chat")
         picked = db.memories.memory("likes").read_random(5)
         assert {e.key for e in picked} == {"a", "b"}
+
+    def test_entry_count_counts_without_reading(self, db):
+        """``entry_count`` is what a caller rendering a BOUNDED window subtracts from
+        to say honestly how much it left out (#1914) — so it must be the collection's
+        WHOLE size, not the length of whatever page was just read."""
+        db.memories.create_collection("likes", "x")
+        assert db.memories.memory("likes").entry_count() == 0
+
+        for index in range(3):
+            db.memories.memory("likes").write(
+                [EntryInput(key=f"k{index}", content=f"value {index}")], author="chat"
+            )
+
+        collection = db.memories.memory("likes")
+        assert collection.entry_count() == 3
+        # Independent of any read's page size — the point of the method.
+        assert len(collection.read_latest(1)) == 1
+        assert collection.entry_count() == 3
+
+    def test_entry_count_refuses_on_a_log(self, db):
+        """A keyed read like every other one: a log's size is reached through its own
+        cursored reads, so asking a log gets the house wrong-shape refusal rather than
+        a plausible zero."""
+        db.memories.create_log("events", "x")
+        with pytest.raises(WrongShapeError):
+            db.memories.memory("events").entry_count()
 
     def test_read_random_no_k_returns_all(self, db):
         db.memories.create_collection("likes", "x")

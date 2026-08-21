@@ -564,6 +564,17 @@ class PennyConstants:
     SELF_STATE_MECHANISMS_LIMIT = 12
     SELF_STATE_ACTIVITY_LIMIT = 8
     SELF_STATE_MAP_LIMIT = 20
+    # How many of the bound collection's entries a collector cycle's prompt renders
+    # (#1914), newest first, in the same spirit as the three above: a prompt-budget
+    # bound with a VISIBLE overflow, deliberately generous, tunable later.  20 keeps a
+    # daily routine's recent three weeks readable — far past the point where a
+    # re-observing routine can see the key it wrote under — while the block stays a
+    # list a cycle skims rather than a corpus it re-reads.  The overflow states its own
+    # COUNT rather than naming a fetch tool the way the self-state sections do: a
+    # cycle's surface is scoped to its program's own calls, so a read tool named here
+    # might not be on it, and an instruction that cannot be followed is worse than the
+    # honest number.
+    COLLECTOR_HOLDINGS_LIMIT = 20
     # Keys named before the "…" tail in a multi-write run line's writes clause
     # (#1641): a run that wrote several entries shows the count plus this many
     # sample keys, so the clause stays one line.  Wholesale bound, tunable later.

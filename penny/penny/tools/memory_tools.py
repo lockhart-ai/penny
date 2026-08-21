@@ -123,7 +123,7 @@ logger = logging.getLogger(__name__)
 # ── Shared formatting ───────────────────────────────────────────────────────
 
 
-def _format_entries(
+def format_entries(
     entries: list[MemoryEntry],
     *,
     source: str | None = None,
@@ -149,6 +149,13 @@ def _format_entries(
     metadata, distinct from the copyable key.  Keyless entries (log) show just
     content.  An empty read names the source and states it's empty (not an error),
     so the model doesn't confuse absence with a failure or re-read the same way.
+
+    PUBLIC because the read tools are no longer its only caller (#1914): the
+    collector's composed prompt renders the bound collection's current entries
+    through this same function, so the keys a cycle reads AMBIENTLY are in the
+    same invocation form the keys it reads from a tool result are.  Two renders
+    of the same thing that could drift apart is exactly the defect that made a
+    cycle invent a fresh key each time.
     """
     if not entries:
         if source is None:
@@ -1052,7 +1059,7 @@ class CollectionGetTool(MemoryTool):
                 f"collection_write(memory='{args.memory}', entries=<the new key and content>) "
                 f"creates NEW keys only and rejects an existing key as a duplicate."
             )
-        return ToolResult(message=_format_entries(rows, source=args.memory))
+        return ToolResult(message=format_entries(rows, source=args.memory))
 
 
 class CollectionReadLatestTool(MemoryTool):
@@ -1094,7 +1101,7 @@ class CollectionReadLatestTool(MemoryTool):
         args = ReadLatestArgs(**kwargs)
         entries = _resolve(self._db, args.memory).read_latest(args.k)
         return ToolResult(
-            message=_format_entries(entries, source=args.memory, ordering="most recent first")
+            message=format_entries(entries, source=args.memory, ordering="most recent first")
         )
 
 
@@ -1127,7 +1134,7 @@ class CollectionReadRandomTool(MemoryTool):
         args = ReadRandomArgs(**kwargs)
         entries = _resolve(self._db, args.memory).read_random(args.k)
         return ToolResult(
-            message=_format_entries(entries, source=args.memory, ordering="random sample")
+            message=format_entries(entries, source=args.memory, ordering="random sample")
         )
 
 
@@ -1190,7 +1197,7 @@ class ReadSimilarTool(MemoryTool):
             )
         entries = _resolve(self._db, args.memory).read_similar(vec, args.k)
         return ToolResult(
-            message=_format_entries(entries, source=args.memory, ordering="most relevant first")
+            message=format_entries(entries, source=args.memory, ordering="most relevant first")
         )
 
 
@@ -2755,7 +2762,7 @@ class LogReadTool(CursorReadTool):
         memory = _resolve(self._db, args.memory)
         entries = self._read_cursor(memory) if self._cursor_mode else self._read_window(memory)
         return ToolResult(
-            message=_format_entries(entries, source=args.memory, ordering="oldest first")
+            message=format_entries(entries, source=args.memory, ordering="oldest first")
         )
 
     def _read_cursor(self, memory: Memory) -> list[MemoryEntry]:
@@ -2859,7 +2866,7 @@ class ReadRunCallsTool(CursorReadTool):
         ]
         self._advance_pending(key, [entry.created_at for entry in entries])
         return ToolResult(
-            message=_format_entries(entries, source=args.target, ordering="oldest first")
+            message=format_entries(entries, source=args.target, ordering="oldest first")
         )
 
 
