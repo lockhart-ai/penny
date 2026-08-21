@@ -282,6 +282,15 @@ class Prompt:
         "Work from what you already have, or close the cycle with done() — "
         "the browser is disconnected, so nothing can be browsed this cycle."
     )
+    # The same recovery for a PROGRAM-SCOPED cycle (#1911), which carries no terminator
+    # at all: its surface is its routine's own calls, so there is no ``done()`` to name
+    # and naming one would be an instruction the model cannot follow.  It says only what
+    # is left to do — the cycle ends when the program's calls are covered, or on the
+    # step budget, either way without a call the model has to reach for.
+    BROWSE_OUTAGE_RECOVERY_PROGRAM = (
+        "Work from what you already have — the browser is disconnected, so nothing "
+        "can be browsed this cycle."
+    )
 
     # Email prompts — the search → read → answer surface now lives on the chat
     # agent's tool set (retired /email + /zoho, epic #1445); the chat prompt and

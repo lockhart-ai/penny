@@ -2641,7 +2641,7 @@ class TestCollectionWritesAndReads:
         assert "done()" not in result.message
 
     @pytest.mark.asyncio
-    async def test_write_all_duplicates_collector_scope_hints_done(self, db, mock_llm):
+    async def test_write_all_duplicates_close_names_the_surface_terminator(self, db, mock_llm):
         _seed_collection(
             db,
             name="likes",
@@ -2649,8 +2649,12 @@ class TestCollectionWritesAndReads:
             extraction_prompt="test fixture extraction prompt",
             schedule="FREQ=HOURLY",
         )
-        # A collector binds its writes to one collection via ``scope``.
-        write = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
+        # A collector binds its writes to one collection via ``scope``; the close it may
+        # be told to make is keyed to the surface's own TERMINATOR (#1911), since a
+        # program-scoped cycle is a collector and has no ``done`` to name.
+        write = CollectionWriteTool(
+            db, _make_llm_client(mock_llm), author="test", scope="likes", terminator="done"
+        )
         await write.execute(
             memory="likes", entries=[{"key": "dark roast", "content": "first body"}]
         )
@@ -2658,12 +2662,23 @@ class TestCollectionWritesAndReads:
             memory="likes",
             entries=[{"key": "dark roast coffee", "content": "different body entirely"}],
         )
-        # Whole batch was duplicates and this is a collector, so the close names
-        # ``done()`` — the model can close the cycle instead of key-hunting — while
-        # the per-entry rejection still binds the matched key into update_entry.
+        # Whole batch was duplicates and this surface HAS a terminator, so the close
+        # names it — the model can close the cycle instead of key-hunting — while the
+        # per-entry rejection still binds the matched key into update_entry.
         assert "Nothing new to add" in all_duplicates.message
         assert "done()" in all_duplicates.message
         assert "update_entry(key='dark roast', content=<richer info>)" in all_duplicates.message
+
+        # THE WATCHED CASE (#1911): the same collector-scoped write on a surface with NO
+        # terminator names none — a program-scoped cycle has no ``done``, so telling it
+        # to call one would be an instruction it could not follow.
+        scoped = CollectionWriteTool(db, _make_llm_client(mock_llm), author="test", scope="likes")
+        no_terminator = await scoped.execute(
+            memory="likes",
+            entries=[{"key": "dark roast beans", "content": "another body entirely"}],
+        )
+        assert "Nothing new to add" in no_terminator.message
+        assert "done" not in no_terminator.message
         # A re-write under the SAME key with the SAME value is the change-gate's
         # UNCHANGED outcome (#1587) — the watch's "no change" signal, reported as
         # such (not a generic "duplicate") AND carrying a STOP the collector loop

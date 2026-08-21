@@ -16,6 +16,8 @@ class ListFoldersTool(Tool):
     """List available email folders."""
 
     name = "list_folders"
+    # A folder is named so its messages can be listed.
+    advises = ("list_emails",)
     description = (
         "List every email folder in the user's mailbox. Returns each folder's name and "
         "type (Inbox, Sent, Drafts, etc.). Use this to discover what folders exist before "

@@ -28,6 +28,8 @@ class DraftEmailTool(Tool):
     """Compose and save an email draft for user review."""
 
     name = "draft_email"
+    # A draft answers a message the model read first.
+    advises = ("read_emails",)
     description = (
         "Compose an email and save it as a draft for the user to review — it is saved to "
         "the Drafts folder for them to edit and send, and is NEVER sent automatically. Use "

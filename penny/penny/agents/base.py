@@ -193,12 +193,6 @@ class Agent:
     # once the program's own calls are covered.
     terminator_tool: str = DoneTool.name
 
-    # Recovery move bound into a browse channel-outage error (no browser
-    # connected).  Chat answers from memory or tells the user; ``BackgroundAgent``
-    # overrides this to bind the argless ``done()`` — the terminator it actually
-    # has (chat has none).
-    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
-
     # The composable response-validation chain — one validator per live
     # condition, run in order by ``run_validators`` each model call.  Reads
     # like a table of contents: a future guard is one more entry here, not a
@@ -1193,6 +1187,7 @@ class Agent:
             run_id=run_id,
             include_lifecycle=self._include_lifecycle_tools(),
             round_framing=self._configuring_round(),
+            terminator=self._surface_terminator(),
         )
         tools.append(self._build_browse_tool(author=self.name))
         # ``choose`` — the fair random picker — is on every agent surface, like
@@ -1202,6 +1197,24 @@ class Agent:
         # no state, so one shared instance built per cycle is fine.
         tools.append(ChooseTool())
         return tools
+
+    def _surface_terminator(self) -> str | None:
+        """The terminator tool THIS surface carries, or ``None`` when it carries none.
+
+        Chat has none — it terminates by replying — so nothing rendered on a chat
+        surface may tell the model to close with a tool call.  ``BackgroundAgent``
+        returns ``done``, and ``Collector`` returns ``None`` for a program-scoped cycle
+        (#1911), which is what keeps a result message from naming a ``done()`` that
+        cycle does not have.  A template method rather than a flag, because it is the
+        run type that decides.
+        """
+        return None
+
+    def channel_outage_recovery(self) -> str:
+        """The move a browse channel-outage error binds — read from the surface rather
+        than fixed per class, since what a run can be told to do depends on what it
+        actually has (#1911)."""
+        return Prompt.BROWSE_OUTAGE_RECOVERY_CHAT
 
     def _include_lifecycle_tools(self) -> bool:
         """Whether this agent may reshape the registry — create / update / merge /
@@ -1227,7 +1240,7 @@ class Agent:
             embedding_client=self._embedding_model_client,
             model_client=self._model_client,
             author=author,
-            channel_outage_recovery=self.channel_outage_recovery,
+            channel_outage_recovery=self.channel_outage_recovery(),
         )
         if self._browse_provider:
             tool.set_browse_provider(self._browse_provider)
@@ -1749,9 +1762,18 @@ class BackgroundAgent(Agent):
     # rejection: the model acted, it just acted too early.
     run_shape_validators: list[ResponseValidator] = [PrematureDoneValidator()]
 
-    # A collector closes with ``done()``, so its channel-outage recovery binds that
-    # terminator instead of the chat "answer the user" move.
-    channel_outage_recovery: str = Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
+    def _surface_terminator(self) -> str | None:
+        """A background cycle carries ``done`` as its early out (``Collector`` drops it
+        for a program-scoped cycle, #1911)."""
+        return DoneTool.name
+
+    def channel_outage_recovery(self) -> str:
+        """A cycle that still has ``done()`` is told to close with it; a program-scoped
+        one, which has no terminator at all, is told only to work from what it has —
+        never to make a call it cannot make."""
+        if self._surface_terminator() is None:
+            return Prompt.BROWSE_OUTAGE_RECOVERY_PROGRAM
+        return Prompt.BROWSE_OUTAGE_RECOVERY_COLLECTOR
 
     def get_max_steps(self) -> int:
         return int(self.config.runtime.BACKGROUND_MAX_STEPS)

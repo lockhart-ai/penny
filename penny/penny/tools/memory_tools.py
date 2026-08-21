@@ -634,6 +634,8 @@ class CollectionCreateTool(MemoryTool):
     """
 
     name = "collection_set"
+    # The creation / re-render echo points at the metadata read for what was configured.
+    advises = ("memory_metadata",)
     description = (
         "Set up a background collection. A collection is storage plus an OPTIONAL job.\n"
         "\n"
@@ -1003,6 +1005,11 @@ class CollectionGetTool(MemoryTool):
     """Exact-key lookup in a collection."""
 
     name = "collection_get"
+    # The densest recovery message on the surface: a key that is not there could be
+    # listed, searched for by meaning, refreshed under the key it really has, or
+    # written as new — and the message names all four, so all four have to be callable
+    # wherever it can render.
+    advises = ("collection_keys", "read_similar", "update_entry", "collection_write")
     description = (
         "Look up an entry by its exact key in a collection. Returns the entry's "
         "content if found, or a 'not found' message otherwise."
@@ -1057,6 +1064,8 @@ class CollectionReadLatestTool(MemoryTool):
     """
 
     name = "collection_read_latest"
+    # Collections only — the description sends a log read to the cursored reader.
+    advises = ("log_read",)
     description = (
         "Return the newest entries in a collection, newest first. Omit `k` to "
         "return every entry. Collections only — to read a log use `log_read(<log>)`."
@@ -1126,6 +1135,9 @@ class ReadSimilarTool(MemoryTool):
     """Return entries most similar to an anchor phrase (collections or logs)."""
 
     name = "read_similar"
+    # A transient embed failure leaves meaning search unavailable, so the message
+    # names the two plain reads that still work.
+    advises = ("collection_read_latest", "log_read")
     description = (
         "Return entries from a memory ordered by content similarity to an "
         "`anchor` phrase. Works for both collections and logs — use this "
@@ -1259,11 +1271,14 @@ def _is_name_variant(asked: str, existing: str) -> bool:
 # trailing closes only frame how the cycle may END; the actionable call lives per
 # entry.
 _DUPLICATE_CLOSE_SOME = "Refresh with richer info, or skip these."
-# All proposed entries were duplicates — nothing new landed.  The collector variant
-# names ``done()`` (its close tool); the chat variant must NOT (chat has no ``done``).
-_DUPLICATE_CLOSE_ALL_COLLECTOR = (
+# All proposed entries were duplicates — nothing new landed.  The first variant names
+# the surface's OWN terminator, interpolated (#1911) rather than written literally: a
+# chat surface has none, and neither does a program-scoped collector cycle, so the name
+# is only ever the one the surface was built with and the message cannot invent a call
+# that isn't there.
+_DUPLICATE_CLOSE_ALL_TERMINATOR = (
     "Nothing new to add — refresh one of the above with richer info, "
-    "otherwise call done() to close the cycle."
+    "otherwise call {terminator}() to close the cycle."
 )
 _DUPLICATE_CLOSE_ALL_CHAT = (
     "Nothing new to add this time — refresh one of the above only if you have richer info."
@@ -1377,6 +1392,14 @@ class CollectionWriteTool(MemoryTool):
     """Write entries to a collection with similarity-based dedup."""
 
     name = "collection_write"
+    # The CORRECTION SIBLINGS (#1911).  ``update_entry`` because the duplicate
+    # rejection binds an ``update_entry`` call per rejected entry — the model is told
+    # to refresh the row that already exists, so that call has to be available.
+    # ``collection_delete_entry`` because the collector's corrections runtime rule
+    # names the pair together: a routine that writes may find an entry that should be
+    # removed rather than rewritten, and offering one half of that without the other
+    # would teach a correction the surface cannot carry out.
+    advises = ("update_entry", "collection_delete_entry")
     description = (
         "Write one or more entries to a collection. Each entry has a short "
         "`key` (topic/identifier) and a longer `content` body. Dedup runs "
@@ -1418,6 +1441,7 @@ class CollectionWriteTool(MemoryTool):
         author: str,
         scope: str | None = None,
         run_id: str | None = None,
+        terminator: str | None = None,
     ) -> None:
         self._db = db
         self._llm = llm_client
@@ -1426,6 +1450,9 @@ class CollectionWriteTool(MemoryTool):
         # The writing run — stamped on each new entry (created/last-written) so a
         # stored value cites the run that produced it (#1560).
         self._run_id = run_id
+        # The terminator THIS surface carries, or None (#1911) — read by the
+        # all-duplicates close, which may only name a call the model can actually make.
+        self._terminator = terminator
 
     async def _suggestion_embedding(self, name: str) -> list[float] | None:
         # This tool embeds, so a write to a mistyped collection gets the MEANING
@@ -1606,13 +1633,17 @@ class CollectionWriteTool(MemoryTool):
 
     def _duplicate_close(self, *, all_duplicates: bool) -> str:
         """The trailing framing after the per-entry rejections (each already binds its
-        own ``update_entry`` call).  When the whole batch was duplicates, a collector
-        (``scope`` set) may close with ``done()``; the chat agent (``scope`` is
-        ``None``) has no ``done`` tool, so it gets a variant that never names one."""
+        own ``update_entry`` call).  When the whole batch was duplicates, a surface that
+        CARRIES a terminator may be told to close with it; every other surface gets the
+        variant that names no call at all.
+
+        Keyed to the surface's own terminator rather than to "is this a collector"
+        (#1911): a program-scoped cycle is a collector and has no ``done`` — naming one
+        would be an instruction it cannot follow."""
         if not all_duplicates:
             return _DUPLICATE_CLOSE_SOME
-        if self._scope is not None:
-            return _DUPLICATE_CLOSE_ALL_COLLECTOR
+        if self._terminator is not None:
+            return _DUPLICATE_CLOSE_ALL_TERMINATOR.format(terminator=self._terminator)
         return _DUPLICATE_CLOSE_ALL_CHAT
 
 
@@ -1620,6 +1651,9 @@ class UpdateEntryTool(MemoryTool):
     """Replace the content of an existing entry in a collection."""
 
     name = "update_entry"
+    # A key that does not exist is either a new entry or a mistyped one, and the
+    # not-found message names both moves.
+    advises = ("collection_write", "collection_keys")
     description = (
         "Replace the content of an existing entry in a collection, identified "
         "by key. Returns an error if the key doesn't exist."
@@ -1744,6 +1778,8 @@ class CollectionSetTool(MemoryTool):
     bound last time.  With no framing this class is byte-identical to what it was."""
 
     name = "collection_set"
+    # The creation echo points at the metadata read for what was configured.
+    advises = ("memory_metadata",)
     description = (
         "Create or reconfigure a collection in ONE idempotent call. If `name` "
         "doesn't exist it comes into being with this config; if it does, only "
@@ -2052,6 +2088,8 @@ class CollectionUpdateTool(MemoryTool):
     """
 
     name = "collection_set"
+    # The creation / re-render echo points at the metadata read for what was configured.
+    advises = ("memory_metadata",)
     description = (
         "Update an existing collection's metadata. Only supplied fields "
         "are changed.\n"
@@ -2581,6 +2619,8 @@ class CollectionDeleteEntryTool(MemoryTool):
     """Delete an entry from a collection by key."""
 
     name = "collection_delete_entry"
+    # A key that does not exist sends the model to the list of keys that do.
+    advises = ("collection_keys",)
     description = (
         "Delete the entry with the given key from a collection. Returns the "
         "number of entries removed (zero if the key did not exist)."
@@ -2885,6 +2925,8 @@ class GetEventTool(Tool):
     """
 
     name = "get_event"
+    # A malformed or unmatched id recovers through the lists that carry valid ones.
+    advises = ("read_run_calls", "find")
     description = (
         "Look up ONE event from your activity log by the typed id it rendered — a "
         "`run <id>` line, or a change's `(run <id>)` cause.  Pass the whole token, "
@@ -3164,6 +3206,8 @@ class FindTool(MemoryTool):
     """
 
     name = "find"
+    # Nothing matched: the wider net is the catalog.
+    advises = ("collection_catalog",)
     description = (
         "Find anything of your own by meaning, when you don't know its exact name — "
         "a collection, a log, a taught skill, or a single stored entry (a fact you "
@@ -3238,6 +3282,8 @@ class ExistsTool(MemoryTool):
     """Probe whether an equivalent entry already exists across a set of memories."""
 
     name = "exists"
+    # A name that is free is a name to write to.
+    advises = ("collection_write",)
     description = (
         "Check whether an entry equivalent to the given key/content already "
         "exists in any of the listed memories. Uses the same similarity-based "
@@ -3406,6 +3452,7 @@ def build_memory_tools(
     run_id: str | None = None,
     include_lifecycle: bool = True,
     round_framing: RoundFraming | None = None,
+    terminator: str | None = None,
 ) -> list[Tool]:
     """Construct the memory tool surface for an agent.
 
@@ -3500,7 +3547,9 @@ def build_memory_tools(
         SkillReadTool(db),
     ]
     mutations: list[Tool] = [
-        CollectionWriteTool(db, llm_client, agent_name, scope=scope, run_id=run_id),
+        CollectionWriteTool(
+            db, llm_client, agent_name, scope=scope, run_id=run_id, terminator=terminator
+        ),
         UpdateEntryTool(db, agent_name, scope=scope, run_id=run_id),
         CollectionDeleteEntryTool(db, scope=scope),
         LogAppendTool(db, llm_client, agent_name, run_id=run_id),

@@ -24,6 +24,8 @@ class ReadEmailsTool(Tool):
     """Read the full body of one or more emails by ID."""
 
     name = "read_emails"
+    # Nothing to read points back at the two ways of finding messages.
+    advises = ("search_emails", "list_emails")
     description = (
         "Read the full content of one or more emails by their ids. Run this after a search "
         "(`search_emails(text=<keywords>)`) or a folder listing to get the complete "

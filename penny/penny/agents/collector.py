@@ -66,6 +66,7 @@ from penny.notification import NOTIFICATION_NOTES, CollectorNotifier, Notificati
 from penny.program import ProgramCall, is_covered, program_calls
 from penny.responses import PennyResponse
 from penny.text_validity import check_extraction_prompt
+from penny.tools.base import Tool, close_over_advice
 from penny.tools.collection_instantiation import skill_params
 from penny.tools.memory_tools import DoneTool
 
@@ -101,23 +102,40 @@ class Collector(BackgroundAgent):
     # fix.  Class-scoped so subclasses (none yet) could override if a
     # different runtime contract emerged.
     #
-    # Shrunk to what still applies (#1911).  Three rules left, and the two that went
-    # are the two the framework now settles: the "end every cycle with done()" rule
-    # (the cycle ends when the program's own calls are covered — a read, not a move
-    # the model makes) and the QUIET-cycle rule (which existed to stop the model
-    # forcing a write when the tail demanded one; nothing demands one now, and a
-    # no-change write is answered by the write gate's STOP either way).  Nothing here
-    # mentions telling the user: that is not part of a cycle any more.
-    _RUNTIME_RULES = (
-        "## Runtime rules (always apply)\n"
-        "\n"
-        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
-        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
-        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
-        "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
-        '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically."
+    # Shrunk to what still applies (#1911).  Two rules went with the framework taking
+    # their job: "end every cycle with done()" (the cycle ends when the program's own
+    # calls are covered — a read, not a move the model makes) and the QUIET-cycle rule
+    # (which existed to stop the model forcing a write when the tail demanded one).
+    # Nothing here mentions telling the user: that is not part of a cycle any more.
+    #
+    # Each line DECLARES the tools it names, and only lines whose tools are on this
+    # cycle's surface render.  A cycle's surface is scoped to its program now, so a
+    # rule naming ``update_entry`` on a surface without one would be an instruction
+    # that cannot be followed — the same n≤1 reachability bug a result message naming
+    # an absent sibling would be, and answered the same way.
+    _RUNTIME_RULES_HEAD = "## Runtime rules (always apply)"
+    _RUNTIME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "- Single batched `collection_write(entries=[...])` per cycle — not one call "
+            "per entry.",
+            ("collection_write",),
+        ),
+        (
+            "- For corrections: if a recent message indicates an existing entry is wrong, "
+            "stale, closed, or otherwise no longer accurate, `update_entry(key=<key>, "
+            "content=<corrected content>)` or `collection_delete_entry(key=<key>)` rather "
+            "than appending alongside.",
+            ("update_entry", "collection_delete_entry"),
+        ),
+        (
+            "- Cite only what you actually browsed this cycle.  Never invent a URL to "
+            'populate a "Source:" field — if no real source was fetched, omit the field.',
+            ("browse",),
+        ),
+        (
+            "- Don't dedup manually — the store rejects duplicates on write automatically.",
+            ("collection_write",),
+        ),
     )
 
     def __init__(
@@ -589,8 +607,9 @@ class Collector(BackgroundAgent):
         """
         target = self._require_target()
         fresh = self.db.memories.get(target.name) or target
-        return self._compose_prompt(fresh, self._routine(fresh)) + self._run_history_section(
-            fresh.name
+        surface = frozenset(tool.name for tool in self._tool_registry.get_all())
+        return self._compose_prompt(fresh, self._routine(fresh), surface) + (
+            self._run_history_section(fresh.name)
         )
 
     def _routine(self, target: MemoryRow) -> Skill | None:
@@ -629,7 +648,9 @@ class Collector(BackgroundAgent):
         )
 
     @classmethod
-    def _compose_prompt(cls, target: MemoryRow, skill: Skill | None) -> str:
+    def _compose_prompt(
+        cls, target: MemoryRow, skill: Skill | None, surface: frozenset[str]
+    ) -> str:
         """Frame the extraction_prompt with target identity + what the collection is
         set up to run + the assembly-owned step tail + runtime rules (#1557/#1907).
 
@@ -656,6 +677,10 @@ class Collector(BackgroundAgent):
         covered — a read, not a step).  So the composed prompt's numbered steps are
         exactly the stored ``extraction_prompt``'s, which is exactly the routine, which
         is exactly what coverage is read against: one program, one reading of it.
+
+        ``surface`` is the tool names this cycle actually runs with — scoped to the
+        program's own calls when the framework could read it — and the runtime rules are
+        filtered against it, so the prompt never instructs a call the model cannot make.
         """
         return (
             f"You are the collector for the `{target.name}` collection.\n"
@@ -663,8 +688,23 @@ class Collector(BackgroundAgent):
             f"{cls._routine_section(target, skill)}"
             "\n"
             f"{target.extraction_prompt}\n\n"
-            f"{cls._RUNTIME_RULES}"
-        )
+            f"{cls._runtime_rules(surface)}"
+        ).rstrip("\n")
+
+    @classmethod
+    def _runtime_rules(cls, surface: frozenset[str]) -> str:
+        """The runtime rules this cycle's surface can actually carry out.
+
+        A rule renders only when every tool it names is present, so a program-scoped
+        cycle reads instructions about the tools it HAS and nothing else.  With no rule
+        applicable the head goes too — a heading over nothing is a worse artifact than
+        the absence."""
+        lines = [
+            line for line, named in cls._RUNTIME_RULES if all(tool in surface for tool in named)
+        ]
+        if not lines:
+            return ""
+        return "\n".join([cls._RUNTIME_RULES_HEAD, "", *lines])
 
     @classmethod
     def _routine_section(cls, target: MemoryRow, skill: Skill | None) -> str:
@@ -713,6 +753,38 @@ class Collector(BackgroundAgent):
         if parameter.description:
             return f"- {parameter.name}: {_NO_VALUE} — it needs {parameter.description}"
         return f"- {parameter.name}: {_NO_VALUE}"
+
+    def get_tools(self, run_id: str | None = None) -> list[Tool]:
+        """The cycle's tool surface, SCOPED to the program when one can be read (#1911).
+
+        The code owner's ruling: "we know the tools beforehand so we can dynamically
+        restrict the tool calling surface to only the tools in the actual skill".  A
+        cycle carrying out a known routine has no use for the rest of the surface, and
+        every tool it does not need is a door the run can wander through — the last one
+        being an interjected ``read_similar``, which re-admits chat-flavoured content
+        mid-program and is where the measured tail decayed.  Absent beats discouraged.
+
+        The scope is the program's own calls CLOSED over :attr:`Tool.advises`, so a
+        sibling a result message points at (``collection_write``'s duplicate rejection
+        naming ``update_entry``) is present to be called: a rendered instruction always
+        resolves in one call.  ``done`` is not in any program, so a scoped cycle has no
+        terminator at all — coverage and a write-gate STOP are its only closes, and a
+        genuinely stuck one ends on the max-steps/abort path with its own honest cause
+        rather than on a model-declared clean close.
+
+        A program the framework CANNOT read (a legacy prose row) keeps the full surface
+        and its ``done()`` — byte-identical to before this change, because there is no
+        coverage to close it and taking its terminator away would leave it nothing."""
+        tools = super().get_tools(run_id)
+        if not self._program:
+            return tools
+        scoped = close_over_advice({call.tool for call in self._program}, tools)
+        return [tool for tool in tools if tool.name in scoped]
+
+    def _surface_terminator(self) -> str | None:
+        """``done`` only while this cycle's surface still carries it — a scoped cycle
+        has none, so nothing rendered on it may tell the model to close with one."""
+        return None if self._program else super()._surface_terminator()
 
     def _memory_scope(self) -> str:
         """Pin entry mutations to the bound target collection."""

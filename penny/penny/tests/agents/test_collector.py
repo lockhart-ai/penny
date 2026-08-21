@@ -79,6 +79,14 @@ def _make_collector(test_config, tmp_path) -> tuple[Collector, Database]:
     return collector, db
 
 
+# The UNSCOPED collector surface — every tool the runtime rules name, so a
+# ``_compose_prompt`` render under it carries all four rules.  A program-scoped cycle
+# passes a narrower set and drops the rules it cannot carry out (#1911).
+_FULL_SURFACE = frozenset(
+    {"collection_write", "update_entry", "collection_delete_entry", "browse", "done"}
+)
+
+
 def _get(db: Database, name: str) -> MemoryRow:
     """Fetch a memory that the test just created — asserts it exists (typed)."""
     memory = db.memories.get(name)
@@ -709,7 +717,7 @@ def test_compose_prompt_wraps_extraction_with_target_and_runtime_rules():
         ),
     )
 
-    composed = Collector._compose_prompt(target, None)
+    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
 
     expected = (
         "You are the collector for the `board-games` collection.\n"
@@ -770,7 +778,7 @@ def test_compose_prompt_carries_only_the_skill_when_notify_true():
     )
     target = quiet.model_copy(update={"notify": True})
 
-    composed = Collector._compose_prompt(target, None)
+    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
 
     expected = (
         "You are the collector for the `indie-metroidvanias` collection.\n"
@@ -778,13 +786,13 @@ def test_compose_prompt_carries_only_the_skill_when_notify_true():
         "\n"
         f"{_NOTIFY_RENDERED_PROMPT}\n"
         "\n"
-        f"{Collector._RUNTIME_RULES}"
+        f"{Collector._runtime_rules(_FULL_SURFACE)}"
     )
     assert composed == expected, (
         f"Composed notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
     )
     # The flag no longer changes a single character of what the model reads.
-    assert Collector._compose_prompt(quiet, None) == composed
+    assert Collector._compose_prompt(quiet, None, _FULL_SURFACE) == composed
     # Named gate cases: the retired steps and terminal are absent by name.
     for retired in ("read_similar", "send_message", "done()"):
         assert retired not in composed
@@ -808,7 +816,7 @@ def test_compose_prompt_appends_nothing_to_a_prose_prompt():
         extraction_prompt=legacy_prompt,
     )
 
-    composed = Collector._compose_prompt(target, None)
+    composed = Collector._compose_prompt(target, None, _FULL_SURFACE)
 
     expected = (
         "You are the collector for the `summit-status` collection.\n"
@@ -816,7 +824,7 @@ def test_compose_prompt_appends_nothing_to_a_prose_prompt():
         "\n"
         f"{legacy_prompt}\n"
         "\n"
-        f"{Collector._RUNTIME_RULES}"
+        f"{Collector._runtime_rules(_FULL_SURFACE)}"
     )
     assert composed == expected, (
         f"Legacy notify prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
@@ -850,8 +858,160 @@ def test_send_message_is_not_on_the_collector_surface(test_config, tmp_path):
     names = {tool.name for tool in collector.get_tools()}
 
     assert "send_message" not in names
-    assert "done" in names
     assert "send_message" not in collector_tool_surface(db, collector._model_client)
+
+
+# ── The cycle's surface is scoped to its program (#1911) ──────────────────────
+
+# A two-call program. Its scoped surface is those two calls plus the correction
+# siblings ``collection_write``'s own rejection text points at — and nothing else.
+_SCOPED_PROGRAM = (
+    "1. browse(queries=['https://northpier.example/departures'], extract='the dawn sailing')\n"
+    "2. collection_write(memory='ferry-departures', entries=[{'key': 'x', 'content': 'y'}])"
+)
+
+# A program the framework cannot read: prose, naming no call in any notation.
+_PROSE_PROGRAM = (
+    "Watch the summit webcam page, read the status banner, and record the current "
+    "trail status in the collection under the key `trail`."
+)
+
+
+def _surface_for(collector: Collector, db: Database, name: str) -> set[str]:
+    """The tool names the cycle for ``name`` actually runs with."""
+    collector._bind(_get(db, name))
+    return {tool.name for tool in collector.get_tools()}
+
+
+def test_a_readable_program_scopes_the_surface_to_its_own_calls(test_config, tmp_path):
+    """THE SCOPED SURFACE (#1911, the code owner's ruling): "we know the tools
+    beforehand so we can dynamically restrict the tool calling surface to only the tools
+    in the actual skill".
+
+    The surface is EXACTLY the program's two calls CLOSED over the advice relation —
+    asserted as an equality, because the point is what is ABSENT: ``read_similar`` is
+    gone, so the interjected chat-flavoured read the measured tail decayed on is
+    structurally unavailable rather than discouraged.
+
+    The closure is TRANSITIVE, and ``collection_keys`` is the proof: the write's
+    rejection names ``update_entry``, and ``update_entry``'s own not-found message names
+    ``collection_keys`` — two hops from the program, and still reachable, because a
+    rendered instruction has to resolve however deep the chain of advice runs."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "ferry-departures", "the dawn sailing", extraction_prompt=_SCOPED_PROGRAM
+    )
+
+    surface = _surface_for(collector, db, "ferry-departures")
+
+    assert surface == {
+        "browse",
+        "collection_write",
+        "update_entry",
+        "collection_delete_entry",
+        "collection_keys",
+    }
+    assert "read_similar" not in surface
+
+
+def test_a_scoped_cycle_cannot_call_done(test_config, tmp_path):
+    """THE WATCHED DELETION (#1911): a program-scoped cycle has NO terminator — ``done``
+    is absent from its schema, not merely discouraged in its prompt.
+
+    Coverage and a write-gate STOP are its only closes.  A genuinely stuck cycle ends on
+    the max-steps / abort path carrying its own honest cause (#1909), which is a truer
+    record than a model-declared clean close it could reach by giving up."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "ferry-departures", "the dawn sailing", extraction_prompt=_SCOPED_PROGRAM
+    )
+
+    surface = _surface_for(collector, db, "ferry-departures")
+
+    assert "done" not in surface
+    # Absent from the SCHEMA the model is handed, which is what makes it unavailable.
+    assert (
+        "done"
+        not in {tool["function"]["name"] for tool in collector._tool_registry.get_ollama_tools()}
+        - surface
+    )
+    assert collector._surface_terminator() is None
+
+
+def test_an_unreadable_program_keeps_the_whole_surface_and_its_done(test_config, tmp_path):
+    """The legacy prose row is UNCHANGED (#1911): with no readable program there is no
+    coverage to close the cycle, so taking its terminator away would leave it nothing —
+    it keeps the full collector surface and its ``done()``, byte-identical to before."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection("summit-status", "trail status", extraction_prompt=_PROSE_PROGRAM)
+
+    surface = _surface_for(collector, db, "summit-status")
+
+    assert "done" in surface
+    assert collector._surface_terminator() == "done"
+    # The whole surface, not a subset: the reads a scoped cycle loses are all here.
+    assert {"browse", "read_similar", "collection_write", "log_read", "find"} <= surface
+
+
+def test_a_scoped_cycle_reads_only_the_runtime_rules_it_can_carry_out(test_config, tmp_path):
+    """The rules are filtered against the surface, so the prompt never instructs a call
+    the model cannot make — a read-only routine reads a prompt about reading.
+
+    Whole-render, both directions: a write program keeps every rule its tools support,
+    and a read-only one has no rules block at all rather than a heading over nothing."""
+    write_surface = frozenset(
+        {"browse", "collection_write", "update_entry", "collection_delete_entry"}
+    )
+    assert Collector._runtime_rules(write_surface) == (
+        "## Runtime rules (always apply)\n"
+        "\n"
+        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
+        "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
+        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
+        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
+        "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
+        '"Source:" field — if no real source was fetched, omit the field.\n'
+        "- Don't dedup manually — the store rejects duplicates on write automatically."
+    )
+    # A write program that never browses drops the browse rule and keeps the rest.
+    assert "browsed this cycle" not in Collector._runtime_rules(
+        frozenset({"collection_write", "update_entry", "collection_delete_entry"})
+    )
+    # A read-only program supports none of them, so the head goes too.
+    assert Collector._runtime_rules(frozenset({"log_read"})) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_scoped_cycle_records_its_own_cause(mock_llm, test_config, tmp_path):
+    """The honest end (#1909/#1911): with no ``done`` to reach for, a cycle that cannot
+    finish its program runs out its step budget and its run record says so.
+
+    That is the trade the scoped surface makes — a model that gives up can no longer
+    declare a clean close, so what the record shows is what actually happened."""
+    collector, db = _make_collector(test_config, tmp_path)
+    db.memories.create_collection(
+        "ferry-departures",
+        "the dawn sailing",
+        extraction_prompt=_SCOPED_PROGRAM,
+        schedule="FREQ=HOURLY",
+    )
+
+    def handler(request: dict, count: int) -> LlmResponse:
+        # Never the write, so the program is never covered and nothing closes the cycle.
+        return mock_llm._make_tool_call_response(
+            request, "browse", {"queries": ["https://northpier.example/departures"]}
+        )
+
+    mock_llm.set_response_handler(handler)
+
+    success, _ = await collector.run_for("ferry-departures")
+
+    assert success is False
+    runs = [run for run in db.messages.get_prompt_log_runs() if run["agent_name"] == "collector"]
+    assert len(runs) == 1
+    assert runs[0]["run_outcome"] == RunOutcome.FAILED.value
+    assert "max steps exceeded" in runs[0]["run_reason"]
+    assert db.send_queue.next_pending() is None
 
 
 # ── What a CONFIGURED collection's cycle reads (#1907) ────────────────────────
@@ -872,8 +1032,11 @@ async def _configure_timetable_collection(db: Database) -> None:
 
 
 async def _composed_for(collector: Collector, db: Database, name: str) -> str:
-    """The per-cycle system prompt the collector really builds for ``name``."""
-    collector._current_target = _get(db, name)
+    """The per-cycle system prompt the collector really builds for ``name`` — bound and
+    with its tools installed, exactly as ``_run_cycle`` does, so the prompt is composed
+    against the surface this cycle actually runs with (#1911)."""
+    collector._bind(_get(db, name))
+    collector._install_tools(collector.get_tools())
     return await collector._build_system_prompt(None)
 
 
@@ -911,7 +1074,7 @@ async def test_configured_collection_cycle_reads_routine_values_and_joined_progr
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
         "\n"
-        f"{Collector._RUNTIME_RULES}"
+        f"{Collector._runtime_rules(_FULL_SURFACE)}"
     )
     assert composed == expected, (
         f"Configured collection prompt mismatch:\n{composed!r}\n\nvs expected:\n{expected!r}"
@@ -961,7 +1124,7 @@ async def test_a_term_the_collection_was_never_given_reads_as_a_named_gap(test_c
         "entries=[{'key': {the key the extracted value is stored under}, "
         "'content': the value from step 1}])\n"
         "\n"
-        f"{Collector._RUNTIME_RULES}"
+        f"{Collector._runtime_rules(_FULL_SURFACE)}"
     )
 
 
@@ -1273,10 +1436,15 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
     """Full verbatim dump of the collector's on-wire message array.
 
     Shows exactly what the collector model sees: the system message (date +
-    per-collection body + runtime-rules tail + this collector's recent run
-    history) and the bare user turn (empty for a background agent).  Date and
-    run timestamps are normalised to placeholders; everything else is asserted
-    char-for-char so the structure is visible and drift is caught."""
+    per-collection body + whatever runtime rules this SURFACE can carry out + this
+    collector's recent run history) and the bare user turn (empty for a background
+    agent).  Date and run timestamps are normalised to placeholders; everything else is
+    asserted char-for-char so the structure is visible and drift is caught.
+
+    THE SCOPED SHAPE (#1911): this collection's program is one ``log_read``, so the
+    cycle's surface is one ``log_read`` — and every runtime rule names a tool it does not
+    have, so the whole rules block is ABSENT rather than instructing calls the model
+    cannot make.  A read-only routine reads a prompt about reading."""
     collector, db = _make_collector(test_config, tmp_path)
     db.memories.create_collection(
         "board-games",
@@ -1297,7 +1465,8 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
             run_target="board-games",
         )
         collector._tag_promptlog_run(run_id, outcome, reason, 0)
-    collector._current_target = db.memories.get("board-games")
+    collector._bind(db.memories.get("board-games"))
+    collector._install_tools(collector.get_tools())
 
     system_prompt = await collector._build_system_prompt(None)
     messages = collector._build_messages("", None, system_prompt)
@@ -1317,16 +1486,6 @@ async def test_collector_message_array_verbatim(test_config, tmp_path):
         "\n"
         "Collect board games.\n"
         '1. log_read("user-messages")\n'
-        "\n"
-        "## Runtime rules (always apply)\n"
-        "\n"
-        "- Single batched `collection_write(entries=[...])` per cycle — not one call per entry.\n"
-        "- For corrections: if a recent message indicates an existing entry is wrong, stale, "
-        "closed, or otherwise no longer accurate, `update_entry(key=<key>, content=<corrected "
-        "content>)` or `collection_delete_entry(key=<key>)` rather than appending alongside.\n"
-        "- Cite only what you actually browsed this cycle.  Never invent a URL to populate a "
-        '"Source:" field — if no real source was fetched, omit the field.\n'
-        "- Don't dedup manually — the store rejects duplicates on write automatically.\n"
         "\n"
         "## Your recent runs (newest first)\n"
         "What your previous cycles did, and when — context to avoid repeating "

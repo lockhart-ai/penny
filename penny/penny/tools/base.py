@@ -4,6 +4,7 @@ import asyncio
 import difflib
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
 from pydantic import ValidationError
@@ -61,6 +62,21 @@ class Tool(ABC):
     # rejected through the envelope instead of being silently dropped.
     args_model: type[ToolArgs] = NoArgs
     timeout: float | None = None  # None = use ToolExecutor's global timeout
+    # The tools THIS tool's own rendered text may direct the model to (#1911).  A
+    # result message that says "call ``update_entry(key=…)``" is an ANCHOR: the n≤1
+    # discipline says a rendered instruction resolves in one call, so it must never
+    # name a tool the surface does not carry.
+    #
+    # Since a collector cycle's surface is now SCOPED to its program's own calls, that
+    # is a real possibility rather than a theoretical one — so the advice relation is
+    # DECLARED here, beside the text that does the advising, and the scoped surface is
+    # closed over it.  Declaring it per tool rather than tabulating it in the collector
+    # is what keeps it true for a tool nobody has written yet: a plugin tool that points
+    # at a sibling says so on itself, and the closure picks it up for free.
+    #
+    # Enforced, not trusted: a test walks each tool class's own string literals for
+    # references to any registered tool name and fails when one is not declared here.
+    advises: tuple[str, ...] = ()
 
     _registry: ClassVar[dict[str, type[Tool]]] = {}
 
@@ -314,6 +330,26 @@ class Tool(ABC):
                 "parameters": params,
             },
         }
+
+
+def close_over_advice(names: Iterable[str], tools: Sequence[Tool]) -> frozenset[str]:
+    """``names`` widened to include every tool their rendered text may point at (#1911).
+
+    The transitive closure under :attr:`Tool.advises`, over the tools actually available
+    — so a scoped surface built from it can never render an instruction naming a tool it
+    does not carry, however many hops of advice separate them.  A declared sibling that
+    is not among ``tools`` is simply unreachable and drops out; there is nothing to add
+    to a surface for a tool this deployment does not have."""
+    by_name = {tool.name: tool for tool in tools}
+    reached = {name for name in names if name in by_name}
+    frontier = list(reached)
+    while frontier:
+        tool = by_name[frontier.pop()]
+        for sibling in tool.advises:
+            if sibling in by_name and sibling not in reached:
+                reached.add(sibling)
+                frontier.append(sibling)
+    return frozenset(reached)
 
 
 class ToolRegistry:
